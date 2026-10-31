@@ -32,5 +32,5 @@ these UI items.
   Source change and unit tests are present; cross-PC UI verification remains.
 
 Test one SPLINED instance at a time for any operation that writes the shared
-database. The current MEDIAPC Beyoncé display investigation is separate from
+database. The current PC workstation's Beyoncé display investigation is separate from
 this Setup checklist and should be observed before any refresh.

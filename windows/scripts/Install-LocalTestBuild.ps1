@@ -40,7 +40,7 @@ if ([System.IO.Path]::GetDirectoryName($releaseRoot).TrimEnd('\') -ne $targetRoo
 }
 
 $buildKind = if ($Quick) { 'quick incremental' } else { 'clean production-equivalent' }
-Write-Host "Building a $buildKind MEDIAPC test executable..." -ForegroundColor Cyan
+Write-Host "Building a $buildKind PC test executable..." -ForegroundColor Cyan
 Push-Location $repositoryRoot
 $previousIncremental = $env:CARGO_INCREMENTAL
 try {

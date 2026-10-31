@@ -26,7 +26,7 @@ The release executable is:
 windows\target\x86_64-pc-windows-msvc\release\splined.exe
 ```
 
-### Production-equivalent local MEDIAPC test build
+### Production-equivalent local PC test build
 
 For routine local iterations, close SPLINED and double-click
 `E:\apps\SPLINED\Apply Quick Local Update.cmd`, or run:

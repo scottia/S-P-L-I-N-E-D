@@ -1,112 +1,111 @@
 # S:P:L:I:N:E:D Documentation
 
-This directory documents the current supported **S:P:L:I:N:E:D** behavior and
-Config v5 schema. It is organized by task so one subject has one authoritative
-home. Historical changes and release notes are maintained in
-[GitHub Releases](https://github.com/scottia/S-P-L-I-N-E-D/releases), not mixed
-with the current product documentation.
+This index separates current operating guidance from maintainer procedures and
+historical evidence. Follow the current guides for product behavior. Audits,
+dated reconciliation notes, and unverified follow-ups are retained for context,
+not as instructions for an installed release.
 
-## Start here
+## Current user guides
 
-1. [Install and complete the first run](installation-first-run.md).
-2. Choose the interface guide for the runtime you use:
-   [Windows](windows-guide.md) or [WebGUI](browser-workspace-guide.md).
+Start here:
+
+1. [Install SPLINED and complete the first run](installation-first-run.md).
+2. Choose the guide for your interface:
+   [Windows](windows-guide.md) or [Ubuntu WebGUI](browser-workspace-guide.md).
 3. Review [Config v5](config-v5-reference.md) and
-   [credentials/provider setup](credentials-providers.md).
-4. Start in Read mode with a small selection before enabling Live Write.
+   [credential/provider setup](credentials-providers.md).
+4. Back up persistent state and begin with Read mode on a small selection.
 
-## Guides by task
+The current guides have distinct ownership:
 
-### Install and operate
-
-- [Installation and first run](installation-first-run.md) — Windows portable,
-  Linux, macOS, Docker, initial indexing, and the first safe scan.
-- [Windows guide](windows-guide.md) — the replacement artwork shell, graphical
-  library, dynamic source strip, Navidrome enrichment, candidate review,
-  MusicBrainz Matches, Custom Upscale, backup, updates, and troubleshooting.
-- [Windows 1.0.88 functional-parity audit](windows-functional-parity-1.0.88.md)
-  — feature-by-feature migration status, validation, and explicit retirements.
-- [Windows replacement GUI validation](windows-gui-redesign-qa.md) — screenshot
-  comparison matrix, test coverage, and deliberate reference adaptations.
-- [WebGUI guide](browser-workspace-guide.md) — Python server, PostgreSQL catalog, browser settings, artwork writes, COMP review, and persistent embedding queue.
-
-### Configure artwork and providers
-
-- [Config v5 reference](config-v5-reference.md) — every configuration section,
-  path rule, runtime option, and validation requirement.
-- [Source policies and Range Types](source-policies-range-types.md) — global
-  range, source overrides, strict content validation, ranking eligibility,
-  compilation authority, local artwork, and AISPLINE boundaries.
-- [Credentials and provider setup](credentials-providers.md) — supported
-  providers, credential files, protection, relocation, and backup.
-- [MusicBrainz OAuth](musicbrainz-oauth.md) — authorization, refresh, timing,
-  retries, and recovery.
-- [API/OAuth validation](oauth-validation.md) — safe provider checks and
-  provider-specific recovery guidance.
-
-### Understand library state
-
-- [SPLINED media database](splined-media-database.md) — SQLite authority,
-  cross-platform sharing, identity, indexing, status persistence, backup, and
-  inspection.
+- [Windows application guide](windows-guide.md) — Windows library browsing,
+  artwork review, MusicBrainz choices, Write behavior, backup, updates, and
+  troubleshooting.
+- [WebGUI guide](browser-workspace-guide.md) — browser setup, PostgreSQL index
+  and queue behavior, artwork/COMP review, writes, recovery, and deployment
+  boundaries.
 - [Select Media and status colors](media-filter-status-colors.md) — filters,
-  selection scope, Album and Artist states, counts, refresh, and accessibility.
+  selection scope, counts, status meaning, and accessibility.
+- [Microsoft Store channel](windows-store.md) — installed Windows identity,
+  Store-managed updates, and the separation from portable releases.
 
-### Platform packaging
+## Authoritative technical references
 
-- [Microsoft Store Windows channel](windows-store.md) — live installation,
-  exact production identity, Store-managed in-app update requests, synchronized
-  normal-release packaging and publication, existing-tag recovery, and isolated
-  development QA.
-- [Release automation](release-automation.md) — purpose, risk, and confirmation
-  choices for the numbered workflows; git-cliff 2.14.2 release-note authority;
-  and exact-tag Store/Docker recovery paths.
-- [Docker installation](../docker/README.md)
-- [Windows source and build guide](../windows/README.md)
-- [Windows portable instructions](../release/README-WINDOWS.txt)
-- [Linux portable instructions](../release/README-LINUX.txt)
-- [macOS portable instructions](../release/README-MACOS.txt)
+- [Config v5 reference](config-v5-reference.md) owns configuration fields,
+  defaults, path rules, and validation.
+- [Source policies and Range Types](source-policies-range-types.md) owns
+  candidate eligibility, ranking, local artwork, output evaluation, and the
+  COMP/per-track policy.
+- [SPLINED media database](splined-media-database.md) owns native SQLite
+  identity, indexing, durable state, sharing, and backup boundaries. It also
+  records that WebGUI uses a separate PostgreSQL catalog.
+- [Credentials and provider setup](credentials-providers.md) owns credential
+  files, supported provider contracts, protection, relocation, and backup.
+- [MusicBrainz OAuth](musicbrainz-oauth.md) and
+  [provider validation](oauth-validation.md) own authorization and diagnostic
+  procedures.
+- [MusicBrainz fallback workflow](musicbrainz-fallback-workflow.md) records the
+  current Windows fallback identity/UI contract; source-policy rules remain
+  authoritative when wording overlaps.
 
-### Maintainer follow-ups
+Provider secrets never belong in Config v5, source control, screenshots, or
+diagnostic reports.
 
-- [Windows Setup follow-ups](windows-setup-follow-ups.md) — unreleased
-  first-run and shared-database wording items awaiting UI verification.
+## Maintainer procedures and architecture
 
-## Runtime map
+- [Release automation](release-automation.md) — numbered release/recovery
+  workflows, validation selection, Store handling, and release-note authority.
+- [Windows source/build guide](../windows/README.md) — native Rust/Slint build,
+  runtime layout, packaging, and source validation.
+- [Docker deployment](../docker/README.md) — Compose, PostgreSQL, persistent
+  mounts, backup, and container validation.
+- [Browser workspace schematic](browser-workspace-schematic.md) — interface
+  comparison baseline used when either maintained UI changes.
+- [Windows Rust/Slint architecture checklist](windows-rust-slint-migration-checklist.md)
+  — current single-executable architecture and retired implementation boundary.
 
-| Runtime | User interface | Configuration | Persistent state |
-| --- | --- | --- | --- |
-| Windows | Cargo-built Rust application + Slint GUI | Auto-discovered portable `data/config.toml`/`data/ui.toml`, or `<LocalState>\SPLINED\data` for MSIX; structured Setup/Settings write Config v5 | `<scan.cache_dir>\splined.db` plus configured credentials |
-| WebGUI / Python / Docker | Browser | Browser-editable Config v5 | PostgreSQL catalog and jobs; persistent files and separately stored credentials |
-| Linux/macOS native CLI | Command line | File-backed Config v5 | Runtime-selected cache and database paths |
+Portable artifact instructions are distributed with the artifacts:
+[Windows](../release/README-WINDOWS.txt),
+[Linux](../release/README-LINUX.txt), and
+[macOS](../release/README-MACOS.txt). An instruction file documents an artifact
+format; it does not by itself guarantee that every release publishes that
+platform.
 
-All supported runtimes share Config v5 concepts, source policy language, and
-Album/status concepts. Windows retains SQLite; WebGUI uses PostgreSQL. Interface controls and configuration storage
-differ by platform; the linked interface guides describe those differences.
+## Historical audits and unverified follow-ups
 
-## Documentation boundaries
+These records preserve review evidence or work that still required validation.
+Do not use them in place of the current guides above:
 
-- The Config reference defines fields and validation, while the source-policy
-  guide defines how those fields affect candidate eligibility and ranking.
-- The media-database guide owns SQLite, identity, inventory, and durable status
-  behavior. The Select Media guide owns their visual projection and controls.
-- Provider credentials are documented separately from Config because secrets
-  never belong in `config.toml` or Windows interface settings.
-- GitHub Releases owns version history. Files in `/docs` describe only the
-  currently supported behavior.
+- [Windows Setup follow-ups](windows-setup-follow-ups.md) — source-only items
+  still awaiting end-to-end verification.
+- [Windows/WebGUI function audit](windows-web-function-audit.md) — migration-era
+  comparison and runtime observations.
+- [WebGUI live-write parity record](webgui-live-write-parity-2026-10-30.md) and
+  [WebGUI settings parity summary](webgui-settings-parity-summary-2026-10-29.md).
+- [Windows baseline reconciliation](windows-baseline-reconciliation-2026-10-18.md)
+  and [Windows source audit](windows-source-audit-2026-10-17.md).
+- [Windows 1.0.88 functional-parity audit](windows-functional-parity-1.0.88.md)
+  and [Windows graphical-workspace QA](windows-gui-redesign-qa.md).
 
-## Future concepts
+Future design ideas live in
+[project notes](../project-notes/artwork-composition.md) and are not supported
+behavior until implemented, validated, and documented in a current guide.
 
-The separate [project notes](../project-notes/artwork-composition.md) capture
-ideas for later design work. They are not descriptions of supported behavior.
+## Platform boundaries and safety
 
-## Safety baseline
+| Runtime | Interface | Persistent authority |
+| --- | --- | --- |
+| Windows | Native Rust/Slint application | SQLite plus Windows-owned Config/UI state |
+| Ubuntu WebGUI | Python/browser application deployed with Docker | PostgreSQL plus mounted config, credentials, cache, and artwork state |
+| Root-native Linux/macOS | Separate Rust command-line implementation | Runtime-selected native configuration and cache/database paths |
 
-- Never commit credential JSON, API keys, OAuth tokens, or private values.
-- Read mode evaluates without installing artwork or committing completion.
-- Test Live Write against a backup, snapshot, staging library, or small Album
-  selection first.
-- Back up Config/settings, credentials, and `splined.db`; temporary candidate
-  images and diagnostic logs are disposable.
+The runtimes share concepts, not a live database or guaranteed interface
+parity. Avoid simultaneous writers to the same music files.
+
+- Read mode evaluates without installing music-library artwork.
+- Write mode changes album or embedded artwork; test with a backup, snapshot,
+  staging library, or small selection first.
+- Back up configuration, credentials, and the runtime's persistent database.
+  Temporary candidates and diagnostic logs are not substitutes for that state.
 
 Return to the [repository README](../README.md).
