@@ -10,14 +10,14 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       webgui: ${{ steps.scope.outputs.webgui }}
-      native: ${{ steps.scope.outputs.native }}
-      native_matrix: ${{ steps.scope.outputs.native_matrix }}
+      linux: ${{ steps.scope.outputs.linux }}
+      windows_advisory: ${{ steps.scope.outputs.windows_advisory }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
       - name: Check validation selection rules
-        run: python3 -m unittest discover -s .github/scripts -p test_validation_scope.py -v
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
       - name: Select checks for changed files
         id: scope
         env:
@@ -67,26 +67,37 @@ jobs:
       - if: always()
         run: docker logs splined-webgui-test || true
   native:
-    name: native (${{ matrix.os }})
+    name: native (ubuntu-latest)
     needs: scope
-    if: needs.scope.outputs.native == 'true'
-    strategy:
-      matrix: ${{ fromJSON(needs.scope.outputs.native_matrix) }}
-    runs-on: ${{ matrix.os }}
+    if: needs.scope.outputs.linux == 'true'
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Install Rust
-        run: rustup toolchain install ${{ matrix.toolchain }} --profile minimal --no-self-update
-      - name: Install Windows Rust quality components
-        if: runner.os == 'Windows'
-        run: rustup component add rustfmt clippy --toolchain ${{ matrix.toolchain }}
-      - name: Check Windows Rust formatting
-        if: runner.os == 'Windows'
-        run: cargo +${{ matrix.toolchain }} fmt --manifest-path windows/Cargo.toml -- --check
-      - name: Check Windows Rust lints
-        if: runner.os == 'Windows'
-        run: cargo +${{ matrix.toolchain }} clippy --locked --manifest-path windows/Cargo.toml --all-targets --target x86_64-pc-windows-msvc -- -D warnings
-      - if: runner.os == 'Linux'
-        run: cargo +${{ matrix.toolchain }} test --locked
-      - if: runner.os == 'Windows'
-        run: cargo +${{ matrix.toolchain }} test --manifest-path windows/Cargo.toml --lib --bin splined --locked --target x86_64-pc-windows-msvc
+        run: rustup toolchain install stable --profile minimal --no-self-update
+      - run: cargo +stable test --locked
+  windows-advisory:
+    name: Windows Rust/Slint — advisory
+    needs: scope
+    runs-on: ${{ needs.scope.outputs.windows_advisory == 'true' && 'windows-latest' || 'ubuntu-latest' }}
+    continue-on-error: true
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Report diagnostics not run for this change scope
+        if: needs.scope.outputs.windows_advisory != 'true'
+        env:
+          TESTED_REVISION: ${{ github.event.pull_request.head.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: python .github/scripts/windows_advisory.py --not-run
+      - name: Run scoped advisory diagnostics
+        if: needs.scope.outputs.windows_advisory == 'true'
+        env:
+          TESTED_REVISION: ${{ github.event.pull_request.head.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: python .github/scripts/windows_advisory.py

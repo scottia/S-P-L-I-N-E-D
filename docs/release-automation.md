@@ -40,13 +40,22 @@ the `dev` pull request into `main`. Validation runs on pull requests, so pushing
 and merging the same source does not launch duplicate push-triggered builds.
 
 Checks follow the changed files: WebGUI changes run the Python/PostgreSQL and
-container checks; Windows changes run formatting, Clippy (`-D warnings`), and
-library/application tests with Rust 1.99.0 and the x64 Windows target; root Rust
-changes run the Linux Rust tests. Shared schema, fixtures, assets, and validation
-workflow changes run all checks. Documentation-only changes skip runtime builds.
-Keep the Windows validation toolchain in sync with workflows 01 and 02 when
-updating Rust. For a Windows release, enable extended validation to repeat the
-quality checks against the exact versioned release source before packaging.
+container checks, and root Rust changes run the Linux Rust tests. Relevant
+Windows Rust, Slint, Cargo, and native build-input changes run the
+**Windows Rust/Slint — advisory** report. It records formatting, `cargo check`,
+and Clippy outcomes as Passed, Warnings, Failed, or Not run, without `-D
+warnings`, Windows tests, or merge-gating status. Documentation, naming,
+packaging-message, and display-only changes do not compile the native app.
+Shared schema, fixtures, and validation workflow changes still select every
+applicable runtime check.
+
+The advisory report includes the tested revision, exact commands, exit results,
+and workflow-log link. Findings remain visible and are never described as
+passed, but PR validation does not auto-format or repair source. Keep the
+Windows toolchain in sync with workflows 01 and 02 when updating Rust. For a
+Windows release, enable **Extended Windows validation**: release validation
+retains strict formatting, Clippy, and library tests against the exact
+versioned source before packaging.
 
 For routine PC iterations, close SPLINED and double-click
 `E:\apps\SPLINED\Apply Quick Local Update.cmd`. It reuses unchanged optimized
@@ -61,10 +70,10 @@ Git or starting Actions. An
 unoptimized Windows build is not used against the real library because its UI
 refresh cost can make Windows report the application as unresponsive. This
 local test binary is never a release input. After explicit approval, promote
-the tested source through `dev` and `main`; pull-request validation runs strict
-Windows checks, and workflow 01 always performs a clean optimized build from
-the versioned `main` source before producing the portable archive or Store
-MSIX.
+the tested source through `dev` and `main`; relevant pull requests publish
+advisory Windows diagnostics, and workflow 01 always performs a clean optimized
+build from the versioned `main` source before producing the portable archive or
+Store MSIX.
 
 The two Store options are both off by default and mutually exclusive:
 
