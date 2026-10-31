@@ -103,7 +103,7 @@ class BrowserFallbackTests(unittest.TestCase):
             "function showDialog", 1
         )[0]
         self.assertNotIn("searchArtist", enter_artist_art)
-        self.assertIn('state.workspace === "enhance" ? searchArtist : launchArtist', application)
+        self.assertIn('state.workspace === "enhance" ? searchArtist() : launchArtist()', operations)
         self.assertIn('status: "check-error"', application)
         document = (static / "index.html").read_text(encoding="utf-8")
         self.assertIn('id="fullscreenButton"', document)

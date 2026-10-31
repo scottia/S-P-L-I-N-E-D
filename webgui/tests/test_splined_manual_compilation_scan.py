@@ -2,12 +2,84 @@ from __future__ import annotations
 
 import json
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 import splined_scan as scan
 
 
 class ManualCompilationDecisionTests(unittest.TestCase):
+    def test_musicbrainz_result_selection_preserves_comp_track_identity(self) -> None:
+        target = SimpleNamespace(
+            release_mbid="8f33a714-f8f6-4c8f-b6f3-8183f48c03bb",
+            recording_mbid="e1efc38f-1f86-4c2c-bd90-df1e0796f789",
+            recording_artist="10,000 Maniacs",
+            release_artist="Various Artists",
+            recording_title="Because the Night",
+            release_title="Billboard Hot 100 Singles of 1994",
+            release_date="1994",
+            country="US",
+            release_class="compilation",
+            release_group_mbid="f65ab2b0-a008-4d26-86de-63e7dc4bfba8",
+            score=100,
+        )
+        unrelated = SimpleNamespace(
+            release_mbid="f4013a2e-7c96-492f-bf5a-8fa21af9cf02",
+            recording_mbid="ff667552-2e7f-4d22-9168-7dcce06f9329",
+            recording_artist="Other Performer",
+            release_artist="Various Artists",
+            recording_title="Other Track",
+            release_title="Billboard Hot 100 Singles of 1994",
+            release_date="1994",
+            country="US",
+            release_class="compilation",
+            release_group_mbid="f65ab2b0-a008-4d26-86de-63e7dc4bfba8",
+            score=85,
+        )
+        captured: dict[str, object] = {}
+
+        def choose(_prompt: str, **context: object) -> str:
+            captured.update(context)
+            options = context["options"]
+            assert isinstance(options, list)
+            return str(
+                next(
+                    index
+                    for index, option in enumerate(options, 1)
+                    if option["recording_id"] == target.recording_mbid
+                )
+            )
+
+        with mock.patch.object(scan.core, "read_input", side_effect=choose):
+            decision, selected = scan._manual_choose_release(
+                [unrelated, target],
+                authority={
+                    "artist_id": "291dcfb8-b31c-496a-905b-9955509d75b6",
+                    "release_id": "",
+                    "recording_id": target.recording_mbid,
+                },
+                friendly={
+                    "artist": "10,000 Maniacs",
+                    "album": "Billboard Hot 100 Singles of 1994",
+                    "track": "Because the Night",
+                },
+            )
+
+        self.assertEqual(decision, "selected")
+        self.assertIs(selected, target)
+        self.assertEqual(captured["kind"], "musicbrainz-results")
+        self.assertEqual(captured["authority"]["artist"], "10,000 Maniacs")
+        matching = next(
+            option
+            for option in captured["options"]
+            if option["recording_id"] == target.recording_mbid
+        )
+        self.assertEqual(matching["recording_artist"], "10,000 Maniacs")
+        self.assertEqual(matching["track"], "Because the Night")
+        self.assertEqual(
+            matching["title"], "Billboard Hot 100 Singles of 1994"
+        )
+
     def test_manual_escape_returns_album_exit_decision(self) -> None:
         with (
             mock.patch.object(scan, "render_candidate_table"),
