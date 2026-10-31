@@ -57,10 +57,13 @@ required because the real 3,884-album library makes an unoptimized Windows UI
 too slow for valid testing. This local executable is not a release candidate.
 
 After the local build is approved, promote the tested source through `dev` and
-`main`. Pull-request validation runs the strict Windows formatting, Clippy, and
-test suite. Workflow 01 then performs a fresh optimized Windows build from the
-versioned `main` source and uses that same release executable for portable and
-Store packaging.
+`main`. Relevant Rust, Slint, Cargo, and native build-input changes receive a
+**Windows Rust/Slint — advisory** PR report with formatting, `cargo check`, and
+Clippy outcomes. The report does not use `-D warnings`, run Windows tests, or
+gate approval; documentation and display-message-only changes report Not run.
+Workflow 01 retains strict optional Extended Windows validation and performs a
+fresh optimized build from versioned `main` source, using that same release
+executable for portable and Store packaging.
 
 `windows/build.rs` compiles `windows/ui/app.slint` and embeds build identity.
 The executable links directly to the Rust library modules in `windows/src`.
@@ -131,3 +134,8 @@ contract, absence of C# sources and compiler paths, exact portable allowlist,
 Store package inputs, state-root separation, and update-channel selection.
 Controller and library unit tests cover real state transitions without placing
 business authority in Slint callbacks.
+
+PR advisory diagnostics are informational and never modify source. Their
+summary reports the tested revision, commands, exit results, and logs as
+Passed, Warnings, Failed, or Not run. Release and recovery workflows keep their
+existing build, package, smoke, and strict-validation responsibilities.
