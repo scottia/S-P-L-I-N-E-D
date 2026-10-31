@@ -141,10 +141,15 @@ async function writeArtwork() {
   if (!components.length) throw new Error("Choose the artist image or banner radio before writing");
   const result = await post("/api/artwork/artist", {artist_id: state.artist.id, components});
   state.artist = await api("/api/artist?id=" + encodeURIComponent(state.artist.id));
+  const listedArtist = state.artists.find(artist => artist.id === state.artist.id);
+  if (listedArtist) {
+    listedArtist.portrait = state.artist.portrait;
+    listedArtist.status = state.artist.status;
+  }
   state.selectedPortrait = null; state.selectedBanner = null; state.renderedPreview = {};
   state.fx.current = {}; state.fx.artist = {}; state.fx.banner = {};
   state.fit.artist = {zoom: 1, x: 0, y: 0}; state.fit.banner = {zoom: 1, x: 0, y: 0};
-  renderHero(); renderPanes(); renderReview(); setStatus("Written: " + result.written.join(", "));
+  renderLibrary(); renderHero(); renderPanes(); renderReview(); setStatus("Written: " + result.written.join(", "));
 }
 const previewReview = renderReview;
 renderReview = function () {
@@ -245,7 +250,7 @@ async function focusQueuedAlbum(decision) {
   const album = await api("/api/album?id=" + encodeURIComponent(albumId));
   if (request !== state.selectionRequest || state.queuedDecision !== decision) return;
   let artist = state.artist;
-  if (artist?.id !== album.artist_id) {
+  if (!albumInCurrentArtistContext(albumId) && artist?.id !== album.artist_id) {
     artist = await api("/api/artist?id=" + encodeURIComponent(album.artist_id));
     if (request !== state.selectionRequest || state.queuedDecision !== decision) return;
   }

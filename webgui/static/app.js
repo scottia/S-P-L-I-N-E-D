@@ -373,6 +373,11 @@ function albumRow(album, child) {
   button.addEventListener("click", () => chooseAlbum(album.id)); return button;
 }
 
+function albumInCurrentArtistContext(albumId) {
+  return !!state.artist?.albums?.some(album => album.id === albumId)
+    || state.compGroups.some(group => group.id === albumId);
+}
+
 function albumBannerKind(album, artist) {
   if (!album.album_mbid) return "compiled";
   if (album.soundtrack) return "soundtrack";
@@ -1108,9 +1113,24 @@ async function loadLibrary(query = "") {
     if (request !== state.listRequest) return;
     state.libraryLoading = false;
     renderLibrary();
+    if (state.libraryMode === "artists") hydrateArtistThumbnails(request);
     if (state.libraryMode === "artists" && !state.artist && state.artists.length) await chooseArtist(state.artists[0].id, false);
     else setStatus(state.libraryMode === "fallback" && !state.albumsIndex.length ? "No missing-ID albums in the library" : "Library ready · WebGUI ready");
   } catch (error) { if (request === state.listRequest) { state.libraryLoading = false; renderLibrary(); setStatus(error.message, "error"); } }
+}
+async function hydrateArtistThumbnails(request) {
+  try {
+    const thumbnails = await api("/api/artists/thumbnails");
+    if (request !== state.listRequest || state.libraryMode !== "artists") return;
+    let changed = false;
+    for (const thumbnail of thumbnails) {
+      const artist = state.artists.find(item => item.id === thumbnail.id);
+      if (artist && thumbnail.portrait && artist.portrait !== thumbnail.portrait) {
+        artist.portrait = thumbnail.portrait; changed = true;
+      }
+    }
+    if (changed) renderLibrary();
+  } catch { /* Local Artist Art remains available when Navidrome is offline. */ }
 }
 async function chooseArtist(id, select = true) {
   const request = ++state.selectionRequest;
@@ -1129,6 +1149,8 @@ async function chooseArtist(id, select = true) {
     const compGroups = await api("/api/artist/comp-albums?id=" + encodeURIComponent(artist.id));
     if (request !== state.selectionRequest) return;
     state.artist = artist; state.artistMetadata = null; state.compGroups = compGroups;
+    const listedArtist = state.artists.find(item => item.id === artist.id);
+    if (listedArtist && artist.portrait) listedArtist.portrait = artist.portrait;
     state.album = null; state.editorMode = "artist"; state.workspace = "find";
     if (select) markSelectedArtist(artist);
     state.candidates = state.artist.local_candidates || []; resetCandidateFilters();
@@ -1146,7 +1168,10 @@ async function chooseAlbum(id) {
   try {
     const album = await api("/api/album?id=" + encodeURIComponent(id));
     if (request !== state.selectionRequest) return;
-    if (state.artist?.id !== album.artist_id) {
+    // Featured, soundtrack, Various Artists, and COMP cards belong to the
+    // currently displayed artist projection even when the physical album is
+    // owned by another catalog artist.  Keep that artist context on click.
+    if (!albumInCurrentArtistContext(id) && state.artist?.id !== album.artist_id) {
       const artist = await api("/api/artist?id=" + encodeURIComponent(album.artist_id));
       if (request !== state.selectionRequest) return;
       state.artist = artist; state.artistMetadata = null; loadArtistMetadata(artist.id);
