@@ -379,7 +379,7 @@ class Catalog:
                 mbid = str(row["musicbrainz_artistid"] or "").strip().casefold()
                 (by_mbid.setdefault(mbid, []) if mbid else blank).append(row)
             paths = [
-                str(row["primary_path"] or "").replace("\\", "/").rstrip("/").casefold()
+                str(row["primary_path"] or "").replace("\\", "/").rstrip("/")
                 if "primary_path" in row.keys() else ""
                 for row in name_rows
             ]
@@ -420,7 +420,7 @@ class Catalog:
             raise KeyError("Artist not found")
         identity = normalized_artist_identity(selected["artist_name"])
         selected_mbid = str(selected["musicbrainz_artistid"] or "").strip().casefold()
-        selected_path = str(selected["primary_path"] or "").replace("\\", "/").rstrip("/").casefold()
+        selected_path = str(selected["primary_path"] or "").replace("\\", "/").rstrip("/")
         candidates = [
             row for row in candidates
             if normalized_artist_identity(row["artist_name"]) == identity
@@ -436,7 +436,7 @@ class Catalog:
                 row for row in candidates
                 if not str(row["musicbrainz_artistid"] or "").strip()
                 or str(row["musicbrainz_artistid"] or "").strip().casefold() == selected_mbid
-                or bool(selected_path) and str(row["primary_path"] or "").replace("\\", "/").rstrip("/").casefold() == selected_path
+                or bool(selected_path) and str(row["primary_path"] or "").replace("\\", "/").rstrip("/") == selected_path
             ]
         elif len(nonempty) <= 1:
             aliases = candidates

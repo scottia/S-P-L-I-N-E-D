@@ -39,14 +39,14 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                 "artist_key": "mbid:correct",
                 "artist_name": "Aerosmith",
                 "musicbrainz_artistid": "3d2b98e5-556f-4451-a3ff-c50ea18d57cb",
-                "primary_path": "N:/media/music/Aerosmith",
+                "primary_path": "/music/Aerosmith",
                 "album_count": 19,
             },
             {
                 "artist_key": "mbid:stray-tag",
                 "artist_name": "Aerosmith",
                 "musicbrainz_artistid": "8e045c17-6447-471f-8169-50b7129f0cbb",
-                "primary_path": "N:/media/music/Aerosmith",
+                "primary_path": "/music/Aerosmith",
                 "album_count": 1,
             },
         ]
@@ -56,6 +56,62 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             PreviewApp._canonical_artist_row(groups[0])["artist_key"],
             "mbid:correct",
         )
+
+    def test_posix_paths_differing_only_by_case_remain_separate(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "index.sqlite"
+            credentials = root / "credentials"
+            credentials.mkdir()
+            album_rows = [
+                ("album-upper", "artist-upper", "Upper Album", root / "albums" / "upper"),
+                ("album-lower", "artist-lower", "Lower Album", root / "albums" / "lower"),
+            ]
+            for _, _, _, folder in album_rows:
+                folder.mkdir(parents=True)
+                (folder / "song.mp3").touch()
+
+            with closing(connect(database)) as db:
+                db.execute(
+                    "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,"
+                    "musicbrainz_artistid TEXT,primary_path TEXT,album_count INTEGER,status TEXT)"
+                )
+                db.execute(
+                    "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,album_name TEXT,"
+                    "path TEXT,cover_path TEXT,track_count INTEGER,status TEXT,compilation INTEGER,"
+                    "musicbrainz_albumid TEXT,release_year TEXT,embedded_tracks INTEGER,webp_found INTEGER)"
+                )
+                db.execute(
+                    "CREATE TABLE tracks (track_key TEXT PRIMARY KEY,album_key TEXT,path TEXT,title TEXT,artist_name TEXT)"
+                )
+                db.executemany("INSERT INTO artists VALUES (?,?,?,?,?,?)", [
+                    ("artist-upper", "Band", "mbid-upper", "/music/Band", 1, "processed"),
+                    ("artist-lower", "Band", "mbid-lower", "/music/band", 1, "processed"),
+                ])
+                db.executemany(
+                    "INSERT INTO albums VALUES (?,?,?,?,NULL,1,'processed',0,?,'2026',1,0)",
+                    [(key, artist, name, str(folder), "release-" + key)
+                     for key, artist, name, folder in album_rows],
+                )
+                db.executemany(
+                    "INSERT INTO tracks VALUES (?,?,?,?,?)",
+                    [("track-" + key, key, str(folder / "song.mp3"), name + " Song", "Band")
+                     for key, _, name, folder in album_rows],
+                )
+                db.commit()
+
+            app = PreviewApp(root, database, root, credentials, cache=root / "cache")
+
+            listed = [item for item in app.artists("") if item["name"] == "Band"]
+            self.assertEqual({item["id"] for item in listed}, {"artist-upper", "artist-lower"})
+            self.assertEqual(
+                {item["id"] for item in app.artist("artist-upper")["albums"]},
+                {"album-upper"},
+            )
+            self.assertEqual(
+                {item["id"] for item in app.artist("artist-lower")["albums"]},
+                {"album-lower"},
+            )
 
     def test_first_load_merges_duplicate_identity_and_projects_every_album_class(self):
         with TemporaryDirectory() as directory:
