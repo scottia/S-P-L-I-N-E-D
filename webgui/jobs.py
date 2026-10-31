@@ -132,12 +132,16 @@ class JobQueue:
                     "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
                     (kind + ":" + str(payload["album_id"]),),
                 )
-                old = db.raw.execute(
-                    "SELECT id FROM web_jobs WHERE kind=%s AND payload->>'album_id'=%s AND state NOT IN ('done','failed','cancelled')",
+                active = db.raw.execute(
+                    "SELECT id,payload FROM web_jobs WHERE kind=%s AND payload->>'album_id'=%s AND state NOT IN ('done','failed','cancelled') ORDER BY created_at",
                     (kind, str(payload["album_id"])),
-                ).fetchone()
-                if old:
-                    return {"id": old["id"], "already_queued": True}
+                ).fetchall()
+                for old in active:
+                    if kind != "comp" or (
+                        old["payload"].get("artist_id") == payload.get("artist_id")
+                        and old["payload"].get("track_keys") == payload.get("track_keys")
+                    ):
+                        return {"id": old["id"], "already_queued": True}
             db.raw.execute(
                 "INSERT INTO web_jobs(id,kind,state,payload) VALUES(%s,%s,%s,%s)",
                 (job_id, kind, "staged" if staged else "queued", Jsonb(payload)),

@@ -1260,6 +1260,7 @@ def run_manual_compilation_album(
     unresolved_items: list[dict[str, str]],
     state: dict[str, Any],
     target_track_paths: set[str] | None = None,
+    track_context: Any | None = None,
 ) -> bool:
     """Resolve and approve embedded artwork independently for every track."""
     if not core.compilation_manual_album_eligible(tracks):
@@ -1328,6 +1329,8 @@ def run_manual_compilation_album(
                 f"{core.gray('not explicitly selected')} · skipped"
             )
             continue
+        if track_context is not None:
+            track_context(track)
         if str(track.path) in completed_paths and str(track.path) not in explicit_targets:
             print(
                 f"    {core.cyan('Progress:'):11} "
