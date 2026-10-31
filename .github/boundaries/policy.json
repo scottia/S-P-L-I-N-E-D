@@ -1,0 +1,140 @@
+{
+  "schema": 1,
+  "categories": [
+    "windows",
+    "ubuntu-webgui",
+    "shared-contract",
+    "release-version",
+    "terminology-docs",
+    "root-native-other",
+    "boundary-policy"
+  ],
+  "rules": [
+    {
+      "category": "boundary-policy",
+      "patterns": [
+        ".github/boundaries/**"
+      ]
+    },
+    {
+      "category": "terminology-docs",
+      "patterns": [
+        "*.md",
+        "**/*.md",
+        "release/*.txt",
+        "LICENSE"
+      ]
+    },
+    {
+      "category": "release-version",
+      "patterns": [
+        ".github/workflows/01-full-release.yml",
+        ".github/workflows/02-store-recovery.yml",
+        ".github/workflows/03-ghcr-recovery.yml",
+        "release/*.ps1",
+        "release/templates/**",
+        "release/tests/**",
+        "cliff.toml",
+        "tests/release_automation.rs"
+      ]
+    },
+    {
+      "category": "shared-contract",
+      "patterns": [
+        ".github/workflows/validate.yml",
+        ".github/scripts/**",
+        ".github/CODEOWNERS",
+        ".github/dependabot.yml",
+        ".gitattributes",
+        ".gitignore",
+        "schema/**",
+        "fixtures/**",
+        "assets/**",
+        "config.example.toml",
+        "tests/public_config_examples.rs",
+        "tests/windows_executable_architecture.rs",
+        "tests/windows_slint_check_contract.json"
+      ]
+    },
+    {
+      "category": "windows",
+      "patterns": [
+        "windows/**"
+      ]
+    },
+    {
+      "category": "ubuntu-webgui",
+      "patterns": [
+        "webgui/**",
+        "docker/**",
+        ".dockerignore"
+      ]
+    },
+    {
+      "category": "root-native-other",
+      "patterns": [
+        "src/**",
+        "tests/**",
+        "Cargo.toml",
+        "Cargo.lock",
+        "deny.toml"
+      ]
+    }
+  ],
+  "protected_content": [
+    {
+      "path": "Cargo.toml",
+      "field": "root package version",
+      "pattern": "(?ms)^\\[package\\].*?^version\\s*=\\s*\"([^\"]+)\""
+    },
+    {
+      "path": "Cargo.lock",
+      "field": "root lockfile package version",
+      "pattern": "(?ms)\\[\\[package\\]\\]\\s*name = \"splined\"\\s*version = \"([^\"]+)\""
+    },
+    {
+      "path": "windows/Cargo.toml",
+      "field": "Windows package version",
+      "pattern": "(?ms)^\\[package\\].*?^version\\s*=\\s*\"([^\"]+)\""
+    },
+    {
+      "path": "windows/Cargo.lock",
+      "field": "Windows lockfile package version",
+      "pattern": "(?ms)\\[\\[package\\]\\]\\s*name = \"splined-windows\"\\s*version = \"([^\"]+)\""
+    },
+    {
+      "path": "windows/gui/app.manifest",
+      "field": "Windows executable manifest version",
+      "pattern": "<assemblyIdentity\\s+version=\"([^\"]+)\""
+    },
+    {
+      "path": "windows/package/Package.appxmanifest",
+      "field": "MSIX identity version",
+      "pattern": "(?s)<Identity\\b[^>]*\\bVersion=\"([^\"]+)\""
+    },
+    {
+      "path": "windows/package/SPLINED.appinstaller.template",
+      "field": "App Installer versions",
+      "pattern": "Version=\"([0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+)\""
+    },
+    {
+      "path": "webgui/backend/splined.py",
+      "field": "WebGUI USER_AGENT",
+      "pattern": "(?m)^USER_AGENT\\s*=\\s*\"([^\"]+)\"$"
+    },
+    {
+      "path": "webgui/backend/splined.py",
+      "field": "WebGUI VERSION",
+      "pattern": "(?m)^VERSION\\s*=\\s*\"([^\"]+)\"$"
+    }
+  ],
+  "validation": {
+    "windows": ["windows"],
+    "ubuntu-webgui": ["ubuntu-webgui"],
+    "shared-contract": ["windows", "ubuntu-webgui", "root-native-other"],
+    "release-version": ["release-version"],
+    "terminology-docs": ["terminology-docs"],
+    "root-native-other": ["root-native-other"],
+    "boundary-policy": ["boundary-policy"]
+  }
+}
