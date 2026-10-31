@@ -14,6 +14,7 @@ ignored_subs = []
 [scan]
 scan_library_dir = ""
 scan_mode = true
+library_scan = false
 scan_mode_timeout = 24
 cache_dir = "_db"
 temporary_cache_dir = "_cache"

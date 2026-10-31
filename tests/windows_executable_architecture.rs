@@ -394,7 +394,7 @@ fn numeric_release_tag_is_pushed_only_after_selected_builds_pass() {
         .split("  generate-release-notes:")
         .next()
         .unwrap();
-    for dependency in ["build-windows", "build-ubuntu", "build-macos"] {
+    for dependency in ["build-windows", "build-webgui", "build-macos"] {
         assert!(finalize.contains(dependency));
     }
     assert!(finalize.contains("git tag -a \"$RELEASE_VERSION\" \"$RELEASE_COMMIT\""));
