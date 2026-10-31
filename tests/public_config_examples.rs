@@ -173,7 +173,7 @@ fn windows_and_release_versions_advance_coherently() {
         "(needs.publish-store.result == 'success' || needs.publish-store.result == 'skipped')"
     ));
 
-    for platform in ["Windows", "Ubuntu", "macOS", "All"] {
+    for platform in ["Windows", "WebGUI / Python", "macOS", "All"] {
         assert!(workflow.contains(&format!("- \"{platform}\"")));
     }
 }
