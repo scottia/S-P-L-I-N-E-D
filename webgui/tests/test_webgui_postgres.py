@@ -325,6 +325,28 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         })
         self.assertEqual(full_payload["track_keys"], [target_key, other_key])
 
+        candidate = self.runtime.temporary_cache / "selected-comp-candidate.png"
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (900, 600), "orange").save(candidate)
+        embedded = self.services.embed_comp_track({
+            "artist_id": self.row["artist_key"],
+            "album_id": comp_row["album_key"],
+            "track_key": target_key,
+            "image": self.services.catalog.image(candidate),
+            "adjustments": {"Brightness": 8},
+            "upscale": True,
+        })
+        self.assertEqual((embedded["width"], embedded["height"]), (300, 300))
+        with Image.open(BytesIO(embedded_track_artwork_bytes(target_path))) as image:
+            self.assertEqual(image.size, (300, 300))
+        self.assertIsNone(embedded_track_artwork_bytes(other_path))
+        self.assertIsNone(embedded_track_artwork_bytes(featured_path))
+        with closing(self.db.connect()) as db:
+            written = list(db.execute(
+                "SELECT track_path FROM compilation_track_artwork"
+            ))
+        self.assertEqual([row["track_path"] for row in written], [str(target_path)])
+
     def test_read_mode_and_invalid_destinations_do_not_write(self):
         original = self.cover.read_bytes()
         self.runtime.cfg["mode"] = "read"
@@ -617,6 +639,22 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.queue.action("decision", "interrupted", "1", "stale")
         self.queue.action("remove", "interrupted")
         self.assertEqual(self.queue.list(), [])
+
+    def test_album_queue_bulk_actions_never_change_hidden_comp_work(self):
+        self.queue = JobQueue(self.services)
+        self.queue.close()
+        album = self.queue.enqueue("embed-album", {}, staged=True)
+        comp = self.queue.enqueue("comp", {"track_keys": ["track"]}, staged=True)
+
+        self.queue.action("start", kind="embed-album")
+        states = {item["id"]: item["state"] for item in self.queue.list()}
+        self.assertEqual(states[album["id"]], "queued")
+        self.assertEqual(states[comp["id"]], "staged")
+
+        self.queue.action("clear", kind="embed-album")
+        remaining = {item["id"]: item for item in self.queue.list()}
+        self.assertNotIn(album["id"], remaining)
+        self.assertEqual(remaining[comp["id"]]["state"], "staged")
 
     @patch("splined_scan._manual_remote_candidates", return_value=([], []))
     def test_comp_decision_writes_one_track_and_records_postgres_completion(

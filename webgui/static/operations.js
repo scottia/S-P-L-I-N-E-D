@@ -108,11 +108,24 @@ async function writeArtwork() {
   if (state.queuedDecision) {
     const candidate = state.queuedDecision.selected;
     if (!candidate) throw new Error("Preview a queued candidate before choosing it");
-    await submitQueuedDecision(candidate.queueValue);
+    const value = state.queuedDecision.jobKind === "comp"
+      ? JSON.stringify({
+        action: "webgui-embed-track", number: candidate.queueValue,
+        artwork: {image: candidate.image, adjustments: state.fx.comp || {}, upscale: !!state.upscalePreview},
+      })
+      : candidate.queueValue;
+    await submitQueuedDecision(value);
     return;
   }
   if (state.editorMode === "artist" && state.compReportVisible) {
-    if (state.compTrack) await enqueueComp(state.compTrack.albumId, [state.compTrack.key], state.artist?.id || "");
+    if (!state.compTrack?.image) throw new Error("Select a COMP track with artwork before embedding it");
+    const result = await post("/api/artist/comp-embed", componentPayload("comp", state.compTrack.image, {
+      artist_id: state.artist?.id || "", album_id: state.compTrack.albumId,
+      track_key: state.compTrack.key, upscale: !!state.upscalePreview,
+    }));
+    state.upscalePreview = null; state.renderedPreview.comp = null; state.fx.comp = {};
+    await refreshQueuedAlbumAfterSave();
+    setStatus(`Embedded COMP track · ${result.file} · ${result.width} × ${result.height}`, "ready");
     return;
   }
   if (state.editorMode === "fallback") {
@@ -158,7 +171,7 @@ renderReview = function () {
   const currentPackage = state.editorMode === "artist" && state.workspace === "enhance" && state.radioCurrent
     && !!(state.selectedPortrait?.image || state.selectedBanner?.image || state.artist?.portrait || state.artist?.banner);
   $("writeButton").disabled = entry ? !state.artist : !writable || (state.editorMode === "album" ? !(state.selectedCover?.image || state.album?.cover)
-    : state.editorMode === "fallback" ? !state.fallbackTrack : state.compReportVisible ? !state.compTrack : !(currentPackage || (state.radioArtist && (state.selectedPortrait || state.artist?.portrait)) || (state.radioBanner && (state.selectedBanner || state.artist?.banner))));
+    : state.editorMode === "fallback" ? !state.fallbackTrack : state.compReportVisible ? !state.compTrack?.image : !(currentPackage || (state.radioArtist && (state.selectedPortrait || state.artist?.portrait)) || (state.radioBanner && (state.selectedBanner || state.artist?.banner))));
   const staged = state.editorMode === "album" && state.embedQueue.some(item => item.id === state.album?.id);
   $("embedBatchButton").disabled = !writable || state.editorMode !== "album" || !(state.selectedCover?.image || state.album?.cover);
   $("embedBatchButton").classList.toggle("staged", staged);
@@ -166,14 +179,23 @@ renderReview = function () {
   $("musicbrainzButton").disabled = !state.album || state.editorMode !== "album";
   $("bypassButton").disabled = !state.album || state.editorMode !== "album";
   $("writeNotice").textContent = writable ? "Live Write · WRITE saves artwork. EMBED Batch saves the cover and stages track embedding. COMP work asks for track artwork in queued review." : "Read mode · searching and previewing are enabled. Enable Live Write in Settings to save artwork or track tags.";
+  if (state.compReportVisible && state.compPreviewMode) {
+    $("writeButton").disabled = true;
+    $("upscaleButton").disabled = true;
+    $("embedBatchButton").disabled = true;
+    $("writeNotice").textContent = "COMP preview mode · turn preview off before changing or embedding track artwork.";
+  }
   if (state.queuedDecision) {
     const musicBrainzResults = state.queuedDecision.kind === "musicbrainz-results";
-    $("upscaleButton").disabled = true;
-    $("writeButton").textContent = musicBrainzResults ? "CHOOSE RESULT" : state.queuedDecision.jobKind === "comp" ? "EMBED Thumb" : "WRITE Cover";
-    $("writeButton").disabled = musicBrainzResults || !state.queuedDecision.selected;
+    const compCandidate = state.queuedDecision.jobKind === "comp" && !!state.queuedDecision.selected;
+    $("upscaleButton").disabled = state.compPreviewMode || !compCandidate;
+    $("writeButton").textContent = musicBrainzResults ? "CHOOSE RESULT" : state.queuedDecision.jobKind === "comp" ? "EMBED Track" : "WRITE Cover";
+    $("writeButton").disabled = !writable || state.compPreviewMode || musicBrainzResults || !state.queuedDecision.selected;
     $("embedBatchButton").disabled = true;
     $("writeNotice").textContent = musicBrainzResults ? "Choose a MusicBrainz release in Candidate Artwork; its artwork candidates load next."
-      : writable ? "Live Write · select one candidate, then save it here." : "Read-only queued review · choices are evaluated but files are not saved.";
+      : !writable ? "Read-only queued review · choices are evaluated but files are not saved."
+      : compCandidate ? "Live Write · adjust or upscale this candidate, then EMBED Track writes only the active COMP track."
+      : "Live Write · select one candidate, then save it here.";
   }
 };
 async function searchAlbum(releaseId = null) {
@@ -235,8 +257,8 @@ async function stageAlbum() {
   renderHero(); renderReview();
   setStatus(result.already_queued ? "Album is already staged" : "Cover written and album staged · " + state.album.name);
 };
-async function queueAction(action, id = null, value = null, nonce = null) {
-  const result = await post("/api/jobs/action", {action, id, value, nonce}); await pollJobs(); return result;
+async function queueAction(action, id = null, value = null, nonce = null, kind = null) {
+  const result = await post("/api/jobs/action", {action, id, value, nonce, kind}); await pollJobs(); return result;
 }
 function queuedCandidate(option, index) {
   const dimensions = String(option.resolution || "").match(/(\d+)\D+(\d+)/);
@@ -347,6 +369,8 @@ async function presentQueuedCandidates(job, prompt, options) {
   state.queuedDecision = {
     jobId: job.id, jobKind: job.kind, nonce: prompt.nonce, kind: context.kind || "", context,
     payload: job.payload || {}, previousCandidates, selected: null,
+    authority: {...authority, ...(context.authority || {})},
+    diagnostics: job.progress?.current?.diagnostics?.items || [], authoritySaved: job.progress?.current?.authority_saved || null,
   };
   state.workspace = "find";
   state.candidates = options.map(queuedCandidate);
@@ -366,6 +390,8 @@ async function presentQueuedMusicBrainz(job, prompt, options) {
   state.queuedDecision = {
     jobId: job.id, jobKind: job.kind, nonce: prompt.nonce, kind: "musicbrainz-results", context,
     payload: job.payload || {}, previousCandidates, selected: null, options: [...options],
+    authority: {...authority, ...(context.authority || {})},
+    diagnostics: job.progress?.current?.diagnostics?.items || [], authoritySaved: job.progress?.current?.authority_saved || null,
   };
   state.workspace = "find";
   state.candidates = [];
@@ -378,25 +404,23 @@ async function presentQueuedMusicBrainz(job, prompt, options) {
 }
 function renderQueue() {
   const host = $("embedQueue"); clear(host);
-  // Catalog indexing is application maintenance, not album embedding. Keep it
-  // in status/diagnostics so a completed 3,885-album refresh can never look
-  // like 3,885 tracks were embedded with the currently selected cover.
-  const jobs = (state.jobs || []).filter(job => ["embed-album", "comp", "scan"].includes(job.kind));
-  if (!jobs.length) host.append(node("p", "empty-copy", "No queued work yet."));
+  // This workspace is the album EMBED Batch queue. COMP candidate work stays
+  // in its Artist report and Selected Artwork flow.
+  const jobs = (state.jobs || []).filter(job => job.kind === "embed-album");
+  if (!jobs.length) host.append(node("p", "empty-copy", "No albums queued yet."));
   for (const job of jobs) {
-    const prompt = job.progress?.prompt || {}, context = prompt.context || {};
-    const title = [context.scope_artist || context.track_artist || context.artist || job.payload?.artist_name || job.payload?.artist,
-      context.track_title || context.track || context.album || job.payload?.name]
-      .filter(Boolean).join(" — ") || ({comp: "COMP track artwork", "embed-album": "Album embedding", scan: "Artwork scan", index: "Library index"}[job.kind] || "Artwork work");
-    const kind = job.kind === "comp" ? "COMP track artwork" : job.kind === "embed-album" ? "Album track embedding"
-      : job.kind === "scan" ? "Artwork scan" : job.kind === "index" ? "Library index" : "Artwork work";
-    const stateLabel = job.state === "staged" ? "Staged — not started" : job.state === "done" ? "Completed" : job.state;
-    const detail = [kind, stateLabel, prompt.label || job.progress.message,
-      job.progress.total ? (job.progress.completed || 0) + "/" + job.progress.total : ""].filter(Boolean).join(" · ");
+    const title = [job.payload?.artist, job.payload?.name].filter(Boolean).join(" — ") || "Album embedding";
+    const stateLabel = job.state === "staged" ? "staged" : job.state === "done" ? "completed" : job.state;
+    const total = Number(job.progress?.total || job.result?.tracks || job.payload?.tracks || 0);
+    const completed = job.state === "done" ? total : Number(job.progress?.completed || 0);
+    const side = Number(job.result?.side || job.payload?.embedded_side || 0);
+    const detail = [stateLabel, total ? `${completed}/${total} tracks` : "", side ? `embedded ${side} × ${side}` : ""].filter(Boolean).join(" · ");
     const card = node("div", "queue-card state-" + job.state), copy = node("div", "row-copy");
+    if (job.payload?.cover) card.append(image(job.payload.cover, "queue-cover", (job.payload?.name || "Album") + " staged cover"));
     copy.append(node("strong", "", title), node("small", "", detail));
-    if (job.state === "done" && job.kind === "embed-album") copy.append(node("p", "operation-success", `Completed write · ${job.result?.tracks ?? job.payload?.tracks ?? 0} tracks verified`));
-    if (job.state === "done" && job.kind === "scan") copy.append(node("p", "operation-success", `${job.result?.reviewed ?? 0} Albums reviewed · batch complete`));
+    if (job.payload?.cover_width && job.payload?.cover_height)
+      copy.append(node("small", "queue-resolution", `staged cover resolution ${job.payload.cover_width} × ${job.payload.cover_height}`));
+    if (job.state === "done") copy.append(node("p", "operation-success", `Completed write · ${total} tracks verified`));
     if (job.error) copy.append(node("p", "operation-error", job.error)); card.append(copy);
     if (["staged", "waiting", "done", "failed"].includes(job.state)) actionButton("Review", () => reviewJob(job.id), card);
     if (["failed", "paused"].includes(job.state)) actionButton("Resume", () => queueAction("retry", job.id), card);
@@ -405,9 +429,12 @@ function renderQueue() {
     host.append(card);
   }
   const pending = jobs.filter(job => !["done", "failed", "cancelled"].includes(job.state));
-  state.embedQueue = pending.filter(job => job.kind === "embed-album").map(job => ({...job.payload, id: job.payload.album_id}));
+  state.embedQueue = pending.map(job => ({...job.payload, id: job.payload.album_id}));
   $("embedTab").classList.toggle("has-queued-albums", !!pending.length);
   $("removeAllStaged").disabled = !jobs.some(job => !["running", "waiting"].includes(job.state));
+  const summary = pending.length ? `${pending.length} album${pending.length === 1 ? "" : "s"} staged or queued for embedding.` : "No albums staged for embedding.";
+  $("embedQueueStatus").textContent = summary;
+  $("embedQueueFooter").textContent = summary;
 };
 async function refreshCompletedAlbum(albumId) {
   if (!albumId) return;
@@ -493,10 +520,15 @@ async function pollJobs() {
         state.reviewJobState = job.state;
         if (job.state === "done") {
           await refreshQueuedAlbumAfterSave(job);
-          state.reviewJobId = null;
+          const nextComp = job.kind === "comp" ? state.jobs.filter(item => item.kind === "comp" && item.id !== job.id
+            && item.payload?.artist_id === job.payload?.artist_id && !["done", "failed", "cancelled"].includes(item.state))
+            .sort((left, right) => String(left.created_at || "").localeCompare(String(right.created_at || "")))[0] : null;
+          state.reviewJobId = nextComp?.id || null;
+          state.reviewJobState = nextComp?.state || "";
           if (job.kind === "embed-album") setStatus("Album track embedding completed and verified · " + (state.album?.name || job.payload?.name || "Album"));
           else if (job.kind === "scan") setStatus(`Album batch complete · ${job.result?.reviewed ?? 0} reviewed · ${job.result?.mode === "write" ? "approved covers written" : "Read mode, no covers written"}`);
-          else setStatus("COMP track artwork work complete · " + (state.album?.name || job.payload?.name || "Album"));
+          else setStatus("COMP track artwork work complete · " + (job.payload?.name || "Album") + (nextComp ? " · continuing this Artist's next COMP album" : ""));
+          if (nextComp?.state === "waiting") await renderJob(nextComp);
         } else if (job.state === "failed") {
           setStatus(job.error || "Queued artwork failed", "error");
         }
@@ -1070,9 +1102,9 @@ async function upscaleArtist() {
   if (state.radioCurrent) state.fx.current = {};
   renderPanes(); renderReview(); setStatus("Upscaled artwork ready to write");
 }
-$("startStaged").addEventListener("click", () => runAction(() => queueAction("start")));
-$("pauseAfterAlbum").addEventListener("click", () => runAction(() => queueAction("pause-after")));
-$("pauseAllAlbums").addEventListener("click", () => runAction(() => queueAction("pause")));
+$("startStaged").addEventListener("click", () => runAction(() => queueAction("start", null, null, null, "embed-album")));
+$("pauseAfterAlbum").addEventListener("click", () => runAction(() => queueAction("pause-after", null, null, null, "embed-album")));
+$("pauseAllAlbums").addEventListener("click", () => runAction(() => queueAction("pause", null, null, null, "embed-album")));
 function fullscreenElement() {
   return document.fullscreenElement || document.webkitFullscreenElement || null;
 }
@@ -1182,7 +1214,12 @@ applyPreviewEffects=function () {
         element.src=result.image;element.style.filter='none';element.style.transform='none';
       })());
     };
-    if (state.editorMode==='album') {
+    if (state.queuedDecision?.jobKind==='comp' && state.queuedDecision.selected || state.editorMode==='artist' && state.compReportVisible) {
+      const source=state.queuedDecision?.jobKind==='comp' && state.queuedDecision.selected
+        ? state.queuedDecision.selected.image : state.compTrack?.image;
+      add('#selectedFrame .selected-image','comp',source,{upscale:!!state.upscalePreview});
+      add('#albumPane img','comp',source,{upscale:!!state.upscalePreview});
+    } else if (state.editorMode==='album') {
       const source=state.selectedCover?.image||state.album?.cover;
       add('#selectedFrame .selected-image','cover',source,{upscale:!!state.upscalePreview});
       add('#albumPane img','cover',source,{upscale:!!state.upscalePreview});

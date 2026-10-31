@@ -11,9 +11,13 @@ from pathlib import Path
 from uuid import uuid4
 import hashlib
 import os
+import shutil
 import tempfile
 import threading
 
+from mutagen import File as MutagenFile
+from mutagen.id3 import ID3, TXXX, UFID
+from mutagen.mp4 import MP4
 from PIL import Image, ImageOps
 from psycopg import sql
 from psycopg.types.json import Jsonb
@@ -752,6 +756,252 @@ class Services:
         self.catalog.portrait_cache.pop(artist_id, None)
         return {"written": written}
 
+    def _persist_comp_track_authority(self, track, recording_mbid, artist_mbids):
+        """Atomically save validated Recording/Artist IDs without Album identity."""
+        recording = str(recording_mbid or "").strip().casefold()
+        artists = "; ".join(sorted(compilation._mbids(artist_mbids)))
+        if not core.valid_mbid(recording) or not artists:
+            raise ValueError("Validated Recording and Artist IDs are required")
+        path = Path(track.path).resolve()
+        if not inside(path, self.runtime.music):
+            raise ValueError("COMP track is outside the configured music library")
+        descriptor, staged_name = tempfile.mkstemp(
+            prefix=f".{path.name}.splined-identity-",
+            suffix=path.suffix,
+            dir=path.parent,
+        )
+        os.close(descriptor)
+        staged = Path(staged_name)
+        try:
+            shutil.copyfile(path, staged)
+            try:
+                shutil.copymode(path, staged)
+            except OSError:
+                pass
+            audio = MutagenFile(staged)
+            if audio is None:
+                raise ValueError("Unsupported COMP track format")
+            if audio.tags is None:
+                audio.add_tags()
+            if isinstance(audio, MP4):
+                assert audio.tags is not None
+                audio.tags["----:com.apple.iTunes:MusicBrainz Track Id"] = [
+                    recording.encode("utf-8")
+                ]
+                audio.tags["----:com.apple.iTunes:MusicBrainz Artist Id"] = [
+                    artists.encode("utf-8")
+                ]
+            elif isinstance(audio.tags, ID3):
+                retained = []
+                for frame in audio.tags.getall("TXXX"):
+                    description = str(getattr(frame, "desc", "") or "").strip().casefold()
+                    if description not in {
+                        "musicbrainz recording id",
+                        "musicbrainz track id",
+                        "musicbrainz_trackid",
+                        "musicbrainz artist id",
+                        "musicbrainz_artistid",
+                    }:
+                        retained.append(frame)
+                audio.tags.delall("TXXX")
+                for frame in retained:
+                    audio.tags.add(frame)
+                retained_ufid = [
+                    frame
+                    for frame in audio.tags.getall("UFID")
+                    if str(getattr(frame, "owner", "") or "")
+                    .rstrip("/")
+                    .casefold()
+                    != "http://musicbrainz.org"
+                ]
+                audio.tags.delall("UFID")
+                for frame in retained_ufid:
+                    audio.tags.add(frame)
+                audio.tags.add(
+                    TXXX(encoding=3, desc="MusicBrainz Track Id", text=[recording])
+                )
+                audio.tags.add(
+                    TXXX(encoding=3, desc="MusicBrainz Artist Id", text=[artists])
+                )
+                audio.tags.add(
+                    UFID(owner="http://musicbrainz.org", data=recording.encode("ascii"))
+                )
+            else:
+                assert audio.tags is not None
+                audio.tags["musicbrainz_trackid"] = [recording]
+                audio.tags["musicbrainz_artistid"] = [artists]
+            audio.save()
+            verified = core.read_track(staged)
+            if str(verified.recording_mbid or "").strip().casefold() != recording:
+                raise ValueError("Staged track did not retain the Recording ID")
+            if compilation._mbids(verified.artist_mbid) != compilation._mbids(
+                artists
+            ):
+                raise ValueError("Staged track did not retain the Artist ID")
+            os.replace(staged, path)
+        finally:
+            staged.unlink(missing_ok=True)
+
+    def _prepare_comp_embedded(self, payload):
+        rendered = self.preview(dict(payload, kind="comp"))
+        source = self.catalog.image_bytes(rendered["image"])
+        side = int(
+            self.runtime.cfg.get("output", {}).get("embedded_thumbnail_size", 1200)
+        )
+        with Image.open(BytesIO(source)) as opened:
+            image = imaging.prepare_embedded_thumbnail(opened, side)
+            body = imaging.encode(image, "jpeg")
+        return body, {"width": side, "height": side}, "jpeg", rendered
+
+    def _record_comp_track_artwork(self, row, record, body, outcome):
+        now = tags.utc_now()
+        track_path = str(record["path"])
+        with closing(self.runtime.database.connect()) as db, db:
+            db.execute(
+                "INSERT INTO compilation_track_artwork"
+                "(track_path,recording_mbid,artist_mbid,source_kind,source_locator,"
+                "release_mbid,artwork_sha256,outcome,applied_at,splined_version) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(track_path) DO UPDATE SET "
+                "recording_mbid=excluded.recording_mbid,artist_mbid=excluded.artist_mbid,"
+                "source_kind=excluded.source_kind,source_locator=excluded.source_locator,"
+                "release_mbid=excluded.release_mbid,artwork_sha256=excluded.artwork_sha256,"
+                "outcome=excluded.outcome,applied_at=excluded.applied_at,"
+                "splined_version=excluded.splined_version",
+                (
+                    track_path,
+                    str(record.get("musicbrainz_recordingid") or ""),
+                    str(record.get("musicbrainz_artistid") or ""),
+                    "webgui-selected-artwork",
+                    "artist-comp-report",
+                    None,
+                    hashlib.sha256(body).hexdigest(),
+                    outcome,
+                    now,
+                    core.VERSION,
+                ),
+            )
+            total = int(
+                db.execute(
+                    "SELECT count(*) FROM tracks WHERE album_key=?",
+                    (row["album_key"],),
+                ).fetchone()[0]
+            )
+            completed = int(
+                db.execute(
+                    "SELECT count(*) FROM tracks JOIN compilation_track_artwork "
+                    "ON lower(compilation_track_artwork.track_path)=lower(tracks.path) "
+                    "WHERE tracks.album_key=? AND compilation_track_artwork.outcome "
+                    "IN ('embedded-replaced','embedded-existing')",
+                    (row["album_key"],),
+                ).fetchone()[0]
+            )
+            db.execute(
+                "INSERT INTO compilation_album_progress"
+                "(album_path,total_tracks,completed_tracks,status,updated_at,splined_version) "
+                "VALUES(?,?,?,?,?,?) ON CONFLICT(album_path) DO UPDATE SET "
+                "total_tracks=excluded.total_tracks,completed_tracks=excluded.completed_tracks,"
+                "status=excluded.status,updated_at=excluded.updated_at,"
+                "splined_version=excluded.splined_version",
+                (
+                    str(row["path"]),
+                    total,
+                    completed,
+                    "complete" if total and completed >= total else "incomplete",
+                    now,
+                    core.VERSION,
+                ),
+            )
+
+    @serialized
+    def embed_comp_track(self, payload):
+        self.runtime.require_write()
+        artist_id = str(payload.get("artist_id", "")).strip()
+        album_id = str(payload.get("album_id", "")).strip()
+        track_key = str(payload.get("track_key", "")).strip()
+        if not artist_id:
+            raise ValueError("Open an Artist COMP Report before embedding a track")
+        normalized = self.validate_comp_payload(
+            {
+                "artist_id": artist_id,
+                "album_id": album_id,
+                "track_keys": [track_key],
+            }
+        )
+        row = self.album_row(normalized["album_id"])
+        record = next(
+            (
+                item
+                for item in self.hydrate_tracks(row["album_key"])
+                if item["track_key"] == track_key
+            ),
+            None,
+        )
+        if record is None:
+            raise KeyError("COMP track not found")
+        path, folder = Path(record["path"]), Path(row["path"])
+        if (
+            not inside(folder, self.runtime.music)
+            or not inside(path, folder)
+            or not path.is_file()
+        ):
+            raise ValueError("COMP track is outside the configured music library")
+        body, info, image_format, rendered = self._prepare_comp_embedded(payload)
+        original = embedded_track_artwork_bytes(path)
+        outcome = "embedded-existing" if original == body else "embedded-replaced"
+        if original != body:
+            backup_root = self.runtime.cache / "embedded-backups"
+            backup_root.mkdir(parents=True, exist_ok=True)
+            if original:
+                backup = backup_root / (
+                    hashlib.sha256(
+                        (str(path) + hashlib.sha256(original).hexdigest()).encode()
+                    ).hexdigest()
+                    + ".image"
+                )
+                if not backup.exists():
+                    backup.write_bytes(original)
+            compilation.replace_embedded_artwork(path, body, image_format, info)
+        verified = embedded_track_artwork_bytes(path)
+        if not verified or hashlib.sha256(verified).digest() != hashlib.sha256(body).digest():
+            raise ValueError("Embedded COMP artwork verification failed for " + path.name)
+        with Image.open(BytesIO(verified)) as opened:
+            if opened.size != (info["width"], info["height"]):
+                raise ValueError("Embedded COMP artwork did not verify at the requested size")
+        refreshed = next(
+            (
+                item
+                for item in self.hydrate_tracks(
+                    row["album_key"], refresh_embedding_stats=False
+                )
+                if item["track_key"] == track_key
+            ),
+            record,
+        )
+        self._record_comp_track_artwork(row, refreshed, body, outcome)
+        self.refresh_embedding_stats(row)
+        self.audit(
+            "embed-comp-track",
+            track_key,
+            {
+                "artist_id": artist_id,
+                "album_id": row["album_key"],
+                "side": info["width"],
+                "outcome": outcome,
+            },
+        )
+        return {
+            "album_id": row["album_key"],
+            "track_key": track_key,
+            "file": path.name,
+            "status": "green",
+            "completed": True,
+            "width": info["width"],
+            "height": info["height"],
+            "bytes": len(body),
+            "upscaled": bool(rendered.get("upscaled")),
+            "outcome": outcome,
+        }
+
     @serialized
     def embed_album(self, payload, progress=None, cancelled=None):
         self.runtime.require_write()
@@ -889,6 +1139,15 @@ class Services:
             "library_root": str(self.runtime.music),
             "name": row["album_name"],
             "artist": row["artist_name"],
+            "cover": result["image"],
+            "cover_width": result["width"],
+            "cover_height": result["height"],
+            "embedded_side": int(
+                self.runtime.cfg.get("output", {}).get(
+                    "embedded_thumbnail_size", 1200
+                )
+            ),
+            "embedded_tracks": int(row["embedded_tracks"] or 0),
             "prepared_file": name,
             "sha256": hashlib.sha256(body).hexdigest(),
             "tracks": row["track_count"],
@@ -965,6 +1224,15 @@ class Services:
                 track_artist=str(track.artist or ""),
             )
 
+        def prepare_selected_artwork(request):
+            body, info, image_format, _ = self._prepare_comp_embedded(request)
+            return body, info, image_format
+
+        def persist_track_authority(track, recording_mbid, artist_mbids):
+            self._persist_comp_track_authority(
+                track, recording_mbid, artist_mbids
+            )
+
         summary = core.Summary()
         cache = r.temporary_cache / "comp-work" / uuid4().hex
         cache.mkdir(parents=True, exist_ok=True)
@@ -983,6 +1251,8 @@ class Services:
             state={},
             target_track_paths={allowed[key] for key in requested},
             track_context=update_track_context,
+            prepare_selected_artwork=prepare_selected_artwork,
+            persist_track_authority=persist_track_authority,
         )
         self.refresh_album(row["album_key"])
         self.refresh_embedding_stats(row)

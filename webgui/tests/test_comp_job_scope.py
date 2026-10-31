@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import unittest
+from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import RLock
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import numpy as np
+import soundfile as sf
+from mutagen.flac import FLAC, Picture
+from PIL import Image
+
+from webgui.catalog import embedded_track_artwork_bytes
 from webgui.services import Services
 
 
@@ -113,6 +120,9 @@ class CompJobScopeTests(unittest.TestCase):
             def manual_scan(album, tracks, **kwargs):
                 captured["files"] = list(album.audio_files)
                 captured["targets"] = kwargs["target_track_paths"]
+                captured["persist_track_authority"] = kwargs[
+                    "persist_track_authority"
+                ]
                 kwargs["track_context"](tracks[0])
                 return True
 
@@ -135,6 +145,133 @@ class CompJobScopeTests(unittest.TestCase):
             self.assertEqual(adapter.context["scope_artist"], "Selected Artist")
             self.assertEqual(adapter.context["track_key"], "artist-track")
             self.assertEqual(adapter.context["track_title"], "Target Song")
+            self.assertTrue(callable(captured.get("persist_track_authority")))
+
+    def test_validated_authority_write_is_atomic_and_preserves_embedded_art(self):
+        with TemporaryDirectory() as directory:
+            music = Path(directory) / "music"
+            music.mkdir()
+            track_path = music / "Because the Night.flac"
+            sf.write(track_path, np.zeros((4410, 2)), 44100)
+            original_art = BytesIO()
+            Image.new("RGB", (32, 32), (8, 16, 24)).save(original_art, "JPEG")
+            audio = FLAC(track_path)
+            audio["title"] = "Because the Night"
+            audio["artist"] = "10,000 Maniacs"
+            picture = Picture()
+            picture.type = 3
+            picture.mime = "image/jpeg"
+            picture.width = picture.height = 32
+            picture.depth = 24
+            picture.data = original_art.getvalue()
+            audio.add_picture(picture)
+            audio.save()
+            service = Services.__new__(Services)
+            service.runtime = SimpleNamespace(music=music)
+            track = SimpleNamespace(path=track_path)
+            recording = "e1efc38f-1f86-4c2c-bd90-df1e0796f789"
+            artist = "291dcfb8-b31c-496a-905b-9955509d75b6"
+
+            service._persist_comp_track_authority(track, recording, artist)
+
+            verified = FLAC(track_path)
+            self.assertEqual(verified["musicbrainz_trackid"], [recording])
+            self.assertEqual(verified["musicbrainz_artistid"], [artist])
+            self.assertEqual(verified.pictures[0].data, original_art.getvalue())
+
+    def test_embed_track_prepares_exact_square_and_writes_only_selected_file(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            album = root / "music" / "Various Artists" / "Billboard 1994"
+            album.mkdir(parents=True)
+            target = album / "10,000 Maniacs - Because the Night.flac"
+            other = album / "Other Performer.flac"
+            for path in (target, other):
+                sf.write(path, np.zeros((4410, 2)), 44100)
+                audio = FLAC(path)
+                audio["title"] = path.stem
+                audio["artist"] = "10,000 Maniacs" if path == target else "Other Performer"
+                audio["albumartist"] = "Various Artists"
+                audio["album"] = "Billboard Hot 100 Singles of 1994"
+                audio.save()
+            source = root / "candidate.png"
+            Image.new("RGB", (1800, 900), (90, 30, 120)).save(source)
+
+            class Images:
+                rendered = b""
+
+                def image_source(self, value):
+                    if value != "/candidate":
+                        raise KeyError(value)
+                    return source
+
+                def image(self, body):
+                    self.rendered = body
+                    return "/rendered"
+
+                def image_bytes(self, value):
+                    if value != "/rendered":
+                        raise KeyError(value)
+                    return self.rendered
+
+            service = Services.__new__(Services)
+            service.runtime = SimpleNamespace(
+                processing=RLock(), require_write=lambda: None,
+                music=root / "music", cache=root / "cache",
+                cfg={
+                    "output": {
+                        "embedded_thumbnail_size": 1200,
+                        "upscale_below_ideal": True,
+                        "upscale_max_percent": 200,
+                    },
+                    "range": {"ideal": 1800},
+                },
+            )
+            service.catalog = Images()
+            normalized = {
+                "artist_id": "10k-maniacs", "album_id": "billboard-1994",
+                "track_keys": ["because-the-night"],
+            }
+            service.validate_comp_payload = lambda _payload: normalized
+            service.album_row = lambda _album_id: {
+                "album_key": "billboard-1994", "path": str(album),
+            }
+            records = [
+                {
+                    "track_key": "because-the-night", "path": str(target),
+                    "musicbrainz_recordingid": "recording", "musicbrainz_artistid": "artist",
+                },
+                {"track_key": "other", "path": str(other)},
+            ]
+            service.hydrate_tracks = lambda _album_id, **_kwargs: records
+            recorded = []
+            service._record_comp_track_artwork = lambda *args: recorded.append(args)
+            service.refresh_embedding_stats = lambda _row: 1
+            service.audit = lambda *_args, **_kwargs: None
+
+            result = service.embed_comp_track({
+                "artist_id": "10k-maniacs", "album_id": "billboard-1994",
+                "track_key": "because-the-night", "image": "/candidate",
+                "adjustments": {"Brightness": 12}, "upscale": True,
+            })
+
+            with Image.open(BytesIO(embedded_track_artwork_bytes(target))) as embedded:
+                self.assertEqual(embedded.size, (1200, 1200))
+                self.assertLess(max(embedded.getpixel((600, 50))), 12)
+                self.assertGreater(max(embedded.getpixel((600, 600))), 60)
+            self.assertIsNone(embedded_track_artwork_bytes(other))
+            self.assertEqual((result["width"], result["height"]), (1200, 1200))
+            self.assertTrue(result["upscaled"])
+            self.assertEqual(recorded[0][1]["track_key"], "because-the-night")
+
+    def test_embed_track_keeps_write_permission_guard(self):
+        service = Services.__new__(Services)
+        service.runtime = SimpleNamespace(
+            processing=RLock(),
+            require_write=lambda: (_ for _ in ()).throw(PermissionError("read mode")),
+        )
+        with self.assertRaisesRegex(PermissionError, "read mode"):
+            service.embed_comp_track({})
 
 
 if __name__ == "__main__":

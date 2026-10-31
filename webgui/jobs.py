@@ -149,17 +149,34 @@ class JobQueue:
         self.wake.set()
         return {"id": job_id, "state": "staged" if staged else "queued"}
 
-    def action(self, action, job_id=None, value=None, nonce=None):
+    def action(self, action, job_id=None, value=None, nonce=None, kind=None):
+        kind = str(kind or "").strip()
+        if kind and kind not in {"embed-album", "comp", "index", "scan"}:
+            raise ValueError("Unknown work type")
         with closing(self.db.connect()) as db, db:
             if action == "start":
-                db.execute(
-                    "UPDATE web_jobs SET state='queued',decision=NULL,progress=progress-'prompt',"
-                    "error='',updated_at=now() WHERE state='staged'"
-                )
+                if kind:
+                    db.execute(
+                        "UPDATE web_jobs SET state='queued',decision=NULL,progress=progress-'prompt',"
+                        "error='',updated_at=now() WHERE state='staged' AND kind=?",
+                        (kind,),
+                    )
+                else:
+                    db.execute(
+                        "UPDATE web_jobs SET state='queued',decision=NULL,progress=progress-'prompt',"
+                        "error='',updated_at=now() WHERE state='staged'"
+                    )
             elif action == "pause-after":
-                db.execute(
-                    "UPDATE web_jobs SET state='paused',updated_at=now() WHERE state IN ('queued','staged')"
-                )
+                if kind:
+                    db.execute(
+                        "UPDATE web_jobs SET state='paused',updated_at=now() "
+                        "WHERE state IN ('queued','staged') AND kind=?",
+                        (kind,),
+                    )
+                else:
+                    db.execute(
+                        "UPDATE web_jobs SET state='paused',updated_at=now() WHERE state IN ('queued','staged')"
+                    )
             elif action == "decision":
                 result = db.raw.execute(
                     "UPDATE web_jobs SET decision=%s,updated_at=now() WHERE id=%s AND state='waiting' AND progress->'prompt'->>'nonce'=%s",
@@ -180,6 +197,12 @@ class JobQueue:
                         "UPDATE web_jobs SET state=?,updated_at=now() WHERE id=? AND state NOT IN ('done','failed','cancelled')",
                         (state, job_id),
                     )
+                elif kind:
+                    db.execute(
+                        "UPDATE web_jobs SET state=?,updated_at=now() "
+                        "WHERE state NOT IN ('done','failed','cancelled') AND kind=?",
+                        (state, kind),
+                    )
                 else:
                     db.execute(
                         "UPDATE web_jobs SET state=?,updated_at=now() WHERE state NOT IN ('done','failed','cancelled')",
@@ -195,9 +218,15 @@ class JobQueue:
                     raise ValueError("Pause work before removing it")
                 db.execute("DELETE FROM web_jobs WHERE id=?", (job_id,))
             elif action == "clear":
-                db.execute(
-                    "DELETE FROM web_jobs WHERE state NOT IN ('running','waiting')"
-                )
+                if kind:
+                    db.execute(
+                        "DELETE FROM web_jobs WHERE state NOT IN ('running','waiting') AND kind=?",
+                        (kind,),
+                    )
+                else:
+                    db.execute(
+                        "DELETE FROM web_jobs WHERE state NOT IN ('running','waiting')"
+                    )
             else:
                 raise ValueError("Unknown queue action")
         self.wake.set()

@@ -70,6 +70,11 @@ const renderMusicBrainzFunction = between(
   "function renderMusicBrainzResults",
   "function renderCandidates",
 );
+const renderQueueFunction = between(
+  operationsSource,
+  "function renderQueue",
+  "async function refreshCompletedAlbum",
+);
 const stageAlbumFunction = between(
   operationsSource,
   "async function stageAlbum",
@@ -292,24 +297,51 @@ test("both Artist COMP launch controls route through the scoped COMP action", as
   assert.match(appSource, /searchButton"\)\.addEventListener\("click", \(\) => runAction\(launchCandidateWork\)\)/);
 });
 
-test("individual Artist COMP track work retains Artist and track scope", async () => {
-  const queued = [];
+test("EMBED Track writes only the selected Artist COMP track with its prepared artwork", async () => {
+  const calls = [];
   const state = {
     queuedDecision: null,
     editorMode: "artist",
     compReportVisible: true,
-    compTrack: {albumId: "billboard-1994", key: "10k-because-the-night"},
+    compTrack: {albumId: "billboard-1994", key: "10k-because-the-night", image: "/track-art"},
     artist: {id: "10k-maniacs", name: "10,000 Maniacs"},
+    fx: {comp: {Brightness: 12}}, upscalePreview: {image: "/upscaled"}, renderedPreview: {comp: {image: "/rendered"}},
   };
   const context = load(writeArtworkFunction, {
     state,
-    enqueueComp: async (...args) => { queued.push(args); },
+    post: async (path, payload) => { calls.push([path, payload]); return {file: "Because the Night.flac", width: 1200, height: 1200}; },
+    componentPayload: (kind, image, extra) => ({kind, image, adjustments: state.fx.comp, ...extra}),
+    refreshQueuedAlbumAfterSave: async () => {}, setStatus() {},
     submitQueuedDecision() {},
   });
 
   await context.writeArtwork();
 
-  assert.deepEqual(JSON.parse(JSON.stringify(queued)), [["billboard-1994", ["10k-because-the-night"], "10k-maniacs"]]);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [["/api/artist/comp-embed", {
+    kind: "comp", image: "/track-art", adjustments: {Brightness: 12}, artist_id: "10k-maniacs",
+    album_id: "billboard-1994", track_key: "10k-because-the-night", upscale: true,
+  }]]);
+  assert.equal(state.upscalePreview, null);
+  assert.deepEqual(JSON.parse(JSON.stringify(state.fx.comp)), {});
+});
+
+test("queued COMP candidates submit adjustment and upscale intent with the exact candidate number", async () => {
+  const submitted = [];
+  const state = {
+    queuedDecision: {jobKind: "comp", selected: {queueValue: 4, image: "/candidate-4"}},
+    fx: {comp: {Contrast: 8}}, upscalePreview: {image: "/preview"},
+  };
+  const context = load(writeArtworkFunction, {
+    state,
+    submitQueuedDecision: async value => { submitted.push(JSON.parse(value)); },
+  });
+
+  await context.writeArtwork();
+
+  assert.deepEqual(JSON.parse(JSON.stringify(submitted)), [{
+    action: "webgui-embed-track", number: 4,
+    artwork: {image: "/candidate-4", adjustments: {Contrast: 8}, upscale: true},
+  }]);
 });
 
 test("MusicBrainz release prompt stays on the Artist COMP track", async () => {
@@ -388,7 +420,7 @@ test("MusicBrainz result decisions ignore stale image candidates and preserve re
   const grid = {children: [], append(...children) { this.children.push(...children); }};
   renderer.renderMusicBrainzResults(grid, {options, context: {track_title: "Because the Night"}}, "billboard");
   assert.equal(grid.children.length, 1);
-  await grid.children[0].listeners.click();
+  await grid.children[0].children[0].listeners.click();
   assert.deepEqual(submitted, [2]);
 });
 
@@ -420,6 +452,47 @@ test("a MusicBrainz lookup without matches surfaces diagnostics instead of a sil
   assert.ok(statuses.some(([message, level]) => message.includes("Because the Night") && level === "error"));
   assert.equal(messages.includes("Use suggested"), false);
   assert.equal(messages.includes("MusicBrainz matches"), true);
+});
+
+test("Album Track Embedding shows album details and excludes COMP and scan jobs", () => {
+  const elements = {
+    embedQueue: {children: [], replaceChildren() { this.children = []; }, append(...children) { this.children.push(...children); }},
+    embedTab: {classList: {toggle() {}}},
+    removeAllStaged: {disabled: false},
+    embedQueueStatus: {textContent: ""}, embedQueueFooter: {textContent: ""},
+  };
+  const state = {embedQueue: [], jobs: [
+    {id: "album-1", kind: "embed-album", state: "staged", payload: {
+      album_id: "psychedelic", artist: "13th Floor Elevators", name: "The Psychedelic Sounds of the 13th Floor Elevators",
+      cover: "/cover.jpg", cover_width: 1800, cover_height: 1800, embedded_side: 1200, tracks: 21,
+    }, progress: {}},
+    {id: "comp-1", kind: "comp", state: "waiting", payload: {name: "Billboard 1994"}, progress: {}},
+    {id: "scan-1", kind: "scan", state: "paused", payload: {name: "Artist scan"}, progress: {}},
+  ]};
+  const node = (tag, className = "", text = "") => ({
+    tag, className, text, children: [], append(...children) { this.children.push(...children); },
+  });
+  const context = load(renderQueueFunction, {
+    state, $: id => elements[id], clear: element => element.replaceChildren(), node,
+    image: (src, className, alt) => ({tag: "img", src, className, alt}),
+    actionButton: (label, action, host) => host.append({tag: "button", label, action}),
+    reviewJob() {}, queueAction() {},
+  });
+
+  context.renderQueue();
+
+  assert.equal(elements.embedQueue.children.length, 1);
+  const card = elements.embedQueue.children[0];
+  assert.equal(card.children[0].src, "/cover.jpg");
+  const copy = card.children.find(child => child.className === "row-copy");
+  assert.ok(copy.children.some(child => child.text.includes("13th Floor Elevators — The Psychedelic Sounds")));
+  assert.ok(copy.children.some(child => child.text.includes("0/21 tracks") && child.text.includes("1200 × 1200")));
+  assert.ok(copy.children.some(child => child.text.includes("staged cover resolution 1800 × 1800")));
+  assert.equal(state.embedQueue.length, 1);
+  assert.equal(elements.embedQueueStatus.textContent, "1 album staged or queued for embedding.");
+  assert.equal(elements.embedQueueFooter.textContent, elements.embedQueueStatus.textContent);
+  assert.match(operationsSource, /queueAction\("start", null, null, null, "embed-album"\)/);
+  assert.match(appSource, /queueAction\("clear", null, null, null, "embed-album"\)/);
 });
 
 test("lazy thumbnail hydration updates matching artists and rerenders", async () => {

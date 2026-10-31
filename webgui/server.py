@@ -601,6 +601,10 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
                 str(value.get("track_key", "")),
             )
 
+    @app.post("/api/artist/comp-embed")
+    def comp_embed(payload: dict):
+        return context.require().embed_comp_track(payload)
+
     @app.get("/api/jobs")
     def jobs():
         context.require()
@@ -644,6 +648,7 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
             value.get("id"),
             value.get("value"),
             value.get("nonce"),
+            value.get("kind"),
         )
 
     @app.post("/api/artwork/upload")
