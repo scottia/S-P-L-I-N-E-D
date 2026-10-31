@@ -55,6 +55,21 @@ const artistMetadataFunction = between(
   "async function loadArtistMetadata",
   "async function searchArtist",
 );
+const clearFocusFunction = between(
+  appSource,
+  "function clearFocusCandidates",
+  "function resetFocusAdjustments",
+);
+const chooseAlbumFunction = between(
+  appSource,
+  "async function chooseAlbum",
+  "async function selectFallbackTrack",
+);
+const artistCompReportFunction = between(
+  appSource,
+  "async function openArtistCompReport",
+  "async function probeArtistCompStatuses",
+);
 
 function queuedContext({groups, album, artistResponse}) {
   const originalArtist = {id: "projected-artist", albums: []};
@@ -64,7 +79,8 @@ function queuedContext({groups, album, artistResponse}) {
     state: {
       artist: originalArtist,
       album: null,
-      compGroups: groups,
+      compAlbums: groups,
+      compGroups: [],
       compReportVisible: false,
       compTrack: null,
       editorMode: "artist",
@@ -74,7 +90,7 @@ function queuedContext({groups, album, artistResponse}) {
     api: async path => {
       calls.push(path);
       if (path.startsWith("/api/album")) return album;
-      if (path.startsWith("/api/artist")) return artistResponse;
+      if (path.startsWith("/api/artist")) return {artist: artistResponse, comp_albums: []};
       throw new Error(`unexpected API call: ${path}`);
     },
     markSelectedAlbum() {},
@@ -223,6 +239,8 @@ test("background Artist metadata refreshes Featured and COMP projections without
   const state = {
     artist: {id: "artist-1", albums: [{id: "old"}]},
     artistMetadata: null,
+    artistMetadataRequest: 0,
+    compAlbums: [],
     compGroups: [],
   };
   const context = load(artistMetadataFunction, {
@@ -238,9 +256,123 @@ test("background Artist metadata refreshes Featured and COMP projections without
   await context.loadArtistMetadata("artist-1");
 
   assert.deepEqual(state.artist.albums.map(album => album.id), ["own", "featured"]);
-  assert.deepEqual(state.compGroups.map(group => group.id), ["comp"]);
+  assert.deepEqual(state.compAlbums.map(group => group.id), ["comp"]);
+  assert.equal(state.compGroups.length, 0);
   assert.equal(state.artistMetadata.biography, "Biography");
   assert.equal(renders, 1);
+});
+
+test("Album navigation preserves the selected Artist COMP card inventory", async () => {
+  const comp = {id: "comp-1", tracks: [{key: "target-track"}]};
+  const state = {
+    artist: {id: "artist-1", albums: [{id: "own-1"}]},
+    artistMetadata: null,
+    album: null,
+    compAlbums: [comp],
+    compGroups: [comp],
+    compCollapsed: new Set(),
+    compare: new Set(),
+    candidates: [],
+    selectedPortrait: null, selectedBanner: null, selectedCover: null,
+    upscalePreview: null, renderedPreview: {},
+    fallbackTracks: [], fallbackTrack: null, fallbackPreviewOnly: false, fallbackRun: false,
+    fallbackTrackRequest: 0, fallbackPreviewMode: false, fallbackReportExpanded: true,
+    fallbackHelpExpanded: false, compReportVisible: false, compReportLoading: false,
+    compPreviewMode: false, compTrack: null, compRunIndex: -1,
+    compTrackRequest: 0, compStatusRequest: 0, compReportRequest: 0,
+    queuedDecision: null, reviewJobId: null, candidateFilterLocked: true,
+    selectionRequest: 0, searchRequest: 0, reviewCleared: false,
+  };
+  const context = load(clearFocusFunction + contextFunctions + chooseAlbumFunction, {
+    state,
+    api: async path => {
+      assert.match(path, /^\/api\/album/);
+      return {id: "own-1", artist_id: "artist-1", album_mbid: "release-1", candidates: []};
+    },
+    resetFocusAdjustments() {}, renderSources() {}, renderCandidates() {}, renderWorkspace() {},
+    resetCandidateFilters() {}, markSelectedAlbum() {}, renderAll() {}, loadArtistMetadata() {},
+    setStatus() {},
+  });
+
+  await context.chooseAlbum("own-1");
+
+  assert.equal(context.albumInCurrentArtistContext("comp-1"), true);
+  assert.deepEqual(state.compAlbums.map(group => group.id), ["comp-1"]);
+  assert.equal(state.compGroups.length, 0);
+});
+
+test("late Artist metadata cannot replace an already scoped COMP report", async () => {
+  let resolveMetadata;
+  const metadataReady = new Promise(resolve => { resolveMetadata = resolve; });
+  const scoped = [{id: "comp-1", tracks: [{key: "target-track"}]}];
+  const unscoped = [{id: "comp-1", tracks: Array.from({length: 102}, (_, index) => ({key: `track-${index}`}))}];
+  const state = {
+    artist: {id: "artist-1", albums: []}, artistMetadata: null,
+    artistMetadataRequest: 0,
+    compAlbums: [], compGroups: [], compCollapsed: new Set(),
+    compReportVisible: false, compReportLoading: false, compPreviewMode: false,
+    compTrack: null, compTrackRequest: 0, compStatusRequest: 0, compReportRequest: 0,
+    candidates: [], upscalePreview: null,
+  };
+  const elements = {
+    compReportButton: {disabled: false, textContent: "COMP Report"},
+    fallbackReport: {querySelectorAll: () => [], getBoundingClientRect: () => ({top: 0})},
+    overviewContent: {scrollTop: 0, getBoundingClientRect: () => ({top: 0})},
+  };
+  const context = load(artistMetadataFunction + artistCompReportFunction, {
+    state,
+    api: async path => path.startsWith("/api/artist/metadata") ? metadataReady : scoped,
+    $: id => elements[id],
+    renderLibrary() {}, renderHero() {}, renderSources() {}, renderCandidates() {}, renderReview() {},
+    resetCandidateFilters() {}, setStatus() {}, probeArtistCompStatuses() {},
+    requestAnimationFrame() {},
+  });
+
+  const metadata = context.loadArtistMetadata("artist-1");
+  await context.openArtistCompReport();
+  resolveMetadata({
+    biography: "Biography", similar: [], artist: {id: "artist-1", albums: []},
+    comp_albums: unscoped,
+  });
+  await metadata;
+
+  assert.deepEqual(state.compGroups[0].tracks.map(track => track.key), ["target-track"]);
+  assert.equal(state.compAlbums[0].tracks.length, 102);
+});
+
+test("late COMP response cannot leak tracks into a newly selected Artist", async () => {
+  let resolveFirst;
+  const firstReady = new Promise(resolve => { resolveFirst = resolve; });
+  const state = {
+    artist: {id: "artist-1", albums: []}, compAlbums: [], compGroups: [],
+    compCollapsed: new Set(), compReportVisible: false, compReportLoading: false,
+    compPreviewMode: false, compTrack: null, compTrackRequest: 0,
+    compStatusRequest: 0, compReportRequest: 0, candidates: [], upscalePreview: null,
+  };
+  const elements = {
+    compReportButton: {disabled: false, textContent: "COMP Report"},
+    fallbackReport: {querySelectorAll: () => [], getBoundingClientRect: () => ({top: 0})},
+    overviewContent: {scrollTop: 0, getBoundingClientRect: () => ({top: 0})},
+  };
+  const context = load(artistCompReportFunction, {
+    state,
+    api: async path => path.includes("artist-1") ? firstReady
+      : [{id: "comp-2", tracks: [{key: "artist-2-track"}]}],
+    $: id => elements[id],
+    renderHero() {}, renderCandidates() {}, renderReview() {}, setStatus() {},
+    probeArtistCompStatuses() {}, requestAnimationFrame() {},
+  });
+
+  const first = context.openArtistCompReport();
+  state.artist = {id: "artist-2", albums: []};
+  state.compReportLoading = false;
+  ++state.compReportRequest;
+  await context.openArtistCompReport();
+  resolveFirst([{id: "comp-1", tracks: [{key: "artist-1-track"}]}]);
+  await first;
+
+  assert.equal(state.compGroups[0].id, "comp-2");
+  assert.deepEqual(state.compGroups[0].tracks.map(track => track.key), ["artist-2-track"]);
 });
 
 test("empty and offline thumbnail hydration leave local results usable", async () => {

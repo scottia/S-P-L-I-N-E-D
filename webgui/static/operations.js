@@ -259,15 +259,16 @@ async function focusQueuedAlbum(decision) {
   const request = ++state.selectionRequest;
   const album = await api("/api/album?id=" + encodeURIComponent(albumId));
   if (request !== state.selectionRequest || state.queuedDecision !== decision) return;
-  let artist = state.artist;
+  let artist = state.artist, compAlbums = state.compAlbums;
   if (!albumInCurrentArtistContext(albumId) && artist?.id !== album.artist_id) {
-    artist = await api("/api/artist?id=" + encodeURIComponent(album.artist_id));
+    const overview = await api("/api/artist/overview?id=" + encodeURIComponent(album.artist_id));
     if (request !== state.selectionRequest || state.queuedDecision !== decision) return;
+    artist = overview.artist; compAlbums = overview.comp_albums || [];
   }
   const fallback = !String(album.album_mbid || "").trim();
   const tracks = fallback ? await api("/api/fallback/tracks?id=" + encodeURIComponent(albumId)) : [];
   if (request !== state.selectionRequest || state.queuedDecision !== decision) return;
-  state.artist = artist; state.artistMetadata = null; state.album = album;
+  state.artist = artist; state.artistMetadata = null; state.album = album; state.compAlbums = compAlbums;
   state.editorMode = fallback ? "fallback" : "album"; state.workspace = "find";
   state.fallbackTracks = tracks; state.fallbackTrack = null; state.upscalePreview = null;
   state.compGroups = []; state.compReportVisible = false; state.compTrack = null;
@@ -340,16 +341,27 @@ async function refreshCompletedAlbum(albumId) {
   const album = await api("/api/album?id=" + encodeURIComponent(albumId));
   if (state.album?.id === albumId) state.album = album;
   if (state.artist?.id === album.artist_id) {
-    state.artist = await api("/api/artist?id=" + encodeURIComponent(album.artist_id));
-    state.compGroups = await api("/api/artist/comp-albums?id=" + encodeURIComponent(album.artist_id));
+    const overview = await api("/api/artist/overview?id=" + encodeURIComponent(album.artist_id));
+    if (state.artist?.id === album.artist_id) {
+      state.artist = overview.artist;
+      state.compAlbums = overview.comp_albums || [];
+    }
   }
   renderLibrary(); renderHero(); renderPanes(); renderReview();
 }
 async function refreshQueuedAlbumAfterSave() {
   if (state.editorMode === "artist" && state.compReportVisible && state.artist) {
+    const artistId = state.artist.id;
     const selected = state.compTrack ? {albumId: state.compTrack.albumId, key: state.compTrack.key} : null;
-    state.compGroups = await api("/api/artist/comp-report?id=" + encodeURIComponent(state.artist.id));
-    if (selected) await selectArtistCompTrack(selected.albumId, selected.key);
+    const [compGroups, compAlbums] = await Promise.all([
+      api("/api/artist/comp-report?id=" + encodeURIComponent(artistId)),
+      api("/api/artist/comp-albums?id=" + encodeURIComponent(artistId)),
+    ]);
+    if (state.artist?.id !== artistId || !state.compReportVisible) return;
+    state.compGroups = compGroups; state.compAlbums = compAlbums;
+    const selectedStillVisible = selected && compGroups.some(group => group.id === selected.albumId
+      && group.tracks.some(track => track.key === selected.key));
+    if (selectedStillVisible) await selectArtistCompTrack(selected.albumId, selected.key);
     else { renderHero(); renderCandidates(); renderReview(); }
     return;
   }
@@ -422,7 +434,16 @@ async function renderJob(job) {
     body.append(node("p", "", job.state === "done" ? "Finished" : job.state));
     if(job.result) for(const [key,value] of Object.entries(job.result)) if(typeof value!=="object") body.append(node("p","",key.replaceAll("_"," ")+": "+value));
     if (job.state === "done") {
-      if (state.compReportVisible && state.artist) runAction(async () => { state.compGroups = await api("/api/artist/comp-report?id=" + encodeURIComponent(state.artist.id)); renderArtistCompReport(); probeArtistCompStatuses(); });
+      if (state.compReportVisible && state.artist) runAction(async () => {
+        const artistId = state.artist.id;
+        const [compGroups, compAlbums] = await Promise.all([
+          api("/api/artist/comp-report?id=" + encodeURIComponent(artistId)),
+          api("/api/artist/comp-albums?id=" + encodeURIComponent(artistId)),
+        ]);
+        if (state.artist?.id !== artistId || !state.compReportVisible) return;
+        state.compGroups = compGroups; state.compAlbums = compAlbums;
+        renderArtistCompReport(); probeArtistCompStatuses();
+      });
       actionButton("Next queued decision", async () => { const next = state.jobs.find(item => item.state === "waiting"); if (next) await reviewJob(next.id); else { state.reviewJobId = null; $("workspaceDialog").close(); } });
     }
     if (["paused", "failed"].includes(job.state)) actionButton("Resume", () => queueAction("retry", job.id));

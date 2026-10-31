@@ -61,7 +61,7 @@ const state = {
   upscalePreview: null, renderedPreview: {},
   fallbackTracks: [], fallbackTrack: null, fallbackPreviewOnly: false, fallbackRun: false, fallbackTrackRequest: 0,
   fallbackPreviewMode: false, fallbackReportExpanded: true, fallbackHelpExpanded: false,
-  compGroups: [], compReportVisible: false, compReportLoading: false, compPreviewMode: false, compCollapsed: new Set(),
+  compAlbums: [], compGroups: [], compReportVisible: false, compReportLoading: false, compPreviewMode: false, compCollapsed: new Set(),
   compTrack: null, compTrackRequest: 0, compStatusRequest: 0, compReportRequest: 0, compRunIndex: -1,
   compRepairEnabled: false, compBusy: false,
   activeSource: "", radioCurrent: true, radioArtist: false, radioBanner: false, themedPackaging: false,
@@ -70,7 +70,7 @@ const state = {
   fx: {artist: {}, banner: {}, album: {}, current: {}, package: {}}, fit: {artist: {zoom: 1, x: 0, y: 0}, banner: {zoom: 1, x: 0, y: 0}},
   theme: "dark", compare: new Set(), graphicalEnhancement: normalizeGraphicalEnhancement(),
   embedQueue: [], queuedDecision: null, reviewJobState: "", listRequest: 0, selectionRequest: 0, searchRequest: 0,
-  libraryLoading: false,
+  libraryLoading: false, artistMetadataRequest: 0,
 };
 function applyGraphicalEnhancement(value) {
   state.graphicalEnhancement = normalizeGraphicalEnhancement(value);
@@ -380,7 +380,7 @@ function albumRow(album, child) {
 
 function albumInCurrentArtistContext(albumId) {
   return !!state.artist?.albums?.some(album => album.id === albumId)
-    || state.compGroups.some(group => group.id === albumId);
+    || state.compAlbums.some(group => group.id === albumId);
 }
 
 function albumBannerKind(album, artist) {
@@ -539,9 +539,9 @@ function renderHeroContents() {
   $("artistArtEntry").setAttribute("aria-label", "Open Artist Art Enhancements");
   $("artistArtEntry").classList.toggle("active", !!artist && state.editorMode === "artist");
   const grid = $("albumGrid"); clear(grid);
-  const compById = new Map(state.compGroups.map(group => [group.id, group]));
+  const compById = new Map(state.compAlbums.map(group => [group.id, group]));
   const compIds = new Set(compById.keys());
-  const projected = state.compGroups.filter(group => !(artist?.albums || []).some(album => album.id === group.id)).map(group => ({
+  const projected = state.compAlbums.filter(group => !(artist?.albums || []).some(album => album.id === group.id)).map(group => ({
     id: group.id, name: group.name, year: group.year, cover: group.cover, cover_found: !!group.cover,
     album_mbid: "", compilation: true, tracks: group.tracks.length,
     embedded: group.tracks.filter(track => track.completed).length,
@@ -717,7 +717,7 @@ function renderArtistCompReport() {
 function closeArtistCompReport() {
   if (state.compBusy) return;
   ++state.compReportRequest; ++state.compStatusRequest; ++state.compTrackRequest;
-  state.compReportLoading = false; state.compReportVisible = false; state.compTrack = null;
+  state.compReportLoading = false; state.compReportVisible = false; state.compGroups = []; state.compTrack = null;
   state.upscalePreview = null; state.candidates = state.artist?.local_candidates || [];
   $("compReportButton").textContent = "COMP Report"; $("compReportButton").disabled = false;
   renderHero(); renderCandidates(); renderReview();
@@ -729,7 +729,7 @@ async function openArtistCompReport(albumId = "") {
   if (state.compReportLoading) return;
   const request = ++state.compReportRequest, artistId = state.artist.id;
   ++state.compStatusRequest; ++state.compTrackRequest;
-  state.compReportLoading = true; state.compTrack = null;
+  state.compReportLoading = true; state.compGroups = []; state.compTrack = null;
   $("compReportButton").disabled = true;
   renderHero();
   setStatus("Loading COMP report…", "busy");
@@ -1156,17 +1156,17 @@ async function hydrateArtistThumbnails(request) {
 }
 async function chooseArtist(id, select = true) {
   const request = ++state.selectionRequest;
-  ++state.searchRequest;
+  ++state.searchRequest; ++state.artistMetadataRequest;
   clearFocusCandidates(); resetFocusAdjustments();
-  state.artist = null; state.artistMetadata = null; state.album = null;
+  state.artist = null; state.artistMetadata = null; state.album = null; state.compAlbums = [];
   state.editorMode = "artist"; state.workspace = "find";
   renderAll();
   setStatus("Loading artist and existing artwork…", "busy");
   try {
     const overview = await api("/api/artist/overview?id=" + encodeURIComponent(id));
     if (request !== state.selectionRequest) return;
-    const artist = overview.artist, compGroups = overview.comp_albums;
-    state.artist = artist; state.artistMetadata = null; state.compGroups = compGroups;
+    const artist = overview.artist, compAlbums = overview.comp_albums;
+    state.artist = artist; state.artistMetadata = null; state.compAlbums = compAlbums; state.compGroups = [];
     const listedArtist = state.artists.find(item => item.id === artist.id);
     if (listedArtist && artist.portrait) listedArtist.portrait = artist.portrait;
     state.album = null; state.editorMode = "artist"; state.workspace = "find";
@@ -1191,9 +1191,11 @@ async function chooseAlbum(id) {
     // currently displayed artist projection even when the physical album is
     // owned by another catalog artist.  Keep that artist context on click.
     if (!albumInCurrentArtistContext(id) && state.artist?.id !== album.artist_id) {
-      const artist = await api("/api/artist?id=" + encodeURIComponent(album.artist_id));
+      const overview = await api("/api/artist/overview?id=" + encodeURIComponent(album.artist_id));
       if (request !== state.selectionRequest) return;
-      state.artist = artist; state.artistMetadata = null; loadArtistMetadata(artist.id);
+      state.artist = overview.artist; state.artistMetadata = null;
+      state.compAlbums = overview.comp_albums || [];
+      loadArtistMetadata(overview.artist.id);
     }
     const fallback = !String(album.album_mbid || "").trim();
     const tracks = fallback ? await api("/api/fallback/tracks?id=" + encodeURIComponent(id)) : [];
@@ -1221,15 +1223,16 @@ async function selectFallbackTrack(key, previewOnly) {
   } catch (error) { if (request === state.fallbackTrackRequest) setStatus(error.message, "error"); }
 }
 async function loadArtistMetadata(id, refresh = false) {
+  const request = ++state.artistMetadataRequest;
   try {
     const metadata = await api("/api/artist/metadata?id=" + encodeURIComponent(id) + (refresh ? "&refresh=true" : ""));
-    if (state.artist?.id !== id) return;
+    if (request !== state.artistMetadataRequest || state.artist?.id !== id) return;
     if (metadata.artist?.id === id) {
       state.artist = metadata.artist;
       const listed = (state.artists || []).find(item => item.id === id);
       if (listed && metadata.artist.portrait) listed.portrait = metadata.artist.portrait;
     }
-    if (Array.isArray(metadata.comp_albums)) state.compGroups = metadata.comp_albums;
+    if (Array.isArray(metadata.comp_albums)) state.compAlbums = metadata.comp_albums;
     state.artistMetadata = metadata; renderLibrary(); renderHero(); renderSources();
   } catch { /* The labeled sample layout remains available when Navidrome is offline. */ }
 }
@@ -1314,9 +1317,9 @@ for (const [kind, id] of [["media", "mediaFilterLock"], ["candidate", "candidate
 for (const [buttonId, mode] of [["artistsTab", "artists"], ["albumsTab", "albums"], ["fallbackTab", "fallback"]]) {
   $(buttonId).addEventListener("click", () => {
     if (state.libraryMode === mode) return;
-    ++state.selectionRequest; ++state.searchRequest;
+    ++state.selectionRequest; ++state.searchRequest; ++state.artistMetadataRequest;
     state.libraryLoading = true;
-    state.libraryMode = mode; state.artist = null; state.artistMetadata = null; state.album = null; state.mediaSelected.clear();
+    state.libraryMode = mode; state.artist = null; state.artistMetadata = null; state.album = null; state.compAlbums = []; state.mediaSelected.clear();
     state.editorMode = mode === "fallback" ? "fallback" : "artist"; state.workspace = "find";
     clearFocusCandidates(); resetFocusAdjustments(); renderAll();
     loadLibrary(mode === "artists" ? $("artistSearch").value : $("albumSearch").value);
