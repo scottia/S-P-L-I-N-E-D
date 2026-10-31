@@ -1,32 +1,131 @@
 name: Validate supported runtimes
+
 on:
   pull_request:
     branches: [dev, main]
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+
 permissions:
   contents: read
+
+concurrency:
+  group: validation-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: true
+
 jobs:
   scope:
-    name: Select relevant validation
+    name: Validation / scope selection
     runs-on: ubuntu-latest
     outputs:
-      webgui: ${{ steps.scope.outputs.webgui }}
-      native: ${{ steps.scope.outputs.native }}
-      native_matrix: ${{ steps.scope.outputs.native_matrix }}
+      infrastructure: ${{ steps.scope.outputs.infrastructure }}
+      root_native: ${{ steps.scope.outputs.root_native }}
+      windows: ${{ steps.scope.outputs.windows }}
+      ubuntu_webgui: ${{ steps.scope.outputs.ubuntu_webgui }}
+      release_contract: ${{ steps.scope.outputs.release_contract }}
+      documentation: ${{ steps.scope.outputs.documentation }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Check out target-base validation code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 0
-      - name: Check validation selection rules
-        run: python3 -m unittest discover -s .github/scripts -p test_validation_scope.py -v
-      - name: Select checks for changed files
+          persist-credentials: false
+          path: validation-base
+      - name: Check out the proposed revision for data and application tests
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: proposal-data
+      - name: Select consumers independently of authorization
         id: scope
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: python3 .github/scripts/validation_scope.py "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"
-  webgui:
+        run: |
+          set -euo pipefail
+          test "$(git -C validation-base rev-parse HEAD)" = "$BASE_SHA"
+          test "$(git -C proposal-data rev-parse HEAD)" = "$HEAD_SHA"
+          git -C proposal-data fetch --no-tags ../validation-base "$BASE_SHA"
+          test -f validation-base/.github/boundaries/check_boundary.py
+          test -f validation-base/.github/scripts/validation_scope.py
+          set +e
+          python3 validation-base/.github/boundaries/check_boundary.py \
+            --repository proposal-data \
+            --base "$BASE_SHA" \
+            --head "$HEAD_SHA" \
+            --json > "$RUNNER_TEMP/boundary.json"
+          checker_code=$?
+          set -e
+          if [ "$checker_code" -ne 0 ] && [ "$checker_code" -ne 2 ]; then
+            exit "$checker_code"
+          fi
+          python3 validation-base/.github/scripts/validation_scope.py \
+            "$RUNNER_TEMP/boundary.json" \
+            --github-output "$GITHUB_OUTPUT"
+
+  infrastructure:
+    name: Validation / safeguard infrastructure
     needs: scope
-    if: needs.scope.outputs.webgui == 'true'
+    if: needs.scope.outputs.infrastructure == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Test proposed safeguard implementation without credentials
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s .github/boundaries -p 'test_*.py' -v
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
+
+  root_native:
+    name: Validation / root-native Rust
+    needs: scope
+    if: needs.scope.outputs.root_native == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile minimal --no-self-update
+      - name: Test root-native implementation
+        run: cargo +stable test --locked
+
+  windows:
+    name: Validation / Windows native
+    needs: scope
+    if: needs.scope.outputs.windows == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Install pinned Windows Rust
+        run: rustup toolchain install 1.99.0 --profile minimal --no-self-update
+      - name: Install Windows Rust quality components
+        run: rustup component add rustfmt clippy --toolchain 1.99.0
+      - name: Check Windows Rust formatting
+        run: cargo +1.99.0 fmt --manifest-path windows/Cargo.toml -- --check
+      - name: Check Windows Rust lints
+        run: cargo +1.99.0 clippy --locked --manifest-path windows/Cargo.toml --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+      - name: Test Windows implementation
+        run: cargo +1.99.0 test --manifest-path windows/Cargo.toml --lib --bin splined --locked --target x86_64-pc-windows-msvc
+      - name: Test root Windows contracts
+        run: cargo +1.99.0 test --locked --test windows_executable_architecture --test public_config_examples
+
+  ubuntu_webgui:
+    name: Validation / Ubuntu WebGUI
+    needs: scope
+    if: needs.scope.outputs.ubuntu_webgui == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -44,6 +143,10 @@ jobs:
       PYTHONPATH: .:webgui/backend
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
@@ -64,29 +167,102 @@ jobs:
             sleep 1
           done
           python -c "import json; value=json.load(open('/tmp/splined-status.json')); assert value['database']=='PostgreSQL' and value['auth_required'] and value['database_ready']"
-      - if: always()
+      - name: Report disposable container logs
+        if: always()
         run: docker logs splined-webgui-test || true
-  native:
-    name: native (${{ matrix.os }})
+
+  release_contract:
+    name: Validation / release contracts
     needs: scope
-    if: needs.scope.outputs.native == 'true'
-    strategy:
-      matrix: ${{ fromJSON(needs.scope.outputs.native_matrix) }}
-    runs-on: ${{ matrix.os }}
+    if: needs.scope.outputs.release_contract == 'true'
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - name: Install Rust
-        run: rustup toolchain install ${{ matrix.toolchain }} --profile minimal --no-self-update
-      - name: Install Windows Rust quality components
-        if: runner.os == 'Windows'
-        run: rustup component add rustfmt clippy --toolchain ${{ matrix.toolchain }}
-      - name: Check Windows Rust formatting
-        if: runner.os == 'Windows'
-        run: cargo +${{ matrix.toolchain }} fmt --manifest-path windows/Cargo.toml -- --check
-      - name: Check Windows Rust lints
-        if: runner.os == 'Windows'
-        run: cargo +${{ matrix.toolchain }} clippy --locked --manifest-path windows/Cargo.toml --all-targets --target x86_64-pc-windows-msvc -- -D warnings
-      - if: runner.os == 'Linux'
-        run: cargo +${{ matrix.toolchain }} test --locked
-      - if: runner.os == 'Windows'
-        run: cargo +${{ matrix.toolchain }} test --manifest-path windows/Cargo.toml --lib --bin splined --locked --target x86_64-pc-windows-msvc
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile minimal --no-self-update
+      - name: Test release, architecture, and configuration contracts
+        run: >-
+          cargo +stable test --locked
+          --test release_automation
+          --test windows_executable_architecture
+          --test public_config_examples
+
+  documentation:
+    name: Validation / documentation contract
+    needs: scope
+    if: needs.scope.outputs.documentation == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out target base for local diff data
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: validation-base
+      - name: Check out proposed documentation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: proposal-data
+      - name: Check authorized documentation diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git -C proposal-data fetch --no-tags ../validation-base "$BASE_SHA"
+          git -C proposal-data diff --check "$BASE_SHA...$HEAD_SHA"
+
+  signed_identity:
+    name: Validation / signed workflow identity
+    if: ${{ always() }}
+    needs: [scope, infrastructure, root_native, windows, ubuntu_webgui, release_contract, documentation]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - name: Request GitHub-signed workflow identity
+        env:
+          OIDC_AUDIENCE: splined-ci-validation-evidence-v1
+          TOKEN_PATH: ${{ runner.temp }}/splined-validation-identity.jwt
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from urllib.parse import quote
+          from urllib.request import Request, urlopen
+
+          request_url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+          separator = "&" if "?" in request_url else "?"
+          url = request_url + separator + "audience=" + quote(
+              os.environ["OIDC_AUDIENCE"], safe=""
+          )
+          request = Request(
+              url,
+              headers={
+                  "Authorization": "Bearer "
+                  + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]
+              },
+          )
+          with urlopen(request, timeout=30) as response:
+              payload = json.load(response)
+          token = payload.get("value")
+          if not isinstance(token, str) or token.count(".") != 2 or len(token) > 16384:
+              raise SystemExit("GitHub OIDC response did not contain one bounded JWT")
+          Path(os.environ["TOKEN_PATH"]).write_text(token, encoding="ascii")
+          PY
+      - name: Store signed identity as data for the trusted gate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: splined-validation-identity-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/splined-validation-identity.jwt
+          if-no-files-found: error
+          retention-days: 1

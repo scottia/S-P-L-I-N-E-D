@@ -1,0 +1,122 @@
+name: Trusted boundary decision
+
+# Bootstrap: owner-review and land the exact path policy first, then owner-review
+# this enforcement infrastructure separately on the default branch. This
+# workflow intentionally cannot approve its own introduction or modification.
+
+on:
+  pull_request_target:
+    branches: [dev, main]
+    types: [opened, synchronize, reopened, edited, ready_for_review, labeled, unlabeled]
+  workflow_run:
+    workflows: [Validate supported runtimes]
+    types: [requested, in_progress, completed]
+
+permissions: {}
+
+concurrency:
+  group: trusted-boundary-head-${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    name: Safeguard / trusted boundary evaluation
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    outputs:
+      report: ${{ steps.evaluate.outputs.report }}
+      decision_json: ${{ steps.evaluate.outputs.decision_json }}
+      state: ${{ steps.evaluate.outputs.state }}
+      head_sha: ${{ steps.evaluate.outputs.head_sha }}
+    steps:
+      - name: Check out the trusted default-branch infrastructure revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: trusted-control
+      - name: Resolve the event using trusted code
+        id: event
+        env:
+          EVENT_PATH: ${{ github.event_path }}
+        run: |
+          set -euo pipefail
+          test "$(git -C trusted-control rev-parse HEAD)" = "${{ github.workflow_sha }}"
+          test -f trusted-control/.github/scripts/trusted_boundary_adapter.py
+          python3 trusted-control/.github/scripts/trusted_boundary_adapter.py \
+            --phase event \
+            --event "$EVENT_PATH" \
+            --github-output "$GITHUB_OUTPUT"
+      - name: Check out the current proposed revision as data only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ github.repository }}
+          ref: refs/pull/${{ steps.event.outputs.pr_number }}/head
+          fetch-depth: 0
+          persist-credentials: false
+          path: proposal-data
+      - name: Evaluate live authorization and validation evidence
+        id: evaluate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_PATH: ${{ github.event_path }}
+          CONTROL_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          python3 trusted-control/.github/scripts/trusted_boundary_adapter.py \
+            --phase evaluate \
+            --event "$EVENT_PATH" \
+            --repository "${{ github.repository }}" \
+            --repository-id "${{ github.repository_id }}" \
+            --git-repository proposal-data \
+            --trusted-root trusted-control \
+            --trusted-sha "${{ github.workflow_sha }}" \
+            --workflow-ref "${{ github.workflow_ref }}" \
+            --control-run-id "${{ github.run_id }}" \
+            --control-run-attempt "${{ github.run_attempt }}" \
+            --control-url "$CONTROL_URL" \
+            --output "$RUNNER_TEMP/decision.json" \
+            --github-output "$GITHUB_OUTPUT"
+
+  report:
+    name: Safeguard / trusted boundary decision
+    if: ${{ always() }}
+    needs: evaluate
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - name: Check out the same trusted infrastructure revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          path: trusted-control
+      - name: Recheck live state and report on the current PR test-merge commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_PATH: ${{ github.event_path }}
+          DECISION_JSON: ${{ needs.evaluate.outputs.decision_json }}
+        run: |
+          set -euo pipefail
+          test "$(git -C trusted-control rev-parse HEAD)" = "${{ github.workflow_sha }}"
+          test -f trusted-control/.github/scripts/trusted_boundary_adapter.py
+          python3 trusted-control/.github/scripts/trusted_boundary_adapter.py \
+            --phase report \
+            --event "$EVENT_PATH" \
+            --repository "${{ github.repository }}" \
+            --repository-id "${{ github.repository_id }}" \
+            --trusted-root trusted-control \
+            --trusted-sha "${{ github.workflow_sha }}" \
+            --workflow-ref "${{ github.workflow_ref }}" \
+            --control-run-id "${{ github.run_id }}" \
+            --control-run-attempt "${{ github.run_attempt }}" \
+            --control-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}"

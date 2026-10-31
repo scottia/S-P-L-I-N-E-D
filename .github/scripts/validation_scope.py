@@ -1,55 +1,90 @@
-"""Select runtime validation from the files changed by a pull request."""
+"""Select validation lanes from an authorized boundary-check result."""
 
+from __future__ import annotations
+
+import argparse
 import json
-import re
-import subprocess
+from pathlib import Path
 import sys
+from typing import Mapping
 
 
-def select_checks(paths):
-    checks = {"webgui": False, "linux": False, "windows": False}
-    for path in paths:
-        if (
-            path == "__all__"
-            or path in {".gitattributes", "config.example.toml", "rust-toolchain", "rust-toolchain.toml"}
-            or path.startswith((".github/workflows/", ".github/scripts/", ".cargo/", "schema/", "fixtures/", "assets/"))
-        ):
-            return dict.fromkeys(checks, True)
-        if path.endswith(".md"):
-            continue
-        if path.startswith(("webgui/", "docker/")) or path == ".dockerignore":
-            checks["webgui"] = True
-        if path.startswith("windows/"):
-            checks["windows"] = True
-        if path.startswith(("src/", "tests/")) or path in {"Cargo.toml", "Cargo.lock", "build.rs", "deny.toml"}:
-            checks["linux"] = True
-    return checks
+LANES = (
+    "infrastructure",
+    "root_native",
+    "windows",
+    "ubuntu_webgui",
+    "release_contract",
+    "documentation",
+)
 
 
-def main():
+def is_validation_infrastructure(path: str) -> bool:
+    return (
+        path in {
+            ".github/workflows/boundary.yml",
+            ".github/workflows/validate.yml",
+        }
+        or path.startswith(".github/scripts/")
+        or path.startswith(".github/boundaries/")
+    )
+
+
+def select_lanes(boundary: Mapping[str, object]) -> dict[str, bool]:
+    """Map classified policy validations to consumers, independent of authorization."""
+
+    categories = {str(value) for value in boundary.get("categories", [])}
+    validations = {str(value) for value in boundary.get("validations", [])}
+    classified = boundary.get("classified_paths", {})
+    if not isinstance(classified, Mapping):
+        raise ValueError("Boundary result is missing classified paths")
+
+    paths = {str(path) for path in classified}
+    selected = dict.fromkeys(LANES, False)
+    selected["root_native"] = "root-native-other" in validations
+    selected["windows"] = "windows" in validations
+    selected["ubuntu_webgui"] = "ubuntu-webgui" in validations
+    selected["release_contract"] = "release-version" in categories
+    selected["documentation"] = "terminology-docs" in categories
+    selected["infrastructure"] = (
+        "boundary-policy" in categories
+        or any(is_validation_infrastructure(path) for path in paths)
+    )
+    return selected
+
+
+def github_outputs(boundary: Mapping[str, object]) -> list[str]:
+    selection = select_lanes(boundary)
+    compact_boundary = json.dumps(boundary, sort_keys=True, separators=(",", ":"))
+    compact_selection = json.dumps(selection, sort_keys=True, separators=(",", ":"))
+    lines = [
+        f"boundary_json={compact_boundary}",
+        f"selection_json={compact_selection}",
+    ]
+    lines.extend(f"{lane}={str(selection[lane]).lower()}" for lane in LANES)
+    return lines
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("boundary_json", type=Path)
+    parser.add_argument("--github-output", type=Path)
+    args = parser.parse_args(argv)
+
     try:
-        base, head = sys.argv[1:]
-        if not all(re.fullmatch(r"[0-9a-fA-F]{40}", ref) for ref in (base, head)):
-            raise ValueError("Expected commit SHAs")
-        changed = subprocess.check_output(
-            ["git", "diff", "--no-renames", "--name-only", "-z", f"{base}...{head}"],
-            text=True,
-            encoding="utf-8",
-        ).split("\0")
-        checks = select_checks(changed)
-    except (ValueError, subprocess.CalledProcessError, UnicodeError):
-        print("::warning::Changed files unavailable; running all runtime checks", file=sys.stderr)
-        checks = select_checks(["__all__"])
-    matrix = []
-    if checks["linux"]:
-        matrix.append({"os": "ubuntu-latest", "toolchain": "stable"})
-    if checks["windows"]:
-        matrix.append({"os": "windows-latest", "toolchain": "1.99.0"})
-    print(f"webgui={str(checks['webgui']).lower()}")
-    print(f"native={str(bool(matrix)).lower()}")
-    # Keep the matrix valid even when the entire native job is skipped.
-    print("native_matrix=" + json.dumps({"include": matrix or [{"os": "ubuntu-latest", "toolchain": "stable"}]}))
+        boundary = json.loads(args.boundary_json.read_text(encoding="utf-8"))
+        lines = github_outputs(boundary)
+        text = "\n".join(lines) + "\n"
+        if args.github_output is None:
+            sys.stdout.write(text)
+        else:
+            with args.github_output.open("a", encoding="utf-8", newline="\n") as output:
+                output.write(text)
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        print(f"validation selection failed: {error}", file=sys.stderr)
+        return 2
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
