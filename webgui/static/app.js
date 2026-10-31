@@ -684,7 +684,7 @@ function renderArtistCompReport() {
   repair.title = !state.compRepairEnabled ? "COMP repairs are disabled in this test service" : purple ? "Repair readable purple thumbnails across this Artist's COMP albums" : "No purple thumbnails identified";
   repair.addEventListener("click", repairArtistComp);
   const launch = node("button", "fallback-launch", "LAUNCH COMP"); launch.type = "button";
-  launch.disabled = !blue || state.compPreviewMode || state.compBusy; launch.addEventListener("click", launchArtistComp);
+  launch.disabled = !blue || state.compPreviewMode || state.compBusy; launch.addEventListener("click", () => runAction(launchArtistComp));
   const close = node("button", "fallback-close", "CLOSE REPORT"); close.type = "button";
   close.addEventListener("click", closeArtistCompReport);
   toolbar.append(preview, heading, repair, launch, close); report.append(toolbar);
@@ -841,21 +841,63 @@ function renderSources() {
     button.addEventListener("click", () => { state.activeSource = state.activeSource === key ? "" : key; renderSources(); renderCandidates(); }); strip.append(button);
   }
 }
+function renderMusicBrainzResults(grid, decision, query) {
+  const options = decision.options || [];
+  const visible = options.map((option, index) => ({option, index})).filter(({option}) => !query
+    || Object.values(option).join(" ").toLowerCase().includes(query));
+  $("candidateCount").textContent = options.length + (options.length === 1 ? " MusicBrainz result" : " MusicBrainz results");
+  if (!visible.length) {
+    grid.append(node("p", "empty-copy", options.length ? "No MusicBrainz releases match the filter."
+      : "MusicBrainz returned no selectable releases for this track."));
+    return;
+  }
+  for (const {option, index} of visible) {
+    const artist = option.recording_artist || option.artist || "Unknown artist";
+    const track = option.track || decision.context?.track_title || "Unknown recording";
+    const release = option.title || "Unknown release";
+    const card = node("button", "musicbrainz-result-card" + (option.selection_state ? " " + option.selection_state : ""));
+    card.type = "button";
+    card.setAttribute("aria-label", `Choose MusicBrainz release ${index + 1}: ${release}`);
+    card.append(node("span", "musicbrainz-result-number", String(index + 1)),
+      node("strong", "musicbrainz-result-track", artist + " — " + track),
+      node("span", "musicbrainz-result-release", release),
+      node("small", "", [option.release_artist && option.release_artist !== artist ? option.release_artist : "", option.release_class,
+        option.date, option.country].filter(Boolean).join(" · ") || "Release details unavailable"),
+      node("small", "musicbrainz-result-authority", [option.score ? option.score + "% match" : "", option.resolution,
+        option.selection_state === "current" ? "current release" : option.selection_state === "visited" ? "reviewed" : ""].filter(Boolean).join(" · ")));
+    card.addEventListener("click", () => runAction(() => submitQueuedDecision(index + 1)));
+    grid.append(card);
+  }
+}
 function renderCandidates() {
   const skipping = state.queuedDecision?.jobKind === "scan";
-  $("searchButton").textContent = skipping ? "SKIP ALBUM" : "LAUNCH";
+  const musicBrainzResults = state.queuedDecision?.kind === "musicbrainz-results";
+  const artistCompLaunch = !state.queuedDecision && state.editorMode === "artist" && state.compReportVisible;
+  $("searchButton").textContent = skipping ? "SKIP ALBUM" : artistCompLaunch ? "LAUNCH COMP" : "LAUNCH";
   $("searchButton").disabled = skipping ? false
+    : state.queuedDecision ? true
+    : artistCompLaunch ? state.compPreviewMode || state.compBusy || !state.compGroups.some(group => group.tracks.some(track => track.status === "blue"))
     : state.editorMode === "fallback" ? !state.fallbackTracks.some(item => !item.completed) : !state.artist && !state.album;
   const grid = $("candidateGrid"); clear(grid);
   const query = $("candidateSearch").value.trim().toLowerCase();
+  if (musicBrainzResults) {
+    $("compareButton").disabled = true;
+    $("candidateHint").textContent = [state.queuedDecision.context?.track_artist, state.queuedDecision.context?.track_title].filter(Boolean).join(" — ")
+      + " · choose a release; artwork candidates load next";
+    renderCandidateTypeChips();
+    renderMusicBrainzResults(grid, state.queuedDecision, query);
+    return;
+  }
   const visible = state.candidates.filter(candidate => candidateVisible(candidate) && (!query || ((candidate.name || "") + " " + (candidate.source || "")).toLowerCase().includes(query)));
   $("candidateCount").textContent = state.candidates.length + (state.candidates.length === 1 ? " candidate" : " candidates");
   $("compareButton").disabled = state.compare.size < 2;
   $("candidateHint").textContent = state.queuedDecision ? "Select a candidate to preview; save from Selected Artwork"
+    : artistCompLaunch ? "LAUNCH COMP reviews only this Artist's blue compilation tracks"
     : state.editorMode === "fallback" ? "LAUNCH COMP to review track artwork in queued work"
     : state.editorMode === "album" ? "Select a cover candidate to preview" : "Blue: artist · pink: banner · wheel to browse";
   renderCandidateTypeChips();
-  if (!visible.length) { grid.append(node("p", "empty-copy", state.editorMode === "fallback" ? "Select a COMP track above to inspect its embedded artwork. Use LAUNCH COMP to review track artwork in queued work."
+  if (!visible.length) { grid.append(node("p", "empty-copy", artistCompLaunch ? "Use LAUNCH COMP to review this Artist's matching compilation tracks."
+    : state.editorMode === "fallback" ? "Select a COMP track above to inspect its embedded artwork. Use LAUNCH COMP to review track artwork in queued work."
     : state.candidates.length ? "No candidates match the filter." : "Press LAUNCH to search artist art, or select an album to inspect folder art.")); return; }
   for (const candidate of visible) {
     const kind = candidateKind(candidate);
@@ -1328,8 +1370,7 @@ for (const [buttonId, mode] of [["artistsTab", "artists"], ["albumsTab", "albums
 for (const [buttonId, name] of [["findTab", "find"], ["enhanceTab", "enhance"], ["embedTab", "embed"]]) {
   $(buttonId).addEventListener("click", () => { state.workspace = name; renderWorkspace(); if (name === "embed") renderQueue(); setStatus(name === "embed" ? "Persistent embedding queue" : name === "enhance" ? "Artwork enhancements" : "Find & Match Artwork ready"); });
 }
-$("searchButton").addEventListener("click", () => state.queuedDecision?.jobKind === "scan" ? runAction(skipQueuedAlbum) : state.editorMode === "fallback" ? runAction(launchFallback)
-  : state.editorMode === "artist" ? runAction(state.workspace === "enhance" ? searchArtist : launchArtist) : runAction(searchAlbum));
+$("searchButton").addEventListener("click", () => runAction(launchCandidateWork));
 $("artistArtEntry").addEventListener("click", () => {
   if (state.editorMode === "fallback") {
     const key = state.fallbackTrack?.key || state.fallbackTracks[0]?.key;

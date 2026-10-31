@@ -112,7 +112,7 @@ async function writeArtwork() {
     return;
   }
   if (state.editorMode === "artist" && state.compReportVisible) {
-    if (state.compTrack) await enqueueComp(state.compTrack.albumId, [state.compTrack.key]);
+    if (state.compTrack) await enqueueComp(state.compTrack.albumId, [state.compTrack.key], state.artist?.id || "");
     return;
   }
   if (state.editorMode === "fallback") {
@@ -167,11 +167,13 @@ renderReview = function () {
   $("bypassButton").disabled = !state.album || state.editorMode !== "album";
   $("writeNotice").textContent = writable ? "Live Write · WRITE saves artwork. EMBED Batch saves the cover and stages track embedding. COMP work asks for track artwork in queued review." : "Read mode · searching and previewing are enabled. Enable Live Write in Settings to save artwork or track tags.";
   if (state.queuedDecision) {
+    const musicBrainzResults = state.queuedDecision.kind === "musicbrainz-results";
     $("upscaleButton").disabled = true;
-    $("writeButton").textContent = state.queuedDecision.jobKind === "comp" ? "EMBED Thumb" : "WRITE Cover";
-    $("writeButton").disabled = !state.queuedDecision.selected;
+    $("writeButton").textContent = musicBrainzResults ? "CHOOSE RESULT" : state.queuedDecision.jobKind === "comp" ? "EMBED Thumb" : "WRITE Cover";
+    $("writeButton").disabled = musicBrainzResults || !state.queuedDecision.selected;
     $("embedBatchButton").disabled = true;
-    $("writeNotice").textContent = writable ? "Live Write · select one candidate, then save it here." : "Read-only queued review · choices are evaluated but files are not saved.";
+    $("writeNotice").textContent = musicBrainzResults ? "Choose a MusicBrainz release in Candidate Artwork; its artwork candidates load next."
+      : writable ? "Live Write · select one candidate, then save it here." : "Read-only queued review · choices are evaluated but files are not saved.";
   }
 };
 async function searchAlbum(releaseId = null) {
@@ -215,6 +217,13 @@ async function launchArtistComp() {
   }
   if (first) await reviewJob(first); else setStatus("No blue COMP tracks need artwork");
 };
+async function launchCandidateWork() {
+  if (state.queuedDecision?.jobKind === "scan") return skipQueuedAlbum();
+  if (state.editorMode === "artist" && state.compReportVisible) return launchArtistComp();
+  if (state.editorMode === "fallback") return launchFallback();
+  if (state.editorMode === "artist") return state.workspace === "enhance" ? searchArtist() : launchArtist();
+  return searchAlbum();
+}
 async function stageAlbum() {
   const result = await post("/api/jobs", {kind: "embed-album", payload: coverPayload()});
   await pollJobs();
@@ -320,8 +329,12 @@ async function submitQueuedDecision(value) {
     action: "decision", id: decision.jobId, value: String(value), nonce: decision.nonce,
   });
   const label = decision.selected?.queueNumber || value;
+  const musicBrainz = decision.kind === "musicbrainz-results";
+  const track = [decision.context?.track_artist, decision.context?.track_title].filter(Boolean).join(" — ");
   clearQueuedDecision();
-  setStatus("Queued choice " + label + " submitted · waiting for the next decision", "busy");
+  setStatus(musicBrainz
+    ? "MusicBrainz release selected" + (track ? " · " + track : "") + " · loading artwork candidates"
+    : "Queued choice " + label + " submitted · waiting for the next decision", "busy");
   await pollJobs();
 }
 async function presentQueuedCandidates(job, prompt, options) {
@@ -342,6 +355,26 @@ async function presentQueuedCandidates(job, prompt, options) {
   if (!state.queuedDecision || state.queuedDecision.jobId !== job.id) return;
   renderWorkspace(); renderSources(); renderCandidates(); renderReview();
   setStatus("Queued artwork review · select a candidate, then save from Selected Artwork", "busy");
+}
+async function presentQueuedMusicBrainz(job, prompt, options) {
+  if ($("workspaceDialog").open) $("workspaceDialog").close();
+  const previousCandidates = state.queuedDecision?.previousCandidates || state.candidates;
+  const authority = job.progress?.current?.fallback_authority || {};
+  const context = {...(prompt.context || {})};
+  context.track_title ||= authority.track || "";
+  context.track_artist ||= authority.artist || "";
+  state.queuedDecision = {
+    jobId: job.id, jobKind: job.kind, nonce: prompt.nonce, kind: "musicbrainz-results", context,
+    payload: job.payload || {}, previousCandidates, selected: null, options: [...options],
+  };
+  state.workspace = "find";
+  state.candidates = [];
+  state.activeSource = ""; state.compare.clear(); resetCandidateFilters();
+  await focusQueuedAlbum(state.queuedDecision);
+  if (!state.queuedDecision || state.queuedDecision.jobId !== job.id) return;
+  renderWorkspace(); renderSources(); renderCandidates(); renderReview();
+  const track = [context.track_artist, context.track_title].filter(Boolean).join(" — ");
+  setStatus("MusicBrainz results" + (track ? " · " + track : "") + " · choose a release", "busy");
 }
 function renderQueue() {
   const host = $("embedQueue"); clear(host);
@@ -483,7 +516,12 @@ async function renderJob(job) {
   const context = prompt?.context || {}, kind = context.kind;
   const contextualOptions = prompt ? context.options || [] : [];
   const currentOptions = prompt ? job.progress.current?.candidates?.items || [] : [];
-  const options = currentOptions.some(option => option.image) ? currentOptions : contextualOptions;
+  const options = kind === "musicbrainz-results" ? contextualOptions
+    : currentOptions.some(option => option.image) ? currentOptions : contextualOptions;
+  if (job.state === "waiting" && prompt && kind === "musicbrainz-results" && options.length) {
+    await presentQueuedMusicBrainz(job, prompt, options);
+    return;
+  }
   if (job.state === "waiting" && prompt && options.some(option => option.image)) {
     await presentQueuedCandidates(job, prompt, options);
     return;
@@ -491,6 +529,12 @@ async function renderJob(job) {
   const body = dialog("Queued work · " + job.kind);
   body.append(node("p", "", job.payload.name || job.progress.message || job.state));
   if (job.error) body.append(node("p", "operation-error", job.error));
+  const diagnostics = job.progress.current?.diagnostics?.items || [];
+  for (const item of diagnostics) {
+    const source = Array.isArray(item) ? item[0] : item?.source || "lookup";
+    const message = Array.isArray(item) ? item[1] : item?.message || String(item || "");
+    if (message) body.append(node("p", "operation-error", source + " · " + message));
+  }
   if (job.state !== "waiting" || !prompt) {
     body.append(node("p", "", job.state === "done" ? "Finished" : job.state));
     if(job.result) for(const [key,value] of Object.entries(job.result)) if(typeof value!=="object") body.append(node("p","",key.replaceAll("_"," ")+": "+value));
@@ -505,8 +549,19 @@ async function renderJob(job) {
     return;
   }
   body.append(node("p", "", [context.artist, context.album].filter(Boolean).join(" — ") || "Choose how to continue"));
+  if (kind === "musicbrainz-results" && !options.length) {
+    const track = [context.track_artist, context.track_title].filter(Boolean).join(" — ");
+    const message = "MusicBrainz returned no selectable releases" + (track ? " for " + track : "") + ".";
+    body.append(node("p", "operation-error", message));
+    setStatus(message, "error");
+  } else if (["fallback-picker", "normal-picker", "local-comparison"].includes(kind) && !options.some(option => option.image)) {
+    const track = [context.track_artist, context.track_title].filter(Boolean).join(" — ");
+    const message = "No artwork candidates are available" + (track ? " for " + track : "") + ". Review lookup diagnostics or try MusicBrainz.";
+    body.append(node("p", "operation-error", message));
+    setStatus(message, "error");
+  }
   const decide = async value => { await queueAction("decision", job.id, String(value), prompt.nonce); lastPrompt = ""; await pollJobs(); };
-  if (kind !== "musicbrainz-results") actionButton("Use suggested", () => decide("s"));
+  if (kind !== "musicbrainz-results" && options.some(option => option.image)) actionButton("Use suggested", () => decide("s"));
   if (kind === "normal-picker" || kind === "local-comparison") actionButton("Keep / skip this album", () => decide("k"));
   if (kind === "fallback-picker" || context.musicbrainz) actionButton("MusicBrainz matches", () => decide("m"));
   actionButton(kind === "normal-picker" ? "Bypass album" : "Leave unchanged", () => decide("b"));

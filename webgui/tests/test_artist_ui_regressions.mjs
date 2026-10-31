@@ -50,6 +50,26 @@ const launchCompFunctions = between(
   "async function enqueueComp",
   "async function stageAlbum",
 );
+const lowerLaunchFunction = between(
+  operationsSource,
+  "async function launchCandidateWork",
+  "async function stageAlbum",
+);
+const queuedMusicBrainzFunction = between(
+  operationsSource,
+  "async function presentQueuedMusicBrainz",
+  "function renderQueue",
+);
+const renderJobFunction = between(
+  operationsSource,
+  "async function renderJob",
+  "function settingValue",
+);
+const renderMusicBrainzFunction = between(
+  appSource,
+  "function renderMusicBrainzResults",
+  "function renderCandidates",
+);
 const stageAlbumFunction = between(
   operationsSource,
   "async function stageAlbum",
@@ -249,6 +269,159 @@ test("Artist and full-album COMP launches submit independent explicit scopes", a
   assert.deepEqual(reviewed, ["job-1", "job-2"]);
 });
 
+test("both Artist COMP launch controls route through the scoped COMP action", async () => {
+  const calls = [];
+  const context = load(lowerLaunchFunction, {
+    state: {editorMode: "artist", compReportVisible: true, queuedDecision: null, workspace: "find"},
+    launchArtistComp: async () => { calls.push("artist-comp"); },
+    launchFallback: async () => { calls.push("full-comp"); },
+    launchArtist: async () => { calls.push("artist"); },
+    searchArtist: async () => { calls.push("artist-search"); },
+    searchAlbum: async () => { calls.push("album-search"); },
+    skipQueuedAlbum: async () => { calls.push("skip"); },
+  });
+
+  await context.launchCandidateWork();
+  context.state.compReportVisible = false;
+  await context.launchCandidateWork();
+  context.state.editorMode = "fallback";
+  await context.launchCandidateWork();
+
+  assert.deepEqual(calls, ["artist-comp", "artist", "full-comp"]);
+  assert.match(appSource, /launch\.addEventListener\("click", \(\) => runAction\(launchArtistComp\)\)/);
+  assert.match(appSource, /searchButton"\)\.addEventListener\("click", \(\) => runAction\(launchCandidateWork\)\)/);
+});
+
+test("individual Artist COMP track work retains Artist and track scope", async () => {
+  const queued = [];
+  const state = {
+    queuedDecision: null,
+    editorMode: "artist",
+    compReportVisible: true,
+    compTrack: {albumId: "billboard-1994", key: "10k-because-the-night"},
+    artist: {id: "10k-maniacs", name: "10,000 Maniacs"},
+  };
+  const context = load(writeArtworkFunction, {
+    state,
+    enqueueComp: async (...args) => { queued.push(args); },
+    submitQueuedDecision() {},
+  });
+
+  await context.writeArtwork();
+
+  assert.deepEqual(JSON.parse(JSON.stringify(queued)), [["billboard-1994", ["10k-because-the-night"], "10k-maniacs"]]);
+});
+
+test("MusicBrainz release prompt stays on the Artist COMP track", async () => {
+  const focused = [];
+  const state = {
+    queuedDecision: null, candidates: [{image: "old"}], workspace: "embed",
+    activeSource: "amazon", compare: new Set(["old"]),
+  };
+  const options = [{
+    id: "release-1994", recording_id: "recording-because-the-night",
+    recording_artist: "10,000 Maniacs", track: "Because the Night",
+    title: "Billboard Hot 100 Singles of 1994", release_class: "Compilation", score: "100",
+  }];
+  const job = {
+    id: "job-1", kind: "comp",
+    payload: {artist_id: "10k-maniacs", album_id: "billboard-1994", track_keys: ["10k-because-the-night"]},
+    progress: {current: {fallback_authority: {artist: "10,000 Maniacs", track: "Because the Night"}}},
+  };
+  const prompt = {nonce: "nonce-1", context: {
+    kind: "musicbrainz-results", album_id: "billboard-1994", track_key: "10k-because-the-night",
+  }};
+  const context = load(queuedMusicBrainzFunction, {
+    state,
+    $: () => ({open: false, close() {}}),
+    resetCandidateFilters() {},
+    focusQueuedAlbum: async decision => { focused.push(decision); },
+    renderWorkspace() {}, renderSources() {}, renderCandidates() {}, renderReview() {}, setStatus() {},
+  });
+
+  await context.presentQueuedMusicBrainz(job, prompt, options);
+
+  assert.equal(state.workspace, "find");
+  assert.equal(state.candidates.length, 0);
+  assert.equal(state.queuedDecision.kind, "musicbrainz-results");
+  assert.equal(state.queuedDecision.context.track_artist, "10,000 Maniacs");
+  assert.equal(state.queuedDecision.context.track_title, "Because the Night");
+  assert.deepEqual(state.queuedDecision.payload.track_keys, ["10k-because-the-night"]);
+  assert.equal(state.queuedDecision.options[0].recording_id, "recording-because-the-night");
+  assert.equal(focused.length, 1);
+});
+
+test("MusicBrainz result decisions ignore stale image candidates and preserve result numbering", async () => {
+  let presented;
+  const options = [
+    {id: "other-release", artist: "Other Performer", track: "Other Track", title: "Other Release"},
+    {id: "release-1994", recording_artist: "10,000 Maniacs", track: "Because the Night", title: "Billboard Hot 100 Singles of 1994"},
+  ];
+  const job = {
+    id: "job-1", kind: "comp", state: "waiting", payload: {}, error: "",
+    progress: {message: "review", prompt: {nonce: "nonce-1", context: {kind: "musicbrainz-results", options}},
+      current: {candidates: {items: [{image: "/stale.jpg"}]}}},
+  };
+  const context = load(renderJobFunction, {
+    presentQueuedMusicBrainz: async (...args) => { presented = args; },
+    presentQueuedCandidates: async () => { throw new Error("stale image candidates were presented"); },
+  });
+
+  await context.renderJob(job);
+
+  assert.equal(presented[0], job);
+  assert.deepEqual(presented[2], options);
+
+  const submitted = [];
+  const elements = {candidateCount: {textContent: ""}};
+  const node = (tag, className = "", text = "") => ({
+    tag, className, text, children: [], listeners: {},
+    append(...children) { this.children.push(...children); },
+    setAttribute() {},
+    addEventListener(event, handler) { this.listeners[event] = handler; },
+  });
+  const renderer = load(renderMusicBrainzFunction, {
+    $: id => elements[id], node,
+    runAction: action => action(),
+    submitQueuedDecision: async value => { submitted.push(value); },
+  });
+  const grid = {children: [], append(...children) { this.children.push(...children); }};
+  renderer.renderMusicBrainzResults(grid, {options, context: {track_title: "Because the Night"}}, "billboard");
+  assert.equal(grid.children.length, 1);
+  await grid.children[0].listeners.click();
+  assert.deepEqual(submitted, [2]);
+});
+
+test("a MusicBrainz lookup without matches surfaces diagnostics instead of a silent prompt", async () => {
+  const messages = [];
+  const statuses = [];
+  const body = {children: [], append(...children) { this.children.push(...children); }};
+  const context = load(renderJobFunction, {
+    dialog: () => body,
+    node: (tag, className, text) => ({tag, className, text, children: [], append(...children) { this.children.push(...children); }}),
+    field: () => ({value: ""}),
+    actionButton(label) { messages.push(label); },
+    setStatus: (...args) => { statuses.push(args); },
+    queueAction() {}, pollJobs() {}, refreshQueuedAlbumAfterSave() {}, runAction() {},
+    state: {jobs: [], artist: null, compReportVisible: false},
+    $: () => ({close() {}}),
+  });
+  const job = {
+    id: "job-empty", kind: "comp", state: "waiting", payload: {name: "Billboard Hot 100 Singles of 1994"}, error: "",
+    progress: {message: "waiting", prompt: {nonce: "nonce-empty", context: {
+      kind: "fallback-picker", track_artist: "10,000 Maniacs", track_title: "Because the Night",
+    }}, current: {diagnostics: {items: [["musicbrainz", "No recording matched the supplied identity"]]}}},
+  };
+
+  await context.renderJob(job);
+
+  assert.ok(body.children.some(item => item.text?.includes("No recording matched")));
+  assert.ok(body.children.some(item => item.text?.includes("No artwork candidates are available")));
+  assert.ok(statuses.some(([message, level]) => message.includes("Because the Night") && level === "error"));
+  assert.equal(messages.includes("Use suggested"), false);
+  assert.equal(messages.includes("MusicBrainz matches"), true);
+});
+
 test("lazy thumbnail hydration updates matching artists and rerenders", async () => {
   let renders = 0;
   const context = load(hydrateFunction, {
@@ -346,7 +519,7 @@ test("queued Album review exposes SKIP ALBUM and submits k without pausing the b
   await context.skipQueuedAlbum();
   assert.deepEqual(calls, ["k"]);
   assert.doesNotMatch(skipSource, /pause|cancel/);
-  assert.match(appSource, /state\.queuedDecision[^\n]+skipQueuedAlbum/);
+  assert.match(lowerLaunchFunction, /state\.queuedDecision[^\n]+skipQueuedAlbum/);
 });
 
 test("background Artist metadata refreshes Featured and COMP projections without losing focus", async () => {
