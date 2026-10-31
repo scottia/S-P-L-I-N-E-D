@@ -1,8 +1,14 @@
 # Browser workspace schematic
 
-This is the comparison baseline for the SPLINED browser workspace and Windows GUI. Review it whenever either interface changes. The Windows implementation is in `windows/ui/app.slint`; the browser interface is in `webgui/static/index.html`, `app.css`, and `app.js`.
+This is a maintainer map of the WebGUI layout and its corresponding source
+regions. It helps reviewers notice deliberate visual alignment with Windows,
+but it is not a parity promise or user operating guide. The Windows
+implementation is in `windows/ui/app.slint`; the browser interface is in
+`webgui/static/index.html`, `app.css`, and `app.js`.
 
-The [function and event-sequence audit](windows-web-function-audit.md) records the Windows rules behind this layout, current browser coverage, and the remaining gaps.
+Use the current source and tests to establish behavior. The dated
+[function and event-sequence audit](windows-web-function-audit.md) is retained
+only as migration evidence.
 
 ## Screen arrangement
 
@@ -50,7 +56,11 @@ The browser assets under `webgui/static/assets/` are copies of `windows/gui/spli
 
 `webgui/server.py` serves the approved static interface and operation endpoints. Python handles providers, image processing and real artwork/tag writes. PostgreSQL owns catalog, completion ledger, audit records and persistent jobs. Read mode blocks music writes. Settings and provider credentials are editable in the browser; MusicBrainz authorization uses a server-side PKCE verifier.
 
-Windows remains native Rust with SQLite. There is no shared live PostgreSQL/Windows database. Explicit SQLite import accepts a read-only snapshot into an empty server catalog. See the [deployment guide](../docker/README.md) and [WebGUI guide](browser-workspace-guide.md).
+Windows remains native Rust with SQLite. There is no shared live
+PostgreSQL/Windows database. The explicit SQLite import copies recognized rows
+from a read-only snapshot before destination Album rows exist; see the
+[deployment guide](../docker/README.md) for its validation limits and the
+[WebGUI guide](browser-workspace-guide.md) for operation.
 
 ## Comparison checklist
 
@@ -64,4 +74,7 @@ Windows remains native Rust with SQLite. There is no shared live PostgreSQL/Wind
 
 ## Validation
 
-The [function audit](windows-web-function-audit.md) records current behavior, generated-audio write tests, browser queue verification, and the remaining Windows compositor reproduction limit.
+Validate behavior through the current WebGUI tests, generated disposable media,
+and the relevant Windows tests. The historical
+[function audit](windows-web-function-audit.md) records what was checked during
+the migration but is not proof of the current implementation.

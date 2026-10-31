@@ -112,8 +112,8 @@ identical interfaces or use one shared live database.
 Windows keeps its native catalog and durable work state in
 `<scan.cache_dir>/splined.db`. Ubuntu WebGUI keeps its catalog, completion
 ledger, and persistent queue in PostgreSQL. An explicit WebGUI import can copy
-an appropriate read-only SQLite snapshot into an empty PostgreSQL catalog, but
-Windows and WebGUI do not open the same live database.
+recognized rows from a read-only SQLite snapshot before destination Album rows
+exist, but Windows and WebGUI do not open the same live database.
 
 Catalog refreshes reconcile tagged identity with current library locations and
 publish the Artist/Album views used for artwork review. Albums without a

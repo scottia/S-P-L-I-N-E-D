@@ -24,8 +24,8 @@ The current guides have distinct ownership:
 - [WebGUI guide](browser-workspace-guide.md) — browser setup, PostgreSQL index
   and queue behavior, artwork/COMP review, writes, recovery, and deployment
   boundaries.
-- [Select Media and status colors](media-filter-status-colors.md) — filters,
-  selection scope, counts, status meaning, and accessibility.
+- [Windows Select Media and status colors](media-filter-status-colors.md) —
+  native filters, selection scope, counts, status meaning, and accessibility.
 - [Microsoft Store channel](windows-store.md) — installed Windows identity,
   Store-managed updates, and the separation from portable releases.
 
@@ -36,7 +36,7 @@ The current guides have distinct ownership:
 - [Source policies and Range Types](source-policies-range-types.md) owns
   candidate eligibility, ranking, local artwork, output evaluation, and the
   COMP/per-track policy.
-- [SPLINED media database](splined-media-database.md) owns native SQLite
+- [Windows SQLite media database](splined-media-database.md) owns native SQLite
   identity, indexing, durable state, sharing, and backup boundaries. It also
   records that WebGUI uses a separate PostgreSQL catalog.
 - [Credentials and provider setup](credentials-providers.md) owns credential
@@ -59,8 +59,8 @@ diagnostic reports.
   runtime layout, packaging, and source validation.
 - [Docker deployment](../docker/README.md) — Compose, PostgreSQL, persistent
   mounts, backup, and container validation.
-- [Browser workspace schematic](browser-workspace-schematic.md) — interface
-  comparison baseline used when either maintained UI changes.
+- [Browser workspace schematic](browser-workspace-schematic.md) — maintainer
+  map of browser regions and source locations; not a parity guarantee.
 - [Windows Rust/Slint architecture checklist](windows-rust-slint-migration-checklist.md)
   — current single-executable architecture and retired implementation boundary.
 

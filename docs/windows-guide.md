@@ -1,72 +1,428 @@
 # Windows application guide
 
-SPLINED for Windows is a native Rust application with a Slint presentation
-layer. One Cargo-built `splined.exe` contains the application, workflow, and UI;
-there is no managed frontend, application DLL bridge, or helper process.
+SPLINED for Windows is one native Rust/Slint application. This guide covers
+installation, everyday artwork work, Settings, backup, updates, and support.
+It does not apply to the separate browser/PostgreSQL WebGUI.
 
-The Slint interface uses the native graphical artwork workspace: a branded app
-bar, graphical Media Library, switchable Find & Match, Edit, Upscale/Enhance,
-and Advanced modes, dominant Selected Artwork preview, and horizontally
-scrollable candidate/source strips. The presentation remains a projection of
-the same Rust-owned state restored by the
-[1.0.88 functional-parity audit](windows-functional-parity-1.0.88.md).
+Maintainer build and packaging instructions belong in the
+[Windows source/build guide](../windows/README.md). Exact Config v5 fields live
+in the [configuration reference](config-v5-reference.md). Dated audits are
+retained as historical evidence, not current operating instructions.
 
-## First run and state
+## Start here
 
-Portable mode uses the directory containing `splined.exe` as its writable state
-root. MSIX mode obtains the current package family through Windows and uses:
+| I want to… | Go to |
+| --- | --- |
+| Install SPLINED or complete first setup | [Install and complete setup](#install-and-complete-setup) |
+| Find an Artist, Album, or fallback track | [Browse and select music](#browse-and-select-music) |
+| Review or save a cover | [Review and save artwork](#review-and-save-artwork) |
+| Save an Artist portrait or banner | [Artist Art](#artist-art) |
+| Embed thumbnails in tracks | [Embed track artwork](#embed-track-artwork) |
+| Repair a compilation track | [COMP and fallback albums](#comp-and-fallback-albums) |
+| Configure providers or behavior | [Settings and providers](#settings-and-providers) |
+| Back up, restore, or update | [Backup, restore, and updates](#backup-restore-and-updates) |
+| Diagnose a problem | [Diagnostics and troubleshooting](#diagnostics-and-troubleshooting) |
+
+Start with a backed-up library and **READ** mode. Read mode can create normal
+application state such as logs, caches, and samples when configured, but it
+does not install artwork in the music library. **LIVE WRITE** permits explicit
+cover, Artist Art, and audio-tag changes.
+
+## Install and complete setup
+
+Windows has two supported distribution channels:
+
+| Channel | Install/update behavior | Writable application state |
+| --- | --- | --- |
+| [Microsoft Store](https://apps.microsoft.com/detail/9p8g4gmbbvbs?hl=en-US&gl=US) | Windows installs, updates, and removes the package | Package-family `LocalState\SPLINED` |
+| [Portable ZIP](https://github.com/scottia/S-P-L-I-N-E-D/releases) | Extract to a writable folder; updates are manual | `data` beside `splined.exe` |
+
+The Store and Portable channels use the same x64 Rust/Slint application. The
+Store installation directory is read-only; Portable keeps its state with the
+extracted application.
+
+### First setup
+
+1. Start `splined.exe`. Missing or invalid Config v5 opens **Welcome to
+   S.P.L.I.N.E.D.** instead of an initialized workspace.
+2. Choose the Music Library.
+3. Choose a persistent database directory for `splined.db`. New local
+   configurations use `_db` by default.
+4. Choose a separate Temporary Run Cache. New configurations use `_cache`.
+5. Choose log, credential, sample, and V/A / OST Artist Images directories.
+6. Leave **Shared/Network SQLite** off unless multiple native clients will open
+   the same physical database and you have reviewed the
+   [shared-file requirements](splined-media-database.md#before-enabling-shared-mode).
+7. Select **Save & Open Settings**. SPLINED validates the paths, writes Config
+   v5 atomically, loads the library, and leaves any error visible for correction.
+8. Review Settings, configure credentials, refresh the library when needed,
+   and begin with a small READ run.
+
+A clean launch does not precreate Config, database, cache, log, credential, or
+backup directories. They are created only by the corresponding saved setup or
+operation.
+
+### Where Windows keeps state
+
+Portable mode discovers:
 
 ```text
-%LOCALAPPDATA%\Packages\<package-family>\LocalState\SPLINED
+<portable folder>\data\config.toml       Config v5
+<portable folder>\data\ui.toml           interface preferences
+<credential directory>\*.json             provider credentials
+<database directory>\splined.db            media and workflow database
+<temporary cache directory>\...            disposable candidates and previews
 ```
 
-Configuration authority is discovered automatically; the normal startup path
-does not ask for a configuration filename. Portable files are:
+Store mode keeps `config.toml` and `ui.toml` below:
 
 ```text
-<splined.exe directory>\data\config.toml       Config v5
-<splined.exe directory>\data\ui.toml           interface preferences
-<configured credential directory>\*.json       provider credentials
-<scan.cache_dir>\splined.db                     media/workflow database
-<scan.temporary_cache_dir>\...                  disposable previews/cache
+%LOCALAPPDATA%\Packages\<package-family>\LocalState\SPLINED\data
 ```
 
-The packaged equivalents are
-`%LOCALAPPDATA%\Packages\<package-family>\LocalState\SPLINED\data\config.toml`
-and `data\ui.toml` beneath that same root. Existing absolute and UNC paths are
-preserved; relative Config v5 paths resolve against the selected state root.
+Configured absolute, mapped-drive, and UNC paths remain unchanged. Relative
+paths resolve from the active Portable or Store state root. SPLINED does not
+use the Windows Registry as configuration authority.
 
-SPLINED does not generate a default Config v5 or create database, temporary
-cache, log, credential, or obsolete bootstrap directories merely because the
-executable launched. If Config v5 is absent, invalid, or operationally
-incomplete, the ordinary workspace stays unavailable and a short **Welcome to
-S.P.L.I.N.E.D.** Setup opens with the actual error. A new user browses to an
-existing Media Library; the SQLite/database, temporary cache, log, credential,
-and sample locations are prefilled from the portable executable root
-and remain individually browsable. The Setup screen can also read an existing
-`.spl` Settings Archive into its fields without saving it, including a
-password-protected archive. Review the paths and optional shared-database
-`.client-lock` setting before continuing. **Save & Open Settings** validates
-the paths, creates the configured application-owned directories, writes Config
-v5 atomically, loads the library in the background with visible progress, and
-opens the complete Settings screen for review. Errors remain visible on Setup
-for correction and retry. `ui.toml` is separate UI state.
-A backup directory is created when a backup is actually made, not during Setup.
-Double-clicking an unprotected `.spl` archive imports settings directly; if it
-uses shared SQLite with the extra Windows lock disabled, a Yes/No prompt offers
-to enable that lock without blocking the window from opening. If the imported
-paths need correction on a moved PC, the archive values are staged in Setup.
+### Move or restore existing settings
 
-With an existing Config v5, startup opens `<scan.cache_dir>\splined.db`
-automatically and reports the active state root, Config path, SQLite path, and
-loaded Album/Artist/Folder counts without logging credentials.
+Setup can load an unprotected or password-protected `.spl` Settings Archive
+into its fields for review before anything is saved. Correct paths after moving
+a Portable folder, then select **Save & Open Settings**.
 
-New Windows configurations default the persistent database directory to `_db`
-and the disposable runtime cache to `_cache`. Existing absolute Config-v5 paths
-are preserved and are never relocated silently.
+Double-clicking an unprotected associated `.spl` archive imports its Config
+v5 settings before startup. A protected archive, or one that cannot be imported
+directly, opens Backup / Restore with the file selected so its password and
+categories can be reviewed. An archive using shared SQLite may offer to enable
+the optional Windows `.client-lock`; choose it only when every client can
+acquire that lock.
 
-Release builds also provide opt-in, read-only support diagnostics. Because the
-Windows GUI subsystem does not attach stdout, pass an output filename:
+## Browse and select music
+
+The left Media Library is a projection of the resident SQLite catalog:
+
+| View | What it shows |
+| --- | --- |
+| **Artists** | Artists and their Albums; activating an Artist opens its overview and appearances |
+| **Albums** | Direct Album browsing and selection |
+| **Fallback** | Albums without a MusicBrainz Album ID, with their indexed tracks |
+
+The Fallback rule is the missing Album ID—not a Various Artists or Compilation
+tag. An indexed folder cover can identify a fallback Album card, but it is
+never treated as embedded artwork for one of its tracks.
+
+### Select work
+
+- Click an Album for an exclusive selection.
+- Use the Artist view to select that Artist's eligible regular, featured,
+  soundtrack, and Various Artists appearances.
+- Use **All**, **Filtered**, and **None** for deliberate bulk selection.
+- Bypassed Albums need an explicit one-run override.
+- Active timeouts remain protected.
+- Fully green Albums are skipped by an Artist-wide launch unless you select an
+  Album explicitly.
+
+Text and status filters change visibility only. They do not alter database
+identity, history, bypass, timeout, provider policy, or queued work. Locked
+Media and Candidate Filter choices persist in interface state; unlocked choices
+retain their normal fresh-run behavior.
+
+### Refresh the catalog
+
+The Home notice can apply added, changed, and removed library entries
+incrementally. **Settings → Library & Files → Refresh DB** performs a deliberate
+complete SQLite index rebuild. Neither action writes music artwork or inspects
+every embedded image. Close other native clients before refreshing a shared
+SQLite database.
+
+Warm startup and ordinary browsing use the resident database rather than
+rescanning the filesystem on every click. Use an explicit refresh after an
+external tagger or filesystem operation changes the library.
+
+### Read the visual status
+
+Open the circled **?** beside Albums for the complete in-app key. The practical
+summary is:
+
+- Album dots show missing identity/artwork, processing, bypass, Artist Art, or
+  embedded-thumbnail conditions.
+- Card frames distinguish validation, completion, and confirmed embedded-art
+  problems.
+- **ARTIST**, **FEATURING**, **SOUNDTRACK**, **VARIOUS**, and **COMPILED**
+  banners describe the Album's relationship to the selected Artist; they are
+  not completion states.
+- COMP track rows use blue for artwork still needed, purple for thumbnail
+  repair/validation trouble, and green for complete.
+
+More than one condition can be visible at once. For example, a completed COMP
+Album can retain a missing-Album-ID indicator because that missing ID is what
+makes it fallback work.
+
+### Arrange the workspace
+
+The main and comparison windows are resizable and follow Windows per-monitor
+DPI. Drag the pane dividers to resize Media Library, the center workspace,
+Selected Artwork, and Candidate Artwork. Collapsing a pane preserves its last
+expanded size.
+
+Window geometry, pane sizes, the active workspace, filter locks, theme, and
+other presentation choices live in `data\ui.toml`, separately from Config v5.
+Choose **System**, **Dark**, **Light**, or **Chalk** from the Theme menu.
+Artist Overview can also show Similar Artists, combined Artist/Featured genres,
+biography, and Navidrome Top Songs when that supplemental data is available.
+
+The center workspace keeps its tasks separate:
+
+- **Find & Match Artwork** — provider results, filters, MusicBrainz, and
+  Selected Artwork;
+- **Album Art Enhancements** — Album fitment and adjustment preview;
+- **Artists Art Enhancements** — portrait, banner, and themed package work;
+- **Album Track Embedding** — explicitly staged jobs only; and
+- **Advanced** — source priority, run controls, activity, and decisions.
+
+## Review and save artwork
+
+### Regular Album cover
+
+1. Select an Album and choose **LAUNCH**.
+2. Review the source cards and Candidate Artwork. Source, type, policy, and
+   range filters operate on the already discovered results; changing a filter
+   does not contact providers again.
+3. Select a candidate. Use **Compare** for a separate comparison window.
+4. If identity is uncertain, use MusicBrainz Results before committing artwork.
+5. Optionally open Album Art Enhancements or select **Upscale Preview**.
+6. In READ mode, inspect the decision without writing. In LIVE WRITE, use the
+   context-appropriate action:
+   - **WRITE Cover** saves the prepared full-resolution Album cover.
+   - **EMBED Batch** saves/stages the prepared cover and thumbnail for the
+     embedding queue.
+
+**EMBED Thumbs** prepares and previews the square track image but does not write
+it. Selected Artwork shows Before/After dimensions, track count, and projected
+size; **Varying Size** means current tracks do not all use the same dimensions.
+
+Available decisions include **Apply Selected**, **Keep Local**, **Bypass**,
+clear a saved Bypass, MusicBrainz review, and **SKIP ALBUM**. A controlled stop
+or skip does not mark later work complete.
+
+Candidate cards show source provenance, native and projected dimensions, image
+type, range/policy result, recommendation, and selection state. Provider order
+comes from Config v5; Local Files retains its fixed review role.
+
+### MusicBrainz identity
+
+**CURRENT ALBUM** is the authority row. It shows the current Recording, Artist,
+and Release IDs separately from candidate releases. Results are grouped by
+best match, same Artist, and other releases, with match percentages.
+
+Hover a release to preview its Cover Art Archive image; click to lock that
+preview. **Advanced IDs** accepts normalized Recording and Artist UUIDs, while
+the selected result supplies the Release ID. **Apply IDs** and **Use Selected
+Album** are deliberate authority actions; either returns to the same artwork
+workflow. Matching local artwork can appear as an **Existing** choice and
+remains available for optional upscaling or **Embed Existing**.
+
+### Artist Art
+
+1. Select an Artist and choose **Artist Art**.
+2. Review portrait and banner candidates from the configured sources.
+3. Select the portrait, banner, or both. The combined choice enables themed
+   package adjustments.
+4. Adjust independent zoom/position and enhancement settings if needed.
+5. Choose **WRITE Artist Art** in LIVE WRITE mode.
+
+Normal Artists use `artist.*` and `banner.*` in their Artist directory.
+Artists represented only inside shared Soundtrack or Various Artists folders
+use distinct files under **V/A / OST Artist Images Directory**, keyed by stable
+Artist identity when available. A blank or disposable location is unsafe for
+those managed images; keep it persistent and backed up.
+
+A saved banner takes precedence over the Navidrome/background fallback.
+Changing the portrait does not replace a dedicated banner. The Artist match
+editor can save confirmed MusicBrainz identity, biography, and profile URL in
+`splined.db`; it does not rewrite music tags.
+
+### Editing and enlargement
+
+Album and Artist enhancement workspaces provide fitment plus Picture, Sharpen,
+Softness, Contrast, Exposure, Brightness, Gamma, temperature/color, Hue,
+Darkness, and Tint controls. Saved defaults and named Custom A–D presets are
+separate from the current preview.
+
+**Upscale Preview** uses SPLINED's configured conventional enlargement and
+final-artwork rules. It does not write a file. Regenerate the preview after
+changing sliders. Artwork already above Ideal resolution is preserved rather
+than reduced by the ordinary upscale option; output still follows square/crop
+and maximum-enlargement policy.
+
+An Album containing `cover.webp` has a separate WebP indicator. **Play
+Animated cover.webp Preview** affects only the display. **WRITE Cover** can
+create the required still `cover.jpg` while preserving `cover.webp`; audio
+tags receive a static thumbnail, never an animation.
+
+## Embed track artwork
+
+The full-quality Album cover and the square image embedded in audio tracks have
+separate purposes. **Embedded Thumbnail Preference** controls the track image
+size (1200 pixels by default; 300–4000 supported). It does not shrink the saved
+full-resolution `cover.*`.
+
+### Regular Albums
+
+1. Select the desired cover or Upscale Preview.
+2. Choose **EMBED Batch**. This saves/stages the full-resolution cover and a
+   verified thumbnail snapshot while leaving the current workspace open.
+3. Open **Album Track Embedding**.
+4. Choose **Start All Staged**.
+5. Review failures and retry or remove only the affected job.
+
+Opening the embedding tab does not stage the selected Album. **EMBED All
+Albums** stages the focused Artist's eligible regular and featured Albums with
+saved covers; COMP work remains track-scoped.
+
+Queue colors are purple for staged, orange for running, red for failed, green
+for completed, and blue when current tracks already have the preferred
+dimensions. Blue describes dimensions, not image identity; starting the job
+still embeds the chosen cover.
+
+### COMP and fallback Albums
+
+Each track in an Album without a MusicBrainz Album ID is reviewed independently.
+The folder's `cover.*` is display identity only and is never substituted for
+that track's embedded artwork.
+
+- Select a track to review its own candidates and MusicBrainz result.
+- **LAUNCH COMP** processes pending blue tracks in sequence.
+- **EMBED Comp** writes only the selected track's prepared thumbnail.
+- **REPAIR COMP** resizes readable, completed thumbnails that do not match the
+  configured preference. It does not search for new artwork or change the
+  folder cover.
+- **COMP Report** groups an Artist's fallback tracks by Album. Green is
+  complete, purple needs repair/attention, and blue still needs artwork.
+
+Artist-wide **LAUNCH COMP** repairs eligible purple tracks first, then processes
+remaining non-green tracks; completed green tracks are skipped. Every bulk
+repair or write still requires its confirmation. Track progress remains in
+SQLite so a later session can resume.
+
+### Pause or stop work
+
+Albums run sequentially. The main processing control requests a controlled stop
+of the active operation, including a pending decision. Depending on state it
+appears as **PROCESSING**, **STOP**, or **SKIP ALBUM**. A failed Album remains
+recoverable; later queued Albums are not reported complete merely because they
+were staged.
+
+## Settings and providers
+
+Settings uses task-based sections:
+
+| Section | Owns |
+| --- | --- |
+| **Library & Files** | Library, SQLite, cache, log, credential, shared Artist Art, ignored folders, and Refresh DB |
+| **Artwork & Embedding** | Output preservation, file formats, square policy, embedded size, WebP preview, and samples |
+| **Enhancement** | Defaults, presets, palette, banner/frame styles, and resolution ranges |
+| **Artwork Sources** | Provider enablement, exclusion, policy, and search priority |
+| **Connections** | Provider credential files and connection tests |
+| **Backup / Restore** | Settings archives, SQLite snapshots, diagnostics, and restore |
+| **Processing & Logs** | Read/Write default, history, timeouts, logging, retention, and status bar |
+
+Each section saves its own draft into one validated Config v5 document. There
+is no separate Slint configuration authority and raw TOML is not the normal
+workflow. **Advanced** reveals specialist controls without changing their
+defaults merely by showing them.
+
+Enhancement Settings includes global defaults, named Custom A–D presets,
+resolution ranges, banner/frame palettes, the OLED chroma wheel, hue and
+brightness ranges, synchronized frame/lettering, and Random Harmony. These are
+preview/configuration tools; selecting or adjusting them does not write artwork.
+The Help menu opens current help and an About card with version, license,
+project, release, Store, and update links.
+
+The Advanced **Reset / Validate / Save** action requires a second red
+confirmation and typed `RESET`. It backs up Config v5, restores operational
+defaults including READ mode, and preserves music paths, ignored folders,
+database/cache/log/credential paths, shared-SQLite choice, database, music
+files, and provider credentials. Interface layout/theme and backup schedules
+are separate and are not reset.
+
+### Provider setup
+
+Credential JSON remains separate from Config v5 and SQLite. Windows supports
+Navidrome/OpenSubsonic, Fanart.tv, Last.fm, Discogs, and MusicBrainz. Use
+[Credentials and Provider Setup](credentials-providers.md) for file fields,
+authorization, protection, and backup.
+
+A provider participates in artwork search only when it is in Source priority,
+not excluded, and enabled by its source policy. A successful connection test
+does not enable it automatically. **Include in artwork search** adds an enabled
+provider to the ordered list and removes its exclusion. Drag source cards to
+change priority; save the section to apply the order.
+
+Navidrome is supplemental: `splined.db` remains Windows catalog authority. A
+connection is reported successful only after a real OpenSubsonic `ping.view`
+response. Thumbnails are cached under the Temporary Run Cache and do not write
+to the music library.
+
+## Backup, restore, and updates
+
+### Back up
+
+Windows keeps three backup types separate:
+
+| Type | File | Contents |
+| --- | --- | --- |
+| Settings Archive | `.spl` | Selected Config v5, credentials, and interface categories; optional password |
+| SQLite Database | `.sqlite` | Consistent online snapshot of `splined.db`; can optionally include managed V/A / OST Artist images |
+| Diagnostic Summary | `.json` | Secret-free support information; not restorable |
+
+Each type can have its own Off, Daily, Weekly, or Monthly schedule and maximum
+file count. Scheduled work runs only while SPLINED is open and idle; it does
+not install a Windows background task. A limit of zero keeps all backups.
+Retention removes only older timestamped SPLINED files of the selected type,
+not unrelated files in the directory.
+
+For complete protection:
+
+1. Save pending Settings changes.
+2. Back up both **Config V5 Settings** and **Interface Settings** when you want
+   presets, theme, pane sizes, filter locks, banner/frame styles, and baselines.
+3. Create a separate SQLite snapshot.
+4. Select **Include V/A / OST Artist images** or separately back up that
+   directory.
+5. Back up the music library itself. SPLINED state backups cannot restore
+   externally changed covers or audio tags.
+
+### Restore
+
+Restore detects `.spl` and `.sqlite`, validates the selected file, and
+changes only the selected categories. Settings and credentials use atomic
+replacement; SQLite restore uses its online backup API and reloads the Media
+Library.
+
+After restoring Interface Settings, close and reopen SPLINED before making
+more interface changes so the restored window state wins over the running
+window's autosave. Older `.spl` archives containing a database remain
+restorable through **SQLite Database Backup**.
+
+### Update
+
+- **Microsoft Store:** **Check for Updates** uses the native Store API.
+  Installation remains owned by Microsoft Store Library.
+- **Portable:** SPLINED compares the installed semantic version with the
+  official GitHub release notification. It can open the release page but never
+  downloads or replaces its executable.
+
+For a Portable update, close SPLINED and replace only `splined.exe` and
+`README-WINDOWS.txt` from the new archive. Preserve `data`, SQLite,
+credentials, cache, logs, backup history, and all configured external paths.
+
+## Diagnostics and troubleshooting
+
+### Create a read-only support report
+
+Release builds provide opt-in diagnostics. Because the Windows GUI does not
+attach a terminal, supply an output filename:
 
 ```powershell
 splined.exe --library-diagnostics library-diagnostics.txt
@@ -74,653 +430,34 @@ splined.exe --slint-library-diagnostics slint-library-diagnostics.txt
 splined.exe --navidrome-diagnostics navidrome-diagnostics.txt
 ```
 
-The library reports include the active paths, complete resident counts, Slint
-model counts, and non-writing selection/navigation checks. The Slint report also
-collapses and re-expands Media Library, verifies that its width returns at or
-above the Rust minimum without losing the current model, and confirms that a
-Custom Upscale window receives the complete resident Artist model. The
-Navidrome report uses the configured credential file for a live capability
-request but never records its secret.
-
-## Media Library
-
-The graphical left sidebar is projected from the resident Rust database model.
-It provides three views over the same album authority:
-
-- **Artists** shows aggregate artist status. Activating an artist expands its
-  Albums directly below the Artist without leaving the Artist view. Each child
-  Album has an explicit selected/deselected radio and a yellow Album name;
-  Library Status still controls filtering and selection eligibility.
-- **Albums** provides direct and additive album selection.
-- **Fallback** displays one row per Album whose MusicBrainz Album ID is empty.
-  MusicBrainz-identified Various Artists and other compilations stay out of this
-  view. Activating a fallback Album expands only its cached compilation tracks,
-  when present; tracks from every Album are never flattened into one repeated
-  list. The Album radio selects the full fallback run independently of the
-  expand/collapse control.
-
-Media Filter is clipped and internally scrollable, so its Artist/Album searches,
-three equal-width scalable Select Mode buttons, and Library Status radios cannot
-bleed into the library list. The Media Filter and Candidate Filter locks retain
-their locked state and choices across Settings saves, restarts, and Interface
-Settings backups; an unlocked filter keeps its normal behavior. Candidate
-Filter's Include, Disregard, and Reset buttons share the
-available width evenly. Application text has a 14-pixel explicit minimum,
-with 20–22-pixel radio glyphs and a 16-pixel native default.
-
-The main window is resizable and maximizable. Artwork is clipped to its preview
-card so a native-resolution cover cannot cover the library or intercept its
-controls. The Media Library heading reports the current visible-row count, and
-an empty compilation-track section yields its space to the scrollable library.
-The library list retains a usable minimum height ahead of secondary status
-content. Collapsing the Media Library removes its rail entirely and exposes a
-cyan expand control beside Find & Match Artwork. Expansion is requested through
-Rust, restores a clamped width at or above the media-pane minimum, and
-immediately renders the resident model.
-
-### Resizable workspace
-
-The Artwork Workspace has native Slint drag dividers between the Media Library,
-central mode workspace, and Selected Artwork preview. Horizontal drag areas
-resize both side panes continuously while the center receives or releases the
-remaining width. A vertical drag area adjusts the candidate-artwork tray. Each
-divider has a visible hover state and a wider hit area than its rendered line.
-
-Rust validates every requested size before Slint renders it. Media, center,
-artwork, candidate-result, and activity regions retain minimum usable sizes;
-saved values are clamped when the window, display resolution, or DPI changes.
-Maximize uses the available space without replacing the last normal window
-size, and restore returns to that normal geometry. A saved maximized main window
-is applied once the Slint event loop is running so Windows performs a native
-work-area maximize. Candidate Compare and Custom Upscale do not copy the main
-window's maximized state; each opens as an independently resizable native window
-and may be maximized or restored on its own monitor. Collapsing Media Library,
-Artwork Preview & Editing, or Artwork Filter reclaims its space while retaining
-the previous expanded width or height for the next expansion.
-
-Pane geometry, expanded dimensions, the active artwork mode, normal window
-size, maximized state, and the **System / Dark / Light / Chalk** appearance choice are
-presentation preferences in `data\ui.toml`. They are not Config v5 fields.
-Older `ui.toml` files remain valid and acquire safe defaults for fields they do
-not contain. A numbered-workspace layout revision retires obsolete temporary-
-shell pane geometry without changing Config v5 or unrelated UI preferences.
-Windows and Slint native per-monitor DPI are authoritative. SPLINED does not
-infer an interface scale from desktop pixel dimensions, so a Retina-sized RDP
-desktop cannot receive a second artificial 1.25x, 1.5x, or 2x scale. The main,
-Custom Upscale, and candidate-comparison windows are independent native
-PerMonitorV2 windows: each follows the DPI and Windows work area of the monitor
-it currently occupies. Crossing monitors causes Slint to reflow from that
-window's logical dimensions; pane minimums and saved splitter geometry are
-never treated as physical pixels.
-
-### Artwork workspace modes
-
-- **Find & Match Artwork** combines the Config v5 source strip, tri-state
-  filters, adjustment preview, Selected Artwork, and the candidate tray.
-- **Album Art Enhancements** shows the original and adjusted album cover beside
-  a collapsible **Enhancements** sidebar. Its Filters, Fitment, and Advanced
-  menus open over the preview rather than shifting its layout. Filter intensity
-  sliders can be dragged and adjusted repeatedly; the Advanced menu contains
-  the detailed sliders, including Hue and Tint. Tint derives its starting color
-  from the current image and does not persist a palette per photo. Settings →
-  Enhancement accepts an exact `#RRGGBB` color for saved defaults and presets.
-- **Artists Art Enhancements** opens from the orange **Artist Art** action. The
-  central preview shows the saved artist image and banner in pane 1, the proposed
-  artist image in pane 2, and the proposed banner in pane 3. Pane 4 is the
-  existing **Selected Artwork** area on the right. The radios on panes 2 and 3
-  select separate adjustments; selecting both shows the combined package, with
-  **Themed Packaging** enabling combined edits. Pane 1's green radio loads the
-  saved package for editing. Fitment provides independent artist and banner
-  zoom and positioning, including mouse wheel zoom and image dragging. The
-  **Enhancements** sidebar occupies the left edge without shortening the panes.
-- **Album Track Embedding** shows only explicitly staged and recent jobs. A
-  current review album does not appear as a pending job merely because this tab
-  is open. **EMBED Batch** stages the selected album; **Start All Staged** is
-  available only when staged jobs exist.
-- **Advanced** keeps source-priority controls, launch/stop actions, and live
-  Scan Activity and Decisions accessible without displacing the main artwork
-  workflow.
-
-MusicBrainz Results temporarily occupies the central mode workspace while an
-authority decision is pending. Verified **Existing** artwork always appears in
-Best Match, followed there by 90–100% release families; lower-scoring
-same-artist albums and other releases have separate sections. Each release
-family appears in one section, sorted by match percentage within it. A
-MusicBrainz release already offered as Existing is not repeated in the two
-lower sections when its release ID is known; a Best Match release remains
-available as an alternative artwork source. Every family shows its percentage, including
-exact-ID results. Hovering a release previews its Cover Art Archive front image; clicking
-locks the preview. The selected preview can be written directly from **Selected
-Artwork**, with or without an **Upscale Preview**, without first returning to
-the Candidate Artwork strip. The collapsible **Advanced IDs** editor exposes
-Recording and Artist MBIDs; the selected release supplies its Release ID.
-
-Text and status filters change only visibility. Artist and Album filters can
-be combined with general search and multiple independently enabled status
-categories. They never rewrite history, bypass, timeout, processed state,
-provider policy, or database identity. Available states are Unprocessed,
-Partial / Error, Artist Bypass, Artist Complete, Processed, Incomplete, and
-Bypassed.
-
-**All**, **Filtered**, and **None** operate on the Rust-owned selection set.
-ALL respects an active artist scope; FILTERED requires an intentional filter
-scope and selects reviewable results rather than hidden albums.
-Bypassed albums require the explicit one-run override; active timeouts remain
-protected. Incomplete compilation work remains eligible according to the
-authoritative database snapshot.
-
-**Fallback** projects Albums with no MusicBrainz Album ID first, regardless of
-Compilation tags. It then shows the selected Album's cached tracks, filling any
-missing rows with a read-only enumeration of that one folder, for direct
-track-level reopen while retaining the parent Album's queue and completion authority.
-Completed track-art ledger entries are green; tracks without a completed entry
-are blue. An indexed folder-level `cover.jpg`, `cover.png`, or `cover.webp` is
-shown as the fallback Album card's identity, matching ordinary Album cards. It
-is not used as a COMP track preview, candidate, or embedded-art count.
-After a track finishes, SPLINED refreshes that fallback folder's track list
-without switching to the Albums tab. A deliberate top-level tab change clears
-the prior album focus. The Albums tab uses the Artist Overview layout for the
-selected album's artist, but shows only that album card; its EMBED Album action
-stages only that album.
-
-Artist Art is tied to an indexed Artist, not to a Soundtracks or Various Artists
-folder. SPLINED still uses `artist.*` in a dedicated Artist folder. For an
-Artist whose albums live in a shared folder, it saves a distinct image per
-stable Artist ID under the configured **V/A / OST Artist Images Directory**
-(or uses a name key when no single Artist ID is available). It ignores any old
-shared-folder `artist.*` for these Artists without deleting that file. Albums with
-no MusicBrainz Album ID remain COMP fallback and do not participate in this
-Artist Art lookup; their artwork stays track-scoped. Setup requires this persistent
-directory; existing configurations default to `<scan.cache_dir>/artist-art`.
-The Artist match editor separately confirms MusicBrainz identity and saves its
-lookup name, biography, and external profile URL in `splined.db`; it does not
-change music-file tags. This profile record is not the V/A / OST image setting.
-In Backup / Restore, select **Include V/A / OST Artist images** for manual and
-scheduled SQLite snapshots. The resulting single `.sqlite` file includes managed
-per-artist portrait and approved background PNGs; the live database does not. Select the separate image option
-when restoring if those images should be restored too. A `.spl` Settings Archive
-does not contain the images. Back up the directory separately if you leave the
-SQLite image option off.
-Artist Art search shows blue portrait and pink banner preview radios on
-candidates. Saved local `artist.*` and `banner.*` appear as Local candidates
-for reuse or replacement. **WRITE Artist Art** writes the selected portrait,
-banner, or both as `artist.*` and `banner.*`; the saved package remains unchanged
-until the write succeeds. For Artists represented only in a shared
-Soundtracks/Various Artists folder, the write uses Artist-specific files in the
-configured V/A / OST Artist images directory. A saved local banner takes
-precedence over Navidrome; without one, the Navidrome banner or a landscape
-expansion of artist art remains the overview fallback. Changing `artist.*` does
-not replace a dedicated banner. Back up a dedicated Artist folder's `banner.*`
-along with its other media files.
-
-In Artist Overview, a fallback compilation has a vertical **COMPILED** strip. Its
-matching tracks appear directly beneath the selected card. **LAUNCH** can
-process that artist's pending compilation tracks in sequence; changing the
-selection stops that list without discarding blue/green progress. Selecting one
-track opens MusicBrainz for that track. The Selected Artwork preview for a
-compilation track uses only its embedded image, a hovered/selected MusicBrainz
-cover, or an explicitly selected **Existing** source—never the compilation
-folder's `cover.*` or Artist Art.
-Opening a COMP card shows its matching tracks without automatically starting
-an artwork review, even when there is only one track. Click a track to review
-it. This keeps **REPAIR COMP** available without first skipping an
-unwanted artwork review. The colored status bar remains visible for single-
-and multi-track cards. **REPAIR COMP**, immediately before **LAUNCH COMP** in
-the expanded list, inspects only completed tracks with off-preference embedded
-dimensions. It then changes to **YES, Repair**, with **NO** on its left and a
-cyan confirmation beneath. Confirming resizes embedded art without searching
-MusicBrainz or changing the fallback folder's `cover.*`. When every matching
-track verifies green, the list closes after two seconds; a new selection takes
-priority. Tracks still missing art or failing verification keep their album's
-attention state and the list remains available.
-
-**COMP Report** in the Artist Overview footer compiles an Artist-wide
-two-column COMP report (Album and full Track File name) with green completed,
-purple off-preference/unreadable, and blue unfinished rows. Duplicate album
-names are grouped under album headers: click a header to collapse or expand
-just that album's tracks. The Artist Overview's main scroll reaches every
-track, even in a large report; the lower workspace pane need not be resized.
-Click a track row to review artwork with the normal candidate and MusicBrainz
-flow. Only completed tracks with readable off-size embedded art are offered
-for one Artist-wide bulk repair, with a separate confirmation before any audio
-file changes. The split control beside the report title has **REPAIR COMP**
-for purple-only thumbnail repair and **LAUNCH COMP** to repair purple tracks
-first, then process any tracks still non-green across the Artist's reported albums; green
-tracks are skipped. The report has a **Close** button, and a report opened while the
-Artist still needs work closes automatically two seconds after every shown
-album verifies complete. A new selection during those two seconds keeps the
-report open. The circled help tip in the COMP heading explains the repair
-scope and why the current tagged Album authority and MusicBrainz release
-suggestions appear as separate results.
-
-Matching local artwork appears at the top of MusicBrainz Results as separate
-green/cyan **Existing** choices, so different Artist Album covers can be
-previewed and chosen independently. Exact Recording and Artist ID matches are
-preferred; title-based reuse is restricted to the matching artist and excludes
-Live, Remix, and parenthesized variants. An exact Recording ID match is not
-excluded merely because its title has one of those variants. Choosing
-**Existing** leaves the artwork available in Selected Artwork for optional
-upscaling; **Embed Existing** remains available without upscaling.
-
-## Artist Overview status key
-
-Click the circled **?** beside **Albums** to open an opaque, four-column key.
-Each left-aligned entry has a colored label and its explanation directly below
-it; the columns distinguish album conditions from track-level progress:
-
-- **Status dots:** Red means missing Release ID or artwork, or an incomplete
-  album; yellow means Artist Art is missing or the album is bypassed; orange
-  means the album was processed; green means the selected artist's artwork is
-  complete; purple means embedded art is missing or does not match **Embedded
-  Thumbnail Preference**.
-- **Album card frames:** Cyan means SPLINED is still validating an otherwise
-  complete album's embedded thumbnails; it is counted as **Validating**, not
-  **In Process**. Green means completion with embedded art at the preferred
-  size. Orange/purple means a processed album has a confirmed embedded-art
-  issue. Green/purple means the selected artist's COMP tracks are complete but
-  their embedded thumbnails still need attention.
-- **Banners:** A narrow vertical strip sits beside the cover thumbnail. Its
-  50%-transparent background, border, and lettering identify the album type
-  and do not change when processing finishes: **COMPILED** has blue with a gold
-  border and letters; **FEATURING** has gold with green; **SOUNDTRACK** has
-  purple with gold; **VARIOUS** has orange with green; and **ARTIST** has green
-  with gold. COMPILED identifies a compilation album.
-  FEATURING means the selected artist is credited second or later on a track,
-  whether the album has a Release ID or not. Without a secondary credit, the
-  card keeps its album-type banner. The album-status dots and card frames
-  separately show processing and embedded-art completion. Rating stars remain
-  below the album title.
-- **COMP track rows:** Blue means pending artwork, green means completed
-  artwork, and purple means a completed track whose embedded image needs
-  attention.
-
-These colors are independent conditions, not one exclusive album state. A
-completed COMP card can retain a red missing-Release-ID dot because the
-missing Release ID is what makes it a fallback album.
-
-Artist Overview keeps album-type groups and newest-to-oldest sorting without
-visible group separators. Similar Artists is followed by **Artist & Featured
-Artist Top Genres**, then Albums, then Top Songs. Top Songs loads automatically
-from Navidrome in the background when an artist is selected. The biography's
-More/Less controls appear only when the text exceeds five lines at the current
-pane width. The themed more/less control uses the biography font size and sits at the end of the last visible line.
-
-Artists, Albums, and Fallback retain their own scroll offsets during the session. Returning to the same artist or album overview restores its saved position, including expanded album lists.
-
-## Running work
-
-Choose an auto-scan scope and launch mode:
-
-- **ALL** queues every currently eligible album.
-- **SELECTED** queues only explicitly selected eligible albums.
-- **READ** performs review without installing artwork or mutating album files.
-- **LIVE WRITE** permits the selected artwork operation to update album files.
-
-Launch is disabled when no valid queue exists. During a run the control state is
-owned by `ScanController`, and **STOP** requests cancellation of the active
-Rust operation, including an operator-decision wait. Albums are processed
-sequentially; a failed album remains recoverable and later queued albums are not
-silently marked complete.
-In Artists view, clicking either an artist row or its selection dot selects
-all of that artist's Release-ID
-albums, plus Soundtrack, Various Artists, and secondary-credit Featuring
-appearances when the overview discovers them. LAUNCH waits for the overview and
-embedded-art validation, then queues every selected album that is not fully
-green. A database `processed` status by itself does not skip an album with a
-missing cover or embedded-art problem. Fully green albums are skipped in this
-artist-wide run; select an individual album card to reprocess one explicitly.
-COMPILED fallback tracks retain their separate LAUNCH COMP workflow and are
-never queued as whole folders by artist-wide LAUNCH.
-
-## Candidate artwork and sources
-
-The horizontally scrollable source-card row is derived from the Config v5
-`cover_sources` order. Include,
-exclude, and priority actions save back to the same authoritative source list;
-there is no UI-only provider order. Local artwork retains its fixed review role.
-Provider status and candidate counts are projections of runtime events.
-
-The Candidate Artwork strip scrolls horizontally. Its cards contain real source
-provenance, native/projected dimensions,
-image type, range class, policy status, cache path, recommendation, comparison,
-and selection state. Source, type, policy, and range controls filter the
-resident result set. Each control cycles among include, neutral, and disregard
-and the filter state persists in `ui.toml`. Filtering never repeats provider
-discovery.
-
-Optional hover preview does not replace the selected decision. **Compare**
-opens a separate resizable horizontal comparison window. When no acceptable
-candidate survives, the fallback reason and editable artist/album refinement
-use the existing Rust retry decision.
-
-The single run button is at the start of the workspace-mode row. It reads
-**LAUNCH** while idle, **PROCESSING** while work is active, and **SKIP ALBUM**
-while the runtime is waiting for an album decision. Clicking PROCESSING
-requests the same controlled stop used by the Rust scan controller. Candidate
-controls sit directly below the Candidate Artwork heading.
-
-Available decisions include:
-
-- Apply Selected
-- Keep Local
-- Bypass (orange while available)
-- Bypassed (red only after SQLite records the bypass); clicking it asks for
-  confirmation before the persistent bypass is cleared
-- MusicBrainz retry/authority review
-- Skip Album
-
-In READ mode those decisions remain review-only. In LIVE WRITE mode the same
-Rust pipeline is permitted to install validated output.
-
-## MusicBrainz authority
-
-**CURRENT ALBUM** is rendered separately from ordinary search results and is
-the authority row. It carries the current recording, artist, and release IDs.
-Applying IDs submits an authority decision to the Rust runtime. Ordinary result
-selection retains its release-row identity and visited state; **Use Selected
-Album** is a separate action. Artist and release-type filters use the mature
-release ordering without decade groups. Retry and Back to Candidate Artwork
-retain the active result history. Editable Recording and Artist IDs are
-normalized and UUID-validated before **Apply IDs**; the selected result
-provides the Release ID. After an authority choice, the existing artwork
-workflow resumes in the same run.
-
-## Selected Artwork and embedded thumbnails
-
-The three actions above the image information occupy one row: **Upscale
-Preview**, the context-sensitive write/embed action, and **EMBED Thumbs**.
-The buttons and labels shrink with the Selected Artwork pane. **EMBED Thumbs**
-prepares a square thumbnail in memory from the chosen full-quality artwork or
-its optional Upscale Preview; it does not write a file on its own. The square
-policy uses a conservative centered crop and fits wider images rather than
-cutting away too much of the sides. The preview and dimension/file-size fields
-show the prepared thumbnail. While **EMBED Thumbs** is active, the information
-table compares the same track scope in chronological order: **Before** shows
-the current embedded-art resolution and total bytes across the selected tracks;
-**After** shows the preference-sized prepared thumbnail and its projected total
-bytes across those tracks. The `~` on the After size denotes an estimate before
-writing. For a COMP fallback review, the scope is its selected track; for an
-Artist Album, it is all supported tracks in that album. The track count remains
-visible. A yellow line at the bottom of the image separately reports the
-largest existing embedded image's resolution and size, adding **Varying Size**
-when applicable.
-
-An Album containing `cover.webp` also has a blue status dot, independent of
-its processing and embedded-art dots. When no matching `cover.jpg` or
-`cover.png` exists, the Selected Artwork embedded-art line turns blue as a
-reminder to create a still. **WRITE Cover** works directly from a selected
-Album before LAUNCH: it preserves `cover.webp`, creates `cover.jpg` from its
-image (including a selected Upscale treatment), and embeds a static image
-when EMBED Thumbs was chosen. **Play Animated cover.webp Preview** in Artwork
-& Embedding is off by default. When on, an animated WebP plays in Selected
-Artwork while the Album is selected; it never embeds animation in audio tags.
-
-For a COMP fallback track, **EMBED Comp** writes the selected artwork to that
-track at the configured thumbnail size; it does not save a compilation-folder
-`cover.*`. The Fallback tab opens a one-album overview and a track report:
-blue needs artwork, purple needs thumbnail repair, and green is complete.
-**LAUNCH COMP** processes pending tracks in sequence, while selecting a report
-track opens its own review. The report's preview control shows saved thumbs
-without enabling write actions. It reads only the selected track's saved thumb
-in the background and reuses the cached preview until that track changes.
-A missing MusicBrainz Album ID—not a Various
-Artists tag—is the fallback criterion.
-
-For an Artist Album, **EMBED Batch** immediately stages its selected cover or
-Upscale Preview, saving the full-resolution `cover.jpg`/`cover.png` first. No
-separate **WRITE Cover** press is needed. Staging keeps the current workspace open; the Album Track Embedding button gains muted purple text, outline, and background while work is staged or unfinished. **Start All Staged** then embeds the
-prepared preference-sized thumbnail in every supported track, replacing
-existing embedded thumbnails even if they are already at the preferred size.
-The embedding tab lists only jobs actually staged by an embedding action;
-opening it does not stage the current review album. **EMBED All
-Albums** stages the focused artist's visible regular and featured albums with
-saved covers; COMP fallback albums remain track-scoped. Queue rows use purple
-for staged, orange for running, red for failure, green for completed, and blue
-when all existing tracks already have the preferred thumbnail dimensions.
-Blue reflects dimensions only, not image identity; starting that job still
-embeds the chosen cover. Set **Embedded Thumbnail Preference** in Settings
-(1200 pixels by default, 300–4000 allowed).
-
-## Artwork editing and upscale
-
-The editing area exposes Picture, Sharpen, Softness, Contrast, Exposure,
-Brightness, Gamma, Color/temperature, Hue, Darkness, and Tint. Values are
-application state, not widget-local state. Saving defaults writes the Config v5
-output fields atomically. The default intensity draws from saved Settings;
-other detailed sliders begin at their neutral center.
-
-**Upscale Preview** renders the adjusted image without changing album files.
-**WRITE Cover** saves the previewed album cover; **WRITE Artist Art** saves the
-active Artist image, banner, or package. **EMBED Batch** stages the selected
-album cover and prepared thumbnail for the queue. Further slider changes
-invalidate the rendered preview until it is regenerated. The final-artwork
-code preserves native artwork above Ideal resolution, applies square/crop
-policy, and enforces `upscale_max_percent`.
-
-The resizable Original/Upscale comparison remains in Album Art Enhancements.
-The detailed controls update the adjusted and Selected Artwork previews while
-leaving Original unchanged. Artist image, banner, and combined-package edits
-retain separate adjustments and fitment. Adaptive defaults remain Config v5
-backed.
-
-Existing-cover editing requires LIVE WRITE and a current local cover. It uses
-the same validated final-artwork pipeline and safe replacement behavior.
-
-## Settings and credentials
-
-Normal Settings uses one wide work area with task-based navigation: **Library
-& Files**, **Artwork & Embedding**, **Enhancement**, **Artwork Sources**,
-**Connections**, **Backup / Restore**, and **Processing & Logs**. The
-**Advanced** toggle in the Settings header reveals specialist controls inside
-their related sections; it is off by default. Expand the in-app
-help tips for the effect of each group of controls. The tips explain the
-workflow in place; they do not open this guide. Each Config section has a compact Save
-action that applies only that section's edits. The complete resulting Config v5
-is validated and written atomically, then application state is reloaded. A green
-Save highlight indicates an unsaved change. Backup schedules and interface
-preferences are remembered separately.
-The main header places a single framed **🎬 Theme** menu (System, Dark, Light,
-or Chalk) between Home and Settings. Chalk uses muted neutral surfaces across
-the workspace, and Light uses a subdued slate palette with darker accent text.
-**Backup / Restore** section opens separate side-by-side Backup and Restore
-panels to the right of the persistent Settings Sections list. Returning to Settings
-keeps the live Settings draft rather than reloading it. There is no global Save
-button. Settings section names are
-left-aligned with fixed-width glyphs.
-The header **Help** button is available from Home as well as Settings and opens
-a two-item menu. **Get Help** opens the
-Windows guide on GitHub's `main` branch; **About** opens a themed card with
-version, license, technology, project and release links, the Microsoft Store
-listing, and update controls. Library & Files shows **SPLINED File Storage**
-above Runtime: the configured temporary cache usage and `splined.db` plus
-current journal usage refresh while the pane is open. Runtime then shows the
-version, database location, and run state.
-**Processing & Logs** is split into Processing and Logging panes. Processing
-Mode is the saved Read/Write default. Processing Override Delay ranges from
-Always Override (zero hours) through one month (30 days); an older custom
-timeout is preserved as a Custom option. New Config v5 defaults retain 14 days
-of History, without changing an existing user's choice. Logging offers Current
-(in memory, cleared on exit), Verbose (run decisions), Debugger (technical
-debug/trace events), and Error (session errors plus the latest Diagnostic
-Summary JSON). Verbose and Debugger file capture begins on the next launch
-after saving. Log Retention (Days) applies to Windows UI diagnostic files on
-startup; zero keeps them all. Windows UI debug files are named
-`[<machine>]-Windows-ui-<timestamp>-<pid>.debug.log` under the configured log
-directory's `run` folder. PCs may share settings and a log directory: each PC
-creates and prunes only its own named logs. The previous
-`windows-ui-[<machine>]-<timestamp>-<pid>.debug.log` filenames also remain subject to that
-machine's retention; older unnamed logs remain available for manual review.
-**Processing & Logs > Status Bar** appears in Advanced mode and offers Aggressive, Full, Mild, or Off intensity;
-Top, Middle, or Bottom position; and Small, Medium, or Large size. Middle is
-wider and taller. The rainbow strip is static, so intensity changes primarily
-affect appearance rather than system resource use. Interface preferences are
-stored separately from Config v5 options.
-Advanced mode also reveals **Reset / Validate / Save** in Processing & Logs for operational Config v5 only.
-It first previews the reset and requires a second red confirmation with typed
-`RESET`. It backs up the existing config before restoring built-in defaults
-(including READ mode). Music and ignored-folder locations, database/cache/log
-and credential paths, SQLite shared mode, `splined.db`, audio/art files, and
-provider credential files are preserved. Interface theme, layout, status bar,
-and backup schedules are not part of this reset.
-Application configuration is never duplicated in a Slint-specific authority,
-and raw TOML is not the normal Settings workflow.
-
-In **Artwork Sources**, a provider is active only when it appears in Source
-priority, is not excluded, and has an enabled source policy. Turning on
-**Include in artwork search** adds a missing provider to Source priority and
-removes it from Excluded sources when the policy is updated and Settings is
-saved. A successful connection test in **Connections** does not itself enable
-artwork search. Existing priority order is preserved when a provider is added.
-In Artwork Sources, drag a provider card onto another card to move it in the
-single-row search priority; < / > remains available for precise steps. Samples and Local
-Files have fixed positions. Reordering updates the draft Source priority field;
-the section Save applies it to the main workspace and Config v5.
-
-In **Enhancement**, **Theme Enhancements** comes first, followed by
-**Enhancement Defaults** and **Artwork Slider Filtering**, with **Resolution
-Range** last. Enhancement Defaults defines the renameable Default quick
-filter. Artwork Slider Filtering holds Custom A–D.
-Each saved slot records all eleven sliders; select its radio circle to load its
-values into the shared current/adjusted comparison, then choose Save Current
-to replace that slot or Apply to preview it again. Selecting a Custom slot for
-comparison does not replace global enhancement defaults when the section is
-saved. The Enhancements sidebar offers built-in filters and saved Custom A–D
-slots with adjustable intensity. Repeated positive clicks increase a filter's
-effect. These preview actions never write artwork.
-
-**Theme Enhancements** shows all banner and album-frame rows without a nested
-scroll pane. Its live sample is the same album-card component used in Artist
-Overview, showing the selected banner and frame colors. The larger, clickable
-OLED chroma wheel includes a broad yellow
-and gold range. A ring marks the most recently clicked color, and the selected
-swatch's hex value appears below the wheel. Drag across the wheel to preview
-nearby colors. The **Hue Range** bar rotates its visible spectrum, while the
-**Brightness** bar changes both the wheel and the selected color's light/dark
-range. Scroll over the wheel for a smaller brightness step. Choose a banner
-background, frame, or letters swatch, or an album card frame
-swatch, before choosing a color. **Synchronize Banner Frame & Lettering** makes
-both of those colors follow any new color selected for the active banner;
-the banner background changes only when its own swatch is selected. Turn the
-option off to edit frame and lettering separately. Its state is saved with
-Interface Settings. **Random Harmony** uses a wheel click or drag to generate
-a related background, frame, and lettering palette for the selected Banner
-only. Each click can produce a different variation; the frame and letters
-remain identical when synchronization is also on. Random Harmony and both
-wheel ranges are saved with Interface Settings. Banner labels can be renamed
-to at most ten characters. Banner backgrounds remain 50% transparent, and selected colors
-are adjusted with the active Light, Dark, or Chalk theme. The first saved
-banner and frame styles are retained separately as the user's baseline; the
-round Baseline control on each row restores only that row's original name and
-colors. Both current styles and baselines are saved in Interface Settings and
-included in a Settings Archive when that category is selected.
-
-Provider credentials remain separate JSON files. The credential surface
-supports Navidrome/OpenSubsonic, Fanart.tv, Last.fm, Discogs, and MusicBrainz.
-On Windows, credential writes request user-specific filesystem protection and
-report when the storage location cannot apply it.
-
-Navidrome remains a supplemental source; `splined.db` is authoritative. A live
-connection test calls the OpenSubsonic `ping.view` API. Password mode uses the
-standard salted token contract, and API-key mode sends `apiKey` without sending
-username/password. A successful status is shown only after a real server
-response.
-
-The Media Library requests the Artist and Album thumbnails exposed by
-Navidrome/OpenSubsonic. Downloaded 192-pixel thumbnails are kept under the
-configured temporary cache directory in `navidrome-thumbnails`; SPLINED does not write into
-the music library to render the list. Missing thumbnails refresh in the
-background at startup and the selected Artist is retried immediately. Album
-rows temporarily project a newly processed local cover until Navidrome's
-read-only thumbnail projection catches up.
-At startup, SPLINED prunes its known disposable candidate and thumbnail-cache
-files older than 24 hours from the configured temporary cache, including files
-left after an interrupted run. This does not remove saved samples, SQLite data,
-or the persistent V/A / OST Artist Images Directory; the age guard protects
-another client using a shared cache.
-
-When Config v5 uses debug or trace logging, the Windows UI run log records
-startup config, database projection, application-model, and UI creation times.
-Album Embed Queue entries record one line per track with the local-stage or
-album-stage route and timings for copy, tag mutation, validation, share sync,
-replacement, and queue progress. These timings distinguish local TEMP work
-from SMB writes without changing the embedding route; they do not include the
-asynchronous UI redraw. The log header includes the machine, executable path,
-and TEMP directory used by that run.
-Navidrome catalog reads report memory-cache hit/miss, item count, and elapsed
-time; focused thumbnail work reports disk-artwork cache hits and misses. These
-timings help distinguish database startup delay from the first cold Navidrome
-artist load without recording provider secrets. UI refresh entries also report
-cumulative decoded-image memory hits, file decodes, stale invalidations, and
-preload hits. Rewritten file-backed artwork is checked against its size and
-modification time before cached pixels are reused.
-
-## Backup and restore
-
-The maintenance page has exclusive **Backup** and **Restore** modes with separate
-remembered, browsable paths. Windows backups are deliberately independent:
-
-- settings, credentials, and interface preferences use a timestamped `.spl`;
-- the authoritative library database uses a consistent SQLite online snapshot
-  written directly as timestamped `.sqlite`;
-- the secret-free diagnostic summary is a readable timestamped `.json` and is
-  reference material rather than a restorable settings payload.
-
-Choose a Backup Type to see its Off, Daily, Weekly, or Monthly schedule,
-so the database can be protected more frequently than infrequently changing
-settings. Each type has a Max Backup File Count. Zero (the default) keeps all;
-at startup, a nonzero limit removes only older timestamped SPLINED files of
-that type from the selected backup directory. Other files are left alone.
-Diagnostic Summary is an Advanced-only option for generating reference JSON
-to inspect before sending a bug report; it is not a backup that can be
-restored. On a first run without a settings archive, SPLINED offers to create
-one, without modifying the music library. The latest backup fills Restore
-File automatically and the Restore pane lists archived backup files.
-Due jobs run only while SPLINED is open and idle and do not register an
-operating-system background task. Manual `.spl` settings archives may be
-password protected with the established PBKDF2-HMAC-SHA1, AES-256-CBC, and
-HMAC-SHA256 envelope. Restore auto-detects `.spl` and `.sqlite`, validates the
-selected file, uses atomic replacement for settings and credentials and SQLite's
-online backup API for database restores, then immediately reloads the applicable
-configuration or Media Library. Restored Interface Settings are protected from
-the running window's autosave; close and reopen SPLINED before making more
-changes so restored theme, pane sizes, filter locks, presets, banner styles,
-and baseline colors are loaded from the archive. A Settings Archive needs both
-**Config V5 Settings** and **Interface Settings** selected to cover enhancement
-defaults and custom appearance. Save the Enhancement section before backing up;
-an unsaved Enhancement draft defers automatic Settings Archives and blocks a
-manual one. Locked Candidate Filter choices survive restart and backup; unlocked
-filters retain their fresh-run reset behavior. Older `.spl` archives with an
-embedded database remain restorable through the **SQLite Database Backup**
-selection. Password entry is requested only when a selected archive requires it.
-
-Opening an associated unprotected `.spl` file, or launching
-`splined.exe --restore <file>`, automatically imports the archive's Config v5
-settings before startup and then loads the configured database. Other backup
-categories are not changed. If the archive is password protected or its Config
-v5 cannot be imported, SPLINED opens the maintenance/restore surface with the
-archive preselected so the operator can enter the password when prompted and review the
-categories. Portable startup maintains the current user-scoped `.spl` shell
-association; packaged installs use the manifest-owned association.
-
-## Updates
-
-Packaged installations query the native Microsoft Store API. Portable builds
-read only the pinned official stable GitHub notification manifest and compare
-semantic versions. Portable update handling is notification-only; SPLINED does
-not download a replacement executable, invoke a cleanup shell, or overwrite its
-running binary.
-
-## Troubleshooting
-
-- **No library rows:** verify `library.music_library`, the database path, and
-  path mappings in Config v5, then rebuild the index.
-- **Launch disabled:** select an eligible album; bypassed albums need a one-run
-  override and timeout-protected albums cannot launch.
-- **No candidate image:** inspect Activity and provider status, then verify the
-  selected source credential and cache path.
-- **Navidrome says unavailable:** use Test in Provider Credentials. A status is
-  not considered connected until `ping.view` succeeds.
-- **Packaged state appears empty:** verify the Store package family LocalState
-  directory rather than the package installation directory.
-
-Diagnostics redact secrets and retain a bounded application activity log.
+Library and Slint reports check active paths, catalog/model counts, and
+non-writing navigation. Navidrome diagnostics performs a live capability
+request using the configured credential but does not record its secret.
+
+Logs and diagnostic summaries apply central secret redaction. Verbose and
+Debugger file logging begins after restart when enabled. Diagnostic timings can
+separate provider, SQLite, cache, local file, and network-share delays without
+making those logs application authority.
+
+### Common problems
+
+| Symptom | Check |
+| --- | --- |
+| Setup reopens | Read the visible validation error; correct the selected path or archive, then use **Save & Open Settings** again |
+| No library rows | Verify Music Library and database paths, then apply the incremental update or deliberate **Refresh DB** |
+| Album missing after an external move/tag edit | Run an explicit library update; warm browsing does not crawl the filesystem |
+| LAUNCH is disabled | Select an eligible Album; resolve timeout protection or explicitly override a bypass |
+| No candidate artwork | Check Activity, source enablement/order, credential status, policy filters, and cache path |
+| MusicBrainz result is wrong | Review CURRENT ALBUM, refine Artist/Album identity, and validate IDs before applying |
+| Navidrome is unavailable | Test the credential; success requires `ping.view` |
+| Artist portrait/banner is missing after a move | Verify V/A / OST Artist Images Directory and the Artist-specific files |
+| EMBED queue is empty | Stage work with **EMBED Batch**, **EMBED Album**, or **EMBED All Albums**; opening the tab does not stage |
+| COMP track stays blue | Select the track or use **LAUNCH COMP**; a folder cover is not track artwork |
+| COMP track is purple | Preview it and use **REPAIR COMP** when the saved image is readable but off-preference |
+| Store state appears empty | Inspect the package family's `LocalState\SPLINED`, not the read-only installation directory |
+| Portable state appears empty | Confirm you launched the intended extracted `splined.exe` beside its `data` folder |
+| Shared SQLite is locked/unavailable | Stop other clients, verify the same physical database and share locking, and follow the [shared-database guide](splined-media-database.md) |
+
+For status-color detail, see
+[Windows Select Media and Status Colors](media-filter-status-colors.md). For
+provider failures, see [API/OAuth validation](oauth-validation.md).

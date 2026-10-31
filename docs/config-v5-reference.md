@@ -33,7 +33,7 @@ substitute `Config::default()` and present an initialized workspace.
 On first Windows launch the library, SQL database, temporary run cache, log,
 and credential directories are mandatory choices. SPLINED creates only the
 selected database, run-cache, log, and credential directories after explicit,
-validated **Save and Continue**. The ZIP and an ordinary pre-save launch do not
+validated **Save & Open Settings**. The ZIP and an ordinary pre-save launch do not
 precreate `data`, `_cache`, `_logs`, `credentials`, or `docker_builds`. Existing
 saved absolute, mapped-drive, and UNC paths are preserved unchanged.
 
@@ -103,7 +103,9 @@ The WebGUI cache holds downloaded candidates, prepared images, original embedded
 image backups, and persistent `staged-artwork`. Keep that cache volume when
 upgrading: queued work verifies its staged file before writing. WebGUI does not
 open a live SQLite catalog or share Windows' active database. An explicit import
-can copy a named read-only SQLite snapshot into an empty PostgreSQL catalog.
+can copy recognized rows from a named read-only SQLite snapshot before
+destination Album rows exist. It does not rewrite stored paths or replace a
+PostgreSQL backup.
 
 Windows uses `<scan.cache_dir>/splined.db` and a separate Temporary Run Cache.
 Its optional `sqlite_shared` and `.client-lock` settings apply to intentional

@@ -1,14 +1,71 @@
 # SPLINED WebGUI
 
-The supported server interface runs in a browser. The WebGUI service handles providers, image processing, library and tag writes; PostgreSQL stores the catalog, completion ledger, and persistent work queue. Windows remains a separate native Rust application with its own SQLite store.
+This is the user guide for the Python/browser implementation. WebGUI handles
+providers, image processing, library files, and tag writes; PostgreSQL stores
+its catalog, completion ledger, audit events, administrator account, and
+persistent work queue. Windows is a separate native Rust/Slint application with
+its own SQLite store. The two runtimes share concepts, not a live database or
+guaranteed interface parity.
+
+Use the [Docker deployment guide](../docker/README.md) for containers,
+networking, volumes, PostgreSQL, and backup. This page starts after the services
+are running.
 
 ## First run
 
-Deploy the [WebGUI and PostgreSQL stack](../docker/README.md), then open `http://127.0.0.1:8080` on the server or its configured LAN address. On the first network visit, create the one WebGUI administrator with a username, password, password confirmation, and the deployment's `SPLINED_WEB_TOKEN`. The token authorizes enrollment and recovery but is never stored in PostgreSQL; later visits use the saved username and password. After an account exists, **Forgot password?** validates the existing deployment token, replaces only the WebGUI password hash, and invalidates active browser sessions. It does not change the token, PostgreSQL connection credentials, catalog, or artwork records. In **Settings**, select the music library path as seen by the server, Persistent Cache Directory, V/A / OST Artist Images Directory, output policy, and provider credentials. A blank V/A / OST path uses Persistent Cache Directory itself; enter any other persistent server-visible image directory or preferred folder name to keep Artist Art elsewhere. This is an image directory, not a separate database. Save Settings, then choose **Full Refresh Library Index** for the first publication. Start in `read` mode; change **mode** to `write` to enable artwork and tag writes.
+1. Open `http://127.0.0.1:8080` on the server or its configured address.
+2. Create the single WebGUI administrator with a username, password,
+   confirmation, and the deployment's `SPLINED_WEB_TOKEN`.
+3. In **Settings**, choose server-visible paths for the Music Library,
+   Persistent Cache, V/A / OST Artist Images, logs, and credentials.
+4. Review output and provider settings, save, and choose **Full Refresh Library
+   Index** for the first publication.
+5. Begin in `read` mode. Change **mode** to `write` only after the reported
+   decisions and backup plan are satisfactory.
 
-On later launches WebGUI checks Album folders and filenames without opening every normal track. A header action reports separate added, changed, and removed counts and applies only that delta. Normal Albums require at most one representative-file check; changed COMP/Fallback Albums rebuild their complete track identity inventory during the explicit index update. **Settings → Full Refresh Library Index** remains available when the entire PostgreSQL catalog must be deliberately republished.
+The deployment token authorizes first enrollment and password recovery but is
+never stored in PostgreSQL. Later visits use the saved username and password.
+After an account exists, **Forgot password?** validates the unchanged token,
+replaces only the password hash, and invalidates active browser sessions. It
+does not change PostgreSQL credentials, catalog rows, or artwork records.
 
-Settings uses the same task-based sections and shared Config v5 presentation contract as Windows. The workspace opens wide and can be resized from its lower-right edge; independent Boolean choices use left-aligned radio-style selectors. **Settings HELP** opens the permanent [Config v5 and WebGUI Settings reference](config-v5-reference.md). **Advanced ON/OFF · All Sections** is one workspace-wide state rather than a separate switch per page. **Library & Files** identifies the PostgreSQL catalog size and persistent mounted paths without recursively walking network storage. **Scan Mode Enabled** reveals the optional Scan Folder; blank uses Music Library. Comma-separated ignored folder names do not require shell quotes, even when a name contains spaces. **Artwork & Embedding** displays the required `cover`, `artist`, and `banner` filename stems and the supported JPEG, PNG, and WebP formats as fixed information. Optional sample writing stores source cover samples and requires an explicit persistent directory. **Enhancement** includes the OLED Chroma Wheel, renameable banner colors, album-frame colors, a live card preview, Default and Custom A–D adjustment presets, the default-on Upscale Below Ideal policy, the 100–800% enlargement ceiling, and resolution ranges. Those WebGUI interface choices are stored under `webgui_ui` in Config v5 so they survive browser changes and safe settings backup/restore. **Artwork Sources** presents graphical provider ordering before the saved source-policy controls; optional dimensions remain unset until entered. **Connections** edits and tests the five supported credential files inline. The future AISPLINED companion remains visibly optional and disabled by default. Blank secret fields retain their existing values; saved secrets are never sent back to the browser. Container deployments normally supply PostgreSQL credentials through environment variables, so the Advanced connection field is managed by the server. **Processing & Logs** owns the Log Directory, diagnostic level, and retention controls. Diagnostic level `none` suppresses runtime/access logs after the WebGUI restarts while retaining its bounded PostgreSQL event history. The inactive legacy Full Library Scan toggle is not shown; deliberate catalog rebuilds remain under **Backup & Recovery → Catalog Maintenance**.
+All WebGUI paths are paths on the server or inside the container, not on the
+computer running the browser. A blank V/A / OST Artist Images Directory uses
+Persistent Cache Directory itself. Any other value must resolve to a persistent
+server-visible image directory.
+
+### Index maintenance
+
+On later launches WebGUI compares indexed Album folders and filenames without
+opening every normal track. The header reports separate added, changed, and
+removed counts before applying that delta. Changed COMP/Fallback Albums rebuild
+their complete track identity inventory during the explicit update. Use
+**Settings → Full Refresh Library Index** only for a deliberate full rebuild.
+
+### Settings map
+
+**Settings HELP** opens the authoritative
+[Config v5 reference](config-v5-reference.md). **Advanced ON/OFF · All
+Sections** is one workspace-wide state.
+
+- **Library & Files** owns library, cache, log, credential, Artist Art, and
+  optional Scan Folder paths. A blank Scan Folder uses Music Library.
+- **Artwork & Embedding** shows the fixed filename stems and supported formats,
+  preservation rules, embedded size, and optional sample output.
+- **Enhancement** owns palette, presets, fitment, resolution ranges, and bounded
+  conventional enlargement. WebGUI-only presentation choices are saved under
+  `webgui_ui` in Config v5.
+- **Artwork Sources** owns provider order and source-policy controls.
+- **Connections** edits and tests the supported credential files. Saved secrets
+  are masked and blank secret fields retain their existing values.
+- **Backup & Recovery** owns settings export/restore and deliberate catalog
+  maintenance.
+- **Processing & Logs** owns mode, history, diagnostic level, and retention.
+
+Container deployments normally supply PostgreSQL credentials through the
+environment, making the Advanced connection field server-managed. Diagnostic
+level `none` suppresses runtime/access logs after restart without deleting the
+bounded PostgreSQL event history.
 
 ## Artwork workflow
 
@@ -44,7 +101,20 @@ Navidrome supplies biography, similar artists, and top songs when available. If 
 
 ## Data, recovery, and deployment
 
-PostgreSQL is authoritative for WebGUI catalog and jobs. There is no silent SQLite fallback, and the native `scan.sqlite_shared` switch is not a WebGUI setting. Settings can explicitly import a read-only SQLite snapshot into an empty PostgreSQL catalog; paths must match the server's library. The source is left unchanged. Windows and WebGUI do not open the same live database; simultaneous writers to the same music library should be avoided.
+PostgreSQL is authoritative for WebGUI catalog and jobs. There is no silent
+SQLite fallback, and the native `scan.sqlite_shared` switch is not a WebGUI
+setting. Windows and WebGUI do not open the same live database; avoid
+simultaneous writers to the same music library.
+
+**Catalog Maintenance → Import an existing SQLite catalog** is an explicit
+one-time initialization operation. The path names a snapshot readable by the
+server; it is not a client-side file picker or upload. The current importer
+opens the source read-only and refuses a destination whose Album table is
+populated. It copies recognized tables but does not validate a source schema
+version, prove that every destination table is empty, rewrite stored music
+paths, or preflight their compatibility with the server library. Use only a
+disposable, path-compatible snapshot, or run a fresh WebGUI index. The source
+is unchanged.
 
 Back up PostgreSQL using a consistent database dump, plus the config, credential, cache/staged-artwork, and any external artist-art volumes. Track changes require a music-library backup for full recovery. Do not treat a SQLite snapshot or the image cache as a PostgreSQL backup.
 

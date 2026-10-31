@@ -1,5 +1,9 @@
 # SPLINED for Windows
 
+This is the maintainer guide for building and packaging the native Windows
+application. Installation, everyday use, backup, and troubleshooting belong in
+the [Windows user guide](../docs/windows-guide.md).
+
 The Windows application is one native Rust executable built by Cargo. Rust owns
 the application state, media-library model, SQLite access, provider pipeline,
 MusicBrainz review, artwork decisions, editing/upscale state, configuration,
@@ -83,7 +87,7 @@ executable. A packaged MSIX launch discovers them beneath the current package
 family's `LocalState\SPLINED\data` directory. Discovery is read-only: a clean
 launch creates no `data`, database, cache, log, credential, or obsolete
 bootstrap directories. Missing, invalid, or operationally incomplete Config v5
-opens structured Setup. Only explicit validated **Save and Continue** creates
+opens structured Setup. Only explicit validated **Save & Open Settings** creates
 the configured application-owned directories and writes Config v5 atomically.
 The executable and read-only package assets remain separate from writable
 state.

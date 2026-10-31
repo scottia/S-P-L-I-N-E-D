@@ -1,5 +1,9 @@
 # WebGUI live-write parity — 2026-10-30
 
+> **Historical validation record.** This page records the reviewed state at the
+> date and commits named below. Use the [WebGUI guide](browser-workspace-guide.md)
+> and current source for supported behavior.
+
 This update was reconciled through release 2.0.11 before promotion through
 `dev` to `main`.
 

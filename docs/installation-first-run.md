@@ -143,19 +143,17 @@ execution.
 
 ## WebGUI / Python
 
-Deploy the [WebGUI and PostgreSQL stack](../docker/README.md), open its browser
-address, and create the administrator with username, password confirmation,
-and the deployment token. Later logins use username and password. **Forgot
-password?** validates the same unchanged deployment token, replaces only the
-WebGUI password hash, and invalidates active browser sessions.
-Complete Settings, save the server music paths, configure provider
-credentials, and refresh the library index. All artwork review and writes take
-place in the browser.
+Deploy the required [WebGUI and PostgreSQL stack](../docker/README.md), open
+its browser address, and create the administrator with the deployment token.
+Complete Settings with server-visible paths, configure provider credentials,
+and run the first full library refresh. Start in Read mode.
 
-PostgreSQL owns the WebGUI catalog and persistent queue. Windows continues to
-use its native SQLite store. Import a named SQLite snapshot into an empty
-PostgreSQL catalog only when its stored music paths match the server; otherwise
-build a fresh index. See the [WebGUI guide](browser-workspace-guide.md).
+PostgreSQL owns the WebGUI catalog and persistent queue; Windows continues to
+use its independent SQLite store. The optional SQLite snapshot import is a
+one-time server-side initialization aid, not live sharing or synchronization.
+It does not rewrite or preflight stored music paths, so prefer a fresh index
+unless the snapshot is disposable and already uses the server's path
+namespace. See the [WebGUI guide](browser-workspace-guide.md).
 
 ## Safe validation
 

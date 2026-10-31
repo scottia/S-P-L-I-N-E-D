@@ -1,5 +1,9 @@
 # Windows source/binary baseline reconciliation (2026-10-18)
 
+> **Historical reconciliation record.** Local paths, branches, binaries, and
+> validation counts below describe the 2026-10-18 investigation only. They are
+> not current installation or build instructions.
+
 The Windows source in the **local `dev` working tree** was reconciled to the locally retained SPLINED baseline executable. The later, unaccepted thumbnail-control and direct MusicBrainz-preview-write changes were reversed. This is a source baseline, not a new feature release.
 
 ## What changed

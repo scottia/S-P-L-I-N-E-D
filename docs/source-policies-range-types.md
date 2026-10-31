@@ -2,8 +2,9 @@
 
 This page explains how S:P:L:I:N:E:D evaluates artwork size, how global Resolution Range policy works, how per-source overrides refine that policy, and how AISPLINE remediation remains separate from provider acceptance.
 
-This policy model applies to the current Python/Docker and Windows releases
-using Config v5.
+This page owns the shared Config v5 policy language. Each runtime exposes only
+the controls implemented in its interface; shared field names do not imply
+identical screens or provider behavior.
 
 ---
 
@@ -25,7 +26,7 @@ The normal target is the configured **Ideal** size, not maximum size at any cost
 
 ---
 
-# Global Resolution Range
+## Global Resolution Range
 
 SPLINED classifies artwork by the **short side** of the image.
 
@@ -64,7 +65,7 @@ Examples:
 
 ---
 
-# Range Type is the primary policy language
+## Range Type is the primary policy language
 
 Range Type is the normal user-facing authority for source acceptance.
 
@@ -80,11 +81,11 @@ means candidates below `LowerRange` are not normally accepted by that source unl
 
 ---
 
-# Source Enabled, Strict Override, and Source Override
+## Source Enabled, Strict Override, and Source Override
 
 These are separate controls.
 
-## Source Enabled
+### Source Enabled
 
 Determines whether SPLINED may query the provider.
 
@@ -100,7 +101,7 @@ Enabled = Yes
 
 Provider can participate in discovery.
 
-## Source Override
+### Source Override
 
 Determines whether a provider uses custom policy instead of the global policy.
 
@@ -118,7 +119,7 @@ The provider uses its saved source-specific policy.
 
 Turning Source Override off must **not erase** its saved custom values. Those values should remain available if the override is turned back on later.
 
-## Strict Override
+### Strict Override
 
 `strict_override = true` makes decoded image-content evidence authoritative for
 Preferred (`s`) and unattended Auto selection. It supersedes
@@ -151,7 +152,7 @@ rejects search rows for a different ASIN before decoded-content comparison.
 
 ---
 
-# Per-source policy controls
+## Per-source policy controls
 
 Where supported, a source may have custom values for:
 
@@ -168,11 +169,13 @@ Where supported, a source may have custom values for:
 
 Not every source exposes metadata needed for every control. Unsupported controls should be disabled or explained rather than pretending to enforce data the provider does not expose.
 
-Python/TUI should expose the same practical Config v5 source controls as Windows where supported. The goal is to eliminate candidates that policy already knows are irrelevant before they consume unnecessary download, AI-review, ranking, and screen space.
+WebGUI and Windows expose the applicable Config v5 source controls they
+implement. Early rejection prevents irrelevant candidates from consuming
+download, optional companion review, ranking, and screen space.
 
 ---
 
-# Minimum Range Type
+## Minimum Range Type
 
 When Source Override is enabled, Minimum Range Type sets the normal category floor for that provider.
 
@@ -199,7 +202,7 @@ A source-specific minimum affects only that provider.
 
 ---
 
-# Adjacent-lower fallback
+## Adjacent-lower fallback
 
 `allow_below_minimum_fallback` is a **per-source** rule. Despite its historical
 field name, it admits only the one Range Type immediately below the configured
@@ -227,7 +230,7 @@ unbounded relaxation of the source policy.
 
 ---
 
-# Advanced dimension constraints
+## Advanced dimension constraints
 
 Advanced constraints refine the effective source policy.
 
@@ -260,7 +263,7 @@ The UI should make it clear when a value is derived from Range Type versus expli
 
 ---
 
-# Width and height constraints
+## Width and height constraints
 
 Explicit minimum width/height fields are additional geometry gates.
 
@@ -272,7 +275,7 @@ Avoid adding unnecessary advanced constraints if the normal Range Type model alr
 
 ---
 
-# Primary image only
+## Primary image only
 
 `Primary image only` relies on **provider metadata**. It is an early metadata
 filter and is separate from Strict Override's decoded-content evidence gate.
@@ -281,7 +284,7 @@ If the provider exposes a reliable primary/front indicator, the option may use i
 
 ---
 
-# Early filtering and performance
+## Early filtering and performance
 
 Source policy should be applied as early as the available metadata permits.
 
@@ -294,7 +297,7 @@ provider discovery
 -> candidate download as required
 -> normal SPLINED evaluation/ranking
 -> optional AISPLINE review of relevant candidates
--> TUI/source summary
+-> interface/source summary
 ```
 
 Independent provider discovery and candidate downloads may overlap to avoid
@@ -308,7 +311,7 @@ This optimization must not change normal SPLINED ranking semantics among candida
 
 ---
 
-# Album authority and curated compilations
+## Album authority and curated compilations
 
 Album identity and artwork lookup use tagged Album Artist/Album values
 and MusicBrainz Album/Release IDs. Track-level featured performers do not create
@@ -449,7 +452,7 @@ server membership alone is never Preferred/Auto authority.
 
 ---
 
-# Final-image evaluation
+## Final-image evaluation
 
 SPLINED should evaluate the image that would actually be written, not blindly trust provider-reported dimensions.
 
@@ -461,7 +464,7 @@ Policy principle:
 
 ---
 
-# Local artwork
+## Local artwork
 
 Existing local artwork is evaluated before unnecessary replacement.
 
@@ -471,7 +474,7 @@ Local artwork is also a first-class potential AISPLINE input when AI integration
 
 ---
 
-# AISPLINE remediation policy
+## AISPLINE remediation policy
 
 A:I:S:P:L:I:N:E:D is not a retrieval provider.
 
@@ -494,7 +497,7 @@ Ideal 1800
 
 AISPLINE does not change the meaning of SPLINED Range Types. It operates after an image candidate exists.
 
-## User floor vs hard lock
+### User floor vs hard lock
 
 The baseline AISPLINE user floor is:
 
@@ -518,7 +521,7 @@ allow_below_minimum_override = false
 
 No Config v5 version bump is required simply because AISPLINE-specific policy is added inside the existing `[aisplined]` section.
 
-## AISPLINE source-summary semantics
+### AISPLINE source-summary semantics
 
 When AI is enabled, AISPLINE review may occur before the candidate summary is presented.
 
@@ -538,7 +541,7 @@ At most one candidate per album may be selected for enhancement. Selecting one `
 
 A suggested remote candidate can be handed directly to AISPLINE without first being installed into the album directory.
 
-## Previously Enhanced provenance
+### Previously Enhanced provenance
 
 A previously successful AISPLINE result known through retained history may be presented as an Enhanced candidate only when the corresponding file still exists and validates.
 
@@ -552,7 +555,7 @@ User-facing provenance markers are:
 
 `[Enhanced]` is prior-result provenance. It is not the same thing as the current `AI ENHANCED` checkbox.
 
-## `upscale_below_ideal` runtime override
+### `upscale_below_ideal` runtime override
 
 If the user chooses AISPLINE enhancement while ordinary SPLINED output policy has:
 
@@ -567,9 +570,9 @@ The override must not rewrite Config v5, affect later albums, or silently enable
 
 ---
 
-# Candidate status language
+## Candidate status language
 
-The GUI/TUI may show candidate results such as:
+The active interface may show candidate results such as:
 
 ```text
 lower-range - Acceptable
@@ -580,7 +583,7 @@ These labels describe the candidate's effective range/policy result. They should
 
 ---
 
-# Troubleshooting source policy
+## Troubleshooting source policy
 
 If a candidate you expected to see is missing:
 
@@ -599,7 +602,7 @@ If the scan log reports candidates hidden by active source policy, discovery suc
 
 ---
 
-# Relationship to Config v5
+## Relationship to Config v5
 
 For the broader configuration model, see [Config v5 reference](config-v5-reference.md).
 
@@ -607,7 +610,7 @@ Exact serialized Config v5 keys/defaults are listed in the Config v5 reference a
 
 ---
 
-# Related documentation
+## Related documentation
 
 - [Config v5 reference](config-v5-reference.md)
 - [Windows guide](windows-guide.md)

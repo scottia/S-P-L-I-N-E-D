@@ -1,6 +1,11 @@
-# SPLINED media database
+# Windows SQLite media database
 
-WebGUI now uses PostgreSQL, with its own catalog and persistent queue. The SQLite lifecycle and shared-file instructions below apply to native clients and legacy snapshots. See the [WebGUI data guide](browser-workspace-guide.md#data-recovery-and-deployment) for server setup, explicit import, and backup. Windows does not connect to the live PostgreSQL store.
+This is the authoritative reference for the native Windows SQLite catalog,
+including optional shared-file operation. It is not the WebGUI database guide.
+WebGUI requires PostgreSQL for its separate catalog and persistent queue; see
+the [WebGUI data guide](browser-workspace-guide.md#data-recovery-and-deployment)
+and [Docker deployment guide](../docker/README.md). Windows does not connect to
+the live PostgreSQL store.
 
 The native Windows implementation stores its persistent Select Media model in:
 

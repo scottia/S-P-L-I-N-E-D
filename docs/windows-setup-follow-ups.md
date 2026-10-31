@@ -21,9 +21,10 @@ these UI items.
 - [ ] **Verify shared SQLite guidance in a test build:** Setup and Advanced
   Settings now link to the shared-database guide, describe cross-host locking
   risk, and recommend the extra `.client-lock` when every client can acquire
-  it. Python/Docker is the normal first publisher for a cross-mounted shared
-  inventory; an explicit Windows Refresh can also update it. Verify the
-  guidance fits and the link opens in both screens.
+  it. The first native Windows client to refresh a new shared database
+  establishes its path namespace and published policy. WebGUI is not a
+  publisher for this SQLite file; it uses PostgreSQL. Verify the guidance fits
+  and the link opens in both screens.
 
 ## Related backup verification
 
@@ -32,5 +33,5 @@ these UI items.
   Source change and unit tests are present; cross-PC UI verification remains.
 
 Test one SPLINED instance at a time for any operation that writes the shared
-database. The current PC workstation's Beyoncé display investigation is separate from
-this Setup checklist and should be observed before any refresh.
+database. Unrelated workstation investigations belong in their own issue or
+preserved audit record, not in this Setup checklist.

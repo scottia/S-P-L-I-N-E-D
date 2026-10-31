@@ -5,7 +5,7 @@ WebGUI exposes **Settings → Provider Credentials → Test Connection** for eac
 `/credentials` is the existing Docker Config v5 default, not a validator
 override. Relative `credential_dir` values are resolved from the directory
 containing `config.toml` through the same `runtime_credential_dir()` and
-`credential_file()` path used by normal Python/Docker operation.
+`credential_file()` path used by normal WebGUI operation.
 
 ## What is tested
 

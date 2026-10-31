@@ -1,5 +1,9 @@
 # Windows 1.0.88 functional-parity audit
 
+> **Historical migration audit.** This comparison preserves evidence from the
+> retired implementation. Use the [Windows guide](windows-guide.md) and current
+> Rust/Slint source for supported behavior.
+
 This audit compares the supported Rust/Slint Windows application with the
 user-visible behavior of the pre-migration Windows application at commit
 `39d2f9e9c7e924ad9a843d6e36c9fbe5cdb2c3d1`. The retired C#/WinForms source was
