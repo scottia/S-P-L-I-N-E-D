@@ -29,6 +29,6 @@ Provider fixtures test request contracts; they do not prove every external accou
 
 ## Windows runtime observations
 
-Earlier MEDIAPC 2.0.4 logs showed the Alan Jackson report returning through preparation errors while Aerosmith completed. The report now gathers uncached COMP inventories and preserves completion records before checking thumbnails. Later logs showed queued tracks waiting for a runner; launch handling now starts the queued runner for selected COMP tracks across albums.
+Earlier logs from the PC workstation running 2.0.4 showed the Alan Jackson report returning through preparation errors while Aerosmith completed. The report now gathers uncached COMP inventories and preserves completion records before checking thumbnails. Later logs showed queued tracks waiting for a runner; launch handling now starts the queued runner for selected COMP tracks across albums.
 
 The background/foreground transparent-window report had no corresponding panic or fatal renderer event in the supplied logs. The existing local Windows change requests a repaint on reactivation and retries at 80 and 240 ms. Real reproduction on that PC remains the evidence needed to establish whether the compositor issue is resolved.

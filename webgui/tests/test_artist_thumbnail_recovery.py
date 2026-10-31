@@ -191,7 +191,7 @@ class ArtistThumbnailEndpointTests(unittest.TestCase):
     def test_thumbnail_list_endpoint_retains_local_network_restriction(self) -> None:
         with TemporaryDirectory() as temporary:
             app, catalog = self._app(Path(temporary), token="")
-            with TestClient(app, base_url="http://mediapc.invalid") as client:
+            with TestClient(app, base_url="http://pc.invalid") as client:
                 response = client.get("/api/artists/thumbnails")
         self.assertEqual(response.status_code, 403)
         catalog.artist_thumbnails.assert_not_called()

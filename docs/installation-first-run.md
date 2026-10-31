@@ -1,8 +1,11 @@
 # Installation and first run
 
-SPLINED ships supported Windows, Linux, macOS, Python, and container release
-artifacts. Keep configuration, credentials, and databases outside source
-control.
+SPLINED maintains a native Windows application, an Ubuntu WebGUI/Python stack,
+and a separate root-native Rust command-line implementation for Linux and
+macOS. Release artifacts vary by selected release target; use a platform's
+instructions only when the matching artifact is published, or build the
+root-native source deliberately. Keep configuration, credentials, and
+databases outside source control.
 
 ## Windows portable
 
@@ -92,23 +95,10 @@ absolute, mapped, and UNC resources remain unchanged. This differs from the
 portable ZIP above, which requires no package installation and keeps its
 root-relative state under `<portable-root>\data`.
 
-For maintainers, `01. Full Release - Build Selected Target and Publish` builds the x64 Windows executable
-once. The same `splined.exe` feeds the Portable ZIP
-and, when either Store mode is selected, the unsigned Store MSIX. Portable and
-selected Store validation must both succeed before the numeric release tag is
-created. After the GitHub Release, the selected Store mode stages the MSIX,
-preserves the existing Store submission metadata, updates only the en-US Store
-Highlights, and either stops as a draft or submits for certification. The MSIX
-is retained with `STORE-HIGHLIGHTS.txt` and its `STORE-SUBMISSION.json` history
-audit in the Actions-only
-`splined-windows-store-submission` artifact; it is not an end-user installer or
-a normal GitHub Release download. Development identity and signing use a
-separate temporary QA layout and cannot mutate the Store artifact.
-`02. Store Recovery - Tagged Draft or Update` rebuilds and stages or submits
-an existing tagged package, according to the explicitly selected Store mode.
-See the [release automation guide](release-automation.md) and
-[Microsoft Store Windows channel](windows-store.md) for the live product,
-identity, and update-publication procedure.
+Maintainer packaging, validation, Store submission, and exact-tag recovery are
+documented in the [release automation guide](release-automation.md). See the
+[Microsoft Store Windows channel](windows-store.md) for installed identity and
+update behavior.
 
 ### Windows upgrade
 
@@ -138,14 +128,18 @@ builds target only `x86_64-pc-windows-msvc`.
 
 ## Linux
 
-Extract the archive, keep `splined` executable, and run it from a terminal.
-Config v5 may be supplied with `--config`; see the configuration reference.
+Use the Linux portable instructions when a matching release artifact is
+published, or build the separate root Cargo project from source. Keep the
+`splined` executable and run it from a terminal. Config v5 may be supplied with
+`--config`; see the configuration reference.
 
 ## macOS
 
-Extract the archive, keep `splined` executable, and run it from a terminal.
-If downloaded-file quarantine applies, review the file and clear quarantine
-according to local policy before execution.
+The selected release workflow can package the separate root-native macOS
+command-line implementation. Extract a published archive, keep the `splined`
+executable, and run it from a terminal. If downloaded-file quarantine applies,
+review the file and clear quarantine according to local policy before
+execution.
 
 ## WebGUI / Python
 
