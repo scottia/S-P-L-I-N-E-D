@@ -1,6 +1,6 @@
 use std::fs;
 
-use splined::config::{parse_config, CURRENT_CONFIG_VERSION};
+use splined::config::{CURRENT_CONFIG_VERSION, parse_config};
 
 const REQUIRED_SECTIONS: &[&str] = &[
     "library",
@@ -85,21 +85,46 @@ fn load_example(path: &str, expected_credential_dir: &str) -> toml::Value {
         );
     }
 
-    parse_config(&text).unwrap_or_else(|error| panic!("{path} must parse as Config v5: {error}"));
     value
 }
 
 #[test]
-fn all_public_examples_are_config_v5_and_secret_free() {
+fn root_native_example_is_config_v5_and_secret_free() {
     assert_eq!(CURRENT_CONFIG_VERSION, 5);
+    let text = fs::read_to_string("config.example.toml").expect("root-native example");
+    let config = parse_config(&text)
+        .unwrap_or_else(|error| panic!("config.example.toml must parse for root native: {error}"));
+    let example = load_example("config.example.toml", "credentials");
+    assert_eq!(example["mode"].as_str(), Some("read"));
+    assert!(!config.scan.library_scan);
+    assert_eq!(config.scan.cache_dir, "_cache");
+}
+
+#[test]
+fn windows_example_is_config_v5_and_secret_free() {
+    let windows = load_example("windows/config.example.toml", "credentials");
+    assert_eq!(windows["mode"].as_str(), Some("read"));
+    assert_eq!(windows["scan"]["library_scan"].as_bool(), Some(false));
+    assert_eq!(windows["scan"]["cache_dir"].as_str(), Some("_db"));
+    assert_eq!(
+        windows["scan"]["temporary_cache_dir"].as_str(),
+        Some("_cache")
+    );
+}
+
+#[test]
+fn docker_webgui_example_is_config_v5_and_secret_free() {
     let python = fs::read_to_string("webgui/backend/splined.py").expect("Python runtime source");
     assert!(python.contains("CONFIG_VERSION = 5"));
     assert!(!python.contains("CONFIG_VERSION = 4"));
-    load_example("config.example.toml", "credentials");
-    load_example("windows/config.example.toml", "credentials");
     let docker = load_example("docker/config.example.toml", "/credentials");
+    assert_eq!(docker["mode"].as_str(), Some("read"));
     assert_eq!(docker["library"]["music_library"].as_str(), Some("/music"));
     assert_eq!(docker["scan"]["cache_dir"].as_str(), Some("/_cache"));
+    assert_eq!(
+        docker["scan"]["temporary_cache_dir"].as_str(),
+        Some("/_cache/_tmp")
+    );
     assert_eq!(docker["scan"]["log_dir"].as_str(), Some("/_logs"));
 }
 
@@ -173,7 +198,7 @@ fn windows_and_release_versions_advance_coherently() {
         "(needs.publish-store.result == 'success' || needs.publish-store.result == 'skipped')"
     ));
 
-    for platform in ["Windows", "Ubuntu", "macOS", "All"] {
+    for platform in ["Windows", "WebGUI / Python", "macOS", "All"] {
         assert!(workflow.contains(&format!("- \"{platform}\"")));
     }
 }

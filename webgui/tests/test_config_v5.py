@@ -27,6 +27,7 @@ class ConfigV5ParityTests(unittest.TestCase):
             config["library"]["music_library"] = str(library)
             config["scan"]["cache_dir"] = str(root / "persistent")
             config["scan"]["temporary_cache_dir"] = str(root / "temporary")
+            config["scan"]["log_dir"] = str(root / "logs")
             runtime = Runtime(config_file, object(), config)
             try:
                 self.assertEqual(runtime.cache, root / "persistent")
