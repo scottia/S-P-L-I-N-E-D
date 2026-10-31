@@ -1,32 +1,131 @@
 name: Validate supported runtimes
+
 on:
   pull_request:
     branches: [dev, main]
+    types: [opened, synchronize, reopened, edited, ready_for_review, labeled, unlabeled]
+
 permissions:
   contents: read
+  pull-requests: read
+
+concurrency:
+  group: validation-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: true
+
 jobs:
-  scope:
-    name: Select relevant validation
+  boundary:
+    name: Safeguard / boundary authorization
     runs-on: ubuntu-latest
     outputs:
-      webgui: ${{ steps.scope.outputs.webgui }}
-      native: ${{ steps.scope.outputs.native }}
-      native_matrix: ${{ steps.scope.outputs.native_matrix }}
+      boundary_json: ${{ steps.scope.outputs.boundary_json }}
+      selection_json: ${{ steps.scope.outputs.selection_json }}
+      infrastructure: ${{ steps.scope.outputs.infrastructure }}
+      root_native: ${{ steps.scope.outputs.root_native }}
+      windows: ${{ steps.scope.outputs.windows }}
+      ubuntu_webgui: ${{ steps.scope.outputs.ubuntu_webgui }}
+      release_contract: ${{ steps.scope.outputs.release_contract }}
+      documentation: ${{ steps.scope.outputs.documentation }}
+    steps:
+      - name: Check out the trusted base revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: trusted-base
+      - name: Check out proposed files as data only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: proposal-data
+      - name: Verify authorization and select validation from trusted code
+        id: scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_PATH: ${{ github.event_path }}
+          REPOSITORY: ${{ github.repository }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git -C trusted-base rev-parse HEAD)" = "$BASE_SHA"
+          test "$(git -C proposal-data rev-parse HEAD)" = "$HEAD_SHA"
+          git -C proposal-data cat-file -e "$BASE_SHA^{commit}"
+          test -f trusted-base/.github/boundaries/check_boundary.py
+          test -f trusted-base/.github/boundaries/policy.json
+          test -f trusted-base/.github/scripts/trusted_boundary_adapter.py
+          test -f trusted-base/.github/scripts/validation_scope.py
+          test -f trusted-base/.github/scripts/final_validation_gate.py
+          python3 trusted-base/.github/scripts/trusted_boundary_adapter.py \
+            --event "$EVENT_PATH" \
+            --repository "$REPOSITORY" \
+            --git-repository proposal-data \
+            --trusted-root trusted-base \
+            --output "$RUNNER_TEMP/boundary.json"
+          python3 trusted-base/.github/scripts/validation_scope.py \
+            "$RUNNER_TEMP/boundary.json" \
+            --github-output "$GITHUB_OUTPUT"
+
+  infrastructure:
+    name: Validation / safeguard infrastructure
+    needs: boundary
+    if: needs.boundary.outputs.infrastructure == 'true'
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          fetch-depth: 0
-      - name: Check validation selection rules
-        run: python3 -m unittest discover -s .github/scripts -p test_validation_scope.py -v
-      - name: Select checks for changed files
-        id: scope
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: python3 .github/scripts/validation_scope.py "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"
-  webgui:
-    needs: scope
-    if: needs.scope.outputs.webgui == 'true'
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Test proposed safeguard implementation without credentials
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s .github/boundaries -p 'test_*.py' -v
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
+
+  root_native:
+    name: Validation / root-native Rust
+    needs: boundary
+    if: needs.boundary.outputs.root_native == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile minimal --no-self-update
+      - name: Test root-native implementation
+        run: cargo +stable test --locked
+
+  windows:
+    name: Validation / Windows native
+    needs: boundary
+    if: needs.boundary.outputs.windows == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Install pinned Windows Rust
+        run: rustup toolchain install 1.99.0 --profile minimal --no-self-update
+      - name: Install Windows Rust quality components
+        run: rustup component add rustfmt clippy --toolchain 1.99.0
+      - name: Check Windows Rust formatting
+        run: cargo +1.99.0 fmt --manifest-path windows/Cargo.toml -- --check
+      - name: Check Windows Rust lints
+        run: cargo +1.99.0 clippy --locked --manifest-path windows/Cargo.toml --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+      - name: Test Windows implementation
+        run: cargo +1.99.0 test --manifest-path windows/Cargo.toml --lib --bin splined --locked --target x86_64-pc-windows-msvc
+      - name: Test root Windows contracts
+        run: cargo +1.99.0 test --locked --test windows_executable_architecture --test public_config_examples
+
+  ubuntu_webgui:
+    name: Validation / Ubuntu WebGUI
+    needs: boundary
+    if: needs.boundary.outputs.ubuntu_webgui == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -44,6 +143,9 @@ jobs:
       PYTHONPATH: .:webgui/backend
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
@@ -64,29 +166,81 @@ jobs:
             sleep 1
           done
           python -c "import json; value=json.load(open('/tmp/splined-status.json')); assert value['database']=='PostgreSQL' and value['auth_required'] and value['database_ready']"
-      - if: always()
+      - name: Report disposable container logs
+        if: always()
         run: docker logs splined-webgui-test || true
-  native:
-    name: native (${{ matrix.os }})
-    needs: scope
-    if: needs.scope.outputs.native == 'true'
-    strategy:
-      matrix: ${{ fromJSON(needs.scope.outputs.native_matrix) }}
-    runs-on: ${{ matrix.os }}
+
+  release_contract:
+    name: Validation / release contracts
+    needs: boundary
+    if: needs.boundary.outputs.release_contract == 'true'
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - name: Install Rust
-        run: rustup toolchain install ${{ matrix.toolchain }} --profile minimal --no-self-update
-      - name: Install Windows Rust quality components
-        if: runner.os == 'Windows'
-        run: rustup component add rustfmt clippy --toolchain ${{ matrix.toolchain }}
-      - name: Check Windows Rust formatting
-        if: runner.os == 'Windows'
-        run: cargo +${{ matrix.toolchain }} fmt --manifest-path windows/Cargo.toml -- --check
-      - name: Check Windows Rust lints
-        if: runner.os == 'Windows'
-        run: cargo +${{ matrix.toolchain }} clippy --locked --manifest-path windows/Cargo.toml --all-targets --target x86_64-pc-windows-msvc -- -D warnings
-      - if: runner.os == 'Linux'
-        run: cargo +${{ matrix.toolchain }} test --locked
-      - if: runner.os == 'Windows'
-        run: cargo +${{ matrix.toolchain }} test --manifest-path windows/Cargo.toml --lib --bin splined --locked --target x86_64-pc-windows-msvc
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile minimal --no-self-update
+      - name: Test release, architecture, and configuration contracts
+        run: >-
+          cargo +stable test --locked
+          --test release_automation
+          --test windows_executable_architecture
+          --test public_config_examples
+
+  documentation:
+    name: Validation / documentation contract
+    needs: boundary
+    if: needs.boundary.outputs.documentation == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check authorized documentation diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: git diff --check "$BASE_SHA...$HEAD_SHA"
+
+  final_gate:
+    name: Safeguard / final validation gate
+    if: ${{ always() }}
+    needs:
+      - boundary
+      - infrastructure
+      - root_native
+      - windows
+      - ubuntu_webgui
+      - release_contract
+      - documentation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the trusted base revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+          path: trusted-base
+      - name: Require explicit success for every selected validation
+        env:
+          BOUNDARY_JSON: ${{ needs.boundary.outputs.boundary_json }}
+          SELECTION_JSON: ${{ needs.boundary.outputs.selection_json }}
+          BOUNDARY_JOB_RESULT: ${{ needs.boundary.result }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RESULTS_JSON: >-
+            {"infrastructure":"${{ needs.infrastructure.result }}","root_native":"${{ needs.root_native.result }}","windows":"${{ needs.windows.result }}","ubuntu_webgui":"${{ needs.ubuntu_webgui.result }}","release_contract":"${{ needs.release_contract.result }}","documentation":"${{ needs.documentation.result }}"}
+        run: |
+          set -euo pipefail
+          test -f trusted-base/.github/scripts/final_validation_gate.py
+          python3 trusted-base/.github/scripts/final_validation_gate.py \
+            --boundary-json "$BOUNDARY_JSON" \
+            --selection-json "$SELECTION_JSON" \
+            --results-json "$RESULTS_JSON" \
+            --boundary-job-result "$BOUNDARY_JOB_RESULT" \
+            --base "$BASE_SHA" \
+            --head "$HEAD_SHA"
