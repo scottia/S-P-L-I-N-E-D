@@ -35,7 +35,7 @@ with Windows and macOS. GitHub release notes classify explicit `webgui`,
 the separate Microsoft Store and Windows categories. A release fixture guards
 against classifying `restore` as Store or `webgui` as generic Windows GUI work.
 
-Validate changes locally on MEDIAPC, push the tested source to `dev`, then merge
+Validate changes locally on PC, push the tested source to `dev`, then merge
 the `dev` pull request into `main`. Validation runs on pull requests, so pushing
 and merging the same source does not launch duplicate push-triggered builds.
 
@@ -48,7 +48,7 @@ Keep the Windows validation toolchain in sync with workflows 01 and 02 when
 updating Rust. For a Windows release, enable extended validation to repeat the
 quality checks against the exact versioned release source before packaging.
 
-For routine MEDIAPC iterations, close SPLINED and double-click
+For routine PC iterations, close SPLINED and double-click
 `E:\apps\SPLINED\Apply Quick Local Update.cmd`. It reuses unchanged optimized
 Cargo objects, verifies and installs the complete executable, and reopens the
 app. Before repository promotion or Microsoft Store preparation, close SPLINED
