@@ -45,6 +45,11 @@ const launchArtistFunction = between(
   "async function launchArtist",
   "async function enqueueComp",
 );
+const launchCompFunctions = between(
+  operationsSource,
+  "async function enqueueComp",
+  "async function stageAlbum",
+);
 const stageAlbumFunction = between(
   operationsSource,
   "async function stageAlbum",
@@ -132,6 +137,116 @@ test("queued album for another artist still changes artist context", async () =>
 
   assert.equal(fixture.context.state.artist, replacement);
   assert.equal(fixture.calls.filter(path => path.startsWith("/api/artist")).length, 1);
+});
+
+test("Artist-scoped queued COMP review retains the report without a preselected track", async () => {
+  const selected = [];
+  const decision = {
+    context: {album_id: "comp-1", track_key: "artist-track"},
+    jobKind: "comp",
+    payload: {artist_id: "artist-1", album_id: "comp-1", track_keys: ["artist-track"]},
+  };
+  const state = {
+    artist: {id: "artist-1", albums: []}, album: null, compAlbums: [],
+    compGroups: [{id: "comp-1", tracks: [{key: "artist-track"}]}],
+    compReportVisible: true, compTrack: null, editorMode: "artist",
+    queuedDecision: decision, selectionRequest: 0,
+  };
+  const context = load(queuedAlbumFunction, {
+    state,
+    selectArtistCompTrack: async (albumId, key) => { selected.push([albumId, key]); },
+    api: async path => { throw new Error(`unexpected full-album navigation: ${path}`); },
+  });
+
+  await context.focusQueuedAlbum(decision);
+
+  assert.equal(state.editorMode, "artist");
+  assert.equal(state.compReportVisible, true);
+  assert.deepEqual(selected, [["comp-1", "artist-track"]]);
+});
+
+test("Artist-scoped queued COMP review restores its Artist after switching", async () => {
+  const calls = [];
+  const selected = [];
+  const decision = {
+    context: {album_id: "comp-1", track_key: "artist-track"},
+    jobKind: "comp",
+    payload: {artist_id: "artist-1", album_id: "comp-1", track_keys: ["artist-track"]},
+  };
+  const state = {
+    artist: {id: "artist-2", albums: []}, artistMetadata: null, album: null,
+    compAlbums: [], compGroups: [{id: "comp-2", tracks: [{key: "other-track"}]}],
+    compReportVisible: true, compReportLoading: false, compPreviewMode: false,
+    compTrack: null, compReportRequest: 0, compStatusRequest: 0, compTrackRequest: 0,
+    fallbackTracks: [], fallbackTrack: null, upscalePreview: null,
+    editorMode: "artist", workspace: "find", queuedDecision: decision,
+    selectionRequest: 0, candidates: [{image: "queued-candidate"}],
+  };
+  const context = load(queuedAlbumFunction, {
+    state,
+    api: async path => {
+      calls.push(path);
+      if (path.startsWith("/api/artist/overview")) return {
+        artist: {id: "artist-1", albums: []},
+        comp_albums: [{id: "comp-1", tracks: [{key: "artist-track"}]}],
+      };
+      if (path.startsWith("/api/artist/comp-report")) return [
+        {id: "comp-1", tracks: [{key: "artist-track"}]},
+      ];
+      throw new Error(`unexpected API call: ${path}`);
+    },
+    $: () => ({textContent: "COMP Report"}),
+    renderLibrary() {}, renderHero() {}, renderSources() {}, renderCandidates() {}, renderWorkspace() {},
+    loadArtistMetadata() {},
+    selectArtistCompTrack: async (albumId, key) => { selected.push([albumId, key]); },
+  });
+
+  await context.focusQueuedAlbum(decision);
+
+  assert.equal(state.artist.id, "artist-1");
+  assert.equal(state.album, null);
+  assert.equal(state.editorMode, "artist");
+  assert.equal(state.compReportVisible, true);
+  assert.deepEqual(state.compGroups[0].tracks.map(track => track.key), ["artist-track"]);
+  assert.deepEqual(selected, [["comp-1", "artist-track"]]);
+  assert.equal(calls.some(path => path.startsWith("/api/album")), false);
+  assert.equal(calls.some(path => path.startsWith("/api/fallback/tracks")), false);
+});
+
+test("Artist and full-album COMP launches submit independent explicit scopes", async () => {
+  const calls = [];
+  const reviewed = [];
+  const state = {
+    artist: {id: "artist-1"}, compReportVisible: true,
+    compGroups: [{id: "comp-1", tracks: [
+      {key: "artist-track", status: "blue"},
+      {key: "completed-track", status: "green"},
+    ]}],
+    album: {id: "comp-1"},
+    fallbackTracks: [
+      {key: "artist-track", completed: false},
+      {key: "other-track", completed: false},
+      {key: "completed-track", completed: true},
+    ],
+  };
+  const context = load(launchCompFunctions, {
+    state,
+    post: async (path, body) => { calls.push([path, body]); return {id: `job-${calls.length}`}; },
+    reviewJob: async id => { reviewed.push(id); },
+    setStatus() {},
+  });
+
+  await context.launchArtistComp();
+  await context.launchFallback();
+
+  const submitted = JSON.parse(JSON.stringify(calls));
+  assert.deepEqual(submitted[0], ["/api/jobs", {kind: "comp", payload: {
+    artist_id: "artist-1", album_id: "comp-1", track_keys: ["artist-track"],
+  }}]);
+  assert.deepEqual(submitted[1], ["/api/jobs", {kind: "comp", payload: {
+    album_id: "comp-1", track_keys: ["artist-track", "other-track"],
+  }}]);
+  assert.deepEqual(reviewed, ["job-1", "job-2"]);
 });
 
 test("lazy thumbnail hydration updates matching artists and rerenders", async () => {

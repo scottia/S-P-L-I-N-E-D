@@ -630,7 +630,7 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
             payload = services.stage_album(payload)
         if kind == "comp":
             context.runtime.require_write()
-            services.album_row(str(payload.get("album_id", "")))
+            payload = services.validate_comp_payload(payload)
         return context.jobs.enqueue(str(kind), payload, staged=kind == "embed-album")
 
     @app.post("/api/jobs/action")

@@ -195,8 +195,10 @@ async function skipQueuedAlbum() {
   if (state.queuedDecision?.jobKind !== "scan") throw new Error("No Album scan is waiting to be skipped");
   await submitQueuedDecision("k");
 }
-async function enqueueComp(albumId, keys) {
-  const result = await post("/api/jobs", {kind: "comp", payload: {album_id: albumId, track_keys: keys}});
+async function enqueueComp(albumId, keys, artistId = "") {
+  const payload = {album_id: albumId, track_keys: [...keys]};
+  if (artistId) payload.artist_id = artistId;
+  const result = await post("/api/jobs", {kind: "comp", payload});
   await reviewJob(result.id);
 }
 async function launchFallback() {
@@ -204,10 +206,12 @@ async function launchFallback() {
   await enqueueComp(state.album.id, state.fallbackTracks.filter(track => !track.completed).map(track => track.key));
 };
 async function launchArtistComp() {
+  if (!state.artist || !state.compReportVisible) throw new Error("Open this Artist's COMP Report before launching work");
+  const artistId = state.artist.id;
   const groups = state.compGroups.map(group => ({id: group.id, keys: group.tracks.filter(track => track.status === "blue").map(track => track.key)})).filter(group => group.keys.length);
   let first;
   for (const group of groups) {
-    const result = await post("/api/jobs", {kind: "comp", payload: {album_id: group.id, track_keys: group.keys}}); first ||= result.id;
+    const result = await post("/api/jobs", {kind: "comp", payload: {artist_id: artistId, album_id: group.id, track_keys: group.keys}}); first ||= result.id;
   }
   if (first) await reviewJob(first); else setStatus("No blue COMP tracks need artwork");
 };
@@ -248,11 +252,43 @@ function clearQueuedDecision() {
 }
 async function focusQueuedAlbum(decision) {
   const albumId = decision?.context?.album_id;
-  const retainCompReport = decision?.jobKind === "comp"
-    && state.editorMode === "artist" && state.compReportVisible
-    && state.compTrack?.albumId === albumId;
-  if (retainCompReport) {
+  const scopeArtistId = decision?.jobKind === "comp" ? String(decision?.payload?.artist_id || "") : "";
+  const scopeKeys = Array.isArray(decision?.payload?.track_keys) ? decision.payload.track_keys : [];
+  const scopedGroup = scopeArtistId === state.artist?.id && state.editorMode === "artist" && state.compReportVisible
+    ? state.compGroups.find(group => group.id === albumId && scopeKeys.every(key => group.tracks.some(track => track.key === key)))
+    : null;
+  if (scopedGroup) {
     decision.previousCandidates = [];
+    const trackKey = decision.context?.track_key || (scopeKeys.length === 1 ? scopeKeys[0] : "");
+    if (trackKey && scopedGroup.tracks.some(track => track.key === trackKey)
+      && (state.compTrack?.albumId !== albumId || state.compTrack?.key !== trackKey))
+      await selectArtistCompTrack(albumId, trackKey);
+    return;
+  }
+  if (scopeArtistId) {
+    const request = ++state.selectionRequest;
+    const overview = scopeArtistId === state.artist?.id
+      ? {artist: state.artist, comp_albums: state.compAlbums}
+      : await api("/api/artist/overview?id=" + encodeURIComponent(scopeArtistId));
+    if (request !== state.selectionRequest || state.queuedDecision !== decision) return;
+    const compGroups = await api("/api/artist/comp-report?id=" + encodeURIComponent(scopeArtistId));
+    if (request !== state.selectionRequest || state.queuedDecision !== decision) return;
+    const group = compGroups.find(item => item.id === albumId);
+    if (!group || !scopeKeys.length || scopeKeys.some(key => !group.tracks.some(track => track.key === key)))
+      throw new Error("Queued COMP work no longer matches this Artist's report");
+    ++state.compReportRequest; ++state.compStatusRequest; ++state.compTrackRequest;
+    state.artist = overview.artist; state.artistMetadata = null; state.album = null;
+    state.compAlbums = overview.comp_albums || []; state.compGroups = compGroups;
+    state.editorMode = "artist"; state.workspace = "find";
+    state.fallbackTracks = []; state.fallbackTrack = null; state.upscalePreview = null;
+    state.compReportLoading = false; state.compReportVisible = true; state.compPreviewMode = false;
+    state.compTrack = null; decision.previousCandidates = [];
+    $("compReportButton").textContent = "CLOSE REPORT";
+    renderLibrary(); renderHero(); renderSources(); renderCandidates(); renderWorkspace();
+    loadArtistMetadata(scopeArtistId);
+    const trackKey = decision.context?.track_key || (scopeKeys.length === 1 ? scopeKeys[0] : "");
+    if (trackKey && group.tracks.some(track => track.key === trackKey))
+      await selectArtistCompTrack(albumId, trackKey);
     return;
   }
   if (!albumId || state.album?.id === albumId) return;
@@ -291,10 +327,13 @@ async function submitQueuedDecision(value) {
 async function presentQueuedCandidates(job, prompt, options) {
   if ($("workspaceDialog").open) $("workspaceDialog").close();
   const previousCandidates = state.queuedDecision?.previousCandidates || state.candidates;
-  const context = prompt.context || {};
+  const authority = job.progress?.current?.fallback_authority || {};
+  const context = {...(prompt.context || {})};
+  context.track_title ||= authority.track || "";
+  context.track_artist ||= authority.artist || "";
   state.queuedDecision = {
     jobId: job.id, jobKind: job.kind, nonce: prompt.nonce, kind: context.kind || "", context,
-    previousCandidates, selected: null,
+    payload: job.payload || {}, previousCandidates, selected: null,
   };
   state.workspace = "find";
   state.candidates = options.map(queuedCandidate);
@@ -313,7 +352,8 @@ function renderQueue() {
   if (!jobs.length) host.append(node("p", "empty-copy", "No queued work yet."));
   for (const job of jobs) {
     const prompt = job.progress?.prompt || {}, context = prompt.context || {};
-    const title = [context.artist || job.payload?.artist, context.album || job.payload?.name]
+    const title = [context.scope_artist || context.track_artist || context.artist || job.payload?.artist_name || job.payload?.artist,
+      context.track_title || context.track || context.album || job.payload?.name]
       .filter(Boolean).join(" — ") || ({comp: "COMP track artwork", "embed-album": "Album embedding", scan: "Artwork scan", index: "Library index"}[job.kind] || "Artwork work");
     const kind = job.kind === "comp" ? "COMP track artwork" : job.kind === "embed-album" ? "Album track embedding"
       : job.kind === "scan" ? "Artwork scan" : job.kind === "index" ? "Library index" : "Artwork work";
@@ -349,7 +389,28 @@ async function refreshCompletedAlbum(albumId) {
   }
   renderLibrary(); renderHero(); renderPanes(); renderReview();
 }
-async function refreshQueuedAlbumAfterSave() {
+async function refreshQueuedAlbumAfterSave(job = null) {
+  const scopeArtistId = job?.kind === "comp" ? String(job.payload?.artist_id || "") : "";
+  if (scopeArtistId) {
+    if (state.artist?.id !== scopeArtistId) return;
+    const artistId = scopeArtistId;
+    const fallbackKey = job.payload?.track_keys?.length === 1 ? job.payload.track_keys[0] : "";
+    const selected = state.compTrack ? {albumId: state.compTrack.albumId, key: state.compTrack.key}
+      : fallbackKey ? {albumId: job.payload?.album_id, key: fallbackKey} : null;
+    const [compGroups, compAlbums] = await Promise.all([
+      api("/api/artist/comp-report?id=" + encodeURIComponent(artistId)),
+      api("/api/artist/comp-albums?id=" + encodeURIComponent(artistId)),
+    ]);
+    if (state.artist?.id !== artistId) return;
+    state.album = null; state.editorMode = "artist"; state.compReportVisible = true;
+    state.compGroups = compGroups; state.compAlbums = compAlbums;
+    $("compReportButton").textContent = "CLOSE REPORT";
+    const selectedStillVisible = selected && compGroups.some(group => group.id === selected.albumId
+      && group.tracks.some(track => track.key === selected.key));
+    if (selectedStillVisible) await selectArtistCompTrack(selected.albumId, selected.key);
+    else { renderHero(); renderCandidates(); renderReview(); }
+    return;
+  }
   if (state.editorMode === "artist" && state.compReportVisible && state.artist) {
     const artistId = state.artist.id;
     const selected = state.compTrack ? {albumId: state.compTrack.albumId, key: state.compTrack.key} : null;
@@ -398,7 +459,7 @@ async function pollJobs() {
       if (job && job.state !== state.reviewJobState) {
         state.reviewJobState = job.state;
         if (job.state === "done") {
-          await refreshQueuedAlbumAfterSave();
+          await refreshQueuedAlbumAfterSave(job);
           state.reviewJobId = null;
           if (job.kind === "embed-album") setStatus("Album track embedding completed and verified · " + (state.album?.name || job.payload?.name || "Album"));
           else if (job.kind === "scan") setStatus(`Album batch complete · ${job.result?.reviewed ?? 0} reviewed · ${job.result?.mode === "write" ? "approved covers written" : "Read mode, no covers written"}`);
@@ -434,15 +495,9 @@ async function renderJob(job) {
     body.append(node("p", "", job.state === "done" ? "Finished" : job.state));
     if(job.result) for(const [key,value] of Object.entries(job.result)) if(typeof value!=="object") body.append(node("p","",key.replaceAll("_"," ")+": "+value));
     if (job.state === "done") {
-      if (state.compReportVisible && state.artist) runAction(async () => {
-        const artistId = state.artist.id;
-        const [compGroups, compAlbums] = await Promise.all([
-          api("/api/artist/comp-report?id=" + encodeURIComponent(artistId)),
-          api("/api/artist/comp-albums?id=" + encodeURIComponent(artistId)),
-        ]);
-        if (state.artist?.id !== artistId || !state.compReportVisible) return;
-        state.compGroups = compGroups; state.compAlbums = compAlbums;
-        renderArtistCompReport(); probeArtistCompStatuses();
+      if (job.kind === "comp") runAction(async () => {
+        await refreshQueuedAlbumAfterSave(job);
+        if (state.compReportVisible && state.artist) probeArtistCompStatuses();
       });
       actionButton("Next queued decision", async () => { const next = state.jobs.find(item => item.state === "waiting"); if (next) await reviewJob(next.id); else { state.reviewJobId = null; $("workspaceDialog").close(); } });
     }

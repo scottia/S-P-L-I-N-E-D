@@ -302,6 +302,28 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.assertEqual({track["file"] for track in full}, {
             target_path.name, other_path.name, featured_path.name,
         })
+        target_key = next(
+            track["key"] for track in first[0]["tracks"]
+            if track["file"] == target_path.name
+        )
+        other_key = next(track["key"] for track in full if track["file"] == other_path.name)
+        scoped_payload = self.services.validate_comp_payload({
+            "artist_id": self.row["artist_key"],
+            "album_id": comp_row["album_key"],
+            "track_keys": [target_key],
+        })
+        self.assertEqual(scoped_payload["track_keys"], [target_key])
+        with self.assertRaisesRegex(ValueError, "not in this Artist's COMP report"):
+            self.services.validate_comp_payload({
+                "artist_id": self.row["artist_key"],
+                "album_id": comp_row["album_key"],
+                "track_keys": [other_key],
+            })
+        full_payload = self.services.validate_comp_payload({
+            "album_id": comp_row["album_key"],
+            "track_keys": [target_key, other_key],
+        })
+        self.assertEqual(full_payload["track_keys"], [target_key, other_key])
 
     def test_read_mode_and_invalid_destinations_do_not_write(self):
         original = self.cover.read_bytes()
@@ -364,6 +386,23 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "verification"):
             self.services.embed_album(staged)
         self.assertEqual(self.files[0].read_bytes(), before)
+
+    def test_comp_queue_deduplicates_only_the_same_track_and_artist_scope(self):
+        queue = JobQueue(self.services)
+        queue.close()
+        full = queue.enqueue("comp", {
+            "album_id": "comp-1", "track_keys": ["artist-track", "other-track"],
+        })
+        scoped = queue.enqueue("comp", {
+            "artist_id": "artist-1", "album_id": "comp-1", "track_keys": ["artist-track"],
+        })
+        repeated = queue.enqueue("comp", {
+            "artist_id": "artist-1", "album_id": "comp-1", "track_keys": ["artist-track"],
+        })
+
+        self.assertNotEqual(full["id"], scoped["id"])
+        self.assertEqual(repeated["id"], scoped["id"])
+        self.assertTrue(repeated["already_queued"])
 
     def test_queue_start_leaves_paused_work_paused_and_retry_clears_stale_review(self):
         self.queue = JobQueue(self.services)

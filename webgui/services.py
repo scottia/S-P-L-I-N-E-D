@@ -895,26 +895,76 @@ class Services:
         }
 
     @serialized
+    def validate_comp_payload(self, payload):
+        """Resolve an explicit COMP selection without widening its scope."""
+        album_id = str(payload.get("album_id", "")).strip()
+        row = self.album_row(album_id)
+        if str(row["musicbrainz_albumid"] or "").strip():
+            raise ValueError("This album is not a COMP fallback album")
+
+        requested = payload.get("track_keys")
+        if (
+            not isinstance(requested, list)
+            or not requested
+            or any(not isinstance(key, str) or not key for key in requested)
+            or len(set(requested)) != len(requested)
+        ):
+            raise ValueError("Choose explicit indexed COMP tracks")
+
+        records = self.hydrate_tracks(album_id)
+        indexed = {item["track_key"] for item in records}
+        if any(key not in indexed for key in requested):
+            raise ValueError("Choose indexed COMP tracks")
+
+        normalized = dict(payload)
+        normalized.update(
+            album_id=album_id,
+            track_keys=list(requested),
+            name=row["album_name"],
+        )
+        artist_id = str(payload.get("artist_id", "")).strip()
+        if artist_id:
+            report = self.catalog.artist_comp_report(artist_id)
+            group = next((item for item in report if item["id"] == album_id), None)
+            scoped = {track["key"] for track in group["tracks"]} if group else set()
+            if any(key not in scoped for key in requested):
+                raise ValueError("Track is not in this Artist's COMP report")
+            normalized["artist_id"] = artist_id
+            normalized["artist_name"] = self.catalog.artist(artist_id)["name"]
+        else:
+            normalized.pop("artist_id", None)
+            normalized.pop("artist_name", None)
+        return normalized
+
+    @serialized
     def run_comp(self, payload, adapter):
         self.runtime.require_write()
         r = self.runtime
-        row = self.album_row(str(payload.get("album_id", "")))
+        payload = self.validate_comp_payload(payload)
+        row = self.album_row(payload["album_id"])
+        scope_artist_id = str(payload.get("artist_id", ""))
         adapter.context = {
             "album_id": row["album_key"],
             "album": row["album_name"],
             "artist": row["artist_name"],
+            "scope_artist_id": scope_artist_id,
+            "scope_artist": payload.get("artist_name", ""),
         }
-        if str(row["musicbrainz_albumid"] or "").strip():
-            raise ValueError("This album is not a COMP fallback album")
         records = self.hydrate_tracks(row["album_key"])
         allowed = {item["track_key"]: item["path"] for item in records}
-        requested = payload.get("track_keys") or list(allowed)
-        if not isinstance(requested, list) or any(
-            key not in allowed for key in requested
-        ):
-            raise ValueError("Choose indexed COMP tracks")
+        requested = payload["track_keys"]
         selected_files = [Path(allowed[key]) for key in requested]
         tracks = [core.read_track(path) for path in selected_files]
+        keys_by_path = {str(Path(allowed[key])): key for key in requested}
+
+        def update_track_context(track):
+            adapter.context.update(
+                track_key=keys_by_path.get(str(track.path), ""),
+                track_file=track.path.name,
+                track_title=str(track.title or track.path.name),
+                track_artist=str(track.artist or ""),
+            )
+
         summary = core.Summary()
         cache = r.temporary_cache / "comp-work" / uuid4().hex
         cache.mkdir(parents=True, exist_ok=True)
@@ -932,6 +982,7 @@ class Services:
             unresolved_items=[],
             state={},
             target_track_paths={allowed[key] for key in requested},
+            track_context=update_track_context,
         )
         self.refresh_album(row["album_key"])
         self.refresh_embedding_stats(row)
