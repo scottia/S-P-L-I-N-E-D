@@ -2142,14 +2142,12 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         )
                     ).to_be_disabled()
                     expect(page.locator(".musicbrainz-release-row").first).to_be_visible()
-                    page.evaluate(
-                        """() => {
-                          document.querySelector('.musicbrainz-release-row').click();
-                          const use = document.querySelector('.musicbrainz-review-actions button.primary');
-                          if (!use || use.disabled) throw new Error('release selection did not enable Use Selected Album');
-                          use.click();
-                        }"""
+                    page.locator(".musicbrainz-release-row").first.click()
+                    use_selected = page.locator(
+                        ".musicbrainz-review-actions button.primary"
                     )
+                    expect(use_selected).to_be_enabled()
+                    use_selected.click()
                     expect(page.locator(".candidate-image-button").first).to_be_visible(
                         timeout=15000
                     )
