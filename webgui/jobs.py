@@ -524,14 +524,14 @@ class JobQueue:
                     self.wake.wait(1)
                     self.wake.clear()
                     continue
-                    self.audit_job(
-                        job["id"],
-                        "job-transition",
-                        stage="worker",
-                        state_from="queued",
-                        state_to="running",
-                        request_status="running",
-                    )
+                self.audit_job(
+                    job["id"],
+                    "job-transition",
+                    stage="worker",
+                    state_from="queued",
+                    state_to="running",
+                    request_status="running",
+                )
                 adapter = JobAdapter(self, job["id"])
                 try:
                     with self.services.runtime.processing, use_adapter(adapter):

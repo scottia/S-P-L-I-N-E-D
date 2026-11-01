@@ -1995,7 +1995,7 @@ $("aboutButton").addEventListener("click", () => runAction(async () => {
   const body = $("dialogBody"), card = node("section", "about-card");
   card.append(node("h3", "", "S.P.L.I.N.E.D."), node("p", "about-tagline", "Searchable · Focused · Linked · Identified · Normalized · Enriched · Defined"));
   const facts = node("dl", "about-facts");
-  for (const [label, value] of [["Version", state.server?.version || storage.version || "Unknown"], ["Runtime", "WebGUI / PostgreSQL"], ["Mode", String(state.server?.mode || storage.mode || "read").toUpperCase()], ["Catalog", storage.database || "PostgreSQL"]]) {
+  for (const [label, value] of [["Version", state.server?.version || storage.version || "Unknown"], ["Revision", (state.server?.revision || storage.revision || "Unknown").slice(0, 12)], ["Runtime", "WebGUI / PostgreSQL"], ["Mode", String(state.server?.mode || storage.mode || "read").toUpperCase()], ["Catalog", storage.database || "PostgreSQL"]]) {
     facts.append(node("dt", "", label), node("dd", "", value));
   }
   const links = node("div", "about-links");

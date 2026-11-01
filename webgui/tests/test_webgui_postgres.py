@@ -1074,7 +1074,12 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             )
             self.assertEqual(
                 client.post(
-                    "/api/bypass", json={"album_id": self.row["album_key"]}
+                    "/api/bypass",
+                    json={"album_id": self.row["album_key"]},
+                    headers={
+                        "X-SPLINED-Action": "action-bypass",
+                        "X-SPLINED-Trace": "trace-bypass",
+                    },
                 ).status_code,
                 200,
             )
@@ -1088,6 +1093,23 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertEqual(diagnostics.status_code, 200)
             self.assertTrue(
                 any(event["action"] == "bypass" for event in diagnostics.json())
+            )
+            bypass_http = [
+                event
+                for event in diagnostics.json()
+                if event["subject"] == "POST /api/bypass"
+                and event["trace_id"] == "trace-bypass"
+            ]
+            self.assertEqual(
+                [event["action"] for event in bypass_http],
+                ["api-request", "api-response"],
+            )
+            self.assertEqual(
+                [event["request_status"] for event in bypass_http],
+                ["started", "completed"],
+            )
+            self.assertTrue(
+                all(event["action_id"] == "action-bypass" for event in bypass_http)
             )
             storage = client.get("/api/storage")
             self.assertEqual(storage.status_code, 200)
@@ -1143,6 +1165,54 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertEqual(client.post("/api/logout").status_code, 200)
             self.assertEqual(client.get("/api/artists").status_code, 401)
         self.runtime = Runtime(self.config, self.db)
+
+    def test_audit_recovers_sanitized_local_fallback_in_order(self):
+        with patch.object(
+            self.runtime.database,
+            "connect",
+            side_effect=OSError("postgres unavailable password=database-secret"),
+        ):
+            fallback_sequence = self.services.audit(
+                "deliberate-test-failure",
+                "audit recovery",
+                {"password": "payload-secret", "album_id": "album-1"},
+                severity="error",
+                action_id="action-recovery",
+                trace_id="trace-recovery",
+                request_status="failed",
+            )
+
+        self.assertLess(fallback_sequence, 0)
+        self.assertTrue(self.services._audit_fallback_path.is_file())
+        current_sequence = self.services.audit(
+            "recovery-check",
+            "audit recovery",
+            action_id="action-recovery",
+            trace_id="trace-recovery",
+            request_status="completed",
+        )
+        self.assertGreater(current_sequence, 0)
+        self.assertFalse(self.services._audit_fallback_path.exists())
+
+        with closing(self.db.connect()) as db:
+            rows = db.execute(
+                "SELECT id,action,details,recovered_from_fallback,session_id,"
+                "application_version,application_revision FROM web_audit "
+                "WHERE action_id=? ORDER BY id",
+                ("action-recovery",),
+            ).fetchall()
+        self.assertEqual(
+            [row["action"] for row in rows],
+            ["deliberate-test-failure", "recovery-check"],
+        )
+        self.assertTrue(rows[0]["recovered_from_fallback"])
+        self.assertFalse(rows[1]["recovered_from_fallback"])
+        self.assertLess(rows[0]["id"], rows[1]["id"])
+        self.assertEqual(rows[0]["details"]["password"], "[REDACTED]")
+        self.assertNotIn("payload-secret", repr(rows))
+        self.assertTrue(all(row["session_id"] for row in rows))
+        self.assertTrue(all(row["application_version"] for row in rows))
+        self.assertTrue(all(row["application_revision"] for row in rows))
 
     def test_credentials_mask_secrets_and_retain_blank_values(self):
         credentials = Credentials(self.runtime)
@@ -1323,6 +1393,21 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         )
         self.assertEqual(self.cover.read_bytes(), original_cover)
         self.assertNotIn("musicbrainz_albumid", FLAC(target))
+        with closing(self.db.connect()) as db:
+            transitions = db.execute(
+                "SELECT id,state_from,state_to,request_status FROM web_audit "
+                "WHERE job_id=? AND action='job-transition' ORDER BY id",
+                (job["id"],),
+            ).fetchall()
+        states = [event["state_to"] for event in transitions]
+        self.assertEqual(states[:2], ["queued", "running"])
+        self.assertGreaterEqual(states.count("waiting"), 2)
+        self.assertGreaterEqual(states.count("running"), 3)
+        self.assertEqual(states[-1], "done")
+        self.assertEqual(
+            [event["id"] for event in transitions],
+            sorted(event["id"] for event in transitions),
+        )
 
     def test_title_suggested_comp_write_without_apply_ids_stays_blue(self):
         row, track, target = self.make_comp_track(
@@ -2121,6 +2206,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
 
                     # A regular Album stages through the rendered controls and
                     # its card survives a real browser reload.
+                    expect(page.locator("#mediaFilter")).to_be_hidden()
+                    page.locator("#mediaFilterToggle").click()
+                    expect(page.locator("#mediaFilter")).to_be_visible()
                     page.locator("#artistSearch").fill("Test Artist")
                     page.locator("#artistList button", has_text="Test Artist").click()
                     page.locator("button.album-card", has_text="Test Album").click()
@@ -2157,12 +2245,15 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     # one 10,000 Maniacs track and presents simulated MB 100%.
                     page.locator("#findTab").click()
                     page.locator("#artistsTab").click()
+                    expect(page.locator("#mediaFilter")).to_be_hidden()
+                    page.locator("#mediaFilterToggle").click()
+                    expect(page.locator("#mediaFilter")).to_be_visible()
                     page.locator("#artistSearch").fill("10,000 Maniacs")
                     page.locator(
                         "#artistList button", has_text="10,000 Maniacs"
                     ).click()
-                    expect(page.locator("#statusText")).to_contain_text(
-                        "Loaded 10,000 Maniacs"
+                    expect(page.locator("#artistName")).to_have_text(
+                        "10,000 Maniacs"
                     )
                     page.locator("#compReportButton").click()
                     expect(page.locator("#fallbackReport")).to_contain_text(
@@ -2297,10 +2388,30 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     page.locator(
                         '.musicbrainz-authority-fields input[placeholder="Artist MBID"]'
                     ).fill("6c8b9855-ba8b-48f9-ac1d-42167f7f7b18")
-                    page.locator(
-                        ".musicbrainz-authority-fields button",
-                        has_text="Apply IDs",
-                    ).click()
+                    authority_nonce = page.evaluate(
+                        "() => state.queuedDecision?.nonce || ''"
+                    )
+                    with page.expect_response(
+                        lambda response: response.url.endswith("/api/jobs/action")
+                        and response.request.method == "POST"
+                        and "manual-authority-query"
+                        in (response.request.post_data or ""),
+                        timeout=15000,
+                    ) as authority_response:
+                        page.locator(
+                            ".musicbrainz-authority-fields button",
+                            has_text="Apply IDs",
+                        ).click()
+                    self.assertTrue(
+                        authority_response.value.ok,
+                        authority_response.value.text(),
+                    )
+                    page.wait_for_function(
+                        "previous => state.queuedDecision?.nonce"
+                        " && state.queuedDecision.nonce !== previous",
+                        arg=authority_nonce,
+                        timeout=15000,
+                    )
                     expect(page.locator("#musicbrainzReview")).to_contain_text(
                         "Artist ID · valid · Recording ID · valid",
                         timeout=15000,
@@ -2324,14 +2435,49 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     # Job polling can replace this enabled button with an
                     # equivalent node between Playwright's stability checks.
                     # Query and dispatch atomically on the currently enabled node.
-                    page.evaluate("""() => {
-                        const button = document.querySelector('.musicbrainz-review-actions button.primary');
-                        if (!button || button.disabled) throw new Error('selected release was not retained');
-                        button.click();
-                    }""")
-                    expect(page.locator(".candidate-image-button").first).to_be_visible(
-                        timeout=15000
+                    with page.expect_response(
+                        lambda response: response.url.endswith("/api/jobs/action")
+                        and response.request.method == "POST"
+                        and '"value":"1"'
+                        in (response.request.post_data or "").replace(" ", ""),
+                        timeout=15000,
+                    ) as action_response:
+                        page.evaluate("""() => {
+                            const button = document.querySelector('.musicbrainz-review-actions button.primary');
+                            if (!button || button.disabled) throw new Error('selected release was not retained');
+                            button.click();
+                        }""")
+                    self.assertTrue(
+                        action_response.value.ok,
+                        action_response.value.text(),
                     )
+                    expect(page.locator("#statusText")).to_contain_text(
+                        "loading artwork candidates", timeout=15000
+                    )
+                    try:
+                        expect(page.locator(".candidate-image-button").first).to_be_visible(
+                            timeout=15000
+                        )
+                    except AssertionError as error:
+                        job_diagnostics = page.evaluate("""async () => ({
+                            reviewJobId: state.reviewJobId,
+                            reviewJobState: state.reviewJobState,
+                            queuedDecision: state.queuedDecision ? {
+                              jobId: state.queuedDecision.jobId,
+                              nonce: state.queuedDecision.nonce,
+                              kind: state.queuedDecision.kind,
+                              selectedResult: state.queuedDecision.selectedResult,
+                            } : null,
+                            jobs: (await fetch('/api/jobs').then(response => response.json())).map(job => ({
+                              id: job.id, kind: job.kind, state: job.state, error: job.error,
+                              promptKind: job.progress?.prompt?.context?.kind,
+                              promptNonce: job.progress?.prompt?.nonce,
+                              message: job.progress?.message,
+                            })),
+                        })""")
+                        self.fail(
+                            f"candidate handoff did not render: {job_diagnostics!r}; {error}"
+                        )
                     cards = page.locator("#candidateGrid .candidate-card.queued")
                     self.assertGreaterEqual(cards.count(), 5)
                     first_card = cards.first
@@ -2449,6 +2595,12 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     )
                     full_launch_call_start = len(http_calls)
                     page.locator("#searchButton").click()
+                    expect(page.locator("#musicbrainzReview")).to_be_visible(
+                        timeout=15000
+                    )
+                    expect(page.locator("#musicbrainzReview")).to_contain_text(
+                        "Other Performer — Other Song", timeout=15000
+                    )
                     expect(page.locator("#musicbrainzReview")).to_contain_text(
                         "100% match · Release Family"
                     )
@@ -2462,6 +2614,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     )
                     page.locator(".musicbrainz-release-row").click()
                     page.locator(".musicbrainz-review-actions button.primary").click()
+                    expect(page.locator(".candidate-image-button").first).to_be_visible(
+                        timeout=15000
+                    )
                     page.locator(".candidate-image-button").first.click()
                     expect(page.locator("#writeButton")).to_have_text("EMBED Comp")
                     expect(page.locator("#embedBatchButton")).to_have_text("EMBED Batch")
@@ -2479,12 +2634,13 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     # Reopen the Artist report and prove full-album work did
                     # not leak the other performer into the Artist scope.
                     page.locator("#artistsTab").click()
+                    expect(page.locator("#mediaFilter")).to_be_visible()
                     page.locator("#artistSearch").fill("10,000 Maniacs")
                     page.locator(
                         "#artistList button", has_text="10,000 Maniacs"
                     ).click()
-                    expect(page.locator("#statusText")).to_contain_text(
-                        "Loaded 10,000 Maniacs"
+                    expect(page.locator("#artistName")).to_have_text(
+                        "10,000 Maniacs"
                     )
                     page.locator("#compReportButton").click()
                     expect(page.locator("#fallbackReport")).to_contain_text(

@@ -1,6 +1,18 @@
 {
-  "format": "splined-web-audit-v1",
+  "format": "splined-web-audit-v2",
   "generated_at": "2026-11-01T18:00:04Z",
+  "export": {
+    "retained_first_sequence": 1201,
+    "retained_last_sequence": 1203,
+    "retained_records": 3,
+    "records_pruned_before_retained_window": 1200,
+    "fallback_records_pending_recovery": 0,
+    "fallback_bytes_pending_recovery": 0,
+    "selected_records": 3,
+    "selected_records_truncated": false,
+    "complete_for_retained_window": true,
+    "truncation_reason": ""
+  },
   "filters": {
     "severity": "",
     "action": "",
@@ -11,6 +23,10 @@
   "events": [
     {
       "sequence": 1201,
+      "session_id": "session-pr131-acceptance",
+      "application_version": "2.0.18",
+      "application_revision": "e8d2c6c091b2824c5e63311feb80c6b4d65b161d",
+      "recovered_from_fallback": false,
       "created_at": "2026-11-01T18:00:01Z",
       "severity": "info",
       "action": "button-click",
@@ -36,6 +52,10 @@
     },
     {
       "sequence": 1202,
+      "session_id": "session-pr131-acceptance",
+      "application_version": "2.0.18",
+      "application_revision": "e8d2c6c091b2824c5e63311feb80c6b4d65b161d",
+      "recovered_from_fallback": false,
       "created_at": "2026-11-01T18:00:02Z",
       "severity": "info",
       "action": "job-transition",
@@ -58,6 +78,10 @@
     },
     {
       "sequence": 1203,
+      "session_id": "session-pr131-acceptance",
+      "application_version": "2.0.18",
+      "application_revision": "e8d2c6c091b2824c5e63311feb80c6b4d65b161d",
+      "recovered_from_fallback": false,
       "created_at": "2026-11-01T18:00:03Z",
       "severity": "error",
       "action": "provider-result",

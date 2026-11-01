@@ -38,7 +38,13 @@ from webgui.catalog import (
 )
 from webgui.runtime import Runtime
 from webgui import imaging
-from webgui.audit import normalize_severity, sanitize, sanitize_text
+from webgui.audit import (
+    application_revision,
+    normalize_severity,
+    sanitize,
+    sanitize_text,
+    utc_now,
+)
 
 
 LOGGER = logging.getLogger("uvicorn.error")
@@ -116,6 +122,24 @@ class Services:
         )
         self.lock = threading.RLock()
         self._audit_events_written = 0
+        self.audit_session_id = uuid4().hex
+        self.application_revision = application_revision()
+        self._audit_lock = threading.RLock()
+        self._audit_fallback_counter = 0
+        log_path = Path(runtime.log_path) if runtime.log_path else runtime.cache / "runtime.log"
+        self._audit_fallback_path = log_path.with_name("web-audit-fallback.jsonl")
+
+    def start_audit_session(self):
+        return self.audit(
+            "diagnostic-session-start",
+            "WebGUI",
+            {
+                "application_version": core.VERSION,
+                "application_revision": self.application_revision,
+            },
+            stage="startup",
+            request_status="started",
+        )
 
     def reload_settings(self):
         app = self.catalog
@@ -134,6 +158,107 @@ class Services:
         app.metadata_cache.clear()
         app.appearance_cache.clear()
         app.portrait_cache.clear()
+
+    def _audit_fallback_files(self):
+        base = self._audit_fallback_path
+        return [base.with_name(base.name + f".{number}") for number in range(4, 0, -1)] + [base]
+
+    def _append_audit_fallback(self, event, insertion_error):
+        self._audit_fallback_counter += 1
+        fallback = {
+            **event,
+            "fallback_id": (
+                f"{self.audit_session_id}:{self._audit_fallback_counter}:"
+                f"{uuid4().hex}"
+            ),
+            "insertion_error": sanitize_text(insertion_error, limit=1000),
+        }
+        path = self._audit_fallback_path
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.is_file() and path.stat().st_size >= 1024 * 1024:
+                oldest = path.with_name(path.name + ".4")
+                oldest.unlink(missing_ok=True)
+                for number in range(3, 0, -1):
+                    source = path.with_name(path.name + f".{number}")
+                    if source.is_file():
+                        os.replace(source, path.with_name(path.name + f".{number + 1}"))
+                os.replace(path, path.with_name(path.name + ".1"))
+            with path.open("a", encoding="utf-8", newline="\n") as handle:
+                handle.write(json.dumps(fallback, ensure_ascii=False, sort_keys=True) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+        except OSError as fallback_error:
+            core.runtime_log(
+                "critical",
+                "webgui.audit fallback unavailable "
+                + core._redact_log_message(sanitize_text(fallback_error)),
+            )
+        return -self._audit_fallback_counter
+
+    def _load_audit_fallback(self):
+        events = []
+        files = []
+        for path in self._audit_fallback_files():
+            if not path.is_file():
+                continue
+            files.append(path)
+            try:
+                with path.open("r", encoding="utf-8") as handle:
+                    for line in handle:
+                        try:
+                            value = json.loads(line)
+                        except (TypeError, ValueError):
+                            continue
+                        if isinstance(value, dict) and value.get("fallback_id"):
+                            events.append(sanitize(value))
+            except OSError:
+                continue
+        return events, files
+
+    @staticmethod
+    def _insert_audit_event(raw, event, *, recovered=False):
+        raw.execute(
+            "INSERT INTO web_audit_sessions"
+            "(session_id,application_version,application_revision,started_at) "
+            "VALUES(%s,%s,%s,%s) ON CONFLICT(session_id) DO NOTHING",
+            (
+                event["session_id"],
+                event["application_version"],
+                event["application_revision"],
+                event["created_at"],
+            ),
+        )
+        return raw.execute(
+            "INSERT INTO web_audit"
+            "(action,subject,details,severity,action_id,trace_id,job_id,scope,stage,"
+            "request_status,elapsed_ms,state_from,state_to,error,created_at,session_id,"
+            "application_version,application_revision,recovered_from_fallback,fallback_id) "
+            "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+            "ON CONFLICT DO NOTHING RETURNING id",
+            (
+                event["action"],
+                event["subject"],
+                Jsonb(event["details"]),
+                event["severity"],
+                event["action_id"],
+                event["trace_id"],
+                event["job_id"],
+                Jsonb(event["scope"]),
+                event["stage"],
+                event["request_status"],
+                event["elapsed_ms"],
+                event["state_from"],
+                event["state_to"],
+                event["error"],
+                event["created_at"],
+                event["session_id"],
+                event["application_version"],
+                event["application_revision"],
+                recovered,
+                str(event.get("fallback_id") or ""),
+            ),
+        ).fetchone()
 
     def audit(
         self,
@@ -164,51 +289,75 @@ class Services:
         }
         clean_scope = sanitize(scope or derived_scope)
         clean_error = sanitize_text(error)
+        event = {
+            "action": action,
+            "subject": subject,
+            "details": details,
+            "severity": normalize_severity(severity),
+            "action_id": sanitize_text(action_id, limit=100),
+            "trace_id": sanitize_text(trace_id, limit=100),
+            "job_id": sanitize_text(job_id, limit=100),
+            "scope": clean_scope,
+            "stage": sanitize_text(stage, limit=120),
+            "request_status": sanitize_text(request_status, limit=120),
+            "elapsed_ms": float(elapsed_ms) if elapsed_ms is not None else None,
+            "state_from": sanitize_text(state_from, limit=40),
+            "state_to": sanitize_text(state_to, limit=40),
+            "error": clean_error,
+            "created_at": utc_now(),
+            "session_id": self.audit_session_id,
+            "application_version": core.VERSION,
+            "application_revision": self.application_revision,
+            "fallback_id": "",
+        }
         core.runtime_log(
             normalize_severity(severity),
             f"webgui.audit action={action} subject={core._redact_log_message(subject)}",
         )
-        with closing(self.runtime.database.connect()) as db, db:
-            row = db.raw.execute(
-                "INSERT INTO web_audit"
-                "(action,subject,details,severity,action_id,trace_id,job_id,scope,stage,"
-                "request_status,elapsed_ms,state_from,state_to,error) "
-                "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
-                (
-                    action,
-                    subject,
-                    Jsonb(details),
-                    normalize_severity(severity),
-                    sanitize_text(action_id, limit=100),
-                    sanitize_text(trace_id, limit=100),
-                    sanitize_text(job_id, limit=100),
-                    Jsonb(clean_scope),
-                    sanitize_text(stage, limit=120),
-                    sanitize_text(request_status, limit=120),
-                    float(elapsed_ms) if elapsed_ms is not None else None,
-                    sanitize_text(state_from, limit=40),
-                    sanitize_text(state_to, limit=40),
-                    clean_error,
-                ),
-            ).fetchone()
-            self._audit_events_written += 1
-            if self._audit_events_written % 256 == 0:
-                retention = max(
-                    1,
-                    min(
-                        int(self.runtime.cfg.get("logging", {}).get("retention_days", 14)),
-                        365,
-                    ),
+        with self._audit_lock:
+            pending, fallback_files = self._load_audit_fallback()
+            try:
+                with closing(self.runtime.database.connect()) as db, db:
+                    for fallback in pending:
+                        self._insert_audit_event(db.raw, fallback, recovered=True)
+                    row = self._insert_audit_event(db.raw, event)
+                    self._audit_events_written += 1
+                    if self._audit_events_written % 256 == 0:
+                        retention = max(
+                            1,
+                            min(
+                                int(self.runtime.cfg.get("logging", {}).get("retention_days", 14)),
+                                365,
+                            ),
+                        )
+                        db.raw.execute(
+                            "DELETE FROM web_audit WHERE created_at < now() - (%s * interval '1 day')",
+                            (retention,),
+                        )
+                        db.raw.execute(
+                            "DELETE FROM web_audit WHERE id IN "
+                            "(SELECT id FROM web_audit ORDER BY id DESC OFFSET 50000)"
+                        )
+            except Exception as insertion_error:
+                core.runtime_log(
+                    "error",
+                    "webgui.audit postgresql insertion failed; event retained locally "
+                    + core._redact_log_message(sanitize_text(insertion_error)),
                 )
-                db.raw.execute(
-                    "DELETE FROM web_audit WHERE created_at < now() - (%s * interval '1 day')",
-                    (retention,),
-                )
-                db.raw.execute(
-                    "DELETE FROM web_audit WHERE id IN "
-                    "(SELECT id FROM web_audit ORDER BY id DESC OFFSET 50000)"
-                )
-        return int(row["id"] if isinstance(row, dict) else row[0])
+                return self._append_audit_fallback(event, insertion_error)
+            for path in fallback_files:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError as cleanup_error:
+                    # Recovery is idempotent through fallback_id. A cleanup
+                    # failure must not misreport the already committed current
+                    # event as lost or append a duplicate fallback record.
+                    core.runtime_log(
+                        "warning",
+                        "webgui.audit recovered fallback cleanup deferred "
+                        + core._redact_log_message(sanitize_text(cleanup_error)),
+                    )
+            return int(row["id"] if isinstance(row, dict) else row[0])
 
     def diagnostics(
         self,
@@ -222,7 +371,7 @@ class Services:
         maximum=500,
     ):
         """Return bounded, credential-free events in chronological order."""
-        limit = max(1, min(int(limit), max(1, min(int(maximum), 50000))))
+        limit = max(1, min(int(limit), max(1, min(int(maximum), 50001))))
         clauses = []
         values = []
         if severity:
@@ -246,7 +395,8 @@ class Services:
             rows = db.execute(
                 "SELECT * FROM (SELECT id,action,subject,details,severity,action_id,"
                 "trace_id,job_id,scope,stage,request_status,elapsed_ms,state_from,state_to,"
-                f"error,created_at FROM web_audit{where} ORDER BY id DESC LIMIT ?) recent "
+                "error,created_at,session_id,application_version,application_revision,"
+                f"recovered_from_fallback FROM web_audit{where} ORDER BY id DESC LIMIT ?) recent "
                 "ORDER BY id",
                 (*values, limit),
             ).fetchall()
@@ -268,9 +418,42 @@ class Services:
                 "state_to": row["state_to"],
                 "error": row["error"],
                 "created_at": row["created_at"].isoformat(),
+                "session_id": row["session_id"],
+                "application_version": row["application_version"],
+                "application_revision": row["application_revision"],
+                "recovered_from_fallback": bool(row["recovered_from_fallback"]),
             }
             for row in rows
         ]
+
+    def audit_bounds(self):
+        """Describe retention and local fallback gaps for truthful exports."""
+        with closing(self.runtime.database.connect()) as db:
+            row = db.execute(
+                "SELECT min(id) AS first_sequence,max(id) AS last_sequence,"
+                "count(*) AS retained_records FROM web_audit"
+            ).fetchone()
+        with self._audit_lock:
+            fallback_records = 0
+            fallback_bytes = 0
+            for path in self._audit_fallback_files():
+                if not path.is_file():
+                    continue
+                try:
+                    fallback_bytes += path.stat().st_size
+                    with path.open("r", encoding="utf-8") as handle:
+                        fallback_records += sum(1 for line in handle if line.strip())
+                except OSError:
+                    continue
+        first = int(row["first_sequence"] or 0)
+        return {
+            "retained_first_sequence": first or None,
+            "retained_last_sequence": int(row["last_sequence"] or 0) or None,
+            "retained_records": int(row["retained_records"] or 0),
+            "records_pruned_before_retained_window": max(0, first - 1),
+            "fallback_records_pending_recovery": fallback_records,
+            "fallback_bytes_pending_recovery": fallback_bytes,
+        }
 
     def storage_summary(self):
         """Describe persistent WebGUI storage without walking network folders."""
@@ -286,6 +469,8 @@ class Services:
             "credentials": str(self.runtime.credentials),
             "configuration": str(self.runtime.config_file),
             "version": core.VERSION,
+            "revision": self.application_revision,
+            "audit_session_id": self.audit_session_id,
             "mode": str(self.runtime.cfg.get("mode", "read")),
         }
 

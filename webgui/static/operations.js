@@ -1,11 +1,16 @@
 "use strict";
 
 // Browser operations use the same prepared pixels and persistent catalog as writes.
+function newActionId() {
+  return typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID() : Math.random().toString(16).slice(2);
+}
 async function runAction(action) {
   const inherited = state.activeActionId;
+  const pending = inherited ? "" : state.pendingActionId || "";
   const started = performance.now();
-  if (!inherited) state.activeActionId = typeof crypto !== "undefined" && crypto.randomUUID
-    ? crypto.randomUUID() : Math.random().toString(16).slice(2);
+  if (!inherited) state.activeActionId = pending || newActionId();
+  if (pending) state.pendingActionId = "";
   const actionId = state.activeActionId;
   try {
     const result = await action();
@@ -1204,7 +1209,7 @@ function renderRuntimeSettings(host, section, draft, bindings, saved, advanced) 
   const events = node("pre", "diagnostic-events audit-events", "Loading events…"); logging.append(events);
   const query = () => new URLSearchParams(Object.fromEntries(Object.entries({severity: severity.value, action: action.value.trim(), correlation: correlation.value.trim(), since: since.value, until: until.value}).filter(([, value]) => value)));
   async function load() {
-    try { const rows = await api("/api/diagnostics?" + query()); events.textContent = rows.length ? rows.map(row => `${String(row.sequence).padStart(8, "0")}  ${row.created_at}  ${row.severity.toUpperCase()}  ${row.action}  ${row.subject}${row.job_id ? "  job=" + row.job_id : ""}${row.trace_id ? "  trace=" + row.trace_id : ""}${row.state_from || row.state_to ? `  ${row.state_from || "—"}→${row.state_to || "—"}` : ""}${row.error ? "  ERROR=" + row.error : ""}${row.details && Object.keys(row.details).length ? "  " + JSON.stringify(row.details) : ""}`).join("\n") : "No recorded Audit events match these filters."; }
+    try { const rows = await api("/api/diagnostics?" + query()); events.textContent = rows.length ? rows.map(row => `${String(row.sequence).padStart(8, "0")}  ${row.created_at}  ${row.severity.toUpperCase()}  ${row.action}  ${row.subject}${row.application_version ? "  v=" + row.application_version : ""}${row.application_revision ? "  rev=" + row.application_revision.slice(0, 12) : ""}${row.session_id ? "  session=" + row.session_id.slice(0, 12) : ""}${row.job_id ? "  job=" + row.job_id : ""}${row.trace_id ? "  trace=" + row.trace_id : ""}${row.state_from || row.state_to ? `  ${row.state_from || "—"}→${row.state_to || "—"}` : ""}${row.recovered_from_fallback ? "  RECOVERED" : ""}${row.error ? "  ERROR=" + row.error : ""}${row.details && Object.keys(row.details).length ? "  " + JSON.stringify(row.details) : ""}`).join("\n") : "No recorded Audit events match these filters."; }
     catch (error) { events.textContent = error.message; }
   }
   const updateDownload = () => download.href = "/api/audit/export?" + query();
@@ -1399,7 +1404,15 @@ document.addEventListener("webkitfullscreenchange", updateFullscreenButton);
 document.addEventListener("click", event => {
   const button = event.target.closest?.("button");
   if (!button || !document.body.classList.contains("authenticated")) return;
+  const actionId = state.activeActionId || state.pendingActionId || newActionId();
+  if (!state.activeActionId) {
+    state.pendingActionId = actionId;
+    queueMicrotask(() => {
+      if (state.pendingActionId === actionId) state.pendingActionId = "";
+    });
+  }
   auditEvent("button-click", button.id || button.className || "button", {
+    action_id: actionId,
     details: {label: String(button.textContent || "").trim().slice(0, 120), disabled: !!button.disabled},
   });
 }, true);

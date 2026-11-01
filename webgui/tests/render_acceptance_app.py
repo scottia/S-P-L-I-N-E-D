@@ -71,6 +71,8 @@ def status():
         "database": "PostgreSQL",
         "database_ready": True,
         "mode": "read",
+        "revision": "e8d2c6c091b2824c5e63311feb80c6b4d65b161d",
+        "audit_session_id": "render-acceptance-session",
         "music": CONFIG["library"]["music_library"],
         "artist_art": CONFIG["scan"]["cache_dir"],
         "embedded_thumbnail_size": 1200,
@@ -155,8 +157,8 @@ def browser_event(payload: dict):
 @app.get("/api/diagnostics")
 def diagnostics():
     return [
-        {"sequence": 1, "created_at": "2026-11-01T12:00:00Z", "severity": "info", "action": "selection-change", "subject": "artist", "job_id": "", "trace_id": "trace-acceptance", "state_from": "", "state_to": "", "error": "", "details": {"artist_id": ARTIST["id"]}},
-        {"sequence": 2, "created_at": "2026-11-01T12:00:01Z", "severity": "warning", "action": "provider-result", "subject": "Navidrome", "job_id": "", "trace_id": "trace-acceptance", "state_from": "requested", "state_to": "completed", "error": "", "details": {"similar": 1}},
+        {"sequence": 1, "created_at": "2026-11-01T12:00:00Z", "severity": "info", "action": "selection-change", "subject": "artist", "job_id": "", "trace_id": "trace-acceptance", "state_from": "", "state_to": "", "error": "", "details": {"artist_id": ARTIST["id"]}, "session_id": "render-acceptance-session", "application_version": "2.0.18", "application_revision": "e8d2c6c091b2824c5e63311feb80c6b4d65b161d", "recovered_from_fallback": False},
+        {"sequence": 2, "created_at": "2026-11-01T12:00:01Z", "severity": "warning", "action": "provider-result", "subject": "Navidrome", "job_id": "", "trace_id": "trace-acceptance", "state_from": "requested", "state_to": "completed", "error": "", "details": {"similar": 1}, "session_id": "render-acceptance-session", "application_version": "2.0.18", "application_revision": "e8d2c6c091b2824c5e63311feb80c6b4d65b161d", "recovered_from_fallback": False},
     ]
 
 
@@ -164,6 +166,8 @@ def diagnostics():
 def storage():
     return {
         "version": "2.0.18",
+        "revision": "e8d2c6c091b2824c5e63311feb80c6b4d65b161d",
+        "audit_session_id": "render-acceptance-session",
         "mode": "read",
         "database": "PostgreSQL · disposable render harness",
         "database_bytes": 0,

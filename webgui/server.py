@@ -74,6 +74,7 @@ class Context:
         database.migrate()
         self.runtime = Runtime(self.config_file, database)
         self.services = Services(self.runtime)
+        self.services.start_audit_session()
         self.reconciliation = SQLiteReconciler(
             database,
             self.runtime.cache,
@@ -159,6 +160,7 @@ class Context:
             runtime.save_settings(cfg)
             self.runtime = runtime
             self.services = Services(runtime)
+            self.services.start_audit_session()
             self.jobs = JobQueue(self.services) if self.start_worker else None
             self.reconciliation = SQLiteReconciler(
                 database,
@@ -241,14 +243,87 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
         request.state.action_id = sanitize_text(
             request.headers.get("x-splined-action", ""), limit=100
         )
+        path = request.url.path
+        noisy = (
+            path
+            in {
+                "/api/status",
+                "/api/jobs",
+                "/api/jobs/control-state",
+                "/api/login",
+                "/api/admin/setup",
+                "/api/admin/recover",
+            }
+            or path.startswith(("/api/image/", "/api/fallback/thumbnail", "/api/audit"))
+        )
+        auditable = path.startswith("/api/") and not noisy
+        scope = {
+            "artist_id": request.query_params.get("artist_id")
+            or (request.query_params.get("id") if "/artist" in path else ""),
+            "album_id": request.query_params.get("album_id")
+            or (
+                request.query_params.get("id")
+                if "/album" in path or "/fallback" in path
+                else ""
+            ),
+            "track_key": request.query_params.get("key", ""),
+        }
+        scope = {key: value for key, value in scope.items() if value}
+
+        def audit_http(action, stage, request_status, *, status_code=None):
+            audit_session = getattr(request.state, "session", None)
+            if (
+                not context.services
+                or not auditable
+                or not audit_session
+                or not audit_session.get("authenticated")
+            ):
+                return
+            try:
+                context.services.audit(
+                    action,
+                    f"{request.method} {path}",
+                    {"http_status": status_code} if status_code is not None else {},
+                    severity=(
+                        "error"
+                        if status_code is not None and status_code >= 500
+                        else "warning"
+                        if status_code is not None and status_code >= 400
+                        else "debug"
+                    ),
+                    action_id=request.state.action_id,
+                    trace_id=request.state.trace_id,
+                    scope=scope,
+                    stage=stage,
+                    request_status=request_status,
+                    elapsed_ms=(time.perf_counter() - started) * 1000,
+                )
+            except Exception as audit_error:
+                core.runtime_log(
+                    "warning",
+                    "webgui.audit request event unavailable "
+                    + core._redact_log_message(str(audit_error)),
+                )
+
+        def audit_response(response):
+            audit_http(
+                "api-response",
+                "response",
+                "failed" if response.status_code >= 400 else "completed",
+                status_code=response.status_code,
+            )
+            return response
+
         origin = request.headers.get("origin")
         if (
             origin
             and urlsplit(origin).netloc.lower()
             != request.headers.get("host", "").lower()
         ):
-            return JSONResponse(
-                {"error": "Cross-origin requests are not allowed"}, status_code=403
+            return audit_response(
+                JSONResponse(
+                    {"error": "Cross-origin requests are not allowed"}, status_code=403
+                )
             )
         host = (request.url.hostname or "").lower()
         if not access_token and host not in {
@@ -257,9 +332,11 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
             "::1",
             "testserver",
         }:
-            return JSONResponse(
-                {"error": "Set a WebGUI access token before enabling network access"},
-                status_code=403,
+            return audit_response(
+                JSONResponse(
+                    {"error": "Set a WebGUI access token before enabling network access"},
+                    status_code=403,
+                )
             )
         sid = request.cookies.get("splined_session", "")
         with sessions_lock:
@@ -281,16 +358,23 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
             "/api/admin/recover",
         } or not request.url.path.startswith("/api/")
         if not public and not session["authenticated"]:
-            return JSONResponse({"error": "Sign in to SPLINED"}, status_code=401)
+            return audit_response(
+                JSONResponse({"error": "Sign in to SPLINED"}, status_code=401)
+            )
+        audit_http("api-request", "request", "started")
         if request.method not in {"GET", "HEAD", "OPTIONS"}:
             if request.headers.get("x-splined-csrf") != session["csrf"]:
-                return JSONResponse(
-                    {"error": "Refresh the page before retrying this operation"},
-                    status_code=403,
+                return audit_response(
+                    JSONResponse(
+                        {"error": "Refresh the page before retrying this operation"},
+                        status_code=403,
+                    )
                 )
             content_length = int(request.headers.get("content-length", "0") or 0)
             if content_length > 40 * 1024 * 1024:
-                return JSONResponse({"error": "Request is too large"}, status_code=413)
+                return audit_response(
+                    JSONResponse({"error": "Request is too large"}, status_code=413)
+                )
         response = await call_next(request)
         response.set_cookie(
             "splined_session",
@@ -305,52 +389,7 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
         )
-        path = request.url.path
-        noisy = (
-            path in {"/api/status", "/api/jobs", "/api/jobs/control-state"}
-            or path.startswith(("/api/image/", "/api/fallback/thumbnail", "/api/audit"))
-        )
-        should_audit = path.startswith("/api/") and (
-            request.method not in {"GET", "HEAD", "OPTIONS"}
-            or path in {
-                "/api/artist",
-                "/api/artist/overview",
-                "/api/artist/metadata",
-                "/api/artist/comp-report",
-                "/api/album",
-                "/api/fallback/tracks",
-                "/api/fallback/track",
-            }
-            or response.status_code >= 400
-        )
-        if context.services and should_audit and not noisy:
-            scope = {
-                "artist_id": request.query_params.get("artist_id")
-                or (request.query_params.get("id") if "/artist" in path else ""),
-                "album_id": request.query_params.get("album_id")
-                or (request.query_params.get("id") if "/album" in path or "/fallback" in path else ""),
-                "track_key": request.query_params.get("key", ""),
-            }
-            try:
-                context.services.audit(
-                    "api-request",
-                    f"{request.method} {path}",
-                    {"http_status": response.status_code},
-                    severity="error" if response.status_code >= 500 else "warning" if response.status_code >= 400 else "debug",
-                    action_id=request.state.action_id,
-                    trace_id=request.state.trace_id,
-                    scope={key: value for key, value in scope.items() if value},
-                    stage="response",
-                    request_status="failed" if response.status_code >= 400 else "completed",
-                    elapsed_ms=(time.perf_counter() - started) * 1000,
-                )
-            except Exception as audit_error:
-                core.runtime_log(
-                    "warning",
-                    "webgui.audit request event unavailable "
-                    + core._redact_log_message(str(audit_error)),
-                )
-        return response
+        return audit_response(response)
 
     @app.exception_handler(PermissionError)
     @app.exception_handler(KeyError)
@@ -407,6 +446,8 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
             result.update(
                 {
                     "mode": r.cfg.get("mode", "read") if r else "read",
+                    "revision": context.services.application_revision if context.services else "unknown",
+                    "audit_session_id": context.services.audit_session_id if context.services else "",
                     "music": str(r.music) if r else "",
                     "artist_art": str(r.artist_art) if r else "",
                     "embedded_thumbnail_size": int(
@@ -570,18 +611,36 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
     ):
         services = context.require()
         events = services.diagnostics(
-            50000,
+            50001,
             severity=severity,
             action=action,
             correlation=correlation,
             since=since,
             until=until,
-            maximum=50000,
+            maximum=50001,
         )
+        truncated = len(events) > 50000
+        if truncated:
+            events = events[-50000:]
+        bounds = services.audit_bounds()
         body = json.dumps(
             {
-                "format": "splined-web-audit-v1",
+                "format": "splined-web-audit-v2",
                 "generated_at": utc_now(),
+                "export": {
+                    **bounds,
+                    "selected_records": len(events),
+                    "selected_records_truncated": truncated,
+                    "complete_for_retained_window": (
+                        not truncated
+                        and bounds["fallback_records_pending_recovery"] == 0
+                    ),
+                    "truncation_reason": (
+                        "selected period exceeds the 50000-record export limit"
+                        if truncated
+                        else ""
+                    ),
+                },
                 "filters": sanitize(
                     {
                         "severity": severity,

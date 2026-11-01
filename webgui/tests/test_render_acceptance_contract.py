@@ -40,7 +40,9 @@ class RenderAcceptanceContractTests(unittest.TestCase):
                 / "pr-131-audit-sample.json"
             ).read_text(encoding="utf-8")
         )
-        self.assertEqual(sample["format"], "splined-web-audit-v1")
+        self.assertEqual(sample["format"], "splined-web-audit-v2")
+        self.assertFalse(sample["export"]["selected_records_truncated"])
+        self.assertTrue(sample["export"]["complete_for_retained_window"])
         sequences = [event["sequence"] for event in sample["events"]]
         self.assertEqual(sequences, sorted(sequences))
         self.assertNotIn("provider-secret", json.dumps(sample))

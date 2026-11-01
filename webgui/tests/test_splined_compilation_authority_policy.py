@@ -64,6 +64,36 @@ class CompilationAuthorityPolicyTests(unittest.TestCase):
             self.assertEqual(frames[0].data, artwork.getvalue())
             self.assertEqual(untouched.read_bytes(), before)
 
+    def test_track_write_retries_transient_windows_publication_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            track = Path(directory) / "selected.mp3"
+            ID3().save(track)
+            artwork = BytesIO()
+            Image.new("RGB", (32, 32), "green").save(artwork, "PNG")
+            replace = policy.os.replace
+            attempts = 0
+
+            def transient_lock(source, destination):
+                nonlocal attempts
+                attempts += 1
+                if attempts < 3:
+                    raise PermissionError("Windows reader still holds the audio file")
+                return replace(source, destination)
+
+            with (
+                patch.object(policy.os, "replace", side_effect=transient_lock),
+                patch.object(policy.time, "sleep"),
+            ):
+                policy.replace_embedded_artwork(
+                    track,
+                    artwork.getvalue(),
+                    "png",
+                    {"width": 32, "height": 32},
+                )
+
+            self.assertEqual(attempts, 3)
+            self.assertEqual(ID3(track).getall("APIC")[0].data, artwork.getvalue())
+
     def test_album_and_track_eligibility_use_local_tags_only(self) -> None:
         missing_album = SimpleNamespace(
             compilation="1",

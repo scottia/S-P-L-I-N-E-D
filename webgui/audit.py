@@ -5,8 +5,11 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from hashlib import sha256
+from pathlib import Path
 import json
+import os
 import re
+import subprocess
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -96,3 +99,30 @@ def digest(value: Any) -> str:
 def normalize_severity(value: Any) -> str:
     severity = str(value or "info").strip().casefold()
     return severity if severity in ALLOWED_SEVERITIES else "info"
+
+
+def application_revision(repository: Path | None = None) -> str:
+    """Resolve an immutable build revision without making it a startup dependency."""
+    configured = str(
+        os.environ.get("SPLINED_REVISION")
+        or os.environ.get("GITHUB_SHA")
+        or ""
+    ).strip()
+    if re.fullmatch(r"[0-9a-fA-F]{7,64}", configured):
+        return configured.casefold()
+    root = (repository or Path(__file__).resolve().parents[1]).resolve()
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=3,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        revision = result.stdout.strip()
+        if re.fullmatch(r"[0-9a-fA-F]{40,64}", revision):
+            return revision.casefold()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return "unknown"
