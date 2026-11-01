@@ -22,6 +22,7 @@ from PIL import Image
 import numpy as np
 import soundfile as sf
 from mutagen.flac import FLAC
+from psycopg.types.json import Jsonb
 import tomlkit
 import splined as core
 
@@ -408,28 +409,292 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.assertFalse((self.runtime.cache / "web-images").exists())
 
     def test_staged_queue_survives_worker_restart_and_verifies_artifact(self):
+        staged = self.services.stage_album(self.payload())
+        self.assertIsNone(staged["cover"])
+        self.assertEqual(staged["prepared_kind"], "thumbnail-v1")
+        prepared = self.runtime.cache / "staged-artwork" / staged["prepared_file"]
+        full_cover = self.runtime.cache / "staged-artwork" / staged["cover_file"]
+        with Image.open(prepared) as image:
+            self.assertEqual(image.size, (300, 300))
+        with Image.open(full_cover) as image:
+            self.assertEqual(image.size, (180, 180))
+
+        first_projection = self.services.staged_album_projection(staged)
+        self.assertTrue(first_projection["staged_valid"])
+        first_handle = first_projection["cover"]
+        self.assertEqual(
+            self.services.catalog.image_bytes(first_handle), full_cover.read_bytes()
+        )
         self.queue = JobQueue(self.services)
-        result = self.queue.enqueue(
-            "embed-album", self.services.stage_album(self.payload()), staged=True
+        result = self.queue.enqueue("embed-album", staged, staged=True)
+
+        # Both index paths leave the durable Album work and its exact prepared
+        # artwork intact.
+        self.services.refresh_index(mode="incremental")
+        self.services.refresh_index(mode="full")
+        self.assertEqual(
+            next(item for item in self.queue.list() if item["id"] == result["id"])[
+                "state"
+            ],
+            "staged",
         )
         self.queue.close()
-        self.queue = JobQueue(self.services)
-        self.assertEqual(self.queue.list()[0]["state"], "staged")
-        self.queue.action("start")
+
+        # A recreated service has a new signing key. The stored payload never
+        # contains the old handle; queue projection signs the persistent cache
+        # snapshot for this process.
+        restarted = Services(self.runtime)
+        with self.assertRaisesRegex(ValueError, "Invalid artwork handle"):
+            restarted.catalog.image_bytes(first_handle)
+        self.queue = JobQueue(restarted)
+        restored = next(
+            item for item in self.queue.list() if item["id"] == result["id"]
+        )
+        self.assertEqual(restored["state"], "staged")
+        self.assertTrue(restored["payload"]["staged_valid"])
+        self.assertNotEqual(restored["payload"]["cover"], first_handle)
+        self.assertEqual(
+            restarted.catalog.image_bytes(restored["payload"]["cover"]),
+            full_cover.read_bytes(),
+        )
+
+        self.queue.action("start", kind="embed-album")
         for _ in range(100):
             row = next(item for item in self.queue.list() if item["id"] == result["id"])
             if row["state"] in {"done", "failed"}:
                 break
             time.sleep(0.05)
         self.assertEqual(row["state"], "done", row["error"])
-        staged = self.services.stage_album(self.payload())
-        (self.runtime.cache / "staged-artwork" / staged["prepared_file"]).write_bytes(
+        self.assertTrue(row["result"]["verified"])
+        corrupt = restarted.stage_album(self.payload())
+        (self.runtime.cache / "staged-artwork" / corrupt["prepared_file"]).write_bytes(
             b"corrupt"
         )
         before = self.files[0].read_bytes()
         with self.assertRaisesRegex(ValueError, "verification"):
-            self.services.embed_album(staged)
+            restarted.embed_album(corrupt)
         self.assertEqual(self.files[0].read_bytes(), before)
+
+    def test_album_staging_rejects_comp_before_it_can_enter_the_queue(self):
+        for path in self.files:
+            audio = FLAC(path)
+            del audio["musicbrainz_albumid"]
+            audio.save()
+        self.services.refresh_index(mode="full")
+        with closing(self.db.connect()) as db:
+            fallback = db.execute(
+                "SELECT * FROM albums WHERE path=?", (str(self.cover.parent),)
+            ).fetchone()
+        original_cover = self.cover.read_bytes()
+        with self.assertRaisesRegex(ValueError, "COMP Fallback Albums"):
+            self.services.stage_album(
+                {
+                    "album_id": fallback["album_key"],
+                    "image": self.services.catalog.image(self.cover),
+                    "adjustments": {"Brightness": 40},
+                }
+            )
+        self.assertEqual(self.cover.read_bytes(), original_cover)
+        with closing(self.db.connect()) as db:
+            self.assertEqual(
+                db.execute(
+                    "SELECT count(*) FROM web_jobs WHERE kind='embed-album'"
+                ).fetchone()[0],
+                0,
+            )
+
+    def test_reclassified_album_job_fails_visibly_without_embedding_comp_tracks(self):
+        self.queue = JobQueue(self.services)
+        self.queue.close()
+        staged = self.services.stage_album(self.payload())
+        result = self.queue.enqueue("embed-album", staged, staged=True)
+        before = [embedded_track_artwork_bytes(path) for path in self.files]
+
+        for path in self.files:
+            audio = FLAC(path)
+            del audio["musicbrainz_albumid"]
+            audio.save()
+        self.services.refresh_index(mode="full")
+
+        restored = next(
+            item for item in self.queue.list() if item["id"] == result["id"]
+        )
+        self.assertFalse(restored["payload"]["staged_valid"])
+        self.assertRegex(
+            restored["payload"]["staged_error"],
+            "(now COMP Fallback|no longer indexed)",
+        )
+        self.queue.action("start", kind="embed-album")
+        failed = next(
+            item for item in self.queue.list() if item["id"] == result["id"]
+        )
+        self.assertEqual(failed["state"], "failed")
+        self.assertRegex(failed["error"], "(now COMP Fallback|no longer indexed)")
+        self.assertEqual(
+            [embedded_track_artwork_bytes(path) for path in self.files], before
+        )
+
+    def test_active_album_job_is_not_hidden_by_mixed_job_history(self):
+        self.queue = JobQueue(self.services)
+        self.queue.close()
+        result = self.queue.enqueue(
+            "embed-album", self.services.stage_album(self.payload()), staged=True
+        )
+        with closing(self.db.connect()) as db, db:
+            with db.raw.cursor() as cursor:
+                cursor.executemany(
+                    "INSERT INTO web_jobs(id,kind,state,payload) VALUES(%s,'comp','done',%s)",
+                    [
+                        (
+                            f"historical-{number:03d}",
+                            Jsonb({"track_keys": [str(number)]}),
+                        )
+                        for number in range(250)
+                    ],
+                )
+        listed = {item["id"]: item for item in self.queue.list()}
+        self.assertIn(result["id"], listed)
+        self.assertEqual(listed[result["id"]]["state"], "staged")
+
+    def test_album_queue_gates_order_and_remove_all_safety(self):
+        self.queue = JobQueue(self.services)
+        self.queue.close()
+        second_folder = self.root / "music" / "Test Artist" / "Second Album"
+        second_folder.mkdir(parents=True)
+        second_track = second_folder / "1.flac"
+        sf.write(second_track, np.zeros((4410, 2)), 44100)
+        second_audio = FLAC(second_track)
+        for key, value in {
+            "title": "Second Track",
+            "artist": "Test Artist",
+            "albumartist": "Test Artist",
+            "album": "Second Album",
+            "musicbrainz_albumid": "55555555-5555-4555-8555-555555555555",
+            "musicbrainz_artistid": "22222222-2222-4222-8222-222222222222",
+        }.items():
+            second_audio[key] = value
+        second_audio.save()
+        second_cover = second_folder / "cover.jpg"
+        Image.new("RGB", (180, 180), "purple").save(second_cover)
+        self.services.refresh_index(mode="full")
+        with closing(self.db.connect()) as db:
+            second_row = db.execute(
+                "SELECT * FROM albums WHERE path=?", (str(second_folder),)
+            ).fetchone()
+
+        staged = self.services.stage_album(self.payload())
+        second_staged = self.services.stage_album(
+            {
+                "album_id": second_row["album_key"],
+                "image": self.services.catalog.image(second_cover),
+            }
+        )
+        snapshots = [
+            self.runtime.cache / "staged-artwork" / item[field]
+            for item in (staged, second_staged)
+            for field in ("prepared_file", "cover_file")
+        ]
+        result = self.queue.enqueue("embed-album", staged, staged=True)
+        second_result = self.queue.enqueue(
+            "embed-album", second_staged, staged=True
+        )
+        self.queue.action("start", kind="embed-album")
+
+        paused_after = self.queue.action("pause-after", kind="embed-album")
+        self.assertTrue(paused_after["pause_after_album"])
+        self.assertIsNone(self.queue.claim())
+        resumed = self.queue.action("resume-queue", kind="embed-album")
+        self.assertFalse(resumed["pause_after_album"])
+
+        paused_all = self.queue.action("pause-all", kind="embed-album")
+        self.assertTrue(paused_all["pause_all_albums"])
+        self.assertIsNone(self.queue.claim())
+        resumed_all = self.queue.action("resume-all", kind="embed-album")
+        self.assertFalse(resumed_all["pause_all_albums"])
+        claimed = self.queue.claim()
+        self.assertEqual(claimed["id"], result["id"])
+        with self.assertRaisesRegex(ValueError, "Pause ALL Albums"):
+            self.queue.action("clear", kind="embed-album")
+
+        self.queue.action("pause", result["id"])
+        self.queue.action("pause", second_result["id"])
+        self.queue.action("clear", kind="embed-album")
+        self.assertTrue(all(not path.exists() for path in snapshots))
+        self.assertFalse(
+            any(item["kind"] == "embed-album" for item in self.queue.list())
+        )
+
+    def test_authenticated_server_recreation_restores_staged_preview(self):
+        self.runtime.close()
+        first_app = create_app(
+            self.config, self.url, token="restart-test-token", start_worker=True
+        )
+        with TestClient(first_app) as client:
+            status = client.get("/api/status").json()
+            client.headers["X-SPLINED-CSRF"] = status["csrf"]
+            setup = client.post(
+                "/api/admin/setup",
+                json={
+                    "username": "restart-admin",
+                    "password": "RestartPassword123",
+                    "confirmation": "RestartPassword123",
+                    "token": "restart-test-token",
+                },
+            )
+            self.assertEqual(setup.status_code, 200, setup.text)
+            album = client.get(
+                "/api/album", params={"id": self.row["album_key"]}
+            ).json()
+            staged = client.post(
+                "/api/jobs",
+                json={
+                    "kind": "embed-album",
+                    "payload": {
+                        "album_id": self.row["album_key"],
+                        "image": album["cover"],
+                    },
+                },
+            )
+            self.assertEqual(staged.status_code, 200, staged.text)
+            first_jobs = client.get("/api/jobs").json()
+            first = next(item for item in first_jobs if item["id"] == staged.json()["id"])
+            first_cover = first["payload"]["cover"]
+            self.assertTrue(first["payload"]["staged_valid"])
+            self.assertEqual(client.get(first_cover).status_code, 200)
+            # A page refresh reads the same staged identity and current handle.
+            refreshed = client.get("/api/jobs").json()
+            self.assertEqual(
+                next(item for item in refreshed if item["id"] == first["id"])[
+                    "payload"
+                ]["cover"],
+                first_cover,
+            )
+
+        second_app = create_app(
+            self.config, self.url, token="restart-test-token", start_worker=True
+        )
+        with TestClient(second_app) as client:
+            status = client.get("/api/status").json()
+            self.assertFalse(status["admin_setup_required"])
+            client.headers["X-SPLINED-CSRF"] = status["csrf"]
+            login = client.post(
+                "/api/login",
+                json={
+                    "username": "restart-admin",
+                    "password": "RestartPassword123",
+                },
+            )
+            self.assertEqual(login.status_code, 200, login.text)
+            restored_jobs = client.get("/api/jobs").json()
+            restored = next(item for item in restored_jobs if item["id"] == first["id"])
+            restored_cover = restored["payload"]["cover"]
+            self.assertTrue(restored["payload"]["staged_valid"])
+            self.assertNotEqual(restored_cover, first_cover)
+            self.assertEqual(client.get(restored_cover).status_code, 200)
+            self.assertEqual(client.get(first_cover).status_code, 400)
+
+        self.runtime = Runtime(self.config, self.db)
+        self.services = Services(self.runtime)
 
     def test_comp_queue_deduplicates_only_the_same_track_and_artist_scope(self):
         queue = JobQueue(self.services)
@@ -453,13 +718,15 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.queue.close()
         queue = self.queue
         self.queue = None
+        staged_payload = self.services.stage_album(self.payload())
         with closing(self.db.connect()) as db, db:
-            db.execute(
+            db.raw.execute(
                 "INSERT INTO web_jobs(id,kind,state,payload,progress,decision,error) VALUES"
-                "('staged-work','embed-album','staged','{}','{}',NULL,''),"
-                "('paused-work','embed-album','paused','{}',"
+                "('staged-work','embed-album','staged',%s,'{}',NULL,''),"
+                "('paused-work','embed-album','paused',%s,"
                 "'{\"prompt\":{\"nonce\":\"stale\"}}',"
-                "'{\"nonce\":\"stale\",\"value\":\"1\"}','old failure')"
+                "'{\"nonce\":\"stale\",\"value\":\"1\"}','old failure')",
+                (Jsonb(staged_payload), Jsonb(staged_payload)),
             )
         queue.action("start")
         with closing(self.db.connect()) as db:
@@ -665,7 +932,8 @@ class PostgreSQLBrowserTests(unittest.TestCase):
     def test_album_queue_bulk_actions_never_change_hidden_comp_work(self):
         self.queue = JobQueue(self.services)
         self.queue.close()
-        album = self.queue.enqueue("embed-album", {}, staged=True)
+        staged = self.services.stage_album(self.payload())
+        album = self.queue.enqueue("embed-album", staged, staged=True)
         comp = self.queue.enqueue("comp", {"track_keys": ["track"]}, staged=True)
 
         self.queue.action("start", kind="embed-album")

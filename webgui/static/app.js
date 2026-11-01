@@ -69,7 +69,7 @@ const state = {
   mediaSelected: new Set(), candidateFilters: new Map(), mediaFilterLocked: false, candidateFilterLocked: false,
   fx: {artist: {}, banner: {}, album: {}, comp: {}, current: {}, package: {}}, fit: {artist: {zoom: 1, x: 0, y: 0}, banner: {zoom: 1, x: 0, y: 0}},
   theme: "dark", compare: new Set(), graphicalEnhancement: normalizeGraphicalEnhancement(),
-  embedQueue: [], queuedDecision: null, reviewJobState: "", listRequest: 0, selectionRequest: 0, searchRequest: 0,
+  embedQueue: [], queueControls: {pause_after_album: false, pause_all_albums: false}, queuedDecision: null, reviewJobState: "", listRequest: 0, selectionRequest: 0, searchRequest: 0,
   libraryLoading: false, artistMetadataRequest: 0,
 };
 function applyGraphicalEnhancement(value) {
@@ -215,6 +215,9 @@ function artistAlbumEligible(album) {
   const complete = status === "processed" && !!album.cover_found
     && Number(album.tracks || 0) > 0 && Number(album.embedded || 0) >= Number(album.tracks || 0);
   return !!album.album_mbid && !["bypassed", "timeout"].includes(status) && !complete;
+}
+function albumEmbeddingEligible(album) {
+  return !!String(album?.album_mbid || "").trim() && Number(album?.tracks || 0) > 0;
 }
 function markSelectedArtist(artist) {
   state.mediaSelected.clear();

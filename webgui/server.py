@@ -612,6 +612,14 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
         context.require()
         return context.jobs.list() if context.jobs else []
 
+    @app.get("/api/jobs/control-state")
+    def job_control_state():
+        context.require()
+        return context.jobs.control_state() if context.jobs else {
+            "pause_after_album": False,
+            "pause_all_albums": False,
+        }
+
     @app.post("/api/jobs")
     def stage_job(payload: dict):
         services = context.require()
@@ -634,6 +642,14 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
             if old:
                 return {"id": old["id"], "already_queued": True}
             payload = services.stage_album(payload)
+            try:
+                result = context.jobs.enqueue(str(kind), payload, staged=True)
+            except Exception:
+                services.remove_staged_artwork(payload)
+                raise
+            if result.get("already_queued"):
+                services.remove_staged_artwork(payload)
+            return result
         if kind == "comp":
             context.runtime.require_write()
             payload = services.validate_comp_payload(payload)

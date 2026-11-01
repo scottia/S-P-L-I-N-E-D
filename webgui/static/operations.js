@@ -175,7 +175,7 @@ renderReview = function () {
   $("writeButton").disabled = entry ? !state.artist : !writable || (state.editorMode === "album" ? !(state.selectedCover?.image || state.album?.cover)
     : state.editorMode === "fallback" ? !state.fallbackTrack?.image : state.compReportVisible ? !state.compTrack?.image : !(currentPackage || (state.radioArtist && (state.selectedPortrait || state.artist?.portrait)) || (state.radioBanner && (state.selectedBanner || state.artist?.banner))));
   const staged = state.editorMode === "album" && state.embedQueue.some(item => item.id === state.album?.id);
-  $("embedBatchButton").disabled = !writable || state.editorMode !== "album" || !(state.selectedCover?.image || state.album?.cover);
+  $("embedBatchButton").disabled = !writable || state.editorMode !== "album" || !albumEmbeddingEligible(state.album) || !(state.selectedCover?.image || state.album?.cover);
   $("embedBatchButton").classList.toggle("staged", staged);
   $("embedBatchButton").title = staged ? "Already staged; press again to confirm the existing queue entry" : "Write the cover and stage track embedding";
   $("musicbrainzButton").disabled = !state.album || state.editorMode !== "album";
@@ -413,20 +413,24 @@ function renderQueue() {
   if (!jobs.length) host.append(node("p", "empty-copy", "No albums queued yet."));
   for (const job of jobs) {
     const title = [job.payload?.artist, job.payload?.name].filter(Boolean).join(" — ") || "Album embedding";
-    const stateLabel = job.state === "staged" ? "staged" : job.state === "done" ? "completed" : job.state;
+    const gated = ["queued", "staged"].includes(job.state) && (state.queueControls.pause_after_album || state.queueControls.pause_all_albums);
+    const stateLabel = gated ? "paused" : job.state === "staged" ? "staged" : job.state === "done" ? "completed" : job.state;
     const total = Number(job.progress?.total || job.result?.tracks || job.payload?.tracks || 0);
     const completed = job.state === "done" ? total : Number(job.progress?.completed || 0);
     const side = Number(job.result?.side || job.payload?.embedded_side || 0);
     const detail = [stateLabel, total ? `${completed}/${total} tracks` : "", side ? `embedded ${side} × ${side}` : ""].filter(Boolean).join(" · ");
-    const card = node("div", "queue-card state-" + job.state), copy = node("div", "row-copy");
+    const preferred = job.state === "done" && job.result?.verified || !!job.payload?.preferred_size;
+    const card = node("div", "queue-card state-" + job.state + (preferred ? " preferred-size" : "") + (job.payload?.staged_valid === false ? " invalid" : "")), copy = node("div", "row-copy");
     if (job.payload?.cover) card.append(image(job.payload.cover, "queue-cover", (job.payload?.name || "Album") + " staged cover"));
     copy.append(node("strong", "", title), node("small", "", detail));
     if (job.payload?.cover_width && job.payload?.cover_height)
       copy.append(node("small", "queue-resolution", `staged cover resolution ${job.payload.cover_width} × ${job.payload.cover_height}`));
+    if (preferred) copy.append(node("small", "queue-preferred", "Preferred embedded size already present"));
     if (job.state === "done") copy.append(node("p", "operation-success", `Completed write · ${total} tracks verified`));
+    if (job.payload?.staged_error) copy.append(node("p", "operation-error", job.payload.staged_error));
     if (job.error) copy.append(node("p", "operation-error", job.error)); card.append(copy);
     if (["staged", "waiting", "done", "failed"].includes(job.state)) actionButton("Review", () => reviewJob(job.id), card);
-    if (["failed", "paused"].includes(job.state)) actionButton("Resume", () => queueAction("retry", job.id), card);
+    if (["failed", "paused"].includes(job.state)) actionButton(job.state === "failed" ? "Retry" : "Resume", () => queueAction("retry", job.id), card);
     if (["running", "waiting", "queued"].includes(job.state)) actionButton("Pause", () => queueAction("pause", job.id), card);
     else actionButton("Remove", () => queueAction("remove", job.id), card);
     host.append(card);
@@ -434,8 +438,17 @@ function renderQueue() {
   const pending = jobs.filter(job => !["done", "failed", "cancelled"].includes(job.state));
   state.embedQueue = pending.map(job => ({...job.payload, id: job.payload.album_id}));
   $("embedTab").classList.toggle("has-queued-albums", !!pending.length);
-  $("removeAllStaged").disabled = !jobs.some(job => !["running", "waiting"].includes(job.state));
-  const summary = pending.length ? `${pending.length} album${pending.length === 1 ? "" : "s"} staged or queued for embedding.` : "No albums staged for embedding.";
+  const processing = jobs.some(job => ["running", "waiting"].includes(job.state));
+  const staged = jobs.filter(job => job.state === "staged").length;
+  const paused = jobs.filter(job => job.state === "paused").length;
+  const failed = jobs.filter(job => job.state === "failed").length;
+  $("startStaged").disabled = !staged;
+  $("pauseAfterAlbum").textContent = state.queueControls.pause_after_album ? "Resume Queue" : "Pause After Album";
+  $("pauseAfterAlbum").disabled = !jobs.some(job => ["queued", "running", "waiting"].includes(job.state)) && !state.queueControls.pause_after_album;
+  $("pauseAllAlbums").textContent = state.queueControls.pause_all_albums ? "Resume All Albums" : "Pause ALL Albums";
+  $("pauseAllAlbums").disabled = !jobs.some(job => ["queued", "running", "waiting", "paused"].includes(job.state)) && !state.queueControls.pause_all_albums;
+  $("removeAllStaged").disabled = !jobs.length || processing;
+  const summary = jobs.length ? `${pending.length} active · ${staged} staged · ${paused} paused · ${failed} failed.` : "No albums staged for embedding.";
   $("embedQueueStatus").textContent = summary;
   $("embedQueueFooter").textContent = summary;
 };
@@ -514,7 +527,11 @@ async function pollJobs() {
   try {
     const priorJobs = new Map((state.jobs || []).map(job => [job.id, job]));
     const priorStaged = new Set(state.embedQueue.map(item => item.id));
-    state.jobs = await api("/api/jobs"); renderQueue();
+    const [jobs, queueControls] = await Promise.all([
+      api("/api/jobs"),
+      api("/api/jobs/control-state"),
+    ]);
+    state.jobs = jobs; state.queueControls = queueControls; renderQueue();
     const stagedChanged = priorStaged.size !== state.embedQueue.length
       || state.embedQueue.some(item => !priorStaged.has(item.id));
     const completedAlbums = state.jobs.filter(job => job.kind === "embed-album" && job.state === "done"
@@ -1115,8 +1132,10 @@ async function upscaleArtist() {
   renderPanes(); renderReview(); setStatus("Upscaled artwork ready to write");
 }
 $("startStaged").addEventListener("click", () => runAction(() => queueAction("start", null, null, null, "embed-album")));
-$("pauseAfterAlbum").addEventListener("click", () => runAction(() => queueAction("pause-after", null, null, null, "embed-album")));
-$("pauseAllAlbums").addEventListener("click", () => runAction(() => queueAction("pause", null, null, null, "embed-album")));
+$("pauseAfterAlbum").addEventListener("click", () => runAction(() => queueAction(
+  state.queueControls.pause_after_album ? "resume-queue" : "pause-after", null, null, null, "embed-album")));
+$("pauseAllAlbums").addEventListener("click", () => runAction(() => queueAction(
+  state.queueControls.pause_all_albums ? "resume-all" : "pause-all", null, null, null, "embed-album")));
 function fullscreenElement() {
   return document.fullscreenElement || document.webkitFullscreenElement || null;
 }
@@ -1150,14 +1169,23 @@ $("bypassButton").addEventListener("click", () => runAction(async () => {
   const result = await post("/api/bypass", {album_id: state.album.id, enabled: state.album.status !== "bypassed"});
   state.album.status = result.bypassed ? "bypassed" : "unprocessed"; renderHero(); setStatus(result.bypassed ? "Album bypassed" : "Album bypass removed");
 }));
-$("embedAllAlbums").addEventListener("click", () => runAction(async () => {
+async function stageAllArtistAlbums() {
   if (!state.artist) return;
-  let count = 0;
-  for (const album of state.artist.albums.filter(item => item.album_mbid && item.cover)) {
-    await post("/api/jobs", {kind: "embed-album", payload: {album_id: album.id, image: album.cover}}); count++;
+  let staged = 0, existing = 0, failed = 0;
+  const albums = state.artist.albums.filter(item => albumEmbeddingEligible(item) && item.cover);
+  for (const album of albums) {
+    try {
+      const result = await post("/api/jobs", {kind: "embed-album", payload: {album_id: album.id, image: album.cover}});
+      if (result.already_queued) existing++; else staged++;
+    } catch (error) {
+      failed++;
+      setStatus(`Unable to stage ${album.name} · ${error.message}`, "error");
+    }
   }
-  await pollJobs(); setStatus(count + " albums staged");
-}));
+  await pollJobs();
+  setStatus(`${staged} Albums staged${existing ? ` · ${existing} already queued` : ""}${failed ? ` · ${failed} failed` : ""}`, failed ? "error" : "ready");
+}
+$("embedAllAlbums").addEventListener("click", () => runAction(stageAllArtistAlbums));
 $("uploadArtwork").addEventListener("click", () => {
   const input = node("input"); input.type = "file"; input.accept = "image/jpeg,image/png,image/webp";
   input.addEventListener("change", () => runAction(async () => {

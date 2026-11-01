@@ -1000,38 +1000,36 @@ class Services:
     @serialized
     def embed_album(self, payload, progress=None, cancelled=None):
         self.runtime.require_write()
-        row = self.album_row(str(payload.get("album_id", "")))
-        if not str(row["musicbrainz_albumid"] or "").strip():
-            raise ValueError("COMP albums require individual track processing")
         if payload.get("prepared_file"):
-            if (
-                payload.get("library_root") != str(self.runtime.music)
-                or payload.get("album_path") != row["path"]
-            ):
-                raise ValueError(
-                    "The staged library location has changed; stage this album again"
-                )
-            path = self.runtime.cache / "staged-artwork" / str(payload["prepared_file"])
-            if (
-                not inside(path, self.runtime.cache / "staged-artwork")
-                or path.name != payload["prepared_file"]
-            ):
-                raise ValueError("Staged artwork is unavailable")
-            source = path.read_bytes()
-            if hashlib.sha256(source).hexdigest() != payload.get("sha256"):
-                raise ValueError("Staged artwork failed verification")
+            row, files, source = self.validate_staged_album(payload)
         else:
+            row = self.album_row(str(payload.get("album_id", "")))
+            if not str(row["musicbrainz_albumid"] or "").strip():
+                raise ValueError("COMP albums require individual track processing")
+            files = self.album_files(row)
+            if not files:
+                raise ValueError("Album has no supported tracks")
             rendered = self.preview(dict(payload, kind="cover"))
             source = self.catalog.image_bytes(rendered["image"])
-        with Image.open(BytesIO(source)) as image:
-            side = int(
-                self.runtime.cfg.get("output", {}).get("embedded_thumbnail_size", 1200)
+        side = int(
+            payload.get("embedded_side")
+            or self.runtime.cfg.get("output", {}).get(
+                "embedded_thumbnail_size", 1200
             )
-            image = ImageOps.fit(image, (side, side), method=Image.Resampling.LANCZOS)
-            body = imaging.encode(image, "jpeg")
-        files = self.album_files(row)
-        if not files:
-            raise ValueError("Album has no supported tracks")
+        )
+        if payload.get("prepared_kind") == "thumbnail-v1":
+            with Image.open(BytesIO(source)) as image:
+                if image.size != (side, side):
+                    raise ValueError(
+                        "Staged artwork does not match its preferred embedded size"
+                    )
+            body = source
+        else:
+            # Backward compatibility for jobs staged before thumbnail snapshots
+            # were persisted separately from the full-resolution cover.
+            with Image.open(BytesIO(source)) as image:
+                image = imaging.prepare_embedded_thumbnail(image, side)
+                body = imaging.encode(image, "jpeg")
         self.runtime.cache.mkdir(parents=True, exist_ok=True)
         backup_root = self.runtime.cache / "embedded-backups"
         backup_root.mkdir(exist_ok=True)
@@ -1068,12 +1066,26 @@ class Services:
                 progress(
                     {"completed": index, "total": len(files), "message": path.name}
                 )
+        for path in files:
+            verified = embedded_track_artwork_bytes(path)
+            if not verified or hashlib.sha256(verified).digest() != hashlib.sha256(
+                body
+            ).digest():
+                raise ValueError(
+                    "Completed Album artwork verification failed for " + path.name
+                )
+            with Image.open(BytesIO(verified)) as opened:
+                if opened.size != (side, side):
+                    raise ValueError(
+                        "Completed Album artwork has the wrong preferred size for "
+                        + path.name
+                    )
         self.refresh_album(row["album_key"], source="webgui-embed")
         self.refresh_embedding_stats(row)
         self.audit(
             "embed-album", row["album_key"], {"tracks": len(files), "side": side}
         )
-        return {"tracks": len(files), "side": side}
+        return {"tracks": len(files), "side": side, "verified": True}
 
     def search_album(self, album_id, release_id=None):
         row = self.album_row(album_id)
@@ -1118,35 +1130,164 @@ class Services:
     def stage_album(self, payload):
         self.runtime.require_write()
         row = self.album_row(str(payload.get("album_id", "")))
+        album_mbid = str(row["musicbrainz_albumid"] or "").strip()
+        if not album_mbid:
+            raise ValueError(
+                "COMP Fallback Albums use the separate track-scoped EMBED Track workflow"
+            )
+        files = self.album_files(row)
+        if not files:
+            raise ValueError("Album has no supported tracks to stage")
         result = self.write_cover(payload)
-        body = self.catalog.image_bytes(result["image"])
+        cover_body = self.catalog.image_bytes(result["image"])
+        side = int(
+            self.runtime.cfg.get("output", {}).get(
+                "embedded_thumbnail_size", 1200
+            )
+        )
+        with Image.open(BytesIO(cover_body)) as opened:
+            thumbnail = imaging.prepare_embedded_thumbnail(opened, side)
+            prepared_body = imaging.encode(thumbnail, "jpeg")
         directory = self.runtime.cache / "staged-artwork"
         directory.mkdir(parents=True, exist_ok=True)
-        name = uuid4().hex + {
+        cover_name = uuid4().hex + {
             "jpeg": ".jpg",
             "png": ".png",
             "webp": ".webp",
         }[result["format"]]
-        self._atomic_artwork(directory / name, body)
+        prepared_name = uuid4().hex + ".jpg"
+        try:
+            self._atomic_artwork(directory / cover_name, cover_body)
+            self._atomic_artwork(directory / prepared_name, prepared_body)
+        except Exception:
+            (directory / cover_name).unlink(missing_ok=True)
+            (directory / prepared_name).unlink(missing_ok=True)
+            raise
         return {
             "album_id": row["album_key"],
             "album_path": row["path"],
+            "album_mbid": album_mbid,
             "library_root": str(self.runtime.music),
             "name": row["album_name"],
             "artist": row["artist_name"],
-            "cover": result["image"],
+            # Persist filenames and hashes, never a process-signed image URL.
+            # Queue reads issue a fresh bounded handle for the current server.
+            "cover": None,
             "cover_width": result["width"],
             "cover_height": result["height"],
-            "embedded_side": int(
-                self.runtime.cfg.get("output", {}).get(
-                    "embedded_thumbnail_size", 1200
-                )
-            ),
+            "embedded_side": side,
             "embedded_tracks": int(row["embedded_tracks"] or 0),
-            "prepared_file": name,
-            "sha256": hashlib.sha256(body).hexdigest(),
-            "tracks": row["track_count"],
+            "prepared_file": prepared_name,
+            "prepared_kind": "thumbnail-v1",
+            "sha256": hashlib.sha256(prepared_body).hexdigest(),
+            "cover_file": cover_name,
+            "cover_sha256": hashlib.sha256(cover_body).hexdigest(),
+            "preferred_size": self.album_has_preferred_artwork(files, side),
+            "tracks": len(files),
         }
+
+    def _staged_artwork_bytes(self, payload, file_field, hash_field):
+        name = str(payload.get(file_field, "")).strip()
+        directory = self.runtime.cache / "staged-artwork"
+        path = directory / name
+        if not name or path.name != name or not inside(path, directory):
+            raise ValueError("Staged artwork is unavailable")
+        try:
+            body = path.read_bytes()
+        except OSError as error:
+            raise ValueError("Staged artwork is unavailable") from error
+        expected = str(payload.get(hash_field, "")).strip()
+        if not expected or hashlib.sha256(body).hexdigest() != expected:
+            raise ValueError("Staged artwork failed verification")
+        return path, body
+
+    @staticmethod
+    def album_has_preferred_artwork(files, side):
+        if not files:
+            return False
+        for path in files:
+            body = embedded_track_artwork_bytes(path)
+            if not body:
+                return False
+            try:
+                with Image.open(BytesIO(body)) as opened:
+                    if opened.size != (side, side):
+                        return False
+            except (OSError, ValueError):
+                return False
+        return True
+
+    def validate_staged_album(self, payload):
+        album_id = str(payload.get("album_id", "")).strip()
+        if payload.get("library_root") != str(self.runtime.music):
+            raise ValueError("The staged music library changed; stage this Album again")
+        try:
+            row = self.album_row(album_id)
+        except KeyError as error:
+            raise ValueError(
+                "The staged Album is no longer indexed; restore it or remove this job"
+            ) from error
+        current_mbid = str(row["musicbrainz_albumid"] or "").strip()
+        if not current_mbid:
+            raise ValueError(
+                "The staged Album is now COMP Fallback; remove this Album job and use EMBED Track"
+            )
+        staged_mbid = str(payload.get("album_mbid", "")).strip()
+        if staged_mbid and current_mbid.casefold() != staged_mbid.casefold():
+            raise ValueError(
+                "The staged Album identity changed; remove it and stage the current Album"
+            )
+        if payload.get("album_path") != row["path"]:
+            raise ValueError(
+                "The staged Album location changed; restore it or stage the relocated Album again"
+            )
+        files = self.album_files(row)
+        if not files:
+            raise ValueError("The staged Album no longer has supported tracks")
+        _, source = self._staged_artwork_bytes(payload, "prepared_file", "sha256")
+        side = int(payload.get("embedded_side") or 0)
+        if not 300 <= side <= 4000:
+            raise ValueError("The staged embedded-thumbnail preference is invalid")
+        if payload.get("prepared_kind") == "thumbnail-v1":
+            try:
+                with Image.open(BytesIO(source)) as opened:
+                    if opened.size != (side, side):
+                        raise ValueError(
+                            "Staged artwork does not match its preferred embedded size"
+                        )
+            except OSError as error:
+                raise ValueError("Staged artwork is unreadable") from error
+        return row, files, source
+
+    def staged_album_projection(self, payload, *, validate=True):
+        projected = dict(payload)
+        projected["cover"] = None
+        try:
+            if payload.get("cover_file"):
+                preview, _ = self._staged_artwork_bytes(
+                    payload, "cover_file", "cover_sha256"
+                )
+            else:
+                preview, _ = self._staged_artwork_bytes(
+                    payload, "prepared_file", "sha256"
+                )
+            projected["cover"] = self.catalog.image(preview)
+            if validate:
+                self.validate_staged_album(payload)
+            projected["staged_valid"] = True
+            projected["staged_error"] = ""
+        except (KeyError, OSError, ValueError) as error:
+            projected["staged_valid"] = not validate
+            projected["staged_error"] = str(error) if validate else ""
+        return projected
+
+    def remove_staged_artwork(self, payload):
+        directory = self.runtime.cache / "staged-artwork"
+        for field in ("prepared_file", "cover_file"):
+            name = str(payload.get(field, "")).strip()
+            path = directory / name
+            if name and path.name == name and inside(path, directory):
+                path.unlink(missing_ok=True)
 
     @serialized
     def validate_comp_payload(self, payload):

@@ -80,6 +80,16 @@ const stageAlbumFunction = between(
   "async function stageAlbum",
   "async function queueAction",
 );
+const stageAllAlbumsFunction = between(
+  operationsSource,
+  "async function stageAllArtistAlbums",
+  '$("embedAllAlbums")',
+);
+const albumEligibilityFunctions = between(
+  appSource,
+  "function artistAlbumEligible",
+  "function markSelectedArtist",
+);
 const artistMetadataFunction = between(
   appSource,
   "async function loadArtistMetadata",
@@ -540,13 +550,16 @@ test("Album Track Embedding shows album details and excludes COMP and scan jobs"
   const elements = {
     embedQueue: {children: [], replaceChildren() { this.children = []; }, append(...children) { this.children.push(...children); }},
     embedTab: {classList: {toggle() {}}},
-    removeAllStaged: {disabled: false},
+    removeAllStaged: {disabled: false}, startStaged: {disabled: false},
+    pauseAfterAlbum: {disabled: false, textContent: ""},
+    pauseAllAlbums: {disabled: false, textContent: ""},
     embedQueueStatus: {textContent: ""}, embedQueueFooter: {textContent: ""},
   };
-  const state = {embedQueue: [], jobs: [
+  const state = {embedQueue: [], queueControls: {pause_after_album: false, pause_all_albums: false}, jobs: [
     {id: "album-1", kind: "embed-album", state: "staged", payload: {
       album_id: "psychedelic", artist: "13th Floor Elevators", name: "The Psychedelic Sounds of the 13th Floor Elevators",
       cover: "/cover.jpg", cover_width: 1800, cover_height: 1800, embedded_side: 1200, tracks: 21,
+      staged_valid: true, staged_error: "", preferred_size: true,
     }, progress: {}},
     {id: "comp-1", kind: "comp", state: "waiting", payload: {name: "Billboard 1994"}, progress: {}},
     {id: "scan-1", kind: "scan", state: "paused", payload: {name: "Artist scan"}, progress: {}},
@@ -570,11 +583,44 @@ test("Album Track Embedding shows album details and excludes COMP and scan jobs"
   assert.ok(copy.children.some(child => child.text.includes("13th Floor Elevators — The Psychedelic Sounds")));
   assert.ok(copy.children.some(child => child.text.includes("0/21 tracks") && child.text.includes("1200 × 1200")));
   assert.ok(copy.children.some(child => child.text.includes("staged cover resolution 1800 × 1800")));
+  assert.ok(copy.children.some(child => child.text.includes("Preferred embedded size")));
   assert.equal(state.embedQueue.length, 1);
-  assert.equal(elements.embedQueueStatus.textContent, "1 album staged or queued for embedding.");
+  assert.equal(elements.embedQueueStatus.textContent, "1 active · 1 staged · 0 paused · 0 failed.");
   assert.equal(elements.embedQueueFooter.textContent, elements.embedQueueStatus.textContent);
+  assert.equal(elements.startStaged.disabled, false);
+  assert.equal(elements.pauseAfterAlbum.textContent, "Pause After Album");
+  assert.equal(elements.pauseAllAlbums.textContent, "Pause ALL Albums");
   assert.match(operationsSource, /queueAction\("start", null, null, null, "embed-album"\)/);
+  assert.match(operationsSource, /state\.queueControls\.pause_after_album \? "resume-queue" : "pause-after"/);
+  assert.match(operationsSource, /state\.queueControls\.pause_all_albums \? "resume-all" : "pause-all"/);
+  assert.ok(operationsSource.includes('job.state === "failed" ? "Retry" : "Resume"'));
   assert.match(appSource, /queueAction\("clear", null, null, null, "embed-album"\)/);
+});
+
+test("EMBED All Albums stages only identified Artist Albums with saved covers", async () => {
+  const calls = [];
+  const statuses = [];
+  const state = {artist: {albums: [
+    {id: "regular", name: "Regular", album_mbid: "release-1", tracks: 10, cover: "/regular.jpg"},
+    {id: "featured", name: "Featured", album_mbid: "release-2", tracks: 1, cover: "/featured.jpg"},
+    {id: "fallback", name: "Fallback", album_mbid: "", tracks: 20, cover: "/fallback.jpg"},
+    {id: "no-cover", name: "No Cover", album_mbid: "release-3", tracks: 8, cover: null},
+  ]}};
+  const context = load(albumEligibilityFunctions + stageAllAlbumsFunction, {
+    state,
+    post: async (_path, body) => {
+      calls.push(body.payload.album_id);
+      return {id: body.payload.album_id, already_queued: body.payload.album_id === "featured"};
+    },
+    pollJobs: async () => {},
+    setStatus: (...args) => { statuses.push(args); },
+  });
+
+  await context.stageAllArtistAlbums();
+
+  assert.deepEqual(calls, ["regular", "featured"]);
+  assert.ok(statuses.at(-1)[0].includes("1 Albums staged"));
+  assert.ok(statuses.at(-1)[0].includes("1 already queued"));
 });
 
 test("lazy thumbnail hydration updates matching artists and rerenders", async () => {

@@ -44,13 +44,7 @@ class JobAdapter:
             )
 
     def cancelled(self):
-        if self.queue.stopped.is_set():
-            return True
-        with closing(self.queue.db.connect()) as db:
-            row = db.execute(
-                "SELECT state FROM web_jobs WHERE id=?", (self.id,)
-            ).fetchone()
-        return not row or row["state"] in {"cancelled", "paused"}
+        return self.queue.cancel_requested(self.id)
 
     def read(self, prompt, context):
         nonce = uuid4().hex
@@ -85,6 +79,9 @@ class JobQueue:
         self.db = services.runtime.database
         self.stopped = threading.Event()
         self.wake = threading.Event()
+        self.control_lock = threading.Lock()
+        self.pause_after_album = False
+        self.pause_all_albums = False
         self.lease = self.db.connect()
         acquired = self.lease.execute(
             "SELECT pg_try_advisory_lock(hashtextextended(current_schema() || ':splined-web-worker',0))"
@@ -111,12 +108,41 @@ class JobQueue:
     def list(self):
         with closing(self.db.connect()) as db:
             rows = list(
-                db.execute("SELECT * FROM web_jobs ORDER BY created_at DESC LIMIT 200")
+                db.execute(
+                    "SELECT * FROM web_jobs WHERE "
+                    "state NOT IN ('done','failed','cancelled') "
+                    "OR (kind='embed-album' AND state='failed') "
+                    "OR id IN (SELECT id FROM web_jobs ORDER BY created_at DESC LIMIT 200) "
+                    "ORDER BY created_at DESC"
+                )
             )
         for row in rows:
+            if row["kind"] == "embed-album":
+                row["payload"] = self.services.staged_album_projection(
+                    row["payload"], validate=row["state"] not in {"done", "cancelled"}
+                )
             row["created_at"] = row["created_at"].isoformat()
             row["updated_at"] = row["updated_at"].isoformat()
         return rows
+
+    def control_state(self):
+        with self.control_lock:
+            return {
+                "pause_after_album": self.pause_after_album,
+                "pause_all_albums": self.pause_all_albums,
+            }
+
+    def cancel_requested(self, job_id):
+        if self.stopped.is_set():
+            return True
+        with closing(self.db.connect()) as db:
+            row = db.execute(
+                "SELECT kind,state FROM web_jobs WHERE id=?", (job_id,)
+            ).fetchone()
+        if not row or row["state"] in {"cancelled", "paused"}:
+            return True
+        with self.control_lock:
+            return row["kind"] == "embed-album" and self.pause_all_albums
 
     def enqueue(self, kind, payload, *, staged=False):
         if kind not in {"embed-album", "comp", "index", "scan"}:
@@ -153,29 +179,103 @@ class JobQueue:
         kind = str(kind or "").strip()
         if kind and kind not in {"embed-album", "comp", "index", "scan"}:
             raise ValueError("Unknown work type")
+        if action in {"pause-after", "resume-queue", "pause-all", "resume-all"}:
+            if kind != "embed-album":
+                raise ValueError("Album queue controls require embed-album scope")
+            if action == "pause-after":
+                with self.control_lock:
+                    self.pause_after_album = True
+            elif action == "resume-queue":
+                with self.control_lock:
+                    self.pause_after_album = False
+            elif action == "pause-all":
+                with self.control_lock:
+                    self.pause_all_albums = True
+            else:
+                with self.control_lock:
+                    self.pause_all_albums = False
+                with closing(self.db.connect()) as db, db:
+                    db.execute(
+                        "UPDATE web_jobs SET state='queued',decision=NULL,"
+                        "progress=progress-'prompt',error='',updated_at=now() "
+                        "WHERE state='paused' AND kind='embed-album'"
+                    )
+            self.wake.set()
+            return {"ok": True, **self.control_state()}
+
+        if action == "retry" and job_id:
+            with closing(self.db.connect()) as db:
+                retry_row = db.execute(
+                    "SELECT kind,state,payload FROM web_jobs WHERE id=?", (job_id,)
+                ).fetchone()
+            if retry_row and retry_row["kind"] == "embed-album":
+                try:
+                    self.services.validate_staged_album(retry_row["payload"])
+                except ValueError as error:
+                    with closing(self.db.connect()) as db, db:
+                        db.execute(
+                            "UPDATE web_jobs SET state='failed',error=?,updated_at=now() WHERE id=?",
+                            (str(error), job_id),
+                        )
+                    raise
+
+        cleanup_payloads = []
         with closing(self.db.connect()) as db, db:
             if action == "start":
                 if kind:
+                    if kind == "embed-album":
+                        staged = list(
+                            db.execute(
+                                "SELECT id,payload FROM web_jobs "
+                                "WHERE state='staged' AND kind='embed-album' "
+                                "ORDER BY created_at"
+                            )
+                        )
+                        for item in staged:
+                            try:
+                                self.services.validate_staged_album(item["payload"])
+                            except ValueError as error:
+                                db.execute(
+                                    "UPDATE web_jobs SET state='failed',error=?,updated_at=now() WHERE id=? AND state='staged'",
+                                    (str(error), item["id"]),
+                                )
+                            else:
+                                db.execute(
+                                    "UPDATE web_jobs SET state='queued',decision=NULL,progress=progress-'prompt',"
+                                    "error='',updated_at=now() WHERE id=? AND state='staged'",
+                                    (item["id"],),
+                                )
+                    else:
+                        db.execute(
+                            "UPDATE web_jobs SET state='queued',decision=NULL,progress=progress-'prompt',"
+                            "error='',updated_at=now() WHERE state='staged' AND kind=?",
+                            (kind,),
+                        )
+                else:
+                    staged = list(
+                        db.execute(
+                            "SELECT id,payload FROM web_jobs "
+                            "WHERE state='staged' AND kind='embed-album' "
+                            "ORDER BY created_at"
+                        )
+                    )
+                    for item in staged:
+                        try:
+                            self.services.validate_staged_album(item["payload"])
+                        except ValueError as error:
+                            db.execute(
+                                "UPDATE web_jobs SET state='failed',error=?,updated_at=now() WHERE id=? AND state='staged'",
+                                (str(error), item["id"]),
+                            )
+                        else:
+                            db.execute(
+                                "UPDATE web_jobs SET state='queued',decision=NULL,progress=progress-'prompt',"
+                                "error='',updated_at=now() WHERE id=? AND state='staged'",
+                                (item["id"],),
+                            )
                     db.execute(
                         "UPDATE web_jobs SET state='queued',decision=NULL,progress=progress-'prompt',"
-                        "error='',updated_at=now() WHERE state='staged' AND kind=?",
-                        (kind,),
-                    )
-                else:
-                    db.execute(
-                        "UPDATE web_jobs SET state='queued',decision=NULL,progress=progress-'prompt',"
-                        "error='',updated_at=now() WHERE state='staged'"
-                    )
-            elif action == "pause-after":
-                if kind:
-                    db.execute(
-                        "UPDATE web_jobs SET state='paused',updated_at=now() "
-                        "WHERE state IN ('queued','staged') AND kind=?",
-                        (kind,),
-                    )
-                else:
-                    db.execute(
-                        "UPDATE web_jobs SET state='paused',updated_at=now() WHERE state IN ('queued','staged')"
+                        "error='',updated_at=now() WHERE state='staged' AND kind<>'embed-album'"
                     )
             elif action == "decision":
                 result = db.raw.execute(
@@ -186,7 +286,9 @@ class JobQueue:
                     raise ValueError("This decision is no longer current")
             elif action == "retry":
                 db.execute(
-                    "UPDATE web_jobs SET state='queued',decision=NULL,progress=progress-'prompt',"
+                    "UPDATE web_jobs SET state='queued',decision=NULL,"
+                    "progress=CASE WHEN state='failed' THEN progress-'prompt'-'completed'-'message' "
+                    "ELSE progress-'prompt' END,"
                     "error='',updated_at=now() WHERE id=? AND state IN ('failed','paused')",
                     (job_id,),
                 )
@@ -212,30 +314,65 @@ class JobQueue:
                 if not job_id:
                     raise ValueError("Choose a job")
                 row = db.execute(
-                    "SELECT state FROM web_jobs WHERE id=?", (job_id,)
+                    "SELECT kind,state,payload FROM web_jobs WHERE id=?", (job_id,)
                 ).fetchone()
                 if row and row["state"] in {"running", "waiting"}:
                     raise ValueError("Pause work before removing it")
+                if row and row["kind"] == "embed-album":
+                    cleanup_payloads.append(row["payload"])
                 db.execute("DELETE FROM web_jobs WHERE id=?", (job_id,))
             elif action == "clear":
                 if kind:
+                    running = db.execute(
+                        "SELECT 1 FROM web_jobs WHERE kind=? AND state IN ('running','waiting') LIMIT 1",
+                        (kind,),
+                    ).fetchone()
+                    if running:
+                        raise ValueError(
+                            "Pause ALL Albums and wait for the current track before removing the queue"
+                        )
+                    if kind == "embed-album":
+                        cleanup_payloads.extend(
+                            row["payload"]
+                            for row in db.execute(
+                                "SELECT payload FROM web_jobs WHERE kind='embed-album'"
+                            )
+                        )
                     db.execute(
-                        "DELETE FROM web_jobs WHERE state NOT IN ('running','waiting') AND kind=?",
+                        "DELETE FROM web_jobs WHERE kind=?",
                         (kind,),
                     )
                 else:
+                    running = db.execute(
+                        "SELECT 1 FROM web_jobs WHERE state IN ('running','waiting') LIMIT 1"
+                    ).fetchone()
+                    if running:
+                        raise ValueError(
+                            "Pause running work before removing the queue"
+                        )
+                    cleanup_payloads.extend(
+                        row["payload"]
+                        for row in db.execute(
+                            "SELECT payload FROM web_jobs WHERE kind='embed-album'"
+                        )
+                    )
                     db.execute(
-                        "DELETE FROM web_jobs WHERE state NOT IN ('running','waiting')"
+                        "DELETE FROM web_jobs"
                     )
             else:
                 raise ValueError("Unknown queue action")
+        for payload in cleanup_payloads:
+            self.services.remove_staged_artwork(payload)
         self.wake.set()
-        return {"ok": True}
+        return {"ok": True, **self.control_state()}
 
     def claim(self):
+        with self.control_lock:
+            block_albums = self.pause_after_album or self.pause_all_albums
         with closing(self.db.connect()) as db, db:
             return db.raw.execute(
-                "UPDATE web_jobs SET state='running',updated_at=now() WHERE id=(SELECT id FROM web_jobs WHERE state='queued' ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING *"
+                "UPDATE web_jobs SET state='running',updated_at=now() WHERE id=(SELECT id FROM web_jobs WHERE state='queued' AND (%s=FALSE OR kind<>'embed-album') ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING *",
+                (block_albums,),
             ).fetchone()
 
     def run(self):
