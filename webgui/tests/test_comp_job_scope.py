@@ -151,6 +151,8 @@ class CompJobScopeTests(unittest.TestCase):
             self.assertEqual(adapter.context["scope_artist"], "Selected Artist")
             self.assertEqual(adapter.context["track_key"], "artist-track")
             self.assertEqual(adapter.context["track_title"], "Target Song")
+            self.assertIn("1 explicitly selected COMP track", progress[0]["message"])
+            self.assertIn("no other compilation tracks", progress[0]["message"])
             self.assertEqual(progress[-1]["completed"], 0)
             self.assertEqual(progress[-1]["total"], 1)
             self.assertIn("Selected Artist — Target Song", progress[-1]["message"])

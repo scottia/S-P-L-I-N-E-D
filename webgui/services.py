@@ -1571,6 +1571,17 @@ class Services:
         allowed = {item["track_key"]: item["path"] for item in records}
         requested = payload["track_keys"]
         selected_files = [Path(allowed[key]) for key in requested]
+        progress = getattr(adapter, "progress", None)
+        if callable(progress):
+            progress({
+                "completed": 0,
+                "total": len(requested),
+                "message": (
+                    f"Loading {len(requested)} explicitly selected COMP "
+                    f"track{'s' if len(requested) != 1 else ''} · "
+                    "no other compilation tracks are included"
+                ),
+            })
         tracks = [core.read_track(path) for path in selected_files]
         keys_by_path = {str(Path(allowed[key])): key for key in requested}
         positions_by_path = {
@@ -1586,12 +1597,12 @@ class Services:
                 track_title=str(track.title or track.path.name),
                 track_artist=str(track.artist or ""),
             )
-            progress = getattr(adapter, "progress", None)
-            if callable(progress):
+            track_progress = getattr(adapter, "progress", None)
+            if callable(track_progress):
                 focused_artist = str(
                     payload.get("artist_name") or track.artist or "Unknown Artist"
                 )
-                progress({
+                track_progress({
                     "completed": position - 1,
                     "total": len(requested),
                     "message": (

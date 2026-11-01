@@ -1140,17 +1140,35 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             credentials.save("navidrome", {"../bad": "secret"})
 
-    def test_interrupted_job_pauses_and_decision_nonce_rejects_stale_input(self):
+    def test_restart_discards_comp_jobs_but_pauses_durable_work(self):
+        prepared_id = "a" * 32
+        prepared_dir = self.services._prepared_comp_directory()
+        prepared_image = prepared_dir / (prepared_id + ".jpg")
+        prepared_manifest = prepared_dir / (prepared_id + ".json")
+        prepared_image.write_bytes(b"prepared")
+        prepared_manifest.write_text("{}", encoding="utf-8")
         with closing(self.db.connect()) as db, db:
+            db.raw.execute(
+                "INSERT INTO web_jobs(id,kind,state,payload,progress) "
+                "VALUES('interrupted','comp','waiting','{}',%s)",
+                (Jsonb({"prepared_comp": {"prepared_id": prepared_id}}),),
+            )
             db.execute(
-                "INSERT INTO web_jobs(id,kind,state,payload) VALUES('interrupted','comp','waiting','{}')"
+                "INSERT INTO web_jobs(id,kind,state,payload) VALUES('completed-comp','comp','done','{}')"
+            )
+            db.execute(
+                "INSERT INTO web_jobs(id,kind,state,payload) VALUES('durable','embed-album','waiting','{}')"
             )
         self.queue = JobQueue(self.services)
-        self.assertEqual(self.queue.list()[0]["state"], "paused")
+        rows = {item["id"]: item for item in self.queue.list()}
+        self.assertNotIn("interrupted", rows)
+        self.assertNotIn("completed-comp", rows)
+        self.assertEqual(rows["durable"]["state"], "paused")
+        self.assertEqual(rows["durable"]["error"], "Interrupted by server restart")
+        self.assertFalse(prepared_image.exists())
+        self.assertFalse(prepared_manifest.exists())
         with self.assertRaises(ValueError):
             self.queue.action("decision", "interrupted", "1", "stale")
-        self.queue.action("remove", "interrupted")
-        self.assertEqual(self.queue.list(), [])
 
     def test_album_queue_bulk_actions_never_change_hidden_comp_work(self):
         self.queue = JobQueue(self.services)
