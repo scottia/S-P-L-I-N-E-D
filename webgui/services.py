@@ -1365,7 +1365,7 @@ class Services:
         if not core.valid_mbid(album_mbid):
             raise ValueError(
                 "Album Track Embedding requires a valid MusicBrainz Release ID; "
-                "COMP Fallback Albums use the separate track-scoped EMBED Track workflow"
+                "COMP Fallback Albums use the separate track-scoped EMBED Comp workflow"
             )
         files = self.album_files(row)
         if not files:

@@ -1767,7 +1767,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             )
 
     def test_rendered_browser_comp_workflows_and_persistent_album_queue(self):
-        """Drive the real app in Chrome; only external provider replies are simulated."""
+        """Drive local FastAPI in a rendered browser; external providers are simulated."""
         try:
             from playwright.sync_api import expect, sync_playwright
         except ImportError as error:  # pragma: no cover - CI installs test requirements.
@@ -1804,6 +1804,17 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             "10,000 Maniacs",
             "6c8b9855-ba8b-48f9-ac1d-42167f7f7b18",
             "11111111-1111-4111-8111-111111111111",
+        )
+        initial_target_art_buffer = BytesIO()
+        Image.new("RGB", (640, 640), "maroon").save(
+            initial_target_art_buffer, format="JPEG"
+        )
+        initial_target_art = initial_target_art_buffer.getvalue()
+        compilation.replace_embedded_artwork(
+            target,
+            initial_target_art,
+            "jpeg",
+            {"width": 640, "height": 640},
         )
         comp_track(
             other,
@@ -1860,7 +1871,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             "retry_max": 1, "min_delay": 0.001, "recording_timeout": 2,
         }}), encoding="utf-8")
 
-        def wait_for_embedded_art(path: Path, timeout: float = 15.0) -> bytes:
+        def wait_for_embedded_art(
+            path: Path, previous: bytes | None = None, timeout: float = 15.0
+        ) -> bytes:
             """Wait for verified audio readback, not a transient progress banner."""
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
@@ -1868,7 +1881,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     body = embedded_track_artwork_bytes(path)
                 except Exception:
                     body = None
-                if body:
+                if body and body != previous:
                     return body
                 time.sleep(0.1)
             self.fail(f"embedded artwork was not readable from {path.name}")
@@ -2138,6 +2151,68 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     expect(page.locator("#fallbackReport")).not_to_contain_text(
                         "Other Song"
                     )
+
+                    # Selecting a report track is a complete, direct COMP
+                    # workflow.  Its current embedded thumb is the Selected
+                    # Artwork source; Upscale Preview and EMBED Comp do not
+                    # require opening MusicBrainz release results.
+                    page.locator("#fallbackReport .fallback-track").click()
+                    expect(page.locator("#selectedSource")).to_have_text(
+                        "Embedded track"
+                    )
+                    expect(page.locator("#selectedDimensions")).to_have_text(
+                        "640 × 640"
+                    )
+                    expect(page.locator("#writeButton")).to_have_text(
+                        "EMBED Comp"
+                    )
+                    expect(page.locator("#writeButton")).to_be_enabled()
+                    expect(page.locator("#embedBatchButton")).to_have_text(
+                        "EMBED Batch"
+                    )
+                    expect(page.locator("#embedBatchButton")).to_be_disabled()
+                    self.assertEqual(
+                        embedded_track_artwork_bytes(target), initial_target_art
+                    )
+                    page.locator("#upscaleButton").click()
+                    expect(page.locator("#statusText")).to_contain_text(
+                        "Upscale preview", timeout=15000
+                    )
+                    self.assertEqual(
+                        embedded_track_artwork_bytes(target), initial_target_art
+                    )
+                    page.locator("#writeButton").click()
+                    direct_art = wait_for_embedded_art(target, initial_target_art)
+                    with Image.open(BytesIO(direct_art)) as embedded:
+                        self.assertEqual(embedded.size, (300, 300))
+                    expect(page.locator("#statusText")).to_contain_text(
+                        "Embedded COMP track", timeout=15000
+                    )
+                    self.assertIsNone(embedded_track_artwork_bytes(other))
+
+                    # Restore the disposable fixture to its pre-write state so
+                    # the same browser test can independently exercise the MB
+                    # candidate workflow below.
+                    compilation.replace_embedded_artwork(
+                        target,
+                        initial_target_art,
+                        "jpeg",
+                        {"width": 640, "height": 640},
+                    )
+                    with closing(self.db.connect()) as db, db:
+                        db.execute(
+                            "DELETE FROM compilation_track_artwork WHERE lower(track_path)=lower(?)",
+                            (str(target),),
+                        )
+                        db.execute(
+                            "DELETE FROM compilation_album_progress WHERE album_path=?",
+                            (str(comp),),
+                        )
+                    page.locator("#compReportButton").click()
+                    page.locator("#compReportButton").click()
+                    expect(page.locator("#fallbackReport")).to_contain_text(
+                        "Because the Night"
+                    )
                     with page.expect_request(
                         lambda request: request.method == "POST"
                         and request.url.endswith("/api/jobs")
@@ -2305,54 +2380,16 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         timeout=15000
                     )
                     page.locator(".candidate-image-button").first.click()
-                    expect(page.locator("#writeButton")).to_have_text("EMBED Track")
-                    expect(page.locator("#embedBatchButton")).to_have_text("EMBED Thumbs")
-                    candidate_state = page.evaluate(
-                        "() => ({kind: state.queuedDecision && state.queuedDecision.kind, jobKind: state.queuedDecision && state.queuedDecision.jobKind, nonce: state.queuedDecision && state.queuedDecision.nonce, selected: !!(state.queuedDecision && state.queuedDecision.selected), target: typeof compTargetScope === 'function' ? compTargetScope() : null})"
-                    )
-                    self.assertTrue(
-                        page.locator("#embedBatchButton").is_enabled(),
-                        candidate_state,
-                    )
-                    self.assertIsNone(embedded_track_artwork_bytes(target))
+                    expect(page.locator("#writeButton")).to_have_text("EMBED Comp")
+                    expect(page.locator("#embedBatchButton")).to_have_text("EMBED Batch")
+                    expect(page.locator("#embedBatchButton")).to_be_disabled()
+                    self.assertEqual(embedded_track_artwork_bytes(target), initial_target_art)
                     page.locator("#upscaleButton").click()
                     expect(page.locator("#statusText")).to_contain_text(
                         "Upscale preview", timeout=15000
                     )
-                    self.assertTrue(
-                        page.locator("#embedBatchButton").is_enabled(),
-                        page.evaluate(
-                            "() => JSON.stringify({decision: state.queuedDecision && {kind: state.queuedDecision.kind, jobKind: state.queuedDecision.jobKind, nonce: state.queuedDecision.nonce, selected: !!state.queuedDecision.selected}, previewMode: state.compPreviewMode, upscale: !!state.upscalePreview})"
-                        ),
-                    )
-                    page.locator("#embedBatchButton").click()
-                    expect(page.locator("#statusText")).to_contain_text(
-                        "Embedded Thumb Ready · 300 × 300 · no audio written",
-                        timeout=15000,
-                    )
-                    expect(page.locator("#selectedQuality")).to_have_text("Thumb Ready")
-                    expect(page.locator("#selectedDimensions")).to_have_text("300 × 300")
-                    expect(page.locator("#review")).to_have_class(
-                        re.compile(r"\bcomp-thumbnail-ready\b")
-                    )
-                    self.assertIsNone(embedded_track_artwork_bytes(target))
-                    if screenshot_dir:
-                        page.locator("#review").screenshot(
-                            path=str(
-                                screenshot_root
-                                / "comp-thumbnail-ready-brave-normal.png"
-                            )
-                        )
-                        page.set_viewport_size({"width": 1920, "height": 1080})
-                        page.locator("#review").screenshot(
-                            path=str(
-                                screenshot_root
-                                / "comp-thumbnail-ready-brave-maximized.png"
-                            )
-                        )
-                        page.set_viewport_size({"width": 1600, "height": 1000})
                     page.locator("#writeButton").click()
-                    target_art = wait_for_embedded_art(target)
+                    target_art = wait_for_embedded_art(target, initial_target_art)
                     with Image.open(BytesIO(target_art)) as embedded:
                         self.assertEqual(embedded.size, (300, 300))
                     expect(page.locator("#statusText")).to_have_text(
@@ -2389,12 +2426,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     page.locator(".musicbrainz-release-row").click()
                     page.locator(".musicbrainz-review-actions button.primary").click()
                     page.locator(".candidate-image-button").first.click()
-                    expect(page.locator("#embedBatchButton")).to_have_text("EMBED Thumbs")
-                    page.locator("#embedBatchButton").click()
-                    expect(page.locator("#statusText")).to_contain_text(
-                        "Embedded Thumb Ready · 300 × 300 · no audio written",
-                        timeout=15000,
-                    )
+                    expect(page.locator("#writeButton")).to_have_text("EMBED Comp")
+                    expect(page.locator("#embedBatchButton")).to_have_text("EMBED Batch")
+                    expect(page.locator("#embedBatchButton")).to_be_disabled()
                     self.assertIsNone(embedded_track_artwork_bytes(other))
                     page.locator("#writeButton").click()
                     wait_for_embedded_art(other)

@@ -322,11 +322,66 @@ function candidateBanner(candidate) {
   return state.candidates.find(item => item !== candidate && candidateKind(item) === "banner" && sourceKey(item.source) === sourceKey(candidate.source)) || null;
 }
 function activeFxTarget() {
-  if (state.queuedDecision?.jobKind === "comp" || state.editorMode === "fallback" || state.editorMode === "artist" && state.compReportVisible) return "comp";
+  if (activeArtworkDecision()?.jobKind === "comp" || state.editorMode === "fallback" || state.editorMode === "artist" && state.compReportVisible) return "comp";
   if (state.editorMode === "album") return "album";
   if (state.radioCurrent) return "current";
   if (state.radioArtist && state.radioBanner) return state.themedPackaging ? "package" : null;
   return state.radioBanner ? "banner" : "artist";
+}
+function currentCompSelectionScope() {
+  if (state.editorMode === "artist" && state.compReportVisible && state.compTrack) return {
+    artist_id: String(state.artist?.id || ""), album_id: String(state.compTrack.albumId || ""), track_key: String(state.compTrack.key || ""),
+  };
+  if (state.editorMode === "fallback" && state.fallbackTrack) return {
+    artist_id: "", album_id: String(state.album?.id || ""), track_key: String(state.fallbackTrack.key || ""),
+  };
+  return null;
+}
+function queuedCompDecisionScope(decision = state.queuedDecision) {
+  if (decision?.jobKind !== "comp") return null;
+  const keys = Array.isArray(decision.payload?.track_keys) ? decision.payload.track_keys : [];
+  return {
+    artist_id: String(decision.payload?.artist_id || ""),
+    album_id: String(decision.context?.album_id || decision.payload?.album_id || ""),
+    track_key: String(decision.context?.track_key || (keys.length === 1 ? keys[0] : "")),
+  };
+}
+function queuedCompOwnsSelectedTrack(decision = state.queuedDecision) {
+  const queued = queuedCompDecisionScope(decision);
+  if (!queued) return false;
+  const selected = currentCompSelectionScope();
+  if (!selected) return true;
+  return queued.artist_id === selected.artist_id && queued.album_id === selected.album_id
+    && !!queued.track_key && queued.track_key === selected.track_key;
+}
+function activeArtworkDecision() {
+  const decision = state.queuedDecision;
+  if (!decision) return null;
+  const selected = currentCompSelectionScope();
+  if (decision.jobKind === "comp") return selected && queuedCompOwnsSelectedTrack(decision) ? decision : null;
+  return selected ? null : decision;
+}
+function activeCompJobId() {
+  if (state.queuedDecision?.jobKind === "comp") return state.queuedDecision.jobId || null;
+  const reviewed = state.jobs?.find(job => job.id === state.reviewJobId && job.kind === "comp"
+    && !["done", "failed", "cancelled"].includes(job.state));
+  return reviewed?.id || null;
+}
+async function cancelActiveCompWork() {
+  const jobId = activeCompJobId();
+  if (!jobId) return;
+  try { await post("/api/jobs/action", {action: "cancel", id: jobId}); }
+  finally {
+    if (state.queuedDecision?.jobId === jobId) state.queuedDecision = null;
+    if (state.reviewJobId === jobId) { state.reviewJobId = null; state.reviewJobState = ""; }
+  }
+}
+async function cancelMismatchedCompWork(scope) {
+  const queued = queuedCompDecisionScope();
+  if (!queued) return;
+  if (queued.artist_id === String(scope.artist_id || "") && queued.album_id === String(scope.album_id || "")
+    && queued.track_key === String(scope.track_key || "")) return;
+  await cancelActiveCompWork();
 }
 function currentCandidate() {
   return state.editorMode === "album" ? state.selectedCover : (state.radioBanner && !state.radioArtist ? state.selectedBanner : state.selectedPortrait);
@@ -872,6 +927,8 @@ async function probeArtistCompStatuses() {
 
 async function selectArtistCompTrack(albumId, key) {
   const request = ++state.compTrackRequest, artistId = state.artist?.id;
+  await cancelMismatchedCompWork({artist_id: artistId, album_id: albumId, track_key: key});
+  if (request !== state.compTrackRequest || artistId !== state.artist?.id || !state.compReportVisible) return;
   state.upscalePreview = null; state.renderedPreview.comp = null; state.compThumbnailPreview = null; state.pendingCompWrite = null; state.fx.comp = {};
   setStatus("Loading existing COMP track artwork…", "busy");
   try {
@@ -912,14 +969,18 @@ async function repairArtistComp() {
 
 function renderSources() {
   const strip = $("sourceStrip"); clear(strip);
+  const decision = activeArtworkDecision();
+  const staleDecision = !!state.queuedDecision && !decision;
+  const candidates = staleDecision ? [] : state.candidates;
+  const diagnostics = staleDecision ? [] : state.sourceDiagnostics;
   const artistImageSources = new Set(["local", "fanart", "deezer", "lastfm", "discogs", "navidrome"]);
   for (const [label, key, icon] of SOURCES) {
-    const count = state.candidates.filter(candidate => sourceKey(candidate.source) === key).length;
+    const count = candidates.filter(candidate => sourceKey(candidate.source) === key).length;
     const navidromeMetadata = key === "navidrome" && state.artistMetadata?.source === "Navidrome";
     const configured = key === "local" || (state.enabledSources || []).includes(key === "fanart" ? "fanarttv" : key);
     const searchable = state.editorMode === "album" ? configured
       : artistImageSources.has(key) && (configured || navidromeMetadata);
-    const runtime = sourceDiagnosticStatus(state.sourceDiagnostics, key);
+    const runtime = sourceDiagnosticStatus(diagnostics, key);
     const runtimeClass = !count && runtime.status ? " " + runtime.status : "";
     const button = node("button", "source-card" + runtimeClass + (state.activeSource === key && key ? " active" : "")); button.type = "button";
     button.title = count ? "Show " + label + " candidates"
@@ -995,7 +1056,7 @@ function appendMusicBrainzAuthorityEditor(host, decision) {
   fields.append(recording, artist, apply); details.append(fields); host.append(details);
 }
 function renderMusicBrainzWorkspace() {
-  const host = $("musicbrainzReview"), decision = state.queuedDecision;
+  const host = $("musicbrainzReview"), decision = activeArtworkDecision();
   clear(host);
   if (decision?.kind !== "musicbrainz-results") { host.hidden = true; return; }
   host.hidden = false;
@@ -1095,7 +1156,7 @@ function renderMusicBrainzWorkspace() {
   actions.prepend(back, keep); actions.append(use); host.append(actions);
 }
 function renderQueuedCompTools() {
-  const host = $("compDecisionTools"), decision = state.queuedDecision;
+  const host = $("compDecisionTools"), decision = activeArtworkDecision();
   clear(host);
   const active = decision?.jobKind === "comp";
   host.hidden = !active; $("candidateDock").classList.toggle("comp-review-active", active);
@@ -1147,12 +1208,14 @@ function renderQueuedCompTools() {
   }
 }
 function renderCandidates() {
-  const skipping = state.queuedDecision?.jobKind === "scan";
-  const musicBrainzResults = state.queuedDecision?.kind === "musicbrainz-results";
-  const artistCompLaunch = !state.queuedDecision && state.editorMode === "artist" && state.compReportVisible;
+  const decision = activeArtworkDecision();
+  const staleDecision = !!state.queuedDecision && !decision;
+  const skipping = decision?.jobKind === "scan";
+  const musicBrainzResults = decision?.kind === "musicbrainz-results";
+  const artistCompLaunch = !decision && state.editorMode === "artist" && state.compReportVisible;
   $("searchButton").textContent = skipping ? "SKIP ALBUM" : artistCompLaunch ? "LAUNCH COMP" : "LAUNCH";
   $("searchButton").disabled = skipping ? false
-    : state.queuedDecision ? true
+    : decision ? true
     : artistCompLaunch ? state.server?.mode !== "write" || state.compPreviewMode || state.compBusy || !state.compGroups.some(group => group.tracks.some(track => track.status === "blue"))
     : state.editorMode === "fallback" ? state.server?.mode !== "write" || !state.fallbackTracks.some(item => !item.completed) : !state.artist && !state.album;
   const grid = $("candidateGrid"); clear(grid);
@@ -1160,34 +1223,35 @@ function renderCandidates() {
   const query = $("candidateSearch").value.trim().toLowerCase();
   if (musicBrainzResults) {
     $("compareButton").disabled = true;
-    $("candidateHint").textContent = [state.queuedDecision.context?.track_artist, state.queuedDecision.context?.track_title].filter(Boolean).join(" — ")
+    $("candidateHint").textContent = [decision.context?.track_artist, decision.context?.track_title].filter(Boolean).join(" — ")
       + " · release families are shown in the main MusicBrainz workspace";
-    $("candidateCount").textContent = (state.queuedDecision.options || []).length + " MusicBrainz releases";
+    $("candidateCount").textContent = (decision.options || []).length + " MusicBrainz releases";
     renderCandidateTypeChips();
     renderMusicBrainzWorkspace();
     return;
   }
-  const visible = state.candidates.filter(candidate => candidateVisible(candidate) && (!query || ((candidate.name || "") + " " + (candidate.source || "")).toLowerCase().includes(query)));
-  $("candidateCount").textContent = state.candidates.length + (state.candidates.length === 1 ? " candidate" : " candidates");
+  const candidateItems = staleDecision ? [] : state.candidates;
+  const visible = candidateItems.filter(candidate => candidateVisible(candidate) && (!query || ((candidate.name || "") + " " + (candidate.source || "")).toLowerCase().includes(query)));
+  $("candidateCount").textContent = candidateItems.length + (candidateItems.length === 1 ? " candidate" : " candidates");
   $("compareButton").disabled = state.compare.size < 2;
-  $("candidateHint").textContent = state.queuedDecision ? "Select a candidate to preview; save from Selected Artwork"
+  $("candidateHint").textContent = decision ? "Select a candidate to preview; save from Selected Artwork"
     : artistCompLaunch ? "LAUNCH COMP reviews only this Artist's blue compilation tracks"
     : state.editorMode === "fallback" ? "LAUNCH COMP to review track artwork in queued work"
     : state.editorMode === "album" ? "Select a cover candidate to preview" : "Blue: artist · pink: banner · wheel to browse";
   renderCandidateTypeChips();
   if (!visible.length) { grid.append(node("p", "empty-copy", artistCompLaunch ? "Use LAUNCH COMP to review this Artist's matching compilation tracks."
     : state.editorMode === "fallback" ? "Select a COMP track above to inspect its embedded artwork. Use LAUNCH COMP to review track artwork in queued work."
-    : state.candidates.length ? "No candidates match the filter." : "Press LAUNCH to search artist art, or select an album to inspect folder art.")); return; }
+    : candidateItems.length ? "No candidates match the filter." : "Press LAUNCH to search artist art, or select an album to inspect folder art.")); return; }
   for (const candidate of visible) {
     const kind = candidateKind(candidate);
-    const active = state.queuedDecision?.selected === candidate || state.selectedCover === candidate || state.selectedPortrait === candidate || state.selectedBanner === candidate;
-    const card = node("div", "candidate-card" + (kind === "banner" ? " banner" : "") + (state.queuedDecision ? " queued" : "") + (active ? " active" : ""));
+    const active = decision?.selected === candidate || state.selectedCover === candidate || state.selectedPortrait === candidate || state.selectedBanner === candidate;
+    const card = node("div", "candidate-card" + (kind === "banner" ? " banner" : "") + (decision ? " queued" : "") + (active ? " active" : ""));
     const picture = node("div", "candidate-picture");
     const main = node("button", "candidate-image-button"); main.type = "button"; main.setAttribute("aria-label", "Preview " + candidate.name);
     if (candidate.image) main.append(image(candidate.image, "", candidate.name));
     main.append(node("span", "candidate-source-label", candidate.source));
     main.addEventListener("click", () => selectCandidate(candidate, kind === "banner" ? "banner" : "artist")); picture.append(main);
-    if (state.editorMode === "artist" && !state.queuedDecision) {
+    if (state.editorMode === "artist" && !decision) {
       if (kind !== "banner") {
         const portrait = node("button", "candidate-radio artist" + (state.selectedPortrait === candidate ? " active" : "")); portrait.type = "button"; portrait.setAttribute("aria-label", "Preview as artist image: " + candidate.name);
         portrait.addEventListener("click", () => selectCandidate(candidate, "artist")); picture.append(portrait);
@@ -1201,7 +1265,7 @@ function renderCandidates() {
     if (active) picture.append(node("span", "candidate-recommended", "●"));
     card.append(picture);
     const line = node("div", "candidate-card-line"); line.append(node("strong", "", candidate.recommended ? "Recommended" : candidate.name));
-    if (state.queuedDecision) {
+    if (decision) {
       const dimensions = node("small", "candidate-resolution", candidate.width + " × " + candidate.height);
       const range = candidate.range_type || candidate.range_class || candidateRange(candidate);
       const quality = [candidate.suggested ? "Suggested" : candidate.selected ? "Preferred" : candidate.acceptable === false ? "Rejected" : "Eligible", range].filter(Boolean).join(" · ");
@@ -1247,7 +1311,8 @@ function paneImage(frame, src, label, portrait = false) {
   else frame.append(image(src, "", label));
 }
 function renderPanes() {
-  const isComp = state.queuedDecision?.jobKind === "comp" || state.editorMode === "fallback"
+  const decision = activeArtworkDecision();
+  const isComp = decision?.jobKind === "comp" || state.editorMode === "fallback"
     || state.editorMode === "artist" && state.compReportVisible;
   const isAlbum = state.editorMode === "album" || state.editorMode === "fallback" || isComp;
   $("paneGrid").classList.toggle("album-layout", isAlbum);
@@ -1256,7 +1321,7 @@ function renderPanes() {
   if (isAlbum) {
     $("albumPaneHeading").textContent = isComp ? "COMP TRACK PREVIEW" : "ALBUM COVER PREVIEW";
     const compTrackImage = state.editorMode === "fallback" ? state.fallbackTrack?.image : state.compTrack?.image;
-    const source = isComp ? activeCompPrepared()?.image || state.renderedPreview.comp?.image || state.upscalePreview?.image || state.queuedDecision?.selected?.image || compTrackImage
+    const source = isComp ? activeCompPrepared()?.image || state.renderedPreview.comp?.image || state.upscalePreview?.image || decision?.selected?.image || compTrackImage
       : state.editorMode === "fallback" ? state.fallbackTrack?.image : state.renderedPreview.album?.image || state.upscalePreview?.image || state.selectedCover?.image || state.album?.cover;
     paneImage($("albumPane"), source, isComp || state.editorMode === "fallback" ? "Choose a COMP track to preview its embedded image" : "Choose a cover candidate");
   }
@@ -1274,13 +1339,8 @@ function selectedImage() {
   const frame = $("selectedFrame"); clear(frame);
   let candidate = null, url = null, type = "Current artwork", source = "Local", quality = "Current";
   const preparedComp = activeCompPrepared();
-  const queuedComp = state.queuedDecision?.jobKind === "comp";
-  const queuedCompAlbum = String(state.queuedDecision?.context?.album_id || state.queuedDecision?.payload?.album_id || "");
-  const queuedScopeKeys = Array.isArray(state.queuedDecision?.payload?.track_keys) ? state.queuedDecision.payload.track_keys : [];
-  const queuedCompTrack = String(state.queuedDecision?.context?.track_key || (queuedScopeKeys.length === 1 ? queuedScopeKeys[0] : ""));
-  const queuedCompOwnsCurrent = !queuedComp || !!state.compTrack
-    && state.compTrack.albumId === queuedCompAlbum
-    && (!queuedCompTrack || state.compTrack.key === queuedCompTrack);
+  const decision = activeArtworkDecision();
+  const queuedComp = decision?.jobKind === "comp";
   if (preparedComp) {
     candidate = preparedComp;
     url = preparedComp.image;
@@ -1288,9 +1348,9 @@ function selectedImage() {
     source = state.pendingCompWrite ? "Verified COMP write pending refresh" : "Prepared COMP thumbnail";
     quality = state.pendingCompWrite ? "Embedding…" : "Thumb Ready";
     if (url) frame.append(image(url, "selected-image", "Prepared COMP thumbnail"));
-  } else if (state.queuedDecision?.selected) {
-    candidate = state.queuedDecision.selected;
-    const compCandidate = state.queuedDecision.jobKind === "comp";
+  } else if (decision?.selected) {
+    candidate = decision.selected;
+    const compCandidate = decision.jobKind === "comp";
     url = compCandidate ? state.renderedPreview.comp?.image || state.upscalePreview?.image || candidate.image : candidate.image;
     type = compCandidate ? "COMP Track Candidate" : "Queued Cover Candidate"; source = state.upscalePreview ? "Upscale preview" : candidate.source || "Queued review"; quality = state.upscalePreview ? "Upscale Preview" : "Preview";
     if (url) frame.append(image(url, "selected-image", candidate.name));
@@ -1305,7 +1365,7 @@ function selectedImage() {
     source = state.upscalePreview ? "Upscale preview" : state.fallbackTrack ? "Embedded track" : "Local";
     quality = state.upscalePreview ? "Upscale Preview" : "Current";
     if (url) frame.append(image(url, "selected-image", state.fallbackTrack?.file + " embedded artwork"));
-  } else if (state.editorMode === "artist" && state.compReportVisible && state.compTrack && queuedCompOwnsCurrent) {
+  } else if (state.editorMode === "artist" && state.compReportVisible && state.compTrack) {
     url = state.renderedPreview.comp?.image || state.upscalePreview?.image || state.compTrack.image;
     type = "COMP Track"; source = state.upscalePreview ? "Upscale preview" : "Embedded track";
     quality = state.upscalePreview ? "Upscale Preview" : "Existing";
@@ -1335,7 +1395,7 @@ function selectedImage() {
   const existing = state.editorMode === "album" ? state.album?.cover_meta : state.editorMode === "fallback" ? state.fallbackTrack
     : state.editorMode === "artist" && state.compReportVisible && state.compTrack ? state.compTrack
     : state.radioBanner && !state.radioArtist ? state.artist?.banner_meta : state.artist?.portrait_meta;
-  const rendered = state.queuedDecision?.jobKind === "comp" || state.editorMode === "fallback"
+  const rendered = decision?.jobKind === "comp" || state.editorMode === "fallback"
     || state.editorMode === "artist" && state.compReportVisible ? state.renderedPreview.comp
     : state.editorMode === "album" ? state.renderedPreview.album
     : state.radioBanner && !state.radioArtist ? state.renderedPreview.banner : state.renderedPreview.artist;
@@ -1373,8 +1433,8 @@ function renderReview() {
   $("themedPackaging").hidden = !packageReady;
   $("themedPackaging").classList.toggle("active", state.themedPackaging);
   $("themedPackaging").setAttribute("aria-pressed", String(state.themedPackaging));
-  $("writeButton").textContent = artistEntry ? "Artist Art" : state.editorMode === "artist" && state.compReportVisible && state.compTrack ? "EMBED Track"
-    : state.editorMode === "artist" ? "WRITE Artist Art" : state.editorMode === "fallback" ? "EMBED Track" : "WRITE Cover";
+  $("writeButton").textContent = artistEntry ? "Artist Art" : state.editorMode === "artist" && state.compReportVisible && state.compTrack ? "EMBED Comp"
+    : state.editorMode === "artist" ? "WRITE Artist Art" : state.editorMode === "fallback" ? "EMBED Comp" : "WRITE Cover";
   $("writeButton").disabled = !(artistEntry && state.artist);
   $("upscaleButton").disabled = state.editorMode === "album" ? !(state.selectedCover?.image || state.album?.cover)
     : state.editorMode === "fallback" ? !state.fallbackTrack?.image
@@ -1455,7 +1515,7 @@ function renderEnhancementMenus() {
   }
   for (const label of FILTER_ROWS) sliderRow(filters, label, target, "fx");
   for (const label of DETAIL_ROWS) sliderRow(detail, label, target, "fx");
-  if (target === "comp") { fitment.append(node("p", "menu-note", "COMP artwork is centered and prepared at the configured embedded-track size when EMBED Track is pressed.")); return; }
+  if (target === "comp") { fitment.append(node("p", "menu-note", "COMP artwork is centered and prepared at the configured embedded-track size when EMBED Comp is pressed.")); return; }
   if (state.editorMode !== "artist") { fitment.append(node("p", "menu-note", "Artist and banner fitment is available in Artist Art.")); return; }
   const targets = target === "package" ? ["artist", "banner"] : target === "artist" || target === "banner" ? [target] : [];
   if (!targets.length) { fitment.append(node("p", "menu-note", "Select Artist Image or Artist Banner to adjust fitment.")); return; }
@@ -1469,7 +1529,8 @@ function renderWorkspace() {
     $(name + "Tab").classList.toggle("active", state.workspace === name);
     $(name + "View").hidden = state.workspace !== name;
   }
-  const musicBrainz = state.workspace === "find" && state.queuedDecision?.kind === "musicbrainz-results";
+  const decision = activeArtworkDecision();
+  const musicBrainz = state.workspace === "find" && decision?.kind === "musicbrainz-results";
   $("candidateDock").hidden = state.workspace === "embed" || musicBrainz;
   $("review").hidden = state.workspace === "embed";
   document.querySelector(".workspace").classList.toggle("embed-active", state.workspace === "embed");
@@ -1478,7 +1539,7 @@ function renderWorkspace() {
   $("musicbrainzReview").hidden = !musicBrainz;
   $("sourceHeading").textContent = musicBrainz ? "Find Releases Containing This Recording" : "Candidate Findings";
   $("sourceSubcopy").textContent = musicBrainz
-    ? [state.queuedDecision?.context?.current_album?.artist || "Various Artists", state.queuedDecision?.context?.current_album?.title || state.album?.name || "COMP Album"].join(" › ")
+    ? [decision?.context?.current_album?.artist || "Various Artists", decision?.context?.current_album?.title || state.album?.name || "COMP Album"].join(" › ")
     : "Search multiple sources to find the best artwork for your music.";
   if (musicBrainz) renderMusicBrainzWorkspace();
   renderPanes(); renderReview();
@@ -1521,6 +1582,7 @@ async function hydrateArtistThumbnails(request) {
   } catch { /* Local Artist Art remains available when Navidrome is offline. */ }
 }
 async function chooseArtist(id, select = true) {
+  await cancelActiveCompWork();
   const request = ++state.selectionRequest;
   ++state.searchRequest; ++state.artistMetadataRequest;
   clearFocusCandidates(); resetFocusAdjustments();
@@ -1543,6 +1605,7 @@ async function chooseArtist(id, select = true) {
   } catch (error) { if (request === state.selectionRequest) setStatus(error.message, "error"); }
 }
 async function chooseAlbum(id) {
+  await cancelActiveCompWork();
   const request = ++state.selectionRequest;
   ++state.searchRequest;
   clearFocusCandidates(); resetFocusAdjustments();
@@ -1579,6 +1642,8 @@ async function chooseAlbum(id) {
 async function selectFallbackTrack(key, previewOnly) {
   if (!state.album || state.editorMode !== "fallback") return;
   const albumId = state.album.id, request = ++state.fallbackTrackRequest;
+  await cancelMismatchedCompWork({artist_id: "", album_id: albumId, track_key: key});
+  if (request !== state.fallbackTrackRequest || state.album?.id !== albumId || state.editorMode !== "fallback") return;
   state.upscalePreview = null; state.renderedPreview.comp = null; state.compThumbnailPreview = null; state.pendingCompWrite = null; state.fx.comp = {};
   setStatus("Loading existing COMP track artwork…", "busy");
   try {
@@ -1683,8 +1748,9 @@ for (const [kind, id] of [["media", "mediaFilterLock"], ["candidate", "candidate
   });
 }
 for (const [buttonId, mode] of [["artistsTab", "artists"], ["albumsTab", "albums"], ["fallbackTab", "fallback"]]) {
-  $(buttonId).addEventListener("click", () => {
+  $(buttonId).addEventListener("click", async () => {
     if (state.libraryMode === mode) return;
+    await cancelActiveCompWork();
     ++state.selectionRequest; ++state.searchRequest; ++state.artistMetadataRequest;
     state.libraryLoading = true;
     state.libraryMode = mode; state.artist = null; state.artistMetadata = null; state.album = null; state.compAlbums = []; state.mediaSelected.clear();
@@ -1719,16 +1785,17 @@ $("upscaleButton").addEventListener("click", async () => {
     await runAction(upscaleArtist);
     return;
   }
-  const compContext = state.queuedDecision?.jobKind === "comp" || state.editorMode === "fallback" || state.editorMode === "artist" && state.compReportVisible;
-  if (compContext || state.queuedDecision?.jobKind === "comp") invalidateCompThumbnail();
-  const source = state.queuedDecision?.jobKind === "comp" && state.queuedDecision.selected ? state.queuedDecision.selected.image
+  const decision = activeArtworkDecision();
+  const compContext = decision?.jobKind === "comp" || state.editorMode === "fallback" || state.editorMode === "artist" && state.compReportVisible;
+  if (compContext) invalidateCompThumbnail();
+  const source = decision?.jobKind === "comp" && decision.selected ? decision.selected.image
     : state.editorMode === "fallback" ? state.fallbackTrack?.image
     : state.editorMode === "artist" && state.compReportVisible ? state.compTrack?.image
     : state.selectedCover?.image || state.album?.cover;
   if (!source) { setStatus("Choose artwork to preview", "error"); return; }
   const request = state.selectionRequest, albumId = state.album?.id, trackKey = state.fallbackTrack?.key;
   const compTrackKey = state.compTrack?.key;
-  const queuedCandidate = state.queuedDecision?.selected?.image || "";
+  const queuedCandidate = decision?.selected?.image || "";
   $("upscaleButton").disabled = true;
   setStatus("Preparing upscale preview…", "busy");
   try {
@@ -1737,14 +1804,14 @@ $("upscaleButton").addEventListener("click", async () => {
     if (request !== state.selectionRequest || albumId !== state.album?.id
       || (state.editorMode === "fallback" && trackKey !== state.fallbackTrack?.key)
       || (state.editorMode === "artist" && state.compReportVisible && compTrackKey !== state.compTrack?.key)
-      || queuedCandidate !== (state.queuedDecision?.selected?.image || "")) return;
+      || queuedCandidate !== (activeArtworkDecision()?.selected?.image || "")) return;
     state.upscalePreview = preview;
     renderReview();
-    setStatus("Upscale preview · " + preview.width + " × " + preview.height + " · " + preview.reason + (compContext ? " · EMBED Track prepares the configured square thumbnail" : ""));
+    setStatus("Upscale preview · " + preview.width + " × " + preview.height + " · " + preview.reason + (compContext ? " · EMBED Comp writes the configured square thumbnail" : ""));
   } catch (error) { if (request === state.selectionRequest) setStatus(error.message, "error"); }
   finally { if (request === state.selectionRequest) renderReview(); }
 });
-$("embedBatchButton").addEventListener("click", () => runAction(compContextActive() ? prepareCompThumbnail : stageAlbum));
+$("embedBatchButton").addEventListener("click", () => runAction(stageAlbum));
 $("removeAllStaged").addEventListener("click", () => runAction(() => queueAction("clear", null, null, null, "embed-album")));
 $("collapseLibrary").addEventListener("click", () => { const collapsed = document.querySelector(".workspace").classList.toggle("library-collapsed"); $("collapseLibrary").textContent = collapsed ? "+" : "−"; $("collapseLibrary").title = collapsed ? "Expand Media Library" : "Collapse Media Library"; fitReviewToViewport(); });
 for (const [buttonId, panelId, otherId] of [["mediaFilterToggle", "mediaFilter", "candidateFilter"], ["candidateFilterToggle", "candidateFilter", "mediaFilter"]]) {
