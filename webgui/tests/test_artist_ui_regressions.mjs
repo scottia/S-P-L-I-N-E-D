@@ -300,6 +300,55 @@ test("Artist-scoped queued COMP review restores its Artist after switching", asy
   assert.equal(calls.some(path => path.startsWith("/api/fallback/tracks")), false);
 });
 
+test("a new queued COMP prompt clears the previous Artist track before async hydration", async () => {
+  let resolveOverview;
+  const overviewReady = new Promise(resolve => { resolveOverview = resolve; });
+  let reviewRenders = 0;
+  const decision = {
+    context: {album_id: "new-comp", track_key: "new-track"},
+    jobKind: "comp",
+    payload: {artist_id: "new-artist", album_id: "new-comp", track_keys: ["new-track"]},
+  };
+  const state = {
+    artist: {id: "previous-artist"}, artistMetadata: null, album: null,
+    compAlbums: [], compGroups: [{id: "previous-comp", tracks: [{key: "previous-track"}]}],
+    compReportVisible: true, compReportLoading: false, compPreviewMode: false,
+    compTrack: {albumId: "previous-comp", key: "previous-track", file: "previous.mp3"},
+    compReportRequest: 0, compStatusRequest: 0, compTrackRequest: 0,
+    fallbackTracks: [], fallbackTrack: null, upscalePreview: {image: "stale-preview"},
+    renderedPreview: {comp: {image: "stale-render"}}, compThumbnailPreview: {image: "stale-thumb"},
+    pendingCompWrite: {owner: "stale"}, editorMode: "artist", workspace: "find",
+    queuedDecision: decision, selectionRequest: 0, candidates: [],
+  };
+  const context = load(queuedAlbumFunction, {
+    state,
+    api: async path => {
+      if (path.startsWith("/api/artist/overview")) return overviewReady;
+      if (path.startsWith("/api/artist/comp-report")) return [
+        {id: "new-comp", tracks: [{key: "new-track"}]},
+      ];
+      throw new Error(`unexpected API call: ${path}`);
+    },
+    $: () => ({textContent: "COMP Report"}),
+    renderReview: () => { reviewRenders += 1; },
+    renderLibrary() {}, renderHero() {}, renderSources() {}, renderCandidates() {}, renderWorkspace() {},
+    loadArtistMetadata() {}, selectArtistCompTrack: async () => {},
+  });
+
+  const focusing = context.focusQueuedAlbum(decision);
+  await Promise.resolve();
+  assert.equal(state.compTrack, null);
+  assert.equal(state.upscalePreview, null);
+  assert.equal(state.renderedPreview.comp, null);
+  assert.equal(state.compThumbnailPreview, null);
+  assert.equal(state.pendingCompWrite, null);
+  assert.equal(reviewRenders, 1);
+
+  resolveOverview({artist: {id: "new-artist"}, comp_albums: []});
+  await focusing;
+  assert.equal(state.artist.id, "new-artist");
+});
+
 test("Artist and full-album COMP launches submit independent explicit scopes", async () => {
   const calls = [];
   const reviewed = [];

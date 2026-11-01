@@ -1274,6 +1274,13 @@ function selectedImage() {
   const frame = $("selectedFrame"); clear(frame);
   let candidate = null, url = null, type = "Current artwork", source = "Local", quality = "Current";
   const preparedComp = activeCompPrepared();
+  const queuedComp = state.queuedDecision?.jobKind === "comp";
+  const queuedCompAlbum = String(state.queuedDecision?.context?.album_id || state.queuedDecision?.payload?.album_id || "");
+  const queuedScopeKeys = Array.isArray(state.queuedDecision?.payload?.track_keys) ? state.queuedDecision.payload.track_keys : [];
+  const queuedCompTrack = String(state.queuedDecision?.context?.track_key || (queuedScopeKeys.length === 1 ? queuedScopeKeys[0] : ""));
+  const queuedCompOwnsCurrent = !queuedComp || !!state.compTrack
+    && state.compTrack.albumId === queuedCompAlbum
+    && (!queuedCompTrack || state.compTrack.key === queuedCompTrack);
   if (preparedComp) {
     candidate = preparedComp;
     url = preparedComp.image;
@@ -1298,11 +1305,13 @@ function selectedImage() {
     source = state.upscalePreview ? "Upscale preview" : state.fallbackTrack ? "Embedded track" : "Local";
     quality = state.upscalePreview ? "Upscale Preview" : "Current";
     if (url) frame.append(image(url, "selected-image", state.fallbackTrack?.file + " embedded artwork"));
-  } else if (state.editorMode === "artist" && state.compReportVisible && state.compTrack) {
+  } else if (state.editorMode === "artist" && state.compReportVisible && state.compTrack && queuedCompOwnsCurrent) {
     url = state.renderedPreview.comp?.image || state.upscalePreview?.image || state.compTrack.image;
     type = "COMP Track"; source = state.upscalePreview ? "Upscale preview" : "Embedded track";
     quality = state.upscalePreview ? "Upscale Preview" : "Existing";
     if (url) frame.append(image(url, "selected-image", state.compTrack.file + " embedded artwork"));
+  } else if (queuedComp) {
+    type = "COMP Track"; source = "Loading selected track"; quality = "Loading";
   } else if ((state.workspace === "enhance" && state.radioCurrent) || (!state.radioCurrent && state.radioArtist && state.radioBanner)) {
     const banner = state.radioCurrent ? state.selectedBanner?.image || state.artist?.banner : state.renderedPreview.banner?.image || state.selectedBanner?.image || state.artist?.banner;
     const portrait = state.radioCurrent ? state.selectedPortrait?.image || state.artist?.portrait : state.renderedPreview.artist?.image || state.selectedPortrait?.image || state.artist?.portrait;

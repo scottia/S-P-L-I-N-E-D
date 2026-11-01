@@ -322,6 +322,58 @@ class CompilationAuthorityPolicyTests(unittest.TestCase):
         self.assertEqual(result.candidates, ())
         self.assertEqual(http.get.call_count, 1)
 
+    def test_interactive_identity_accepts_focused_id_from_multi_artist_credit(self) -> None:
+        artist_credit = [
+            {"artist": {"id": ARTIST_ID, "name": "A Great Big World"}},
+            {"joinphrase": " & ", "artist": {
+                "id": OTHER_ARTIST_ID, "name": "Christina Aguilera",
+            }},
+        ]
+        exact = {
+            "id": RECORDING_ID,
+            "title": "Say Something",
+            "artist-credit": artist_credit,
+            "releases": [{
+                "id": RELEASE_ID,
+                "title": "Is There Anybody Out There?",
+                "status": "Official",
+                "artist-credit": artist_credit,
+                "release-group": {
+                    "id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+                    "title": "Is There Anybody Out There?",
+                    "primary-type": "Album",
+                    "secondary-types": [],
+                },
+            }],
+            "relations": [],
+        }
+        http = SimpleNamespace(last_mb_request=None, get=Mock(side_effect=[
+            FakeResponse(200, {"id": ARTIST_ID, "name": "A Great Big World"}),
+            FakeResponse(200, exact),
+            FakeResponse(200, {"recordings": []}),
+        ]))
+
+        result = policy.resolve_interactive_identity_matches(
+            SimpleNamespace(
+                mb_headers=lambda *_args: ({}, "oauth"),
+                MB_BASE="https://musicbrainz.test/ws/2",
+            ),
+            http, Path("config.toml"), {},
+            SimpleNamespace(
+                artist="A Great Big World; Christina Aguilera",
+                title="Say Something",
+                artist_mbid=ARTIST_ID,
+                recording_mbid=RECORDING_ID,
+            ),
+            policy.MusicBrainzOptions(1, 0.001, 7.0),
+        )
+
+        self.assertEqual(result.artist_status, "valid")
+        self.assertEqual(result.recording_status, "valid")
+        self.assertEqual(result.identity_status, "valid")
+        self.assertEqual(result.focused_artist_mbid, ARTIST_ID)
+        self.assertTrue(result.candidates)
+
     def test_interactive_work_matches_exclude_other_artist_recordings(self) -> None:
         credit = [{"artist": {"id": ARTIST_ID, "name": "10,000 Maniacs"}}]
         exact = {

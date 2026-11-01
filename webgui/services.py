@@ -1573,14 +1573,33 @@ class Services:
         selected_files = [Path(allowed[key]) for key in requested]
         tracks = [core.read_track(path) for path in selected_files]
         keys_by_path = {str(Path(allowed[key])): key for key in requested}
+        positions_by_path = {
+            str(Path(allowed[key])): position
+            for position, key in enumerate(requested, 1)
+        }
 
         def update_track_context(track):
+            position = positions_by_path.get(str(track.path), 1)
             adapter.context.update(
                 track_key=keys_by_path.get(str(track.path), ""),
                 track_file=track.path.name,
                 track_title=str(track.title or track.path.name),
                 track_artist=str(track.artist or ""),
             )
+            progress = getattr(adapter, "progress", None)
+            if callable(progress):
+                focused_artist = str(
+                    payload.get("artist_name") or track.artist or "Unknown Artist"
+                )
+                progress({
+                    "completed": position - 1,
+                    "total": len(requested),
+                    "message": (
+                        "MusicBrainz identity lookup · "
+                        f"{focused_artist} — {track.title or track.path.name} · "
+                        f"track {position} of {len(requested)}"
+                    ),
+                })
 
         def prepare_selected_artwork(request):
             request = dict(

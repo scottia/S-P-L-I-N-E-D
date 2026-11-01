@@ -1084,7 +1084,22 @@ def _artist_name_key(value: Any) -> str:
 
 def _artist_names_compatible(local: Any, musicbrainz: Any) -> bool:
     left = _artist_name_key(local)
-    return bool(left and left == _artist_name_key(musicbrainz))
+    right = _artist_name_key(musicbrainz)
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    # Multi-value ID3 credits are projected as semicolon-delimited text.  A
+    # track can legitimately carry only the focused Artist ID while its
+    # display credit also names a collaborator (for example, A Great Big
+    # World; Christina Aguilera).  Validate the focused ID against an exact
+    # credit component; the subsequent Recording lookup still has to prove
+    # that Artist ID belongs to the authoritative MusicBrainz credit.
+    return right in {
+        _artist_name_key(part)
+        for part in str(local or "").split(";")
+        if _artist_name_key(part)
+    }
 
 
 def _browser_release_class(

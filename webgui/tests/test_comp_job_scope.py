@@ -116,7 +116,8 @@ class CompJobScopeTests(unittest.TestCase):
             ]
             self.services.refresh_album = lambda _album_id: None
             self.services.refresh_embedding_stats = lambda _row: None
-            adapter = SimpleNamespace(context={})
+            progress = []
+            adapter = SimpleNamespace(context={}, progress=progress.append)
             captured = {}
 
             def manual_scan(album, tracks, **kwargs):
@@ -150,6 +151,10 @@ class CompJobScopeTests(unittest.TestCase):
             self.assertEqual(adapter.context["scope_artist"], "Selected Artist")
             self.assertEqual(adapter.context["track_key"], "artist-track")
             self.assertEqual(adapter.context["track_title"], "Target Song")
+            self.assertEqual(progress[-1]["completed"], 0)
+            self.assertEqual(progress[-1]["total"], 1)
+            self.assertIn("Selected Artist — Target Song", progress[-1]["message"])
+            self.assertIn("track 1 of 1", progress[-1]["message"])
             self.assertTrue(callable(captured.get("persist_track_authority")))
             self.assertIs(captured["musicbrainz_results_first"], True)
 

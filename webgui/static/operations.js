@@ -368,12 +368,24 @@ async function focusQueuedAlbum(decision) {
   const albumId = decision?.context?.album_id;
   const scopeArtistId = decision?.jobKind === "comp" ? String(decision?.payload?.artist_id || "") : "";
   const scopeKeys = Array.isArray(decision?.payload?.track_keys) ? decision.payload.track_keys : [];
+  const promptTrackKey = String(decision?.context?.track_key || (scopeKeys.length === 1 ? scopeKeys[0] : ""));
+  const staleCompTrack = decision?.jobKind === "comp" && state.compTrack
+    && (state.compTrack.albumId !== albumId || (promptTrackKey && state.compTrack.key !== promptTrackKey));
+  if (staleCompTrack) {
+    // A queued prompt can arrive after the operator changes Artists.  Clear
+    // the old Selected Artwork immediately, before the async Artist/report
+    // hydration below, so it can never look attached to the new COMP result.
+    state.compTrack = null; state.upscalePreview = null;
+    if (state.renderedPreview) state.renderedPreview.comp = null;
+    state.compThumbnailPreview = null; state.pendingCompWrite = null;
+    if (typeof renderReview === "function") renderReview();
+  }
   const scopedGroup = scopeArtistId === state.artist?.id && state.editorMode === "artist" && state.compReportVisible
     ? state.compGroups.find(group => group.id === albumId && scopeKeys.every(key => group.tracks.some(track => track.key === key)))
     : null;
   if (scopedGroup) {
     decision.previousCandidates = [];
-    const trackKey = decision.context?.track_key || (scopeKeys.length === 1 ? scopeKeys[0] : "");
+    const trackKey = promptTrackKey;
     if (trackKey && scopedGroup.tracks.some(track => track.key === trackKey)
       && (state.compTrack?.albumId !== albumId || state.compTrack?.key !== trackKey))
       await selectArtistCompTrack(albumId, trackKey);
@@ -400,7 +412,7 @@ async function focusQueuedAlbum(decision) {
     $("compReportButton").textContent = "CLOSE REPORT";
     renderLibrary(); renderHero(); renderSources(); renderCandidates(); renderWorkspace();
     loadArtistMetadata(scopeArtistId);
-    const trackKey = decision.context?.track_key || (scopeKeys.length === 1 ? scopeKeys[0] : "");
+    const trackKey = promptTrackKey;
     if (trackKey && group.tracks.some(track => track.key === trackKey))
       await selectArtistCompTrack(albumId, trackKey);
     return;
@@ -649,7 +661,8 @@ async function pollJobs() {
     if (stagedChanged && !completedAlbums.length) { renderHero(); renderReview(); }
     if (state.reviewJobId) {
       const job = state.jobs.find(item => item.id === state.reviewJobId);
-      const key = job?.id + ":" + job?.state + ":" + job?.progress.prompt?.nonce;
+      const key = job?.id + ":" + job?.state + ":" + job?.progress.prompt?.nonce
+        + ":" + (job?.progress?.message || "");
       if (job && key !== lastPrompt && (job.state === "waiting" || $("workspaceDialog").open)) {
         lastPrompt = key; await renderJob(job);
       }
@@ -698,7 +711,8 @@ async function renderJob(job) {
     return;
   }
   const body = dialog("Queued work · " + job.kind);
-  body.append(node("p", "", job.payload.name || job.progress.message || job.state));
+  body.append(node("p", "", job.payload.name || job.state));
+  if (job.progress.message) body.append(node("p", "operation-progress", job.progress.message));
   if (job.error) body.append(node("p", "operation-error", job.error));
   const diagnostics = job.progress.current?.diagnostics?.items || [];
   if (job.kind === "comp" && diagnostics.length) {
