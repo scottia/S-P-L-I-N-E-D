@@ -29,6 +29,7 @@ from webgui.jobs import JobQueue
 from webgui.credentials import Credentials
 from webgui.auth import AdminAuth
 from webgui.audit import sanitize, sanitize_text, utc_now
+from webgui.reconciliation import SQLiteReconciler
 
 
 SETTINGS_UI = Path(__file__).resolve().parents[1] / "schema/settings-ui.json"
@@ -46,6 +47,7 @@ class Context:
         self.runtime = None
         self.services = None
         self.jobs = None
+        self.reconciliation = None
         self.url = ""
         self.error = ""
         try:
@@ -60,6 +62,8 @@ class Context:
         except Exception:
             if self.runtime:
                 self.runtime.close()
+            if self.reconciliation:
+                self.reconciliation.close()
             self.runtime = None
             self.services = None
             self.jobs = None
@@ -70,6 +74,13 @@ class Context:
         database.migrate()
         self.runtime = Runtime(self.config_file, database)
         self.services = Services(self.runtime)
+        self.reconciliation = SQLiteReconciler(
+            database,
+            self.runtime.cache,
+            self.runtime.music,
+            self.services.audit,
+            start_scheduler=self.start_worker,
+        )
         if self.start_worker:
             self.jobs = JobQueue(self.services)
         self.url = url
@@ -113,6 +124,15 @@ class Context:
         if self.runtime and url == self.url:
             self.runtime.save_settings(cfg)
             self.services.reload_settings()
+            if self.reconciliation:
+                self.reconciliation.close()
+            self.reconciliation = SQLiteReconciler(
+                self.runtime.database,
+                self.runtime.cache,
+                self.runtime.music,
+                self.services.audit,
+                start_scheduler=self.start_worker,
+            )
         else:
             if self.jobs and any(
                 item["state"] not in {"done", "failed", "cancelled"}
@@ -131,6 +151,8 @@ class Context:
                 raise ValueError("The music library must be an existing directory")
             if self.jobs:
                 self.jobs.close()
+            if self.reconciliation:
+                self.reconciliation.close()
             if self.runtime:
                 self.runtime.close()
             runtime = Runtime(self.config_file, database, cfg)
@@ -138,6 +160,13 @@ class Context:
             self.runtime = runtime
             self.services = Services(runtime)
             self.jobs = JobQueue(self.services) if self.start_worker else None
+            self.reconciliation = SQLiteReconciler(
+                database,
+                runtime.cache,
+                runtime.music,
+                self.services.audit,
+                start_scheduler=self.start_worker,
+            )
             self.url = url
             self.error = ""
         return self.settings()
@@ -196,6 +225,8 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
         yield
         if context.jobs:
             context.jobs.close()
+        if context.reconciliation:
+            context.reconciliation.close()
         if context.runtime:
             context.runtime.close()
 
@@ -894,6 +925,49 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
         if not source.is_file():
             raise ValueError("Choose an existing SQLite snapshot")
         return services.runtime.database.import_sqlite(source)
+
+    @app.get("/api/reconciliation/sources")
+    def reconciliation_sources():
+        context.require()
+        if not context.reconciliation:
+            raise ValueError("SQLite reconciliation is unavailable")
+        return context.reconciliation.sources()
+
+    @app.get("/api/reconciliation")
+    def reconciliation_history(run_id: str = "", resolution: str = "", limit: int = 500):
+        context.require()
+        if not context.reconciliation:
+            raise ValueError("SQLite reconciliation is unavailable")
+        return context.reconciliation.history(
+            run_id=run_id,
+            resolution=resolution,
+            limit=limit,
+        )
+
+    @app.post("/api/reconciliation/compare")
+    def reconciliation_compare(payload: dict):
+        context.require()
+        if not context.reconciliation:
+            raise ValueError("SQLite reconciliation is unavailable")
+        return context.reconciliation.compare(
+            payload.get("source_path", ""),
+            payload.get("source_root", ""),
+            payload.get("target_root", ""),
+        )
+
+    @app.post("/api/reconciliation/apply")
+    def reconciliation_apply(payload: dict):
+        context.require()
+        if not context.reconciliation:
+            raise ValueError("SQLite reconciliation is unavailable")
+        return context.reconciliation.apply(payload.get("run_id", ""))
+
+    @app.post("/api/reconciliation/settings")
+    def reconciliation_settings(payload: dict):
+        context.require()
+        if not context.reconciliation:
+            raise ValueError("SQLite reconciliation is unavailable")
+        return context.reconciliation.save_settings(payload)
 
     @app.get("/guide")
     def guide():

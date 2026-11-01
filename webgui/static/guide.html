@@ -36,7 +36,7 @@ Navidrome supplies biography, similar artists, and top songs when available. If 
 
 ## Data, recovery, and deployment
 
-PostgreSQL is authoritative for WebGUI catalog and jobs. There is no silent SQLite fallback, and the native `scan.sqlite_shared` switch is not a WebGUI setting. Settings can explicitly import a read-only SQLite snapshot into an empty PostgreSQL catalog; paths must match the server&#x27;s library. The source is left unchanged. Windows and WebGUI do not open the same live database; simultaneous writers to the same music library should be avoided.
+PostgreSQL is authoritative for WebGUI catalog and jobs. There is no silent SQLite fallback, and the native `scan.sqlite_shared` switch is not a WebGUI setting. The empty-catalog importer remains available. With Advanced enabled, SQLite Reconciliation can instead compare a schema-v2 read-only snapshot from the configured persistent cache against an existing PostgreSQL catalog. Enter the snapshot&#x27;s original library root so paths are mapped to the configured WebGUI music root. Compare/Dry Run records safe differences, derived state, and conflicts in `salite_diff`; Apply Safe Differences never applies conflicts or deletes PostgreSQL records. Optional scheduled comparison is disabled by default. The source is left unchanged. Windows and WebGUI do not open the same live database; use a stable snapshot rather than a live Windows database, and avoid simultaneous writers to the same music library.
 
 Back up PostgreSQL using a consistent database dump, plus the config, credential, cache/staged-artwork, and any external artist-art volumes. Track changes require a music-library backup for full recovery. Do not treat a SQLite snapshot or the image cache as a PostgreSQL backup.
 

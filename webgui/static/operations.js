@@ -1102,7 +1102,49 @@ function downloadJsonFile(name, value) {
   const blob = new Blob([JSON.stringify(value, null, 2) + "\n"], {type: "application/json"});
   const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = name; link.click(); URL.revokeObjectURL(link.href);
 }
-function renderCatalogMaintenance(host) {
+async function renderSqliteReconciliation(host) {
+  const section = node("section", "sqlite-reconciliation");
+  section.append(node("h5", "", "SQLite Reconciliation"), node("p", "settings-subcopy", "Compare an authorized read-only SQLite snapshot with this PostgreSQL catalog. Differences remain reviewable in salite_diff; conflicts are never auto-applied."));
+  const source = node("select"), sourceLabel = node("label", "setting-field"); sourceLabel.append(node("span", "", "Authorized SQLite snapshot"), source);
+  const sourceRoot = field(section, "Snapshot library root (source)"), targetRoot = field(section, "WebGUI library root (target)"); targetRoot.value = state.server?.music || ""; targetRoot.readOnly = true;
+  section.insertBefore(sourceLabel, sourceRoot.parentElement || sourceRoot);
+  const summary = node("p", "runtime-summary", "Loading reconciliation status…"), differences = node("pre", "diagnostic-events reconciliation-events", "Loading recorded differences…");
+  const resolution = node("select");
+  for (const [value, label] of [["", "All differences"], ["safe", "Safe pending"], ["conflict", "Conflicts"], ["derived", "Derived"], ["applied", "Applied"], ["skipped", "Failed / skipped"]]) { const option = node("option", "", label); option.value = value; resolution.append(option); }
+  const compare = node("button", "operation-button", "Compare / Dry Run"), apply = node("button", "operation-button", "Apply Safe Differences"), refresh = node("button", "operation-button", "Refresh Differences");
+  compare.type = apply.type = refresh.type = "button"; apply.disabled = true;
+  const actions = node("div", "connection-actions"); actions.append(compare, apply, refresh, resolution); section.append(actions, summary, differences);
+  const schedule = node("section", "reconciliation-schedule"), enabled = node("input"), autoApply = node("input"), interval = node("input");
+  enabled.type = autoApply.type = "checkbox"; interval.type = "number"; interval.min = "15"; interval.max = "10080"; interval.value = "1440";
+  const enabledLabel = node("label", "setting-checkbox"); enabledLabel.append(enabled, node("span", "", "Enable scheduled comparison"));
+  const autoLabel = node("label", "setting-checkbox"); autoLabel.append(autoApply, node("span", "", "Automatically apply safe differences only"));
+  const intervalLabel = node("label", "setting-field"); intervalLabel.append(node("span", "", "Interval (minutes)"), interval);
+  const saveSchedule = node("button", "operation-button", "Save Safe Schedule"); saveSchedule.type = "button";
+  schedule.append(node("h6", "", "Optional schedule · disabled by default"), enabledLabel, autoLabel, intervalLabel, saveSchedule, node("p", "settings-subcopy", "Scheduled runs use these saved paths and can never apply conflicts or delete PostgreSQL records.")); section.append(schedule); host.append(section);
+  let latestRun = "";
+  const describe = result => {
+    const last = result.last_run, settings = result.settings || {};
+    summary.textContent = last ? `Last run ${last.run_id} · ${last.status} · ${last.differences} difference(s) · ${last.conflicts} conflict(s) · ${last.failures} failure(s)` : "No reconciliation run has been recorded.";
+    latestRun = last?.run_id || ""; apply.disabled = !latestRun || !result.pending_safe;
+    differences.textContent = result.differences?.length ? [...result.differences].reverse().map(item => `${String(item.id).padStart(7, "0")}  ${item.entity_table}  ${item.difference_type}  ${item.resolution}  ${item.application_outcome}  ${item.entity_key}${item.error ? "  ERROR=" + item.error : ""}`).join("\n") : "No recorded differences match this filter.";
+    enabled.checked = Boolean(settings.enabled); autoApply.checked = Boolean(settings.auto_apply_safe); interval.value = String(settings.interval_minutes || 1440);
+    if (settings.source_root && !sourceRoot.value) sourceRoot.value = settings.source_root;
+    if (settings.source_path && !source.value) source.value = settings.source_path;
+  };
+  const load = async () => describe(await api("/api/reconciliation?resolution=" + encodeURIComponent(resolution.value)));
+  try {
+    const [sources, result] = await Promise.all([api("/api/reconciliation/sources"), api("/api/reconciliation")]);
+    const blank = node("option", "", sources.length ? "Choose a cache snapshot" : "No authorized snapshots found"); blank.value = ""; source.append(blank);
+    for (const item of sources) { const option = node("option", "", `${item.label} · ${Math.ceil(item.bytes / 1024)} KiB`); option.value = item.path; source.append(option); }
+    if (result.settings?.source_path && ![...source.options].some(option => option.value === result.settings.source_path)) { const option = node("option", "", result.settings.source_path); option.value = result.settings.source_path; source.append(option); }
+    source.value = result.settings?.source_path || ""; sourceRoot.value = result.settings?.source_root || ""; describe(result);
+  } catch (error) { summary.textContent = error.message; summary.classList.add("operation-error"); }
+  compare.addEventListener("click", () => runAction(async () => { const result = await post("/api/reconciliation/compare", {source_path: source.value, source_root: sourceRoot.value, target_root: targetRoot.value}); latestRun = result.run_id; setStatus(`SQLite comparison recorded ${result.differences} difference(s), including ${result.conflicts} conflict(s)`); await load(); }));
+  apply.addEventListener("click", () => runAction(async () => { if (!window.confirm("Apply only the safe, unchanged differences from this run? Conflicts will remain unresolved.")) return; const result = await post("/api/reconciliation/apply", {run_id: latestRun}); setStatus(`Applied ${result.applied} safe SQLite difference(s)`); await load(); }));
+  refresh.addEventListener("click", () => void load()); resolution.addEventListener("change", () => void load());
+  saveSchedule.addEventListener("click", () => runAction(async () => { await post("/api/reconciliation/settings", {enabled: enabled.checked, auto_apply_safe: autoApply.checked, interval_minutes: Number(interval.value), source_path: source.value, source_root: sourceRoot.value, target_root: targetRoot.value}); setStatus(enabled.checked ? "Safe SQLite reconciliation schedule saved" : "SQLite reconciliation schedule disabled"); await load(); }));
+}
+function renderCatalogMaintenance(host, advanced = false) {
   const maintenance = node("section", "catalog-maintenance");
   maintenance.append(node("h4", "", "↕ Catalog Maintenance"), node("p", "settings-subcopy", "Refresh the PostgreSQL catalog or import a deliberate read-only SQLite snapshot."));
   maintenance.append(node("p", "settings-warning", "A full refresh deliberately republishes the complete music catalog. Normal added, changed, and removed files use the faster header update."));
@@ -1111,9 +1153,12 @@ function renderCatalogMaintenance(host) {
   maintenance.append(refresh, node("h5", "", "Import an existing SQLite catalog"), node("p", "settings-subcopy", "Imports a server-side snapshot into an empty PostgreSQL catalog. The source remains unchanged."));
   const path = field(maintenance, "Snapshot path on server"), importButton = node("button", "operation-button full-action", "Import Catalog"); importButton.type = "button";
   importButton.addEventListener("click", () => runAction(async () => { const result = await post("/api/catalog/import", {path: path.value}); setStatus("Imported " + (result.albums || 0) + " albums"); }));
-  maintenance.append(importButton); host.append(maintenance);
+  maintenance.append(importButton);
+  if (advanced) void renderSqliteReconciliation(maintenance);
+  else maintenance.append(node("p", "settings-subcopy", "Enable Advanced to compare and reconcile a SQLite snapshot against an existing PostgreSQL catalog."));
+  host.append(maintenance);
 }
-function renderBackupSettings(host, saved, contract, onRestored) {
+function renderBackupSettings(host, saved, contract, onRestored, advanced = false) {
   const layout = node("div", "backup-layout"), backup = node("section", "backup-column"), restore = node("section", "backup-column");
   backup.append(node("h4", "", "↑ Backup"), node("p", "settings-subcopy", "WebGUI exports its safe Config v5 settings and interface palette. Provider secrets and PostgreSQL data are deliberately excluded."));
   const contents = node("div", "archive-contents"); for (const label of ["Config V5 Settings", "Interface Settings", "Shared UI Contract"]) contents.append(node("span", "", "●  " + label)); backup.append(contents);
@@ -1132,7 +1177,7 @@ function renderBackupSettings(host, saved, contract, onRestored) {
     const restored = await post("/api/settings", {config: value}); applyGraphicalEnhancement(restored.config.webgui_ui?.enhancement); setStatus("Safe WebGUI settings restored"); await onRestored(restored);
   })); restoreActions.append(button); restore.append(restoreActions);
   settingsHelp(restore, "Can I restore a Windows .spl file here?", "No. Windows .spl archives can contain Windows-only SQLite and interface state. Use the WebGUI safe JSON here, and restore PostgreSQL with PostgreSQL tools.");
-  renderCatalogMaintenance(restore);
+  renderCatalogMaintenance(restore, advanced);
   layout.append(backup, restore); host.append(layout);
 }
 function renderRuntimeSettings(host, section, draft, bindings, saved, advanced) {
@@ -1146,7 +1191,7 @@ function renderRuntimeSettings(host, section, draft, bindings, saved, advanced) 
     settingsInput(target, descriptor, descriptor.path, draft, bindings, saved);
   }
   const scope = node("div", "runtime-summary"); scope.append(node("span", "", "Scope  SELECTED / QUEUED"), node("span", "", `Mode  ${(settingValue(draft, "mode", "read") || "read").toUpperCase()}`)); processing.append(scope);
-  const logHeading = node("div", "diagnostic-heading"); logHeading.append(node("strong", "", "Audit")); const refresh = node("button", "operation-button", "Refresh"); refresh.type = "button"; logHeading.append(refresh); logging.append(logHeading);
+  const logHeading = node("div", "diagnostic-heading"); logHeading.append(node("strong", "", "WebGUI Events · Audit")); const refresh = node("button", "operation-button", "Refresh"); refresh.type = "button"; logHeading.append(refresh); logging.append(logHeading);
   const auditFilters = node("div", "audit-filters");
   const severity = node("select"), allSeverity = node("option", "", "All severities"); allSeverity.value = ""; severity.append(allSeverity);
   for (const value of ["critical", "error", "warning", "info", "debug", "verbose"]) { const option = node("option", "", value); option.value = value; severity.append(option); }
@@ -1198,7 +1243,7 @@ async function openSettings() {
       void renderConnectionSettings(fields, credentialProvider);
     }
     if (section.id === "backup") {
-      renderBackupSettings(fields, saved, contract, async restored => { saved = restored; await sessionStatus(); renderAll(); renderSection("backup"); });
+      renderBackupSettings(fields, saved, contract, async restored => { saved = restored; await sessionStatus(); renderAll(); renderSection("backup"); }, advanced);
     }
   }
   async function saveCurrentSection(section, message = section.label + " settings saved") {
