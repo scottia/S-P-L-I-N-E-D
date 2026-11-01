@@ -245,7 +245,10 @@ class CompJobScopeTests(unittest.TestCase):
             ]
             service.hydrate_tracks = lambda _album_id, **_kwargs: records
             recorded = []
-            service._record_comp_track_artwork = lambda *args: recorded.append(args)
+            service._comp_track_authority_validated = lambda _path: True
+            service._record_comp_track_artwork = (
+                lambda *args, **_kwargs: recorded.append(args) or True
+            )
             service.refresh_embedding_stats = lambda _row: 1
             service.audit = lambda *_args, **_kwargs: None
 

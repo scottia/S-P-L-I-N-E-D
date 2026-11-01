@@ -885,7 +885,35 @@ class Services:
             ) from error
         return True
 
-    def _record_comp_track_artwork(self, row, record, body, outcome):
+    def _comp_track_authority_validated(self, path):
+        """Validate the file's current Recording/Artist relationship."""
+        try:
+            track = core.read_track(Path(path))
+            options = core.compilation_credential_options(
+                self.runtime.config_file, self.runtime.cfg
+            )
+            resolution = core.compilation_resolve_interactive_identity(
+                core.Http(),
+                self.runtime.config_file,
+                self.runtime.cfg,
+                track,
+                options,
+            )
+        except Exception as error:
+            core.debug_log(
+                "compilation.direct.authority_validation_failed "
+                f"file={str(path)!r} error={type(error).__name__!r}"
+            )
+            return False
+        return bool(
+            getattr(resolution, "identity_status", "") == "valid"
+            and getattr(resolution, "recording_status", "") == "valid"
+            and getattr(resolution, "artist_status", "") == "valid"
+        )
+
+    def _record_comp_track_artwork(
+        self, row, record, body, outcome, *, authority_validated
+    ):
         now = tags.utc_now()
         track_path = str(record["path"])
         recording = core.valid_mbid(
@@ -894,7 +922,7 @@ class Services:
         artists = sorted(
             compilation._mbids(record.get("musicbrainz_artistid") or "")
         )
-        authoritative = bool(recording and artists)
+        authoritative = bool(authority_validated and recording and artists)
         with closing(self.runtime.database.connect()) as db, db:
             if authoritative:
                 db.execute(
@@ -1015,8 +1043,13 @@ class Services:
             ),
             record,
         )
+        authority_validated = self._comp_track_authority_validated(path)
         completed = self._record_comp_track_artwork(
-            row, refreshed, body, outcome
+            row,
+            refreshed,
+            body,
+            outcome,
+            authority_validated=authority_validated,
         )
         self.refresh_embedding_stats(row)
         self.audit(

@@ -241,11 +241,14 @@ async function launchArtistComp() {
   if (!state.artist || !state.compReportVisible) throw new Error("Open this Artist's COMP Report before launching work");
   const artistId = state.artist.id;
   const groups = state.compGroups.map(group => ({id: group.id, keys: group.tracks.filter(track => track.status === "blue").map(track => track.key)})).filter(group => group.keys.length);
+  if (!groups.length) { setStatus("No blue COMP tracks need artwork"); return; }
+  const trackCount = groups.reduce((total, group) => total + group.keys.length, 0);
+  setStatus(`Opening Artist COMP review · ${groups.length} album${groups.length === 1 ? "" : "s"} · ${trackCount} track${trackCount === 1 ? "" : "s"}`, "busy");
   let first;
   for (const group of groups) {
     const result = await post("/api/jobs", {kind: "comp", payload: {artist_id: artistId, album_id: group.id, track_keys: group.keys}}); first ||= result.id;
   }
-  if (first) await reviewJob(first); else setStatus("No blue COMP tracks need artwork");
+  await reviewJob(first);
 };
 async function launchCandidateWork() {
   if (state.queuedDecision?.jobKind === "scan") return skipQueuedAlbum();

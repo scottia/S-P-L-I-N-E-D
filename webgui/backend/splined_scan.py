@@ -1526,6 +1526,11 @@ def run_manual_compilation_album(
         selected_artwork_request: dict[str, Any] | None = None
         release: core.Release | None = None
         authority_edit_pending = False
+        # Completion authority belongs to the Recording/Artist validation,
+        # not to a subsequently selected release. A same-Artist title
+        # suggestion may supply artwork without validating the track's tagged
+        # Recording ID.
+        authority_completion_validated = False
         leave_track_unchanged = False
 
         while True:
@@ -1598,6 +1603,12 @@ def run_manual_compilation_album(
                         state.get("mb_options_error")
                         or "Invalid MusicBrainz options"
                     )
+                if (
+                    getattr(discovery_identity, "identity_status", "") == "valid"
+                    and getattr(discovery_identity, "recording_status", "") == "valid"
+                    and getattr(discovery_identity, "artist_status", "") == "valid"
+                ):
+                    authority_completion_validated = True
                 core.emit_ui("candidates", items=[])
                 core.emit_ui(
                     "fallback_authority",
@@ -1635,6 +1646,7 @@ def run_manual_compilation_album(
                         track.recording_mbid = authority["recording_id"]
                         track.artist_mbid = authority["artist_id"]
                         authority_edit_pending = False
+                        authority_completion_validated = True
                     decision, discovered_item, changes = _manual_choose_release(
                         discovery_results,
                         current_release_id=authority["release_id"],
@@ -1715,6 +1727,7 @@ def run_manual_compilation_album(
                             # no tag or PostgreSQL authority write occurs until
                             # the real resolver validates Artist + Recording.
                             authority.update(new_values)
+                            authority_completion_validated = False
                             discovery_results = []
                             discovery_identity = None
                             core.emit_ui(
@@ -1741,6 +1754,7 @@ def run_manual_compilation_album(
                         force_sources = True
                         interactive_retry = True
                         authority_edit_pending = True
+                        authority_completion_validated = False
                         continue
                     if decision == "existing":
                         selected_local_row = discovered_item
@@ -1879,6 +1893,7 @@ def run_manual_compilation_album(
                         track.recording_mbid = authority["recording_id"]
                         track.artist_mbid = authority["artist_id"]
                         authority_edit_pending = False
+                        authority_completion_validated = True
                         core.emit_ui(
                             "authority_saved",
                             recording_mbid=authority["recording_id"],
@@ -2122,6 +2137,7 @@ def run_manual_compilation_album(
                     release_mbid=str(release.mbid if release else ""),
                     artwork=artwork,
                     outcome="embedded-replaced",
+                    authority_validated=authority_completion_validated,
                     album_path=str(album.path),
                     total_tracks=len(tracks),
                     completed_tracks=len(next_completed),

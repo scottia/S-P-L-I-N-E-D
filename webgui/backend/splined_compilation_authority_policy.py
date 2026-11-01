@@ -1975,6 +1975,7 @@ def record_application(
     release_mbid: str,
     artwork: bytes,
     outcome: str,
+    authority_validated: bool,
     album_path: str = "",
     total_tracks: int = 0,
     completed_tracks: int = 0,
@@ -1985,7 +1986,7 @@ def record_application(
         _database_path(core, config_file, cfg), timeout=10.0
     )
     try:
-        if not recording or not artist:
+        if not authority_validated or not recording or not artist:
             with connection:
                 # A prior authority row must not keep a now-unresolved track
                 # green after a verified artwork-only write.
