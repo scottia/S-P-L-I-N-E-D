@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 from contextlib import closing
+from dataclasses import replace
 from io import BytesIO
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -30,6 +32,7 @@ from psycopg.types.json import Jsonb
 import tomlkit
 import uvicorn
 import splined as core
+import splined_compilation_authority_policy as compilation
 
 from webgui.database import Database
 from webgui.runtime import Runtime
@@ -121,6 +124,93 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             "image": self.services.catalog.image(self.cover),
             "adjustments": {"Brightness": 40},
         }
+
+    def make_comp_track(self, folder_name, *, recording_id=True):
+        folder = self.root / "music" / "Various Artists" / folder_name
+        folder.mkdir(parents=True)
+        target = folder / "01 Test Artist - Track 1.flac"
+        shutil.copyfile(self.files[0], target)
+        audio = FLAC(target)
+        del audio["musicbrainz_albumid"]
+        if not recording_id:
+            del audio["musicbrainz_trackid"]
+        audio["albumartist"] = "Various Artists"
+        audio["album"] = folder_name
+        audio.save()
+        self.services.refresh_index(mode="full")
+        with closing(self.db.connect()) as db:
+            row = db.execute(
+                "SELECT * FROM albums WHERE path=?", (str(folder),)
+            ).fetchone()
+        track = self.services.hydrate_tracks(row["album_key"])[0]
+        return row, track, target
+
+    @staticmethod
+    def title_suggestion_resolution():
+        item = compilation.DiscoveryCandidate(
+            recording_mbid="44444444-4444-4444-8444-000000000001",
+            recording_title="Track 1",
+            recording_artist="Test Artist",
+            artist_mbids_key="22222222-2222-4222-8222-222222222222",
+            release_mbid="33333333-3333-4333-8333-333333333333",
+            release_group_mbid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            release_class="album",
+            class_rank=0,
+            release_title="Test Album",
+            release_artist="Test Artist",
+            release_date="2000",
+            country="US",
+            score=88,
+            release_group_title="Test Album",
+            match_basis="same-artist-title",
+        )
+        return compilation.DiscoveryResolution(
+            candidates=(item,),
+            identity_status="unresolved",
+            identity_message="Recording ID missing; same-Artist title suggestion available",
+            recording_status="missing",
+            artist_status="valid",
+            friendly_artist="Test Artist",
+            friendly_title="Track 1",
+            focused_artist_mbid="22222222-2222-4222-8222-222222222222",
+            used_fuzzy_search=True,
+        )
+
+    def wait_for_job(self, job_id, predicate, timeout=10.0):
+        deadline = time.monotonic() + timeout
+        item = None
+        while time.monotonic() < deadline:
+            item = next(value for value in self.queue.list() if value["id"] == job_id)
+            if predicate(item):
+                return item
+            time.sleep(0.05)
+        self.fail(f"job {job_id} did not reach the expected state: {item}")
+
+    def drive_comp_candidate(self, row, track):
+        result = self.queue.enqueue(
+            "comp",
+            {"album_id": row["album_key"], "track_keys": [track["track_key"]]},
+        )
+        item = self.wait_for_job(
+            result["id"],
+            lambda value: value["state"] == "waiting"
+            and value["progress"]["prompt"]["context"].get("kind")
+            == "musicbrainz-results",
+        )
+        prompt = item["progress"]["prompt"]
+        self.queue.action("decision", result["id"], "1", prompt["nonce"])
+        item = self.wait_for_job(
+            result["id"],
+            lambda value: value["state"] == "waiting"
+            and value["progress"]["prompt"]["context"].get("kind")
+            != "musicbrainz-results"
+            and bool(value["progress"].get("current", {}).get("candidates", {}).get("items")),
+        )
+        prompt = item["progress"]["prompt"]
+        self.queue.action("decision", result["id"], "1", prompt["nonce"])
+        return self.wait_for_job(
+            result["id"], lambda value: value["state"] in {"done", "failed"}
+        )
 
     def test_comp_existing_title_match_uses_the_postgres_catalog(self):
         rows = core.compilation_local_artwork_rows(
@@ -222,7 +312,17 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         comp.mkdir(parents=True)
         other_album.mkdir(parents=True)
 
-        def write_track(path, *, title, artist, albumartist, album, album_mbid="", artist_mbid=""):
+        def write_track(
+            path,
+            *,
+            title,
+            artist,
+            albumartist,
+            album,
+            album_mbid="",
+            artist_mbid="",
+            recording_mbid="",
+        ):
             sf.write(path, np.zeros((4410, 2)), 44100)
             audio = FLAC(path)
             values = {
@@ -235,6 +335,8 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 values["musicbrainz_albumid"] = album_mbid
             if artist_mbid:
                 values["musicbrainz_artistid"] = artist_mbid
+            if recording_mbid:
+                values["musicbrainz_trackid"] = recording_mbid
             if albumartist == "Various Artists":
                 values["musicbrainz_albumartistid"] = "89ad4ac3-39f7-470e-963a-56509c546377"
             for key, value in values.items():
@@ -251,6 +353,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             albumartist="Various Artists",
             album="Billboard Fixture",
             artist_mbid="22222222-2222-4222-8222-222222222222",
+            recording_mbid="11111111-1111-4111-8111-111111111111",
         )
         write_track(
             other_path,
@@ -259,6 +362,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             albumartist="Various Artists",
             album="Billboard Fixture",
             artist_mbid="77777777-7777-4777-8777-777777777777",
+            recording_mbid="33333333-3333-4333-8333-333333333333",
         )
         write_track(
             featured_path,
@@ -267,6 +371,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             albumartist="Various Artists",
             album="Billboard Fixture",
             artist_mbid="22222222-2222-4222-8222-222222222222",
+            recording_mbid="44444444-4444-4444-8444-444444444444",
         )
         write_track(
             other_album / "01 Other.flac",
@@ -515,6 +620,50 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 ).fetchone()[0],
                 0,
             )
+
+    def test_album_embedding_rejects_malformed_ids_at_stage_retry_and_execution(self):
+        staged = self.services.stage_album(self.payload())
+        self.queue = JobQueue(self.services)
+        self.queue.close()
+        queued = self.queue.enqueue("embed-album", staged, staged=True)
+        before = [path.read_bytes() for path in self.files]
+        with closing(self.db.connect()) as db, db:
+            db.execute(
+                "UPDATE albums SET musicbrainz_albumid='release-not-a-uuid' "
+                "WHERE album_key=?",
+                (self.row["album_key"],),
+            )
+
+        with self.assertRaisesRegex(ValueError, "valid MusicBrainz Release ID"):
+            self.services.stage_album(self.payload())
+        with self.assertRaisesRegex(ValueError, "valid MusicBrainz Release ID"):
+            self.services.embed_album(
+                {"album_id": self.row["album_key"], "image": self.services.catalog.image(self.cover)}
+            )
+        projection = self.services.staged_album_projection(staged)
+        self.assertFalse(projection["staged_valid"])
+        self.assertIn("valid MusicBrainz Release ID", projection["staged_error"])
+        self.queue.action("start", kind="embed-album")
+        failed = next(item for item in self.queue.list() if item["id"] == queued["id"])
+        self.assertEqual(failed["state"], "failed")
+        self.assertIn("valid MusicBrainz Release ID", failed["error"])
+        with self.assertRaisesRegex(ValueError, "valid MusicBrainz Release ID"):
+            self.queue.action("retry", queued["id"])
+        self.assertEqual([path.read_bytes() for path in self.files], before)
+
+    def test_identified_compilation_album_remains_album_embedding_eligible(self):
+        with closing(self.db.connect()) as db, db:
+            db.execute(
+                "UPDATE albums SET compilation=1 WHERE album_key=?",
+                (self.row["album_key"],),
+            )
+        staged = self.services.stage_album(self.payload())
+        row, files, _ = self.services.validate_staged_album(staged)
+        self.assertEqual(row["album_key"], self.row["album_key"])
+        self.assertEqual(files, self.files)
+        result = self.services.embed_album(staged)
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["tracks"], len(self.files))
 
     def test_reclassified_album_job_fails_visibly_without_embedding_comp_tracks(self):
         self.queue = JobQueue(self.services)
@@ -1052,8 +1201,168 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             )["status"],
             "green",
         )
+        with closing(self.db.connect()) as db:
+            recorded = db.execute(
+                "SELECT recording_mbid,artist_mbid,artwork_sha256,outcome "
+                "FROM compilation_track_artwork WHERE track_path=?",
+                (str(target),),
+            ).fetchone()
+        self.assertIsNotNone(recorded)
+        self.assertEqual(recorded["outcome"], "embedded-replaced")
+        self.assertEqual(
+            recorded["artwork_sha256"],
+            hashlib.sha256(embedded_track_artwork_bytes(target)).hexdigest(),
+        )
         self.assertEqual(self.cover.read_bytes(), original_cover)
         self.assertNotIn("musicbrainz_albumid", FLAC(target))
+
+    def test_title_suggested_comp_write_without_apply_ids_stays_blue(self):
+        row, track, target = self.make_comp_track(
+            "Title Suggested Compilation", recording_id=False
+        )
+        self.queue = JobQueue(self.services)
+        resolution = self.title_suggestion_resolution()
+        with (
+            patch.object(
+                core,
+                "compilation_credential_options",
+                return_value=compilation.MusicBrainzOptions(1, 0.0, 1.0),
+            ),
+            patch.object(
+                core,
+                "compilation_resolve_interactive_identity",
+                return_value=resolution,
+            ),
+            patch("splined_scan._manual_remote_candidates", return_value=([], [])),
+        ):
+            item = self.drive_comp_candidate(row, track)
+
+        self.assertEqual(item["state"], "done", item.get("error"))
+        self.assertEqual(item["result"]["installed"], 1)
+        self.assertEqual(item["result"]["unresolved"], 1)
+        self.assertEqual(item["result"]["resolved"], 0)
+        artwork = embedded_track_artwork_bytes(target)
+        self.assertIsNotNone(artwork)
+        with Image.open(BytesIO(artwork)) as image:
+            self.assertEqual(image.size, (300, 300))
+        with closing(self.db.connect()) as db:
+            self.assertIsNone(
+                db.execute(
+                    "SELECT 1 FROM compilation_track_artwork WHERE track_path=?",
+                    (str(target),),
+                ).fetchone()
+            )
+        self.assertEqual(
+            self.services.catalog.comp_track_status(
+                row["album_key"], track["track_key"]
+            )["status"],
+            "blue",
+        )
+        self.assertNotIn("musicbrainz_trackid", FLAC(target))
+        self.assertEqual(
+            FLAC(target)["musicbrainz_artistid"],
+            ["22222222-2222-4222-8222-222222222222"],
+        )
+
+    def test_queued_comp_verified_readback_records_completion(self):
+        row, track, target = self.make_comp_track(
+            "Verified Readback Compilation", recording_id=True
+        )
+        self.queue = JobQueue(self.services)
+        suggestion = self.title_suggestion_resolution()
+        exact = replace(
+            suggestion.candidates[0],
+            score=100,
+            match_basis="exact-recording",
+        )
+        resolution = replace(
+            suggestion,
+            candidates=(exact,),
+            identity_status="valid",
+            identity_message="Recording and Artist IDs verified",
+            recording_status="valid",
+            used_fuzzy_search=False,
+        )
+        with (
+            patch.object(
+                core,
+                "compilation_credential_options",
+                return_value=compilation.MusicBrainzOptions(1, 0.0, 1.0),
+            ),
+            patch.object(
+                core,
+                "compilation_resolve_interactive_identity",
+                return_value=resolution,
+            ),
+            patch("splined_scan._manual_remote_candidates", return_value=([], [])),
+        ):
+            item = self.drive_comp_candidate(row, track)
+
+        self.assertEqual(item["state"], "done", item.get("error"))
+        self.assertEqual(item["result"]["installed"], 1)
+        self.assertEqual(item["result"]["unresolved"], 0)
+        self.assertEqual(item["result"]["resolved"], 1)
+        artwork = embedded_track_artwork_bytes(target)
+        with Image.open(BytesIO(artwork)) as image:
+            self.assertEqual(image.size, (300, 300))
+        with closing(self.db.connect()) as db:
+            recorded = db.execute(
+                "SELECT recording_mbid,artist_mbid,artwork_sha256 "
+                "FROM compilation_track_artwork WHERE track_path=?",
+                (str(target),),
+            ).fetchone()
+        self.assertEqual(
+            recorded["recording_mbid"],
+            "44444444-4444-4444-8444-000000000001",
+        )
+        self.assertEqual(
+            recorded["artwork_sha256"], hashlib.sha256(artwork).hexdigest()
+        )
+        self.assertEqual(
+            self.services.catalog.comp_track_status(
+                row["album_key"], track["track_key"]
+            )["status"],
+            "green",
+        )
+
+    def test_queued_comp_failed_readback_never_records_completion(self):
+        row, track, target = self.make_comp_track(
+            "Failed Readback Compilation", recording_id=True
+        )
+        self.queue = JobQueue(self.services)
+        resolution = self.title_suggestion_resolution()
+        with (
+            patch.object(
+                core,
+                "compilation_credential_options",
+                return_value=compilation.MusicBrainzOptions(1, 0.0, 1.0),
+            ),
+            patch.object(
+                core,
+                "compilation_resolve_interactive_identity",
+                return_value=resolution,
+            ),
+            patch("splined_scan._manual_remote_candidates", return_value=([], [])),
+            patch("webgui.services.embedded_track_artwork_bytes", return_value=None),
+        ):
+            item = self.drive_comp_candidate(row, track)
+
+        self.assertEqual(item["state"], "failed")
+        self.assertIn("verification failed", item["error"])
+        self.assertIsNotNone(embedded_track_artwork_bytes(target))
+        with closing(self.db.connect()) as db:
+            self.assertIsNone(
+                db.execute(
+                    "SELECT 1 FROM compilation_track_artwork WHERE track_path=?",
+                    (str(target),),
+                ).fetchone()
+            )
+        self.assertEqual(
+            self.services.catalog.comp_track_status(
+                row["album_key"], track["track_key"]
+            )["status"],
+            "blue",
+        )
 
     def test_musicbrainz_authorization_is_pkce_and_never_returns_saved_tokens(self):
         credentials = Credentials(self.runtime)
@@ -1371,6 +1680,45 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 })
             return MusicBrainzResponse({}, 503)
 
+        provider_fixture_dir = self.runtime.temporary_cache / "provider-candidates"
+        provider_fixture_dir.mkdir()
+        provider_candidates = []
+        for number, (side, source, color) in enumerate(
+            [
+                (1200, "itunes", "navy"),
+                (1400, "amazon", "orange"),
+                (1600, "coverartarchive", "teal"),
+                (1800, "fanarttv", "purple"),
+                (2000, "discogs", "green"),
+            ],
+            1,
+        ):
+            path = provider_fixture_dir / f"candidate-{number}.jpg"
+            Image.new("RGB", (side, side), color).save(path)
+            provider_candidates.append(
+                core.Candidate(
+                    core.Ref(
+                        source,
+                        f"fixture-{number}",
+                        f"https://fixtures.invalid/{number}",
+                        width=side,
+                        height=side,
+                    ),
+                    path,
+                    side,
+                    side,
+                    "jpeg",
+                    number,
+                )
+            )
+
+        def fixture_remote_candidates(*_args, **_kwargs):
+            return list(provider_candidates), [
+                ("amazon", "Fixture policy diagnostic retained for review"),
+                ("amazon", "Fixture policy diagnostic retained for review"),
+                ("itunes", "Fixture range diagnostic retained for review"),
+            ]
+
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
             port = probe.getsockname()[1]
@@ -1413,6 +1761,10 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 return_value=({"User-Agent": "SPLINED-test"}, "fixture"),
             ),
             patch.object(core.Http, "get", new=fixture_http_get),
+            patch(
+                "splined_scan._manual_remote_candidates",
+                side_effect=fixture_remote_candidates,
+            ),
         ):
             app, server, server_thread = launch_test_server()
 
@@ -1509,6 +1861,11 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         "an artwork provider was queried before release selection",
                     )
                     page.locator(".musicbrainz-authority-editor summary").click()
+                    expect(
+                        page.locator(
+                            '.musicbrainz-authority-fields input[placeholder^="Release MBID"]'
+                        )
+                    ).to_have_count(0)
                     page.locator(
                         '.musicbrainz-authority-fields input[placeholder="Recording MBID"]'
                     ).fill("11111111-1111-4111-8111-111111111111")
@@ -1535,9 +1892,58 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     ).to_be_disabled()
                     page.locator(".musicbrainz-release-row").click()
                     page.locator(".musicbrainz-review-actions button.primary").click()
-                    expect(page.locator(".candidate-image-button")).to_be_visible(
+                    expect(page.locator(".candidate-image-button").first).to_be_visible(
                         timeout=15000
                     )
+                    cards = page.locator("#candidateGrid .candidate-card.queued")
+                    self.assertGreaterEqual(cards.count(), 5)
+                    first_card = cards.first
+                    expect(first_card.locator(".candidate-source-label")).not_to_be_empty()
+                    expect(first_card.locator(".candidate-resolution")).to_be_visible()
+                    expect(first_card.locator(".candidate-quality")).to_be_visible()
+                    first_image_url = first_card.locator("img").evaluate(
+                        "image => image.currentSrc"
+                    )
+                    first_image_response = page.request.get(first_image_url)
+                    self.assertTrue(first_image_response.ok)
+                    with Image.open(BytesIO(first_image_response.body())) as actual:
+                        displayed = first_card.locator(
+                            ".candidate-resolution"
+                        ).inner_text()
+                        self.assertEqual(
+                            displayed, f"{actual.width} × {actual.height}"
+                        )
+                    grid_box = page.locator("#candidateGrid").bounding_box()
+                    visible_cards = 0
+                    for index in range(cards.count()):
+                        box = cards.nth(index).bounding_box()
+                        if box and box["x"] + box["width"] <= grid_box["x"] + grid_box["width"]:
+                            visible_cards += 1
+                            self.assertLessEqual(
+                                box["y"] + box["height"],
+                                grid_box["y"] + grid_box["height"] + 1,
+                            )
+                    self.assertGreaterEqual(visible_cards, 5)
+                    diagnostics = page.locator("#compDecisionTools .comp-diagnostics")
+                    expect(diagnostics).to_contain_text("Diagnostics (2)")
+                    diagnostics.locator("summary").click()
+                    expect(diagnostics.locator(".comp-diagnostics-list")).to_be_visible()
+                    expect(first_card).to_be_visible()
+                    diagnostics.locator("summary").click()
+
+                    screenshot_dir = os.environ.get("SPLINED_TEST_SCREENSHOT_DIR")
+                    if screenshot_dir:
+                        screenshot_root = Path(screenshot_dir)
+                        screenshot_root.mkdir(parents=True, exist_ok=True)
+                        page.locator("#candidateDock").screenshot(
+                            path=str(screenshot_root / "candidate-area-normal.png")
+                        )
+                        page.set_viewport_size({"width": 1920, "height": 1080})
+                        expect(first_card).to_be_visible()
+                        page.locator("#candidateDock").screenshot(
+                            path=str(screenshot_root / "candidate-area-maximized.png")
+                        )
+                        page.set_viewport_size({"width": 1600, "height": 1000})
                     page.locator(
                         "#compDecisionTools button", has_text="MusicBrainz Results"
                     ).click()
@@ -1554,7 +1960,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         ".musicbrainz-review-actions button",
                         has_text="Back to Candidates",
                     ).click()
-                    expect(page.locator(".candidate-image-button")).to_be_visible(
+                    expect(page.locator(".candidate-image-button").first).to_be_visible(
                         timeout=15000
                     )
                     page.locator(
@@ -1565,7 +1971,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     )
                     page.locator(".musicbrainz-release-row").click()
                     page.locator(".musicbrainz-review-actions button.primary").click()
-                    page.locator(".candidate-image-button").click()
+                    page.locator(".candidate-image-button").first.click()
                     expect(page.locator("#writeButton")).to_have_text("EMBED Track")
                     page.locator("#writeButton").click()
                     target_art = wait_for_embedded_art(target)
@@ -1602,7 +2008,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     )
                     page.locator(".musicbrainz-release-row").click()
                     page.locator(".musicbrainz-review-actions button.primary").click()
-                    page.locator(".candidate-image-button").click()
+                    page.locator(".candidate-image-button").first.click()
                     page.locator("#writeButton").click()
                     wait_for_embedded_art(other)
                     expect(page.locator("#statusText")).to_have_text(

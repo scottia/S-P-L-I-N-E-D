@@ -132,7 +132,9 @@ async function writeArtwork() {
     const result = await post(endpoint, componentPayload("comp", track.image, scope));
     state.upscalePreview = null; state.renderedPreview.comp = null; state.fx.comp = {};
     await refreshQueuedAlbumAfterSave();
-    setStatus(`Embedded COMP track · ${result.file} · ${result.width} × ${result.height}`, "ready");
+    setStatus(result.completed
+      ? `Embedded COMP track · ${result.file} · ${result.width} × ${result.height}`
+      : `Artwork embedded and verified · ${result.file} · authoritative IDs remain unresolved, so this track stays blue`, "ready");
     return;
   }
   if (state.editorMode === "album") {
@@ -567,6 +569,7 @@ async function pollJobs() {
           state.reviewJobState = nextComp?.state || "";
           if (job.kind === "embed-album") setStatus("Album track embedding completed and verified · " + (state.album?.name || job.payload?.name || "Album"));
           else if (job.kind === "scan") setStatus(`Album batch complete · ${job.result?.reviewed ?? 0} reviewed · ${job.result?.mode === "write" ? "approved covers written" : "Read mode, no covers written"}`);
+          else if (Number(job.result?.unresolved || 0) > 0) setStatus("COMP artwork written and verified · authoritative completion remains pending for " + job.result.unresolved + " track(s)", "error");
           else setStatus("COMP track artwork work complete · " + (job.payload?.name || "Album") + (nextComp ? " · continuing this Artist's next COMP album" : ""));
           if (nextComp?.state === "waiting") await renderJob(nextComp);
         } else if (job.state === "failed") {
@@ -637,8 +640,8 @@ async function renderJob(job) {
   if (kind === "fallback-picker") {
     const details = node("details", "settings-section"); details.append(node("summary", "", "Find by MusicBrainz authority")); body.append(details);
     const artist = field(details, "Artist ID", context.authority?.artist_mbids || "");
-    const release = field(details, "Release ID", ""); const recording = field(details, "Recording ID", "");
-    actionButton("Search IDs", () => decide(JSON.stringify({action: "manual-authority-query", artist_id: artist.value, release_id: release.value, recording_id: recording.value, edited: "all"})), details);
+    const recording = field(details, "Recording ID", context.authority?.recording_mbid || "");
+    actionButton("Search IDs", () => decide(JSON.stringify({action: "manual-authority-query", artist_id: artist.value, recording_id: recording.value, edited: "all"})), details);
   }
   actionButton("Pause work", () => queueAction("pause", job.id));
 }

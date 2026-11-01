@@ -27,6 +27,10 @@ APP_NAME = core.APP_NAME
 VERSION = core.VERSION
 
 
+class QueuedArtworkVerificationError(ValueError):
+    """A queued write could not be proven by reopening its target audio file."""
+
+
 def _iter_lazy_album_records(albums, prepare_album):
     """Yield prepared Albums one at a time without batch-wide prefetch."""
     for index, album in enumerate(albums, 1):
@@ -1186,7 +1190,7 @@ def _manual_choose_release(
         ):
             fields = {
                 key: str(payload.get(key) or "").strip().casefold()
-                for key in ("artist_id", "release_id", "recording_id", "edited")
+                for key in ("artist_id", "recording_id", "edited")
             }
             return "requery", None, fields
         if (
@@ -1289,7 +1293,7 @@ def _manual_choose_candidate(
         ):
             fields = {
                 key: str(payload.get(key) or "").strip().casefold()
-                for key in ("artist_id", "release_id", "recording_id", "edited")
+                for key in ("artist_id", "recording_id", "edited")
             }
             return "requery", None, fields
         if answer == "m":
@@ -1401,6 +1405,7 @@ def run_manual_compilation_album(
     track_context: Any | None = None,
     prepare_selected_artwork: Any | None = None,
     persist_track_authority: Any | None = None,
+    verify_embedded_artwork: Any | None = None,
     musicbrainz_results_first: bool = False,
 ) -> bool:
     """Resolve and approve embedded artwork independently for every track."""
@@ -1704,9 +1709,6 @@ def run_manual_compilation_album(
                                 new_values["artist_id"],
                                 new_values["recording_id"],
                             )
-                        ) or (
-                            new_values["release_id"]
-                            and len(core.compilation_mbids(new_values["release_id"])) != 1
                         ):
                             # Keep rejected text in the Advanced IDs fields so
                             # the operator can correct it.  It is session-only:
@@ -1719,7 +1721,7 @@ def run_manual_compilation_album(
                                 "diagnostics",
                                 items=[(
                                     "musicbrainz",
-                                    "Recording and Artist IDs must be valid MusicBrainz UUIDs; Release ID may be blank.",
+                                    "Recording and Artist IDs must be valid MusicBrainz UUIDs.",
                                 )],
                             )
                             continue
@@ -2049,11 +2051,6 @@ def run_manual_compilation_album(
                             new_values["artist_id"],
                             new_values["recording_id"],
                         )
-                    ) or (
-                        new_values["release_id"]
-                        and len(
-                            core.compilation_mbids(new_values["release_id"])
-                        ) != 1
                     ):
                         print(
                             f"    {core.yellow('Each edited ID must be a valid MusicBrainz UUID.')}"
@@ -2104,9 +2101,11 @@ def run_manual_compilation_album(
                 core.compilation_replace_embedded(
                     track.path, artwork, image_format, info
                 )
+                if verify_embedded_artwork is not None:
+                    verify_embedded_artwork(track, artwork, info)
                 next_completed = set(completed_paths)
                 next_completed.add(str(track.path))
-                core.compilation_record_application(
+                completion_recorded = core.compilation_record_application(
                     config_file,
                     cfg,
                     track,
@@ -2127,14 +2126,32 @@ def run_manual_compilation_album(
                     total_tracks=len(tracks),
                     completed_tracks=len(next_completed),
                 )
-                completed_paths = next_completed
+                if completion_recorded:
+                    completed_paths = next_completed
+                else:
+                    summary.unresolved += 1
+                    _manual_unresolved(
+                        track,
+                        "Artwork was embedded and verified, but authoritative "
+                        "Recording and Artist IDs were not saved; the track remains pending",
+                        unresolved_items,
+                    )
                 summary.installed += 1
-                action = "EMBEDDED ART REPLACED"
-                semantic = core.green
+                action = (
+                    "EMBEDDED ART REPLACED"
+                    if completion_recorded
+                    else "ARTWORK EMBEDDED · AUTHORITY REQUIRED"
+                )
+                semantic = core.green if completion_recorded else core.yellow
             else:
+                completion_recorded = True
                 summary.read_only += 1
                 action = "READ-ONLY (would replace embedded art)"
                 semantic = core.yellow
+        except QueuedArtworkVerificationError:
+            # A queued WebGUI write that cannot be read back must fail the job,
+            # not fall through as an ordinary per-track provider miss.
+            raise
         except Exception as exc:
             summary.failed += 1
             summary.unresolved += 1
@@ -2146,8 +2163,9 @@ def run_manual_compilation_album(
             continue
 
         summary.selected += 1
-        summary.resolved += 1
-        resolved_tracks += 1
+        if completion_recorded:
+            summary.resolved += 1
+            resolved_tracks += 1
         core.emit_ui(
             "album_material_result",
             outcome=action.title(),
@@ -2159,7 +2177,7 @@ def run_manual_compilation_album(
             format=image_format,
             range_type="Ladder",
             distance=0,
-            manual_compilation=(mode == "write"),
+            manual_compilation=(mode == "write" and completion_recorded),
             progress_completed=len(completed_paths),
             progress_total=len(tracks),
             progress_status=(

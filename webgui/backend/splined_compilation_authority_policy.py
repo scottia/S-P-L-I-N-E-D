@@ -1978,15 +1978,22 @@ def record_application(
     album_path: str = "",
     total_tracks: int = 0,
     completed_tracks: int = 0,
-) -> None:
+) -> bool:
     recording = next(iter(_mbids(getattr(track, "recording_mbid", None))), "")
     artist = _artist_key(_mbids(getattr(track, "artist_mbid", None)))
-    if not recording or not artist:
-        return
     connection = connect_sqlite(
         _database_path(core, config_file, cfg), timeout=10.0
     )
     try:
+        if not recording or not artist:
+            with connection:
+                # A prior authority row must not keep a now-unresolved track
+                # green after a verified artwork-only write.
+                connection.execute(
+                    "DELETE FROM compilation_track_artwork WHERE track_path=?",
+                    (str(track.path),),
+                )
+            return False
         with connection:
             _ensure_progress_table(connection)
             connection.execute(
@@ -2026,6 +2033,22 @@ def record_application(
                     completed_tracks,
                     str(core.display_version()),
                 )
+        saved = connection.execute(
+            "SELECT recording_mbid, artist_mbid, artwork_sha256, outcome "
+            "FROM compilation_track_artwork WHERE track_path=?",
+            (str(track.path),),
+        ).fetchone()
+        if not saved:
+            return False
+        value = lambda key, index: (
+            saved[key] if hasattr(saved, "keys") else saved[index]
+        )
+        return bool(
+            str(value("recording_mbid", 0)).casefold() == recording
+            and str(value("artist_mbid", 1)).casefold() == artist.casefold()
+            and str(value("artwork_sha256", 2)) == hashlib.sha256(artwork).hexdigest()
+            and str(value("outcome", 3)) == outcome
+        )
     finally:
         connection.close()
 

@@ -343,7 +343,6 @@ class ManualCompilationDecisionTests(unittest.TestCase):
             ("__manual_candidates__", "back-candidates", {}),
             (json.dumps(edited), "requery", {
                 "artist_id": edited["artist_id"],
-                "release_id": edited["release_id"],
                 "recording_id": edited["recording_id"],
                 "edited": "all",
             }),

@@ -853,33 +853,80 @@ class Services:
             body = imaging.encode(image, "jpeg")
         return body, {"width": side, "height": side}, "jpeg", rendered
 
+    @staticmethod
+    def _verify_comp_embedded(track, body, info):
+        """Read back one queued COMP write before completion can be recorded."""
+        raw_path = getattr(track, "path", None)
+        if raw_path is None and hasattr(track, "get"):
+            raw_path = track.get("path")
+        path = Path(raw_path)
+        verified = embedded_track_artwork_bytes(path)
+        if (
+            not verified
+            or hashlib.sha256(verified).digest() != hashlib.sha256(body).digest()
+        ):
+            raise scan.QueuedArtworkVerificationError(
+                "Embedded COMP artwork verification failed for " + path.name
+            )
+        expected = (int(info.get("width", 0)), int(info.get("height", 0)))
+        if expected[0] <= 0 or expected[0] != expected[1]:
+            raise scan.QueuedArtworkVerificationError(
+                "Preferred COMP artwork dimensions are not square"
+            )
+        try:
+            with Image.open(BytesIO(verified)) as opened:
+                if opened.size != expected:
+                    raise scan.QueuedArtworkVerificationError(
+                        "Embedded COMP artwork did not verify at the preferred square size"
+                    )
+        except OSError as error:
+            raise scan.QueuedArtworkVerificationError(
+                "Embedded COMP artwork readback is not a supported image"
+            ) from error
+        return True
+
     def _record_comp_track_artwork(self, row, record, body, outcome):
         now = tags.utc_now()
         track_path = str(record["path"])
+        recording = core.valid_mbid(
+            str(record.get("musicbrainz_recordingid") or "")
+        )
+        artists = sorted(
+            compilation._mbids(record.get("musicbrainz_artistid") or "")
+        )
+        authoritative = bool(recording and artists)
         with closing(self.runtime.database.connect()) as db, db:
-            db.execute(
-                "INSERT INTO compilation_track_artwork"
-                "(track_path,recording_mbid,artist_mbid,source_kind,source_locator,"
-                "release_mbid,artwork_sha256,outcome,applied_at,splined_version) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(track_path) DO UPDATE SET "
-                "recording_mbid=excluded.recording_mbid,artist_mbid=excluded.artist_mbid,"
-                "source_kind=excluded.source_kind,source_locator=excluded.source_locator,"
-                "release_mbid=excluded.release_mbid,artwork_sha256=excluded.artwork_sha256,"
-                "outcome=excluded.outcome,applied_at=excluded.applied_at,"
-                "splined_version=excluded.splined_version",
-                (
-                    track_path,
-                    str(record.get("musicbrainz_recordingid") or ""),
-                    str(record.get("musicbrainz_artistid") or ""),
-                    "webgui-selected-artwork",
-                    "comp-report",
-                    None,
-                    hashlib.sha256(body).hexdigest(),
-                    outcome,
-                    now,
-                    core.VERSION,
-                ),
-            )
+            if authoritative:
+                db.execute(
+                    "INSERT INTO compilation_track_artwork"
+                    "(track_path,recording_mbid,artist_mbid,source_kind,source_locator,"
+                    "release_mbid,artwork_sha256,outcome,applied_at,splined_version) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(track_path) DO UPDATE SET "
+                    "recording_mbid=excluded.recording_mbid,artist_mbid=excluded.artist_mbid,"
+                    "source_kind=excluded.source_kind,source_locator=excluded.source_locator,"
+                    "release_mbid=excluded.release_mbid,artwork_sha256=excluded.artwork_sha256,"
+                    "outcome=excluded.outcome,applied_at=excluded.applied_at,"
+                    "splined_version=excluded.splined_version",
+                    (
+                        track_path,
+                        recording,
+                        "; ".join(artists),
+                        "webgui-selected-artwork",
+                        "comp-report",
+                        None,
+                        hashlib.sha256(body).hexdigest(),
+                        outcome,
+                        now,
+                        core.VERSION,
+                    ),
+                )
+            else:
+                # A verified artwork write is not authoritative completion.
+                # Remove any stale row so refresh cannot leave the track green.
+                db.execute(
+                    "DELETE FROM compilation_track_artwork WHERE track_path=?",
+                    (track_path,),
+                )
             total = int(
                 db.execute(
                     "SELECT count(*) FROM tracks WHERE album_key=?",
@@ -911,6 +958,7 @@ class Services:
                     core.VERSION,
                 ),
             )
+        return authoritative
 
     @serialized
     def embed_comp_track(self, payload):
@@ -956,12 +1004,7 @@ class Services:
                 if not backup.exists():
                     backup.write_bytes(original)
             compilation.replace_embedded_artwork(path, body, image_format, info)
-        verified = embedded_track_artwork_bytes(path)
-        if not verified or hashlib.sha256(verified).digest() != hashlib.sha256(body).digest():
-            raise ValueError("Embedded COMP artwork verification failed for " + path.name)
-        with Image.open(BytesIO(verified)) as opened:
-            if opened.size != (info["width"], info["height"]):
-                raise ValueError("Embedded COMP artwork did not verify at the requested size")
+        self._verify_comp_embedded(record, body, info)
         refreshed = next(
             (
                 item
@@ -972,7 +1015,9 @@ class Services:
             ),
             record,
         )
-        self._record_comp_track_artwork(row, refreshed, body, outcome)
+        completed = self._record_comp_track_artwork(
+            row, refreshed, body, outcome
+        )
         self.refresh_embedding_stats(row)
         self.audit(
             "embed-comp-track",
@@ -982,14 +1027,16 @@ class Services:
                 "album_id": row["album_key"],
                 "side": info["width"],
                 "outcome": outcome,
+                "completion_recorded": completed,
             },
         )
         return {
             "album_id": row["album_key"],
             "track_key": track_key,
             "file": path.name,
-            "status": "green",
-            "completed": True,
+            "status": "green" if completed else "blue",
+            "completed": completed,
+            "authority_required": not completed,
             "width": info["width"],
             "height": info["height"],
             "bytes": len(body),
@@ -1004,8 +1051,11 @@ class Services:
             row, files, source = self.validate_staged_album(payload)
         else:
             row = self.album_row(str(payload.get("album_id", "")))
-            if not str(row["musicbrainz_albumid"] or "").strip():
-                raise ValueError("COMP albums require individual track processing")
+            if not core.valid_mbid(str(row["musicbrainz_albumid"] or "")):
+                raise ValueError(
+                    "Album Track Embedding requires a valid MusicBrainz Release ID; "
+                    "COMP albums require individual track processing"
+                )
             files = self.album_files(row)
             if not files:
                 raise ValueError("Album has no supported tracks")
@@ -1131,8 +1181,9 @@ class Services:
         self.runtime.require_write()
         row = self.album_row(str(payload.get("album_id", "")))
         album_mbid = str(row["musicbrainz_albumid"] or "").strip()
-        if not album_mbid:
+        if not core.valid_mbid(album_mbid):
             raise ValueError(
+                "Album Track Embedding requires a valid MusicBrainz Release ID; "
                 "COMP Fallback Albums use the separate track-scoped EMBED Track workflow"
             )
         files = self.album_files(row)
@@ -1230,10 +1281,20 @@ class Services:
         current_mbid = str(row["musicbrainz_albumid"] or "").strip()
         if not current_mbid:
             raise ValueError(
-                "The staged Album is now COMP Fallback; remove this Album job and use EMBED Track"
+                "The staged Album is now COMP Fallback; remove this Album job "
+                "and use track-scoped COMP work"
+            )
+        if not core.valid_mbid(current_mbid):
+            raise ValueError(
+                "The staged Album no longer has a valid MusicBrainz Release ID; "
+                "remove this Album job and use track-scoped COMP work when applicable"
             )
         staged_mbid = str(payload.get("album_mbid", "")).strip()
-        if staged_mbid and current_mbid.casefold() != staged_mbid.casefold():
+        if not core.valid_mbid(staged_mbid):
+            raise ValueError(
+                "The staged Album identity is invalid; remove it and stage the current Album"
+            )
+        if current_mbid.casefold() != staged_mbid.casefold():
             raise ValueError(
                 "The staged Album identity changed; remove it and stage the current Album"
             )
@@ -1389,6 +1450,7 @@ class Services:
             track_context=update_track_context,
             prepare_selected_artwork=prepare_selected_artwork,
             persist_track_authority=persist_track_authority,
+            verify_embedded_artwork=self._verify_comp_embedded,
             musicbrainz_results_first=True,
         )
         self.refresh_album(row["album_key"])

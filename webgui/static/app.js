@@ -222,14 +222,17 @@ function mediaStatusKey(item) {
 }
 function mediaMatches(item) { return state.mediaStatuses.has(mediaStatusKey(item)); }
 function selectedMedia(item) { return state.mediaSelected.has(item.id); }
+function validMusicBrainzId(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(value || "").trim());
+}
 function artistAlbumEligible(album) {
   const status = String(album.status || "").toLowerCase();
   const complete = status === "processed" && !!album.cover_found
     && Number(album.tracks || 0) > 0 && Number(album.embedded || 0) >= Number(album.tracks || 0);
-  return !!album.album_mbid && !["bypassed", "timeout"].includes(status) && !complete;
+  return validMusicBrainzId(album.album_mbid) && !["bypassed", "timeout"].includes(status) && !complete;
 }
 function albumEmbeddingEligible(album) {
-  return !!String(album?.album_mbid || "").trim() && Number(album?.tracks || 0) > 0;
+  return validMusicBrainzId(album?.album_mbid) && Number(album?.tracks || 0) > 0;
 }
 function markSelectedArtist(artist) {
   state.mediaSelected.clear();
@@ -950,11 +953,10 @@ function appendMusicBrainzAuthorityEditor(host, decision) {
   const fields = node("div", "musicbrainz-authority-fields");
   const recording = node("input"); recording.type = "text"; recording.placeholder = "Recording MBID"; recording.value = authority.recording_mbid || "";
   const artist = node("input"); artist.type = "text"; artist.placeholder = "Artist MBID"; artist.value = authority.artist_mbids || "";
-  const release = node("input"); release.type = "text"; release.placeholder = "Release MBID (optional)"; release.value = authority.release_mbid || "";
   const apply = node("button", "", "Apply IDs"); apply.type = "button";
   apply.addEventListener("click", () => runAction(() => submitQueuedDecision(JSON.stringify({action: "manual-authority-query",
-    artist_id: artist.value, release_id: release.value, recording_id: recording.value, edited: "all"}))));
-  fields.append(recording, artist, release, apply); details.append(fields); host.append(details);
+    artist_id: artist.value, recording_id: recording.value, edited: "all"}))));
+  fields.append(recording, artist, apply); details.append(fields); host.append(details);
 }
 function renderMusicBrainzWorkspace() {
   const host = $("musicbrainzReview"), decision = state.queuedDecision;
@@ -1079,11 +1081,10 @@ function renderQueuedCompTools() {
   details.append(summary);
   const recording = node("input"); recording.type = "text"; recording.placeholder = "Recording MBID"; recording.value = authority.recording_mbid || "";
   const artist = node("input"); artist.type = "text"; artist.placeholder = "Artist MBID"; artist.value = authority.artist_mbids || "";
-  const release = node("input"); release.type = "text"; release.placeholder = "Release MBID (optional)"; release.value = authority.release_mbid || "";
   const apply = node("button", "", "Apply IDs"); apply.type = "button";
   apply.addEventListener("click", () => runAction(() => submitQueuedDecision(JSON.stringify({action: "manual-authority-query",
-    artist_id: artist.value, release_id: release.value, recording_id: recording.value, edited: "all"}))));
-  details.append(recording, artist, release, apply); controls.append(details);
+    artist_id: artist.value, recording_id: recording.value, edited: "all"}))));
+  details.append(recording, artist, apply); controls.append(details);
   const artistId = String(authority.artist_mbids || "").split(/[;,]/)[0].trim();
   const info = node("a", "comp-mb-info", "MB INFO"); info.target = "_blank"; info.rel = "noopener";
   info.href = artistId ? "https://musicbrainz.org/artist/" + encodeURIComponent(artistId)
@@ -1100,8 +1101,14 @@ function renderQueuedCompTools() {
   }
   host.append(controls);
   if (decision.authoritySaved?.message) host.append(node("p", "operation-success", decision.authoritySaved.message));
-  for (const diagnostic of distinctDiagnostics(decision.diagnostics))
-    host.append(node("p", "operation-error", diagnostic));
+  const diagnostics = distinctDiagnostics(decision.diagnostics);
+  if (diagnostics.length) {
+    const details = node("details", "comp-diagnostics");
+    details.append(node("summary", "", `Diagnostics (${diagnostics.length})`));
+    const messages = node("div", "comp-diagnostics-list");
+    diagnostics.forEach(message => messages.append(node("p", "operation-error", message)));
+    details.append(messages); host.append(details);
+  }
 }
 function renderCandidates() {
   const skipping = state.queuedDecision?.jobKind === "scan";
@@ -1159,7 +1166,10 @@ function renderCandidates() {
     card.append(picture);
     const line = node("div", "candidate-card-line"); line.append(node("strong", "", candidate.recommended ? "Recommended" : candidate.name));
     if (state.queuedDecision) {
-      card.append(line, node("small", "", candidate.width + " × " + candidate.height)); grid.append(card);
+      const dimensions = node("small", "candidate-resolution", candidate.width + " × " + candidate.height);
+      const range = candidate.range_type || candidate.range_class || candidateRange(candidate);
+      const quality = [candidate.suggested ? "Suggested" : candidate.selected ? "Preferred" : candidate.acceptable === false ? "Rejected" : "Eligible", range].filter(Boolean).join(" · ");
+      card.append(dimensions, line, node("small", "candidate-quality", quality)); grid.append(card);
       continue;
     }
     const action = node("button", "candidate-compare" + (state.compare.has(candidate.image) ? " active" : ""), state.compare.has(candidate.image) ? "Compare ●" : "Compare ○");

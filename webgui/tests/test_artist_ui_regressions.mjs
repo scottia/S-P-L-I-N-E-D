@@ -97,7 +97,7 @@ const stageAllAlbumsFunction = between(
 );
 const albumEligibilityFunctions = between(
   appSource,
-  "function artistAlbumEligible",
+  "function validMusicBrainzId",
   "function markSelectedArtist",
 );
 const artistMetadataFunction = between(
@@ -739,10 +739,12 @@ test("EMBED All Albums stages only identified Artist Albums with saved covers", 
   const calls = [];
   const statuses = [];
   const state = {artist: {albums: [
-    {id: "regular", name: "Regular", album_mbid: "release-1", tracks: 10, cover: "/regular.jpg"},
-    {id: "featured", name: "Featured", album_mbid: "release-2", tracks: 1, cover: "/featured.jpg"},
+    {id: "regular", name: "Regular", album_mbid: "11111111-1111-4111-8111-111111111111", tracks: 10, cover: "/regular.jpg"},
+    {id: "featured", name: "Featured", album_mbid: "22222222-2222-4222-8222-222222222222", tracks: 1, cover: "/featured.jpg"},
+    {id: "identified-compilation", name: "Compilation Release", album_mbid: "33333333-3333-4333-8333-333333333333", compilation: true, tracks: 2, cover: "/compilation.jpg"},
+    {id: "malformed", name: "Malformed", album_mbid: "release-not-a-uuid", tracks: 3, cover: "/malformed.jpg"},
     {id: "fallback", name: "Fallback", album_mbid: "", tracks: 20, cover: "/fallback.jpg"},
-    {id: "no-cover", name: "No Cover", album_mbid: "release-3", tracks: 8, cover: null},
+    {id: "no-cover", name: "No Cover", album_mbid: "44444444-4444-4444-8444-444444444444", tracks: 8, cover: null},
   ]}};
   const context = load(albumEligibilityFunctions + stageAllAlbumsFunction, {
     state,
@@ -756,9 +758,28 @@ test("EMBED All Albums stages only identified Artist Albums with saved covers", 
 
   await context.stageAllArtistAlbums();
 
-  assert.deepEqual(calls, ["regular", "featured"]);
-  assert.ok(statuses.at(-1)[0].includes("1 Albums staged"));
+  assert.deepEqual(calls, ["regular", "featured", "identified-compilation"]);
+  assert.ok(statuses.at(-1)[0].includes("2 Albums staged"));
   assert.ok(statuses.at(-1)[0].includes("1 already queued"));
+});
+
+test("Album embedding eligibility requires a UUID but permits identified compilation releases", () => {
+  const context = load(albumEligibilityFunctions, {});
+  const valid = {album_mbid: "33333333-3333-4333-8333-333333333333", compilation: true, tracks: 2, status: "incomplete"};
+  assert.equal(context.albumEmbeddingEligible(valid), true);
+  assert.equal(context.artistAlbumEligible(valid), true);
+  assert.equal(context.albumEmbeddingEligible({...valid, album_mbid: "release-not-a-uuid"}), false);
+  assert.equal(context.artistAlbumEligible({...valid, album_mbid: "release-not-a-uuid"}), false);
+  assert.equal(context.albumEmbeddingEligible({...valid, album_mbid: ""}), false);
+});
+
+test("COMP Advanced IDs omit editable Release IDs and candidate cards retain compact metadata", () => {
+  assert.doesNotMatch(appSource, /placeholder = "Release MBID/);
+  assert.doesNotMatch(operationsSource, /field\(details, "Release ID"/);
+  assert.match(appSource, /candidate-resolution/);
+  assert.match(appSource, /candidate-quality/);
+  assert.match(appSource, /Diagnostics \(\$\{diagnostics\.length\}\)/);
+  assert.match(appSource, /artist_id: artist\.value, recording_id: recording\.value/);
 });
 
 test("lazy thumbnail hydration updates matching artists and rerenders", async () => {
