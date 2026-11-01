@@ -400,6 +400,31 @@ test("Artist and full-album COMP launches submit independent explicit scopes", a
   assert.deepEqual(reviewed, [["job-1", true], ["job-2", true]]);
 });
 
+test("explicit blue, purple, and green tracks launch through both COMP controls without scope expansion", async () => {
+  for (const status of ["blue", "purple", "green"]) {
+    const calls = [];
+    const selected = {key: `${status}-track`, status};
+    const state = {
+      artist: {id: "artist-1"}, compReportVisible: true,
+      compTrack: {albumId: "comp-1", key: selected.key},
+      compGroups: [{id: "comp-1", tracks: [selected, {key: "unrelated-blue", status: "blue"}]}],
+      album: {id: "comp-1"}, fallbackTrack: {key: selected.key},
+      fallbackTracks: [selected, {key: "other-blue", status: "blue"}],
+    };
+    const context = load(launchCompFunctions, {
+      state,
+      post: async (path, body) => { calls.push([path, body]); return {id: `job-${calls.length}`}; },
+      reviewJob: async () => {}, setStatus() {},
+    });
+    await context.launchArtistComp();
+    await context.launchFallback();
+    assert.deepEqual(JSON.parse(JSON.stringify(calls.map(call => call[1].payload))), [
+      {artist_id: "artist-1", album_id: "comp-1", track_keys: [selected.key]},
+      {album_id: "comp-1", track_keys: [selected.key]},
+    ]);
+  }
+});
+
 test("both Artist COMP launch controls route through the scoped COMP action", async () => {
   const calls = [];
   const context = load(lowerLaunchFunction, {
@@ -447,6 +472,19 @@ test("automatic COMP launch uses the status bar without a running-work dialog", 
   assert.equal(polls, 1);
   assert.equal(context.state.reviewJobId, job.id);
   assert.match(statuses[0][0], /track 1 of 1/);
+});
+
+test("ordinary queued scan work also stays in the status area without a modal", async () => {
+  let dialogs = 0, renders = 0;
+  const job = {id: "scan-queued", kind: "scan", state: "queued", progress: {}};
+  const context = load(reviewJobFunction, {
+    state: {jobs: [job], reviewJobId: null, reviewJobState: ""}, lastPrompt: "",
+    $: () => ({open: false, close() {}}), setStatus() {},
+    renderJob: async () => { renders += 1; }, dialog: () => { dialogs += 1; }, pollJobs: async () => {},
+  });
+  await context.reviewJob(job.id);
+  assert.equal(dialogs, 0);
+  assert.equal(renders, 0);
 });
 
 test("Artist COMP renders all album groups and previews only the selected current track", () => {
@@ -1215,14 +1253,47 @@ test("Album navigation preserves the selected Artist COMP card inventory", async
     },
     resetFocusAdjustments() {}, renderSources() {}, renderCandidates() {}, renderWorkspace() {},
     resetCandidateFilters() {}, markSelectedAlbum() {}, renderAll() {}, loadArtistMetadata() {},
-    setStatus() {}, cancelActiveCompWork: async () => {},
+    setStatus() {}, cancelActiveCompWork: async () => {}, auditEvent() {},
   });
 
   await context.chooseAlbum("own-1");
 
   assert.equal(context.albumInCurrentArtistContext("comp-1"), true);
+  assert.equal(state.album.id, "own-1");
   assert.deepEqual(state.compAlbums.map(group => group.id), ["comp-1"]);
   assert.equal(state.compGroups.length, 0);
+});
+
+test("fresh Albums view selection establishes Artist context and remains responsive", async () => {
+  const state = {
+    artist: null, artistMetadata: null, artistMetadataRequest: 0, artists: [],
+    album: null, compAlbums: [], compGroups: [], compCollapsed: new Set(), compare: new Set(),
+    candidates: [], selectedPortrait: null, selectedBanner: null, selectedCover: null,
+    upscalePreview: null, renderedPreview: {}, fallbackTracks: [], fallbackTrack: null,
+    fallbackPreviewOnly: false, fallbackRun: false, fallbackTrackRequest: 0,
+    fallbackPreviewMode: false, fallbackReportExpanded: true, fallbackHelpExpanded: false,
+    compReportVisible: false, compReportLoading: false, compPreviewMode: false, compTrack: null,
+    compRunIndex: -1, compTrackRequest: 0, compStatusRequest: 0, compReportRequest: 0,
+    queuedDecision: null, reviewJobId: null, candidateFilterLocked: true,
+    selectionRequest: 0, searchRequest: 0, reviewCleared: false, libraryMode: "albums",
+  };
+  const paths = [];
+  const context = load(clearFocusFunction + contextFunctions + chooseAlbumFunction, {
+    state,
+    api: async path => {
+      paths.push(path);
+      if (path.startsWith("/api/album")) return {id: "album-1", artist_id: "artist-1", artist_name: "Artist", album_mbid: "release-1", candidates: [], tracks: 1};
+      return {artist: {id: "artist-1", albums: [{id: "album-1"}], local_candidates: []}, comp_albums: []};
+    },
+    resetFocusAdjustments() {}, renderSources() {}, renderCandidates() {}, renderWorkspace() {},
+    resetCandidateFilters() {}, markSelectedAlbum() {}, renderAll() {}, loadArtistMetadata() {},
+    setStatus() {}, cancelActiveCompWork: async () => {}, auditEvent() {},
+  });
+  await context.chooseAlbum("album-1");
+  assert.deepEqual(paths.map(path => path.split("?")[0]), ["/api/album", "/api/artist/overview"]);
+  assert.equal(state.artist.id, "artist-1");
+  assert.equal(state.album.id, "album-1");
+  assert.equal(state.editorMode, "album");
 });
 
 test("late Artist metadata cannot replace an already scoped COMP report", async () => {

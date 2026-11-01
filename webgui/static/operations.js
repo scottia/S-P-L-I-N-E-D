@@ -327,15 +327,34 @@ async function enqueueComp(albumId, keys, artistId = "") {
   const result = await post("/api/jobs", {kind: "comp", payload});
   await reviewJob(result.id, true);
 }
+function fallbackCompLaunchTargets() {
+  const selected = state.fallbackTrack?.key
+    ? state.fallbackTracks.find(track => track.key === state.fallbackTrack.key) : null;
+  return selected && ["blue", "purple", "green"].includes(selected.status)
+    ? [selected] : state.fallbackTracks.filter(track => track.status === "blue");
+}
+function artistCompLaunchGroups() {
+  if (state.compTrack?.albumId && state.compTrack?.key) {
+    const group = state.compGroups.find(item => item.id === state.compTrack.albumId);
+    const selected = group?.tracks.find(track => track.key === state.compTrack.key);
+    if (selected && ["blue", "purple", "green"].includes(selected.status))
+      return [{id: group.id, keys: [selected.key]}];
+  }
+  return state.compGroups.map(group => ({id: group.id, keys: group.tracks.filter(track => track.status === "blue").map(track => track.key)})).filter(group => group.keys.length);
+}
 async function launchFallback() {
   if (!state.album) return;
-  await enqueueComp(state.album.id, state.fallbackTracks.filter(track => track.status === "blue").map(track => track.key));
+  const targets = fallbackCompLaunchTargets();
+  if (!targets.length) { setStatus("Select a blue, purple, or green COMP track to review"); return; }
+  state.fallbackPreviewMode = false;
+  await enqueueComp(state.album.id, targets.map(track => track.key));
 };
 async function launchArtistComp() {
   if (!state.artist || !state.compReportVisible) throw new Error("Open this Artist's COMP Report before launching work");
   const artistId = state.artist.id;
-  const groups = state.compGroups.map(group => ({id: group.id, keys: group.tracks.filter(track => track.status === "blue").map(track => track.key)})).filter(group => group.keys.length);
-  if (!groups.length) { setStatus("No blue COMP tracks need artwork"); return; }
+  const groups = artistCompLaunchGroups();
+  if (!groups.length) { setStatus("Select a blue, purple, or green COMP track to review"); return; }
+  state.compPreviewMode = false;
   const trackCount = groups.reduce((total, group) => total + group.keys.length, 0);
   setStatus(`Opening Artist COMP review · ${groups.length} album${groups.length === 1 ? "" : "s"} · ${trackCount} track${trackCount === 1 ? "" : "s"}`, "busy");
   let first;
@@ -727,10 +746,10 @@ async function reviewJob(id, quietRunning = false) {
   state.reviewJobId = id; lastPrompt = "";
   const job = (state.jobs || []).find(item => item.id === id);
   state.reviewJobState = job?.state || "";
-  if (job && quietRunning && job.kind === "comp" && job.state !== "waiting") {
+  if (job && job.state !== "waiting" && !["failed", "paused"].includes(job.state)) {
     if ($("workspaceDialog").open) $("workspaceDialog").close();
-    setStatus(job.progress?.message || "COMP track review queued", "busy");
-  } else if (job) await renderJob(job); else if (!quietRunning) dialog("Queued work");
+    setStatus(job.progress?.message || `${job.kind} ${job.state || "queued"}`, ["done", "cancelled"].includes(job.state) ? "ready" : "busy");
+  } else if (job) await renderJob(job);
   await pollJobs();
 }
 async function renderJob(job) {

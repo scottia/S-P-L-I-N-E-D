@@ -643,21 +643,32 @@ function renderHeroContents() {
   $("artistInfoMbid").textContent = artist?.mbid || "Not indexed";
   $("artistInfoGenres").textContent = artist?.genres?.join(", ") || "Not available";
   $("artistInfoRoles").textContent = artist?.roles?.join(", ") || "Primary Artist";
+  $("artistInfoRows").hidden = !state.artistInfoExpanded;
+  $("artistInfoToggle").disabled = !artist;
+  $("artistInfoToggle").setAttribute("aria-expanded", String(state.artistInfoExpanded));
+  $("artistInfoToggle").setAttribute("aria-label", state.artistInfoExpanded ? "Hide Artist information" : "Show Artist information");
   $("refreshArtistInfo").disabled = !artist;
   $("musicbrainzArtistButton").disabled = !artist?.mbid;
   renderArtistBiography(artist, metadata);
-  $("similarSource").textContent = metadata?.similar?.length ? "· Navidrome"
-    : metadata?.source && metadata.source !== "sample" ? "· " + metadata.source : "· sample layout";
+  $("similarSource").textContent = metadata?.similar?.length ? "· " + (metadata.source || "Provider")
+    : metadata ? "· unavailable" : "· loading";
   const similar = $("similarArtists"); clear(similar);
-  const names = !artist ? [] : metadata?.similar?.length ? metadata.similar : state.artists.filter(item => item.id !== artist.id).slice(0, 6).map(item => item.name);
-  for (const name of names) {
+  const recommendations = !artist || !Array.isArray(metadata?.similar) ? [] : metadata.similar;
+  for (const recommendation of recommendations) {
+    const item = typeof recommendation === "string" ? {name: recommendation} : recommendation;
+    const name = String(item.name || "").trim();
+    if (!name) continue;
     const card = node("button", "similar-card"); card.type = "button";
-    card.append(node("span", "similar-avatar", name.slice(0, 1).toUpperCase()), node("span", "similar-name", name), node("span", "similar-status", "●"));
-    const local = state.artists.find(item => item.name.toLocaleLowerCase() === name.toLocaleLowerCase());
+    const avatar = item.image ? image(item.image, "similar-avatar", name + " artist image") : node("span", "similar-avatar", name.slice(0, 1).toUpperCase());
+    card.append(avatar, node("span", "similar-name", name), node("span", "similar-status", "●"));
+    const local = item.local_id ? state.artists.find(artistItem => artistItem.id === item.local_id)
+      : state.artists.find(artistItem => artistItem.name.toLocaleLowerCase() === name.toLocaleLowerCase());
     card.disabled = !local; card.title = local ? "Open " + name : name + " is not in the indexed library";
     if (local) card.addEventListener("click", () => chooseArtist(local.id));
     similar.append(card);
   }
+  if (artist && metadata && !similar.childElementCount)
+    similar.append(node("p", "similar-unavailable", metadata.similar_reason || metadata.reason || "No genuine Similar Artists were returned by the configured provider."));
   const facts = $("albumOverviewFacts"); clear(facts);
   if (state.album) {
     const indicator = node("span", "status-indicator", "● " + (state.album.status || "unprocessed"));
@@ -782,8 +793,9 @@ function renderFallbackOverview() {
   repair.title = !state.compRepairEnabled ? "COMP repairs are disabled in this test service" : purple ? "Repair readable purple thumbnails in this full Fallback album" : "No purple thumbnails identified";
   repair.addEventListener("click", () => runAction(repairFallback));
   const launch = node("button", "fallback-launch", "LAUNCH COMP"); launch.type = "button";
-  launch.disabled = state.server?.mode !== "write" || !pending || state.fallbackPreviewMode;
-  launch.title = state.server?.mode !== "write" ? "Enable Live Write to process COMP tracks" : "Review every pending track in this fallback album";
+  const selectedLaunch = state.fallbackTrack && state.fallbackTracks.find(item => item.key === state.fallbackTrack.key && ["blue", "purple", "green"].includes(item.status));
+  launch.disabled = state.server?.mode !== "write" || (!selectedLaunch && !pending);
+  launch.title = state.server?.mode !== "write" ? "Enable Live Write to process COMP tracks" : selectedLaunch ? "Review only the explicitly selected COMP track" : "Review every blue track in this fallback album";
   launch.addEventListener("click", () => runAction(launchFallback));
   toolbar.append(preview, heading, repair, launch); report.append(toolbar);
   report.append(node("div", "fallback-report-summary", `${total} tracks: ${green} green, ${purple} purple, ${blue} blue${checking ? `, ${checking} checking` : ""}${checkErrors ? `, ${checkErrors} retry needed` : ""}`));
@@ -854,8 +866,9 @@ function renderArtistCompReport() {
   repair.title = !state.compRepairEnabled ? "COMP repairs are disabled in this test service" : purple ? "Repair readable purple thumbnails across this Artist's COMP albums" : "No purple thumbnails identified";
   repair.addEventListener("click", repairArtistComp);
   const launch = node("button", "fallback-launch", "LAUNCH COMP"); launch.type = "button";
-  launch.disabled = state.server?.mode !== "write" || !blue || state.compPreviewMode || state.compBusy;
-  launch.title = state.server?.mode !== "write" ? "Enable Live Write to process COMP tracks" : "Review this Artist's blue COMP tracks";
+  const selectedLaunch = state.compTrack && tracks.find(track => track.albumId === state.compTrack.albumId && track.key === state.compTrack.key && ["blue", "purple", "green"].includes(track.status));
+  launch.disabled = state.server?.mode !== "write" || (!selectedLaunch && !blue) || state.compBusy;
+  launch.title = state.server?.mode !== "write" ? "Enable Live Write to process COMP tracks" : selectedLaunch ? "Review only the explicitly selected Artist COMP track" : "Review this Artist's blue COMP tracks";
   launch.addEventListener("click", () => runAction(launchArtistComp));
   const close = node("button", "fallback-close", "CLOSE REPORT"); close.type = "button";
   close.addEventListener("click", closeArtistCompReport);
@@ -1249,8 +1262,8 @@ function renderCandidates() {
   $("searchButton").textContent = skipping ? "SKIP ALBUM" : artistCompLaunch ? "LAUNCH COMP" : "LAUNCH";
   $("searchButton").disabled = skipping ? false
     : decision ? true
-    : artistCompLaunch ? state.server?.mode !== "write" || state.compPreviewMode || state.compBusy || !state.compGroups.some(group => group.tracks.some(track => track.status === "blue"))
-    : state.editorMode === "fallback" ? state.server?.mode !== "write" || !state.fallbackTracks.some(item => !item.completed) : !state.artist && !state.album;
+    : artistCompLaunch ? state.server?.mode !== "write" || state.compBusy || !artistCompLaunchGroups().length
+    : state.editorMode === "fallback" ? state.server?.mode !== "write" || !fallbackCompLaunchTargets().length : !state.artist && !state.album;
   const grid = $("candidateGrid"); clear(grid);
   renderQueuedCompTools();
   const query = $("candidateSearch").value.trim().toLowerCase();
@@ -1268,8 +1281,8 @@ function renderCandidates() {
   $("candidateCount").textContent = candidateItems.length + (candidateItems.length === 1 ? " candidate" : " candidates");
   $("compareButton").disabled = state.compare.size < 2;
   $("candidateHint").textContent = decision ? "Select a candidate to preview; save from Selected Artwork"
-    : artistCompLaunch ? "LAUNCH COMP reviews only this Artist's blue compilation tracks"
-    : state.editorMode === "fallback" ? "LAUNCH COMP to review track artwork in queued work"
+    : artistCompLaunch ? state.compTrack ? "LAUNCH COMP reviews only the explicitly selected Artist track" : "LAUNCH COMP reviews this Artist's blue compilation tracks"
+    : state.editorMode === "fallback" ? state.fallbackTrack ? "LAUNCH COMP reviews only the explicitly selected track" : "LAUNCH COMP reviews blue track artwork"
     : state.editorMode === "album" ? "Select a cover candidate to preview" : "Blue: artist · pink: banner · wheel to browse";
   renderCandidateTypeChips();
   if (!visible.length) { grid.append(node("p", "empty-copy", artistCompLaunch ? "Use LAUNCH COMP to review this Artist's matching compilation tracks."
@@ -1797,6 +1810,11 @@ $("biographyToggle").addEventListener("click", () => {
   state.biographyExpanded = !state.biographyExpanded;
   updateBiographyToggle();
 });
+$("artistInfoToggle").addEventListener("click", () => {
+  if (!state.artist) return;
+  state.artistInfoExpanded = !state.artistInfoExpanded;
+  renderHero();
+});
 window.addEventListener("resize", () => requestAnimationFrame(updateBiographyToggle));
 $("albumSearch").addEventListener("input", event => { if (state.libraryMode === "artists") renderLibrary(); else loadLibrary(event.target.value); });
 $("candidateSearch").addEventListener("input", renderCandidates);
@@ -1971,6 +1989,21 @@ $("themeButton").addEventListener("click", () => {
   $("dialogBody").append(options);
 });
 $("settingsButton").addEventListener("click", () => runAction(openSettings));
+$("aboutButton").addEventListener("click", () => runAction(async () => {
+  const storage = await api("/api/storage");
+  showDialog("About S.P.L.I.N.E.D.", []);
+  const body = $("dialogBody"), card = node("section", "about-card");
+  card.append(node("h3", "", "S.P.L.I.N.E.D."), node("p", "about-tagline", "Searchable · Focused · Linked · Identified · Normalized · Enriched · Defined"));
+  const facts = node("dl", "about-facts");
+  for (const [label, value] of [["Version", state.server?.version || storage.version || "Unknown"], ["Runtime", "WebGUI / PostgreSQL"], ["Mode", String(state.server?.mode || storage.mode || "read").toUpperCase()], ["Catalog", storage.database || "PostgreSQL"]]) {
+    facts.append(node("dt", "", label), node("dd", "", value));
+  }
+  const links = node("div", "about-links");
+  for (const [label, href] of [["Source Code on GitHub ↗", "https://github.com/scottia/S-P-L-I-N-E-D"], ["Release Notes ↗", "https://github.com/scottia/S-P-L-I-N-E-D/releases"]]) {
+    const link = node("a", "guide-link", label); link.href = href; link.target = "_blank"; link.rel = "noopener"; links.append(link);
+  }
+  card.append(facts, links); body.append(card);
+}));
 $("helpButton").addEventListener("click", () => {
   showDialog("SPLINED WebGUI", ["Use Settings to configure your library, PostgreSQL catalog, artwork policy, and provider credentials. Refresh the library index after adding music.", "LAUNCH searches the selected albums, or the current artist when no albums are selected. Review queued decisions in the browser. Artist Art opens portrait and banner search. WRITE saves prepared artwork; EMBED Batch saves the cover and stages track embedding without changing your current view.", "Live Write enables music and tag changes. Read mode supports searching and previewing. The queue and completion ledger persist in PostgreSQL."]);
   const link=node("a","guide-link","Open WebGUI guide");link.href="/guide";link.target="_blank";link.rel="noopener";$("dialogBody").append(link);

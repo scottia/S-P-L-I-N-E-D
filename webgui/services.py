@@ -576,6 +576,18 @@ class Services:
             self.refresh_embedding_stats(row)
         return records
 
+    def ensure_tracks(self, album_id):
+        """Hydrate only when the durable catalog lacks indexed album tracks."""
+        row = self.album_row(album_id)
+        with closing(self.runtime.database.connect()) as db:
+            indexed = int(
+                db.execute(
+                    "SELECT count(*) FROM tracks WHERE album_key=?", (album_id,)
+                ).fetchone()[0]
+            )
+        expected = int(row["track_count"] or 0)
+        return self.hydrate_tracks(album_id) if indexed < expected else []
+
     def indexed_tracks(self, album_id, track_keys):
         """Return only explicitly requested indexed tracks, in request order."""
         requested = [str(key) for key in track_keys]
@@ -873,17 +885,55 @@ class Services:
         core.validate_filename(stem)
         extension = {"jpeg": ".jpg", "png": ".png", "webp": ".webp"}[fmt]
         destination = Path(row["path"]) / (stem + extension)
-        if self.runtime.cfg.get("output", {}).get("preserve_file", True):
-            number = 1
-            while destination.exists() and destination.read_bytes() != body:
-                number += 1
-                destination = Path(row["path"]) / (
-                    f"{stem}-({number})" + destination.suffix
-                )
+        exact_covers = sorted(
+            (
+                path
+                for path in Path(row["path"]).iterdir()
+                if path.is_file()
+                and not path.is_symlink()
+                and path.stem.casefold() == stem.casefold()
+                and path.suffix.casefold() in {".jpg", ".jpeg", ".png", ".webp"}
+            ),
+            key=lambda path: path.name.casefold(),
+        )
+        preserved = []
+        preserve = bool(self.runtime.cfg.get("output", {}).get("preserve_file", True))
+        for existing in exact_covers:
+            if existing == destination and existing.read_bytes() == body:
+                continue
+            if preserve:
+                number = 2
+                backup = existing.with_name(f"{stem}-({number}){existing.suffix}")
+                while backup.exists():
+                    number += 1
+                    backup = existing.with_name(f"{stem}-({number}){existing.suffix}")
+                os.replace(existing, backup)
+                preserved.append(backup.name)
+            else:
+                existing.unlink()
         self._atomic_artwork(destination, body)
+        verified = destination.read_bytes()
+        if verified != body:
+            raise scan.QueuedArtworkVerificationError(
+                "Written cover did not pass byte-for-byte readback verification"
+            )
+        with Image.open(BytesIO(verified)) as opened:
+            verified_size = [int(opened.width), int(opened.height)]
         self.refresh_album(row["album_key"], source="webgui")
-        self.audit("write-cover", row["album_key"], {"file": destination.name})
-        return {"written": [destination.name], **rendered}
+        self.audit(
+            "write-cover",
+            row["album_key"],
+            {
+                "album_id": row["album_key"],
+                "file": destination.name,
+                "preserved": preserved,
+                "sha256": hashlib.sha256(verified).hexdigest(),
+                "verified_size": verified_size,
+            },
+            stage="write-readback",
+            request_status="verified",
+        )
+        return {"written": [destination.name], "preserved": preserved, **rendered}
 
     @serialized
     def write_artist(self, payload):

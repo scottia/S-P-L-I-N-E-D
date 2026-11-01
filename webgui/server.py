@@ -665,13 +665,12 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
     @app.get("/api/album")
     def album(id: str):
         services = context.require()
-        services.hydrate_tracks(id)
         return services.catalog.album(id)
 
     @app.get("/api/fallback/tracks")
     def tracks(id: str):
         services = context.require()
-        services.hydrate_tracks(id)
+        services.ensure_tracks(id)
         return services.catalog.fallback_tracks(id)
 
     @app.get("/api/fallback/track")
