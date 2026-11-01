@@ -137,7 +137,9 @@ const repairFallbackFunction = between(
 );
 
 test("COMP artwork source labels map to the Windows source counters", () => {
-  const context = load(sourceKeyFunction, {});
+  const context = load(sourceKeyFunction, {SOURCES: [
+    ["Amazon", "amazon"], ["MusicBrainz", "musicbrainz"], ["Discogs", "discogs"], ["Fanart.tv", "fanart"],
+  ]});
   assert.equal(context.sourceKey("MB / CAA"), "musicbrainz");
   assert.equal(context.sourceKey("MusicBrainz"), "musicbrainz");
   assert.equal(context.sourceKey("CoverArt"), "coverartarchive");
@@ -150,6 +152,10 @@ test("COMP artwork source labels map to the Windows source counters", () => {
     ])),
     ["musicbrainz · policy-filtered", "amazon · HTTP 503"],
   );
+  assert.equal(context.sourceDiagnosticStatus([["amazon", "Amazon Store search returned HTTP 503"]], "amazon").status, "unavailable");
+  assert.equal(context.sourceDiagnosticStatus([["discogs", "policy-filtered: Short side is below the global minimum"]], "discogs").status, "filtered");
+  assert.equal(context.sourceDiagnosticStatus(["Fanart.tv: request failed (ConnectionError)"], "fanart").status, "unavailable");
+  assert.match(appSource, /runtime\.status === "unavailable" \? "⚠ Unavailable"/);
 });
 
 function queuedContext({groups, album, artistResponse}) {
@@ -600,6 +606,12 @@ test("MusicBrainz release prompt stays on the Artist COMP track", async () => {
   assert.equal(state.queuedDecision.context.identity.status, "valid");
   assert.equal(state.queuedDecision.selectedResult, null);
   assert.equal(focused.length, 1);
+
+  state.queuedDecision.selectedResult = 0;
+  state.queuedDecision.artistFilter = "10,000 Maniacs";
+  await context.presentQueuedMusicBrainz(job, prompt, options);
+  assert.equal(state.queuedDecision.selectedResult, 0);
+  assert.equal(state.queuedDecision.artistFilter, "10,000 Maniacs");
 });
 
 test("MusicBrainz result decisions ignore stale image candidates and preserve result numbering", async () => {
@@ -682,6 +694,32 @@ test("a MusicBrainz lookup without matches surfaces diagnostics instead of a sil
   assert.ok(statuses.some(([message, level]) => message.includes("Because the Night") && level === "error"));
   assert.equal(messages.includes("Use suggested"), false);
   assert.equal(messages.includes("MusicBrainz matches"), true);
+});
+
+test("a restart pause moves provider failures to source status instead of repeating the diagnostic list", async () => {
+  const body = {children: [], append(...children) { this.children.push(...children); }};
+  const actions = [], state = {jobs: [], artist: null, compReportVisible: false, sourceDiagnostics: []};
+  let sourceRenders = 0;
+  const context = load(renderJobFunction, {
+    dialog: () => body,
+    node: (tag, className, text) => ({tag, className, text, children: [], append(...children) { this.children.push(...children); }}),
+    field: () => ({value: ""}),
+    actionButton(label) { actions.push(label); },
+    setStatus() {}, queueAction() {}, pollJobs() {}, refreshQueuedAlbumAfterSave() {}, runAction() {},
+    renderSources() { sourceRenders += 1; }, state,
+    distinctDiagnostics: items => items.map(item => Array.isArray(item) ? item.join(" · ") : String(item)),
+  });
+  const diagnostics = [["amazon", "Amazon Store search returned HTTP 503"], ["discogs", "policy-filtered: below minimum"]];
+  await context.renderJob({
+    id: "paused-comp", kind: "comp", state: "paused", payload: {name: "Billboard Hot 100 Singles of 1994"},
+    error: "Interrupted by server restart", progress: {current: {diagnostics: {items: diagnostics}}},
+  });
+
+  assert.deepEqual(state.sourceDiagnostics, diagnostics);
+  assert.equal(sourceRenders, 1);
+  assert.equal(body.children.some(item => item.text?.includes("HTTP 503")), false);
+  assert.equal(body.children.some(item => item.text?.includes("policy-filtered")), false);
+  assert.equal(actions.includes("Resume"), true);
 });
 
 test("Album Track Embedding shows album details and excludes COMP and scan jobs", () => {

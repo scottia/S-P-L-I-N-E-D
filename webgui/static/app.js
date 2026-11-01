@@ -67,6 +67,7 @@ const state = {
   activeSource: "", radioCurrent: true, radioArtist: false, radioBanner: false, themedPackaging: false,
   mediaStatuses: new Set(["unprocessed", "incomplete", "processed", "bypassed", "partial", "artistComplete", "artistBypass"]),
   mediaSelected: new Set(), candidateFilters: new Map(), mediaFilterLocked: false, candidateFilterLocked: false,
+  sourceDiagnostics: [],
   fx: {artist: {}, banner: {}, album: {}, comp: {}, current: {}, package: {}}, fit: {artist: {zoom: 1, x: 0, y: 0}, banner: {zoom: 1, x: 0, y: 0}},
   theme: "dark", compare: new Set(), graphicalEnhancement: normalizeGraphicalEnhancement(),
   embedQueue: [], queueControls: {pause_after_album: false, pause_all_albums: false}, queuedDecision: null, reviewJobState: "", listRequest: 0, selectionRequest: 0, searchRequest: 0,
@@ -165,6 +166,7 @@ function clearFocusCandidates() {
   state.compGroups = []; state.compReportVisible = false; state.compReportLoading = false; state.compPreviewMode = false;
   state.compCollapsed.clear(); state.compTrack = null; state.compRunIndex = -1;
   ++state.compTrackRequest; ++state.compStatusRequest; ++state.compReportRequest;
+  state.sourceDiagnostics = [];
   state.compare.clear();
   if (!state.candidateFilterLocked) { state.activeSource = ""; state.candidateFilters.clear(); $("candidateSearch").value = ""; }
 }
@@ -194,6 +196,33 @@ function distinctDiagnostics(items) {
     const message = Array.isArray(item) ? item[1] : item?.message || String(item || "");
     const text = source + " · " + message;
     if (message && !seen.has(text)) { seen.add(text); result.push(text); }
+  }
+  return result;
+}
+function sourceDiagnosticEntry(item) {
+  let source = Array.isArray(item) ? item[0] : item?.source || "";
+  let message = Array.isArray(item) ? item[1] : item?.message || String(item || "");
+  if (!source && message) {
+    const separated = message.match(/^([^:·]+)[:·]\s*(.+)$/);
+    if (separated) { source = separated[1]; message = separated[2]; }
+    else {
+      const lowered = message.toLowerCase();
+      const matched = SOURCES.find(([label, key]) => key && (lowered.startsWith(label.toLowerCase()) || lowered.startsWith(key)));
+      if (matched) source = matched[1];
+    }
+  }
+  return {key: sourceKey(source), message: String(message || "")};
+}
+function sourceDiagnosticStatus(items, key) {
+  const priorities = {filtered: 1, warning: 2, unavailable: 3};
+  let result = {status: "", message: ""};
+  for (const item of items || []) {
+    const entry = sourceDiagnosticEntry(item);
+    if (entry.key !== key || !entry.message) continue;
+    const unavailable = /\b(?:http\s*[45]\d\d|unavailable|request failed|connection|network|timed? out|timeout|unauthori[sz]ed|forbidden|rate.?limit|dns)\b/i.test(entry.message);
+    const filtered = /policy-filtered|below (?:the )?(?:global )?minimum|not primary\/front|\bfiltered\b|\bexcluded\b/i.test(entry.message);
+    const status = unavailable ? "unavailable" : filtered ? "filtered" : "warning";
+    if ((priorities[status] || 0) >= (priorities[result.status] || 0)) result = {status, message: entry.message};
   }
   return result;
 }
@@ -890,10 +919,17 @@ function renderSources() {
     const configured = key === "local" || (state.enabledSources || []).includes(key === "fanart" ? "fanarttv" : key);
     const searchable = state.editorMode === "album" ? configured
       : artistImageSources.has(key) && (configured || navidromeMetadata);
-    const button = node("button", "source-card" + (state.activeSource === key && key ? " active" : "")); button.type = "button";
-    button.title = count ? "Show " + label + " candidates" : label + (searchable ? " · ready for artist search" : " · unavailable for this selection");
+    const runtime = sourceDiagnosticStatus(state.sourceDiagnostics, key);
+    const runtimeClass = !count && runtime.status ? " " + runtime.status : "";
+    const button = node("button", "source-card" + runtimeClass + (state.activeSource === key && key ? " active" : "")); button.type = "button";
+    button.title = count ? "Show " + label + " candidates"
+      : runtime.message ? label + " · " + runtime.message
+      : label + (searchable ? " · ready for artist search" : " · unavailable for this selection");
     button.append(icon === "⊘" ? node("span", "source-symbol", "⊘") : image("/assets/source-icons/" + icon + ".svg", "", ""));
-    button.append(node("strong", "", label), node("small", "", count + " found"), node("span", "source-state" + (searchable ? "" : " pending"), count ? "● Results" : navidromeMetadata ? "● Metadata" : searchable ? "● Ready" : "○ Inactive"));
+    const status = count ? "● Results" : runtime.status === "unavailable" ? "⚠ Unavailable"
+      : runtime.status === "filtered" ? "○ Filtered" : runtime.status === "warning" ? "⚠ Warning"
+      : navidromeMetadata ? "● Metadata" : searchable ? "● Ready" : "○ Inactive";
+    button.append(node("strong", "", label), node("small", "", count + " found"), node("span", "source-state" + (searchable ? "" : " pending"), status));
     button.addEventListener("click", () => { state.activeSource = state.activeSource === key ? "" : key; renderSources(); renderCandidates(); }); strip.append(button);
   }
 }
@@ -1551,12 +1587,13 @@ async function searchArtist() {
   if (!state.artist) return;
   const id = state.artist.id;
   const request = ++state.searchRequest;
+  state.sourceDiagnostics = [];
   $("searchButton").disabled = true;
   setStatus("Searching configured artist-image sources for " + state.artist.name + "…", "busy");
   try {
     const result = await api("/api/search/artist", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({id})});
     if (request !== state.searchRequest || state.artist?.id !== id || state.editorMode !== "artist") return;
-    state.candidates = [...(state.artist.local_candidates || []), ...result.candidates]; resetCandidateFilters();
+    state.candidates = [...(state.artist.local_candidates || []), ...result.candidates]; state.sourceDiagnostics = result.warnings || []; resetCandidateFilters();
     renderSources(); renderCandidates(); renderPanes(); renderReview();
     setStatus(result.candidates.length + " online candidates found" + (result.warnings.length ? " · " + result.warnings.length + " source warnings" : ""));
   } catch (error) {

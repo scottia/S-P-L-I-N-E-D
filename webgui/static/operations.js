@@ -207,10 +207,11 @@ renderReview = function () {
 async function searchAlbum(releaseId = null) {
   if (!state.album) return;
   const id = state.album.id, request = ++state.searchRequest;
+  state.sourceDiagnostics = [];
   setStatus("Searching configured artwork sources…", "busy");
   const result = await post("/api/search/album", {id, release_id: releaseId});
   if (request !== state.searchRequest || state.album?.id !== id) return;
-  state.candidates = [...(state.album.candidates || []), ...result.candidates]; resetCandidateFilters();
+  state.candidates = [...(state.album.candidates || []), ...result.candidates]; state.sourceDiagnostics = result.warnings || []; resetCandidateFilters();
   renderSources(); renderCandidates(); renderReview();
   setStatus(result.candidates.length + " online candidates" + (result.warnings.length ? " · " + result.warnings.join("; ") : ""));
 };
@@ -228,6 +229,7 @@ async function skipQueuedAlbum() {
 async function enqueueComp(albumId, keys, artistId = "") {
   const payload = {album_id: albumId, track_keys: [...keys]};
   if (artistId) payload.artist_id = artistId;
+  state.sourceDiagnostics = [];
   const result = await post("/api/jobs", {kind: "comp", payload});
   await reviewJob(result.id);
 }
@@ -281,8 +283,10 @@ function queuedCandidate(option, index) {
 }
 function clearQueuedDecision() {
   const previous = state.queuedDecision?.previousCandidates || [];
+  const previousDiagnostics = state.queuedDecision?.previousSourceDiagnostics || [];
   state.queuedDecision = null;
   state.candidates = previous;
+  state.sourceDiagnostics = previousDiagnostics;
   state.compare.clear();
   resetCandidateFilters();
   renderSources(); renderCandidates(); renderWorkspace(); renderReview();
@@ -368,18 +372,20 @@ async function submitQueuedDecision(value) {
 async function presentQueuedCandidates(job, prompt, options) {
   if ($("workspaceDialog").open) $("workspaceDialog").close();
   const previousCandidates = state.queuedDecision?.previousCandidates || state.candidates;
+  const previousSourceDiagnostics = state.queuedDecision?.previousSourceDiagnostics || state.sourceDiagnostics;
   const authority = job.progress?.current?.fallback_authority || {};
   const context = {...(prompt.context || {})};
   context.track_title ||= authority.track || "";
   context.track_artist ||= authority.artist || "";
   state.queuedDecision = {
     jobId: job.id, jobKind: job.kind, nonce: prompt.nonce, kind: context.kind || "", context,
-    payload: job.payload || {}, previousCandidates, selected: null,
+    payload: job.payload || {}, previousCandidates, previousSourceDiagnostics, selected: null,
     authority: {...authority, ...(context.authority || {})},
     diagnostics: job.progress?.current?.diagnostics?.items || [], authoritySaved: job.progress?.current?.authority_saved || null,
   };
   state.workspace = "find";
   state.candidates = options.map(queuedCandidate);
+  state.sourceDiagnostics = state.queuedDecision.diagnostics;
   state.activeSource = ""; state.compare.clear(); resetCandidateFilters();
   await focusQueuedAlbum(state.queuedDecision);
   if (!state.queuedDecision || state.queuedDecision.jobId !== job.id) return;
@@ -388,21 +394,32 @@ async function presentQueuedCandidates(job, prompt, options) {
 }
 async function presentQueuedMusicBrainz(job, prompt, options) {
   if ($("workspaceDialog").open) $("workspaceDialog").close();
+  const currentDecision = state.queuedDecision;
+  // Polling may return the same waiting prompt while the operator is choosing
+  // an edition.  Keep that browser-local choice until a decision is submitted;
+  // submitQueuedDecision clears queuedDecision before a genuinely new prompt.
+  const preserveSelection = currentDecision?.jobId === job.id
+    && currentDecision?.kind === "musicbrainz-results";
   const previousCandidates = state.queuedDecision?.previousCandidates || state.candidates;
+  const previousSourceDiagnostics = state.queuedDecision?.previousSourceDiagnostics || state.sourceDiagnostics;
   const authority = job.progress?.current?.fallback_authority || {};
   const context = {...(prompt.context || {})};
   context.track_title ||= authority.track || "";
   context.track_artist ||= authority.artist || "";
   state.queuedDecision = {
     jobId: job.id, jobKind: job.kind, nonce: prompt.nonce, kind: "musicbrainz-results", context,
-    payload: job.payload || {}, previousCandidates, selected: null, options: [...options],
-    selectedResult: null, selectedExisting: null,
+    payload: job.payload || {}, previousCandidates, previousSourceDiagnostics, selected: null, options: [...options],
+    selectedResult: preserveSelection ? currentDecision.selectedResult : null,
+    selectedExisting: preserveSelection ? currentDecision.selectedExisting : null,
+    artistFilter: preserveSelection ? currentDecision.artistFilter : "",
+    releaseTypeFilter: preserveSelection ? currentDecision.releaseTypeFilter : "",
     existingArtwork: job.progress?.current?.musicbrainz_existing?.items || [],
     authority: {...authority, ...(context.authority || {})},
     diagnostics: job.progress?.current?.diagnostics?.items || [], authoritySaved: job.progress?.current?.authority_saved || null,
   };
   state.workspace = "find";
   state.candidates = [];
+  state.sourceDiagnostics = state.queuedDecision.diagnostics;
   state.activeSource = ""; state.compare.clear(); resetCandidateFilters();
   await focusQueuedAlbum(state.queuedDecision);
   if (!state.queuedDecision || state.queuedDecision.jobId !== job.id) return;
@@ -605,7 +622,12 @@ async function renderJob(job) {
   body.append(node("p", "", job.payload.name || job.progress.message || job.state));
   if (job.error) body.append(node("p", "operation-error", job.error));
   const diagnostics = job.progress.current?.diagnostics?.items || [];
-  for (const message of distinctDiagnostics(diagnostics))
+  if (job.kind === "comp" && diagnostics.length) {
+    state.sourceDiagnostics = diagnostics;
+    if (typeof renderSources === "function") renderSources();
+  }
+  const restartPause = job.state === "paused" && job.error === "Interrupted by server restart";
+  if (!restartPause) for (const message of distinctDiagnostics(diagnostics))
     body.append(node("p", "operation-error", message));
   if (job.state !== "waiting" || !prompt) {
     body.append(node("p", "", job.state === "done" ? "Finished" : job.state));

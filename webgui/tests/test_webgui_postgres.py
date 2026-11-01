@@ -1717,6 +1717,8 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 ("amazon", "Fixture policy diagnostic retained for review"),
                 ("amazon", "Fixture policy diagnostic retained for review"),
                 ("itunes", "Fixture range diagnostic retained for review"),
+                ("musicbrainz", "policy-filtered: Reference is not primary/front under active source policy"),
+                ("deezer", "request failed (ConnectionError)"),
             ]
 
         with socket.socket() as probe:
@@ -1890,8 +1892,15 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                             has_text="Back to Candidates",
                         )
                     ).to_be_disabled()
-                    page.locator(".musicbrainz-release-row").click()
-                    page.locator(".musicbrainz-review-actions button.primary").click()
+                    expect(page.locator(".musicbrainz-release-row").first).to_be_visible()
+                    page.evaluate(
+                        """() => {
+                          document.querySelector('.musicbrainz-release-row').click();
+                          const use = document.querySelector('.musicbrainz-review-actions button.primary');
+                          if (!use || use.disabled) throw new Error('release selection did not enable Use Selected Album');
+                          use.click();
+                        }"""
+                    )
                     expect(page.locator(".candidate-image-button").first).to_be_visible(
                         timeout=15000
                     )
@@ -1925,11 +1934,17 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                             )
                     self.assertGreaterEqual(visible_cards, 5)
                     diagnostics = page.locator("#compDecisionTools .comp-diagnostics")
-                    expect(diagnostics).to_contain_text("Diagnostics (2)")
+                    expect(diagnostics).to_contain_text("Diagnostics (4)")
                     diagnostics.locator("summary").click()
                     expect(diagnostics.locator(".comp-diagnostics-list")).to_be_visible()
                     expect(first_card).to_be_visible()
                     diagnostics.locator("summary").click()
+                    unavailable = page.locator("#sourceStrip .source-card", has_text="Deezer")
+                    expect(unavailable).to_have_class(re.compile(r"\bunavailable\b"))
+                    expect(unavailable.locator(".source-state")).to_have_text("⚠ Unavailable")
+                    filtered = page.locator("#sourceStrip .source-card", has_text="MusicBrainz")
+                    expect(filtered).to_have_class(re.compile(r"\bfiltered\b"))
+                    expect(filtered.locator(".source-state")).to_have_text("○ Filtered")
 
                     screenshot_dir = os.environ.get("SPLINED_TEST_SCREENSHOT_DIR")
                     if screenshot_dir:
