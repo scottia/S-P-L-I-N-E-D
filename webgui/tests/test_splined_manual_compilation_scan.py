@@ -15,10 +15,19 @@ class ManualCompilationDecisionTests(unittest.TestCase):
             path=Path("Because the Night.flac"),
             artist="10,000 Maniacs",
             title="Because the Night",
+            album="Billboard Hot 100 Singles of 1994",
+            album_artist="Various Artists",
             artist_mbid="b9a06530-1241-4162-836f-7b8e79deaa58",
             recording_mbid="2ee5c11c-9e1a-4812-844b-c06530e5e600",
         )
         release = SimpleNamespace(release_mbid="release-id")
+        identity = SimpleNamespace(
+            candidates=(release,), error="", warnings=(),
+            identity_status="valid", identity_message="Recording verified",
+            recording_status="valid", artist_status="valid",
+            friendly_artist=track.artist, friendly_title=track.title,
+            focused_artist_mbid=track.artist_mbid, used_fuzzy_search=False,
+        )
         with (
             mock.patch.object(
                 scan.core,
@@ -42,10 +51,16 @@ class ManualCompilationDecisionTests(unittest.TestCase):
             mock.patch.object(scan, "_manual_musicbrainz_options", return_value=object()),
             mock.patch.object(
                 scan.core,
-                "compilation_discover_releases",
-                return_value=((release,), ""),
+                "compilation_resolve_interactive_identity",
+                return_value=identity,
                 create=True,
-            ) as discover,
+            ) as resolve,
+            mock.patch.object(
+                scan.core,
+                "compilation_local_artwork_rows",
+                return_value=[],
+                create=True,
+            ),
             mock.patch.object(
                 scan, "_manual_choose_release", return_value=("exit-album", None, {})
             ) as choose_release,
@@ -71,7 +86,7 @@ class ManualCompilationDecisionTests(unittest.TestCase):
             )
 
         self.assertFalse(continued)
-        discover.assert_called_once()
+        resolve.assert_called_once()
         choose_release.assert_called_once_with(
             [release],
             current_release_id="",
@@ -86,8 +101,113 @@ class ManualCompilationDecisionTests(unittest.TestCase):
                 "album": "",
                 "track": track.title,
             },
+            identity=identity,
+            current_album={
+                "artist": "Various Artists",
+                "title": "Billboard Hot 100 Singles of 1994",
+                "release_id": "",
+            },
+            existing_rows=[],
+            can_back=False,
         )
         remote.assert_not_called()
+
+    def test_advanced_ids_preserve_rejected_text_then_persist_only_validated_ids(self) -> None:
+        track = SimpleNamespace(
+            path=Path("Because the Night.flac"), artist="10,000 Maniacs",
+            title="Because the Night", album="Billboard 1994",
+            album_artist="Various Artists", album_mbid=None, compilation="1",
+            artist_mbid="b9a06530-1241-4162-836f-7b8e79deaa58",
+            recording_mbid="2ee5c11c-9e1a-4812-844b-c06530e5e600",
+        )
+        corrected_artist = "33333333-3333-4333-8333-333333333333"
+        corrected_recording = "44444444-4444-4444-8444-444444444444"
+        release = SimpleNamespace(
+            release_mbid="55555555-5555-4555-8555-555555555555",
+            recording_mbid=corrected_recording,
+            recording_artist=track.artist,
+            release_artist=track.artist,
+            recording_title=track.title,
+            release_title="Campfire Songs",
+            release_date="2004", country="US", release_class="album",
+            release_group_mbid="66666666-6666-4666-8666-666666666666",
+            release_group_title="Campfire Songs", artist_mbids_key=corrected_artist,
+            class_rank=0, score=100,
+        )
+        valid = SimpleNamespace(
+            candidates=(release,), error="", warnings=(),
+            identity_status="valid", identity_message="validated",
+            recording_status="valid", artist_status="valid",
+            friendly_artist=track.artist, friendly_title=track.title,
+            focused_artist_mbid=corrected_artist, used_fuzzy_search=False,
+        )
+        invalid = SimpleNamespace(
+            candidates=(), error="Invalid Artist ID", warnings=(),
+            identity_status="invalid", identity_message="Invalid Artist ID",
+            recording_status="unresolved", artist_status="invalid",
+            friendly_artist=track.artist, friendly_title=track.title,
+            focused_artist_mbid="", used_fuzzy_search=False,
+        )
+        prompts = []
+        responses = iter([
+            json.dumps({
+                "action": "manual-authority-query", "artist_id": "not-a-uuid",
+                "release_id": "", "recording_id": track.recording_mbid,
+                "edited": "all",
+            }),
+            json.dumps({
+                "action": "manual-authority-query", "artist_id": corrected_artist,
+                "release_id": "", "recording_id": corrected_recording,
+                "edited": "all",
+            }),
+            "__manual_album_exit__",
+        ])
+
+        def answer(_prompt, **context):
+            prompts.append(context)
+            return next(responses)
+
+        persisted = []
+        with (
+            mock.patch.object(scan.core, "compilation_manual_album_eligible", return_value=True, create=True),
+            mock.patch.object(scan.core, "compilation_manual_track_eligible", return_value=(True, ""), create=True),
+            mock.patch.object(
+                scan.core, "compilation_mbids",
+                side_effect=lambda value: {
+                    part.strip().casefold()
+                    for part in str(value or "").replace(",", ";").split(";")
+                    if len(part.strip()) == 36 and part.count("-") == 4
+                },
+                create=True,
+            ),
+            mock.patch.object(scan.core, "ui_cancelled", return_value=False),
+            mock.patch.object(scan, "_manual_musicbrainz_options", return_value=object()),
+            mock.patch.object(scan.core, "compilation_local_artwork_rows", return_value=[], create=True),
+            mock.patch.object(
+                scan.core, "compilation_resolve_interactive_identity",
+                side_effect=[valid, invalid, valid], create=True,
+            ) as resolve,
+            mock.patch.object(scan.core, "read_input", side_effect=answer),
+            mock.patch.object(scan.core, "emit_ui"),
+            mock.patch.object(scan.core, "debug_log"),
+        ):
+            continued = scan.run_manual_compilation_album(
+                SimpleNamespace(path=Path("Billboard 1994")), [track],
+                http=object(), config_file=Path("config.toml"),
+                cfg={"mode": "read"}, sources=[], cache=Path("cache"),
+                format_order=["jpeg"], summary=SimpleNamespace(unresolved=0),
+                api_queried=set(), unresolved_items=[], state={},
+                target_track_paths={str(track.path)},
+                persist_track_authority=lambda _track, recording, artist: persisted.append((recording, artist)),
+                musicbrainz_results_first=True,
+            )
+
+        self.assertFalse(continued)
+        self.assertEqual(resolve.call_count, 3)
+        self.assertEqual(prompts[1]["authority"]["artist_mbids"], "not-a-uuid")
+        self.assertEqual(prompts[2]["authority"]["artist_mbids"], corrected_artist)
+        self.assertEqual(prompts[2]["authority"]["recording_mbid"], corrected_recording)
+        self.assertEqual(persisted, [(corrected_recording, corrected_artist)])
 
     def test_webgui_candidate_choice_retains_prepared_track_artwork_request(self) -> None:
         candidate = mock.Mock()

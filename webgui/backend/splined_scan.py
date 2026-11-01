@@ -964,6 +964,40 @@ def _manual_local_candidates(
     return candidates
 
 
+def _manual_emit_existing_artwork(
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Expose authorized local Album matches beside native-style MB results."""
+    items: list[dict[str, Any]] = []
+    eligible_rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        cover = Path(str(row.get("cover_path") or ""))
+        identity = str(cover).casefold()
+        if not identity or identity in seen or not cover.is_file():
+            continue
+        seen.add(identity)
+        eligible_rows.append(row)
+        items.append(
+            {
+                "path": str(cover),
+                "title": str(row.get("album_name") or cover.parent.name),
+                "artist": str(row.get("album_artist") or ""),
+                "release_id": str(row.get("musicbrainz_albumid") or ""),
+                "release_group_id": str(
+                    row.get("musicbrainz_releasegroupid") or ""
+                ),
+                "kind": (
+                    "recording-match"
+                    if row.get("recording_match")
+                    else "artist-title-match"
+                ),
+            }
+        )
+    core.emit_ui("musicbrainz_existing", items=items)
+    return eligible_rows
+
+
 def _manual_remote_candidates(
     http: Any,
     config_file: Path,
@@ -1023,6 +1057,11 @@ def _manual_discovery_options(
 ) -> list[dict[str, str]]:
     options: list[dict[str, str]] = []
     for item in items:
+        family_title = str(
+            getattr(item, "release_group_title", "")
+            or item.release_title
+        )
+        family_id = str(item.release_group_mbid or item.release_mbid)
         options.append(
             {
                 "id": str(item.release_mbid),
@@ -1039,11 +1078,22 @@ def _manual_discovery_options(
                 "country": str(item.country),
                 "release_class": str(item.release_class).title(),
                 "release_group_id": str(item.release_group_mbid),
-                "group": (
-                    f"{item.recording_artist} · "
-                    f"{str(item.release_class).title()}"
-                ),
+                "release_group_title": family_title,
+                "family_id": family_id,
+                "family_title": family_title,
+                "group": f"Release Family · {family_title}",
                 "score": str(item.score),
+                "match_basis": str(
+                    getattr(item, "match_basis", "exact-recording")
+                ),
+                "match_label": {
+                    "exact-recording": "Tagged Recording ID",
+                    "related-work": "Related Work · validated Artist",
+                    "same-artist-title": "Same-Artist title suggestion",
+                }.get(
+                    str(getattr(item, "match_basis", "")),
+                    "MusicBrainz match",
+                ),
             }
         )
     return core.decorate_musicbrainz_results(
@@ -1060,7 +1110,11 @@ def _manual_choose_release(
     inspected_resolutions: dict[str, str] | None = None,
     authority: dict[str, str] | None = None,
     friendly: dict[str, str] | None = None,
-) -> tuple[str, Any | None, dict[str, str]]:
+    identity: Any | None = None,
+    current_album: dict[str, str] | None = None,
+    existing_rows: list[dict[str, Any]] | None = None,
+    can_back: bool = False,
+) -> tuple[str, Any | None, dict[str, Any]]:
     options = _manual_discovery_options(
         items,
         current_release_id=current_release_id,
@@ -1090,6 +1144,30 @@ def _manual_choose_release(
                 "release_mbid": str((authority or {}).get("release_id", "")),
                 "recording_mbid": str((authority or {}).get("recording_id", "")),
             },
+            identity={
+                "status": str(getattr(identity, "identity_status", "pending")),
+                "message": str(getattr(identity, "identity_message", "")),
+                "recording_status": str(
+                    getattr(identity, "recording_status", "pending")
+                ),
+                "artist_status": str(
+                    getattr(identity, "artist_status", "pending")
+                ),
+                "friendly_artist": str(
+                    getattr(identity, "friendly_artist", "")
+                ),
+                "friendly_title": str(
+                    getattr(identity, "friendly_title", "")
+                ),
+                "focused_artist_mbid": str(
+                    getattr(identity, "focused_artist_mbid", "")
+                ),
+                "used_fuzzy_search": bool(
+                    getattr(identity, "used_fuzzy_search", False)
+                ),
+            },
+            current_album=dict(current_album or {}),
+            can_back=bool(can_back),
         ).strip()
         answer = raw_answer.lower()
         if answer in {"__cancel__", "__manual_album_exit__"}:
@@ -1111,6 +1189,17 @@ def _manual_choose_release(
                 for key in ("artist_id", "release_id", "recording_id", "edited")
             }
             return "requery", None, fields
+        if (
+            isinstance(payload, dict)
+            and payload.get("action") == "use-existing"
+        ):
+            try:
+                existing_number = int(payload.get("number", 0))
+            except (TypeError, ValueError):
+                existing_number = 0
+            rows = list(existing_rows or [])
+            if 1 <= existing_number <= len(rows):
+                return "existing", rows[existing_number - 1], {}
         if answer.isdigit() and 1 <= int(answer) <= len(items):
             selected_id = options[int(answer) - 1].get("id", "")
             selected = next(
@@ -1424,7 +1513,10 @@ def run_manual_compilation_album(
             or not authority["recording_id"]
         )
         discovery_results: list[Any] = []
+        discovery_identity: Any | None = None
+        discovery_existing_rows: list[dict[str, Any]] = []
         selected_release_item: Any | None = None
+        selected_local_row: dict[str, Any] | None = None
         selected: core.Candidate | None = None
         selected_artwork_request: dict[str, Any] | None = None
         release: core.Release | None = None
@@ -1438,23 +1530,59 @@ def run_manual_compilation_album(
                 cache_key = (
                     str(track.artist or "").strip().casefold(),
                     str(track.title or "").strip().casefold(),
+                    authority["artist_id"],
+                    authority["recording_id"],
                 )
                 discovery_cache = state.setdefault("mb_discovery_results", {})
+                identity_cache = state.setdefault("mb_discovery_identity", {})
                 used_discovery_cache = False
                 if not discovery_results and cache_key in discovery_cache:
                     discovery_results = list(discovery_cache[cache_key])
+                    discovery_identity = identity_cache.get(cache_key)
                     used_discovery_cache = True
+                authority_track = _manual_track_authority(
+                    track,
+                    artist_id=authority["artist_id"],
+                    recording_id=authority["recording_id"],
+                )
+                discovery_existing_rows = core.compilation_local_artwork_rows(
+                    config_file,
+                    cfg,
+                    authority_track,
+                    current_album_path=album.path,
+                    release_mbid="",
+                )
+                discovery_existing_rows = _manual_emit_existing_artwork(
+                    discovery_existing_rows
+                )
                 if not discovery_results and options is not None:
-                    discovered, search_error = core.compilation_discover_releases(
-                        http,
-                        config_file,
-                        cfg,
-                        track,
-                        options,
-                    )
+                    if musicbrainz_results_first:
+                        discovery_identity = (
+                            core.compilation_resolve_interactive_identity(
+                                http,
+                                config_file,
+                                cfg,
+                                authority_track,
+                                options,
+                            )
+                        )
+                        discovered = discovery_identity.candidates
+                        search_error = discovery_identity.error
+                    else:
+                        discovered, search_error = (
+                            core.compilation_discover_releases(
+                                http,
+                                config_file,
+                                cfg,
+                                authority_track,
+                                options,
+                            )
+                        )
                     discovery_results = list(discovered)
                     if discovery_results:
                         discovery_cache[cache_key] = list(discovery_results)
+                    if discovery_identity is not None:
+                        identity_cache[cache_key] = discovery_identity
                     core.debug_log(
                         "compilation.manual.discovery "
                         f"file={str(track.path)!r} results={len(discovery_results)} "
@@ -1477,13 +1605,31 @@ def run_manual_compilation_album(
                 )
                 core.emit_ui(
                     "diagnostics",
-                    items=(
-                        [("musicbrainz", search_error)]
-                        if search_error
-                        else []
-                    ),
+                    items=[
+                        ("musicbrainz", message)
+                        for message in dict.fromkeys(
+                            [
+                                *(getattr(discovery_identity, "warnings", ()) or ()),
+                                *([search_error] if search_error else []),
+                            ]
+                        )
+                    ],
                 )
-                if discovery_results:
+                if discovery_results or musicbrainz_results_first:
+                    if (
+                        authority_edit_pending
+                        and getattr(discovery_identity, "identity_status", "")
+                        == "valid"
+                        and persist_track_authority is not None
+                    ):
+                        persist_track_authority(
+                            track,
+                            authority["recording_id"],
+                            authority["artist_id"],
+                        )
+                        track.recording_mbid = authority["recording_id"]
+                        track.artist_mbid = authority["artist_id"]
+                        authority_edit_pending = False
                     decision, discovered_item, changes = _manual_choose_release(
                         discovery_results,
                         current_release_id=authority["release_id"],
@@ -1492,6 +1638,24 @@ def run_manual_compilation_album(
                         ),
                         authority=authority,
                         friendly=friendly,
+                        identity=discovery_identity,
+                        current_album={
+                            "artist": str(
+                                getattr(track, "album_artist", None)
+                                or "Various Artists"
+                            ),
+                            "title": str(
+                                getattr(track, "album", None)
+                                or album.path.name
+                            ),
+                            "release_id": "",
+                        },
+                        existing_rows=discovery_existing_rows,
+                        can_back=bool(
+                            selected_release_item is not None
+                            or selected_local_row is not None
+                            or authority["release_id"]
+                        ),
                     )
                     if decision == "exit-album":
                         if mode == "write":
@@ -1504,6 +1668,19 @@ def run_manual_compilation_album(
                             )
                         return False
                     if decision == "back-candidates":
+                        if not (
+                            selected_release_item is not None
+                            or selected_local_row is not None
+                            or authority["release_id"]
+                        ):
+                            core.emit_ui(
+                                "diagnostics",
+                                items=[(
+                                    "musicbrainz",
+                                    "Select a release before opening artwork candidates.",
+                                )],
+                            )
+                            continue
                         show_discovery = False
                         interactive_retry = True
                         continue
@@ -1531,6 +1708,13 @@ def run_manual_compilation_album(
                             new_values["release_id"]
                             and len(core.compilation_mbids(new_values["release_id"])) != 1
                         ):
+                            # Keep rejected text in the Advanced IDs fields so
+                            # the operator can correct it.  It is session-only:
+                            # no tag or PostgreSQL authority write occurs until
+                            # the real resolver validates Artist + Recording.
+                            authority.update(new_values)
+                            discovery_results = []
+                            discovery_identity = None
                             core.emit_ui(
                                 "diagnostics",
                                 items=[(
@@ -1541,14 +1725,38 @@ def run_manual_compilation_album(
                             continue
                         authority.update(new_values)
                         selected_release_item = None
-                        show_discovery = False
-                        force_musicbrainz = True
+                        selected_local_row = None
+                        discovery_results = []
+                        discovery_identity = None
+                        state.setdefault("mb_discovery_results", {}).pop(
+                            cache_key, None
+                        )
+                        state.setdefault("mb_discovery_identity", {}).pop(
+                            cache_key, None
+                        )
+                        show_discovery = musicbrainz_results_first
+                        force_musicbrainz = not musicbrainz_results_first
                         force_sources = True
                         interactive_retry = True
                         authority_edit_pending = True
                         continue
+                    if decision == "existing":
+                        selected_local_row = discovered_item
+                        selected_release_item = None
+                        authority["release_id"] = str(
+                            selected_local_row.get("musicbrainz_albumid") or ""
+                        ).casefold()
+                        friendly["album"] = str(
+                            selected_local_row.get("album_name") or ""
+                        )
+                        show_discovery = False
+                        force_musicbrainz = False
+                        force_sources = False
+                        interactive_retry = True
+                        continue
                     if discovered_item is None:
                         continue
+                    selected_local_row = None
                     selected_release_item = (
                         core.compilation_release_candidate_from_discovery(
                             discovered_item
@@ -1559,8 +1767,13 @@ def run_manual_compilation_album(
                             discovered_item.artist_mbids_key
                         )
                     )
+                    focused_artist_id = authority["artist_id"]
                     authority.update(
-                        artist_id=artist_ids[0] if artist_ids else "",
+                        artist_id=(
+                            focused_artist_id
+                            if focused_artist_id in artist_ids
+                            else artist_ids[0] if artist_ids else ""
+                        ),
                         recording_id=discovered_item.recording_mbid,
                         release_id=discovered_item.release_mbid,
                     )
@@ -1590,12 +1803,16 @@ def run_manual_compilation_album(
                 if force_musicbrainz or selected_release_item is not None
                 else ""
             )
-            local_rows = core.compilation_local_artwork_rows(
-                config_file,
-                cfg,
-                authority_track,
-                current_album_path=album.path,
-                release_mbid=exact_release,
+            local_rows = (
+                [selected_local_row]
+                if selected_local_row is not None
+                else core.compilation_local_artwork_rows(
+                    config_file,
+                    cfg,
+                    authority_track,
+                    current_album_path=album.path,
+                    release_mbid=exact_release,
+                )
             )
             local_match = local_rows[0] if local_rows else {}
             local_candidates: list[core.Candidate] = []

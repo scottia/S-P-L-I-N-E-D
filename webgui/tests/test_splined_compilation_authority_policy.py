@@ -150,6 +150,260 @@ class CompilationAuthorityPolicyTests(unittest.TestCase):
         self.assertNotIn("Billboard Hot 100", params["query"])
         self.assertNotIn("limit", params)
 
+    def test_interactive_identity_results_validate_ids_and_group_release_families(self) -> None:
+        artist = {"id": ARTIST_ID, "name": "10,000 Maniacs"}
+        artist_credit = [{"artist": artist}]
+        exact_group = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+        alternate_group = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+        exact = {
+            "id": RECORDING_ID,
+            "title": "Because the Night",
+            "artist-credit": artist_credit,
+            "relations": [],
+            "releases": [{
+                "id": RELEASE_ID,
+                "title": "Billboard Hot 100 Singles of 1994",
+                "status": "Official",
+                "date": "1994",
+                "country": "US",
+                "artist-credit": [{"artist": {"id": OTHER_ARTIST_ID, "name": "Various Artists"}}],
+                "release-group": {
+                    "id": exact_group,
+                    "title": "Billboard Hot 100 Singles of 1994",
+                    "primary-type": "Album",
+                    "secondary-types": ["Compilation"],
+                },
+            }, {
+                "id": "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd",
+                "title": "Billboard Hot 100 Singles of 1994",
+                "status": "Official",
+                "date": "1995",
+                "country": "CA",
+                "artist-credit": [{"artist": {"id": OTHER_ARTIST_ID, "name": "Various Artists"}}],
+                "release-group": {
+                    "id": exact_group,
+                    "title": "Billboard Hot 100 Singles of 1994",
+                    "primary-type": "Album",
+                    "secondary-types": ["Compilation"],
+                },
+            }],
+        }
+        alternate = {
+            "id": OTHER_RECORDING_ID,
+            "score": 99,
+            "title": "Because the Night (Unplugged)",
+            "artist-credit": artist_credit,
+            "releases": [{
+                "id": "abababab-abab-4bab-8bab-abababababab",
+                "title": "Campfire Songs",
+                "status": "Official",
+                "date": "2004-02-17",
+                "country": "US",
+                "artist-credit": artist_credit,
+                "release-group": {
+                    "id": alternate_group,
+                    "title": "Campfire Songs: The Popular, Obscure & Unknown Recordings of 10,000 Maniacs",
+                    "primary-type": "Album",
+                    "secondary-types": ["Compilation"],
+                },
+            }],
+        }
+        http = SimpleNamespace(
+            last_mb_request=None,
+            get=Mock(side_effect=[
+                FakeResponse(200, artist),
+                FakeResponse(200, exact),
+                FakeResponse(200, {"recordings": [alternate]}),
+            ]),
+        )
+        core = SimpleNamespace(
+            mb_headers=lambda *_args: ({"User-Agent": "test"}, "oauth"),
+            MB_BASE="https://musicbrainz.test/ws/2",
+        )
+        result = policy.resolve_interactive_identity_matches(
+            core,
+            http,
+            Path("config.toml"),
+            {},
+            SimpleNamespace(
+                artist="10,000 Maniacs",
+                title="Because the Night",
+                album="Billboard Hot 100 Singles of 1994",
+                artist_mbid=ARTIST_ID,
+                recording_mbid=RECORDING_ID,
+            ),
+            policy.MusicBrainzOptions(1, 0.001, 7.0),
+        )
+
+        self.assertEqual(result.identity_status, "valid")
+        self.assertEqual(result.recording_status, "valid")
+        self.assertEqual(result.artist_status, "valid")
+        self.assertEqual(result.focused_artist_mbid, ARTIST_ID)
+        self.assertTrue(result.used_fuzzy_search)
+        self.assertEqual([item.score for item in result.candidates], [100, 100, 94])
+        self.assertEqual(
+            [item.match_basis for item in result.candidates],
+            ["exact-recording", "exact-recording", "same-artist-title"],
+        )
+        self.assertEqual(
+            len({item.release_group_mbid for item in result.candidates[:2]}), 1
+        )
+        self.assertEqual(result.candidates[0].release_group_title, "Billboard Hot 100 Singles of 1994")
+        self.assertEqual(result.candidates[2].release_group_title, "Campfire Songs: The Popular, Obscure & Unknown Recordings of 10,000 Maniacs")
+        search = http.get.call_args_list[-1].kwargs["params"]["query"]
+        self.assertIn(f"arid:{ARTIST_ID}", search)
+        self.assertIn('recording:"Because the Night"', search)
+        self.assertNotIn("Billboard Hot 100 Singles of 1994", search)
+
+    def test_interactive_identity_keeps_missing_recording_distinct_from_artist_authority(self) -> None:
+        credit = [{"artist": {"id": ARTIST_ID, "name": "10,000 Maniacs"}}]
+        suggestion = {
+            "id": OTHER_RECORDING_ID,
+            "score": 91,
+            "title": "Because the Night",
+            "artist-credit": credit,
+            "releases": [{
+                "id": RELEASE_ID,
+                "title": "Campfire Songs",
+                "status": "Official",
+                "artist-credit": credit,
+                "release-group": {
+                    "id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+                    "title": "Campfire Songs",
+                    "primary-type": "Album",
+                    "secondary-types": ["Compilation"],
+                },
+            }],
+        }
+        http = SimpleNamespace(last_mb_request=None, get=Mock(side_effect=[
+            FakeResponse(200, {"id": ARTIST_ID, "name": "10,000 Maniacs"}),
+            FakeResponse(200, {"recordings": [suggestion]}),
+        ]))
+        result = policy.resolve_interactive_identity_matches(
+            SimpleNamespace(
+                mb_headers=lambda *_args: ({}, "oauth"),
+                MB_BASE="https://musicbrainz.test/ws/2",
+            ),
+            http, Path("config.toml"), {},
+            SimpleNamespace(
+                artist="10,000 Maniacs", title="Because the Night",
+                artist_mbid=ARTIST_ID, recording_mbid="",
+            ),
+            policy.MusicBrainzOptions(1, 0.001, 7.0),
+        )
+        self.assertEqual(result.artist_status, "valid")
+        self.assertEqual(result.recording_status, "missing")
+        self.assertEqual(result.identity_status, "missing")
+        self.assertEqual(result.candidates[0].score, 91)
+        self.assertEqual(result.candidates[0].match_basis, "same-artist-title")
+        self.assertIn(f"arid:{ARTIST_ID}", http.get.call_args.kwargs["params"]["query"])
+
+    def test_interactive_identity_rejects_artist_name_mismatch_without_title_search(self) -> None:
+        http = SimpleNamespace(
+            last_mb_request=None,
+            get=Mock(return_value=FakeResponse(200, {
+                "id": ARTIST_ID, "name": "Different Artist",
+            })),
+        )
+        result = policy.resolve_interactive_identity_matches(
+            SimpleNamespace(
+                mb_headers=lambda *_args: ({}, "oauth"),
+                MB_BASE="https://musicbrainz.test/ws/2",
+            ),
+            http, Path("config.toml"), {},
+            SimpleNamespace(
+                artist="10,000 Maniacs", title="Because the Night",
+                artist_mbid=ARTIST_ID, recording_mbid=RECORDING_ID,
+            ),
+            policy.MusicBrainzOptions(1, 0.001, 7.0),
+        )
+        self.assertEqual(result.artist_status, "invalid")
+        self.assertEqual(result.recording_status, "unresolved")
+        self.assertEqual(result.candidates, ())
+        self.assertEqual(http.get.call_count, 1)
+
+    def test_interactive_work_matches_exclude_other_artist_recordings(self) -> None:
+        credit = [{"artist": {"id": ARTIST_ID, "name": "10,000 Maniacs"}}]
+        exact = {
+            "id": RECORDING_ID,
+            "title": "Because the Night",
+            "artist-credit": credit,
+            "releases": [],
+            "relations": [{"work": {"id": WORK_ID}}],
+        }
+        work = {"id": WORK_ID, "relations": [
+            {"recording": {
+                "id": OTHER_RECORDING_ID, "title": "Because the Night",
+                "artist-credit": [{"artist": {
+                    "id": OTHER_ARTIST_ID, "name": "Other Artist",
+                }}],
+            }},
+            {"recording": {
+                "id": WORK_RECORDING_ID, "title": "Because the Night",
+                "artist-credit": credit,
+            }},
+        ]}
+        related = {
+            "id": WORK_RECORDING_ID,
+            "title": "Because the Night",
+            "artist-credit": credit,
+            "releases": [{
+                "id": RELEASE_ID, "title": "Campfire Songs",
+                "status": "Official", "artist-credit": credit,
+                "release-group": {
+                    "id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+                    "title": "Campfire Songs", "primary-type": "Album",
+                    "secondary-types": ["Compilation"],
+                },
+            }],
+        }
+        http = SimpleNamespace(last_mb_request=None, get=Mock(side_effect=[
+            FakeResponse(200, {"id": ARTIST_ID, "name": "10,000 Maniacs"}),
+            FakeResponse(200, exact), FakeResponse(200, work),
+            FakeResponse(200, related), FakeResponse(200, {"recordings": []}),
+        ]))
+        result = policy.resolve_interactive_identity_matches(
+            SimpleNamespace(
+                mb_headers=lambda *_args: ({}, "oauth"),
+                MB_BASE="https://musicbrainz.test/ws/2",
+            ),
+            http, Path("config.toml"), {},
+            SimpleNamespace(
+                artist="10,000 Maniacs", title="Because the Night",
+                artist_mbid=ARTIST_ID, recording_mbid=RECORDING_ID,
+            ),
+            policy.MusicBrainzOptions(1, 0.001, 7.0),
+        )
+        self.assertEqual(result.recording_status, "valid")
+        self.assertEqual(len(result.candidates), 1)
+        self.assertEqual(result.candidates[0].recording_mbid, WORK_RECORDING_ID)
+        self.assertEqual(result.candidates[0].score, 95)
+        self.assertEqual(result.candidates[0].match_basis, "related-work")
+        urls = [call.args[0] for call in http.get.call_args_list]
+        self.assertFalse(any(OTHER_RECORDING_ID in url for url in urls))
+
+    def test_interactive_identity_reports_zero_results_and_provider_failure(self) -> None:
+        http = SimpleNamespace(last_mb_request=None, get=Mock(side_effect=[
+            FakeResponse(200, {"id": ARTIST_ID, "name": "10,000 Maniacs"}),
+            FakeResponse(503),
+        ]))
+        result = policy.resolve_interactive_identity_matches(
+            SimpleNamespace(
+                mb_headers=lambda *_args: ({}, "oauth"),
+                MB_BASE="https://musicbrainz.test/ws/2",
+            ),
+            http, Path("config.toml"), {},
+            SimpleNamespace(
+                artist="10,000 Maniacs", title="Because the Night",
+                artist_mbid=ARTIST_ID, recording_mbid="",
+            ),
+            policy.MusicBrainzOptions(1, 0.001, 7.0),
+        )
+        self.assertEqual(result.candidates, ())
+        self.assertEqual(result.recording_status, "missing")
+        self.assertIn("no MusicBrainz Recording ID", result.error)
+        self.assertTrue(any("HTTP 503" in warning for warning in result.warnings))
+
     def test_completed_track_ledger_resumes_and_finishes_album(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

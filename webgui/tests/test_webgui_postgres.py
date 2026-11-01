@@ -1013,9 +1013,27 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 break
             time.sleep(0.05)
         self.assertEqual(item["state"], "waiting", item.get("error"))
-        self.assertTrue(item["progress"]["current"]["candidates"]["items"])
         prompt = item["progress"]["prompt"]
         self.assertEqual(prompt["context"]["album_id"], row["album_key"])
+        self.assertEqual(prompt["context"]["kind"], "musicbrainz-results")
+        self.queue.action(
+            "decision", job["id"],
+            json.dumps({"action": "use-existing", "number": 1}),
+            prompt["nonce"],
+        )
+        for _ in range(120):
+            item = next(
+                value for value in self.queue.list() if value["id"] == job["id"]
+            )
+            if (
+                item["state"] == "waiting"
+                and item["progress"]["prompt"]["context"].get("kind")
+                != "musicbrainz-results"
+            ):
+                break
+            time.sleep(0.05)
+        self.assertTrue(item["progress"]["current"]["candidates"]["items"])
+        prompt = item["progress"]["prompt"]
         self.queue.action("decision", job["id"], "1", prompt["nonce"])
         for _ in range(120):
             item = next(
@@ -1212,23 +1230,46 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         # sidebar identity that Windows does not expose.
         artist_album = self.root / "music" / "10,000 Maniacs" / "Reference Album"
         artist_album.mkdir(parents=True)
-        artist_track = artist_album / "01 Reference.flac"
+        target_release_id = "12345678-1234-4234-8234-123456789abc"
+        other_release_id = "99999999-9999-4999-8999-999999999999"
+        artist_track = artist_album / "01 Because the Night.flac"
         sf.write(artist_track, np.zeros((4410, 2)), 44100)
         audio = FLAC(artist_track)
         for key, value in {
-            "title": "Reference",
+            "title": "Because the Night",
             "artist": "10,000 Maniacs",
             "albumartist": "10,000 Maniacs",
             "album": "Reference Album",
-            "musicbrainz_albumid": "12345678-1234-4234-8234-123456789abc",
+            "musicbrainz_albumid": target_release_id,
             "musicbrainz_artistid": "6c8b9855-ba8b-48f9-ac1d-42167f7f7b18",
+            "musicbrainz_trackid": "11111111-1111-4111-8111-111111111111",
         }.items():
             audio[key] = value
         audio.save()
+        Image.new("RGB", (900, 600), "orange").save(artist_album / "cover.png")
+        other_album = self.root / "music" / "Other Performer" / "Other Reference"
+        other_album.mkdir(parents=True)
+        other_reference = other_album / "01 Other Song.flac"
+        sf.write(other_reference, np.zeros((4410, 2)), 44100)
+        audio = FLAC(other_reference)
+        for key, value in {
+            "title": "Other Song",
+            "artist": "Other Performer",
+            "albumartist": "Other Performer",
+            "album": "Other Reference",
+            "musicbrainz_albumid": other_release_id,
+            "musicbrainz_artistid": "77777777-7777-4777-8777-777777777777",
+            "musicbrainz_trackid": "88888888-8888-4888-8888-888888888888",
+        }.items():
+            audio[key] = value
+        audio.save()
+        Image.new("RGB", (900, 600), "cyan").save(other_album / "cover.png")
         Image.new("RGB", (700, 700), "purple").save(comp / "cover.jpg")
-        candidate = self.runtime.temporary_cache / "browser-provider-candidate.png"
-        candidate.parent.mkdir(parents=True, exist_ok=True)
-        Image.new("RGB", (900, 600), "orange").save(candidate)
+        credential = self.root / "credentials" / "musicbrainz.json"
+        credential.parent.mkdir(parents=True, exist_ok=True)
+        credential.write_text(json.dumps({"options": {
+            "retry_max": 1, "min_delay": 0.001, "recording_timeout": 2,
+        }}), encoding="utf-8")
 
         def wait_for_embedded_art(path: Path, timeout: float = 15.0) -> bytes:
             """Wait for verified audio readback, not a transient progress banner."""
@@ -1251,89 +1292,84 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.runtime.close()
 
         app = None
+        http_calls: list[str] = []
 
-        def simulated_manual_comp(album, tracks, **kwargs):
-            # This is deliberately a provider simulation, not a browser or
-            # write simulation. Job prompts and filesystem writes use the real
-            # queue, API, interaction adapter, and embedding implementation.
-            from interaction.status import emit, read_input
+        class MusicBrainzResponse:
+            def __init__(self, payload, status_code=200):
+                self.status_code = status_code
+                self._payload = payload
 
-            summary = kwargs["summary"]
-            for completed, track in enumerate(tracks, 1):
-                kwargs["track_context"](track)
-                authority = {
-                    "track": str(track.title),
-                    "artist": str(track.artist),
-                    "recording_mbid": str(track.recording_mbid or ""),
-                    "artist_mbids": str(track.artist_mbid or ""),
-                }
-                option = {
-                    "path": str(candidate),
-                    "source": "simulated-provider",
-                    "title": "Rendered-browser candidate",
-                    "width": 900,
-                    "height": 600,
-                    "resolution": "900x600",
-                    "number": 1,
-                }
-                emit("fallback_authority", **authority)
-                release = {
-                    "number": 1,
-                    "title": "Billboard Hot 100 Singles of 1994",
-                    "track": str(track.title),
-                    "artist": str(track.artist),
-                    "recording_artist": str(track.artist),
-                    "release_artist": "Various Artists",
-                    "release_class": "Compilation",
+            def json(self):
+                return self._payload
+
+        identities = {
+            "6c8b9855-ba8b-48f9-ac1d-42167f7f7b18": {
+                "recording": "11111111-1111-4111-8111-111111111111",
+                "artist": "10,000 Maniacs",
+                "title": "Because the Night",
+                "release": target_release_id,
+                "album": "Reference Album",
+                "group": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            },
+            "77777777-7777-4777-8777-777777777777": {
+                "recording": "88888888-8888-4888-8888-888888888888",
+                "artist": "Other Performer",
+                "title": "Other Song",
+                "release": other_release_id,
+                "album": "Other Reference",
+                "group": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            },
+        }
+
+        def recording_payload(artist_id, identity):
+            credit = [{"artist": {"id": artist_id, "name": identity["artist"]}}]
+            return {
+                "id": identity["recording"],
+                "score": 100,
+                "title": identity["title"],
+                "artist-credit": credit,
+                "relations": [],
+                "releases": [{
+                    "id": identity["release"],
+                    "title": identity["album"],
+                    "status": "Official",
                     "date": "1994",
                     "country": "US",
-                    "score": 100,
-                    "recording_id": str(track.recording_mbid or ""),
-                    "artist_id": str(track.artist_mbid or ""),
-                    "release_id": "99999999-9999-4999-8999-999999999999",
-                }
-                answer = read_input(
-                    "MusicBrainz matches",
-                    kind="musicbrainz-results",
-                    options=[release],
-                    track_title=str(track.title),
-                    track_artist=str(track.artist),
-                    authority=authority,
-                )
-                if answer == "1":
-                    emit("candidates", items=[dict(option)])
-                    answer = read_input(
-                        "Choose release artwork",
-                        kind="fallback-picker",
-                        options=[dict(option)],
-                        musicbrainz=True,
-                        track_title=str(track.title),
-                        track_artist=str(track.artist),
-                        authority=authority,
+                    "artist-credit": credit,
+                    "release-group": {
+                        "id": identity["group"],
+                        "title": identity["album"],
+                        "primary-type": "Album",
+                        "secondary-types": [],
+                    },
+                }],
+            }
+
+        def fixture_http_get(_http, url, **kwargs):
+            http_calls.append(url)
+            for artist_id, identity in identities.items():
+                if url.endswith("/artist/" + artist_id):
+                    return MusicBrainzResponse({
+                        "id": artist_id, "name": identity["artist"]
+                    })
+                if url.endswith("/recording/" + identity["recording"]):
+                    return MusicBrainzResponse(
+                        recording_payload(artist_id, identity)
                     )
-                choice = json.loads(answer)
-                self.assertEqual(choice["action"], "webgui-embed-track")
-                body, info, image_format = kwargs["prepare_selected_artwork"](
-                    choice["artwork"]
+            if url.rstrip("/").endswith("/recording"):
+                query = str(kwargs.get("params", {}).get("query", ""))
+                identity = next(
+                    (value for key, value in identities.items() if key in query),
+                    None,
                 )
-                core.compilation_replace_embedded(
-                    track.path, body, image_format, info
+                artist_id = next(
+                    (key for key in identities if key in query), ""
                 )
-                services = app.state.context.services
-                row = services.album_row(comp_row["album_key"])
-                record = next(
-                    item
-                    for item in services.hydrate_tracks(
-                        row["album_key"], refresh_embedding_stats=False
-                    )
-                    if Path(item["path"]) == Path(track.path)
-                )
-                services._record_comp_track_artwork(
-                    row, record, body, "embedded-replaced"
-                )
-                summary.selected += 1
-                summary.resolved += 1
-                summary.installed += 1
+                return MusicBrainzResponse({
+                    "recordings": [recording_payload(artist_id, identity)]
+                    if identity else []
+                })
+            return MusicBrainzResponse({}, 503)
 
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
@@ -1370,9 +1406,13 @@ class PostgreSQLBrowserTests(unittest.TestCase):
 
         server = None
         server_thread = None
-        with patch(
-            "webgui.services.scan.run_manual_compilation_album",
-            side_effect=simulated_manual_comp,
+        with (
+            patch.object(
+                core,
+                "mb_headers",
+                return_value=({"User-Agent": "SPLINED-test"}, "fixture"),
+            ),
+            patch.object(core.Http, "get", new=fixture_http_get),
         ):
             app, server, server_thread = launch_test_server()
 
@@ -1447,16 +1487,84 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         "Other Song"
                     )
                     page.locator("#fallbackReport .fallback-launch").click()
-                    expect(page.locator("#compDecisionTools")).to_be_visible(
+                    expect(page.locator("#musicbrainzReview")).to_be_visible(
                         timeout=15000
                     )
-                    expect(page.locator(".musicbrainz-result-card")).to_contain_text(
-                        "100% match"
+                    expect(page.locator("#sourceHeading")).to_have_text(
+                        "Find Releases Containing This Recording"
                     )
+                    expect(page.locator("#musicbrainzReview")).to_contain_text(
+                        "100% match · Release Family"
+                    )
+                    expect(page.locator("#musicbrainzReview")).to_contain_text(
+                        "CURRENT ALBUM · SPLINED LIBRARY AUTHORITY"
+                    )
+                    expect(page.locator("#candidateDock")).to_be_hidden()
                     expect(page.locator("#sourceStrip button", has_text="MusicBrainz")).to_contain_text(
-                        "1 found"
+                        "0 found"
                     )
-                    page.locator(".musicbrainz-result-choice").click()
+                    self.assertTrue(http_calls)
+                    self.assertTrue(
+                        all(url.startswith(core.MB_BASE) for url in http_calls),
+                        "an artwork provider was queried before release selection",
+                    )
+                    page.locator(".musicbrainz-authority-editor summary").click()
+                    page.locator(
+                        '.musicbrainz-authority-fields input[placeholder="Recording MBID"]'
+                    ).fill("11111111-1111-4111-8111-111111111111")
+                    page.locator(
+                        '.musicbrainz-authority-fields input[placeholder="Artist MBID"]'
+                    ).fill("6c8b9855-ba8b-48f9-ac1d-42167f7f7b18")
+                    page.locator(
+                        ".musicbrainz-authority-fields button",
+                        has_text="Apply IDs",
+                    ).click()
+                    expect(page.locator("#musicbrainzReview")).to_contain_text(
+                        "Artist ID · valid · Recording ID · valid",
+                        timeout=15000,
+                    )
+                    self.assertTrue(
+                        all(url.startswith(core.MB_BASE) for url in http_calls),
+                        "Apply IDs queried an artwork provider before release selection",
+                    )
+                    expect(
+                        page.locator(
+                            ".musicbrainz-review-actions button",
+                            has_text="Back to Candidates",
+                        )
+                    ).to_be_disabled()
+                    page.locator(".musicbrainz-release-row").click()
+                    page.locator(".musicbrainz-review-actions button.primary").click()
+                    expect(page.locator(".candidate-image-button")).to_be_visible(
+                        timeout=15000
+                    )
+                    page.locator(
+                        "#compDecisionTools button", has_text="MusicBrainz Results"
+                    ).click()
+                    expect(page.locator("#musicbrainzReview")).to_be_visible(
+                        timeout=15000
+                    )
+                    expect(
+                        page.locator(
+                            ".musicbrainz-review-actions button",
+                            has_text="Back to Candidates",
+                        )
+                    ).to_be_enabled()
+                    page.locator(
+                        ".musicbrainz-review-actions button",
+                        has_text="Back to Candidates",
+                    ).click()
+                    expect(page.locator(".candidate-image-button")).to_be_visible(
+                        timeout=15000
+                    )
+                    page.locator(
+                        "#compDecisionTools button", has_text="MusicBrainz Results"
+                    ).click()
+                    expect(page.locator("#musicbrainzReview")).to_be_visible(
+                        timeout=15000
+                    )
+                    page.locator(".musicbrainz-release-row").click()
+                    page.locator(".musicbrainz-review-actions button.primary").click()
                     page.locator(".candidate-image-button").click()
                     expect(page.locator("#writeButton")).to_have_text("EMBED Track")
                     page.locator("#writeButton").click()
@@ -1479,11 +1587,21 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     expect(page.locator("#fallbackReport")).to_contain_text(
                         "Other Song"
                     )
+                    full_launch_call_start = len(http_calls)
                     page.locator("#searchButton").click()
-                    expect(page.locator(".musicbrainz-result-card")).to_contain_text(
-                        "100% match"
+                    expect(page.locator("#musicbrainzReview")).to_contain_text(
+                        "100% match · Release Family"
                     )
-                    page.locator(".musicbrainz-result-choice").click()
+                    expect(page.locator("#candidateDock")).to_be_hidden()
+                    self.assertTrue(
+                        all(
+                            url.startswith(core.MB_BASE)
+                            for url in http_calls[full_launch_call_start:]
+                        ),
+                        "an artwork provider was queried before full-Fallback release selection",
+                    )
+                    page.locator(".musicbrainz-release-row").click()
+                    page.locator(".musicbrainz-review-actions button.primary").click()
                     page.locator(".candidate-image-button").click()
                     page.locator("#writeButton").click()
                     wait_for_embedded_art(other)

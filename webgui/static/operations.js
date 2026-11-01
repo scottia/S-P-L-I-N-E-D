@@ -283,7 +283,7 @@ function clearQueuedDecision() {
   state.candidates = previous;
   state.compare.clear();
   resetCandidateFilters();
-  renderSources(); renderCandidates(); renderReview();
+  renderSources(); renderCandidates(); renderWorkspace(); renderReview();
 }
 async function focusQueuedAlbum(decision) {
   const albumId = decision?.context?.album_id;
@@ -394,6 +394,8 @@ async function presentQueuedMusicBrainz(job, prompt, options) {
   state.queuedDecision = {
     jobId: job.id, jobKind: job.kind, nonce: prompt.nonce, kind: "musicbrainz-results", context,
     payload: job.payload || {}, previousCandidates, selected: null, options: [...options],
+    selectedResult: null, selectedExisting: null,
+    existingArtwork: job.progress?.current?.musicbrainz_existing?.items || [],
     authority: {...authority, ...(context.authority || {})},
     diagnostics: job.progress?.current?.diagnostics?.items || [], authoritySaved: job.progress?.current?.authority_saved || null,
   };
@@ -404,7 +406,14 @@ async function presentQueuedMusicBrainz(job, prompt, options) {
   if (!state.queuedDecision || state.queuedDecision.jobId !== job.id) return;
   renderWorkspace(); renderSources(); renderCandidates(); renderReview();
   const track = [context.track_artist, context.track_title].filter(Boolean).join(" — ");
-  setStatus("MusicBrainz results" + (track ? " · " + track : "") + " · choose a release", "busy");
+  const familyCount = new Set(options.map(option => String(option.family_id || option.release_group_id || option.id || "")).filter(Boolean)).size;
+  const identity = context.identity || {};
+  const message = identity.status === "valid"
+    ? "MusicBrainz Recording ID verified" + (identity.used_fuzzy_search ? " · same-artist title suggestions available" : "")
+      + ` · ${familyCount} release ${familyCount === 1 ? "family" : "families"}`
+    : "MusicBrainz identity review" + (track ? " · " + track : "")
+      + (familyCount ? ` · ${familyCount} release ${familyCount === 1 ? "family" : "families"}` : " · no selectable release families");
+  setStatus(message, familyCount ? "busy" : "error");
 }
 function renderQueue() {
   const host = $("embedQueue"); clear(host);
@@ -581,7 +590,7 @@ async function renderJob(job) {
   const currentOptions = prompt ? job.progress.current?.candidates?.items || [] : [];
   const options = kind === "musicbrainz-results" ? contextualOptions
     : currentOptions.some(option => option.image) ? currentOptions : contextualOptions;
-  if (job.state === "waiting" && prompt && kind === "musicbrainz-results" && options.length) {
+  if (job.state === "waiting" && prompt && kind === "musicbrainz-results") {
     await presentQueuedMusicBrainz(job, prompt, options);
     return;
   }
@@ -593,11 +602,8 @@ async function renderJob(job) {
   body.append(node("p", "", job.payload.name || job.progress.message || job.state));
   if (job.error) body.append(node("p", "operation-error", job.error));
   const diagnostics = job.progress.current?.diagnostics?.items || [];
-  for (const item of diagnostics) {
-    const source = Array.isArray(item) ? item[0] : item?.source || "lookup";
-    const message = Array.isArray(item) ? item[1] : item?.message || String(item || "");
-    if (message) body.append(node("p", "operation-error", source + " · " + message));
-  }
+  for (const message of distinctDiagnostics(diagnostics))
+    body.append(node("p", "operation-error", message));
   if (job.state !== "waiting" || !prompt) {
     body.append(node("p", "", job.state === "done" ? "Finished" : job.state));
     if(job.result) for(const [key,value] of Object.entries(job.result)) if(typeof value!=="object") body.append(node("p","",key.replaceAll("_"," ")+": "+value));

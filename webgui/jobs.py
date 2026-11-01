@@ -25,7 +25,7 @@ class JobAdapter:
 
     def emit(self, event, payload):
         payload = dict(payload)
-        if event == "candidates":
+        if event in {"candidates", "musicbrainz_existing"}:
             for item in payload.get("items", []):
                 if item.get("path"):
                     item["image"] = self.queue.services.catalog.image(

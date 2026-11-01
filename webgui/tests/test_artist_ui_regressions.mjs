@@ -67,8 +67,8 @@ const renderJobFunction = between(
 );
 const renderMusicBrainzFunction = between(
   appSource,
-  "function renderMusicBrainzResults",
-  "function renderCandidates",
+  "function musicBrainzFamilyKey",
+  "function renderQueuedCompTools",
 );
 const sourceKeyFunction = between(
   appSource,
@@ -569,10 +569,15 @@ test("MusicBrainz release prompt stays on the Artist COMP track", async () => {
   const job = {
     id: "job-1", kind: "comp",
     payload: {artist_id: "10k-maniacs", album_id: "billboard-1994", track_keys: ["10k-because-the-night"]},
-    progress: {current: {fallback_authority: {artist: "10,000 Maniacs", track: "Because the Night"}}},
+    progress: {current: {
+      fallback_authority: {artist: "10,000 Maniacs", track: "Because the Night"},
+      musicbrainz_existing: {items: [{title: "Campfire Songs", image: "/api/image/existing"}]},
+    }},
   };
   const prompt = {nonce: "nonce-1", context: {
     kind: "musicbrainz-results", album_id: "billboard-1994", track_key: "10k-because-the-night",
+    identity: {status: "valid", friendly_artist: "10,000 Maniacs", friendly_title: "Because the Night"},
+    current_album: {artist: "Various Artists", title: "Billboard Hot 100 Singles of 1994"},
   }};
   const context = load(queuedMusicBrainzFunction, {
     state,
@@ -591,6 +596,9 @@ test("MusicBrainz release prompt stays on the Artist COMP track", async () => {
   assert.equal(state.queuedDecision.context.track_title, "Because the Night");
   assert.deepEqual(state.queuedDecision.payload.track_keys, ["10k-because-the-night"]);
   assert.equal(state.queuedDecision.options[0].recording_id, "recording-because-the-night");
+  assert.equal(state.queuedDecision.existingArtwork[0].title, "Campfire Songs");
+  assert.equal(state.queuedDecision.context.identity.status, "valid");
+  assert.equal(state.queuedDecision.selectedResult, null);
   assert.equal(focused.length, 1);
 });
 
@@ -615,24 +623,34 @@ test("MusicBrainz result decisions ignore stale image candidates and preserve re
   assert.equal(presented[0], job);
   assert.deepEqual(presented[2], options);
 
-  const submitted = [];
-  const elements = {candidateCount: {textContent: ""}};
-  const node = (tag, className = "", text = "") => ({
-    tag, className, text, children: [], listeners: {},
-    append(...children) { this.children.push(...children); },
-    setAttribute() {},
-    addEventListener(event, handler) { this.listeners[event] = handler; },
+  const renderer = load(renderMusicBrainzFunction, {});
+  const grouped = renderer.musicBrainzFamilies([
+    {...options[1], family_id: "campfire", family_title: "Campfire Songs", score: "95", release_class: "Compilation", release_artist: "10,000 Maniacs"},
+    {...options[1], id: "release-2004-eu", family_id: "campfire", family_title: "Campfire Songs", score: "95", release_class: "Compilation", release_artist: "10,000 Maniacs"},
+    {...options[0], family_id: "appearance", family_title: "Other Release", score: "70", release_class: "Soundtrack", release_artist: "Various Artists"},
+  ]);
+  assert.equal(grouped.length, 2);
+  assert.equal(grouped[0].title, "Campfire Songs");
+  assert.equal(grouped[0].score, 95);
+  assert.equal(grouped[0].options.length, 2);
+  assert.equal(grouped[0].section, 0);
+  assert.equal(grouped[1].section, 2);
+  assert.match(appSource, /originalIndex[\s\S]*decision\.selectedResult = resultIndex/);
+});
+
+test("MusicBrainz zero-result prompts open the authority workspace", async () => {
+  let presented;
+  const job = {id: "job-empty", kind: "comp", state: "waiting", payload: {}, error: "", progress: {
+    prompt: {nonce: "nonce-empty", context: {kind: "musicbrainz-results", options: [], identity: {status: "failed"}}},
+    current: {diagnostics: {items: [["musicbrainz", "No recording matched the supplied identity"]]}},
+  }};
+  const context = load(renderJobFunction, {
+    presentQueuedMusicBrainz: async (...args) => { presented = args; },
+    presentQueuedCandidates: async () => { throw new Error("candidate dock opened"); },
   });
-  const renderer = load(renderMusicBrainzFunction, {
-    $: id => elements[id], node,
-    runAction: action => action(),
-    submitQueuedDecision: async value => { submitted.push(value); },
-  });
-  const grid = {children: [], append(...children) { this.children.push(...children); }};
-  renderer.renderMusicBrainzResults(grid, {options, context: {track_title: "Because the Night"}}, "billboard");
-  assert.equal(grid.children.length, 1);
-  await grid.children[0].children[0].listeners.click();
-  assert.deepEqual(submitted, [2]);
+  await context.renderJob(job);
+  assert.equal(presented[0], job);
+  assert.deepEqual(presented[2], []);
 });
 
 test("a MusicBrainz lookup without matches surfaces diagnostics instead of a silent prompt", async () => {
@@ -647,6 +665,7 @@ test("a MusicBrainz lookup without matches surfaces diagnostics instead of a sil
     setStatus: (...args) => { statuses.push(args); },
     queueAction() {}, pollJobs() {}, refreshQueuedAlbumAfterSave() {}, runAction() {},
     state: {jobs: [], artist: null, compReportVisible: false},
+    distinctDiagnostics: items => items.map(item => Array.isArray(item) ? item.join(" · ") : String(item)),
     $: () => ({close() {}}),
   });
   const job = {

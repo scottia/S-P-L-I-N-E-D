@@ -881,12 +881,8 @@ async function repairArtistComp() {
 function renderSources() {
   const strip = $("sourceStrip"); clear(strip);
   const artistImageSources = new Set(["local", "fanart", "deezer", "lastfm", "discogs", "navidrome"]);
-  const musicBrainzResultCount = state.queuedDecision?.kind === "musicbrainz-results"
-    ? (state.queuedDecision.options || []).length : 0;
   for (const [label, key, icon] of SOURCES) {
-    const count = key === "musicbrainz" && musicBrainzResultCount
-      ? musicBrainzResultCount
-      : state.candidates.filter(candidate => sourceKey(candidate.source) === key).length;
+    const count = state.candidates.filter(candidate => sourceKey(candidate.source) === key).length;
     const navidromeMetadata = key === "navidrome" && state.artistMetadata?.source === "Navidrome";
     const configured = key === "local" || (state.enabledSources || []).includes(key === "fanart" ? "fanarttv" : key);
     const searchable = state.editorMode === "album" ? configured
@@ -898,39 +894,167 @@ function renderSources() {
     button.addEventListener("click", () => { state.activeSource = state.activeSource === key ? "" : key; renderSources(); renderCandidates(); }); strip.append(button);
   }
 }
-function renderMusicBrainzResults(grid, decision, query) {
-  const options = decision.options || [];
-  const visible = options.map((option, index) => ({option, index})).filter(({option}) => !query
-    || Object.values(option).join(" ").toLowerCase().includes(query)).filter(({option}) =>
-      (!decision.artistFilter || (option.recording_artist || option.artist || "").toLowerCase() === decision.artistFilter.toLowerCase())
-      && (!decision.releaseTypeFilter || (option.release_class || "").toLowerCase() === decision.releaseTypeFilter.toLowerCase()));
-  $("candidateCount").textContent = options.length + (options.length === 1 ? " MusicBrainz result" : " MusicBrainz results");
-  if (!visible.length) {
-    grid.append(node("p", "empty-copy", options.length ? "No MusicBrainz releases match the filter."
-      : "MusicBrainz returned no selectable releases for this track."));
-    return;
+function musicBrainzFamilyKey(option) {
+  return String(option.family_id || option.release_group_id || option.id || "").toLowerCase();
+}
+function musicBrainzFamilyTitle(option) {
+  return option.family_title || option.release_group_title || option.title || "Unknown release family";
+}
+function musicBrainzScore(option) {
+  const score = Number(option.score);
+  return Number.isFinite(score) ? score : 0;
+}
+function musicBrainzSameArtist(option) {
+  const recording = String(option.recording_artist || option.artist || "").trim().toLowerCase();
+  const release = String(option.release_artist || recording).trim().toLowerCase();
+  return !!recording && release === recording;
+}
+function musicBrainzFamilySection(options) {
+  const score = Math.max(0, ...options.map(musicBrainzScore));
+  if (score >= 90) return 0;
+  if (options.some(option => musicBrainzSameArtist(option)
+    && ["album", "compilation"].includes(String(option.release_class || "").toLowerCase()))) return 1;
+  return 2;
+}
+function musicBrainzFamilies(options) {
+  const families = new Map();
+  options.forEach((option, index) => {
+    const key = musicBrainzFamilyKey(option) || `release-${index}`;
+    const family = families.get(key) || {key, title: musicBrainzFamilyTitle(option), options: []};
+    family.options.push({option, index}); families.set(key, family);
+  });
+  return [...families.values()].map(family => ({
+    ...family,
+    score: Math.max(0, ...family.options.map(({option}) => musicBrainzScore(option))),
+    section: musicBrainzFamilySection(family.options.map(({option}) => option)),
+  })).sort((left, right) => left.section - right.section || right.score - left.score
+    || left.title.localeCompare(right.title) || left.key.localeCompare(right.key));
+}
+function appendMusicBrainzFilters(host, decision) {
+  const controls = node("div", "musicbrainz-filters");
+  const artists = [...new Set((decision.options || []).map(option => option.recording_artist || option.artist || "").filter(Boolean))];
+  const types = [...new Set((decision.options || []).map(option => option.release_class || "").filter(Boolean))];
+  const select = (label, values, key) => {
+    const owner = node("label", "musicbrainz-filter", label), input = node("select");
+    const all = node("option", "", "All"); all.value = ""; input.append(all);
+    values.sort().forEach(value => { const option = node("option", "", value); option.value = value; input.append(option); });
+    input.value = decision[key] || "";
+    input.addEventListener("change", () => { decision[key] = input.value; renderMusicBrainzWorkspace(); });
+    owner.append(input); controls.append(owner);
+  };
+  select("Artist", artists, "artistFilter"); select("Release Type", types, "releaseTypeFilter"); host.append(controls);
+}
+function appendMusicBrainzAuthorityEditor(host, decision) {
+  const authority = decision.authority || {}, details = node("details", "musicbrainz-authority-editor");
+  details.append(node("summary", "", "Advanced IDs"));
+  const fields = node("div", "musicbrainz-authority-fields");
+  const recording = node("input"); recording.type = "text"; recording.placeholder = "Recording MBID"; recording.value = authority.recording_mbid || "";
+  const artist = node("input"); artist.type = "text"; artist.placeholder = "Artist MBID"; artist.value = authority.artist_mbids || "";
+  const release = node("input"); release.type = "text"; release.placeholder = "Release MBID (optional)"; release.value = authority.release_mbid || "";
+  const apply = node("button", "", "Apply IDs"); apply.type = "button";
+  apply.addEventListener("click", () => runAction(() => submitQueuedDecision(JSON.stringify({action: "manual-authority-query",
+    artist_id: artist.value, release_id: release.value, recording_id: recording.value, edited: "all"}))));
+  fields.append(recording, artist, release, apply); details.append(fields); host.append(details);
+}
+function renderMusicBrainzWorkspace() {
+  const host = $("musicbrainzReview"), decision = state.queuedDecision;
+  clear(host);
+  if (decision?.kind !== "musicbrainz-results") { host.hidden = true; return; }
+  host.hidden = false;
+  const identity = decision.context?.identity || {}, authority = decision.authority || {};
+  const trackArtist = identity.friendly_artist || decision.context?.track_artist || authority.artist || "Unknown artist";
+  const trackTitle = identity.friendly_title || decision.context?.track_title || authority.track || "Unknown recording";
+  const heading = node("div", "musicbrainz-review-heading"), copy = node("div");
+  copy.append(node("span", "musicbrainz-kicker", "MusicBrainz"), node("h2", "", `TRACK  ${trackArtist} — ${trackTitle}`));
+  const artistId = String(identity.focused_artist_mbid || authority.artist_mbids || "").split(/[;,]/)[0].trim();
+  const info = node("a", "musicbrainz-info-link", "MB INFO"); info.target = "_blank"; info.rel = "noopener";
+  info.href = artistId ? "https://musicbrainz.org/artist/" + encodeURIComponent(artistId)
+    : "https://musicbrainz.org/search?query=" + encodeURIComponent(trackArtist) + "&type=artist&method=indexed";
+  heading.append(copy, info); host.append(heading);
+  const statusClass = identity.status === "valid" ? " valid" : identity.status === "failed" ? " failed" : " warning";
+  const identityBand = node("div", "musicbrainz-identity" + statusClass);
+  identityBand.append(node("strong", "", `${trackArtist} — ${trackTitle}`),
+    node("span", "musicbrainz-identity-states", `Artist ID · ${identity.artist_status || "unresolved"} · Recording ID · ${identity.recording_status || "unresolved"}`),
+    node("span", "", identity.message || "MusicBrainz identity lookup completed.")); host.append(identityBand);
+  const current = decision.context?.current_album || {}, authorityCard = node("section", "musicbrainz-current-album");
+  authorityCard.append(node("strong", "", "CURRENT ALBUM · SPLINED LIBRARY AUTHORITY"));
+  const currentBody = node("div", "musicbrainz-current-body");
+  const currentAlbumId = decision.context?.album_id || decision.payload?.album_id || "";
+  const scopedCompCover = state.compGroups.find(group => group.id === currentAlbumId)?.cover || "";
+  const currentImage = scopedCompCover || state.album?.cover || state.compTrack?.image || state.fallbackTrack?.image || "";
+  if (currentImage) currentBody.append(image(currentImage, "musicbrainz-current-cover", current.title || "Current compilation"));
+  const currentCopy = node("div"); currentCopy.append(node("b", "", current.title || state.album?.name || "Current compilation"),
+    node("span", "", current.artist || "Various Artists"),
+    node("small", "", current.release_id ? `MusicBrainz Release ID · ${current.release_id}` : "No MusicBrainz Release ID"));
+  currentBody.append(currentCopy); authorityCard.append(currentBody); host.append(authorityCard);
+  appendMusicBrainzAuthorityEditor(host, decision);
+  const controls = node("div", "musicbrainz-results-controls");
+  controls.append(node("strong", "", "MusicBrainz Results · Best Match, Artist, then Other · % by family"));
+  appendMusicBrainzFilters(controls, decision); host.append(controls);
+  const existing = decision.existingArtwork || [];
+  if (existing.length) {
+    const section = node("section", "musicbrainz-result-section existing");
+    section.append(node("h3", "", "BEST MATCH · EXISTING SPLINED ALBUM ARTWORK"));
+    const cards = node("div", "musicbrainz-existing-grid");
+    existing.forEach((item, index) => {
+      const button = node("button", "musicbrainz-existing-card" + (decision.selectedExisting === index ? " selected" : "")); button.type = "button";
+      if (item.image) button.append(image(item.image, "", item.title || "Existing Album artwork"));
+      button.append(node("strong", "", item.title || "Existing Album"), node("span", "", item.artist || trackArtist),
+        node("small", "", item.kind === "recording-match" ? "Recording ID match" : "Artist/title match"));
+      button.addEventListener("click", () => { decision.selectedExisting = index; decision.selectedResult = null; renderMusicBrainzWorkspace(); }); cards.append(button);
+    });
+    section.append(cards); host.append(section);
   }
-  for (const {option, index} of visible) {
-    const artist = option.recording_artist || option.artist || "Unknown artist";
-    const track = option.track || decision.context?.track_title || "Unknown recording";
-    const release = option.title || "Unknown release";
-    const card = node("div", "musicbrainz-result-card" + (option.selection_state ? " " + option.selection_state : ""));
-    const choose = node("button", "musicbrainz-result-choice"); choose.type = "button";
-    choose.setAttribute("aria-label", `Choose MusicBrainz release ${index + 1}: ${release}`);
-    choose.append(node("span", "musicbrainz-result-number", String(index + 1)),
-      node("strong", "musicbrainz-result-track", artist + " — " + track),
-      node("span", "musicbrainz-result-release", release),
-      node("small", "", [option.release_artist && option.release_artist !== artist ? option.release_artist : "", option.release_class,
-        option.date, option.country].filter(Boolean).join(" · ") || "Release details unavailable"),
-      node("small", "musicbrainz-result-authority", [option.score ? option.score + "% match" : "", option.resolution,
-        option.selection_state === "current" ? "current release" : option.selection_state === "visited" ? "reviewed" : ""].filter(Boolean).join(" · ")));
-    choose.addEventListener("click", () => runAction(() => submitQueuedDecision(index + 1))); card.append(choose);
-    if (option.musicbrainz_url) {
-      const link = node("a", "musicbrainz-result-link", "Open MB Page"); link.href = option.musicbrainz_url;
-      link.target = "_blank"; link.rel = "noopener"; card.append(link);
-    }
-    grid.append(card);
+  const visible = (decision.options || []).map((option, originalIndex) => ({...option, originalIndex})).filter(option =>
+    (!decision.artistFilter || String(option.recording_artist || option.artist || "").toLowerCase() === decision.artistFilter.toLowerCase())
+    && (!decision.releaseTypeFilter || String(option.release_class || "").toLowerCase() === decision.releaseTypeFilter.toLowerCase()));
+  const labels = ["BEST MATCH · 90–100%", "ARTIST RELEASES", "OTHER MATCHING RELEASES · SOUNDTRACKS, COMPILATIONS & APPEARANCES"];
+  const families = musicBrainzFamilies(visible);
+  labels.forEach((label, sectionIndex) => {
+    const rows = families.filter(family => family.section === sectionIndex);
+    if (!rows.length) return;
+    const section = node("section", "musicbrainz-result-section"); section.append(node("h3", "", label));
+    rows.forEach(family => {
+      const familyHost = node("div", "musicbrainz-family"); familyHost.append(node("h4", "", `${family.score}% match · Release Family · ${family.title}`));
+      family.options.forEach(({option, index}) => {
+        const resultIndex = Number.isInteger(option.originalIndex) ? option.originalIndex : index;
+        const selected = decision.selectedResult === resultIndex;
+        const row = node("button", "musicbrainz-release-row" + (selected ? " selected" : "")
+          + (option.selection_state ? " " + option.selection_state : "")); row.type = "button";
+        row.setAttribute("aria-label", `Select MusicBrainz release ${resultIndex + 1}: ${option.title || family.title}`);
+        row.append(node("span", "musicbrainz-release-radio", selected ? "●" : "○"));
+        const rowCopy = node("span", "musicbrainz-release-copy");
+        rowCopy.append(node("strong", "", option.title || family.title),
+          node("small", "", [option.release_artist || trackArtist, option.country, option.date, option.release_class, option.id].filter(Boolean).join(" · ")),
+          node("small", "musicbrainz-release-state", [option.match_label || String(option.match_basis || "").replaceAll("-", " "), option.resolution,
+            option.selection_state === "current" ? "current release" : option.selection_state === "visited" ? "reviewed" : ""].filter(Boolean).join(" · ")));
+        row.append(rowCopy); row.addEventListener("click", () => { decision.selectedResult = resultIndex; decision.selectedExisting = null; renderMusicBrainzWorkspace(); }); familyHost.append(row);
+      });
+      section.append(familyHost);
+    }); host.append(section);
+  });
+  if (!visible.length) host.append(node("p", "musicbrainz-empty", (decision.options || []).length
+    ? "No MusicBrainz release families match the current filters."
+    : `MusicBrainz returned no selectable release families for ${trackArtist} — ${trackTitle}. Correct Advanced IDs or keep the current track unchanged.`));
+  if (decision.authoritySaved?.message) host.append(node("p", "operation-success", decision.authoritySaved.message));
+  distinctDiagnostics(decision.diagnostics).forEach(message => host.append(node("p", "operation-error", message)));
+  const actions = node("div", "musicbrainz-review-actions");
+  const back = node("button", "", "Back to Candidates"); back.type = "button";
+  back.disabled = decision.context?.can_back === false;
+  back.title = back.disabled ? "Select a release before opening artwork candidates" : "Return to the selected release's artwork candidates";
+  back.addEventListener("click", () => runAction(() => submitQueuedDecision("__manual_candidates__")));
+  const keep = node("button", "", "Keep Current"); keep.type = "button"; keep.addEventListener("click", () => runAction(() => submitQueuedDecision("b")));
+  const selectedOption = Number.isInteger(decision.selectedResult) ? decision.options[decision.selectedResult] : null;
+  if (selectedOption?.musicbrainz_url) {
+    const open = node("a", "", "Open MB Page"); open.href = selectedOption.musicbrainz_url; open.target = "_blank"; open.rel = "noopener"; actions.append(open);
   }
+  const useExisting = decision.selectedExisting !== null && decision.selectedExisting !== undefined;
+  const use = node("button", "primary", useExisting ? "Use Existing Artwork" : "Use Selected Album"); use.type = "button";
+  use.disabled = !selectedOption && !useExisting;
+  use.addEventListener("click", () => runAction(() => useExisting
+    ? submitQueuedDecision(JSON.stringify({action: "use-existing", number: decision.selectedExisting + 1}))
+    : submitQueuedDecision(decision.selectedResult + 1)));
+  actions.prepend(back, keep); actions.append(use); host.append(actions);
 }
 function renderQueuedCompTools() {
   const host = $("compDecisionTools"), decision = state.queuedDecision;
@@ -994,9 +1118,10 @@ function renderCandidates() {
   if (musicBrainzResults) {
     $("compareButton").disabled = true;
     $("candidateHint").textContent = [state.queuedDecision.context?.track_artist, state.queuedDecision.context?.track_title].filter(Boolean).join(" — ")
-      + " · choose a release; artwork candidates load next";
+      + " · release families are shown in the main MusicBrainz workspace";
+    $("candidateCount").textContent = (state.queuedDecision.options || []).length + " MusicBrainz releases";
     renderCandidateTypeChips();
-    renderMusicBrainzResults(grid, state.queuedDecision, query);
+    renderMusicBrainzWorkspace();
     return;
   }
   const visible = state.candidates.filter(candidate => candidateVisible(candidate) && (!query || ((candidate.name || "") + " " + (candidate.source || "")).toLowerCase().includes(query)));
@@ -1278,9 +1403,18 @@ function renderWorkspace() {
     $(name + "Tab").classList.toggle("active", state.workspace === name);
     $(name + "View").hidden = state.workspace !== name;
   }
-  $("candidateDock").hidden = state.workspace === "embed";
+  const musicBrainz = state.workspace === "find" && state.queuedDecision?.kind === "musicbrainz-results";
+  $("candidateDock").hidden = state.workspace === "embed" || musicBrainz;
   $("review").hidden = state.workspace === "embed";
   document.querySelector(".workspace").classList.toggle("embed-active", state.workspace === "embed");
+  document.querySelector(".workspace").classList.toggle("musicbrainz-active", musicBrainz);
+  $("overviewSection").hidden = musicBrainz;
+  $("musicbrainzReview").hidden = !musicBrainz;
+  $("sourceHeading").textContent = musicBrainz ? "Find Releases Containing This Recording" : "Candidate Findings";
+  $("sourceSubcopy").textContent = musicBrainz
+    ? [state.queuedDecision?.context?.current_album?.artist || "Various Artists", state.queuedDecision?.context?.current_album?.title || state.album?.name || "COMP Album"].join(" › ")
+    : "Search multiple sources to find the best artwork for your music.";
+  if (musicBrainz) renderMusicBrainzWorkspace();
   renderPanes(); renderReview();
   requestAnimationFrame(() => { fitReviewToViewport(); updateBiographyToggle(); });
   restoreScroll(SCROLL_SURFACES);
