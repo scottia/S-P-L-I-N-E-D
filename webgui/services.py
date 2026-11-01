@@ -872,7 +872,7 @@ class Services:
                     str(record.get("musicbrainz_recordingid") or ""),
                     str(record.get("musicbrainz_artistid") or ""),
                     "webgui-selected-artwork",
-                    "artist-comp-report",
+                    "comp-report",
                     None,
                     hashlib.sha256(body).hexdigest(),
                     outcome,
@@ -918,15 +918,10 @@ class Services:
         artist_id = str(payload.get("artist_id", "")).strip()
         album_id = str(payload.get("album_id", "")).strip()
         track_key = str(payload.get("track_key", "")).strip()
-        if not artist_id:
-            raise ValueError("Open an Artist COMP Report before embedding a track")
-        normalized = self.validate_comp_payload(
-            {
-                "artist_id": artist_id,
-                "album_id": album_id,
-                "track_keys": [track_key],
-            }
-        )
+        selection = {"album_id": album_id, "track_keys": [track_key]}
+        if artist_id:
+            selection["artist_id"] = artist_id
+        normalized = self.validate_comp_payload(selection)
         row = self.album_row(normalized["album_id"])
         record = next(
             (

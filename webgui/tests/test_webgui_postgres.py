@@ -347,6 +347,28 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             ))
         self.assertEqual([row["track_path"] for row in written], [str(target_path)])
 
+        target_art = embedded_track_artwork_bytes(target_path)
+        full_embedded = self.services.embed_comp_track({
+            "album_id": comp_row["album_key"],
+            "track_key": other_key,
+            "image": self.services.catalog.image(candidate),
+            "adjustments": {"Exposure": -4},
+            "upscale": False,
+        })
+        self.assertEqual((full_embedded["width"], full_embedded["height"]), (300, 300))
+        self.assertEqual(embedded_track_artwork_bytes(target_path), target_art)
+        with Image.open(BytesIO(embedded_track_artwork_bytes(other_path))) as image:
+            self.assertEqual(image.size, (300, 300))
+        self.assertIsNone(embedded_track_artwork_bytes(featured_path))
+        with closing(self.db.connect()) as db:
+            written = {
+                row["track_path"]
+                for row in db.execute(
+                    "SELECT track_path FROM compilation_track_artwork"
+                )
+            }
+        self.assertEqual(written, {str(target_path), str(other_path)})
+
     def test_read_mode_and_invalid_destinations_do_not_write(self):
         original = self.cover.read_bytes()
         self.runtime.cfg["mode"] = "read"

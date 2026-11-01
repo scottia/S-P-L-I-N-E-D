@@ -179,7 +179,7 @@ class CompJobScopeTests(unittest.TestCase):
             self.assertEqual(verified["musicbrainz_artistid"], [artist])
             self.assertEqual(verified.pictures[0].data, original_art.getvalue())
 
-    def test_embed_track_prepares_exact_square_and_writes_only_selected_file(self):
+    def test_artist_and_full_embed_prepare_exact_square_and_write_only_selected_file(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             album = root / "music" / "Various Artists" / "Billboard 1994"
@@ -228,11 +228,7 @@ class CompJobScopeTests(unittest.TestCase):
                 },
             )
             service.catalog = Images()
-            normalized = {
-                "artist_id": "10k-maniacs", "album_id": "billboard-1994",
-                "track_keys": ["because-the-night"],
-            }
-            service.validate_comp_payload = lambda _payload: normalized
+            service.validate_comp_payload = lambda payload: dict(payload)
             service.album_row = lambda _album_id: {
                 "album_key": "billboard-1994", "path": str(album),
             }
@@ -263,6 +259,17 @@ class CompJobScopeTests(unittest.TestCase):
             self.assertEqual((result["width"], result["height"]), (1200, 1200))
             self.assertTrue(result["upscaled"])
             self.assertEqual(recorded[0][1]["track_key"], "because-the-night")
+
+            target_art = embedded_track_artwork_bytes(target)
+            full_result = service.embed_comp_track({
+                "album_id": "billboard-1994", "track_key": "other",
+                "image": "/candidate", "adjustments": {}, "upscale": False,
+            })
+            self.assertEqual((full_result["width"], full_result["height"]), (1200, 1200))
+            self.assertEqual(embedded_track_artwork_bytes(target), target_art)
+            with Image.open(BytesIO(embedded_track_artwork_bytes(other))) as embedded:
+                self.assertEqual(embedded.size, (1200, 1200))
+            self.assertEqual(recorded[1][1]["track_key"], "other")
 
     def test_embed_track_keeps_write_permission_guard(self):
         service = Services.__new__(Services)

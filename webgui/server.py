@@ -589,18 +589,20 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
             str(value.get("album_id", "")), bool(value.get("enabled", True))
         )
 
+    @app.post("/api/comp/repair")
     @app.post("/api/artist/comp-repair")
     def comp_repair(payload: dict):
         services = context.require()
         context.runtime.require_write()
         value = payload
         with context.runtime.processing:
-            return services.catalog.repair_artist_comp_track(
-                str(value.get("artist_id", "")),
+            return services.catalog.repair_comp_track(
                 str(value.get("album_id", "")),
                 str(value.get("track_key", "")),
+                str(value.get("artist_id", "")),
             )
 
+    @app.post("/api/comp/embed")
     @app.post("/api/artist/comp-embed")
     def comp_embed(payload: dict):
         return context.require().embed_comp_track(payload)

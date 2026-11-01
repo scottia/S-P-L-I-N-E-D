@@ -117,19 +117,21 @@ async function writeArtwork() {
     await submitQueuedDecision(value);
     return;
   }
-  if (state.editorMode === "artist" && state.compReportVisible) {
-    if (!state.compTrack?.image) throw new Error("Select a COMP track with artwork before embedding it");
-    const result = await post("/api/artist/comp-embed", componentPayload("comp", state.compTrack.image, {
-      artist_id: state.artist?.id || "", album_id: state.compTrack.albumId,
-      track_key: state.compTrack.key, upscale: !!state.upscalePreview,
-    }));
+  const artistComp = state.editorMode === "artist" && state.compReportVisible;
+  const fullComp = state.editorMode === "fallback";
+  if (artistComp || fullComp) {
+    const track = artistComp ? state.compTrack : state.fallbackTrack;
+    if (!track?.image) throw new Error("Select a COMP track with artwork before embedding it");
+    const scope = {
+      album_id: artistComp ? track.albumId : state.album?.id || "",
+      track_key: track.key,
+      upscale: !!state.upscalePreview,
+    };
+    if (artistComp) scope.artist_id = state.artist?.id || "";
+    const result = await post("/api/comp/embed", componentPayload("comp", track.image, scope));
     state.upscalePreview = null; state.renderedPreview.comp = null; state.fx.comp = {};
     await refreshQueuedAlbumAfterSave();
     setStatus(`Embedded COMP track · ${result.file} · ${result.width} × ${result.height}`, "ready");
-    return;
-  }
-  if (state.editorMode === "fallback") {
-    if (state.fallbackTrack) await enqueueComp(state.album.id, [state.fallbackTrack.key]);
     return;
   }
   if (state.editorMode === "album") {
@@ -171,7 +173,7 @@ renderReview = function () {
   const currentPackage = state.editorMode === "artist" && state.workspace === "enhance" && state.radioCurrent
     && !!(state.selectedPortrait?.image || state.selectedBanner?.image || state.artist?.portrait || state.artist?.banner);
   $("writeButton").disabled = entry ? !state.artist : !writable || (state.editorMode === "album" ? !(state.selectedCover?.image || state.album?.cover)
-    : state.editorMode === "fallback" ? !state.fallbackTrack : state.compReportVisible ? !state.compTrack?.image : !(currentPackage || (state.radioArtist && (state.selectedPortrait || state.artist?.portrait)) || (state.radioBanner && (state.selectedBanner || state.artist?.banner))));
+    : state.editorMode === "fallback" ? !state.fallbackTrack?.image : state.compReportVisible ? !state.compTrack?.image : !(currentPackage || (state.radioArtist && (state.selectedPortrait || state.artist?.portrait)) || (state.radioBanner && (state.selectedBanner || state.artist?.banner))));
   const staged = state.editorMode === "album" && state.embedQueue.some(item => item.id === state.album?.id);
   $("embedBatchButton").disabled = !writable || state.editorMode !== "album" || !(state.selectedCover?.image || state.album?.cover);
   $("embedBatchButton").classList.toggle("staged", staged);
@@ -179,7 +181,8 @@ renderReview = function () {
   $("musicbrainzButton").disabled = !state.album || state.editorMode !== "album";
   $("bypassButton").disabled = !state.album || state.editorMode !== "album";
   $("writeNotice").textContent = writable ? "Live Write · WRITE saves artwork. EMBED Batch saves the cover and stages track embedding. COMP work asks for track artwork in queued review." : "Read mode · searching and previewing are enabled. Enable Live Write in Settings to save artwork or track tags.";
-  if (state.compReportVisible && state.compPreviewMode) {
+  if (state.editorMode === "fallback" && state.fallbackPreviewMode
+    || state.compReportVisible && state.compPreviewMode) {
     $("writeButton").disabled = true;
     $("upscaleButton").disabled = true;
     $("embedBatchButton").disabled = true;
@@ -227,7 +230,7 @@ async function enqueueComp(albumId, keys, artistId = "") {
 }
 async function launchFallback() {
   if (!state.album) return;
-  await enqueueComp(state.album.id, state.fallbackTracks.filter(track => !track.completed).map(track => track.key));
+  await enqueueComp(state.album.id, state.fallbackTracks.filter(track => track.status === "blue").map(track => track.key));
 };
 async function launchArtistComp() {
   if (!state.artist || !state.compReportVisible) throw new Error("Open this Artist's COMP Report before launching work");
@@ -492,7 +495,16 @@ async function refreshQueuedAlbumAfterSave(job = null) {
   if (state.album?.id !== albumId) return;
   state.album = album;
   if (state.artist?.id === album.artist_id) state.artist = await api("/api/artist?id=" + encodeURIComponent(album.artist_id));
-  if (state.editorMode === "fallback") state.fallbackTracks = await api("/api/fallback/tracks?id=" + encodeURIComponent(albumId));
+  if (state.editorMode === "fallback") {
+    const selectedKey = state.fallbackTrack?.key || "";
+    state.fallbackTracks = await api("/api/fallback/tracks?id=" + encodeURIComponent(albumId));
+    probeFallbackStatuses();
+    if (selectedKey && state.fallbackTracks.some(track => track.key === selectedKey)) {
+      await selectFallbackTrack(selectedKey, state.fallbackPreviewMode);
+      return;
+    }
+    state.fallbackTrack = null;
+  }
   renderLibrary(); renderHero(); renderSources(); renderCandidates(); renderWorkspace();
 }
 let jobsPolling = false, lastPrompt = "";
@@ -1188,14 +1200,16 @@ setInterval(() => { if (!document.hidden) runAction(pollJobs); }, 1500);
 initialize().catch(error => { document.body.className = "auth-required"; $("authError").textContent = error.message; });
 
 async function repairFallback() {
-  if (!state.album || !state.artist) return;
+  if (!state.album) return;
   let repaired=0;
   for (const track of state.fallbackTracks.filter(item=>item.completed)) {
     const status=await api('/api/fallback/track-status?id='+encodeURIComponent(state.album.id)+'&key='+encodeURIComponent(track.key));
     if (status.status==='purple' && status.repairable) {
-      await post('/api/artist/comp-repair',{artist_id:state.artist.id,album_id:state.album.id,track_key:track.key});repaired++;
+      await post('/api/comp/repair',{album_id:state.album.id,track_key:track.key});repaired++;
     }
   }
+  state.fallbackTracks = await api('/api/fallback/tracks?id='+encodeURIComponent(state.album.id));
+  await probeFallbackStatuses();
   setStatus(repaired+' COMP thumbnails repaired');
 }
 const quickPreview=applyPreviewEffects;
@@ -1214,9 +1228,9 @@ applyPreviewEffects=function () {
         element.src=result.image;element.style.filter='none';element.style.transform='none';
       })());
     };
-    if (state.queuedDecision?.jobKind==='comp' && state.queuedDecision.selected || state.editorMode==='artist' && state.compReportVisible) {
+    if (state.queuedDecision?.jobKind==='comp' && state.queuedDecision.selected || state.editorMode==='fallback' || state.editorMode==='artist' && state.compReportVisible) {
       const source=state.queuedDecision?.jobKind==='comp' && state.queuedDecision.selected
-        ? state.queuedDecision.selected.image : state.compTrack?.image;
+        ? state.queuedDecision.selected.image : state.editorMode==='fallback' ? state.fallbackTrack?.image : state.compTrack?.image;
       add('#selectedFrame .selected-image','comp',source,{upscale:!!state.upscalePreview});
       add('#albumPane img','comp',source,{upscale:!!state.upscalePreview});
     } else if (state.editorMode==='album') {

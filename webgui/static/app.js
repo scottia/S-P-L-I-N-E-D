@@ -59,7 +59,7 @@ const state = {
   libraryMode: "artists", editorMode: "artist", workspace: "find",
   candidates: [], selectedPortrait: null, selectedBanner: null, selectedCover: null, reviewCleared: false,
   upscalePreview: null, renderedPreview: {},
-  fallbackTracks: [], fallbackTrack: null, fallbackPreviewOnly: false, fallbackRun: false, fallbackTrackRequest: 0,
+  fallbackTracks: [], fallbackTrack: null, fallbackPreviewOnly: false, fallbackRun: false, fallbackTrackRequest: 0, fallbackStatusRequest: 0,
   fallbackPreviewMode: false, fallbackReportExpanded: true, fallbackHelpExpanded: false,
   compAlbums: [], compGroups: [], compReportVisible: false, compReportLoading: false, compPreviewMode: false, compCollapsed: new Set(),
   compTrack: null, compTrackRequest: 0, compStatusRequest: 0, compReportRequest: 0, compRunIndex: -1,
@@ -160,7 +160,7 @@ function clearFocusCandidates() {
   state.candidates = [];
   state.selectedPortrait = null; state.selectedBanner = null; state.selectedCover = null;
   state.upscalePreview = null; state.renderedPreview = {}; state.fallbackTracks = []; state.fallbackTrack = null;
-  state.fallbackPreviewOnly = false; state.fallbackRun = false; ++state.fallbackTrackRequest;
+  state.fallbackPreviewOnly = false; state.fallbackRun = false; ++state.fallbackTrackRequest; ++state.fallbackStatusRequest;
   state.fallbackPreviewMode = false; state.fallbackReportExpanded = true; state.fallbackHelpExpanded = false;
   state.compGroups = []; state.compReportVisible = false; state.compReportLoading = false; state.compPreviewMode = false;
   state.compCollapsed.clear(); state.compTrack = null; state.compRunIndex = -1;
@@ -588,8 +588,13 @@ function renderHeroContents() {
 function renderFallbackOverview() {
   const album = state.album, track = state.fallbackTrack;
   const total = state.fallbackTracks.length;
+  const green = state.fallbackTracks.filter(item => item.status === "green").length;
+  const purple = state.fallbackTracks.filter(item => item.status === "purple").length;
+  const blue = state.fallbackTracks.filter(item => item.status === "blue").length;
+  const checking = state.fallbackTracks.filter(item => item.status === "checking").length;
+  const checkErrors = state.fallbackTracks.filter(item => item.status === "check-error").length;
   const complete = state.fallbackTracks.filter(item => item.completed).length;
-  const pending = total - complete;
+  const pending = blue;
   const hero = $("hero"); hero.classList.add("fallback-overview");
   hero.style.backgroundImage = "none";
   $("overviewHeading").textContent = "COMPILATION Fallback Track Embedding";
@@ -637,30 +642,57 @@ function renderFallbackOverview() {
   preview.setAttribute("aria-pressed", String(state.fallbackPreviewMode));
   preview.addEventListener("click", () => { state.fallbackPreviewMode = !state.fallbackPreviewMode; renderHero(); renderReview(); });
   const heading = node("strong", "", "COMP Report · " + (album?.name || ""));
-  const repair = node("button", "fallback-repair", "REPAIR COMP"); repair.type = "button"; repair.disabled = !state.compRepairEnabled;
-  repair.title = "Repair recorded COMP thumbnails";
+  const repair = node("button", "fallback-repair", "REPAIR COMP"); repair.type = "button";
+  repair.disabled = !state.compRepairEnabled || !state.fallbackTracks.some(item => item.status === "purple" && item.repairable);
+  repair.title = !state.compRepairEnabled ? "COMP repairs are disabled in this test service" : purple ? "Repair readable purple thumbnails in this full Fallback album" : "No purple thumbnails identified";
   repair.addEventListener("click", () => runAction(repairFallback));
   const launch = node("button", "fallback-launch", "LAUNCH COMP"); launch.type = "button";
   launch.disabled = state.server?.mode !== "write" || !pending || state.fallbackPreviewMode;
   launch.title = state.server?.mode !== "write" ? "Enable Live Write to process COMP tracks" : "Review every pending track in this fallback album";
-  launch.addEventListener("click", launchFallback);
+  launch.addEventListener("click", () => runAction(launchFallback));
   toolbar.append(preview, heading, repair, launch); report.append(toolbar);
-  report.append(node("div", "fallback-report-summary", `${total} tracks · ${complete} green · ${pending} need artwork`));
+  report.append(node("div", "fallback-report-summary", `${total} tracks: ${green} green, ${purple} purple, ${blue} blue${checking ? `, ${checking} checking` : ""}${checkErrors ? `, ${checkErrors} retry needed` : ""}`));
   const columns = node("div", "fallback-report-columns"); columns.append(node("span", "", "ALBUM"), node("span", "", "TRACK FILE")); report.append(columns);
   const albumRow = node("button", "fallback-report-album"); albumRow.type = "button";
   albumRow.append(node("strong", "", (state.fallbackReportExpanded ? "▾  " : "▸  ") + (album?.name || "Album")),
-    node("span", "", `${total} tracks · ${complete} green, ${pending} need artwork`));
+    node("span", "", `${total} tracks · ${complete} recorded, ${total - complete} need artwork`));
   albumRow.addEventListener("click", () => { state.fallbackReportExpanded = !state.fallbackReportExpanded; renderHero(); });
   report.append(albumRow);
   if (state.fallbackReportExpanded) for (const item of state.fallbackTracks) {
     const row = node("button", "fallback-track" + (track?.key === item.key ? " selected" : ""));
     row.type = "button";
-    row.classList.add(item.completed ? "complete" : "pending");
-    row.append(node("span", "fallback-track-spacer"), node("span", "fallback-track-file", item.file));
+    row.classList.add(item.status === "purple" ? "purple" : ["checking", "check-error"].includes(item.status) ? "checking" : item.completed ? "complete" : "pending");
+    if (item.status === "check-error") row.title = item.checkError || "Thumbnail validation could not be completed; reload the album to retry";
+    row.append(node("span", "fallback-track-spacer"), node("span", "fallback-track-file", item.file),
+      node("span", "fallback-track-status", "COMP status · " + (item.status === "green" ? "complete" : item.status === "purple" ? "thumbnail repair" : item.status === "checking" ? "checking thumbnail" : "needs artwork")));
     row.addEventListener("click", () => selectFallbackTrack(item.key, state.fallbackPreviewMode)); report.append(row);
   }
   if (!total) report.append(node("p", "empty-copy", "No indexed audio tracks in this fallback album."));
   $("topSongs").textContent = "";
+}
+
+async function probeFallbackStatuses() {
+  const request = ++state.fallbackStatusRequest, albumId = state.album?.id;
+  const targets = state.fallbackTracks.filter(track => track.completed);
+  if (!albumId || state.editorMode !== "fallback") return;
+  if (!targets.length) {
+    setStatus(`COMP report ready · ${state.fallbackTracks.length} tracks · no recorded thumbnails to validate`);
+    return;
+  }
+  for (let offset = 0; offset < targets.length; offset += 3) {
+    const batch = targets.slice(offset, offset + 3);
+    const results = await Promise.allSettled(batch.map(track =>
+      api("/api/fallback/track-status?id=" + encodeURIComponent(albumId) + "&key=" + encodeURIComponent(track.key))));
+    if (request !== state.fallbackStatusRequest || albumId !== state.album?.id || state.editorMode !== "fallback") return;
+    results.forEach((result, index) => {
+      if (result.status === "fulfilled") Object.assign(batch[index], result.value);
+      else Object.assign(batch[index], {status: "check-error", repairable: false, checkError: result.reason?.message || "Thumbnail validation failed"});
+    });
+    renderHero();
+  }
+  if (request !== state.fallbackStatusRequest || albumId !== state.album?.id || state.editorMode !== "fallback") return;
+  const failures = targets.filter(track => track.status === "check-error").length;
+  setStatus(`COMP report ready · ${state.fallbackTracks.length} tracks · ${targets.length - failures} recorded thumbnails validated${failures ? ` · ${failures} retry needed` : ""}`, failures ? "error" : "ready");
 }
 
 function renderArtistCompReport() {
@@ -712,7 +744,8 @@ function renderArtistCompReport() {
       if (track.status === "check-error") row.title = track.checkError || "Thumbnail validation could not be completed; reopen the report to retry";
       row.append(node("span", "fallback-track-spacer"), node("span", "fallback-track-file", track.file),
         node("span", "fallback-track-status", "COMP status · " + (track.status === "green" ? "complete" : track.status === "purple" ? "thumbnail repair" : track.status === "checking" ? "checking thumbnail" : "needs artwork")));
-      const thumbnail = selected && state.compTrack?.image ? state.compTrack.image : track.thumbnail;
+      const thumbnail = selected && state.compPreviewMode
+        ? state.compTrack?.image || track.thumbnail : null;
       if (thumbnail) row.append(image(thumbnail, "fallback-inline-thumb", "Existing track art"));
       row.addEventListener("click", () => selectArtistCompTrack(group.id, track.key)); report.append(row);
     }
@@ -817,7 +850,7 @@ async function repairArtistComp() {
     if (artistId !== state.artist?.id) break;
     setStatus(`Repairing COMP thumbnail ${index + 1}/${targets.length} · ${track.file}`, "busy");
     try {
-      const result = await api("/api/artist/comp-repair", {method: "POST", headers: {"Content-Type": "application/json"},
+      const result = await api("/api/comp/repair", {method: "POST", headers: {"Content-Type": "application/json"},
         body: JSON.stringify({artist_id: artistId, album_id: group.id, track_key: track.key})});
       Object.assign(track, result, {status: "green", completed: true, repairable: false});
       repaired++;
@@ -1027,14 +1060,16 @@ function paneImage(frame, src, label, portrait = false) {
   else frame.append(image(src, "", label));
 }
 function renderPanes() {
-  const isComp = state.queuedDecision?.jobKind === "comp" || state.editorMode === "artist" && state.compReportVisible;
+  const isComp = state.queuedDecision?.jobKind === "comp" || state.editorMode === "fallback"
+    || state.editorMode === "artist" && state.compReportVisible;
   const isAlbum = state.editorMode === "album" || state.editorMode === "fallback" || isComp;
   $("paneGrid").classList.toggle("album-layout", isAlbum);
   $("albumEnhancePane").hidden = !isAlbum;
   $("enhanceTab").textContent = isComp ? "COMP Track Enhancements" : isAlbum ? "Album Art Enhancements" : "Artists Art Enhancements";
   if (isAlbum) {
     $("albumPaneHeading").textContent = isComp ? "COMP TRACK PREVIEW" : "ALBUM COVER PREVIEW";
-    const source = isComp ? state.renderedPreview.comp?.image || state.upscalePreview?.image || state.queuedDecision?.selected?.image || state.compTrack?.image
+    const compTrackImage = state.editorMode === "fallback" ? state.fallbackTrack?.image : state.compTrack?.image;
+    const source = isComp ? state.renderedPreview.comp?.image || state.upscalePreview?.image || state.queuedDecision?.selected?.image || compTrackImage
       : state.editorMode === "fallback" ? state.fallbackTrack?.image : state.renderedPreview.album?.image || state.upscalePreview?.image || state.selectedCover?.image || state.album?.cover;
     paneImage($("albumPane"), source, isComp || state.editorMode === "fallback" ? "Choose a COMP track to preview its embedded image" : "Choose a cover candidate");
   }
@@ -1063,13 +1098,13 @@ function selectedImage() {
     quality = state.upscalePreview ? "Upscale Preview" : candidate ? "Preview" : "Current";
     if (url) frame.append(image(url, "selected-image", state.album?.name + " cover"));
   } else if (state.editorMode === "fallback") {
-    url = state.upscalePreview?.image || state.fallbackTrack?.image;
+    url = state.renderedPreview.comp?.image || state.upscalePreview?.image || state.fallbackTrack?.image;
     type = state.fallbackTrack ? "COMP Track" : "Current Cover";
     source = state.upscalePreview ? "Upscale preview" : state.fallbackTrack ? "Embedded track" : "Local";
     quality = state.upscalePreview ? "Upscale Preview" : "Current";
     if (url) frame.append(image(url, "selected-image", state.fallbackTrack?.file + " embedded artwork"));
   } else if (state.editorMode === "artist" && state.compReportVisible && state.compTrack) {
-    url = state.upscalePreview?.image || state.compTrack.image;
+    url = state.renderedPreview.comp?.image || state.upscalePreview?.image || state.compTrack.image;
     type = "COMP Track"; source = state.upscalePreview ? "Upscale preview" : "Embedded track";
     quality = state.upscalePreview ? "Upscale Preview" : "Existing";
     if (url) frame.append(image(url, "selected-image", state.compTrack.file + " embedded artwork"));
@@ -1096,7 +1131,8 @@ function selectedImage() {
   const existing = state.editorMode === "album" ? state.album?.cover_meta : state.editorMode === "fallback" ? state.fallbackTrack
     : state.editorMode === "artist" && state.compReportVisible && state.compTrack ? state.compTrack
     : state.radioBanner && !state.radioArtist ? state.artist?.banner_meta : state.artist?.portrait_meta;
-  const rendered = state.queuedDecision?.jobKind === "comp" || state.editorMode === "artist" && state.compReportVisible ? state.renderedPreview.comp
+  const rendered = state.queuedDecision?.jobKind === "comp" || state.editorMode === "fallback"
+    || state.editorMode === "artist" && state.compReportVisible ? state.renderedPreview.comp
     : state.editorMode === "album" ? state.renderedPreview.album
     : state.radioBanner && !state.radioArtist ? state.renderedPreview.banner : state.renderedPreview.artist;
   const metadata = rendered || state.upscalePreview || candidate || existing;
@@ -1319,14 +1355,15 @@ async function chooseAlbum(id) {
     markSelectedAlbum(album);
     state.candidates = fallback ? [] : album.candidates || []; resetCandidateFilters();
     renderAll();
-    setStatus(fallback ? `COMP ready · ${tracks.length} tracks · ${tracks.filter(item => !item.completed).length} pending · use LAUNCH COMP or select a track`
+    setStatus(fallback ? `COMP ready · ${tracks.length} tracks · ${tracks.filter(item => !item.completed).length} pending · validating recorded thumbnails`
       : "Loaded " + album.artist_name + " · " + album.name + " · " + album.tracks + " tracks");
+    if (fallback) probeFallbackStatuses();
   } catch (error) { if (request === state.selectionRequest) setStatus(error.message, "error"); }
 }
 async function selectFallbackTrack(key, previewOnly) {
   if (!state.album || state.editorMode !== "fallback") return;
   const albumId = state.album.id, request = ++state.fallbackTrackRequest;
-  state.upscalePreview = null;
+  state.upscalePreview = null; state.renderedPreview.comp = null; state.fx.comp = {};
   setStatus("Loading existing COMP track artwork…", "busy");
   try {
     const track = await api("/api/fallback/track?id=" + encodeURIComponent(albumId) + "&key=" + encodeURIComponent(key));
