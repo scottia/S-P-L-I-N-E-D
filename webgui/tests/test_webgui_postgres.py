@@ -3,10 +3,14 @@
 from __future__ import annotations
 from contextlib import closing
 from io import BytesIO
+import json
 import os
 from pathlib import Path
+import re
 import shutil
+import socket
 import tempfile
+import threading
 import time
 import tomllib
 import unittest
@@ -22,7 +26,9 @@ from PIL import Image
 import numpy as np
 import soundfile as sf
 from mutagen.flac import FLAC
+from psycopg.types.json import Jsonb
 import tomlkit
+import uvicorn
 import splined as core
 
 from webgui.database import Database
@@ -325,6 +331,50 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         })
         self.assertEqual(full_payload["track_keys"], [target_key, other_key])
 
+        candidate = self.runtime.temporary_cache / "selected-comp-candidate.png"
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (900, 600), "orange").save(candidate)
+        embedded = self.services.embed_comp_track({
+            "artist_id": self.row["artist_key"],
+            "album_id": comp_row["album_key"],
+            "track_key": target_key,
+            "image": self.services.catalog.image(candidate),
+            "adjustments": {"Brightness": 8},
+            "upscale": True,
+        })
+        self.assertEqual((embedded["width"], embedded["height"]), (300, 300))
+        with Image.open(BytesIO(embedded_track_artwork_bytes(target_path))) as image:
+            self.assertEqual(image.size, (300, 300))
+        self.assertIsNone(embedded_track_artwork_bytes(other_path))
+        self.assertIsNone(embedded_track_artwork_bytes(featured_path))
+        with closing(self.db.connect()) as db:
+            written = list(db.execute(
+                "SELECT track_path FROM compilation_track_artwork"
+            ))
+        self.assertEqual([row["track_path"] for row in written], [str(target_path)])
+
+        target_art = embedded_track_artwork_bytes(target_path)
+        full_embedded = self.services.embed_comp_track({
+            "album_id": comp_row["album_key"],
+            "track_key": other_key,
+            "image": self.services.catalog.image(candidate),
+            "adjustments": {"Exposure": -4},
+            "upscale": False,
+        })
+        self.assertEqual((full_embedded["width"], full_embedded["height"]), (300, 300))
+        self.assertEqual(embedded_track_artwork_bytes(target_path), target_art)
+        with Image.open(BytesIO(embedded_track_artwork_bytes(other_path))) as image:
+            self.assertEqual(image.size, (300, 300))
+        self.assertIsNone(embedded_track_artwork_bytes(featured_path))
+        with closing(self.db.connect()) as db:
+            written = {
+                row["track_path"]
+                for row in db.execute(
+                    "SELECT track_path FROM compilation_track_artwork"
+                )
+            }
+        self.assertEqual(written, {str(target_path), str(other_path)})
+
     def test_read_mode_and_invalid_destinations_do_not_write(self):
         original = self.cover.read_bytes()
         self.runtime.cfg["mode"] = "read"
@@ -364,28 +414,308 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.assertFalse((self.runtime.cache / "web-images").exists())
 
     def test_staged_queue_survives_worker_restart_and_verifies_artifact(self):
+        staged = self.services.stage_album(self.payload())
+        self.assertIsNone(staged["cover"])
+        self.assertEqual(staged["prepared_kind"], "thumbnail-v1")
+        prepared = self.runtime.cache / "staged-artwork" / staged["prepared_file"]
+        full_cover = self.runtime.cache / "staged-artwork" / staged["cover_file"]
+        with Image.open(prepared) as image:
+            self.assertEqual(image.size, (300, 300))
+        with Image.open(full_cover) as image:
+            self.assertEqual(
+                image.size,
+                (staged["cover_width"], staged["cover_height"]),
+            )
+
+        first_projection = self.services.staged_album_projection(staged)
+        self.assertTrue(first_projection["staged_valid"])
+        first_handle = first_projection["cover"]
+        self.assertEqual(
+            self.services.catalog.image_bytes(first_handle), full_cover.read_bytes()
+        )
         self.queue = JobQueue(self.services)
-        result = self.queue.enqueue(
-            "embed-album", self.services.stage_album(self.payload()), staged=True
+        result = self.queue.enqueue("embed-album", staged, staged=True)
+
+        # Both index paths leave the durable Album work and its exact prepared
+        # artwork intact.
+        self.services.refresh_index(mode="incremental")
+        self.services.refresh_index(mode="full")
+        self.assertEqual(
+            next(item for item in self.queue.list() if item["id"] == result["id"])[
+                "state"
+            ],
+            "staged",
         )
         self.queue.close()
-        self.queue = JobQueue(self.services)
-        self.assertEqual(self.queue.list()[0]["state"], "staged")
-        self.queue.action("start")
+
+        # A recreated service has a new signing key. The stored payload never
+        # contains the old handle; queue projection signs the persistent cache
+        # snapshot for this process.
+        restarted = Services(self.runtime)
+        with self.assertRaisesRegex(ValueError, "Invalid artwork handle"):
+            restarted.catalog.image_bytes(first_handle)
+        self.queue = JobQueue(restarted)
+        restored = next(
+            item for item in self.queue.list() if item["id"] == result["id"]
+        )
+        self.assertEqual(restored["state"], "staged")
+        self.assertTrue(restored["payload"]["staged_valid"])
+        self.assertNotEqual(restored["payload"]["cover"], first_handle)
+        self.assertEqual(
+            restarted.catalog.image_bytes(restored["payload"]["cover"]),
+            full_cover.read_bytes(),
+        )
+
+        self.queue.action("start", kind="embed-album")
         for _ in range(100):
             row = next(item for item in self.queue.list() if item["id"] == result["id"])
             if row["state"] in {"done", "failed"}:
                 break
             time.sleep(0.05)
         self.assertEqual(row["state"], "done", row["error"])
-        staged = self.services.stage_album(self.payload())
-        (self.runtime.cache / "staged-artwork" / staged["prepared_file"]).write_bytes(
+        self.assertTrue(row["result"]["verified"])
+        corrupt_payload = self.payload()
+        corrupt_payload["image"] = restarted.catalog.image(self.cover)
+        corrupt = restarted.stage_album(corrupt_payload)
+        (self.runtime.cache / "staged-artwork" / corrupt["prepared_file"]).write_bytes(
             b"corrupt"
         )
         before = self.files[0].read_bytes()
         with self.assertRaisesRegex(ValueError, "verification"):
-            self.services.embed_album(staged)
+            restarted.embed_album(corrupt)
         self.assertEqual(self.files[0].read_bytes(), before)
+
+    def test_album_staging_rejects_comp_before_it_can_enter_the_queue(self):
+        # A refresh publishes the current classification to PostgreSQL. Model
+        # that accepted catalog transition directly so this test remains about
+        # the staging boundary rather than tag-reader cache behavior.
+        with closing(self.db.connect()) as db, db:
+            db.execute(
+                "UPDATE albums SET musicbrainz_albumid='' WHERE album_key=?",
+                (self.row["album_key"],),
+            )
+            fallback = db.execute(
+                "SELECT * FROM albums WHERE path=?", (str(self.cover.parent),)
+            ).fetchone()
+        self.assertEqual(str(fallback["musicbrainz_albumid"] or ""), "")
+        original_cover = self.cover.read_bytes()
+        with self.assertRaisesRegex(ValueError, "COMP Fallback Albums"):
+            self.services.stage_album(
+                {
+                    "album_id": fallback["album_key"],
+                    "image": self.services.catalog.image(self.cover),
+                    "adjustments": {"Brightness": 40},
+                }
+            )
+        self.assertEqual(self.cover.read_bytes(), original_cover)
+        with closing(self.db.connect()) as db:
+            self.assertEqual(
+                db.execute(
+                    "SELECT count(*) FROM web_jobs WHERE kind='embed-album'"
+                ).fetchone()[0],
+                0,
+            )
+
+    def test_reclassified_album_job_fails_visibly_without_embedding_comp_tracks(self):
+        self.queue = JobQueue(self.services)
+        self.queue.close()
+        staged = self.services.stage_album(self.payload())
+        result = self.queue.enqueue("embed-album", staged, staged=True)
+        before = [embedded_track_artwork_bytes(path) for path in self.files]
+
+        # The job survives an index refresh. Then model the refreshed catalog
+        # reclassifying this path as COMP and prove the obsolete Album job is
+        # visible but cannot be started.
+        self.services.refresh_index(mode="full")
+        with closing(self.db.connect()) as db, db:
+            db.execute(
+                "UPDATE albums SET musicbrainz_albumid='' WHERE album_key=?",
+                (self.row["album_key"],),
+            )
+            fallback = db.execute(
+                "SELECT * FROM albums WHERE path=?", (str(self.cover.parent),)
+            ).fetchone()
+        self.assertEqual(str(fallback["musicbrainz_albumid"] or ""), "")
+
+        restored = next(
+            item for item in self.queue.list() if item["id"] == result["id"]
+        )
+        self.assertFalse(restored["payload"]["staged_valid"])
+        self.assertRegex(
+            restored["payload"]["staged_error"],
+            "(now COMP Fallback|no longer indexed)",
+        )
+        self.queue.action("start", kind="embed-album")
+        failed = next(
+            item for item in self.queue.list() if item["id"] == result["id"]
+        )
+        self.assertEqual(failed["state"], "failed")
+        self.assertRegex(failed["error"], "(now COMP Fallback|no longer indexed)")
+        self.assertEqual(
+            [embedded_track_artwork_bytes(path) for path in self.files], before
+        )
+
+    def test_active_album_job_is_not_hidden_by_mixed_job_history(self):
+        self.queue = JobQueue(self.services)
+        self.queue.close()
+        result = self.queue.enqueue(
+            "embed-album", self.services.stage_album(self.payload()), staged=True
+        )
+        with closing(self.db.connect()) as db, db:
+            with db.raw.cursor() as cursor:
+                cursor.executemany(
+                    "INSERT INTO web_jobs(id,kind,state,payload) VALUES(%s,'comp','done',%s)",
+                    [
+                        (
+                            f"historical-{number:03d}",
+                            Jsonb({"track_keys": [str(number)]}),
+                        )
+                        for number in range(250)
+                    ],
+                )
+        listed = {item["id"]: item for item in self.queue.list()}
+        self.assertIn(result["id"], listed)
+        self.assertEqual(listed[result["id"]]["state"], "staged")
+
+    def test_album_queue_gates_order_and_remove_all_safety(self):
+        self.queue = JobQueue(self.services)
+        self.queue.close()
+        second_folder = self.root / "music" / "Test Artist" / "Second Album"
+        second_folder.mkdir(parents=True)
+        second_track = second_folder / "1.flac"
+        sf.write(second_track, np.zeros((4410, 2)), 44100)
+        second_audio = FLAC(second_track)
+        for key, value in {
+            "title": "Second Track",
+            "artist": "Test Artist",
+            "albumartist": "Test Artist",
+            "album": "Second Album",
+            "musicbrainz_albumid": "55555555-5555-4555-8555-555555555555",
+            "musicbrainz_artistid": "22222222-2222-4222-8222-222222222222",
+        }.items():
+            second_audio[key] = value
+        second_audio.save()
+        second_cover = second_folder / "cover.jpg"
+        Image.new("RGB", (180, 180), "purple").save(second_cover)
+        self.services.refresh_index(mode="full")
+        with closing(self.db.connect()) as db:
+            second_row = db.execute(
+                "SELECT * FROM albums WHERE path=?", (str(second_folder),)
+            ).fetchone()
+
+        staged = self.services.stage_album(self.payload())
+        second_staged = self.services.stage_album(
+            {
+                "album_id": second_row["album_key"],
+                "image": self.services.catalog.image(second_cover),
+            }
+        )
+        snapshots = [
+            self.runtime.cache / "staged-artwork" / item[field]
+            for item in (staged, second_staged)
+            for field in ("prepared_file", "cover_file")
+        ]
+        result = self.queue.enqueue("embed-album", staged, staged=True)
+        second_result = self.queue.enqueue(
+            "embed-album", second_staged, staged=True
+        )
+        self.queue.action("start", kind="embed-album")
+
+        paused_after = self.queue.action("pause-after", kind="embed-album")
+        self.assertTrue(paused_after["pause_after_album"])
+        self.assertIsNone(self.queue.claim())
+        resumed = self.queue.action("resume-queue", kind="embed-album")
+        self.assertFalse(resumed["pause_after_album"])
+
+        paused_all = self.queue.action("pause-all", kind="embed-album")
+        self.assertTrue(paused_all["pause_all_albums"])
+        self.assertIsNone(self.queue.claim())
+        resumed_all = self.queue.action("resume-all", kind="embed-album")
+        self.assertFalse(resumed_all["pause_all_albums"])
+        claimed = self.queue.claim()
+        self.assertEqual(claimed["id"], result["id"])
+        with self.assertRaisesRegex(ValueError, "Pause ALL Albums"):
+            self.queue.action("clear", kind="embed-album")
+
+        self.queue.action("pause", result["id"])
+        self.queue.action("pause", second_result["id"])
+        self.queue.action("clear", kind="embed-album")
+        self.assertTrue(all(not path.exists() for path in snapshots))
+        self.assertFalse(
+            any(item["kind"] == "embed-album" for item in self.queue.list())
+        )
+
+    def test_authenticated_server_recreation_restores_staged_preview(self):
+        self.runtime.close()
+        first_app = create_app(
+            self.config, self.url, token="restart-test-token", start_worker=True
+        )
+        with TestClient(first_app) as client:
+            status = client.get("/api/status").json()
+            client.headers["X-SPLINED-CSRF"] = status["csrf"]
+            setup = client.post(
+                "/api/admin/setup",
+                json={
+                    "username": "restart-admin",
+                    "password": "RestartPassword123",
+                    "confirmation": "RestartPassword123",
+                    "token": "restart-test-token",
+                },
+            )
+            self.assertEqual(setup.status_code, 200, setup.text)
+            album = client.get(
+                "/api/album", params={"id": self.row["album_key"]}
+            ).json()
+            staged = client.post(
+                "/api/jobs",
+                json={
+                    "kind": "embed-album",
+                    "payload": {
+                        "album_id": self.row["album_key"],
+                        "image": album["cover"],
+                    },
+                },
+            )
+            self.assertEqual(staged.status_code, 200, staged.text)
+            first_jobs = client.get("/api/jobs").json()
+            first = next(item for item in first_jobs if item["id"] == staged.json()["id"])
+            first_cover = first["payload"]["cover"]
+            self.assertTrue(first["payload"]["staged_valid"])
+            self.assertEqual(client.get(first_cover).status_code, 200)
+            # A page refresh reads the same staged identity and current handle.
+            refreshed = client.get("/api/jobs").json()
+            self.assertEqual(
+                next(item for item in refreshed if item["id"] == first["id"])[
+                    "payload"
+                ]["cover"],
+                first_cover,
+            )
+
+        second_app = create_app(
+            self.config, self.url, token="restart-test-token", start_worker=True
+        )
+        with TestClient(second_app) as client:
+            status = client.get("/api/status").json()
+            self.assertFalse(status["admin_setup_required"])
+            client.headers["X-SPLINED-CSRF"] = status["csrf"]
+            login = client.post(
+                "/api/login",
+                json={
+                    "username": "restart-admin",
+                    "password": "RestartPassword123",
+                },
+            )
+            self.assertEqual(login.status_code, 200, login.text)
+            restored_jobs = client.get("/api/jobs").json()
+            restored = next(item for item in restored_jobs if item["id"] == first["id"])
+            restored_cover = restored["payload"]["cover"]
+            self.assertTrue(restored["payload"]["staged_valid"])
+            self.assertNotEqual(restored_cover, first_cover)
+            self.assertEqual(client.get(restored_cover).status_code, 200)
+            self.assertEqual(client.get(first_cover).status_code, 400)
+
+        self.runtime = Runtime(self.config, self.db)
+        self.services = Services(self.runtime)
 
     def test_comp_queue_deduplicates_only_the_same_track_and_artist_scope(self):
         queue = JobQueue(self.services)
@@ -409,13 +739,15 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.queue.close()
         queue = self.queue
         self.queue = None
+        staged_payload = self.services.stage_album(self.payload())
         with closing(self.db.connect()) as db, db:
-            db.execute(
+            db.raw.execute(
                 "INSERT INTO web_jobs(id,kind,state,payload,progress,decision,error) VALUES"
-                "('staged-work','embed-album','staged','{}','{}',NULL,''),"
-                "('paused-work','embed-album','paused','{}',"
+                "('staged-work','embed-album','staged',%s,'{}',NULL,''),"
+                "('paused-work','embed-album','paused',%s,"
                 "'{\"prompt\":{\"nonce\":\"stale\"}}',"
-                "'{\"nonce\":\"stale\",\"value\":\"1\"}','old failure')"
+                "'{\"nonce\":\"stale\",\"value\":\"1\"}','old failure')",
+                (Jsonb(staged_payload), Jsonb(staged_payload)),
             )
         queue.action("start")
         with closing(self.db.connect()) as db:
@@ -618,6 +950,23 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.queue.action("remove", "interrupted")
         self.assertEqual(self.queue.list(), [])
 
+    def test_album_queue_bulk_actions_never_change_hidden_comp_work(self):
+        self.queue = JobQueue(self.services)
+        self.queue.close()
+        staged = self.services.stage_album(self.payload())
+        album = self.queue.enqueue("embed-album", staged, staged=True)
+        comp = self.queue.enqueue("comp", {"track_keys": ["track"]}, staged=True)
+
+        self.queue.action("start", kind="embed-album")
+        states = {item["id"]: item["state"] for item in self.queue.list()}
+        self.assertEqual(states[album["id"]], "queued")
+        self.assertEqual(states[comp["id"]], "staged")
+
+        self.queue.action("clear", kind="embed-album")
+        remaining = {item["id"]: item for item in self.queue.list()}
+        self.assertNotIn(album["id"], remaining)
+        self.assertEqual(remaining[comp["id"]]["state"], "staged")
+
     @patch("splined_scan._manual_remote_candidates", return_value=([], []))
     def test_comp_decision_writes_one_track_and_records_postgres_completion(
         self, _remote
@@ -809,6 +1158,372 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertEqual(
                 db.execute("SELECT count(*) FROM albums").fetchone()[0], 1
             )
+
+    def test_rendered_browser_comp_workflows_and_persistent_album_queue(self):
+        """Drive the real app in Chrome; only external provider replies are simulated."""
+        try:
+            from playwright.sync_api import expect, sync_playwright
+        except ImportError as error:  # pragma: no cover - CI installs test requirements.
+            self.skipTest(f"Playwright is unavailable: {error}")
+
+        comp = (
+            self.root
+            / "music"
+            / "Various Artists"
+            / "Billboard Hot 100 Singles of 1994"
+        )
+        comp.mkdir(parents=True)
+        target = comp / "01 10,000 Maniacs - Because the Night.flac"
+        other = comp / "02 Other Performer - Other Song.flac"
+
+        def comp_track(path, title, artist, artist_id, recording_id):
+            sf.write(path, np.zeros((4410, 2)), 44100)
+            audio = FLAC(path)
+            for key, value in {
+                "title": title,
+                "artist": artist,
+                "albumartist": "Various Artists",
+                "album": "Billboard Hot 100 Singles of 1994",
+                "musicbrainz_albumartistid": "89ad4ac3-39f7-470e-963a-56509c546377",
+                "musicbrainz_artistid": artist_id,
+                "musicbrainz_trackid": recording_id,
+            }.items():
+                audio[key] = value
+            audio.save()
+
+        comp_track(
+            target,
+            "Because the Night",
+            "10,000 Maniacs",
+            "6c8b9855-ba8b-48f9-ac1d-42167f7f7b18",
+            "11111111-1111-4111-8111-111111111111",
+        )
+        comp_track(
+            other,
+            "Other Song",
+            "Other Performer",
+            "77777777-7777-4777-8777-777777777777",
+            "88888888-8888-4888-8888-888888888888",
+        )
+        # The reported library selects 10,000 Maniacs from its normal Artist
+        # entry, then projects that Artist's compilation appearances.  Keep a
+        # regular reference Album in the fixture so the rendered interaction
+        # follows the same route instead of manufacturing a track-credit-only
+        # sidebar identity that Windows does not expose.
+        artist_album = self.root / "music" / "10,000 Maniacs" / "Reference Album"
+        artist_album.mkdir(parents=True)
+        artist_track = artist_album / "01 Reference.flac"
+        sf.write(artist_track, np.zeros((4410, 2)), 44100)
+        audio = FLAC(artist_track)
+        for key, value in {
+            "title": "Reference",
+            "artist": "10,000 Maniacs",
+            "albumartist": "10,000 Maniacs",
+            "album": "Reference Album",
+            "musicbrainz_albumid": "12345678-1234-4234-8234-123456789abc",
+            "musicbrainz_artistid": "6c8b9855-ba8b-48f9-ac1d-42167f7f7b18",
+        }.items():
+            audio[key] = value
+        audio.save()
+        Image.new("RGB", (700, 700), "purple").save(comp / "cover.jpg")
+        candidate = self.runtime.temporary_cache / "browser-provider-candidate.png"
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (900, 600), "orange").save(candidate)
+
+        def wait_for_embedded_art(path: Path, timeout: float = 15.0) -> bytes:
+            """Wait for verified audio readback, not a transient progress banner."""
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                try:
+                    body = embedded_track_artwork_bytes(path)
+                except Exception:
+                    body = None
+                if body:
+                    return body
+                time.sleep(0.1)
+            self.fail(f"embedded artwork was not readable from {path.name}")
+
+        self.services.refresh_index(mode="full")
+        with closing(self.db.connect()) as db:
+            comp_row = db.execute(
+                "SELECT * FROM albums WHERE path=?", (str(comp),)
+            ).fetchone()
+        self.runtime.close()
+
+        app = None
+
+        def simulated_manual_comp(album, tracks, **kwargs):
+            # This is deliberately a provider simulation, not a browser or
+            # write simulation. Job prompts and filesystem writes use the real
+            # queue, API, interaction adapter, and embedding implementation.
+            from interaction.status import emit, read_input
+
+            summary = kwargs["summary"]
+            for completed, track in enumerate(tracks, 1):
+                kwargs["track_context"](track)
+                authority = {
+                    "track": str(track.title),
+                    "artist": str(track.artist),
+                    "recording_mbid": str(track.recording_mbid or ""),
+                    "artist_mbids": str(track.artist_mbid or ""),
+                }
+                option = {
+                    "path": str(candidate),
+                    "source": "simulated-provider",
+                    "title": "Rendered-browser candidate",
+                    "width": 900,
+                    "height": 600,
+                    "resolution": "900x600",
+                    "number": 1,
+                }
+                emit("fallback_authority", **authority)
+                emit("candidates", items=[dict(option)])
+                answer = read_input(
+                    "Choose COMP artwork",
+                    kind="fallback-picker",
+                    options=[dict(option)],
+                    musicbrainz=True,
+                    track_title=str(track.title),
+                    track_artist=str(track.artist),
+                    authority=authority,
+                )
+                if answer == "m":
+                    release = {
+                        "number": 1,
+                        "title": "Billboard Hot 100 Singles of 1994",
+                        "track": str(track.title),
+                        "artist": str(track.artist),
+                        "recording_artist": str(track.artist),
+                        "release_artist": "Various Artists",
+                        "release_class": "Compilation",
+                        "date": "1994",
+                        "country": "US",
+                        "score": 100,
+                        "recording_id": str(track.recording_mbid or ""),
+                        "artist_id": str(track.artist_mbid or ""),
+                        "release_id": "99999999-9999-4999-8999-999999999999",
+                    }
+                    answer = read_input(
+                        "MusicBrainz matches",
+                        kind="musicbrainz-results",
+                        options=[release],
+                        track_title=str(track.title),
+                        track_artist=str(track.artist),
+                        authority=authority,
+                    )
+                    if answer == "1":
+                        emit("candidates", items=[dict(option)])
+                        answer = read_input(
+                            "Choose release artwork",
+                            kind="fallback-picker",
+                            options=[dict(option)],
+                            musicbrainz=True,
+                            track_title=str(track.title),
+                            track_artist=str(track.artist),
+                            authority=authority,
+                        )
+                choice = json.loads(answer)
+                self.assertEqual(choice["action"], "webgui-embed-track")
+                body, info, image_format = kwargs["prepare_selected_artwork"](
+                    choice["artwork"]
+                )
+                core.compilation_replace_embedded(
+                    track.path, body, image_format, info
+                )
+                services = app.state.context.services
+                row = services.album_row(comp_row["album_key"])
+                record = next(
+                    item
+                    for item in services.hydrate_tracks(
+                        row["album_key"], refresh_embedding_stats=False
+                    )
+                    if Path(item["path"]) == Path(track.path)
+                )
+                services._record_comp_track_artwork(
+                    row, record, body, "embedded-replaced"
+                )
+                summary.selected += 1
+                summary.resolved += 1
+                summary.installed += 1
+
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+
+        def launch_test_server():
+            application = create_app(
+                self.config,
+                self.url,
+                token="rendered-browser-token",
+                start_worker=True,
+            )
+            running_server = uvicorn.Server(
+                uvicorn.Config(
+                    application,
+                    host="127.0.0.1",
+                    port=port,
+                    log_level="warning",
+                )
+            )
+            running_server.install_signal_handlers = lambda: None
+            running_thread = threading.Thread(
+                target=running_server.run, daemon=True
+            )
+            running_thread.start()
+            for _ in range(100):
+                if running_server.started:
+                    break
+                time.sleep(0.05)
+            self.assertTrue(
+                running_server.started, "temporary WebGUI server did not start"
+            )
+            return application, running_server, running_thread
+
+        server = None
+        server_thread = None
+        with patch(
+            "webgui.services.scan.run_manual_compilation_album",
+            side_effect=simulated_manual_comp,
+        ):
+            app, server, server_thread = launch_test_server()
+
+            try:
+                with sync_playwright() as playwright:
+                    browser = playwright.chromium.launch(
+                        channel=os.environ.get(
+                            "SPLINED_TEST_BROWSER_CHANNEL", "chrome"
+                        ),
+                        headless=True,
+                        args=["--no-sandbox"],
+                    )
+                    page = browser.new_page(viewport={"width": 1600, "height": 1000})
+                    page.goto(f"http://127.0.0.1:{port}", wait_until="networkidle")
+                    page.locator("#setupUsername").fill("browser-admin")
+                    page.locator("#setupPassword").fill("RenderedBrowser123")
+                    page.locator("#setupConfirmation").fill("RenderedBrowser123")
+                    page.locator("#setupToken").fill("rendered-browser-token")
+                    page.locator("#adminSetupForm button[type=submit]").click()
+                    expect(page.locator("body")).to_have_class("authenticated")
+
+                    # A regular Album stages through the rendered controls and
+                    # its card survives a real browser reload.
+                    page.locator("#artistSearch").fill("Test Artist")
+                    page.locator("#artistList button", has_text="Test Artist").click()
+                    page.locator("button.album-card", has_text="Test Album").click()
+                    expect(page.locator("#embedBatchButton")).to_be_enabled()
+                    page.locator("#embedBatchButton").click()
+                    page.locator("#embedTab").click()
+                    expect(page.locator(".queue-card", has_text="Test Album")).to_be_visible()
+
+                    # Recreate the authenticated service against the same
+                    # PostgreSQL schema and persistent cache, then sign in as
+                    # a new server session and verify the staged preview card.
+                    server.should_exit = True
+                    server_thread.join(timeout=15)
+                    self.assertFalse(server_thread.is_alive())
+                    app, server, server_thread = launch_test_server()
+                    page.reload(wait_until="networkidle")
+                    expect(page.locator("#loginForm")).to_be_visible()
+                    page.locator("#loginUsername").fill("browser-admin")
+                    page.locator("#loginPassword").fill("RenderedBrowser123")
+                    page.locator("#loginForm button[type=submit]").click()
+                    expect(page.locator("body")).to_have_class("authenticated")
+                    # Authentication becomes visible before the asynchronous
+                    # library/bootstrap render completes.  Wait for that load
+                    # so its default workspace render cannot race this click.
+                    expect(page.locator("#statusText")).to_contain_text("Loaded")
+                    page.locator("#embedTab").click()
+                    expect(page.locator("#embedView")).to_be_visible()
+                    expect(page.locator(".queue-card", has_text="Test Album")).to_be_visible()
+                    expect(page.locator("#embedQueue")).not_to_contain_text(
+                        "Billboard Hot 100 Singles of 1994"
+                    )
+
+                    # Artist report: the top LAUNCH COMP stays scoped to the
+                    # one 10,000 Maniacs track and presents simulated MB 100%.
+                    page.locator("#findTab").click()
+                    page.locator("#artistsTab").click()
+                    page.locator("#artistSearch").fill("10,000 Maniacs")
+                    page.locator(
+                        "#artistList button", has_text="10,000 Maniacs"
+                    ).click()
+                    expect(page.locator("#statusText")).to_contain_text(
+                        "Loaded 10,000 Maniacs"
+                    )
+                    page.locator("#compReportButton").click()
+                    expect(page.locator("#fallbackReport")).to_contain_text(
+                        "Because the Night"
+                    )
+                    expect(page.locator("#fallbackReport")).not_to_contain_text(
+                        "Other Song"
+                    )
+                    page.locator("#fallbackReport .fallback-launch").click()
+                    expect(page.locator("#compDecisionTools")).to_be_visible()
+                    page.locator(
+                        "#compDecisionTools button", has_text="Search MusicBrainz"
+                    ).click()
+                    expect(page.locator(".musicbrainz-result-card")).to_contain_text(
+                        "100% match"
+                    )
+                    page.locator(".musicbrainz-result-choice").click()
+                    page.locator(".candidate-image-button").click()
+                    expect(page.locator("#writeButton")).to_have_text("EMBED Track")
+                    page.locator("#writeButton").click()
+                    target_art = wait_for_embedded_art(target)
+                    expect(page.locator("#statusText")).to_have_text(
+                        re.compile(r"COMP (track artwork work complete|report ready)"),
+                        timeout=15000,
+                    )
+                    self.assertIsNone(embedded_track_artwork_bytes(other))
+
+                    # Full Fallback: the lower LAUNCH processes the remaining
+                    # performer independently and remains in the full report.
+                    page.locator("#fallbackTab").click()
+                    page.locator(
+                        "#artistList button", has_text="Billboard Hot 100 Singles of 1994"
+                    ).click()
+                    expect(page.locator("#fallbackReport")).to_contain_text(
+                        "Because the Night"
+                    )
+                    expect(page.locator("#fallbackReport")).to_contain_text(
+                        "Other Song"
+                    )
+                    page.locator("#searchButton").click()
+                    page.locator(".candidate-image-button").click()
+                    page.locator("#writeButton").click()
+                    wait_for_embedded_art(other)
+                    expect(page.locator("#statusText")).to_have_text(
+                        re.compile(r"COMP (track artwork work complete|report ready)"),
+                        timeout=15000,
+                    )
+                    self.assertEqual(embedded_track_artwork_bytes(target), target_art)
+                    self.assertIsNotNone(embedded_track_artwork_bytes(other))
+
+                    # Reopen the Artist report and prove full-album work did
+                    # not leak the other performer into the Artist scope.
+                    page.locator("#artistsTab").click()
+                    page.locator("#artistSearch").fill("10,000 Maniacs")
+                    page.locator(
+                        "#artistList button", has_text="10,000 Maniacs"
+                    ).click()
+                    expect(page.locator("#statusText")).to_contain_text(
+                        "Loaded 10,000 Maniacs"
+                    )
+                    page.locator("#compReportButton").click()
+                    expect(page.locator("#fallbackReport")).to_contain_text(
+                        "Because the Night"
+                    )
+                    expect(page.locator("#fallbackReport")).not_to_contain_text(
+                        "Other Song"
+                    )
+                    browser.close()
+            finally:
+                server.should_exit = True
+                server_thread.join(timeout=15)
+                self.assertFalse(server_thread.is_alive())
+
+        self.runtime = Runtime(self.config, self.db)
+        self.services = Services(self.runtime)
 
 
 if __name__ == "__main__":

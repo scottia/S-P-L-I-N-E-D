@@ -9,6 +9,38 @@ import splined_scan as scan
 
 
 class ManualCompilationDecisionTests(unittest.TestCase):
+    def test_webgui_candidate_choice_retains_prepared_track_artwork_request(self) -> None:
+        candidate = mock.Mock()
+        payload = {
+            "action": "webgui-embed-track",
+            "number": 1,
+            "artwork": {
+                "image": "/api/image/candidate",
+                "adjustments": {"Brightness": 12},
+                "upscale": True,
+            },
+        }
+        with (
+            mock.patch.object(scan, "fallback_top_candidates", return_value=[candidate]),
+            mock.patch.object(scan, "fallback_suggested", return_value=candidate),
+            mock.patch.object(scan, "render_candidate_table"),
+            mock.patch.object(scan.core, "read_input", return_value=json.dumps(payload)),
+        ):
+            decision, selected, changes = scan._manual_choose_candidate(
+                [candidate], {}, ["jpeg"]
+            )
+
+        self.assertEqual(decision, "selected")
+        self.assertIs(selected, candidate)
+        self.assertEqual(
+            changes["webgui_artwork"],
+            {
+                "image": "/api/image/candidate",
+                "adjustments": {"Brightness": 12},
+                "upscale": True,
+            },
+        )
+
     def test_musicbrainz_result_selection_preserves_comp_track_identity(self) -> None:
         target = SimpleNamespace(
             release_mbid="8f33a714-f8f6-4c8f-b6f3-8183f48c03bb",
@@ -51,7 +83,7 @@ class ManualCompilationDecisionTests(unittest.TestCase):
             )
 
         with mock.patch.object(scan.core, "read_input", side_effect=choose):
-            decision, selected = scan._manual_choose_release(
+            decision, selected, changes = scan._manual_choose_release(
                 [unrelated, target],
                 authority={
                     "artist_id": "291dcfb8-b31c-496a-905b-9955509d75b6",
@@ -67,6 +99,7 @@ class ManualCompilationDecisionTests(unittest.TestCase):
 
         self.assertEqual(decision, "selected")
         self.assertIs(selected, target)
+        self.assertEqual(changes, {})
         self.assertEqual(captured["kind"], "musicbrainz-results")
         self.assertEqual(captured["authority"]["artist"], "10,000 Maniacs")
         matching = next(
@@ -79,6 +112,49 @@ class ManualCompilationDecisionTests(unittest.TestCase):
         self.assertEqual(
             matching["title"], "Billboard Hot 100 Singles of 1994"
         )
+        self.assertEqual(
+            matching["musicbrainz_url"],
+            "https://musicbrainz.org/release/" + target.release_mbid,
+        )
+
+    def test_musicbrainz_result_navigation_and_authority_actions_are_track_scoped(self) -> None:
+        result = SimpleNamespace(
+            release_mbid="8f33a714-f8f6-4c8f-b6f3-8183f48c03bb",
+            recording_mbid="e1efc38f-1f86-4c2c-bd90-df1e0796f789",
+            recording_artist="10,000 Maniacs",
+            release_artist="Various Artists",
+            recording_title="Because the Night",
+            release_title="Billboard Hot 100 Singles of 1994",
+            release_date="1994",
+            country="US",
+            release_class="compilation",
+            release_group_mbid="f65ab2b0-a008-4d26-86de-63e7dc4bfba8",
+            score=100,
+        )
+        edited = {
+            "action": "manual-authority-query",
+            "artist_id": "291dcfb8-b31c-496a-905b-9955509d75b6",
+            "release_id": result.release_mbid,
+            "recording_id": result.recording_mbid,
+            "edited": "all",
+        }
+        for response, expected, expected_changes in (
+            ("b", "unchanged", {}),
+            ("__manual_candidates__", "back-candidates", {}),
+            (json.dumps(edited), "requery", {
+                "artist_id": edited["artist_id"],
+                "release_id": edited["release_id"],
+                "recording_id": edited["recording_id"],
+                "edited": "all",
+            }),
+        ):
+            with self.subTest(response=response), mock.patch.object(
+                scan.core, "read_input", return_value=response
+            ):
+                decision, selected, changes = scan._manual_choose_release([result])
+            self.assertEqual(decision, expected)
+            self.assertIsNone(selected)
+            self.assertEqual(changes, expected_changes)
 
     def test_manual_escape_returns_album_exit_decision(self) -> None:
         with (
