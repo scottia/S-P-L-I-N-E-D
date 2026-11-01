@@ -568,6 +568,26 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.assertEqual((enlarged["width"], enlarged["height"]), (1200, 1800))
         self.assertTrue(enlarged["upscaled"])
         self.assertIn("200% ceiling", enlarged["reason"])
+        self.assertEqual(enlarged["upscale_percent"], 200.0)
+        self.assertTrue(enlarged["upscale_limited"])
+
+        ideal_source = self.runtime.cache / "near-ideal-cover.png"
+        Image.new("RGB", (1500, 1500), "navy").save(ideal_source)
+        ideal_preview = self.services.preview(
+            {
+                "image": self.services.catalog.image(ideal_source),
+                "kind": "comp",
+                "upscale": True,
+            }
+        )
+        self.assertEqual(
+            (ideal_preview["width"], ideal_preview["height"]), (1800, 1800)
+        )
+        self.assertEqual(ideal_preview["upscale_percent"], 120.0)
+        self.assertFalse(ideal_preview["upscale_limited"])
+        self.assertIn("120% to 1800px Ideal", ideal_preview["reason"])
+        self.assertNotIn("200%", ideal_preview["reason"])
+        self.assertEqual(ideal_preview["embedded_thumbnail_size"], 300)
         self.assertTrue(list((self.runtime.temporary_cache / "web-images").iterdir()))
         self.assertFalse((self.runtime.cache / "web-images").exists())
 
@@ -2176,7 +2196,23 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     )
                     page.locator("#upscaleButton").click()
                     expect(page.locator("#statusText")).to_contain_text(
-                        "Upscale preview", timeout=15000
+                        "Embedded Thumb Ready · 300 × 300", timeout=15000
+                    )
+                    expect(page.locator("#selectedDimensions")).to_have_text(
+                        "300 × 300"
+                    )
+                    artwork_info = page.locator("#artMetadata")
+                    expect(artwork_info).to_contain_text("Before")
+                    expect(artwork_info).to_contain_text("Track(s) (1)")
+                    expect(artwork_info).to_contain_text("640 × 640")
+                    expect(artwork_info).to_contain_text("After")
+                    expect(artwork_info).to_contain_text("Embedded Thumb")
+                    expect(artwork_info).to_contain_text("Source")
+                    expect(artwork_info).to_contain_text("Upscale Preview")
+                    expect(artwork_info).to_contain_text("Enhancement")
+                    expect(page.locator("#writeNotice")).to_be_hidden()
+                    expect(page.locator("#selectedQuality")).to_have_text(
+                        "Thumb Ready"
                     )
                     self.assertEqual(
                         embedded_track_artwork_bytes(target), initial_target_art
@@ -2386,8 +2422,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     self.assertEqual(embedded_track_artwork_bytes(target), initial_target_art)
                     page.locator("#upscaleButton").click()
                     expect(page.locator("#statusText")).to_contain_text(
-                        "Upscale preview", timeout=15000
+                        "Embedded Thumb Ready · 300 × 300", timeout=15000
                     )
+                    expect(page.locator("#selectedDimensions")).to_have_text("300 × 300")
                     page.locator("#writeButton").click()
                     target_art = wait_for_embedded_art(target, initial_target_art)
                     with Image.open(BytesIO(target_art)) as embedded:

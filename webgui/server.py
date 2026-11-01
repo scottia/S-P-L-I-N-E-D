@@ -311,6 +311,13 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
                     "mode": r.cfg.get("mode", "read") if r else "read",
                     "music": str(r.music) if r else "",
                     "artist_art": str(r.artist_art) if r else "",
+                    "embedded_thumbnail_size": int(
+                        r.cfg.get("output", {}).get(
+                            "embedded_thumbnail_size", 1200
+                        )
+                    )
+                    if r
+                    else 1200,
                     "comp_repair": bool(r and r.cfg.get("mode") == "write"),
                     "animate_webp_preview": bool(
                         r and r.cfg.get("webgui_ui", {}).get("animate_webp_preview", False)

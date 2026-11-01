@@ -1310,6 +1310,41 @@ function paneImage(frame, src, label, portrait = false) {
   if (portrait) { const mask = node("span", "portrait-viewport"); mask.append(image(src, "portrait-preview", label)); frame.append(mask); }
   else frame.append(image(src, "", label));
 }
+function renderSelectedArtworkMetadata({source, type, dimensions, fileSize, prepared, preview, existing, candidate, originSource}) {
+  const host = $("artMetadata"); clear(host);
+  const cell = (text, className = "", id = "") => {
+    const value = node("div", className, text);
+    if (id) value.id = id;
+    host.append(value);
+  };
+  if (!prepared || !preview) {
+    host.classList.remove("comparison");
+    for (const [label, value, id] of [
+      ["Source", source, "selectedSource"], ["Type", type, "selectedType"],
+      ["Dimensions", dimensions, "selectedDimensions"], ["File Size", fileSize, "selectedSize"],
+    ]) {
+      const wrapper = node("div"); wrapper.append(node("small", "", label), node("span", "", value));
+      wrapper.lastChild.id = id; host.append(wrapper);
+    }
+    return;
+  }
+  host.classList.add("comparison");
+  // Match the Windows Selected Artwork comparison: the prepared thumbnail is
+  // an in-memory "After" estimate for the same track(s), while Source reports
+  // the full-resolution enhancement from which it was prepared.
+  const rows = [
+    ["Before", "Track(s) (1)", existing?.width && existing?.height ? `${existing.width} × ${existing.height}` : "No embedded art", existing?.bytes ? size(existing.bytes) : "0 B", "meta-before"],
+    ["After", "Embedded Thumb", `${prepared.width} × ${prepared.height}`, `~${size(prepared.bytes)}`, "meta-after"],
+    ["Source", "Type", "Dimensions", "File Size", "meta-heading"],
+    [originSource || "Enhancement", "Upscale Preview", `${preview.width} × ${preview.height}`, size(preview.bytes), "meta-origin"],
+  ];
+  rows.forEach(([stage, rowType, rowDimensions, rowSize, className]) => {
+    cell(stage, className);
+    cell(rowType, className, className === "meta-origin" ? "selectedSource" : stage === "After" ? "selectedType" : "");
+    cell(rowDimensions, className, stage === "After" ? "selectedDimensions" : "");
+    cell(rowSize, className, stage === "After" ? "selectedSize" : "");
+  });
+}
 function renderPanes() {
   const decision = activeArtworkDecision();
   const isComp = decision?.jobKind === "comp" || state.editorMode === "fallback"
@@ -1391,7 +1426,6 @@ function selectedImage() {
   }
   if (!frame.childElementCount && state.editorMode !== "fallback" && !(state.compReportVisible && state.compTrack))
     frame.append(image("/assets/set-your-imagination-tv.jpg", "", "Set your imagination now"));
-  $("selectedType").textContent = type; $("selectedSource").textContent = source;
   const existing = state.editorMode === "album" ? state.album?.cover_meta : state.editorMode === "fallback" ? state.fallbackTrack
     : state.editorMode === "artist" && state.compReportVisible && state.compTrack ? state.compTrack
     : state.radioBanner && !state.radioArtist ? state.artist?.banner_meta : state.artist?.portrait_meta;
@@ -1400,8 +1434,14 @@ function selectedImage() {
     : state.editorMode === "album" ? state.renderedPreview.album
     : state.radioBanner && !state.radioArtist ? state.renderedPreview.banner : state.renderedPreview.artist;
   const metadata = preparedComp || rendered || state.upscalePreview || candidate || existing;
-  $("selectedDimensions").textContent = metadata ? metadata.width + " × " + metadata.height : "—";
-  $("selectedSize").textContent = metadata ? size(metadata.bytes) : "—";
+  renderSelectedArtworkMetadata({
+    source, type,
+    dimensions: metadata ? metadata.width + " × " + metadata.height : "—",
+    fileSize: metadata ? size(metadata.bytes) : "—",
+    prepared: preparedComp, preview: state.upscalePreview, existing,
+    candidate: preparedComp ? decision?.selected : candidate,
+    originSource: state.upscalePreview ? "Enhancement" : decision?.selected?.source || (existing?.image ? "Embedded track" : source),
+  });
   $("selectedQuality").textContent = quality;
   $("selectedQuality").classList.toggle("comp-thumb-ready", !!preparedComp && !state.pendingCompWrite);
   $("review").classList.toggle("comp-thumbnail-ready", !!preparedComp && !state.pendingCompWrite);
@@ -1440,7 +1480,12 @@ function renderReview() {
     : state.editorMode === "fallback" ? !state.fallbackTrack?.image
     : state.editorMode === "artist" && state.compReportVisible ? !state.compTrack?.image : false;
   $("embedBatchButton").disabled = !(state.editorMode === "album" && state.album && (state.selectedCover?.image || state.album.cover));
-  $("writeNotice").textContent = "Artwork changes are saved only by WRITE or EMBED actions.";
+  const compContext = state.editorMode === "fallback" || state.editorMode === "artist" && state.compReportVisible;
+  const embeddedSide = Number(state.compThumbnailPreview?.width || state.server?.embedded_thumbnail_size || 1200);
+  $("writeNotice").hidden = compContext;
+  $("writeNotice").textContent = compContext
+    ? `COMP embed target · ${embeddedSide} × ${embeddedSide} · Upscale Preview prepares this thumbnail in memory; only EMBED Comp writes audio.`
+    : "Artwork changes are saved only by WRITE or EMBED actions.";
   $("reviewChoice").hidden = state.editorMode !== "artist" || !(state.selectedPortrait || state.selectedBanner);
   $("useArtist").classList.toggle("active", !state.radioBanner || state.radioArtist);
   $("useBanner").classList.toggle("active", state.radioBanner);
@@ -1779,6 +1824,12 @@ $("compareButton").addEventListener("click", () => {
   const choices = state.candidates.filter(candidate => state.compare.has(candidate.image));
   showDialog("Candidate comparison", choices.map(candidate => candidate.source + " · " + candidate.name + " · " + candidate.width + " × " + candidate.height));
 });
+function upscalePreviewStatus(preview, prepared = null, compContext = false) {
+  const result = "Upscale preview · " + (preview.reason || (preview.width + " × " + preview.height));
+  if (compContext && prepared)
+    return result + " · Embedded Thumb Ready · " + prepared.width + " × " + prepared.height + " · no audio written";
+  return result + " · original artwork is unchanged until written";
+}
 $("upscaleButton").addEventListener("click", async () => {
   if (state.editorMode === "artist" && !state.compReportVisible) {
     state.workspace = "enhance"; renderWorkspace();
@@ -1806,8 +1857,9 @@ $("upscaleButton").addEventListener("click", async () => {
       || (state.editorMode === "artist" && state.compReportVisible && compTrackKey !== state.compTrack?.key)
       || queuedCandidate !== (activeArtworkDecision()?.selected?.image || "")) return;
     state.upscalePreview = preview;
+    const prepared = compContext ? await prepareCompThumbnail({announce: false}) : null;
     renderReview();
-    setStatus("Upscale preview · " + preview.width + " × " + preview.height + " · " + preview.reason + (compContext ? " · EMBED Comp writes the configured square thumbnail" : ""));
+    setStatus(upscalePreviewStatus(preview, prepared, compContext), "ready");
   } catch (error) { if (request === state.selectionRequest) setStatus(error.message, "error"); }
   finally { if (request === state.selectionRequest) renderReview(); }
 });

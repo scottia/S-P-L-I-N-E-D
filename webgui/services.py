@@ -643,6 +643,7 @@ class Services:
             fit=payload.get("fit"),
             kind=kind,
         )
+        policy_source_width, policy_source_height = image.size
         upscaled = False
         if upscale_requested and upscale_enabled and kind != "cover":
             image, upscaled, _ = imaging.upscale_to_policy(
@@ -675,12 +676,38 @@ class Services:
                 path.unlink(missing_ok=True)
         else:
             width, height = image.size
+        policy_source_short = min(policy_source_width, policy_source_height)
+        output_short = min(width, height)
+        applied_percent = (
+            output_short / policy_source_short * 100.0
+            if policy_source_short > 0
+            else 100.0
+        )
+        requested_percent = (
+            ideal / policy_source_short * 100.0
+            if 0 < policy_source_short < ideal
+            else 100.0
+        )
+        upscale_limited = bool(upscaled and output_short < ideal)
         if upscaled:
-            reason = f"Prepared toward {ideal}px Ideal within the {max_percent}% ceiling; original artwork is unchanged until written"
+            if upscale_limited:
+                reason = (
+                    f"Upscaled {policy_source_width} × {policy_source_height} → "
+                    f"{width} × {height} ({applied_percent:.0f}% ceiling; "
+                    f"below {ideal}px Ideal)"
+                )
+            else:
+                reason = (
+                    f"Upscaled {policy_source_width} × {policy_source_height} → "
+                    f"{width} × {height} ({applied_percent:.0f}% to "
+                    f"{ideal}px Ideal)"
+                )
         elif upscale_requested and not upscale_enabled:
             reason = "Actual source resolution preserved because Upscale Below Ideal is off in Settings"
+        elif upscale_requested and policy_source_short >= ideal:
+            reason = f"Source already meets or exceeds {ideal}px Ideal; no enlargement applied"
         elif upscale_requested:
-            reason = "Actual source resolution already meets Ideal or the configured ceiling prevents enlargement"
+            reason = "The configured upscale ceiling prevents enlargement; source resolution preserved"
         else:
             reason = "Prepared preview; original artwork is unchanged until written"
         return {
@@ -691,6 +718,16 @@ class Services:
             "kind": kind,
             "format": target,
             "upscaled": upscaled,
+            "source_width": policy_source_width,
+            "source_height": policy_source_height,
+            "ideal": ideal,
+            "upscale_percent": applied_percent,
+            "upscale_requested_percent": requested_percent,
+            "upscale_max_percent": max_percent,
+            "upscale_limited": upscale_limited,
+            "embedded_thumbnail_size": int(
+                output.get("embedded_thumbnail_size", 1200)
+            ),
             "reason": reason,
         }
 

@@ -50,6 +50,11 @@ const compThumbnailFunctions = compDecisionFunctions + "\n" + between(
   "function compContextActive",
   "function coverPayload",
 );
+const upscalePreviewStatusFunction = between(
+  appSource,
+  "function upscalePreviewStatus",
+  '$("upscaleButton").addEventListener',
+);
 const launchArtistFunction = between(
   operationsSource,
   "async function launchArtist",
@@ -658,6 +663,7 @@ test("queued COMP candidates submit adjustment and upscale intent with the exact
 
 test("the internal COMP thumbnail preparation remains bound to the selected track", async () => {
   const requests = [];
+  const statuses = [];
   const state = {
     queuedDecision: {
       jobKind: "comp", jobId: "job-1", nonce: "prompt-1",
@@ -677,10 +683,10 @@ test("the internal COMP thumbnail preparation remains bound to the selected trac
       requests.push({path, payload});
       return {prepared_id: "a".repeat(32), sha256: "b".repeat(64), image: "/prepared", width: 1200, height: 1200, bytes: 900, audio_written: false};
     },
-    setStatus() {}, renderPanes() {}, renderReview() {},
+    setStatus(...values) { statuses.push(values); }, renderPanes() {}, renderReview() {},
   });
 
-  await context.prepareCompThumbnail();
+  await context.prepareCompThumbnail({announce: false});
 
   assert.equal(requests[0].path, "/api/artist/comp-thumbnail-preview");
   assert.deepEqual(JSON.parse(JSON.stringify(requests[0].payload)), {
@@ -689,6 +695,24 @@ test("the internal COMP thumbnail preparation remains bound to the selected trac
   });
   assert.equal(state.compThumbnailPreview.image, "/prepared");
   assert.equal(state.compThumbnailPreview.audio_written, false);
+  assert.deepEqual(statuses, []);
+});
+
+test("COMP Upscale Preview reports the applied scale and prepared embedded size", () => {
+  const context = load(upscalePreviewStatusFunction, {});
+  const status = context.upscalePreviewStatus(
+    {
+      width: 1800, height: 1800,
+      reason: "Upscaled 1500 × 1500 → 1800 × 1800 (120% to 1800px Ideal)",
+    },
+    {width: 1200, height: 1200},
+    true,
+  );
+  assert.equal(
+    status,
+    "Upscale preview · Upscaled 1500 × 1500 → 1800 × 1800 (120% to 1800px Ideal) · Embedded Thumb Ready · 1200 × 1200 · no audio written",
+  );
+  assert.doesNotMatch(status, /200%/);
 });
 
 test("queued EMBED Comp accepts an already prepared thumbnail identity and digest", async () => {

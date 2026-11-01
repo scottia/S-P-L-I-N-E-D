@@ -141,19 +141,20 @@ function activeCompPrepared() {
 function invalidateCompThumbnail() {
   state.compThumbnailPreview = null;
 }
-async function prepareCompThumbnail() {
+async function prepareCompThumbnail({announce = true} = {}) {
   if (!compContextActive()) throw new Error("Choose a COMP track first");
   const source = compCandidateSource(), scope = compTargetScope();
   if (!source || !scope.album_id || !scope.track_key) throw new Error("Choose COMP artwork and a track before preparing its thumbnail");
   const owner = compThumbnailOwner();
   const endpoint = scope.artist_id ? "/api/artist/comp-thumbnail-preview" : "/api/comp/thumbnail-preview";
-  setStatus("Preparing configured COMP thumbnail…", "busy");
+  if (announce) setStatus("Preparing configured COMP thumbnail…", "busy");
   const result = await post(endpoint, componentPayload("comp", source, {...scope, upscale: !!state.upscalePreview}));
-  if (owner !== compThumbnailOwner()) return;
+  if (owner !== compThumbnailOwner()) return null;
   state.compThumbnailPreview = {...result, owner};
   state.pendingCompWrite = null;
   renderPanes(); renderReview();
-  setStatus(`Embedded Thumb Ready · ${result.width} × ${result.height} · no audio written`, "ready");
+  if (announce) setStatus(`Embedded Thumb Ready · ${result.width} × ${result.height} · no audio written`, "ready");
+  return state.compThumbnailPreview;
 }
 function coverPayload() {
   if (!state.album) throw new Error("Choose an album first");
@@ -281,6 +282,7 @@ renderReview = function () {
     $("writeNotice").textContent = !writable ? "Read mode · enable Live Write to embed the selected COMP track."
       : "Track-scoped COMP · current artwork, Upscale Preview, and enhancements can be embedded without MusicBrainz.";
   }
+  $("writeNotice").hidden = compContext;
 };
 async function searchAlbum(releaseId = null) {
   if (!state.album) return;
