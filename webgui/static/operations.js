@@ -108,15 +108,33 @@ async function writeArtwork() {
   if (state.queuedDecision) {
     const candidate = state.queuedDecision.selected;
     if (!candidate) throw new Error("Preview a queued candidate before choosing it");
-    await submitQueuedDecision(candidate.queueValue);
+    const value = state.queuedDecision.jobKind === "comp"
+      ? JSON.stringify({
+        action: "webgui-embed-track", number: candidate.queueValue,
+        artwork: {image: candidate.image, adjustments: state.fx.comp || {}, upscale: !!state.upscalePreview},
+      })
+      : candidate.queueValue;
+    await submitQueuedDecision(value);
     return;
   }
-  if (state.editorMode === "artist" && state.compReportVisible) {
-    if (state.compTrack) await enqueueComp(state.compTrack.albumId, [state.compTrack.key], state.artist?.id || "");
-    return;
-  }
-  if (state.editorMode === "fallback") {
-    if (state.fallbackTrack) await enqueueComp(state.album.id, [state.fallbackTrack.key]);
+  const artistComp = state.editorMode === "artist" && state.compReportVisible;
+  const fullComp = state.editorMode === "fallback";
+  if (artistComp || fullComp) {
+    const track = artistComp ? state.compTrack : state.fallbackTrack;
+    if (!track?.image) throw new Error("Select a COMP track with artwork before embedding it");
+    const scope = {
+      album_id: artistComp ? track.albumId : state.album?.id || "",
+      track_key: track.key,
+      upscale: !!state.upscalePreview,
+    };
+    if (artistComp) scope.artist_id = state.artist?.id || "";
+    const endpoint = artistComp ? "/api/artist/comp-embed" : "/api/comp/embed";
+    const result = await post(endpoint, componentPayload("comp", track.image, scope));
+    state.upscalePreview = null; state.renderedPreview.comp = null; state.fx.comp = {};
+    await refreshQueuedAlbumAfterSave();
+    setStatus(result.completed
+      ? `Embedded COMP track · ${result.file} · ${result.width} × ${result.height}`
+      : `Artwork embedded and verified · ${result.file} · authoritative IDs remain unresolved, so this track stays blue`, "ready");
     return;
   }
   if (state.editorMode === "album") {
@@ -158,31 +176,42 @@ renderReview = function () {
   const currentPackage = state.editorMode === "artist" && state.workspace === "enhance" && state.radioCurrent
     && !!(state.selectedPortrait?.image || state.selectedBanner?.image || state.artist?.portrait || state.artist?.banner);
   $("writeButton").disabled = entry ? !state.artist : !writable || (state.editorMode === "album" ? !(state.selectedCover?.image || state.album?.cover)
-    : state.editorMode === "fallback" ? !state.fallbackTrack : state.compReportVisible ? !state.compTrack : !(currentPackage || (state.radioArtist && (state.selectedPortrait || state.artist?.portrait)) || (state.radioBanner && (state.selectedBanner || state.artist?.banner))));
+    : state.editorMode === "fallback" ? !state.fallbackTrack?.image : state.compReportVisible ? !state.compTrack?.image : !(currentPackage || (state.radioArtist && (state.selectedPortrait || state.artist?.portrait)) || (state.radioBanner && (state.selectedBanner || state.artist?.banner))));
   const staged = state.editorMode === "album" && state.embedQueue.some(item => item.id === state.album?.id);
-  $("embedBatchButton").disabled = !writable || state.editorMode !== "album" || !(state.selectedCover?.image || state.album?.cover);
+  $("embedBatchButton").disabled = !writable || state.editorMode !== "album" || !albumEmbeddingEligible(state.album) || !(state.selectedCover?.image || state.album?.cover);
   $("embedBatchButton").classList.toggle("staged", staged);
   $("embedBatchButton").title = staged ? "Already staged; press again to confirm the existing queue entry" : "Write the cover and stage track embedding";
   $("musicbrainzButton").disabled = !state.album || state.editorMode !== "album";
   $("bypassButton").disabled = !state.album || state.editorMode !== "album";
   $("writeNotice").textContent = writable ? "Live Write · WRITE saves artwork. EMBED Batch saves the cover and stages track embedding. COMP work asks for track artwork in queued review." : "Read mode · searching and previewing are enabled. Enable Live Write in Settings to save artwork or track tags.";
+  if (state.editorMode === "fallback" && state.fallbackPreviewMode
+    || state.compReportVisible && state.compPreviewMode) {
+    $("writeButton").disabled = true;
+    $("upscaleButton").disabled = true;
+    $("embedBatchButton").disabled = true;
+    $("writeNotice").textContent = "COMP preview mode · turn preview off before changing or embedding track artwork.";
+  }
   if (state.queuedDecision) {
     const musicBrainzResults = state.queuedDecision.kind === "musicbrainz-results";
-    $("upscaleButton").disabled = true;
-    $("writeButton").textContent = musicBrainzResults ? "CHOOSE RESULT" : state.queuedDecision.jobKind === "comp" ? "EMBED Thumb" : "WRITE Cover";
-    $("writeButton").disabled = musicBrainzResults || !state.queuedDecision.selected;
+    const compCandidate = state.queuedDecision.jobKind === "comp" && !!state.queuedDecision.selected;
+    $("upscaleButton").disabled = state.compPreviewMode || !compCandidate;
+    $("writeButton").textContent = musicBrainzResults ? "CHOOSE RESULT" : state.queuedDecision.jobKind === "comp" ? "EMBED Track" : "WRITE Cover";
+    $("writeButton").disabled = !writable || state.compPreviewMode || musicBrainzResults || !state.queuedDecision.selected;
     $("embedBatchButton").disabled = true;
     $("writeNotice").textContent = musicBrainzResults ? "Choose a MusicBrainz release in Candidate Artwork; its artwork candidates load next."
-      : writable ? "Live Write · select one candidate, then save it here." : "Read-only queued review · choices are evaluated but files are not saved.";
+      : !writable ? "Read-only queued review · choices are evaluated but files are not saved."
+      : compCandidate ? "Live Write · adjust or upscale this candidate, then EMBED Track writes only the active COMP track."
+      : "Live Write · select one candidate, then save it here.";
   }
 };
 async function searchAlbum(releaseId = null) {
   if (!state.album) return;
   const id = state.album.id, request = ++state.searchRequest;
+  state.sourceDiagnostics = [];
   setStatus("Searching configured artwork sources…", "busy");
   const result = await post("/api/search/album", {id, release_id: releaseId});
   if (request !== state.searchRequest || state.album?.id !== id) return;
-  state.candidates = [...(state.album.candidates || []), ...result.candidates]; resetCandidateFilters();
+  state.candidates = [...(state.album.candidates || []), ...result.candidates]; state.sourceDiagnostics = result.warnings || []; resetCandidateFilters();
   renderSources(); renderCandidates(); renderReview();
   setStatus(result.candidates.length + " online candidates" + (result.warnings.length ? " · " + result.warnings.join("; ") : ""));
 };
@@ -200,22 +229,26 @@ async function skipQueuedAlbum() {
 async function enqueueComp(albumId, keys, artistId = "") {
   const payload = {album_id: albumId, track_keys: [...keys]};
   if (artistId) payload.artist_id = artistId;
+  state.sourceDiagnostics = [];
   const result = await post("/api/jobs", {kind: "comp", payload});
   await reviewJob(result.id);
 }
 async function launchFallback() {
   if (!state.album) return;
-  await enqueueComp(state.album.id, state.fallbackTracks.filter(track => !track.completed).map(track => track.key));
+  await enqueueComp(state.album.id, state.fallbackTracks.filter(track => track.status === "blue").map(track => track.key));
 };
 async function launchArtistComp() {
   if (!state.artist || !state.compReportVisible) throw new Error("Open this Artist's COMP Report before launching work");
   const artistId = state.artist.id;
   const groups = state.compGroups.map(group => ({id: group.id, keys: group.tracks.filter(track => track.status === "blue").map(track => track.key)})).filter(group => group.keys.length);
+  if (!groups.length) { setStatus("No blue COMP tracks need artwork"); return; }
+  const trackCount = groups.reduce((total, group) => total + group.keys.length, 0);
+  setStatus(`Opening Artist COMP review · ${groups.length} album${groups.length === 1 ? "" : "s"} · ${trackCount} track${trackCount === 1 ? "" : "s"}`, "busy");
   let first;
   for (const group of groups) {
     const result = await post("/api/jobs", {kind: "comp", payload: {artist_id: artistId, album_id: group.id, track_keys: group.keys}}); first ||= result.id;
   }
-  if (first) await reviewJob(first); else setStatus("No blue COMP tracks need artwork");
+  await reviewJob(first);
 };
 async function launchCandidateWork() {
   if (state.queuedDecision?.jobKind === "scan") return skipQueuedAlbum();
@@ -235,8 +268,8 @@ async function stageAlbum() {
   renderHero(); renderReview();
   setStatus(result.already_queued ? "Album is already staged" : "Cover written and album staged · " + state.album.name);
 };
-async function queueAction(action, id = null, value = null, nonce = null) {
-  const result = await post("/api/jobs/action", {action, id, value, nonce}); await pollJobs(); return result;
+async function queueAction(action, id = null, value = null, nonce = null, kind = null) {
+  const result = await post("/api/jobs/action", {action, id, value, nonce, kind}); await pollJobs(); return result;
 }
 function queuedCandidate(option, index) {
   const dimensions = String(option.resolution || "").match(/(\d+)\D+(\d+)/);
@@ -253,11 +286,13 @@ function queuedCandidate(option, index) {
 }
 function clearQueuedDecision() {
   const previous = state.queuedDecision?.previousCandidates || [];
+  const previousDiagnostics = state.queuedDecision?.previousSourceDiagnostics || [];
   state.queuedDecision = null;
   state.candidates = previous;
+  state.sourceDiagnostics = previousDiagnostics;
   state.compare.clear();
   resetCandidateFilters();
-  renderSources(); renderCandidates(); renderReview();
+  renderSources(); renderCandidates(); renderWorkspace(); renderReview();
 }
 async function focusQueuedAlbum(decision) {
   const albumId = decision?.context?.album_id;
@@ -340,16 +375,20 @@ async function submitQueuedDecision(value) {
 async function presentQueuedCandidates(job, prompt, options) {
   if ($("workspaceDialog").open) $("workspaceDialog").close();
   const previousCandidates = state.queuedDecision?.previousCandidates || state.candidates;
+  const previousSourceDiagnostics = state.queuedDecision?.previousSourceDiagnostics || state.sourceDiagnostics;
   const authority = job.progress?.current?.fallback_authority || {};
   const context = {...(prompt.context || {})};
   context.track_title ||= authority.track || "";
   context.track_artist ||= authority.artist || "";
   state.queuedDecision = {
     jobId: job.id, jobKind: job.kind, nonce: prompt.nonce, kind: context.kind || "", context,
-    payload: job.payload || {}, previousCandidates, selected: null,
+    payload: job.payload || {}, previousCandidates, previousSourceDiagnostics, selected: null,
+    authority: {...authority, ...(context.authority || {})},
+    diagnostics: job.progress?.current?.diagnostics?.items || [], authoritySaved: job.progress?.current?.authority_saved || null,
   };
   state.workspace = "find";
   state.candidates = options.map(queuedCandidate);
+  state.sourceDiagnostics = state.queuedDecision.diagnostics;
   state.activeSource = ""; state.compare.clear(); resetCandidateFilters();
   await focusQueuedAlbum(state.queuedDecision);
   if (!state.queuedDecision || state.queuedDecision.jobId !== job.id) return;
@@ -358,56 +397,92 @@ async function presentQueuedCandidates(job, prompt, options) {
 }
 async function presentQueuedMusicBrainz(job, prompt, options) {
   if ($("workspaceDialog").open) $("workspaceDialog").close();
+  const currentDecision = state.queuedDecision;
+  // Polling may return the same waiting prompt while the operator is choosing
+  // an edition.  Keep that browser-local choice until a decision is submitted;
+  // submitQueuedDecision clears queuedDecision before a genuinely new prompt.
+  const preserveSelection = currentDecision?.jobId === job.id
+    && currentDecision?.kind === "musicbrainz-results";
   const previousCandidates = state.queuedDecision?.previousCandidates || state.candidates;
+  const previousSourceDiagnostics = state.queuedDecision?.previousSourceDiagnostics || state.sourceDiagnostics;
   const authority = job.progress?.current?.fallback_authority || {};
   const context = {...(prompt.context || {})};
   context.track_title ||= authority.track || "";
   context.track_artist ||= authority.artist || "";
   state.queuedDecision = {
     jobId: job.id, jobKind: job.kind, nonce: prompt.nonce, kind: "musicbrainz-results", context,
-    payload: job.payload || {}, previousCandidates, selected: null, options: [...options],
+    payload: job.payload || {}, previousCandidates, previousSourceDiagnostics, selected: null, options: [...options],
+    selectedResult: preserveSelection ? currentDecision.selectedResult : null,
+    selectedExisting: preserveSelection ? currentDecision.selectedExisting : null,
+    artistFilter: preserveSelection ? currentDecision.artistFilter : "",
+    releaseTypeFilter: preserveSelection ? currentDecision.releaseTypeFilter : "",
+    existingArtwork: job.progress?.current?.musicbrainz_existing?.items || [],
+    authority: {...authority, ...(context.authority || {})},
+    diagnostics: job.progress?.current?.diagnostics?.items || [], authoritySaved: job.progress?.current?.authority_saved || null,
   };
   state.workspace = "find";
   state.candidates = [];
+  state.sourceDiagnostics = state.queuedDecision.diagnostics;
   state.activeSource = ""; state.compare.clear(); resetCandidateFilters();
   await focusQueuedAlbum(state.queuedDecision);
   if (!state.queuedDecision || state.queuedDecision.jobId !== job.id) return;
   renderWorkspace(); renderSources(); renderCandidates(); renderReview();
   const track = [context.track_artist, context.track_title].filter(Boolean).join(" — ");
-  setStatus("MusicBrainz results" + (track ? " · " + track : "") + " · choose a release", "busy");
+  const familyCount = new Set(options.map(option => String(option.family_id || option.release_group_id || option.id || "")).filter(Boolean)).size;
+  const identity = context.identity || {};
+  const message = identity.status === "valid"
+    ? "MusicBrainz Recording ID verified" + (identity.used_fuzzy_search ? " · same-artist title suggestions available" : "")
+      + ` · ${familyCount} release ${familyCount === 1 ? "family" : "families"}`
+    : "MusicBrainz identity review" + (track ? " · " + track : "")
+      + (familyCount ? ` · ${familyCount} release ${familyCount === 1 ? "family" : "families"}` : " · no selectable release families");
+  setStatus(message, familyCount ? "busy" : "error");
 }
 function renderQueue() {
   const host = $("embedQueue"); clear(host);
-  // Catalog indexing is application maintenance, not album embedding. Keep it
-  // in status/diagnostics so a completed 3,885-album refresh can never look
-  // like 3,885 tracks were embedded with the currently selected cover.
-  const jobs = (state.jobs || []).filter(job => ["embed-album", "comp", "scan"].includes(job.kind));
-  if (!jobs.length) host.append(node("p", "empty-copy", "No queued work yet."));
+  // This workspace is the album EMBED Batch queue. COMP candidate work stays
+  // in its Artist report and Selected Artwork flow.
+  const jobs = (state.jobs || []).filter(job => job.kind === "embed-album");
+  if (!jobs.length) host.append(node("p", "empty-copy", "No albums queued yet."));
   for (const job of jobs) {
-    const prompt = job.progress?.prompt || {}, context = prompt.context || {};
-    const title = [context.scope_artist || context.track_artist || context.artist || job.payload?.artist_name || job.payload?.artist,
-      context.track_title || context.track || context.album || job.payload?.name]
-      .filter(Boolean).join(" — ") || ({comp: "COMP track artwork", "embed-album": "Album embedding", scan: "Artwork scan", index: "Library index"}[job.kind] || "Artwork work");
-    const kind = job.kind === "comp" ? "COMP track artwork" : job.kind === "embed-album" ? "Album track embedding"
-      : job.kind === "scan" ? "Artwork scan" : job.kind === "index" ? "Library index" : "Artwork work";
-    const stateLabel = job.state === "staged" ? "Staged — not started" : job.state === "done" ? "Completed" : job.state;
-    const detail = [kind, stateLabel, prompt.label || job.progress.message,
-      job.progress.total ? (job.progress.completed || 0) + "/" + job.progress.total : ""].filter(Boolean).join(" · ");
-    const card = node("div", "queue-card state-" + job.state), copy = node("div", "row-copy");
+    const title = [job.payload?.artist, job.payload?.name].filter(Boolean).join(" — ") || "Album embedding";
+    const gated = ["queued", "staged"].includes(job.state) && (state.queueControls.pause_after_album || state.queueControls.pause_all_albums);
+    const stateLabel = gated ? "paused" : job.state === "staged" ? "staged" : job.state === "done" ? "completed" : job.state;
+    const total = Number(job.progress?.total || job.result?.tracks || job.payload?.tracks || 0);
+    const completed = job.state === "done" ? total : Number(job.progress?.completed || 0);
+    const side = Number(job.result?.side || job.payload?.embedded_side || 0);
+    const detail = [stateLabel, total ? `${completed}/${total} tracks` : "", side ? `embedded ${side} × ${side}` : ""].filter(Boolean).join(" · ");
+    const preferred = job.state === "done" && job.result?.verified || !!job.payload?.preferred_size;
+    const card = node("div", "queue-card state-" + job.state + (preferred ? " preferred-size" : "") + (job.payload?.staged_valid === false ? " invalid" : "")), copy = node("div", "row-copy");
+    if (job.payload?.cover) card.append(image(job.payload.cover, "queue-cover", (job.payload?.name || "Album") + " staged cover"));
     copy.append(node("strong", "", title), node("small", "", detail));
-    if (job.state === "done" && job.kind === "embed-album") copy.append(node("p", "operation-success", `Completed write · ${job.result?.tracks ?? job.payload?.tracks ?? 0} tracks verified`));
-    if (job.state === "done" && job.kind === "scan") copy.append(node("p", "operation-success", `${job.result?.reviewed ?? 0} Albums reviewed · batch complete`));
+    if (job.payload?.cover_width && job.payload?.cover_height)
+      copy.append(node("small", "queue-resolution", `staged cover resolution ${job.payload.cover_width} × ${job.payload.cover_height}`));
+    if (preferred) copy.append(node("small", "queue-preferred", "Preferred embedded size already present"));
+    if (job.state === "done") copy.append(node("p", "operation-success", `Completed write · ${total} tracks verified`));
+    if (job.payload?.staged_error) copy.append(node("p", "operation-error", job.payload.staged_error));
     if (job.error) copy.append(node("p", "operation-error", job.error)); card.append(copy);
     if (["staged", "waiting", "done", "failed"].includes(job.state)) actionButton("Review", () => reviewJob(job.id), card);
-    if (["failed", "paused"].includes(job.state)) actionButton("Resume", () => queueAction("retry", job.id), card);
+    if (["failed", "paused"].includes(job.state)) actionButton(job.state === "failed" ? "Retry" : "Resume", () => queueAction("retry", job.id), card);
     if (["running", "waiting", "queued"].includes(job.state)) actionButton("Pause", () => queueAction("pause", job.id), card);
     else actionButton("Remove", () => queueAction("remove", job.id), card);
     host.append(card);
   }
   const pending = jobs.filter(job => !["done", "failed", "cancelled"].includes(job.state));
-  state.embedQueue = pending.filter(job => job.kind === "embed-album").map(job => ({...job.payload, id: job.payload.album_id}));
+  state.embedQueue = pending.map(job => ({...job.payload, id: job.payload.album_id}));
   $("embedTab").classList.toggle("has-queued-albums", !!pending.length);
-  $("removeAllStaged").disabled = !jobs.some(job => !["running", "waiting"].includes(job.state));
+  const processing = jobs.some(job => ["running", "waiting"].includes(job.state));
+  const staged = jobs.filter(job => job.state === "staged").length;
+  const paused = jobs.filter(job => job.state === "paused").length;
+  const failed = jobs.filter(job => job.state === "failed").length;
+  $("startStaged").disabled = !staged;
+  $("pauseAfterAlbum").textContent = state.queueControls.pause_after_album ? "Resume Queue" : "Pause After Album";
+  $("pauseAfterAlbum").disabled = !jobs.some(job => ["queued", "running", "waiting"].includes(job.state)) && !state.queueControls.pause_after_album;
+  $("pauseAllAlbums").textContent = state.queueControls.pause_all_albums ? "Resume All Albums" : "Pause ALL Albums";
+  $("pauseAllAlbums").disabled = !jobs.some(job => ["queued", "running", "waiting", "paused"].includes(job.state)) && !state.queueControls.pause_all_albums;
+  $("removeAllStaged").disabled = !jobs.length || processing;
+  const summary = jobs.length ? `${pending.length} active · ${staged} staged · ${paused} paused · ${failed} failed.` : "No albums staged for embedding.";
+  $("embedQueueStatus").textContent = summary;
+  $("embedQueueFooter").textContent = summary;
 };
 async function refreshCompletedAlbum(albumId) {
   if (!albumId) return;
@@ -465,7 +540,16 @@ async function refreshQueuedAlbumAfterSave(job = null) {
   if (state.album?.id !== albumId) return;
   state.album = album;
   if (state.artist?.id === album.artist_id) state.artist = await api("/api/artist?id=" + encodeURIComponent(album.artist_id));
-  if (state.editorMode === "fallback") state.fallbackTracks = await api("/api/fallback/tracks?id=" + encodeURIComponent(albumId));
+  if (state.editorMode === "fallback") {
+    const selectedKey = state.fallbackTrack?.key || "";
+    state.fallbackTracks = await api("/api/fallback/tracks?id=" + encodeURIComponent(albumId));
+    probeFallbackStatuses();
+    if (selectedKey && state.fallbackTracks.some(track => track.key === selectedKey)) {
+      await selectFallbackTrack(selectedKey, state.fallbackPreviewMode);
+      return;
+    }
+    state.fallbackTrack = null;
+  }
   renderLibrary(); renderHero(); renderSources(); renderCandidates(); renderWorkspace();
 }
 let jobsPolling = false, lastPrompt = "";
@@ -475,7 +559,11 @@ async function pollJobs() {
   try {
     const priorJobs = new Map((state.jobs || []).map(job => [job.id, job]));
     const priorStaged = new Set(state.embedQueue.map(item => item.id));
-    state.jobs = await api("/api/jobs"); renderQueue();
+    const [jobs, queueControls] = await Promise.all([
+      api("/api/jobs"),
+      api("/api/jobs/control-state"),
+    ]);
+    state.jobs = jobs; state.queueControls = queueControls; renderQueue();
     const stagedChanged = priorStaged.size !== state.embedQueue.length
       || state.embedQueue.some(item => !priorStaged.has(item.id));
     const completedAlbums = state.jobs.filter(job => job.kind === "embed-album" && job.state === "done"
@@ -493,10 +581,17 @@ async function pollJobs() {
         state.reviewJobState = job.state;
         if (job.state === "done") {
           await refreshQueuedAlbumAfterSave(job);
-          state.reviewJobId = null;
+          const scopeArtistId = job.kind === "comp" ? String(job.payload?.artist_id || "") : "";
+          const nextComp = scopeArtistId ? state.jobs.filter(item => item.kind === "comp" && item.id !== job.id
+            && String(item.payload?.artist_id || "") === scopeArtistId && !["done", "failed", "cancelled"].includes(item.state))
+            .sort((left, right) => String(left.created_at || "").localeCompare(String(right.created_at || "")))[0] : null;
+          state.reviewJobId = nextComp?.id || null;
+          state.reviewJobState = nextComp?.state || "";
           if (job.kind === "embed-album") setStatus("Album track embedding completed and verified · " + (state.album?.name || job.payload?.name || "Album"));
           else if (job.kind === "scan") setStatus(`Album batch complete · ${job.result?.reviewed ?? 0} reviewed · ${job.result?.mode === "write" ? "approved covers written" : "Read mode, no covers written"}`);
-          else setStatus("COMP track artwork work complete · " + (state.album?.name || job.payload?.name || "Album"));
+          else if (Number(job.result?.unresolved || 0) > 0) setStatus("COMP artwork written and verified · authoritative completion remains pending for " + job.result.unresolved + " track(s)", "error");
+          else setStatus("COMP track artwork work complete · " + (job.payload?.name || "Album") + (nextComp ? " · continuing this Artist's next COMP album" : ""));
+          if (nextComp?.state === "waiting") await renderJob(nextComp);
         } else if (job.state === "failed") {
           setStatus(job.error || "Queued artwork failed", "error");
         }
@@ -518,7 +613,7 @@ async function renderJob(job) {
   const currentOptions = prompt ? job.progress.current?.candidates?.items || [] : [];
   const options = kind === "musicbrainz-results" ? contextualOptions
     : currentOptions.some(option => option.image) ? currentOptions : contextualOptions;
-  if (job.state === "waiting" && prompt && kind === "musicbrainz-results" && options.length) {
+  if (job.state === "waiting" && prompt && kind === "musicbrainz-results") {
     await presentQueuedMusicBrainz(job, prompt, options);
     return;
   }
@@ -530,11 +625,13 @@ async function renderJob(job) {
   body.append(node("p", "", job.payload.name || job.progress.message || job.state));
   if (job.error) body.append(node("p", "operation-error", job.error));
   const diagnostics = job.progress.current?.diagnostics?.items || [];
-  for (const item of diagnostics) {
-    const source = Array.isArray(item) ? item[0] : item?.source || "lookup";
-    const message = Array.isArray(item) ? item[1] : item?.message || String(item || "");
-    if (message) body.append(node("p", "operation-error", source + " · " + message));
+  if (job.kind === "comp" && diagnostics.length) {
+    state.sourceDiagnostics = diagnostics;
+    if (typeof renderSources === "function") renderSources();
   }
+  const restartPause = job.state === "paused" && job.error === "Interrupted by server restart";
+  if (!restartPause) for (const message of distinctDiagnostics(diagnostics))
+    body.append(node("p", "operation-error", message));
   if (job.state !== "waiting" || !prompt) {
     body.append(node("p", "", job.state === "done" ? "Finished" : job.state));
     if(job.result) for(const [key,value] of Object.entries(job.result)) if(typeof value!=="object") body.append(node("p","",key.replaceAll("_"," ")+": "+value));
@@ -568,8 +665,8 @@ async function renderJob(job) {
   if (kind === "fallback-picker") {
     const details = node("details", "settings-section"); details.append(node("summary", "", "Find by MusicBrainz authority")); body.append(details);
     const artist = field(details, "Artist ID", context.authority?.artist_mbids || "");
-    const release = field(details, "Release ID", ""); const recording = field(details, "Recording ID", "");
-    actionButton("Search IDs", () => decide(JSON.stringify({action: "manual-authority-query", artist_id: artist.value, release_id: release.value, recording_id: recording.value, edited: "all"})), details);
+    const recording = field(details, "Recording ID", context.authority?.recording_mbid || "");
+    actionButton("Search IDs", () => decide(JSON.stringify({action: "manual-authority-query", artist_id: artist.value, recording_id: recording.value, edited: "all"})), details);
   }
   actionButton("Pause work", () => queueAction("pause", job.id));
 }
@@ -1070,9 +1167,11 @@ async function upscaleArtist() {
   if (state.radioCurrent) state.fx.current = {};
   renderPanes(); renderReview(); setStatus("Upscaled artwork ready to write");
 }
-$("startStaged").addEventListener("click", () => runAction(() => queueAction("start")));
-$("pauseAfterAlbum").addEventListener("click", () => runAction(() => queueAction("pause-after")));
-$("pauseAllAlbums").addEventListener("click", () => runAction(() => queueAction("pause")));
+$("startStaged").addEventListener("click", () => runAction(() => queueAction("start", null, null, null, "embed-album")));
+$("pauseAfterAlbum").addEventListener("click", () => runAction(() => queueAction(
+  state.queueControls.pause_after_album ? "resume-queue" : "pause-after", null, null, null, "embed-album")));
+$("pauseAllAlbums").addEventListener("click", () => runAction(() => queueAction(
+  state.queueControls.pause_all_albums ? "resume-all" : "pause-all", null, null, null, "embed-album")));
 function fullscreenElement() {
   return document.fullscreenElement || document.webkitFullscreenElement || null;
 }
@@ -1106,14 +1205,23 @@ $("bypassButton").addEventListener("click", () => runAction(async () => {
   const result = await post("/api/bypass", {album_id: state.album.id, enabled: state.album.status !== "bypassed"});
   state.album.status = result.bypassed ? "bypassed" : "unprocessed"; renderHero(); setStatus(result.bypassed ? "Album bypassed" : "Album bypass removed");
 }));
-$("embedAllAlbums").addEventListener("click", () => runAction(async () => {
+async function stageAllArtistAlbums() {
   if (!state.artist) return;
-  let count = 0;
-  for (const album of state.artist.albums.filter(item => item.album_mbid && item.cover)) {
-    await post("/api/jobs", {kind: "embed-album", payload: {album_id: album.id, image: album.cover}}); count++;
+  let staged = 0, existing = 0, failed = 0;
+  const albums = state.artist.albums.filter(item => albumEmbeddingEligible(item) && item.cover);
+  for (const album of albums) {
+    try {
+      const result = await post("/api/jobs", {kind: "embed-album", payload: {album_id: album.id, image: album.cover}});
+      if (result.already_queued) existing++; else staged++;
+    } catch (error) {
+      failed++;
+      setStatus(`Unable to stage ${album.name} · ${error.message}`, "error");
+    }
   }
-  await pollJobs(); setStatus(count + " albums staged");
-}));
+  await pollJobs();
+  setStatus(`${staged} Albums staged${existing ? ` · ${existing} already queued` : ""}${failed ? ` · ${failed} failed` : ""}`, failed ? "error" : "ready");
+}
+$("embedAllAlbums").addEventListener("click", () => runAction(stageAllArtistAlbums));
 $("uploadArtwork").addEventListener("click", () => {
   const input = node("input"); input.type = "file"; input.accept = "image/jpeg,image/png,image/webp";
   input.addEventListener("change", () => runAction(async () => {
@@ -1156,15 +1264,31 @@ setInterval(() => { if (!document.hidden) runAction(pollJobs); }, 1500);
 initialize().catch(error => { document.body.className = "auth-required"; $("authError").textContent = error.message; });
 
 async function repairFallback() {
-  if (!state.album || !state.artist) return;
-  let repaired=0;
-  for (const track of state.fallbackTracks.filter(item=>item.completed)) {
-    const status=await api('/api/fallback/track-status?id='+encodeURIComponent(state.album.id)+'&key='+encodeURIComponent(track.key));
-    if (status.status==='purple' && status.repairable) {
-      await post('/api/artist/comp-repair',{artist_id:state.artist.id,album_id:state.album.id,track_key:track.key});repaired++;
+  if (!state.album) return;
+  const albumId = state.album.id;
+  let repaired = 0, failed = 0;
+  const failures = [];
+  for (const track of state.fallbackTracks.filter(item => item.completed)) {
+    if (state.editorMode !== "fallback" || state.album?.id !== albumId) break;
+    try {
+      const status = await api('/api/fallback/track-status?id=' + encodeURIComponent(albumId) + '&key=' + encodeURIComponent(track.key));
+      Object.assign(track, status);
+      if (status.status === 'purple' && status.repairable) {
+        const result = await post('/api/comp/repair', {album_id: albumId, track_key: track.key});
+        Object.assign(track, result, {status: "green", completed: true, repairable: false});
+        repaired++;
+      }
+    } catch (error) {
+      failed++;
+      track.repairError = error.message;
+      failures.push(`${track.file}: ${error.message}`);
     }
+    renderHero();
   }
-  setStatus(repaired+' COMP thumbnails repaired');
+  if (state.editorMode !== "fallback" || state.album?.id !== albumId) return;
+  state.fallbackTracks = await api('/api/fallback/tracks?id=' + encodeURIComponent(albumId));
+  await probeFallbackStatuses();
+  setStatus(`COMP repair complete · ${repaired} green${failed ? ` · ${failed} failed · ${failures.join("; ")}` : ""}`, failed ? "error" : "ready");
 }
 const quickPreview=applyPreviewEffects;
 let previewTimer,previewGeneration=0;
@@ -1182,7 +1306,12 @@ applyPreviewEffects=function () {
         element.src=result.image;element.style.filter='none';element.style.transform='none';
       })());
     };
-    if (state.editorMode==='album') {
+    if (state.queuedDecision?.jobKind==='comp' && state.queuedDecision.selected || state.editorMode==='fallback' || state.editorMode==='artist' && state.compReportVisible) {
+      const source=state.queuedDecision?.jobKind==='comp' && state.queuedDecision.selected
+        ? state.queuedDecision.selected.image : state.editorMode==='fallback' ? state.fallbackTrack?.image : state.compTrack?.image;
+      add('#selectedFrame .selected-image','comp',source,{upscale:!!state.upscalePreview});
+      add('#albumPane img','comp',source,{upscale:!!state.upscalePreview});
+    } else if (state.editorMode==='album') {
       const source=state.selectedCover?.image||state.album?.cover;
       add('#selectedFrame .selected-image','cover',source,{upscale:!!state.upscalePreview});
       add('#albumPane img','cover',source,{upscale:!!state.upscalePreview});

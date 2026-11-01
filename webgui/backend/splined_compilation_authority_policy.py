@@ -90,6 +90,25 @@ class DiscoveryCandidate:
     release_date: str
     country: str
     score: int
+    release_group_title: str = ""
+    match_basis: str = "exact-recording"
+
+
+@dataclass(frozen=True)
+class DiscoveryResolution:
+    """Windows-equivalent identity result for the COMP release workspace."""
+
+    candidates: tuple[DiscoveryCandidate, ...]
+    error: str = ""
+    warnings: tuple[str, ...] = ()
+    identity_status: str = "pending"
+    identity_message: str = ""
+    recording_status: str = "pending"
+    artist_status: str = "pending"
+    friendly_artist: str = ""
+    friendly_title: str = ""
+    focused_artist_mbid: str = ""
+    used_fuzzy_search: bool = False
 
 
 def _truthy(value: Any) -> bool:
@@ -921,6 +940,7 @@ def discover_recording_releases(
     """
     artist = _lucene_phrase(getattr(track, "artist", ""))
     title = _lucene_phrase(getattr(track, "title", ""))
+    tagged_recordings = _mbids(getattr(track, "recording_mbid", None))
     if not artist or not title:
         return (), "Manual MusicBrainz search requires local Artist and Title"
     if options.retry_max == 0:
@@ -1024,6 +1044,12 @@ def discover_recording_releases(
                         str(release.get("date") or "").strip(),
                         str(release.get("country") or "").strip(),
                         score,
+                        str(group.get("title") or "").strip(),
+                        (
+                            "exact-recording"
+                            if recording_id in tagged_recordings
+                            else "same-artist-title"
+                        ),
                     )
                 )
         found.sort(
@@ -1045,6 +1071,519 @@ def discover_recording_releases(
             )
         return tuple(found), ""
     return (), last_error or "MusicBrainz attempt budget exhausted"
+
+
+def _artist_name_key(value: Any) -> str:
+    compact = "".join(
+        character
+        for character in str(value or "").casefold().replace("&", "and")
+        if character.isalnum()
+    )
+    return compact.removeprefix("the")
+
+
+def _artist_names_compatible(local: Any, musicbrainz: Any) -> bool:
+    left = _artist_name_key(local)
+    return bool(left and left == _artist_name_key(musicbrainz))
+
+
+def _browser_release_class(
+    release: dict[str, Any],
+) -> tuple[str, int] | None:
+    """Project every Official edition shown by the native MB workspace."""
+    if str(release.get("status") or "").strip().casefold() != "official":
+        return None
+    group = release.get("release-group")
+    group = group if isinstance(group, dict) else {}
+    secondary = {
+        str(value).strip().casefold()
+        for value in group.get("secondary-types", [])
+        if str(value).strip()
+    }
+    if "soundtrack" in secondary:
+        return "soundtrack", 3
+    if "compilation" in secondary:
+        return "compilation", 4
+    primary = str(group.get("primary-type") or "").strip().casefold()
+    return {
+        "album": ("album", 0),
+        "single": ("single", 1),
+        "ep": ("ep", 2),
+        "broadcast": ("broadcast", 5),
+    }.get(primary, ("other", 6))
+
+
+def _project_discovery_candidates(
+    recording: dict[str, Any],
+    *,
+    score: int,
+    match_basis: str = "exact-recording",
+) -> list[DiscoveryCandidate]:
+    recording_ids = _mbids(recording.get("id"))
+    artist_ids = _credit_mbids(recording.get("artist-credit"))
+    if len(recording_ids) != 1 or not artist_ids:
+        return []
+    recording_mbid = next(iter(recording_ids))
+    recording_artist = _credit_text(recording.get("artist-credit"))
+    recording_title = str(recording.get("title") or "").strip()
+    artist_key = _artist_key(artist_ids)
+    projected: list[DiscoveryCandidate] = []
+    for release in recording.get("releases", []):
+        if not isinstance(release, dict):
+            continue
+        release_ids = _mbids(release.get("id"))
+        classification = _browser_release_class(release)
+        if len(release_ids) != 1 or classification is None:
+            continue
+        release_class, class_rank = classification
+        group = release.get("release-group")
+        group = group if isinstance(group, dict) else {}
+        projected.append(
+            DiscoveryCandidate(
+                recording_mbid=recording_mbid,
+                recording_title=recording_title,
+                recording_artist=recording_artist,
+                artist_mbids_key=artist_key,
+                release_mbid=next(iter(release_ids)),
+                release_group_mbid=next(iter(_mbids(group.get("id"))), ""),
+                release_class=release_class,
+                class_rank=class_rank,
+                release_title=str(release.get("title") or "").strip(),
+                release_artist=(
+                    _credit_text(release.get("artist-credit"))
+                    or recording_artist
+                ),
+                release_date=str(release.get("date") or "").strip(),
+                country=str(release.get("country") or "").strip(),
+                score=max(0, min(100, int(score))),
+                release_group_title=str(group.get("title") or "").strip(),
+                match_basis=match_basis,
+            )
+        )
+    return projected
+
+
+def _discovery_family_id(item: DiscoveryCandidate) -> str:
+    return (item.release_group_mbid or item.release_mbid).casefold()
+
+
+def _discovery_family_title(item: DiscoveryCandidate) -> str:
+    return (item.release_group_title or item.release_title).strip().casefold()
+
+
+def _discovery_preferred_artist_album(item: DiscoveryCandidate) -> bool:
+    return item.release_class in {"album", "compilation"} and (
+        _artist_names_compatible(item.release_artist, item.recording_artist)
+    )
+
+
+def _finalize_discovery_candidates(
+    candidates: Iterable[DiscoveryCandidate],
+) -> tuple[DiscoveryCandidate, ...]:
+    by_release: dict[str, DiscoveryCandidate] = {}
+    for item in candidates:
+        key = item.release_mbid.casefold()
+        current = by_release.get(key)
+        if current is None or item.score > current.score:
+            by_release[key] = item
+    rows = list(by_release.values())
+    family_rank: dict[str, tuple[int, bool, int]] = {}
+    for item in rows:
+        family = _discovery_family_id(item)
+        score, preferred, class_rank = family_rank.get(
+            family, (0, False, 255)
+        )
+        family_rank[family] = (
+            max(score, item.score),
+            preferred or _discovery_preferred_artist_album(item),
+            min(class_rank, item.class_rank),
+        )
+
+    def section(rank: tuple[int, bool, int]) -> int:
+        return 0 if rank[0] >= 90 else 1 if rank[1] else 2
+
+    def country_rank(value: str) -> int:
+        country = value.strip().casefold()
+        return 0 if country == "us" else 1 if country == "xw" else 3 if not country else 2
+
+    rows.sort(
+        key=lambda item: (
+            section(family_rank[_discovery_family_id(item)]),
+            -family_rank[_discovery_family_id(item)][0],
+            -int(family_rank[_discovery_family_id(item)][1]),
+            family_rank[_discovery_family_id(item)][2],
+            _discovery_family_title(item),
+            _discovery_family_id(item),
+            -item.score,
+            country_rank(item.country),
+            item.release_date or "9999-99-99",
+            item.release_mbid,
+        )
+    )
+    return tuple(rows)
+
+
+def _discovery_family_count(
+    candidates: Iterable[DiscoveryCandidate],
+) -> int:
+    return len({_discovery_family_id(item) for item in candidates})
+
+
+def _search_recording_candidates(
+    core: Any,
+    http: Any,
+    headers: dict[str, str],
+    options: MusicBrainzOptions,
+    query: str,
+    *,
+    artist_mbid: str,
+    tagged_recording_mbid: str,
+) -> tuple[list[DiscoveryCandidate], str]:
+    payload, error = _request_musicbrainz_entity(
+        http,
+        f"{core.MB_BASE}/recording/",
+        {"query": query, "fmt": "json", "limit": "50"},
+        headers,
+        options,
+        "Recording search",
+    )
+    if payload is None:
+        return [], error
+    found: list[DiscoveryCandidate] = []
+    detailed = 0
+    for hit in payload.get("recordings", []):
+        if not isinstance(hit, dict):
+            continue
+        if artist_mbid not in _credit_mbids(hit.get("artist-credit")):
+            continue
+        try:
+            score = int(hit.get("score") or 0)
+        except (TypeError, ValueError):
+            score = 0
+        if score < 55:
+            continue
+        recording_id = next(iter(_mbids(hit.get("id"))), "")
+        if not recording_id:
+            continue
+        if recording_id != tagged_recording_mbid:
+            score = min(score, 94)
+        recording = hit
+        if not isinstance(hit.get("releases"), list) or not hit.get("releases"):
+            if detailed >= 8:
+                continue
+            detailed += 1
+            recording, lookup_error = _request_musicbrainz_entity(
+                http,
+                f"{core.MB_BASE}/recording/{recording_id}",
+                {
+                    "inc": "artist-credits+releases+release-groups",
+                    "fmt": "json",
+                },
+                headers,
+                options,
+                "Recording",
+            )
+            if recording is None:
+                error = lookup_error or error
+                continue
+        found.extend(_project_discovery_candidates(
+            recording,
+            score=score,
+            match_basis=(
+                "exact-recording"
+                if recording_id == tagged_recording_mbid
+                else "same-artist-title"
+            ),
+        ))
+    return found, error
+
+
+def _interactive_work_candidates(
+    core: Any,
+    http: Any,
+    headers: dict[str, str],
+    options: MusicBrainzOptions,
+    tagged_recording_mbid: str,
+    artist_mbid: str,
+    work_mbids: Iterable[str],
+) -> tuple[list[DiscoveryCandidate], str]:
+    last_error = ""
+    for work_mbid in work_mbids:
+        work, error = _request_musicbrainz_entity(
+            http,
+            f"{core.MB_BASE}/work/{work_mbid}",
+            {"inc": "recording-rels+artist-credits", "fmt": "json"},
+            headers,
+            options,
+            "Work",
+        )
+        if work is None:
+            last_error = error
+            continue
+        found: list[DiscoveryCandidate] = []
+        for recording in _matching_work_recordings(
+            work, tagged_recording_mbid, {artist_mbid}
+        )[:_MAX_WORK_RECORDING_LOOKUPS]:
+            recording_mbid = next(iter(_mbids(recording.get("id"))), "")
+            if not recording_mbid:
+                continue
+            lookup, error = _request_musicbrainz_entity(
+                http,
+                f"{core.MB_BASE}/recording/{recording_mbid}",
+                {
+                    "inc": "artist-credits+releases+release-groups",
+                    "fmt": "json",
+                },
+                headers,
+                options,
+                "Recording",
+            )
+            if lookup is None:
+                last_error = error
+                continue
+            if artist_mbid not in _credit_mbids(lookup.get("artist-credit")):
+                continue
+            found.extend(_project_discovery_candidates(
+                lookup, score=95, match_basis="related-work"
+            ))
+        if found:
+            return found, ""
+    return [], last_error
+
+
+def resolve_interactive_identity_matches(
+    core: Any,
+    http: Any,
+    config_file: Path,
+    cfg: dict[str, Any],
+    track: Any,
+    options: MusicBrainzOptions,
+) -> DiscoveryResolution:
+    """Mirror the native Recording/Artist authority and release-family page."""
+    local_artist = str(getattr(track, "artist", "") or "").strip()
+    local_title = str(getattr(track, "title", "") or "").strip()
+    raw_artist_ids = str(getattr(track, "artist_mbid", "") or "").strip()
+    raw_recording_ids = str(
+        getattr(track, "recording_mbid", "") or ""
+    ).strip()
+    artist_mbids = sorted(_mbids(raw_artist_ids))
+    recording_mbids = sorted(_mbids(raw_recording_ids))
+    artist_input_status = (
+        "missing" if not raw_artist_ids else "invalid" if not artist_mbids
+        else "pending"
+    )
+    recording_input_status = (
+        "missing" if not raw_recording_ids
+        else "invalid" if len(recording_mbids) != 1
+        else "pending"
+    )
+    if not artist_mbids:
+        message = (
+            "A MusicBrainz Artist ID is missing." if artist_input_status == "missing"
+            else "The supplied MusicBrainz Artist ID is invalid."
+        )
+        return DiscoveryResolution(
+            (), message, identity_status=artist_input_status,
+            identity_message=message,
+            recording_status=(
+                "unresolved" if recording_input_status == "pending"
+                else recording_input_status
+            ),
+            artist_status=artist_input_status, friendly_artist=local_artist,
+            friendly_title=local_title,
+        )
+    try:
+        headers, _mode = core.mb_headers(config_file, cfg)
+    except Exception as exc:
+        message = (
+            "MusicBrainz authentication/refresh failed: "
+            f"{type(exc).__name__}"
+        )
+        return DiscoveryResolution(
+            (), message, identity_status="unresolved", identity_message=message,
+            recording_status=(
+                "unresolved" if recording_input_status == "pending"
+                else recording_input_status
+            ),
+            artist_status="unresolved", friendly_artist=local_artist,
+            friendly_title=local_title,
+        )
+
+    focused_artist_mbid = ""
+    friendly_artist = local_artist
+    last_error = ""
+    artist_resolved_but_mismatched = False
+    for artist_mbid in artist_mbids:
+        artist, error = _request_musicbrainz_entity(
+            http,
+            f"{core.MB_BASE}/artist/{artist_mbid}",
+            {"fmt": "json"},
+            headers,
+            options,
+            "Artist",
+        )
+        if artist is None:
+            last_error = error
+            continue
+        artist_name = str(artist.get("name") or "").strip()
+        if _artist_names_compatible(local_artist, artist_name):
+            focused_artist_mbid = artist_mbid
+            friendly_artist = artist_name or local_artist
+            break
+        artist_resolved_but_mismatched = True
+    if not focused_artist_mbid:
+        message = last_error or (
+            "None of the tagged Artist IDs resolves to the selected artist "
+            + local_artist
+        )
+        artist_status = (
+            "invalid" if artist_resolved_but_mismatched
+            or "not found" in message.casefold() else "unresolved"
+        )
+        return DiscoveryResolution(
+            (), message, identity_status=artist_status,
+            identity_message=message,
+            recording_status=(
+                "unresolved" if recording_input_status == "pending"
+                else recording_input_status
+            ),
+            artist_status=artist_status, friendly_artist=local_artist,
+            friendly_title=local_title,
+        )
+
+    candidates: list[DiscoveryCandidate] = []
+    warnings: list[str] = []
+    exact_valid = False
+    friendly_title = local_title
+    tagged_recording_mbid = recording_mbids[0] if len(recording_mbids) == 1 else ""
+    recording_status = recording_input_status
+    exact_error = (
+        "The track has no MusicBrainz Recording ID."
+        if recording_status == "missing"
+        else "The track has an invalid MusicBrainz Recording ID."
+    )
+    if tagged_recording_mbid:
+        recording, error = _request_musicbrainz_entity(
+            http,
+            f"{core.MB_BASE}/recording/{tagged_recording_mbid}",
+            {
+                "inc": "artist-credits+releases+release-groups+work-rels",
+                "fmt": "json",
+            },
+            headers,
+            options,
+            "Recording",
+        )
+        if recording is None:
+            exact_error = error
+            recording_status = (
+                "invalid" if "not found" in error.casefold()
+                else "unresolved"
+            )
+        elif focused_artist_mbid not in _credit_mbids(
+            recording.get("artist-credit")
+        ):
+            exact_error = (
+                "Recording Artist ID does not match the local Artist ID"
+            )
+            recording_status = "invalid"
+        else:
+            exact_valid = True
+            recording_status = "valid"
+            friendly_title = str(recording.get("title") or local_title).strip()
+            candidates.extend(
+                _project_discovery_candidates(recording, score=100)
+            )
+            if _discovery_family_count(candidates) <= 1:
+                work_candidates, work_error = _interactive_work_candidates(
+                    core,
+                    http,
+                    headers,
+                    options,
+                    tagged_recording_mbid,
+                    focused_artist_mbid,
+                    _related_work_mbids(recording),
+                )
+                candidates.extend(work_candidates)
+                if work_error and not work_candidates:
+                    warnings.append(work_error)
+            exact_error = (
+                "The Recording and Artist IDs are valid, but no eligible "
+                "official release was found."
+            )
+
+    finalized_exact = _finalize_discovery_candidates(candidates)
+    needs_artist_album = not any(
+        item.release_class == "album"
+        and _artist_names_compatible(item.release_artist, friendly_artist)
+        for item in finalized_exact
+    )
+    should_search = (
+        not finalized_exact
+        or _discovery_family_count(finalized_exact) <= 1
+        or needs_artist_album
+    )
+    if should_search and local_title:
+        query = (
+            f'recording:"{_lucene_phrase(local_title)}" '
+            f"AND arid:{focused_artist_mbid}"
+        )
+        suggestions, search_error = _search_recording_candidates(
+            core,
+            http,
+            headers,
+            options,
+            query,
+            artist_mbid=focused_artist_mbid,
+            tagged_recording_mbid=tagged_recording_mbid,
+        )
+        candidates.extend(suggestions)
+        if search_error:
+            warnings.append(
+                "Additional artist/title suggestions were unavailable: "
+                + search_error
+            )
+
+    finalized = _finalize_discovery_candidates(candidates)
+    used_fuzzy = any(item.score < 95 for item in finalized)
+    if exact_valid:
+        identity_message = (
+            f"Validated Recording and Artist identity: {friendly_artist} — "
+            f"{friendly_title}"
+        )
+        if used_fuzzy:
+            identity_message += (
+                ". Lower-percentage results are same-artist title "
+                "suggestions, not the tagged Recording ID."
+            )
+        error = "" if finalized else exact_error
+        status = "valid"
+        recording_status = "valid"
+    else:
+        identity_message = (
+            exact_error
+            + (
+                " Artist-restricted title recovery is shown below; choose a "
+                "release or correct Advanced IDs."
+                if finalized
+                else ""
+            )
+        )
+        error = "" if finalized else exact_error
+        status = recording_status
+    return DiscoveryResolution(
+        candidates=finalized,
+        error=error,
+        warnings=tuple(dict.fromkeys(value for value in warnings if value)),
+        identity_status=status,
+        identity_message=identity_message,
+        recording_status=recording_status,
+        artist_status="valid",
+        friendly_artist=friendly_artist,
+        friendly_title=friendly_title,
+        focused_artist_mbid=focused_artist_mbid,
+        used_fuzzy_search=used_fuzzy,
+    )
 
 
 def release_candidate_from_discovery(
@@ -1436,18 +1975,26 @@ def record_application(
     release_mbid: str,
     artwork: bytes,
     outcome: str,
+    authority_validated: bool,
     album_path: str = "",
     total_tracks: int = 0,
     completed_tracks: int = 0,
-) -> None:
+) -> bool:
     recording = next(iter(_mbids(getattr(track, "recording_mbid", None))), "")
     artist = _artist_key(_mbids(getattr(track, "artist_mbid", None)))
-    if not recording or not artist:
-        return
     connection = connect_sqlite(
         _database_path(core, config_file, cfg), timeout=10.0
     )
     try:
+        if not authority_validated or not recording or not artist:
+            with connection:
+                # A prior authority row must not keep a now-unresolved track
+                # green after a verified artwork-only write.
+                connection.execute(
+                    "DELETE FROM compilation_track_artwork WHERE track_path=?",
+                    (str(track.path),),
+                )
+            return False
         with connection:
             _ensure_progress_table(connection)
             connection.execute(
@@ -1487,6 +2034,22 @@ def record_application(
                     completed_tracks,
                     str(core.display_version()),
                 )
+        saved = connection.execute(
+            "SELECT recording_mbid, artist_mbid, artwork_sha256, outcome "
+            "FROM compilation_track_artwork WHERE track_path=?",
+            (str(track.path),),
+        ).fetchone()
+        if not saved:
+            return False
+        value = lambda key, index: (
+            saved[key] if hasattr(saved, "keys") else saved[index]
+        )
+        return bool(
+            str(value("recording_mbid", 0)).casefold() == recording
+            and str(value("artist_mbid", 1)).casefold() == artist.casefold()
+            and str(value("artwork_sha256", 2)) == hashlib.sha256(artwork).hexdigest()
+            and str(value("outcome", 3)) == outcome
+        )
     finally:
         connection.close()
 
@@ -1648,6 +2211,9 @@ def install(core: Any) -> None:
     )
     core.compilation_discover_releases = partial(
         discover_recording_releases, core
+    )
+    core.compilation_resolve_interactive_identity = partial(
+        resolve_interactive_identity_matches, core
     )
     core.compilation_release_candidate_from_discovery = (
         release_candidate_from_discovery

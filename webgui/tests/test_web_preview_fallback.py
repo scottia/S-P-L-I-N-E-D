@@ -8,7 +8,7 @@ import unittest
 from io import BytesIO
 
 from PIL import Image
-from mutagen.id3 import APIC, ID3
+from mutagen.id3 import APIC, ID3, TIT2, TPE1, TXXX
 
 from webgui.catalog import PreviewApp
 from webgui.services import Services
@@ -85,9 +85,11 @@ class BrowserFallbackTests(unittest.TestCase):
         self.assertIn("delete draft.scan.sqlite_shared", operations)
         self.assertIn("presentQueuedCandidates(job, prompt, options)", operations)
         self.assertIn("await focusQueuedAlbum(state.queuedDecision)", operations)
-        self.assertIn('\"EMBED Thumb\"', operations)
-        self.assertIn('context.album || job.payload?.name', operations)
-        self.assertIn('["embed-album", "comp", "scan"].includes(job.kind)', operations)
+        self.assertIn('\"EMBED Track\"', operations)
+        self.assertIn('job.kind === "embed-album"', operations)
+        self.assertIn('kind === "musicbrainz-results"', operations)
+        self.assertIn('"__manual_candidates__"', application)
+        self.assertIn('"Advanced IDs / Apply IDs"', application)
         self.assertIn('state.workspace === "enhance" && state.radioCurrent', operations)
         self.assertIn('$("fullscreenButton")', operations)
         self.assertNotIn('$("reviewWork")', operations)
@@ -134,7 +136,10 @@ class BrowserFallbackTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             database = root / "index.sqlite"
-            folders = [root / "comp-one", root / "comp-two", root / "identified"]
+            folders = [
+                root / "comp-one", root / "comp-two", root / "comp-three",
+                root / "identified",
+            ]
             for folder in folders:
                 folder.mkdir()
             paths = [folder / "01 Track.mp3" for folder in folders]
@@ -149,11 +154,14 @@ class BrowserFallbackTests(unittest.TestCase):
             third.touch()
             uncredited.touch()
             other_artist.touch()
-            for path, side in [(paths[0], 1200), (paths[1], 400)]:
+            for path, side in [(paths[0], 1200), (paths[1], 400), (other_artist, 400)]:
                 picture = BytesIO()
                 Image.new("RGB", (side, side), "blue").save(picture, "PNG")
                 tags = ID3()
                 tags.add(APIC(encoding=3, mime="image/png", type=3, desc="Cover", data=picture.getvalue()))
+                tags.add(TIT2(encoding=3, text=[path.stem]))
+                tags.add(TPE1(encoding=3, text=["Preserved Performer"]))
+                tags.add(TXXX(encoding=3, desc="Unrelated", text=["keep-me"]))
                 tags.save(path)
             with closing(connect(database)) as db:
                 db.execute("CREATE TABLE artists (artist_key TEXT PRIMARY KEY, artist_name TEXT)")
@@ -162,11 +170,14 @@ class BrowserFallbackTests(unittest.TestCase):
                 db.execute("CREATE TABLE tracks (track_key TEXT PRIMARY KEY, album_key TEXT, "
                            "path TEXT, title TEXT, artist_name TEXT)")
                 db.execute("CREATE TABLE compilation_track_artwork (track_path TEXT, outcome TEXT)")
+                db.execute("CREATE TABLE artist_album_appearances (artist_key TEXT, album_key TEXT, "
+                           "featured INTEGER, navidrome_album_id TEXT, song_paths_json TEXT)")
                 db.execute("INSERT INTO artists VALUES ('target', '3 Doors Down')")
                 db.executemany("INSERT INTO albums VALUES (?, ?, ?, ?, '2003', ?, ?)", [
                     ("one", "COMP One", str(folders[0]), str(covers[0]), "", "various"),
                     ("two", "COMP Two", str(folders[1]), str(covers[1]), None, "target"),
-                    ("identified", "Has Release ID", str(folders[2]), str(covers[2]), "release-id", "target"),
+                    ("three", "COMP Three", str(folders[2]), str(covers[2]), "", "various"),
+                    ("identified", "Has Release ID", str(folders[3]), str(covers[3]), "release-id", "target"),
                 ])
                 db.executemany("INSERT INTO tracks VALUES (?, ?, ?, 'Track', ?)", [
                     ("first", "one", str(paths[0]), "3 Doors Down; Guest"),
@@ -174,10 +185,16 @@ class BrowserFallbackTests(unittest.TestCase):
                     ("blue", "two", str(third), "3 Doors Down"),
                     ("untagged", "two", str(uncredited), ""),
                     ("other", "two", str(other_artist), "3 Doors Downward"),
-                    ("excluded", "identified", str(paths[2]), "3 Doors Down"),
+                    ("appearance", "three", str(paths[2]), "Alias Ensemble"),
+                    ("excluded", "identified", str(paths[3]), "3 Doors Down"),
                 ])
+                db.execute(
+                    "INSERT INTO artist_album_appearances VALUES "
+                    "('target','three',1,'navidrome-three','[\"comp-three/01 Track.mp3\"]')"
+                )
                 db.execute("INSERT INTO compilation_track_artwork VALUES (?, 'embedded-existing')", (str(paths[0]),))
                 db.execute("INSERT INTO compilation_track_artwork VALUES (?, 'embedded-existing')", (str(paths[1]),))
+                db.execute("INSERT INTO compilation_track_artwork VALUES (?, 'embedded-existing')", (str(other_artist),))
                 db.commit()
             app = PreviewApp(root, database, root, root, allow_comp_repairs=True)
             with closing(app.connect()) as db:
@@ -188,27 +205,52 @@ class BrowserFallbackTests(unittest.TestCase):
             summary = app.artist_comp_albums("target")
             report = app.artist_comp_report("target")
             full_fallback = app.fallback_tracks("two")
-            self.assertEqual([group["id"] for group in summary], ["one", "two"])
-            self.assertEqual([len(group["tracks"]) for group in summary], [1, 3])
+            self.assertEqual(set(app.artist_comp_album_ids("target")), {"one", "two", "three"})
+            self.assertEqual({group["id"] for group in summary}, {"one", "two", "three"})
+            self.assertEqual(
+                {group["id"]: len(group["tracks"]) for group in summary},
+                {"one": 1, "two": 3, "three": 1},
+            )
             self.assertTrue(summary[0]["cover"].startswith("/api/image/p."))
             self.assertEqual(app.image_bytes(summary[0]["cover"]), covers[0].read_bytes())
             self.assertNotIn("/api/fallback/thumbnail", summary[0]["cover"])
             with Image.open(BytesIO(app.fallback_thumbnail("one", "first"))) as thumbnail:
                 self.assertEqual(thumbnail.size, (1200, 1200))
-            self.assertEqual([group["id"] for group in report], ["one", "two"])
-            self.assertEqual([group["tracks"][0]["completed"] for group in report], [True, True])
-            self.assertFalse(report[1]["tracks"][1]["completed"])
-            self.assertEqual({track["key"] for track in report[1]["tracks"]}, {"second", "blue", "untagged"})
+            report_by_id = {group["id"]: group for group in report}
+            self.assertEqual(set(report_by_id), {"one", "two", "three"})
+            self.assertTrue(report_by_id["one"]["tracks"][0]["completed"])
+            self.assertTrue(report_by_id["two"]["tracks"][0]["completed"])
+            self.assertFalse(report_by_id["two"]["tracks"][1]["completed"])
+            self.assertEqual(
+                {track["key"] for track in report_by_id["two"]["tracks"]},
+                {"second", "blue", "untagged"},
+            )
+            self.assertEqual(
+                {track["key"] for track in report_by_id["three"]["tracks"]},
+                {"appearance"},
+            )
             self.assertEqual(
                 {track["key"] for track in full_fallback},
                 {"second", "blue", "untagged", "other"},
             )
             self.assertEqual(app.comp_track_status("one", "first")["status"], "green")
             self.assertEqual(app.comp_track_status("two", "second")["status"], "purple")
+            self.assertEqual(app.comp_track_status("two", "other")["status"], "purple")
             self.assertEqual(app.comp_track_status("two", "blue")["status"], "blue")
-            app.repair_artist_comp_track("target", "two", "second")
+            app.repair_comp_track("two", "second", "target")
             self.assertEqual(app.comp_track_status("two", "second")["status"], "green")
-            self.assertEqual(len(list((root / "comp-repair-backups").glob("*.original-image"))), 1)
+            with self.assertRaisesRegex(ValueError, "not in this Artist"):
+                app.repair_comp_track("two", "other", "target")
+            app.repair_comp_track("two", "other")
+            self.assertEqual(app.comp_track_status("two", "other")["status"], "green")
+            repaired_tags = ID3(other_artist)
+            self.assertEqual(repaired_tags.getall("TIT2")[0].text, [other_artist.stem])
+            self.assertEqual(repaired_tags.getall("TPE1")[0].text, ["Preserved Performer"])
+            self.assertEqual(
+                next(frame.text for frame in repaired_tags.getall("TXXX") if frame.desc == "Unrelated"),
+                ["keep-me"],
+            )
+            self.assertEqual(len(list((root / "comp-repair-backups").glob("*.original-image"))), 2)
 
     def test_only_missing_musicbrainz_album_ids_appear_in_fallback(self) -> None:
         with TemporaryDirectory() as directory:

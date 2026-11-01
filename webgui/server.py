@@ -589,22 +589,52 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
             str(value.get("album_id", "")), bool(value.get("enabled", True))
         )
 
-    @app.post("/api/artist/comp-repair")
-    def comp_repair(payload: dict):
+    def repair_comp(payload: dict, *, artist_required: bool):
         services = context.require()
         context.runtime.require_write()
-        value = payload
+        artist_id = str(payload.get("artist_id", "")).strip()
+        if artist_required and not artist_id:
+            raise ValueError("Choose the Artist COMP Report before repairing a track")
         with context.runtime.processing:
-            return services.catalog.repair_artist_comp_track(
-                str(value.get("artist_id", "")),
-                str(value.get("album_id", "")),
-                str(value.get("track_key", "")),
+            return services.catalog.repair_comp_track(
+                str(payload.get("album_id", "")),
+                str(payload.get("track_key", "")),
+                artist_id if artist_required else "",
             )
+
+    @app.post("/api/comp/repair")
+    def full_comp_repair(payload: dict):
+        return repair_comp(payload, artist_required=False)
+
+    @app.post("/api/artist/comp-repair")
+    def artist_comp_repair(payload: dict):
+        return repair_comp(payload, artist_required=True)
+
+    @app.post("/api/comp/embed")
+    def full_comp_embed(payload: dict):
+        value = dict(payload)
+        value.pop("artist_id", None)
+        value.pop("artist_name", None)
+        return context.require().embed_comp_track(value)
+
+    @app.post("/api/artist/comp-embed")
+    def artist_comp_embed(payload: dict):
+        if not str(payload.get("artist_id", "")).strip():
+            raise ValueError("Choose the Artist COMP Report before embedding a track")
+        return context.require().embed_comp_track(payload)
 
     @app.get("/api/jobs")
     def jobs():
         context.require()
         return context.jobs.list() if context.jobs else []
+
+    @app.get("/api/jobs/control-state")
+    def job_control_state():
+        context.require()
+        return context.jobs.control_state() if context.jobs else {
+            "pause_after_album": False,
+            "pause_all_albums": False,
+        }
 
     @app.post("/api/jobs")
     def stage_job(payload: dict):
@@ -628,6 +658,14 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
             if old:
                 return {"id": old["id"], "already_queued": True}
             payload = services.stage_album(payload)
+            try:
+                result = context.jobs.enqueue(str(kind), payload, staged=True)
+            except Exception:
+                services.remove_staged_artwork(payload)
+                raise
+            if result.get("already_queued"):
+                services.remove_staged_artwork(payload)
+            return result
         if kind == "comp":
             context.runtime.require_write()
             payload = services.validate_comp_payload(payload)
@@ -644,6 +682,7 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
             value.get("id"),
             value.get("value"),
             value.get("nonce"),
+            value.get("kind"),
         )
 
     @app.post("/api/artwork/upload")
