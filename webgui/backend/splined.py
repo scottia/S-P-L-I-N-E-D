@@ -1047,33 +1047,41 @@ def inventory(
     return albums, ignored
 
 
-def first(value: Any) -> str | None:
+def tag_text_values(value: Any) -> list[str]:
+    """Return clean text values without Mutagen's ID3 NUL rendering.
+
+    ID3 text frames may contain more than one value.  ``str(frame)`` joins
+    those values with NUL characters, which is neither the intended artist
+    credit nor representable in PostgreSQL JSONB.  Read the frame's real text
+    collection, flatten it, and retain each credit explicitly.
+    """
     if value is None:
-        return None
-    if isinstance(value, (list, tuple)):
-        if not value:
-            return None
-        value = value[0]
-    if isinstance(value, bytes):
-        value = value.decode("utf-8", "replace")
-    text = str(value).strip()
-    return text or None
+        return []
+    frame_values = getattr(value, "text", None)
+    if frame_values is not None:
+        value = frame_values
+    values = value if isinstance(value, (list, tuple)) else [value]
+    result: list[str] = []
+    for item in values:
+        nested = item if isinstance(item, (list, tuple)) else [item]
+        for part in nested:
+            if isinstance(part, bytes):
+                part = part.decode("utf-8", "replace")
+            for text in str(part or "").split("\0"):
+                text = text.strip()
+                if text:
+                    result.append(text)
+    return result
+
+
+def first(value: Any) -> str | None:
+    values = tag_text_values(value)
+    return values[0] if values else None
 
 
 def all_values(value: Any) -> str | None:
     """Preserve multi-value identifier tags as one parseable text value."""
-    text_values = getattr(value, "text", None)
-    if text_values is not None:
-        value = text_values
-    values = value if isinstance(value, (list, tuple)) else [value]
-    result: list[str] = []
-    for item in values:
-        if isinstance(item, bytes):
-            item = item.decode("utf-8", "replace")
-        text = str(item or "").strip()
-        if text:
-            result.append(text)
-    return "; ".join(result) or None
+    return "; ".join(tag_text_values(value)) or None
 
 
 def musicbrainz_recording_ufid(tags: Any) -> str | None:
@@ -1098,7 +1106,7 @@ def read_track(path: Path) -> Track:
     try:
         if suffix == ".mp3":
             tags = ID3(path)
-            title = first(tags.get("TIT2")); artist = first(tags.get("TPE1")); album = first(tags.get("TALB")); album_artist = first(tags.get("TPE2"))
+            title = first(tags.get("TIT2")); artist = all_values(tags.get("TPE1")); album = first(tags.get("TALB")); album_artist = all_values(tags.get("TPE2"))
             compilation = first(tags.get("TCMP"))
             for f in tags.getall("TXXX"):
                 desc = (getattr(f, "desc", "") or "").strip().lower()
@@ -1111,11 +1119,11 @@ def read_track(path: Path) -> Track:
                 recording_mbid = musicbrainz_recording_ufid(tags)
         elif suffix == ".flac":
             f = FLAC(path)
-            title = first(f.get("title")); artist = first(f.get("artist")); album = first(f.get("album")); album_artist = first(f.get("albumartist"))
+            title = first(f.get("title")); artist = all_values(f.get("artist")); album = first(f.get("album")); album_artist = all_values(f.get("albumartist"))
             album_mbid = first(f.get("musicbrainz_albumid")); recording_mbid = first(f.get("musicbrainz_trackid")); artist_mbid = all_values(f.get("musicbrainz_artistid")); compilation = first(f.get("compilation"))
         elif suffix in {".m4a", ".mp4"}:
             tags = MP4(path).tags or {}
-            title = first(tags.get("\xa9nam")); artist = first(tags.get("\xa9ART")); album = first(tags.get("\xa9alb")); album_artist = first(tags.get("aART"))
+            title = first(tags.get("\xa9nam")); artist = all_values(tags.get("\xa9ART")); album = first(tags.get("\xa9alb")); album_artist = all_values(tags.get("aART"))
             album_mbid = first(tags.get("----:com.apple.iTunes:MusicBrainz Album Id")); recording_mbid = first(tags.get("----:com.apple.iTunes:MusicBrainz Track Id"))
             artist_mbid = all_values(tags.get("----:com.apple.iTunes:MusicBrainz Artist Id"))
             cpil = tags.get("cpil"); compilation = "1" if cpil and bool(cpil[0]) else None
@@ -1123,7 +1131,7 @@ def read_track(path: Path) -> Track:
             f = MutagenFile(path, easy=True)
             tags = getattr(f, "tags", None) if f is not None else None
             if tags:
-                title = first(tags.get("title")); artist = first(tags.get("artist")); album = first(tags.get("album")); album_artist = first(tags.get("albumartist"))
+                title = first(tags.get("title")); artist = all_values(tags.get("artist")); album = first(tags.get("album")); album_artist = all_values(tags.get("albumartist"))
                 album_mbid = first(tags.get("musicbrainz_albumid")); recording_mbid = first(tags.get("musicbrainz_trackid")); artist_mbid = all_values(tags.get("musicbrainz_artistid")); compilation = first(tags.get("compilation"))
     except Exception as exc:
         raise SplinedError(f"Unable to read SPLINED audio tags from {path}: {exc}") from exc

@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import closing
 from pathlib import Path
 from uuid import uuid4
+import json
 import threading
 
 from psycopg.types.json import Jsonb
@@ -64,6 +65,23 @@ class JobAdapter:
                 ).fetchone()
                 if row and row["decision"] and row["decision"].get("nonce") == nonce:
                     value = str(row["decision"].get("value", ""))
+                    try:
+                        selected = json.loads(value)
+                    except (TypeError, ValueError):
+                        selected = None
+                    artwork = selected.get("artwork") if isinstance(selected, dict) else None
+                    if isinstance(artwork, dict) and artwork.get("prepared_id"):
+                        self.progress(
+                            {
+                                "prepared_comp": {
+                                    "prepared_id": str(artwork.get("prepared_id", "")),
+                                    "sha256": str(artwork.get("prepared_sha256", "")),
+                                    "album_id": str(self.context.get("album_id", "")),
+                                    "track_key": str(self.context.get("track_key", "")),
+                                    "artist_id": str(self.context.get("scope_artist_id", "")),
+                                }
+                            }
+                        )
                     db.execute(
                         "UPDATE web_jobs SET state='running',decision=NULL,progress=progress - 'prompt',updated_at=now() WHERE id=?",
                         (self.id,),
@@ -91,10 +109,26 @@ class JobQueue:
             self.lease.close()
             raise ValueError("Another WebGUI worker already owns this catalog")
         with closing(self.db.connect()) as db, db:
-            # Interrupted writes resume only after an explicit operator start.
-            db.execute(
-                "UPDATE web_jobs SET state='paused',decision=NULL,error='Interrupted by server restart',updated_at=now() WHERE state IN ('running','waiting')"
+            # COMP review is interactive, track-scoped browser work rather
+            # than a durable embedding queue.  Never resume or retain it
+            # across a server lifecycle: authority/candidate state must be
+            # rebuilt from the current Artist report and selected track.
+            comp_rows = list(
+                db.execute(
+                    "SELECT progress FROM web_jobs WHERE kind='comp'"
+                )
             )
+            db.execute("DELETE FROM web_jobs WHERE kind='comp'")
+            # Durable non-COMP writes resume only after an explicit operator
+            # action. Album staging and its prepared snapshots remain intact.
+            db.execute(
+                "UPDATE web_jobs SET state='paused',decision=NULL,error='Interrupted by server restart',updated_at=now() "
+                "WHERE kind<>'comp' AND state IN ('running','waiting')"
+            )
+        for row in comp_rows:
+            prepared = row["progress"].get("prepared_comp", {})
+            if isinstance(prepared, dict):
+                self.services._remove_prepared_comp(prepared.get("prepared_id", ""))
         self.thread = threading.Thread(
             target=self.run, name="splined-web-worker", daemon=True
         )

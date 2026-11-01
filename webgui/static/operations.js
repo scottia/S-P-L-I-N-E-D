@@ -99,21 +99,82 @@ function componentPayload(kind, imageURL, extra = {}) {
   return {kind, image: imageURL, adjustments: state.fx[target] || {},
     package_adjustments: state.themedPackaging ? state.fx.package : {}, fit: state.fit[target], ...extra};
 }
+function compContextActive() {
+  return activeArtworkDecision()?.jobKind === "comp" || state.editorMode === "fallback"
+    || state.editorMode === "artist" && state.compReportVisible;
+}
+function compTargetScope() {
+  const decision = activeArtworkDecision();
+  if (decision?.jobKind === "comp") {
+    return {
+      artist_id: String(decision.payload?.artist_id || ""),
+      album_id: String(decision.context?.album_id || decision.payload?.album_id || ""),
+      track_key: String(decision.context?.track_key || (decision.payload?.track_keys?.length === 1 ? decision.payload.track_keys[0] : "")),
+    };
+  }
+  if (state.editorMode === "artist" && state.compReportVisible) return {
+    artist_id: String(state.artist?.id || ""), album_id: String(state.compTrack?.albumId || ""), track_key: String(state.compTrack?.key || ""),
+  };
+  return {artist_id: "", album_id: String(state.album?.id || ""), track_key: String(state.fallbackTrack?.key || "")};
+}
+function compCandidateSource() {
+  const decision = activeArtworkDecision();
+  return decision?.jobKind === "comp" && decision.selected
+    ? decision.selected.image
+    : state.editorMode === "fallback" ? state.fallbackTrack?.image : state.compTrack?.image;
+}
+function compThumbnailOwner() {
+  const decision = activeArtworkDecision();
+  return JSON.stringify({
+    ...compTargetScope(),
+    job: decision?.jobId || "",
+    nonce: decision?.nonce || "",
+    candidate: compCandidateSource() || "",
+    adjustments: state.fx.comp || {},
+    upscale: !!state.upscalePreview,
+  });
+}
+function activeCompPrepared() {
+  if (state.pendingCompWrite?.preview && (!activeArtworkDecision() || state.pendingCompWrite.owner === compThumbnailOwner())) return state.pendingCompWrite.preview;
+  return state.compThumbnailPreview?.owner === compThumbnailOwner() ? state.compThumbnailPreview : null;
+}
+function invalidateCompThumbnail() {
+  state.compThumbnailPreview = null;
+}
+async function prepareCompThumbnail({announce = true} = {}) {
+  if (!compContextActive()) throw new Error("Choose a COMP track first");
+  const source = compCandidateSource(), scope = compTargetScope();
+  if (!source || !scope.album_id || !scope.track_key) throw new Error("Choose COMP artwork and a track before preparing its thumbnail");
+  const owner = compThumbnailOwner();
+  const endpoint = scope.artist_id ? "/api/artist/comp-thumbnail-preview" : "/api/comp/thumbnail-preview";
+  if (announce) setStatus("Preparing configured COMP thumbnail…", "busy");
+  const result = await post(endpoint, componentPayload("comp", source, {...scope, upscale: !!state.upscalePreview}));
+  if (owner !== compThumbnailOwner()) return null;
+  state.compThumbnailPreview = {...result, owner};
+  state.pendingCompWrite = null;
+  renderPanes(); renderReview();
+  if (announce) setStatus(`Embedded Thumb Ready · ${result.width} × ${result.height} · no audio written`, "ready");
+  return state.compThumbnailPreview;
+}
 function coverPayload() {
   if (!state.album) throw new Error("Choose an album first");
   return componentPayload("cover", state.selectedCover?.image || state.album.cover,
     {album_id: state.album.id, upscale: !!state.upscalePreview});
 }
 async function writeArtwork() {
-  if (state.queuedDecision) {
-    const candidate = state.queuedDecision.selected;
+  const decision = activeArtworkDecision();
+  if (decision) {
+    const candidate = decision.selected;
     if (!candidate) throw new Error("Preview a queued candidate before choosing it");
-    const value = state.queuedDecision.jobKind === "comp"
+    const prepared = decision.jobKind === "comp" && typeof activeCompPrepared === "function" ? activeCompPrepared() : null;
+    const value = decision.jobKind === "comp"
       ? JSON.stringify({
         action: "webgui-embed-track", number: candidate.queueValue,
-        artwork: {image: candidate.image, adjustments: state.fx.comp || {}, upscale: !!state.upscalePreview},
+        artwork: {image: candidate.image, adjustments: state.fx.comp || {}, upscale: !!state.upscalePreview,
+          ...(prepared ? {prepared_id: prepared.prepared_id, prepared_sha256: prepared.sha256} : {})},
       })
       : candidate.queueValue;
+    if (prepared) state.pendingCompWrite = {preview: prepared, owner: prepared.owner, jobId: decision.jobId};
     await submitQueuedDecision(value);
     return;
   }
@@ -129,9 +190,16 @@ async function writeArtwork() {
     };
     if (artistComp) scope.artist_id = state.artist?.id || "";
     const endpoint = artistComp ? "/api/artist/comp-embed" : "/api/comp/embed";
+    const prepared = typeof activeCompPrepared === "function" ? activeCompPrepared() : null;
+    if (prepared) Object.assign(scope, {prepared_id: prepared.prepared_id, prepared_sha256: prepared.sha256});
+    if (prepared) state.pendingCompWrite = {preview: prepared, owner: prepared.owner};
     const result = await post(endpoint, componentPayload("comp", track.image, scope));
-    state.upscalePreview = null; state.renderedPreview.comp = null; state.fx.comp = {};
+    if (result.image) Object.assign(track, {image: result.image, width: result.width, height: result.height, bytes: result.bytes});
     await refreshQueuedAlbumAfterSave();
+    state.upscalePreview = null; state.renderedPreview.comp = null; state.fx.comp = {};
+    state.compThumbnailPreview = null; state.pendingCompWrite = null;
+    if (typeof renderPanes === "function") renderPanes();
+    if (typeof renderReview === "function") renderReview();
     setStatus(result.completed
       ? `Embedded COMP track · ${result.file} · ${result.width} × ${result.height}`
       : `Artwork embedded and verified · ${result.file} · authoritative IDs remain unresolved, so this track stays blue`, "ready");
@@ -177,10 +245,17 @@ renderReview = function () {
     && !!(state.selectedPortrait?.image || state.selectedBanner?.image || state.artist?.portrait || state.artist?.banner);
   $("writeButton").disabled = entry ? !state.artist : !writable || (state.editorMode === "album" ? !(state.selectedCover?.image || state.album?.cover)
     : state.editorMode === "fallback" ? !state.fallbackTrack?.image : state.compReportVisible ? !state.compTrack?.image : !(currentPackage || (state.radioArtist && (state.selectedPortrait || state.artist?.portrait)) || (state.radioBanner && (state.selectedBanner || state.artist?.banner))));
+  const compContext = compContextActive();
   const staged = state.editorMode === "album" && state.embedQueue.some(item => item.id === state.album?.id);
-  $("embedBatchButton").disabled = !writable || state.editorMode !== "album" || !albumEmbeddingEligible(state.album) || !(state.selectedCover?.image || state.album?.cover);
+  $("writeButton").textContent = compContext ? "EMBED Comp" : $("writeButton").textContent;
+  $("embedBatchButton").textContent = "EMBED Batch";
+  $("embedBatchButton").classList.add("action-purple");
+  $("embedBatchButton").classList.remove("action-cyan");
+  $("embedBatchButton").disabled = compContext || !writable || state.editorMode !== "album"
+    || !albumEmbeddingEligible(state.album) || !(state.selectedCover?.image || state.album?.cover);
   $("embedBatchButton").classList.toggle("staged", staged);
-  $("embedBatchButton").title = staged ? "Already staged; press again to confirm the existing queue entry" : "Write the cover and stage track embedding";
+  $("embedBatchButton").title = compContext ? "Album EMBED Batch is unavailable for track-scoped COMP artwork"
+    : staged ? "Already staged; press again to confirm the existing queue entry" : "Write the cover and stage track embedding";
   $("musicbrainzButton").disabled = !state.album || state.editorMode !== "album";
   $("bypassButton").disabled = !state.album || state.editorMode !== "album";
   $("writeNotice").textContent = writable ? "Live Write · WRITE saves artwork. EMBED Batch saves the cover and stages track embedding. COMP work asks for track artwork in queued review." : "Read mode · searching and previewing are enabled. Enable Live Write in Settings to save artwork or track tags.";
@@ -191,18 +266,23 @@ renderReview = function () {
     $("embedBatchButton").disabled = true;
     $("writeNotice").textContent = "COMP preview mode · turn preview off before changing or embedding track artwork.";
   }
-  if (state.queuedDecision) {
-    const musicBrainzResults = state.queuedDecision.kind === "musicbrainz-results";
-    const compCandidate = state.queuedDecision.jobKind === "comp" && !!state.queuedDecision.selected;
-    $("upscaleButton").disabled = state.compPreviewMode || !compCandidate;
-    $("writeButton").textContent = musicBrainzResults ? "CHOOSE RESULT" : state.queuedDecision.jobKind === "comp" ? "EMBED Track" : "WRITE Cover";
-    $("writeButton").disabled = !writable || state.compPreviewMode || musicBrainzResults || !state.queuedDecision.selected;
-    $("embedBatchButton").disabled = true;
+  const decision = activeArtworkDecision();
+  if (decision) {
+    const musicBrainzResults = decision.kind === "musicbrainz-results";
+    const compCandidate = decision.jobKind === "comp" && !!decision.selected;
+    $("upscaleButton").disabled = state.compPreviewMode || decision.jobKind === "comp" && !compCandidate;
+    $("writeButton").textContent = decision.jobKind === "comp" ? "EMBED Comp" : "WRITE Cover";
+    $("writeButton").disabled = !writable || state.compPreviewMode || musicBrainzResults || !decision.selected;
+    if (decision.jobKind === "comp") $("embedBatchButton").disabled = true;
     $("writeNotice").textContent = musicBrainzResults ? "Choose a MusicBrainz release in Candidate Artwork; its artwork candidates load next."
       : !writable ? "Read-only queued review · choices are evaluated but files are not saved."
-      : compCandidate ? "Live Write · adjust or upscale this candidate, then EMBED Track writes only the active COMP track."
+      : compCandidate ? "EMBED Comp prepares the preferred square thumbnail and writes only the active COMP track."
       : "Live Write · select one candidate, then save it here.";
+  } else if (compContext) {
+    $("writeNotice").textContent = !writable ? "Read mode · enable Live Write to embed the selected COMP track."
+      : "Track-scoped COMP · current artwork, Upscale Preview, and enhancements can be embedded without MusicBrainz.";
   }
+  $("writeNotice").hidden = compContext;
 };
 async function searchAlbum(releaseId = null) {
   if (!state.album) return;
@@ -231,7 +311,7 @@ async function enqueueComp(albumId, keys, artistId = "") {
   if (artistId) payload.artist_id = artistId;
   state.sourceDiagnostics = [];
   const result = await post("/api/jobs", {kind: "comp", payload});
-  await reviewJob(result.id);
+  await reviewJob(result.id, true);
 }
 async function launchFallback() {
   if (!state.album) return;
@@ -248,7 +328,7 @@ async function launchArtistComp() {
   for (const group of groups) {
     const result = await post("/api/jobs", {kind: "comp", payload: {artist_id: artistId, album_id: group.id, track_keys: group.keys}}); first ||= result.id;
   }
-  await reviewJob(first);
+  await reviewJob(first, true);
 };
 async function launchCandidateWork() {
   if (state.queuedDecision?.jobKind === "scan") return skipQueuedAlbum();
@@ -298,12 +378,24 @@ async function focusQueuedAlbum(decision) {
   const albumId = decision?.context?.album_id;
   const scopeArtistId = decision?.jobKind === "comp" ? String(decision?.payload?.artist_id || "") : "";
   const scopeKeys = Array.isArray(decision?.payload?.track_keys) ? decision.payload.track_keys : [];
+  const promptTrackKey = String(decision?.context?.track_key || (scopeKeys.length === 1 ? scopeKeys[0] : ""));
+  const staleCompTrack = decision?.jobKind === "comp" && state.compTrack
+    && (state.compTrack.albumId !== albumId || (promptTrackKey && state.compTrack.key !== promptTrackKey));
+  if (staleCompTrack) {
+    // A queued prompt can arrive after the operator changes Artists.  Clear
+    // the old Selected Artwork immediately, before the async Artist/report
+    // hydration below, so it can never look attached to the new COMP result.
+    state.compTrack = null; state.upscalePreview = null;
+    if (state.renderedPreview) state.renderedPreview.comp = null;
+    state.compThumbnailPreview = null; state.pendingCompWrite = null;
+    if (typeof renderReview === "function") renderReview();
+  }
   const scopedGroup = scopeArtistId === state.artist?.id && state.editorMode === "artist" && state.compReportVisible
     ? state.compGroups.find(group => group.id === albumId && scopeKeys.every(key => group.tracks.some(track => track.key === key)))
     : null;
   if (scopedGroup) {
     decision.previousCandidates = [];
-    const trackKey = decision.context?.track_key || (scopeKeys.length === 1 ? scopeKeys[0] : "");
+    const trackKey = promptTrackKey;
     if (trackKey && scopedGroup.tracks.some(track => track.key === trackKey)
       && (state.compTrack?.albumId !== albumId || state.compTrack?.key !== trackKey))
       await selectArtistCompTrack(albumId, trackKey);
@@ -330,12 +422,18 @@ async function focusQueuedAlbum(decision) {
     $("compReportButton").textContent = "CLOSE REPORT";
     renderLibrary(); renderHero(); renderSources(); renderCandidates(); renderWorkspace();
     loadArtistMetadata(scopeArtistId);
-    const trackKey = decision.context?.track_key || (scopeKeys.length === 1 ? scopeKeys[0] : "");
+    const trackKey = promptTrackKey;
     if (trackKey && group.tracks.some(track => track.key === trackKey))
       await selectArtistCompTrack(albumId, trackKey);
     return;
   }
-  if (!albumId || state.album?.id === albumId) return;
+  if (!albumId) return;
+  if (state.album?.id === albumId) {
+    if (decision.jobKind === "comp" && state.editorMode === "fallback" && promptTrackKey
+      && state.fallbackTrack?.key !== promptTrackKey)
+      await selectFallbackTrack(promptTrackKey, false);
+    return;
+  }
   const request = ++state.selectionRequest;
   const album = await api("/api/album?id=" + encodeURIComponent(albumId));
   if (request !== state.selectionRequest || state.queuedDecision !== decision) return;
@@ -356,6 +454,8 @@ async function focusQueuedAlbum(decision) {
   if (decision.jobKind !== "scan") markSelectedAlbum(album);
   renderLibrary(); renderHero(); renderSources(); renderCandidates(); renderWorkspace();
   loadArtistMetadata(album.artist_id);
+  if (fallback && promptTrackKey && tracks.some(track => track.key === promptTrackKey))
+    await selectFallbackTrack(promptTrackKey, false);
 }
 async function submitQueuedDecision(value) {
   const decision = state.queuedDecision;
@@ -374,6 +474,9 @@ async function submitQueuedDecision(value) {
 }
 async function presentQueuedCandidates(job, prompt, options) {
   if ($("workspaceDialog").open) $("workspaceDialog").close();
+  const currentDecision = state.queuedDecision;
+  const samePrompt = currentDecision?.jobId === job.id && currentDecision?.nonce === prompt.nonce;
+  const preserveSelection = samePrompt && currentDecision?.selected;
   const previousCandidates = state.queuedDecision?.previousCandidates || state.candidates;
   const previousSourceDiagnostics = state.queuedDecision?.previousSourceDiagnostics || state.sourceDiagnostics;
   const authority = job.progress?.current?.fallback_authority || {};
@@ -382,7 +485,8 @@ async function presentQueuedCandidates(job, prompt, options) {
   context.track_artist ||= authority.artist || "";
   state.queuedDecision = {
     jobId: job.id, jobKind: job.kind, nonce: prompt.nonce, kind: context.kind || "", context,
-    payload: job.payload || {}, previousCandidates, previousSourceDiagnostics, selected: null,
+    payload: job.payload || {}, previousCandidates, previousSourceDiagnostics,
+    selected: preserveSelection ? currentDecision.selected : null,
     authority: {...authority, ...(context.authority || {})},
     diagnostics: job.progress?.current?.diagnostics?.items || [], authoritySaved: job.progress?.current?.authority_saved || null,
   };
@@ -390,8 +494,9 @@ async function presentQueuedCandidates(job, prompt, options) {
   state.candidates = options.map(queuedCandidate);
   state.sourceDiagnostics = state.queuedDecision.diagnostics;
   state.activeSource = ""; state.compare.clear(); resetCandidateFilters();
-  await focusQueuedAlbum(state.queuedDecision);
+  if (!samePrompt) await focusQueuedAlbum(state.queuedDecision);
   if (!state.queuedDecision || state.queuedDecision.jobId !== job.id) return;
+  if (state.pendingCompWrite && state.pendingCompWrite.owner !== compThumbnailOwner()) state.pendingCompWrite = null;
   renderWorkspace(); renderSources(); renderCandidates(); renderReview();
   setStatus("Queued artwork review · select a candidate, then save from Selected Artwork", "busy");
 }
@@ -401,8 +506,8 @@ async function presentQueuedMusicBrainz(job, prompt, options) {
   // Polling may return the same waiting prompt while the operator is choosing
   // an edition.  Keep that browser-local choice until a decision is submitted;
   // submitQueuedDecision clears queuedDecision before a genuinely new prompt.
-  const preserveSelection = currentDecision?.jobId === job.id
-    && currentDecision?.kind === "musicbrainz-results";
+  const samePrompt = currentDecision?.jobId === job.id && currentDecision?.nonce === prompt.nonce;
+  const preserveSelection = samePrompt && currentDecision?.kind === "musicbrainz-results";
   const previousCandidates = state.queuedDecision?.previousCandidates || state.candidates;
   const previousSourceDiagnostics = state.queuedDecision?.previousSourceDiagnostics || state.sourceDiagnostics;
   const authority = job.progress?.current?.fallback_authority || {};
@@ -424,7 +529,7 @@ async function presentQueuedMusicBrainz(job, prompt, options) {
   state.candidates = [];
   state.sourceDiagnostics = state.queuedDecision.diagnostics;
   state.activeSource = ""; state.compare.clear(); resetCandidateFilters();
-  await focusQueuedAlbum(state.queuedDecision);
+  if (!samePrompt) await focusQueuedAlbum(state.queuedDecision);
   if (!state.queuedDecision || state.queuedDecision.jobId !== job.id) return;
   renderWorkspace(); renderSources(); renderCandidates(); renderReview();
   const track = [context.track_artist, context.track_title].filter(Boolean).join(" — ");
@@ -573,7 +678,12 @@ async function pollJobs() {
     if (stagedChanged && !completedAlbums.length) { renderHero(); renderReview(); }
     if (state.reviewJobId) {
       const job = state.jobs.find(item => item.id === state.reviewJobId);
-      const key = job?.id + ":" + job?.state + ":" + job?.progress.prompt?.nonce;
+      const key = job?.id + ":" + job?.state + ":" + job?.progress.prompt?.nonce
+        + ":" + (job?.progress?.message || "");
+      if (job?.kind === "comp" && ["queued", "running"].includes(job.state)
+        && job.progress?.message && key !== lastPrompt) {
+        setStatus(job.progress.message, "busy");
+      }
       if (job && key !== lastPrompt && (job.state === "waiting" || $("workspaceDialog").open)) {
         lastPrompt = key; await renderJob(job);
       }
@@ -599,11 +709,14 @@ async function pollJobs() {
     }
   } finally { jobsPolling = false; }
 }
-async function reviewJob(id) {
+async function reviewJob(id, quietRunning = false) {
   state.reviewJobId = id; lastPrompt = "";
   const job = (state.jobs || []).find(item => item.id === id);
   state.reviewJobState = job?.state || "";
-  if (job) await renderJob(job); else dialog("Queued work");
+  if (job && quietRunning && job.kind === "comp" && job.state !== "waiting") {
+    if ($("workspaceDialog").open) $("workspaceDialog").close();
+    setStatus(job.progress?.message || "COMP track review queued", "busy");
+  } else if (job) await renderJob(job); else if (!quietRunning) dialog("Queued work");
   await pollJobs();
 }
 async function renderJob(job) {
@@ -622,7 +735,8 @@ async function renderJob(job) {
     return;
   }
   const body = dialog("Queued work · " + job.kind);
-  body.append(node("p", "", job.payload.name || job.progress.message || job.state));
+  body.append(node("p", "", job.payload.name || job.state));
+  if (job.progress.message) body.append(node("p", "operation-progress", job.progress.message));
   if (job.error) body.append(node("p", "operation-error", job.error));
   const diagnostics = job.progress.current?.diagnostics?.items || [];
   if (job.kind === "comp" && diagnostics.length) {
@@ -1293,7 +1407,14 @@ async function repairFallback() {
 const quickPreview=applyPreviewEffects;
 let previewTimer,previewGeneration=0;
 applyPreviewEffects=function () {
-  quickPreview();clearTimeout(previewTimer);const generation=++previewGeneration;
+  clearTimeout(previewTimer);const generation=++previewGeneration;
+  if (activeCompPrepared()) {
+    for (const element of document.querySelectorAll('#selectedFrame .selected-image,#albumPane img')) {
+      element.style.filter='none';element.style.transform='none';
+    }
+    return;
+  }
+  quickPreview();
   if (!state.server?.authenticated) return;
   previewTimer=setTimeout(()=>runAction(async()=>{
     const requests=[];
@@ -1306,9 +1427,10 @@ applyPreviewEffects=function () {
         element.src=result.image;element.style.filter='none';element.style.transform='none';
       })());
     };
-    if (state.queuedDecision?.jobKind==='comp' && state.queuedDecision.selected || state.editorMode==='fallback' || state.editorMode==='artist' && state.compReportVisible) {
-      const source=state.queuedDecision?.jobKind==='comp' && state.queuedDecision.selected
-        ? state.queuedDecision.selected.image : state.editorMode==='fallback' ? state.fallbackTrack?.image : state.compTrack?.image;
+    const decision=activeArtworkDecision();
+    if (decision?.jobKind==='comp' && decision.selected || state.editorMode==='fallback' || state.editorMode==='artist' && state.compReportVisible) {
+      const source=decision?.jobKind==='comp' && decision.selected
+        ? decision.selected.image : state.editorMode==='fallback' ? state.fallbackTrack?.image : state.compTrack?.image;
       add('#selectedFrame .selected-image','comp',source,{upscale:!!state.upscalePreview});
       add('#albumPane img','comp',source,{upscale:!!state.upscalePreview});
     } else if (state.editorMode==='album') {

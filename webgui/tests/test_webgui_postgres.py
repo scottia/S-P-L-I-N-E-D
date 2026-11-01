@@ -39,7 +39,7 @@ import splined_compilation_authority_policy as compilation
 from webgui.database import Database
 from webgui.runtime import Runtime
 from webgui.services import Services
-from webgui.jobs import JobQueue
+from webgui.jobs import JobAdapter, JobQueue
 from webgui.server import create_app
 from webgui.catalog import embedded_track_artwork_bytes
 from webgui.credentials import Credentials
@@ -146,6 +146,36 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             ).fetchone()
         track = self.services.hydrate_tracks(row["album_key"])[0]
         return row, track, target
+
+    def test_multivalue_id3_artist_is_safe_in_postgresql_job_progress(self):
+        path = self.root / "multi-credit.mp3"
+        tags = ID3()
+        tags.add(TIT2(encoding=3, text=["Say Something"]))
+        tags.add(TPE1(encoding=3, text=["A Great Big World", "Christina Aguilera"]))
+        tags.add(TPE2(encoding=3, text=["Various Artists"]))
+        tags.add(TALB(encoding=3, text=["Billboard Hot 100 Singles of 2014"]))
+        tags.save(path, v2_version=4)
+        track = core.read_track(path)
+        job_id = uuid4().hex
+        with closing(self.db.connect()) as db, db:
+            db.raw.execute(
+                "INSERT INTO web_jobs(id,kind,state,payload) VALUES(%s,%s,%s,%s)",
+                (job_id, "comp", "running", Jsonb({"album_id": "fixture"})),
+            )
+        adapter = JobAdapter(SimpleNamespace(db=self.db), job_id)
+
+        adapter.progress(
+            {"current": {"fallback_authority": {"artist": track.artist}}}
+        )
+
+        with closing(self.db.connect()) as db:
+            saved = db.execute(
+                "SELECT progress FROM web_jobs WHERE id=?", (job_id,)
+            ).fetchone()["progress"]
+        self.assertEqual(
+            saved["current"]["fallback_authority"]["artist"],
+            "A Great Big World; Christina Aguilera",
+        )
 
     @staticmethod
     def title_suggestion_resolution():
@@ -441,18 +471,33 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         candidate = self.runtime.temporary_cache / "selected-comp-candidate.png"
         candidate.parent.mkdir(parents=True, exist_ok=True)
         Image.new("RGB", (900, 600), "orange").save(candidate)
+        prepared = self.services.prepare_comp_thumbnail({
+            "artist_id": self.row["artist_key"],
+            "album_id": comp_row["album_key"],
+            "track_key": target_key,
+            "image": self.services.catalog.image(candidate),
+            "adjustments": {"Brightness": 8},
+            "upscale": True,
+        })
+        self.assertFalse(prepared["audio_written"])
+        self.assertEqual((prepared["width"], prepared["height"]), (300, 300))
+        self.assertIsNone(embedded_track_artwork_bytes(target_path))
+        restarted_services = Services(self.runtime)
         with patch.object(
-            self.services, "_comp_track_authority_validated", return_value=True
+            restarted_services, "_comp_track_authority_validated", return_value=True
         ):
-            embedded = self.services.embed_comp_track({
+            embedded = restarted_services.embed_comp_track({
                 "artist_id": self.row["artist_key"],
                 "album_id": comp_row["album_key"],
                 "track_key": target_key,
                 "image": self.services.catalog.image(candidate),
                 "adjustments": {"Brightness": 8},
                 "upscale": True,
+                "prepared_id": prepared["prepared_id"],
+                "prepared_sha256": prepared["sha256"],
             })
         self.assertEqual((embedded["width"], embedded["height"]), (300, 300))
+        self.assertEqual(embedded["artwork_sha256"], prepared["sha256"])
         with Image.open(BytesIO(embedded_track_artwork_bytes(target_path))) as image:
             self.assertEqual(image.size, (300, 300))
         self.assertIsNone(embedded_track_artwork_bytes(other_path))
@@ -523,6 +568,26 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.assertEqual((enlarged["width"], enlarged["height"]), (1200, 1800))
         self.assertTrue(enlarged["upscaled"])
         self.assertIn("200% ceiling", enlarged["reason"])
+        self.assertEqual(enlarged["upscale_percent"], 200.0)
+        self.assertTrue(enlarged["upscale_limited"])
+
+        ideal_source = self.runtime.cache / "near-ideal-cover.png"
+        Image.new("RGB", (1500, 1500), "navy").save(ideal_source)
+        ideal_preview = self.services.preview(
+            {
+                "image": self.services.catalog.image(ideal_source),
+                "kind": "comp",
+                "upscale": True,
+            }
+        )
+        self.assertEqual(
+            (ideal_preview["width"], ideal_preview["height"]), (1800, 1800)
+        )
+        self.assertEqual(ideal_preview["upscale_percent"], 120.0)
+        self.assertFalse(ideal_preview["upscale_limited"])
+        self.assertIn("120% to 1800px Ideal", ideal_preview["reason"])
+        self.assertNotIn("200%", ideal_preview["reason"])
+        self.assertEqual(ideal_preview["embedded_thumbnail_size"], 300)
         self.assertTrue(list((self.runtime.temporary_cache / "web-images").iterdir()))
         self.assertFalse((self.runtime.cache / "web-images").exists())
 
@@ -1095,17 +1160,35 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             credentials.save("navidrome", {"../bad": "secret"})
 
-    def test_interrupted_job_pauses_and_decision_nonce_rejects_stale_input(self):
+    def test_restart_discards_comp_jobs_but_pauses_durable_work(self):
+        prepared_id = "a" * 32
+        prepared_dir = self.services._prepared_comp_directory()
+        prepared_image = prepared_dir / (prepared_id + ".jpg")
+        prepared_manifest = prepared_dir / (prepared_id + ".json")
+        prepared_image.write_bytes(b"prepared")
+        prepared_manifest.write_text("{}", encoding="utf-8")
         with closing(self.db.connect()) as db, db:
+            db.raw.execute(
+                "INSERT INTO web_jobs(id,kind,state,payload,progress) "
+                "VALUES('interrupted','comp','waiting','{}',%s)",
+                (Jsonb({"prepared_comp": {"prepared_id": prepared_id}}),),
+            )
             db.execute(
-                "INSERT INTO web_jobs(id,kind,state,payload) VALUES('interrupted','comp','waiting','{}')"
+                "INSERT INTO web_jobs(id,kind,state,payload) VALUES('completed-comp','comp','done','{}')"
+            )
+            db.execute(
+                "INSERT INTO web_jobs(id,kind,state,payload) VALUES('durable','embed-album','waiting','{}')"
             )
         self.queue = JobQueue(self.services)
-        self.assertEqual(self.queue.list()[0]["state"], "paused")
+        rows = {item["id"]: item for item in self.queue.list()}
+        self.assertNotIn("interrupted", rows)
+        self.assertNotIn("completed-comp", rows)
+        self.assertEqual(rows["durable"]["state"], "paused")
+        self.assertEqual(rows["durable"]["error"], "Interrupted by server restart")
+        self.assertFalse(prepared_image.exists())
+        self.assertFalse(prepared_manifest.exists())
         with self.assertRaises(ValueError):
             self.queue.action("decision", "interrupted", "1", "stale")
-        self.queue.action("remove", "interrupted")
-        self.assertEqual(self.queue.list(), [])
 
     def test_album_queue_bulk_actions_never_change_hidden_comp_work(self):
         self.queue = JobQueue(self.services)
@@ -1704,7 +1787,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             )
 
     def test_rendered_browser_comp_workflows_and_persistent_album_queue(self):
-        """Drive the real app in Chrome; only external provider replies are simulated."""
+        """Drive local FastAPI in a rendered browser; external providers are simulated."""
         try:
             from playwright.sync_api import expect, sync_playwright
         except ImportError as error:  # pragma: no cover - CI installs test requirements.
@@ -1741,6 +1824,17 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             "10,000 Maniacs",
             "6c8b9855-ba8b-48f9-ac1d-42167f7f7b18",
             "11111111-1111-4111-8111-111111111111",
+        )
+        initial_target_art_buffer = BytesIO()
+        Image.new("RGB", (640, 640), "maroon").save(
+            initial_target_art_buffer, format="JPEG"
+        )
+        initial_target_art = initial_target_art_buffer.getvalue()
+        compilation.replace_embedded_artwork(
+            target,
+            initial_target_art,
+            "jpeg",
+            {"width": 640, "height": 640},
         )
         comp_track(
             other,
@@ -1797,7 +1891,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             "retry_max": 1, "min_delay": 0.001, "recording_timeout": 2,
         }}), encoding="utf-8")
 
-        def wait_for_embedded_art(path: Path, timeout: float = 15.0) -> bytes:
+        def wait_for_embedded_art(
+            path: Path, previous: bytes | None = None, timeout: float = 15.0
+        ) -> bytes:
             """Wait for verified audio readback, not a transient progress banner."""
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
@@ -1805,7 +1901,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     body = embedded_track_artwork_bytes(path)
                 except Exception:
                     body = None
-                if body:
+                if body and body != previous:
                     return body
                 time.sleep(0.1)
             self.fail(f"embedded artwork was not readable from {path.name}")
@@ -2075,6 +2171,84 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     expect(page.locator("#fallbackReport")).not_to_contain_text(
                         "Other Song"
                     )
+
+                    # Selecting a report track is a complete, direct COMP
+                    # workflow.  Its current embedded thumb is the Selected
+                    # Artwork source; Upscale Preview and EMBED Comp do not
+                    # require opening MusicBrainz release results.
+                    page.locator("#fallbackReport .fallback-track").click()
+                    expect(page.locator("#selectedSource")).to_have_text(
+                        "Embedded track"
+                    )
+                    expect(page.locator("#selectedDimensions")).to_have_text(
+                        "640 × 640"
+                    )
+                    expect(page.locator("#writeButton")).to_have_text(
+                        "EMBED Comp"
+                    )
+                    expect(page.locator("#writeButton")).to_be_enabled()
+                    expect(page.locator("#embedBatchButton")).to_have_text(
+                        "EMBED Batch"
+                    )
+                    expect(page.locator("#embedBatchButton")).to_be_disabled()
+                    self.assertEqual(
+                        embedded_track_artwork_bytes(target), initial_target_art
+                    )
+                    page.locator("#upscaleButton").click()
+                    expect(page.locator("#statusText")).to_contain_text(
+                        "Embedded Thumb Ready · 300 × 300", timeout=15000
+                    )
+                    expect(page.locator("#selectedDimensions")).to_have_text(
+                        "300 × 300"
+                    )
+                    artwork_info = page.locator("#artMetadata")
+                    expect(artwork_info).to_contain_text("Before")
+                    expect(artwork_info).to_contain_text("Track(s) (1)")
+                    expect(artwork_info).to_contain_text("640 × 640")
+                    expect(artwork_info).to_contain_text("After")
+                    expect(artwork_info).to_contain_text("Embedded Thumb")
+                    expect(artwork_info).to_contain_text("Source")
+                    expect(artwork_info).to_contain_text("Upscale Preview")
+                    expect(artwork_info).to_contain_text("Enhancement")
+                    expect(page.locator("#writeNotice")).to_be_hidden()
+                    expect(page.locator("#selectedQuality")).to_have_text(
+                        "Thumb Ready"
+                    )
+                    self.assertEqual(
+                        embedded_track_artwork_bytes(target), initial_target_art
+                    )
+                    page.locator("#writeButton").click()
+                    direct_art = wait_for_embedded_art(target, initial_target_art)
+                    with Image.open(BytesIO(direct_art)) as embedded:
+                        self.assertEqual(embedded.size, (300, 300))
+                    expect(page.locator("#statusText")).to_contain_text(
+                        "Embedded COMP track", timeout=15000
+                    )
+                    self.assertIsNone(embedded_track_artwork_bytes(other))
+
+                    # Restore the disposable fixture to its pre-write state so
+                    # the same browser test can independently exercise the MB
+                    # candidate workflow below.
+                    compilation.replace_embedded_artwork(
+                        target,
+                        initial_target_art,
+                        "jpeg",
+                        {"width": 640, "height": 640},
+                    )
+                    with closing(self.db.connect()) as db, db:
+                        db.execute(
+                            "DELETE FROM compilation_track_artwork WHERE lower(track_path)=lower(?)",
+                            (str(target),),
+                        )
+                        db.execute(
+                            "DELETE FROM compilation_album_progress WHERE album_path=?",
+                            (str(comp),),
+                        )
+                    page.locator("#compReportButton").click()
+                    page.locator("#compReportButton").click()
+                    expect(page.locator("#fallbackReport")).to_contain_text(
+                        "Because the Night"
+                    )
                     with page.expect_request(
                         lambda request: request.method == "POST"
                         and request.url.endswith("/api/jobs")
@@ -2147,7 +2321,14 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         ".musicbrainz-review-actions button.primary"
                     )
                     expect(use_selected).to_be_enabled()
-                    use_selected.click()
+                    # Job polling can replace this enabled button with an
+                    # equivalent node between Playwright's stability checks.
+                    # Query and dispatch atomically on the currently enabled node.
+                    page.evaluate("""() => {
+                        const button = document.querySelector('.musicbrainz-review-actions button.primary');
+                        if (!button || button.disabled) throw new Error('selected release was not retained');
+                        button.click();
+                    }""")
                     expect(page.locator(".candidate-image-button").first).to_be_visible(
                         timeout=15000
                     )
@@ -2234,18 +2415,20 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     expect(page.locator(".candidate-image-button").first).to_be_visible(
                         timeout=15000
                     )
-                    page.locator(
-                        "#compDecisionTools button", has_text="MusicBrainz Results"
-                    ).click()
-                    expect(page.locator("#musicbrainzReview")).to_be_visible(
-                        timeout=15000
-                    )
-                    page.locator(".musicbrainz-release-row").click()
-                    page.locator(".musicbrainz-review-actions button.primary").click()
                     page.locator(".candidate-image-button").first.click()
-                    expect(page.locator("#writeButton")).to_have_text("EMBED Track")
+                    expect(page.locator("#writeButton")).to_have_text("EMBED Comp")
+                    expect(page.locator("#embedBatchButton")).to_have_text("EMBED Batch")
+                    expect(page.locator("#embedBatchButton")).to_be_disabled()
+                    self.assertEqual(embedded_track_artwork_bytes(target), initial_target_art)
+                    page.locator("#upscaleButton").click()
+                    expect(page.locator("#statusText")).to_contain_text(
+                        "Embedded Thumb Ready · 300 × 300", timeout=15000
+                    )
+                    expect(page.locator("#selectedDimensions")).to_have_text("300 × 300")
                     page.locator("#writeButton").click()
-                    target_art = wait_for_embedded_art(target)
+                    target_art = wait_for_embedded_art(target, initial_target_art)
+                    with Image.open(BytesIO(target_art)) as embedded:
+                        self.assertEqual(embedded.size, (300, 300))
                     expect(page.locator("#statusText")).to_have_text(
                         re.compile(r"COMP (track artwork work complete|report ready)"),
                         timeout=15000,
@@ -2280,6 +2463,10 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     page.locator(".musicbrainz-release-row").click()
                     page.locator(".musicbrainz-review-actions button.primary").click()
                     page.locator(".candidate-image-button").first.click()
+                    expect(page.locator("#writeButton")).to_have_text("EMBED Comp")
+                    expect(page.locator("#embedBatchButton")).to_have_text("EMBED Batch")
+                    expect(page.locator("#embedBatchButton")).to_be_disabled()
+                    self.assertIsNone(embedded_track_artwork_bytes(other))
                     page.locator("#writeButton").click()
                     wait_for_embedded_art(other)
                     expect(page.locator("#statusText")).to_have_text(
