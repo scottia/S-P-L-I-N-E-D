@@ -72,6 +72,7 @@ const state = {
   theme: "dark", compare: new Set(), graphicalEnhancement: normalizeGraphicalEnhancement(),
   embedQueue: [], queueControls: {pause_after_album: false, pause_all_albums: false}, queuedDecision: null, reviewJobState: "", listRequest: 0, selectionRequest: 0, searchRequest: 0,
   libraryLoading: false, artistMetadataRequest: 0,
+  activeActionId: "", artistInfoExpanded: false,
 };
 function applyGraphicalEnhancement(value) {
   state.graphicalEnhancement = normalizeGraphicalEnhancement(value);
@@ -137,10 +138,42 @@ function setStatus(message, type = "ready") {
 async function api(path, options) {
   options = {...options, headers: {...options?.headers}};
   if (options.method && options.method !== 'GET' && state.csrf) options.headers['X-SPLINED-CSRF'] = state.csrf;
+  const trace = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(16).slice(2);
+  options.headers['X-SPLINED-Trace'] = trace;
+  if (state.activeActionId) options.headers['X-SPLINED-Action'] = state.activeActionId;
   const response = await fetch(path, options);
   const payload = await response.json();
-  if (!response.ok) throw new Error(payload.error || "Request failed");
+  if (!response.ok) {
+    auditEvent("api-client-error", path, {severity: "error", trace_id: trace, error: payload.error || "Request failed", request_status: "failed"});
+    throw new Error(payload.error || "Request failed");
+  }
   return payload;
+}
+function activeAuditScope() {
+  const track = state.editorMode === "fallback" ? state.fallbackTrack : state.compTrack;
+  return {
+    artist_id: state.artist?.id || "",
+    album_id: state.album?.id || state.compTrack?.albumId || "",
+    track_key: track?.key || "",
+  };
+}
+function auditEvent(action, subject, values = {}) {
+  if (!state.server?.authenticated || !state.csrf) return;
+  const payload = {
+    action, subject, severity: values.severity || "info",
+    action_id: values.action_id || state.activeActionId || "",
+    trace_id: values.trace_id || "", job_id: values.job_id || "",
+    scope: values.scope || activeAuditScope(), stage: values.stage || "browser",
+    request_status: values.request_status || "emitted",
+    state_from: values.state_from || "", state_to: values.state_to || "",
+    elapsed_ms: values.elapsed_ms, error: values.error || "", details: values.details || {},
+  };
+  void fetch("/api/audit/events", {
+    method: "POST",
+    headers: {"Content-Type": "application/json", "X-SPLINED-CSRF": state.csrf,
+      "X-SPLINED-Action": payload.action_id},
+    body: JSON.stringify(payload),
+  }).catch(() => {});
 }
 function node(tag, className = "", text) {
   const element = document.createElement(tag);
@@ -1646,7 +1679,10 @@ async function chooseArtist(id, select = true) {
     if (select) markSelectedArtist(artist);
     state.candidates = state.artist.local_candidates || []; resetCandidateFilters();
     state.radioCurrent = true; state.radioArtist = false; state.radioBanner = false;
-    renderAll(); setStatus("Loaded " + state.artist.name + " · " + state.artist.albums.length + " albums"); loadArtistMetadata(artist.id);
+    state.artistInfoExpanded = false;
+    renderAll(); setStatus("Loaded " + state.artist.name + " · " + state.artist.albums.length + " albums");
+    auditEvent("selection-change", "artist", {scope: {artist_id: artist.id}, details: {library_mode: state.libraryMode}});
+    loadArtistMetadata(artist.id);
   } catch (error) { if (request === state.selectionRequest) setStatus(error.message, "error"); }
 }
 async function chooseAlbum(id) {
@@ -1679,6 +1715,7 @@ async function chooseAlbum(id) {
     markSelectedAlbum(album);
     state.candidates = fallback ? [] : album.candidates || []; resetCandidateFilters();
     renderAll();
+    auditEvent("selection-change", fallback ? "comp-album" : "album", {scope: {artist_id: state.artist?.id || album.artist_id, album_id: album.id}, details: {library_mode: state.libraryMode}});
     setStatus(fallback ? `COMP ready · ${tracks.length} tracks · ${tracks.filter(item => !item.completed).length} pending · validating recorded thumbnails`
       : "Loaded " + album.artist_name + " · " + album.name + " · " + album.tracks + " tracks");
     if (fallback) probeFallbackStatuses();
@@ -1800,6 +1837,7 @@ for (const [buttonId, mode] of [["artistsTab", "artists"], ["albumsTab", "albums
     state.libraryLoading = true;
     state.libraryMode = mode; state.artist = null; state.artistMetadata = null; state.album = null; state.compAlbums = []; state.mediaSelected.clear();
     state.editorMode = mode === "fallback" ? "fallback" : "artist"; state.workspace = "find";
+    auditEvent("navigation", "library-view", {details: {from: document.querySelector(".library-tabs .active")?.id || "", to: mode}});
     clearFocusCandidates(); resetFocusAdjustments(); renderAll();
     loadLibrary(mode === "artists" ? $("artistSearch").value : $("albumSearch").value);
   });

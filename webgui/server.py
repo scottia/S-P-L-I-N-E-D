@@ -28,6 +28,7 @@ from webgui.services import Services
 from webgui.jobs import JobQueue
 from webgui.credentials import Credentials
 from webgui.auth import AdminAuth
+from webgui.audit import sanitize, sanitize_text, utc_now
 
 
 SETTINGS_UI = Path(__file__).resolve().parents[1] / "schema/settings-ui.json"
@@ -203,6 +204,12 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
 
     @app.middleware("http")
     async def browser_session(request, call_next):
+        started = time.perf_counter()
+        supplied_trace = sanitize_text(request.headers.get("x-splined-trace", ""), limit=100)
+        request.state.trace_id = supplied_trace or uuid4().hex
+        request.state.action_id = sanitize_text(
+            request.headers.get("x-splined-action", ""), limit=100
+        )
         origin = request.headers.get("origin")
         if (
             origin
@@ -263,9 +270,55 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
         )
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-SPLINED-Trace"] = request.state.trace_id
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
         )
+        path = request.url.path
+        noisy = (
+            path in {"/api/status", "/api/jobs", "/api/jobs/control-state"}
+            or path.startswith(("/api/image/", "/api/fallback/thumbnail", "/api/audit"))
+        )
+        should_audit = path.startswith("/api/") and (
+            request.method not in {"GET", "HEAD", "OPTIONS"}
+            or path in {
+                "/api/artist",
+                "/api/artist/overview",
+                "/api/artist/metadata",
+                "/api/artist/comp-report",
+                "/api/album",
+                "/api/fallback/tracks",
+                "/api/fallback/track",
+            }
+            or response.status_code >= 400
+        )
+        if context.services and should_audit and not noisy:
+            scope = {
+                "artist_id": request.query_params.get("artist_id")
+                or (request.query_params.get("id") if "/artist" in path else ""),
+                "album_id": request.query_params.get("album_id")
+                or (request.query_params.get("id") if "/album" in path or "/fallback" in path else ""),
+                "track_key": request.query_params.get("key", ""),
+            }
+            try:
+                context.services.audit(
+                    "api-request",
+                    f"{request.method} {path}",
+                    {"http_status": response.status_code},
+                    severity="error" if response.status_code >= 500 else "warning" if response.status_code >= 400 else "debug",
+                    action_id=request.state.action_id,
+                    trace_id=request.state.trace_id,
+                    scope={key: value for key, value in scope.items() if value},
+                    stage="response",
+                    request_status="failed" if response.status_code >= 400 else "completed",
+                    elapsed_ms=(time.perf_counter() - started) * 1000,
+                )
+            except Exception as audit_error:
+                core.runtime_log(
+                    "warning",
+                    "webgui.audit request event unavailable "
+                    + core._redact_log_message(str(audit_error)),
+                )
         return response
 
     @app.exception_handler(PermissionError)
@@ -284,6 +337,20 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
         message = core._redact_log_message(str(error))[:2000]
         if "postgresql://" in message or "postgres://" in message:
             message = "Database operation failed; check the connection in Settings"
+        if context.services:
+            try:
+                context.services.audit(
+                    "api-error",
+                    f"{request.method} {request.url.path}",
+                    severity="error",
+                    action_id=getattr(request.state, "action_id", ""),
+                    trace_id=getattr(request.state, "trace_id", ""),
+                    stage="exception",
+                    request_status="failed",
+                    error=message,
+                )
+            except Exception:
+                pass
         return JSONResponse(
             {"error": message or "Operation failed"}, status_code=status
         )
@@ -421,9 +488,89 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
         return context.configure((payload).get("config"))
 
     @app.get("/api/diagnostics")
-    def diagnostics():
+    def diagnostics(
+        limit: int = 250,
+        severity: str = "",
+        action: str = "",
+        correlation: str = "",
+        since: str = "",
+        until: str = "",
+    ):
         context.require()
-        return context.services.diagnostics()
+        return context.services.diagnostics(
+            limit,
+            severity=severity,
+            action=action,
+            correlation=correlation,
+            since=since,
+            until=until,
+        )
+
+    @app.post("/api/audit/events")
+    def browser_audit(request: Request, payload: dict):
+        services = context.require()
+        value = sanitize(payload)
+        return {
+            "sequence": services.audit(
+                str(value.get("action") or "browser-event"),
+                str(value.get("subject") or "browser"),
+                value.get("details") if isinstance(value.get("details"), dict) else {},
+                severity=str(value.get("severity") or "info"),
+                action_id=str(value.get("action_id") or request.state.action_id),
+                trace_id=str(value.get("trace_id") or request.state.trace_id),
+                job_id=str(value.get("job_id") or ""),
+                scope=value.get("scope") if isinstance(value.get("scope"), dict) else {},
+                stage=str(value.get("stage") or "browser"),
+                request_status=str(value.get("request_status") or "emitted"),
+                elapsed_ms=value.get("elapsed_ms"),
+                state_from=str(value.get("state_from") or ""),
+                state_to=str(value.get("state_to") or ""),
+                error=str(value.get("error") or ""),
+            )
+        }
+
+    @app.get("/api/audit/export")
+    def export_audit(
+        severity: str = "",
+        action: str = "",
+        correlation: str = "",
+        since: str = "",
+        until: str = "",
+    ):
+        services = context.require()
+        events = services.diagnostics(
+            50000,
+            severity=severity,
+            action=action,
+            correlation=correlation,
+            since=since,
+            until=until,
+            maximum=50000,
+        )
+        body = json.dumps(
+            {
+                "format": "splined-web-audit-v1",
+                "generated_at": utc_now(),
+                "filters": sanitize(
+                    {
+                        "severity": severity,
+                        "action": action,
+                        "correlation": correlation,
+                        "since": since,
+                        "until": until,
+                    }
+                ),
+                "events": events,
+            },
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        )
+        return Response(
+            body,
+            media_type="application/json",
+            headers={"Content-Disposition": 'attachment; filename="audit.json"'},
+        )
 
     @app.get("/api/storage")
     def storage():
@@ -494,7 +641,18 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
 
     @app.get("/api/artist/metadata")
     def artist_metadata(id: str, refresh: bool = False):
-        return context.require().catalog.artist_metadata(id, refresh=refresh)
+        services = context.require()
+        result = services.catalog.artist_metadata(id, refresh=refresh)
+        if result.get("reason"):
+            services.audit(
+                "artist-metadata-unavailable",
+                id,
+                {"artist_id": id, "reason": result["reason"]},
+                severity="warning",
+                stage="provider",
+                request_status="unavailable",
+            )
+        return result
 
     @app.get("/api/artist/comp-report")
     def comp_report(id: str):

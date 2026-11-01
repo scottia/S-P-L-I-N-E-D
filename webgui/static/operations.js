@@ -2,7 +2,21 @@
 
 // Browser operations use the same prepared pixels and persistent catalog as writes.
 async function runAction(action) {
-  try { return await action(); } catch (error) { setStatus(error.message, "error"); }
+  const inherited = state.activeActionId;
+  const started = performance.now();
+  if (!inherited) state.activeActionId = typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID() : Math.random().toString(16).slice(2);
+  const actionId = state.activeActionId;
+  try {
+    const result = await action();
+    auditEvent("browser-action", "completed", {action_id: actionId, request_status: "completed", elapsed_ms: performance.now() - started});
+    return result;
+  } catch (error) {
+    auditEvent("browser-action", "failed", {severity: "error", action_id: actionId, request_status: "failed", elapsed_ms: performance.now() - started, error: error.message});
+    setStatus(error.message, "error");
+  } finally {
+    if (!inherited) state.activeActionId = "";
+  }
 }
 const post = (path, value = {}) => api(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(value)});
 function actionButton(label, action, host = $("dialogBody")) {
@@ -1113,13 +1127,25 @@ function renderRuntimeSettings(host, section, draft, bindings, saved, advanced) 
     settingsInput(target, descriptor, descriptor.path, draft, bindings, saved);
   }
   const scope = node("div", "runtime-summary"); scope.append(node("span", "", "Scope  SELECTED / QUEUED"), node("span", "", `Mode  ${(settingValue(draft, "mode", "read") || "read").toUpperCase()}`)); processing.append(scope);
-  const logHeading = node("div", "diagnostic-heading"); logHeading.append(node("strong", "", "WebGUI Events")); const refresh = node("button", "operation-button", "Refresh"); refresh.type = "button"; logHeading.append(refresh); logging.append(logHeading);
-  const events = node("pre", "diagnostic-events", "Loading events…"); logging.append(events);
+  const logHeading = node("div", "diagnostic-heading"); logHeading.append(node("strong", "", "Audit")); const refresh = node("button", "operation-button", "Refresh"); refresh.type = "button"; logHeading.append(refresh); logging.append(logHeading);
+  const auditFilters = node("div", "audit-filters");
+  const severity = node("select"), allSeverity = node("option", "", "All severities"); allSeverity.value = ""; severity.append(allSeverity);
+  for (const value of ["critical", "error", "warning", "info", "debug", "verbose"]) { const option = node("option", "", value); option.value = value; severity.append(option); }
+  const action = node("input"); action.placeholder = "Action contains";
+  const correlation = node("input"); correlation.placeholder = "Job / trace / action ID";
+  const since = node("input"); since.type = "datetime-local"; since.setAttribute("aria-label", "Audit start time");
+  const until = node("input"); until.type = "datetime-local"; until.setAttribute("aria-label", "Audit end time");
+  const download = node("a", "operation-button", "Download audit.json"); download.download = "audit.json";
+  auditFilters.append(severity, action, correlation, since, until, download); logging.append(auditFilters);
+  const events = node("pre", "diagnostic-events audit-events", "Loading events…"); logging.append(events);
+  const query = () => new URLSearchParams(Object.fromEntries(Object.entries({severity: severity.value, action: action.value.trim(), correlation: correlation.value.trim(), since: since.value, until: until.value}).filter(([, value]) => value)));
   async function load() {
-    try { const rows = await api("/api/diagnostics"); events.textContent = rows.length ? rows.map(row => `${row.created_at}  ${row.action}  ${row.subject}${row.details && Object.keys(row.details).length ? "  " + JSON.stringify(row.details) : ""}`).join("\n") : "No recorded WebGUI events yet."; }
+    try { const rows = await api("/api/diagnostics?" + query()); events.textContent = rows.length ? rows.map(row => `${String(row.sequence).padStart(8, "0")}  ${row.created_at}  ${row.severity.toUpperCase()}  ${row.action}  ${row.subject}${row.job_id ? "  job=" + row.job_id : ""}${row.trace_id ? "  trace=" + row.trace_id : ""}${row.state_from || row.state_to ? `  ${row.state_from || "—"}→${row.state_to || "—"}` : ""}${row.error ? "  ERROR=" + row.error : ""}${row.details && Object.keys(row.details).length ? "  " + JSON.stringify(row.details) : ""}`).join("\n") : "No recorded Audit events match these filters."; }
     catch (error) { events.textContent = error.message; }
   }
-  refresh.addEventListener("click", load); void load(); layout.append(processing, logging); host.append(layout);
+  const updateDownload = () => download.href = "/api/audit/export?" + query();
+  for (const input of [severity, action, correlation, since, until]) input.addEventListener("change", updateDownload);
+  refresh.addEventListener("click", load); updateDownload(); void load(); layout.append(processing, logging); host.append(layout);
 }
 async function openSettings() {
   state.reviewJobId = null;
@@ -1306,6 +1332,13 @@ $("fullscreenButton").addEventListener("click", () => runAction(async () => {
 }));
 document.addEventListener("fullscreenchange", updateFullscreenButton);
 document.addEventListener("webkitfullscreenchange", updateFullscreenButton);
+document.addEventListener("click", event => {
+  const button = event.target.closest?.("button");
+  if (!button || !document.body.classList.contains("authenticated")) return;
+  auditEvent("button-click", button.id || button.className || "button", {
+    details: {label: String(button.textContent || "").trim().slice(0, 120), disabled: !!button.disabled},
+  });
+}, true);
 $("applyLibraryChanges").addEventListener("click", () => runAction(async () => {
   $("applyLibraryChanges").hidden = true;
   const job = await post("/api/jobs", {kind: "index", payload: {mode: "incremental"}});
