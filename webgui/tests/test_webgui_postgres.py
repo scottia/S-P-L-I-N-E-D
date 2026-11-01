@@ -39,7 +39,7 @@ import splined_compilation_authority_policy as compilation
 from webgui.database import Database
 from webgui.runtime import Runtime
 from webgui.services import Services
-from webgui.jobs import JobQueue
+from webgui.jobs import JobAdapter, JobQueue
 from webgui.server import create_app
 from webgui.catalog import embedded_track_artwork_bytes
 from webgui.credentials import Credentials
@@ -146,6 +146,36 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             ).fetchone()
         track = self.services.hydrate_tracks(row["album_key"])[0]
         return row, track, target
+
+    def test_multivalue_id3_artist_is_safe_in_postgresql_job_progress(self):
+        path = self.root / "multi-credit.mp3"
+        tags = ID3()
+        tags.add(TIT2(encoding=3, text=["Say Something"]))
+        tags.add(TPE1(encoding=3, text=["A Great Big World", "Christina Aguilera"]))
+        tags.add(TPE2(encoding=3, text=["Various Artists"]))
+        tags.add(TALB(encoding=3, text=["Billboard Hot 100 Singles of 2014"]))
+        tags.save(path, v2_version=4)
+        track = core.read_track(path)
+        job_id = uuid4().hex
+        with closing(self.db.connect()) as db, db:
+            db.raw.execute(
+                "INSERT INTO web_jobs(id,kind,state,payload) VALUES(%s,%s,%s,%s)",
+                (job_id, "comp", "running", Jsonb({"album_id": "fixture"})),
+            )
+        adapter = JobAdapter(SimpleNamespace(db=self.db), job_id)
+
+        adapter.progress(
+            {"current": {"fallback_authority": {"artist": track.artist}}}
+        )
+
+        with closing(self.db.connect()) as db:
+            saved = db.execute(
+                "SELECT progress FROM web_jobs WHERE id=?", (job_id,)
+            ).fetchone()["progress"]
+        self.assertEqual(
+            saved["current"]["fallback_authority"]["artist"],
+            "A Great Big World; Christina Aguilera",
+        )
 
     @staticmethod
     def title_suggestion_resolution():
@@ -441,18 +471,33 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         candidate = self.runtime.temporary_cache / "selected-comp-candidate.png"
         candidate.parent.mkdir(parents=True, exist_ok=True)
         Image.new("RGB", (900, 600), "orange").save(candidate)
+        prepared = self.services.prepare_comp_thumbnail({
+            "artist_id": self.row["artist_key"],
+            "album_id": comp_row["album_key"],
+            "track_key": target_key,
+            "image": self.services.catalog.image(candidate),
+            "adjustments": {"Brightness": 8},
+            "upscale": True,
+        })
+        self.assertFalse(prepared["audio_written"])
+        self.assertEqual((prepared["width"], prepared["height"]), (300, 300))
+        self.assertIsNone(embedded_track_artwork_bytes(target_path))
+        restarted_services = Services(self.runtime)
         with patch.object(
-            self.services, "_comp_track_authority_validated", return_value=True
+            restarted_services, "_comp_track_authority_validated", return_value=True
         ):
-            embedded = self.services.embed_comp_track({
+            embedded = restarted_services.embed_comp_track({
                 "artist_id": self.row["artist_key"],
                 "album_id": comp_row["album_key"],
                 "track_key": target_key,
                 "image": self.services.catalog.image(candidate),
                 "adjustments": {"Brightness": 8},
                 "upscale": True,
+                "prepared_id": prepared["prepared_id"],
+                "prepared_sha256": prepared["sha256"],
             })
         self.assertEqual((embedded["width"], embedded["height"]), (300, 300))
+        self.assertEqual(embedded["artwork_sha256"], prepared["sha256"])
         with Image.open(BytesIO(embedded_track_artwork_bytes(target_path))) as image:
             self.assertEqual(image.size, (300, 300))
         self.assertIsNone(embedded_track_artwork_bytes(other_path))
@@ -2147,7 +2192,14 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         ".musicbrainz-review-actions button.primary"
                     )
                     expect(use_selected).to_be_enabled()
-                    use_selected.click()
+                    # Job polling can replace this enabled button with an
+                    # equivalent node between Playwright's stability checks.
+                    # Query and dispatch atomically on the currently enabled node.
+                    page.evaluate("""() => {
+                        const button = document.querySelector('.musicbrainz-review-actions button.primary');
+                        if (!button || button.disabled) throw new Error('selected release was not retained');
+                        button.click();
+                    }""")
                     expect(page.locator(".candidate-image-button").first).to_be_visible(
                         timeout=15000
                     )
@@ -2234,18 +2286,57 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     expect(page.locator(".candidate-image-button").first).to_be_visible(
                         timeout=15000
                     )
-                    page.locator(
-                        "#compDecisionTools button", has_text="MusicBrainz Results"
-                    ).click()
-                    expect(page.locator("#musicbrainzReview")).to_be_visible(
-                        timeout=15000
-                    )
-                    page.locator(".musicbrainz-release-row").click()
-                    page.locator(".musicbrainz-review-actions button.primary").click()
                     page.locator(".candidate-image-button").first.click()
                     expect(page.locator("#writeButton")).to_have_text("EMBED Track")
+                    expect(page.locator("#embedBatchButton")).to_have_text("EMBED Thumbs")
+                    candidate_state = page.evaluate(
+                        "() => ({kind: state.queuedDecision && state.queuedDecision.kind, jobKind: state.queuedDecision && state.queuedDecision.jobKind, nonce: state.queuedDecision && state.queuedDecision.nonce, selected: !!(state.queuedDecision && state.queuedDecision.selected), target: typeof compTargetScope === 'function' ? compTargetScope() : null})"
+                    )
+                    self.assertTrue(
+                        page.locator("#embedBatchButton").is_enabled(),
+                        candidate_state,
+                    )
+                    self.assertIsNone(embedded_track_artwork_bytes(target))
+                    page.locator("#upscaleButton").click()
+                    expect(page.locator("#statusText")).to_contain_text(
+                        "Upscale preview", timeout=15000
+                    )
+                    self.assertTrue(
+                        page.locator("#embedBatchButton").is_enabled(),
+                        page.evaluate(
+                            "() => JSON.stringify({decision: state.queuedDecision && {kind: state.queuedDecision.kind, jobKind: state.queuedDecision.jobKind, nonce: state.queuedDecision.nonce, selected: !!state.queuedDecision.selected}, previewMode: state.compPreviewMode, upscale: !!state.upscalePreview})"
+                        ),
+                    )
+                    page.locator("#embedBatchButton").click()
+                    expect(page.locator("#statusText")).to_contain_text(
+                        "Embedded Thumb Ready · 300 × 300 · no audio written",
+                        timeout=15000,
+                    )
+                    expect(page.locator("#selectedQuality")).to_have_text("Thumb Ready")
+                    expect(page.locator("#selectedDimensions")).to_have_text("300 × 300")
+                    expect(page.locator("#review")).to_have_class(
+                        re.compile(r"\bcomp-thumbnail-ready\b")
+                    )
+                    self.assertIsNone(embedded_track_artwork_bytes(target))
+                    if screenshot_dir:
+                        page.locator("#review").screenshot(
+                            path=str(
+                                screenshot_root
+                                / "comp-thumbnail-ready-brave-normal.png"
+                            )
+                        )
+                        page.set_viewport_size({"width": 1920, "height": 1080})
+                        page.locator("#review").screenshot(
+                            path=str(
+                                screenshot_root
+                                / "comp-thumbnail-ready-brave-maximized.png"
+                            )
+                        )
+                        page.set_viewport_size({"width": 1600, "height": 1000})
                     page.locator("#writeButton").click()
                     target_art = wait_for_embedded_art(target)
+                    with Image.open(BytesIO(target_art)) as embedded:
+                        self.assertEqual(embedded.size, (300, 300))
                     expect(page.locator("#statusText")).to_have_text(
                         re.compile(r"COMP (track artwork work complete|report ready)"),
                         timeout=15000,
@@ -2280,6 +2371,13 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     page.locator(".musicbrainz-release-row").click()
                     page.locator(".musicbrainz-review-actions button.primary").click()
                     page.locator(".candidate-image-button").first.click()
+                    expect(page.locator("#embedBatchButton")).to_have_text("EMBED Thumbs")
+                    page.locator("#embedBatchButton").click()
+                    expect(page.locator("#statusText")).to_contain_text(
+                        "Embedded Thumb Ready · 300 × 300 · no audio written",
+                        timeout=15000,
+                    )
+                    self.assertIsNone(embedded_track_artwork_bytes(other))
                     page.locator("#writeButton").click()
                     wait_for_embedded_art(other)
                     expect(page.locator("#statusText")).to_have_text(

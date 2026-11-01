@@ -10,6 +10,7 @@ from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
 import hashlib
+import json
 import os
 import shutil
 import tempfile
@@ -842,7 +843,93 @@ class Services:
         finally:
             staged.unlink(missing_ok=True)
 
-    def _prepare_comp_embedded(self, payload):
+    def _comp_target(self, payload):
+        artist_id = str(payload.get("artist_id", "")).strip()
+        album_id = str(payload.get("album_id", "")).strip()
+        track_key = str(payload.get("track_key", "")).strip()
+        selection = {"album_id": album_id, "track_keys": [track_key]}
+        if artist_id:
+            selection["artist_id"] = artist_id
+        normalized = self._validate_comp_payload(selection)
+        row = self.album_row(normalized["album_id"])
+        record = next(
+            (
+                item
+                for item in self.hydrate_tracks(row["album_key"])
+                if item["track_key"] == track_key
+            ),
+            None,
+        )
+        if record is None:
+            raise KeyError("COMP track not found")
+        path, folder = Path(record["path"]), Path(row["path"])
+        if (
+            not inside(folder, self.runtime.music)
+            or not inside(path, folder)
+            or not path.is_file()
+        ):
+            raise ValueError("COMP track is outside the configured music library")
+        return normalized, row, record, path
+
+    def _prepared_comp_directory(self):
+        directory = self.runtime.cache / "prepared-comp"
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory
+
+    def _prepared_comp_target(self, payload, normalized):
+        return {
+            "artist_id": str(normalized.get("artist_id", "")),
+            "album_id": str(normalized["album_id"]),
+            "track_key": str(payload.get("track_key", "")),
+        }
+
+    def _load_prepared_comp(self, payload, normalized):
+        prepared_id = str(payload.get("prepared_id", "")).strip().casefold()
+        if not prepared_id:
+            return None
+        if len(prepared_id) != 32 or any(c not in "0123456789abcdef" for c in prepared_id):
+            raise ValueError("Invalid prepared COMP thumbnail identity")
+        directory = self._prepared_comp_directory()
+        image_path = directory / (prepared_id + ".jpg")
+        manifest_path = directory / (prepared_id + ".json")
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            body = image_path.read_bytes()
+        except (OSError, ValueError, TypeError) as error:
+            raise ValueError("Prepared COMP thumbnail is unavailable; prepare it again") from error
+        if manifest.get("target") != self._prepared_comp_target(payload, normalized):
+            raise ValueError("Prepared COMP thumbnail belongs to a different track")
+        digest = hashlib.sha256(body).hexdigest()
+        if digest != str(manifest.get("sha256", "")):
+            raise ValueError("Prepared COMP thumbnail failed integrity validation")
+        supplied = str(payload.get("prepared_sha256", "")).strip().casefold()
+        if supplied and supplied != digest:
+            raise ValueError("Prepared COMP thumbnail selection changed; prepare it again")
+        try:
+            with Image.open(BytesIO(body)) as opened:
+                width, height = opened.size
+                image_format = str(opened.format or "").casefold()
+        except OSError as error:
+            raise ValueError("Prepared COMP thumbnail is not a supported image") from error
+        side = int(self.runtime.cfg.get("output", {}).get("embedded_thumbnail_size", 1200))
+        if (width, height) != (side, side) or image_format != "jpeg":
+            raise ValueError("Prepared COMP thumbnail no longer matches the configured size")
+        return body, {"width": width, "height": height}, "jpeg", manifest
+
+    def _remove_prepared_comp(self, prepared_id):
+        token = str(prepared_id or "").strip().casefold()
+        if len(token) != 32 or any(c not in "0123456789abcdef" for c in token):
+            return
+        directory = self._prepared_comp_directory()
+        (directory / (token + ".jpg")).unlink(missing_ok=True)
+        (directory / (token + ".json")).unlink(missing_ok=True)
+
+    def _prepare_comp_embedded(self, payload, normalized=None):
+        if payload.get("prepared_id"):
+            normalized = normalized or self._comp_target(payload)[0]
+            prepared = self._load_prepared_comp(payload, normalized)
+            if prepared is not None:
+                return prepared
         rendered = self.preview(dict(payload, kind="comp"))
         source = self.catalog.image_bytes(rendered["image"])
         side = int(
@@ -852,6 +939,60 @@ class Services:
             image = imaging.prepare_embedded_thumbnail(opened, side)
             body = imaging.encode(image, "jpeg")
         return body, {"width": side, "height": side}, "jpeg", rendered
+
+    def prepare_comp_thumbnail(self, payload):
+        normalized, row, record, _ = self._comp_target(payload)
+        fresh = dict(payload)
+        fresh.pop("prepared_id", None)
+        fresh.pop("prepared_sha256", None)
+        body, info, image_format, rendered = self._prepare_comp_embedded(
+            fresh, normalized
+        )
+        prepared_id = uuid4().hex
+        digest = hashlib.sha256(body).hexdigest()
+        manifest = {
+            "version": 1,
+            "prepared_id": prepared_id,
+            "sha256": digest,
+            "format": image_format,
+            "width": info["width"],
+            "height": info["height"],
+            "bytes": len(body),
+            "upscaled": bool(rendered.get("upscaled")),
+            "target": self._prepared_comp_target(payload, normalized),
+        }
+        directory = self._prepared_comp_directory()
+        image_path = directory / (prepared_id + ".jpg")
+        manifest_path = directory / (prepared_id + ".json")
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=".prepared-", suffix=".jpg", dir=directory
+        )
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(body)
+            os.replace(temporary, image_path)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=".prepared-", suffix=".json", dir=directory
+        )
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                json.dump(manifest, handle, sort_keys=True)
+            os.replace(temporary, manifest_path)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+        self.audit(
+            "prepare-comp-thumbnail",
+            record["track_key"],
+            {"album_id": row["album_key"], "side": info["width"], "sha256": digest},
+        )
+        return {
+            **manifest,
+            "image": self.catalog.image(body),
+            "upscaled": bool(manifest.get("upscaled")),
+            "audio_written": False,
+        }
 
     @staticmethod
     def _verify_comp_embedded(track, body, info):
@@ -992,31 +1133,11 @@ class Services:
     def embed_comp_track(self, payload):
         self.runtime.require_write()
         artist_id = str(payload.get("artist_id", "")).strip()
-        album_id = str(payload.get("album_id", "")).strip()
         track_key = str(payload.get("track_key", "")).strip()
-        selection = {"album_id": album_id, "track_keys": [track_key]}
-        if artist_id:
-            selection["artist_id"] = artist_id
-        normalized = self.validate_comp_payload(selection)
-        row = self.album_row(normalized["album_id"])
-        record = next(
-            (
-                item
-                for item in self.hydrate_tracks(row["album_key"])
-                if item["track_key"] == track_key
-            ),
-            None,
+        normalized, row, record, path = self._comp_target(payload)
+        body, info, image_format, rendered = self._prepare_comp_embedded(
+            payload, normalized
         )
-        if record is None:
-            raise KeyError("COMP track not found")
-        path, folder = Path(record["path"]), Path(row["path"])
-        if (
-            not inside(folder, self.runtime.music)
-            or not inside(path, folder)
-            or not path.is_file()
-        ):
-            raise ValueError("COMP track is outside the configured music library")
-        body, info, image_format, rendered = self._prepare_comp_embedded(payload)
         original = embedded_track_artwork_bytes(path)
         outcome = "embedded-existing" if original == body else "embedded-replaced"
         if original != body:
@@ -1033,6 +1154,7 @@ class Services:
                     backup.write_bytes(original)
             compilation.replace_embedded_artwork(path, body, image_format, info)
         self._verify_comp_embedded(record, body, info)
+        verified_body = embedded_track_artwork_bytes(path)
         refreshed = next(
             (
                 item
@@ -1063,6 +1185,7 @@ class Services:
                 "completion_recorded": completed,
             },
         )
+        self._remove_prepared_comp(payload.get("prepared_id"))
         return {
             "album_id": row["album_key"],
             "track_key": track_key,
@@ -1073,6 +1196,8 @@ class Services:
             "width": info["width"],
             "height": info["height"],
             "bytes": len(body),
+            "image": self.catalog.image(verified_body),
+            "artwork_sha256": hashlib.sha256(verified_body).hexdigest(),
             "upscaled": bool(rendered.get("upscaled")),
             "outcome": outcome,
         }
@@ -1383,8 +1508,7 @@ class Services:
             if name and path.name == name and inside(path, directory):
                 path.unlink(missing_ok=True)
 
-    @serialized
-    def validate_comp_payload(self, payload):
+    def _validate_comp_payload(self, payload):
         """Resolve an explicit COMP selection without widening its scope."""
         album_id = str(payload.get("album_id", "")).strip()
         row = self.album_row(album_id)
@@ -1426,6 +1550,10 @@ class Services:
         return normalized
 
     @serialized
+    def validate_comp_payload(self, payload):
+        return self._validate_comp_payload(payload)
+
+    @serialized
     def run_comp(self, payload, adapter):
         self.runtime.require_write()
         r = self.runtime
@@ -1455,8 +1583,26 @@ class Services:
             )
 
         def prepare_selected_artwork(request):
-            body, info, image_format, _ = self._prepare_comp_embedded(request)
+            request = dict(
+                request,
+                artist_id=scope_artist_id,
+                album_id=row["album_key"],
+                track_key=str(adapter.context.get("track_key", "")),
+            )
+            normalized = {
+                "artist_id": scope_artist_id,
+                "album_id": row["album_key"],
+            }
+            body, info, image_format, _ = self._prepare_comp_embedded(
+                request, normalized
+            )
+            adapter.context["prepared_id"] = str(request.get("prepared_id", ""))
             return body, info, image_format
+
+        def verify_selected_artwork(track, body, info):
+            result = self._verify_comp_embedded(track, body, info)
+            self._remove_prepared_comp(adapter.context.pop("prepared_id", ""))
+            return result
 
         def persist_track_authority(track, recording_mbid, artist_mbids):
             self._persist_comp_track_authority(
@@ -1483,7 +1629,7 @@ class Services:
             track_context=update_track_context,
             prepare_selected_artwork=prepare_selected_artwork,
             persist_track_authority=persist_track_authority,
-            verify_embedded_artwork=self._verify_comp_embedded,
+            verify_embedded_artwork=verify_selected_artwork,
             musicbrainz_results_first=True,
         )
         self.refresh_album(row["album_key"])

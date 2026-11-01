@@ -58,7 +58,7 @@ const state = {
   biographyArtistId: null, biographyExpanded: false, biographyText: "",
   libraryMode: "artists", editorMode: "artist", workspace: "find",
   candidates: [], selectedPortrait: null, selectedBanner: null, selectedCover: null, reviewCleared: false,
-  upscalePreview: null, renderedPreview: {},
+  upscalePreview: null, renderedPreview: {}, compThumbnailPreview: null, pendingCompWrite: null,
   fallbackTracks: [], fallbackTrack: null, fallbackPreviewOnly: false, fallbackRun: false, fallbackTrackRequest: 0, fallbackStatusRequest: 0,
   fallbackPreviewMode: false, fallbackReportExpanded: true, fallbackHelpExpanded: false,
   compAlbums: [], compGroups: [], compReportVisible: false, compReportLoading: false, compPreviewMode: false, compCollapsed: new Set(),
@@ -160,7 +160,7 @@ function clearFocusCandidates() {
   state.queuedDecision = null; state.reviewJobId = null;
   state.candidates = [];
   state.selectedPortrait = null; state.selectedBanner = null; state.selectedCover = null;
-  state.upscalePreview = null; state.renderedPreview = {}; state.fallbackTracks = []; state.fallbackTrack = null;
+  state.upscalePreview = null; state.renderedPreview = {}; state.compThumbnailPreview = null; state.pendingCompWrite = null; state.fallbackTracks = []; state.fallbackTrack = null;
   state.fallbackPreviewOnly = false; state.fallbackRun = false; ++state.fallbackTrackRequest; ++state.fallbackStatusRequest;
   state.fallbackPreviewMode = false; state.fallbackReportExpanded = true; state.fallbackHelpExpanded = false;
   state.compGroups = []; state.compReportVisible = false; state.compReportLoading = false; state.compPreviewMode = false;
@@ -872,7 +872,7 @@ async function probeArtistCompStatuses() {
 
 async function selectArtistCompTrack(albumId, key) {
   const request = ++state.compTrackRequest, artistId = state.artist?.id;
-  state.upscalePreview = null; state.renderedPreview.comp = null; state.fx.comp = {};
+  state.upscalePreview = null; state.renderedPreview.comp = null; state.compThumbnailPreview = null; state.pendingCompWrite = null; state.fx.comp = {};
   setStatus("Loading existing COMP track artwork…", "busy");
   try {
     const track = await api("/api/fallback/track?id=" + encodeURIComponent(albumId) + "&key=" + encodeURIComponent(key));
@@ -1220,7 +1220,7 @@ function renderCandidates() {
 }
 function selectCandidate(candidate, target) {
   state.reviewCleared = false;
-  state.upscalePreview = null;
+  state.upscalePreview = null; state.compThumbnailPreview = null; state.pendingCompWrite = null;
   state.renderedPreview = {};
   if (state.queuedDecision) {
     state.queuedDecision.selected = candidate;
@@ -1256,7 +1256,7 @@ function renderPanes() {
   if (isAlbum) {
     $("albumPaneHeading").textContent = isComp ? "COMP TRACK PREVIEW" : "ALBUM COVER PREVIEW";
     const compTrackImage = state.editorMode === "fallback" ? state.fallbackTrack?.image : state.compTrack?.image;
-    const source = isComp ? state.renderedPreview.comp?.image || state.upscalePreview?.image || state.queuedDecision?.selected?.image || compTrackImage
+    const source = isComp ? activeCompPrepared()?.image || state.renderedPreview.comp?.image || state.upscalePreview?.image || state.queuedDecision?.selected?.image || compTrackImage
       : state.editorMode === "fallback" ? state.fallbackTrack?.image : state.renderedPreview.album?.image || state.upscalePreview?.image || state.selectedCover?.image || state.album?.cover;
     paneImage($("albumPane"), source, isComp || state.editorMode === "fallback" ? "Choose a COMP track to preview its embedded image" : "Choose a cover candidate");
   }
@@ -1273,7 +1273,15 @@ function renderPanes() {
 function selectedImage() {
   const frame = $("selectedFrame"); clear(frame);
   let candidate = null, url = null, type = "Current artwork", source = "Local", quality = "Current";
-  if (state.queuedDecision?.selected) {
+  const preparedComp = activeCompPrepared();
+  if (preparedComp) {
+    candidate = preparedComp;
+    url = preparedComp.image;
+    type = "Embedded Thumb";
+    source = state.pendingCompWrite ? "Verified COMP write pending refresh" : "Prepared COMP thumbnail";
+    quality = state.pendingCompWrite ? "Embedding…" : "Thumb Ready";
+    if (url) frame.append(image(url, "selected-image", "Prepared COMP thumbnail"));
+  } else if (state.queuedDecision?.selected) {
     candidate = state.queuedDecision.selected;
     const compCandidate = state.queuedDecision.jobKind === "comp";
     url = compCandidate ? state.renderedPreview.comp?.image || state.upscalePreview?.image || candidate.image : candidate.image;
@@ -1322,10 +1330,12 @@ function selectedImage() {
     || state.editorMode === "artist" && state.compReportVisible ? state.renderedPreview.comp
     : state.editorMode === "album" ? state.renderedPreview.album
     : state.radioBanner && !state.radioArtist ? state.renderedPreview.banner : state.renderedPreview.artist;
-  const metadata = rendered || state.upscalePreview || candidate || existing;
+  const metadata = preparedComp || rendered || state.upscalePreview || candidate || existing;
   $("selectedDimensions").textContent = metadata ? metadata.width + " × " + metadata.height : "—";
   $("selectedSize").textContent = metadata ? size(metadata.bytes) : "—";
   $("selectedQuality").textContent = quality;
+  $("selectedQuality").classList.toggle("comp-thumb-ready", !!preparedComp && !state.pendingCompWrite);
+  $("review").classList.toggle("comp-thumbnail-ready", !!preparedComp && !state.pendingCompWrite);
   const extra = $("reviewExtra"); clear(extra);
   const ribbon = $("embeddedRibbon");
   if (state.editorMode === "fallback") {
@@ -1418,6 +1428,7 @@ function sliderRow(host, label, target, field, minimum = -100, maximum = 100, in
   const updateLabel = () => { value.textContent = field === "fit" ? fitZoom(range.value).toFixed(2) + "×" : (Number(range.value) > 0 ? "+" : "") + range.value; };
   updateLabel();
   range.addEventListener("input", () => {
+    if (target === "comp") invalidateCompThumbnail();
     if (field === "fit") state.fit[target].zoom = fitZoom(range.value);
     else state.fx[target][label] = Number(range.value);
     updateLabel(); applyPreviewEffects();
@@ -1559,7 +1570,7 @@ async function chooseAlbum(id) {
 async function selectFallbackTrack(key, previewOnly) {
   if (!state.album || state.editorMode !== "fallback") return;
   const albumId = state.album.id, request = ++state.fallbackTrackRequest;
-  state.upscalePreview = null; state.renderedPreview.comp = null; state.fx.comp = {};
+  state.upscalePreview = null; state.renderedPreview.comp = null; state.compThumbnailPreview = null; state.pendingCompWrite = null; state.fx.comp = {};
   setStatus("Loading existing COMP track artwork…", "busy");
   try {
     const track = await api("/api/fallback/track?id=" + encodeURIComponent(albumId) + "&key=" + encodeURIComponent(key));
@@ -1699,7 +1710,8 @@ $("upscaleButton").addEventListener("click", async () => {
     await runAction(upscaleArtist);
     return;
   }
-  const compContext = state.editorMode === "fallback" || state.editorMode === "artist" && state.compReportVisible;
+  const compContext = state.queuedDecision?.jobKind === "comp" || state.editorMode === "fallback" || state.editorMode === "artist" && state.compReportVisible;
+  if (compContext || state.queuedDecision?.jobKind === "comp") invalidateCompThumbnail();
   const source = state.queuedDecision?.jobKind === "comp" && state.queuedDecision.selected ? state.queuedDecision.selected.image
     : state.editorMode === "fallback" ? state.fallbackTrack?.image
     : state.editorMode === "artist" && state.compReportVisible ? state.compTrack?.image
@@ -1723,7 +1735,7 @@ $("upscaleButton").addEventListener("click", async () => {
   } catch (error) { if (request === state.selectionRequest) setStatus(error.message, "error"); }
   finally { if (request === state.selectionRequest) renderReview(); }
 });
-$("embedBatchButton").addEventListener("click", () => runAction(stageAlbum));
+$("embedBatchButton").addEventListener("click", () => runAction(compContextActive() ? prepareCompThumbnail : stageAlbum));
 $("removeAllStaged").addEventListener("click", () => runAction(() => queueAction("clear", null, null, null, "embed-album")));
 $("collapseLibrary").addEventListener("click", () => { const collapsed = document.querySelector(".workspace").classList.toggle("library-collapsed"); $("collapseLibrary").textContent = collapsed ? "+" : "−"; $("collapseLibrary").title = collapsed ? "Expand Media Library" : "Collapse Media Library"; fitReviewToViewport(); });
 for (const [buttonId, panelId, otherId] of [["mediaFilterToggle", "mediaFilter", "candidateFilter"], ["candidateFilterToggle", "candidateFilter", "mediaFilter"]]) {
@@ -1741,6 +1753,7 @@ $("collapseEnhancements").addEventListener("click", () => {
 });
 $("resetEnhancements").addEventListener("click", () => {
   const target = activeFxTarget(); if (target) state.fx[target] = {};
+  if (target === "comp") invalidateCompThumbnail();
   if (target === "artist" || target === "banner") state.fit[target] = {zoom: 1, x: 0, y: 0};
   if (target === "package") { state.fit.artist = {zoom: 1, x: 0, y: 0}; state.fit.banner = {zoom: 1, x: 0, y: 0}; }
   renderEnhancementMenus(); applyPreviewEffects();

@@ -617,11 +617,24 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
         value.pop("artist_name", None)
         return context.require().embed_comp_track(value)
 
+    @app.post("/api/comp/thumbnail-preview")
+    def full_comp_thumbnail_preview(payload: dict):
+        value = dict(payload)
+        value.pop("artist_id", None)
+        value.pop("artist_name", None)
+        return context.require().prepare_comp_thumbnail(value)
+
     @app.post("/api/artist/comp-embed")
     def artist_comp_embed(payload: dict):
         if not str(payload.get("artist_id", "")).strip():
             raise ValueError("Choose the Artist COMP Report before embedding a track")
         return context.require().embed_comp_track(payload)
+
+    @app.post("/api/artist/comp-thumbnail-preview")
+    def artist_comp_thumbnail_preview(payload: dict):
+        if not str(payload.get("artist_id", "")).strip():
+            raise ValueError("Choose the Artist COMP Report before preparing a thumbnail")
+        return context.require().prepare_comp_thumbnail(payload)
 
     @app.get("/api/jobs")
     def jobs():

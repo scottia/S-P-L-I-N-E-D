@@ -1,8 +1,32 @@
 # WebGUI COMP Thumbnail Lifecycle Review
 
-Status: **planning only** for draft PR #130. This document is based on
-`main` at `229fde223c323839c8f462b45eb627f33e096a7f`, after PR #129. It does
-not implement or validate a fix.
+Status: **implemented for testing** in draft PR #130. The review was based on
+`main` at `229fde223c323839c8f462b45eb627f33e096a7f`, after PR #129; the owner
+approved the bounded implementation described below. The PR remains draft and
+unmerged while PC-hosted validation continues.
+
+## Implemented outcome
+
+WebGUI now separates **Upscale Preview**, **EMBED Thumbs**, and **EMBED Track**.
+EMBED Thumbs prepares the exact configured square JPEG in the authorized cache,
+binds it to the Artist/Album/track and queued decision, displays it in Selected
+Artwork with a cyan ready state, and does not write audio. EMBED Track accepts
+that opaque preparation identity, verifies its digest and target, writes only
+the selected track, reopens the audio, verifies the exact bytes and square
+dimensions, and returns a fresh read-back image handle. Skipping EMBED Thumbs
+retains the existing write-time preparation behavior.
+
+Queued candidate selection is retained across polling of the same prompt, and
+the prepared image remains visible while the write is pending. The persistent
+job record stores only the opaque preparation ID, digest, and target—not an
+instance-signed URL or unrestricted path. A preparation for another Artist,
+Album, or track is rejected.
+
+Implementation also corrected the blocker observed during PC testing: an ID3
+TPE1 frame containing multiple performers was previously stringified with a
+NUL separator, which PostgreSQL JSONB cannot store. Tag decoding now preserves
+each performer as a semicolon-delimited credit before job progress or identity
+matching, consistent with the Windows multi-credit interpretation.
 
 ## Scope and expected contract
 
@@ -100,7 +124,7 @@ EMBED Thumbs an optional preparation step before EMBED Comp
   Network and image-load assertions are needed to distinguish this from a
   failed audio write.
 
-## Smallest proposed correction
+## Approved implementation
 
 No database migration is required.
 
@@ -169,9 +193,9 @@ present the previous thumbnail as the successful result.
 | Write or readback failed | Prepared thumbnail retained; explicit red error | Retry or return to candidates | Explicit selection change |
 | Preview refresh failed after verified write | Prepared/read-back digest retained; refresh warning | Retry preview refresh | Never downgrade to “write failed” |
 
-## Exact implementation surface
+## Implementation surface
 
-| File/function | Proposed change |
+| File/function | Implemented change |
 |---|---|
 | `webgui/services.py` — `preview`, `_prepare_comp_embedded`, `embed_comp_track`, `run_comp.prepare_selected_artwork` | Add read-only thumbnail preparation, content-addressed snapshot ownership, prepared-digest validation, and a verified read-back image/digest result. |
 | `webgui/server.py` — preview and COMP routes | Add full-Fallback and Artist-scoped thumbnail-preview routes without weakening existing scope validation. |
@@ -247,20 +271,29 @@ result.
   Completion integrity must remain backend-authoritative while the UI reports
   preview refresh separately.
 
-## Owner review questions
+## Approved decisions and validation checkpoint
 
-1. Preserve Windows behavior where EMBED Thumbs is optional, or require it
-   before EMBED Track in WebGUI?
-2. Is the proposed cyan pill/status text **Embedded Thumb Ready · no audio
-   written** the intended confirmation, or should the dimensions themselves
-   also be cyan?
-3. Should a non-queued prepared preview survive leaving and returning to the
-   same track, or should it invalidate immediately as Windows' single owner key
-   does? Queued preparation would remain recoverable through job state.
-4. Keep the current WebGUI COMP JPEG embedding format for this narrow fix, or
-   include PNG preservation parity as a separate task? The proposed minimum
-   does not change format policy.
+- EMBED Thumbs remains optional, matching Windows; EMBED Track can still
+  prepare the configured thumbnail during a verified write.
+- The ready state is cyan and reports **Embedded Thumb Ready**, the actual
+  configured dimensions, and **no audio written**.
+- A prepared preview remains available only while its complete browser owner
+  key still matches. Candidate, enhancement, Artist, Album, track, or queued
+  prompt changes invalidate it.
+- This bounded change retains the existing WebGUI COMP JPEG policy.
 
-Implementation must wait for explicit owner approval. PR #130 should remain a
-draft and must not merge, deploy, release, modify Windows, or change `dev` at
-this checkpoint.
+Executed evidence includes generated FLAC preparation/write/readback tests,
+wrong-track digest rejection, generated multi-value MP3/ID3 parsing, isolated
+PostgreSQL job-progress storage, JavaScript state/payload regressions, and the
+PC-hosted FastAPI workflow rendered in Brave for both Artist-scoped and full
+Fallback COMP work. External artwork and MusicBrainz replies in that browser
+test are deterministic fixtures; they are not live-provider evidence. The
+final local checkpoint passed 211/211 Python/FastAPI/PostgreSQL tests, 34/34
+direct JavaScript regressions, both JavaScript syntax checks, and 14/14
+GitHub-validation-scope tests. Docker/container validation was not performed;
+the owner requested the existing PC-hosted service rather than a temporary
+deployment. Brave screenshots were captured at normal and maximized viewports
+for the cyan thumbnail-ready state.
+
+PR #130 remains draft and must not merge, deploy, release, modify Windows, or
+change `dev` at this checkpoint.

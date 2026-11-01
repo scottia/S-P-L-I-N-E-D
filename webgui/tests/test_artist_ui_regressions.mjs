@@ -40,6 +40,11 @@ const writeArtworkFunction = between(
   "async function writeArtwork",
   "const previewReview",
 );
+const compThumbnailFunctions = between(
+  operationsSource,
+  "function compContextActive",
+  "function coverPayload",
+);
 const launchArtistFunction = between(
   operationsSource,
   "async function launchArtist",
@@ -559,6 +564,59 @@ test("queued COMP candidates submit adjustment and upscale intent with the exact
     action: "webgui-embed-track", number: 4,
     artwork: {image: "/candidate-4", adjustments: {Contrast: 8}, upscale: true},
   }]);
+});
+
+test("EMBED Thumbs prepares the selected Artist COMP candidate without writing audio", async () => {
+  const requests = [];
+  const state = {
+    queuedDecision: {
+      jobKind: "comp", jobId: "job-1", nonce: "prompt-1",
+      payload: {artist_id: "artist-1", album_id: "comp-1", track_keys: ["track-1"]},
+      context: {album_id: "comp-1", track_key: "track-1"},
+      selected: {image: "/candidate-1"},
+    },
+    editorMode: "artist", compReportVisible: true, fx: {comp: {Brightness: 7}},
+    upscalePreview: {image: "/upscaled", width: 1800, height: 1800},
+    compThumbnailPreview: null, pendingCompWrite: null,
+  };
+  const context = load(compThumbnailFunctions, {
+    state,
+    componentPayload: (_kind, image, extra) => ({image, adjustments: state.fx.comp, ...extra}),
+    post: async (path, payload) => {
+      requests.push({path, payload});
+      return {prepared_id: "a".repeat(32), sha256: "b".repeat(64), image: "/prepared", width: 1200, height: 1200, bytes: 900, audio_written: false};
+    },
+    setStatus() {}, renderPanes() {}, renderReview() {},
+  });
+
+  await context.prepareCompThumbnail();
+
+  assert.equal(requests[0].path, "/api/artist/comp-thumbnail-preview");
+  assert.deepEqual(JSON.parse(JSON.stringify(requests[0].payload)), {
+    image: "/candidate-1", adjustments: {Brightness: 7}, artist_id: "artist-1",
+    album_id: "comp-1", track_key: "track-1", upscale: true,
+  });
+  assert.equal(state.compThumbnailPreview.image, "/prepared");
+  assert.equal(state.compThumbnailPreview.audio_written, false);
+});
+
+test("queued EMBED Track carries the prepared thumbnail identity and digest", async () => {
+  const decisions = [];
+  const prepared = {prepared_id: "a".repeat(32), sha256: "b".repeat(64), image: "/prepared", owner: "owner"};
+  const state = {
+    queuedDecision: {jobKind: "comp", jobId: "job-1", selected: {queueValue: 2, image: "/candidate-2"}},
+    fx: {comp: {}}, upscalePreview: null, pendingCompWrite: null,
+  };
+  const context = load(writeArtworkFunction, {
+    state, activeCompPrepared: () => prepared,
+    submitQueuedDecision: async value => decisions.push(JSON.parse(value)),
+  });
+
+  await context.writeArtwork();
+
+  assert.equal(decisions[0].artwork.prepared_id, prepared.prepared_id);
+  assert.equal(decisions[0].artwork.prepared_sha256, prepared.sha256);
+  assert.equal(state.pendingCompWrite.preview.image, "/prepared");
 });
 
 test("MusicBrainz release prompt stays on the Artist COMP track", async () => {

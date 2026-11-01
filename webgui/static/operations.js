@@ -99,6 +99,60 @@ function componentPayload(kind, imageURL, extra = {}) {
   return {kind, image: imageURL, adjustments: state.fx[target] || {},
     package_adjustments: state.themedPackaging ? state.fx.package : {}, fit: state.fit[target], ...extra};
 }
+function compContextActive() {
+  return state.queuedDecision?.jobKind === "comp" || state.editorMode === "fallback"
+    || state.editorMode === "artist" && state.compReportVisible;
+}
+function compTargetScope() {
+  if (state.queuedDecision?.jobKind === "comp") {
+    const decision = state.queuedDecision;
+    return {
+      artist_id: String(decision.payload?.artist_id || ""),
+      album_id: String(decision.context?.album_id || decision.payload?.album_id || ""),
+      track_key: String(decision.context?.track_key || (decision.payload?.track_keys?.length === 1 ? decision.payload.track_keys[0] : "")),
+    };
+  }
+  if (state.editorMode === "artist" && state.compReportVisible) return {
+    artist_id: String(state.artist?.id || ""), album_id: String(state.compTrack?.albumId || ""), track_key: String(state.compTrack?.key || ""),
+  };
+  return {artist_id: "", album_id: String(state.album?.id || ""), track_key: String(state.fallbackTrack?.key || "")};
+}
+function compCandidateSource() {
+  return state.queuedDecision?.jobKind === "comp" && state.queuedDecision.selected
+    ? state.queuedDecision.selected.image
+    : state.editorMode === "fallback" ? state.fallbackTrack?.image : state.compTrack?.image;
+}
+function compThumbnailOwner() {
+  return JSON.stringify({
+    ...compTargetScope(),
+    job: state.queuedDecision?.jobId || "",
+    nonce: state.queuedDecision?.nonce || "",
+    candidate: compCandidateSource() || "",
+    adjustments: state.fx.comp || {},
+    upscale: !!state.upscalePreview,
+  });
+}
+function activeCompPrepared() {
+  if (state.pendingCompWrite?.preview && (!state.queuedDecision || state.pendingCompWrite.owner === compThumbnailOwner())) return state.pendingCompWrite.preview;
+  return state.compThumbnailPreview?.owner === compThumbnailOwner() ? state.compThumbnailPreview : null;
+}
+function invalidateCompThumbnail() {
+  state.compThumbnailPreview = null;
+}
+async function prepareCompThumbnail() {
+  if (!compContextActive()) throw new Error("Choose a COMP track first");
+  const source = compCandidateSource(), scope = compTargetScope();
+  if (!source || !scope.album_id || !scope.track_key) throw new Error("Choose COMP artwork and a track before preparing its thumbnail");
+  const owner = compThumbnailOwner();
+  const endpoint = scope.artist_id ? "/api/artist/comp-thumbnail-preview" : "/api/comp/thumbnail-preview";
+  setStatus("Preparing configured COMP thumbnail…", "busy");
+  const result = await post(endpoint, componentPayload("comp", source, {...scope, upscale: !!state.upscalePreview}));
+  if (owner !== compThumbnailOwner()) return;
+  state.compThumbnailPreview = {...result, owner};
+  state.pendingCompWrite = null;
+  renderPanes(); renderReview();
+  setStatus(`Embedded Thumb Ready · ${result.width} × ${result.height} · no audio written`, "ready");
+}
 function coverPayload() {
   if (!state.album) throw new Error("Choose an album first");
   return componentPayload("cover", state.selectedCover?.image || state.album.cover,
@@ -108,12 +162,15 @@ async function writeArtwork() {
   if (state.queuedDecision) {
     const candidate = state.queuedDecision.selected;
     if (!candidate) throw new Error("Preview a queued candidate before choosing it");
+    const prepared = state.queuedDecision.jobKind === "comp" && typeof activeCompPrepared === "function" ? activeCompPrepared() : null;
     const value = state.queuedDecision.jobKind === "comp"
       ? JSON.stringify({
         action: "webgui-embed-track", number: candidate.queueValue,
-        artwork: {image: candidate.image, adjustments: state.fx.comp || {}, upscale: !!state.upscalePreview},
+        artwork: {image: candidate.image, adjustments: state.fx.comp || {}, upscale: !!state.upscalePreview,
+          ...(prepared ? {prepared_id: prepared.prepared_id, prepared_sha256: prepared.sha256} : {})},
       })
       : candidate.queueValue;
+    if (prepared) state.pendingCompWrite = {preview: prepared, owner: prepared.owner, jobId: state.queuedDecision.jobId};
     await submitQueuedDecision(value);
     return;
   }
@@ -129,9 +186,16 @@ async function writeArtwork() {
     };
     if (artistComp) scope.artist_id = state.artist?.id || "";
     const endpoint = artistComp ? "/api/artist/comp-embed" : "/api/comp/embed";
+    const prepared = typeof activeCompPrepared === "function" ? activeCompPrepared() : null;
+    if (prepared) Object.assign(scope, {prepared_id: prepared.prepared_id, prepared_sha256: prepared.sha256});
+    if (prepared) state.pendingCompWrite = {preview: prepared, owner: prepared.owner};
     const result = await post(endpoint, componentPayload("comp", track.image, scope));
-    state.upscalePreview = null; state.renderedPreview.comp = null; state.fx.comp = {};
+    if (result.image) Object.assign(track, {image: result.image, width: result.width, height: result.height, bytes: result.bytes});
     await refreshQueuedAlbumAfterSave();
+    state.upscalePreview = null; state.renderedPreview.comp = null; state.fx.comp = {};
+    state.compThumbnailPreview = null; state.pendingCompWrite = null;
+    if (typeof renderPanes === "function") renderPanes();
+    if (typeof renderReview === "function") renderReview();
     setStatus(result.completed
       ? `Embedded COMP track · ${result.file} · ${result.width} × ${result.height}`
       : `Artwork embedded and verified · ${result.file} · authoritative IDs remain unresolved, so this track stays blue`, "ready");
@@ -177,10 +241,16 @@ renderReview = function () {
     && !!(state.selectedPortrait?.image || state.selectedBanner?.image || state.artist?.portrait || state.artist?.banner);
   $("writeButton").disabled = entry ? !state.artist : !writable || (state.editorMode === "album" ? !(state.selectedCover?.image || state.album?.cover)
     : state.editorMode === "fallback" ? !state.fallbackTrack?.image : state.compReportVisible ? !state.compTrack?.image : !(currentPackage || (state.radioArtist && (state.selectedPortrait || state.artist?.portrait)) || (state.radioBanner && (state.selectedBanner || state.artist?.banner))));
+  const compContext = compContextActive();
   const staged = state.editorMode === "album" && state.embedQueue.some(item => item.id === state.album?.id);
-  $("embedBatchButton").disabled = !writable || state.editorMode !== "album" || !albumEmbeddingEligible(state.album) || !(state.selectedCover?.image || state.album?.cover);
+  $("embedBatchButton").textContent = compContext ? "EMBED Thumbs" : "EMBED Batch";
+  $("embedBatchButton").classList.toggle("action-purple", !compContext);
+  $("embedBatchButton").classList.toggle("action-cyan", compContext);
+  $("embedBatchButton").disabled = compContext ? !compCandidateSource() || !compTargetScope().track_key
+    : !writable || state.editorMode !== "album" || !albumEmbeddingEligible(state.album) || !(state.selectedCover?.image || state.album?.cover);
   $("embedBatchButton").classList.toggle("staged", staged);
-  $("embedBatchButton").title = staged ? "Already staged; press again to confirm the existing queue entry" : "Write the cover and stage track embedding";
+  $("embedBatchButton").title = compContext ? "Prepare the configured square COMP thumbnail without writing audio"
+    : staged ? "Already staged; press again to confirm the existing queue entry" : "Write the cover and stage track embedding";
   $("musicbrainzButton").disabled = !state.album || state.editorMode !== "album";
   $("bypassButton").disabled = !state.album || state.editorMode !== "album";
   $("writeNotice").textContent = writable ? "Live Write · WRITE saves artwork. EMBED Batch saves the cover and stages track embedding. COMP work asks for track artwork in queued review." : "Read mode · searching and previewing are enabled. Enable Live Write in Settings to save artwork or track tags.";
@@ -197,10 +267,10 @@ renderReview = function () {
     $("upscaleButton").disabled = state.compPreviewMode || !compCandidate;
     $("writeButton").textContent = musicBrainzResults ? "CHOOSE RESULT" : state.queuedDecision.jobKind === "comp" ? "EMBED Track" : "WRITE Cover";
     $("writeButton").disabled = !writable || state.compPreviewMode || musicBrainzResults || !state.queuedDecision.selected;
-    $("embedBatchButton").disabled = true;
+    $("embedBatchButton").disabled = !compCandidate;
     $("writeNotice").textContent = musicBrainzResults ? "Choose a MusicBrainz release in Candidate Artwork; its artwork candidates load next."
       : !writable ? "Read-only queued review · choices are evaluated but files are not saved."
-      : compCandidate ? "Live Write · adjust or upscale this candidate, then EMBED Track writes only the active COMP track."
+      : compCandidate ? "Prepare EMBED Thumbs to preview the configured square image, then EMBED Track writes only the active COMP track."
       : "Live Write · select one candidate, then save it here.";
   }
 };
@@ -374,6 +444,10 @@ async function submitQueuedDecision(value) {
 }
 async function presentQueuedCandidates(job, prompt, options) {
   if ($("workspaceDialog").open) $("workspaceDialog").close();
+  const currentDecision = state.queuedDecision;
+  const preserveSelection = currentDecision?.jobId === job.id
+    && currentDecision?.nonce === prompt.nonce
+    && currentDecision?.selected;
   const previousCandidates = state.queuedDecision?.previousCandidates || state.candidates;
   const previousSourceDiagnostics = state.queuedDecision?.previousSourceDiagnostics || state.sourceDiagnostics;
   const authority = job.progress?.current?.fallback_authority || {};
@@ -382,7 +456,8 @@ async function presentQueuedCandidates(job, prompt, options) {
   context.track_artist ||= authority.artist || "";
   state.queuedDecision = {
     jobId: job.id, jobKind: job.kind, nonce: prompt.nonce, kind: context.kind || "", context,
-    payload: job.payload || {}, previousCandidates, previousSourceDiagnostics, selected: null,
+    payload: job.payload || {}, previousCandidates, previousSourceDiagnostics,
+    selected: preserveSelection ? currentDecision.selected : null,
     authority: {...authority, ...(context.authority || {})},
     diagnostics: job.progress?.current?.diagnostics?.items || [], authoritySaved: job.progress?.current?.authority_saved || null,
   };
@@ -392,6 +467,7 @@ async function presentQueuedCandidates(job, prompt, options) {
   state.activeSource = ""; state.compare.clear(); resetCandidateFilters();
   await focusQueuedAlbum(state.queuedDecision);
   if (!state.queuedDecision || state.queuedDecision.jobId !== job.id) return;
+  if (state.pendingCompWrite && state.pendingCompWrite.owner !== compThumbnailOwner()) state.pendingCompWrite = null;
   renderWorkspace(); renderSources(); renderCandidates(); renderReview();
   setStatus("Queued artwork review · select a candidate, then save from Selected Artwork", "busy");
 }
@@ -1293,7 +1369,14 @@ async function repairFallback() {
 const quickPreview=applyPreviewEffects;
 let previewTimer,previewGeneration=0;
 applyPreviewEffects=function () {
-  quickPreview();clearTimeout(previewTimer);const generation=++previewGeneration;
+  clearTimeout(previewTimer);const generation=++previewGeneration;
+  if (activeCompPrepared()) {
+    for (const element of document.querySelectorAll('#selectedFrame .selected-image,#albumPane img')) {
+      element.style.filter='none';element.style.transform='none';
+    }
+    return;
+  }
+  quickPreview();
   if (!state.server?.authenticated) return;
   previewTimer=setTimeout(()=>runAction(async()=>{
     const requests=[];

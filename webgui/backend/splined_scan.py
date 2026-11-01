@@ -1285,6 +1285,8 @@ def _manual_choose_candidate(
                         "image": str(artwork.get("image") or ""),
                         "adjustments": artwork.get("adjustments") or {},
                         "upscale": bool(artwork.get("upscale")),
+                        "prepared_id": str(artwork.get("prepared_id") or ""),
+                        "prepared_sha256": str(artwork.get("prepared_sha256") or ""),
                     }
                 }
         if (

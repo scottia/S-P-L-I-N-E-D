@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import closing
 from pathlib import Path
 from uuid import uuid4
+import json
 import threading
 
 from psycopg.types.json import Jsonb
@@ -64,6 +65,23 @@ class JobAdapter:
                 ).fetchone()
                 if row and row["decision"] and row["decision"].get("nonce") == nonce:
                     value = str(row["decision"].get("value", ""))
+                    try:
+                        selected = json.loads(value)
+                    except (TypeError, ValueError):
+                        selected = None
+                    artwork = selected.get("artwork") if isinstance(selected, dict) else None
+                    if isinstance(artwork, dict) and artwork.get("prepared_id"):
+                        self.progress(
+                            {
+                                "prepared_comp": {
+                                    "prepared_id": str(artwork.get("prepared_id", "")),
+                                    "sha256": str(artwork.get("prepared_sha256", "")),
+                                    "album_id": str(self.context.get("album_id", "")),
+                                    "track_key": str(self.context.get("track_key", "")),
+                                    "artist_id": str(self.context.get("scope_artist_id", "")),
+                                }
+                            }
+                        )
                     db.execute(
                         "UPDATE web_jobs SET state='running',decision=NULL,progress=progress - 'prompt',updated_at=now() WHERE id=?",
                         (self.id,),

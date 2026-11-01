@@ -13,8 +13,10 @@ from unittest.mock import patch
 import numpy as np
 import soundfile as sf
 from mutagen.flac import FLAC, Picture
+from mutagen.id3 import ID3, TALB, TCMP, TIT2, TPE1, TPE2
 from PIL import Image
 
+import splined as core
 from webgui.catalog import embedded_track_artwork_bytes
 from webgui.services import Services
 
@@ -183,6 +185,22 @@ class CompJobScopeTests(unittest.TestCase):
             self.assertEqual(verified["musicbrainz_artistid"], [artist])
             self.assertEqual(verified.pictures[0].data, original_art.getvalue())
 
+    def test_multi_value_id3_artist_is_json_safe_and_preserves_each_credit(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "multi-credit.mp3"
+            tags = ID3()
+            tags.add(TIT2(encoding=3, text=["Say Something"]))
+            tags.add(TPE1(encoding=3, text=["A Great Big World", "Christina Aguilera"]))
+            tags.add(TALB(encoding=3, text=["Billboard Hot 100 Singles of 2014"]))
+            tags.add(TPE2(encoding=3, text=["Various Artists"]))
+            tags.add(TCMP(encoding=3, text=["1"]))
+            tags.save(path, v2_version=4)
+
+            track = core.read_track(path)
+
+            self.assertEqual(track.artist, "A Great Big World; Christina Aguilera")
+            self.assertNotIn("\0", track.artist)
+
     def test_artist_and_full_embed_prepare_exact_square_and_write_only_selected_file(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -232,7 +250,7 @@ class CompJobScopeTests(unittest.TestCase):
                 },
             )
             service.catalog = Images()
-            service.validate_comp_payload = lambda payload: dict(payload)
+            service._validate_comp_payload = lambda payload: dict(payload)
             service.album_row = lambda _album_id: {
                 "album_key": "billboard-1994", "path": str(album),
             }
@@ -252,10 +270,28 @@ class CompJobScopeTests(unittest.TestCase):
             service.refresh_embedding_stats = lambda _row: 1
             service.audit = lambda *_args, **_kwargs: None
 
+            prepared = service.prepare_comp_thumbnail({
+                "artist_id": "10k-maniacs", "album_id": "billboard-1994",
+                "track_key": "because-the-night", "image": "/candidate",
+                "adjustments": {"Brightness": 12}, "upscale": True,
+            })
+            self.assertFalse(prepared["audio_written"])
+            self.assertEqual((prepared["width"], prepared["height"]), (1200, 1200))
+            self.assertIsNone(embedded_track_artwork_bytes(target))
+            with self.assertRaisesRegex(ValueError, "different track"):
+                service.embed_comp_track({
+                    "album_id": "billboard-1994", "track_key": "other",
+                    "image": "/candidate", "prepared_id": prepared["prepared_id"],
+                    "prepared_sha256": prepared["sha256"],
+                })
+            self.assertIsNone(embedded_track_artwork_bytes(other))
+
             result = service.embed_comp_track({
                 "artist_id": "10k-maniacs", "album_id": "billboard-1994",
                 "track_key": "because-the-night", "image": "/candidate",
                 "adjustments": {"Brightness": 12}, "upscale": True,
+                "prepared_id": prepared["prepared_id"],
+                "prepared_sha256": prepared["sha256"],
             })
 
             with Image.open(BytesIO(embedded_track_artwork_bytes(target))) as embedded:
@@ -265,6 +301,9 @@ class CompJobScopeTests(unittest.TestCase):
             self.assertIsNone(embedded_track_artwork_bytes(other))
             self.assertEqual((result["width"], result["height"]), (1200, 1200))
             self.assertTrue(result["upscaled"])
+            self.assertEqual(result["artwork_sha256"], prepared["sha256"])
+            self.assertEqual(result["image"], "/rendered")
+            self.assertFalse((root / "cache" / "prepared-comp" / (prepared["prepared_id"] + ".jpg")).exists())
             self.assertEqual(recorded[0][1]["track_key"], "because-the-night")
 
             target_art = embedded_track_artwork_bytes(target)

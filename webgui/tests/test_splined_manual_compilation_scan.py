@@ -218,6 +218,8 @@ class ManualCompilationDecisionTests(unittest.TestCase):
                 "image": "/api/image/candidate",
                 "adjustments": {"Brightness": 12},
                 "upscale": True,
+                "prepared_id": "a" * 32,
+                "prepared_sha256": "b" * 64,
             },
         }
         with (
@@ -238,6 +240,8 @@ class ManualCompilationDecisionTests(unittest.TestCase):
                 "image": "/api/image/candidate",
                 "adjustments": {"Brightness": 12},
                 "upscale": True,
+                "prepared_id": "a" * 32,
+                "prepared_sha256": "b" * 64,
             },
         )
 
