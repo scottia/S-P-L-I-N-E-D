@@ -417,7 +417,10 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         with Image.open(prepared) as image:
             self.assertEqual(image.size, (300, 300))
         with Image.open(full_cover) as image:
-            self.assertEqual(image.size, (180, 180))
+            self.assertEqual(
+                image.size,
+                (staged["cover_width"], staged["cover_height"]),
+            )
 
         first_projection = self.services.staged_album_projection(staged)
         self.assertTrue(first_projection["staged_valid"])
@@ -480,11 +483,17 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             audio = FLAC(path)
             del audio["musicbrainz_albumid"]
             audio.save()
+            stat = path.stat()
+            os.utime(
+                path,
+                ns=(stat.st_atime_ns, stat.st_mtime_ns + 2_000_000_000),
+            )
         self.services.refresh_index(mode="full")
         with closing(self.db.connect()) as db:
             fallback = db.execute(
                 "SELECT * FROM albums WHERE path=?", (str(self.cover.parent),)
             ).fetchone()
+        self.assertEqual(str(fallback["musicbrainz_albumid"] or ""), "")
         original_cover = self.cover.read_bytes()
         with self.assertRaisesRegex(ValueError, "COMP Fallback Albums"):
             self.services.stage_album(
@@ -514,7 +523,17 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             audio = FLAC(path)
             del audio["musicbrainz_albumid"]
             audio.save()
+            stat = path.stat()
+            os.utime(
+                path,
+                ns=(stat.st_atime_ns, stat.st_mtime_ns + 2_000_000_000),
+            )
         self.services.refresh_index(mode="full")
+        with closing(self.db.connect()) as db:
+            fallback = db.execute(
+                "SELECT * FROM albums WHERE path=?", (str(self.cover.parent),)
+            ).fetchone()
+        self.assertEqual(str(fallback["musicbrainz_albumid"] or ""), "")
 
         restored = next(
             item for item in self.queue.list() if item["id"] == result["id"]
