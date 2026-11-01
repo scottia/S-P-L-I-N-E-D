@@ -136,34 +136,6 @@ def upscale_to_policy(image, ideal=1800, max_percent=200):
     return image.resize(output_size, Image.Resampling.LANCZOS), True, target
 
 
-def prepare_embedded_thumbnail(image, side):
-    """Match Windows COMP squaring: crop near-square art, contain wider art."""
-    side = int(side)
-    if not 300 <= side <= 4000:
-        raise ValueError("Embedded thumbnail size must be between 300 and 4000")
-    source = ImageOps.exif_transpose(image).convert("RGBA")
-    opaque = Image.new("RGB", source.size, (0, 0, 0))
-    opaque.paste(source, mask=source.getchannel("A"))
-    deviation = abs(opaque.width - opaque.height) / max(opaque.size)
-    if deviation <= 0.02:
-        return ImageOps.fit(
-            opaque,
-            (side, side),
-            method=Image.Resampling.LANCZOS,
-        )
-    fitted = ImageOps.contain(
-        opaque,
-        (side, side),
-        method=Image.Resampling.LANCZOS,
-    )
-    canvas = Image.new("RGB", (side, side), (0, 0, 0))
-    canvas.paste(
-        fitted,
-        ((side - fitted.width) // 2, (side - fitted.height) // 2),
-    )
-    return canvas
-
-
 def render(
     source,
     *,

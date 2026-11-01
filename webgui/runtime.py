@@ -194,9 +194,9 @@ class Runtime:
             )
 
     def prepare_comp_artwork(self, candidate, cfg):
-        from PIL import Image
+        from PIL import Image, ImageOps
         from io import BytesIO
-        from webgui.imaging import encode, prepare_embedded_thumbnail
+        from webgui.imaging import encode
 
         content, info, target = compilation.prepare_embedded_artwork(
             core, candidate, cfg
@@ -204,7 +204,7 @@ class Runtime:
         side = int(cfg.get("output", {}).get("embedded_thumbnail_size", 1200))
         with Image.open(BytesIO(content)) as image:
             body = encode(
-                prepare_embedded_thumbnail(image, side),
+                ImageOps.fit(image, (side, side), method=Image.Resampling.LANCZOS),
                 "jpeg",
             )
         return body, dict(info, width=side, height=side, bytes=len(body)), "jpeg"
