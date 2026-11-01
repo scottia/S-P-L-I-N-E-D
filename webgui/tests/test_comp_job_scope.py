@@ -47,6 +47,10 @@ class CompJobScopeTests(unittest.TestCase):
             {"track_key": "artist-track", "path": "artist.flac"},
             {"track_key": "other-track", "path": "other.flac"},
         ]
+        self.services.indexed_tracks = lambda _album_id, keys: [
+            item for item in self.services.hydrate_tracks(_album_id)
+            if item["track_key"] in keys
+        ]
 
     def test_artist_scope_accepts_only_tracks_in_that_artist_report(self):
         normalized = self.services.validate_comp_payload({
@@ -113,6 +117,10 @@ class CompJobScopeTests(unittest.TestCase):
             self.services.hydrate_tracks = lambda _album_id: [
                 {"track_key": "artist-track", "path": str(target)},
                 {"track_key": "other-track", "path": str(other)},
+            ]
+            self.services.indexed_tracks = lambda _album_id, keys: [
+                item for item in self.services.hydrate_tracks(_album_id)
+                if item["track_key"] in keys
             ]
             self.services.refresh_album = lambda _album_id: None
             self.services.refresh_embedding_stats = lambda _row: None
@@ -268,7 +276,15 @@ class CompJobScopeTests(unittest.TestCase):
                 },
                 {"track_key": "other", "path": str(other)},
             ]
-            service.hydrate_tracks = lambda _album_id, **_kwargs: records
+            service.hydrate_tracks = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("COMP work must not hydrate the full album")
+            )
+            service.indexed_tracks = lambda _album_id, keys: [
+                item for item in records if item["track_key"] in keys
+            ]
+            service.hydrate_selected_tracks = lambda _album_id, keys: [
+                item for item in records if item["track_key"] in keys
+            ]
             recorded = []
             service._comp_track_authority_validated = lambda _path: True
             service._record_comp_track_artwork = (

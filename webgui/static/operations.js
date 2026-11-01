@@ -301,7 +301,7 @@ async function enqueueComp(albumId, keys, artistId = "") {
   if (artistId) payload.artist_id = artistId;
   state.sourceDiagnostics = [];
   const result = await post("/api/jobs", {kind: "comp", payload});
-  await reviewJob(result.id);
+  await reviewJob(result.id, true);
 }
 async function launchFallback() {
   if (!state.album) return;
@@ -318,7 +318,7 @@ async function launchArtistComp() {
   for (const group of groups) {
     const result = await post("/api/jobs", {kind: "comp", payload: {artist_id: artistId, album_id: group.id, track_keys: group.keys}}); first ||= result.id;
   }
-  await reviewJob(first);
+  await reviewJob(first, true);
 };
 async function launchCandidateWork() {
   if (state.queuedDecision?.jobKind === "scan") return skipQueuedAlbum();
@@ -663,6 +663,10 @@ async function pollJobs() {
       const job = state.jobs.find(item => item.id === state.reviewJobId);
       const key = job?.id + ":" + job?.state + ":" + job?.progress.prompt?.nonce
         + ":" + (job?.progress?.message || "");
+      if (job?.kind === "comp" && ["queued", "running"].includes(job.state)
+        && job.progress?.message && key !== lastPrompt) {
+        setStatus(job.progress.message, "busy");
+      }
       if (job && key !== lastPrompt && (job.state === "waiting" || $("workspaceDialog").open)) {
         lastPrompt = key; await renderJob(job);
       }
@@ -688,11 +692,14 @@ async function pollJobs() {
     }
   } finally { jobsPolling = false; }
 }
-async function reviewJob(id) {
+async function reviewJob(id, quietRunning = false) {
   state.reviewJobId = id; lastPrompt = "";
   const job = (state.jobs || []).find(item => item.id === id);
   state.reviewJobState = job?.state || "";
-  if (job) await renderJob(job); else dialog("Queued work");
+  if (job && quietRunning && job.kind === "comp" && job.state !== "waiting") {
+    if ($("workspaceDialog").open) $("workspaceDialog").close();
+    setStatus(job.progress?.message || "COMP track review queued", "busy");
+  } else if (job) await renderJob(job); else if (!quietRunning) dialog("Queued work");
   await pollJobs();
 }
 async function renderJob(job) {

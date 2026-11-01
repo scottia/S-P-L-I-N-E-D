@@ -466,6 +466,41 @@ class Services:
             self.refresh_embedding_stats(row)
         return records
 
+    def indexed_tracks(self, album_id, track_keys):
+        """Return only explicitly requested indexed tracks, in request order."""
+        requested = [str(key) for key in track_keys]
+        if not requested:
+            return []
+        placeholders = ",".join("?" for _ in requested)
+        with closing(self.runtime.database.connect()) as db:
+            rows = list(
+                db.execute(
+                    "SELECT * FROM tracks WHERE album_key=? "
+                    f"AND track_key IN ({placeholders})",
+                    (album_id, *requested),
+                )
+            )
+        by_key = {str(row["track_key"]): row for row in rows}
+        return [by_key[key] for key in requested if key in by_key]
+
+    def hydrate_selected_tracks(self, album_id, track_keys):
+        """Refresh tag metadata for selected tracks without scanning the album."""
+        row = self.album_row(album_id)
+        indexed = self.indexed_tracks(album_id, track_keys)
+        if len(indexed) != len(track_keys):
+            raise ValueError("Choose indexed COMP tracks")
+        files = [Path(item["path"]) for item in indexed]
+        old = {str(item["path"]): item for item in indexed}
+        records, _, _ = tags.inspect_album_tracks(
+            core.AlbumDir(Path(row["path"]), files), album_id, old
+        )
+        with closing(self.runtime.database.connect()) as db, db:
+            for record in records:
+                record["splined_version"] = core.VERSION
+                self._upsert(db, "tracks", record, "track_key")
+        refreshed = {str(item["track_key"]): item for item in records}
+        return [refreshed[key] for key in track_keys if key in refreshed]
+
     def refresh_embedding_stats(self, row):
         count = sum(
             bool(embedded_track_artwork_bytes(path)) for path in self.album_files(row)
@@ -852,14 +887,8 @@ class Services:
             selection["artist_id"] = artist_id
         normalized = self._validate_comp_payload(selection)
         row = self.album_row(normalized["album_id"])
-        record = next(
-            (
-                item
-                for item in self.hydrate_tracks(row["album_key"])
-                if item["track_key"] == track_key
-            ),
-            None,
-        )
+        selected = self.indexed_tracks(row["album_key"], [track_key])
+        record = selected[0] if selected else None
         if record is None:
             raise KeyError("COMP track not found")
         path, folder = Path(record["path"]), Path(row["path"])
@@ -1155,16 +1184,10 @@ class Services:
             compilation.replace_embedded_artwork(path, body, image_format, info)
         self._verify_comp_embedded(record, body, info)
         verified_body = embedded_track_artwork_bytes(path)
-        refreshed = next(
-            (
-                item
-                for item in self.hydrate_tracks(
-                    row["album_key"], refresh_embedding_stats=False
-                )
-                if item["track_key"] == track_key
-            ),
-            record,
+        refreshed_rows = self.hydrate_selected_tracks(
+            row["album_key"], [track_key]
         )
+        refreshed = refreshed_rows[0] if refreshed_rows else record
         authority_validated = self._comp_track_authority_validated(path)
         completed = self._record_comp_track_artwork(
             row,
@@ -1524,7 +1547,7 @@ class Services:
         ):
             raise ValueError("Choose explicit indexed COMP tracks")
 
-        records = self.hydrate_tracks(album_id)
+        records = self.indexed_tracks(album_id, requested)
         indexed = {item["track_key"] for item in records}
         if any(key not in indexed for key in requested):
             raise ValueError("Choose indexed COMP tracks")
@@ -1567,9 +1590,9 @@ class Services:
             "scope_artist_id": scope_artist_id,
             "scope_artist": payload.get("artist_name", ""),
         }
-        records = self.hydrate_tracks(row["album_key"])
-        allowed = {item["track_key"]: item["path"] for item in records}
         requested = payload["track_keys"]
+        records = self.indexed_tracks(row["album_key"], requested)
+        allowed = {item["track_key"]: item["path"] for item in records}
         selected_files = [Path(allowed[key]) for key in requested]
         progress = getattr(adapter, "progress", None)
         if callable(progress):

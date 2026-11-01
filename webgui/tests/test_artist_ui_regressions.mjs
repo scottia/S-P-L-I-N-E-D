@@ -70,6 +70,11 @@ const renderJobFunction = between(
   "async function renderJob",
   "function settingValue",
 );
+const reviewJobFunction = between(
+  operationsSource,
+  "async function reviewJob",
+  "async function renderJob",
+);
 const renderMusicBrainzFunction = between(
   appSource,
   "function musicBrainzFamilyKey",
@@ -368,7 +373,7 @@ test("Artist and full-album COMP launches submit independent explicit scopes", a
   const context = load(launchCompFunctions, {
     state,
     post: async (path, body) => { calls.push([path, body]); return {id: `job-${calls.length}`}; },
-    reviewJob: async id => { reviewed.push(id); },
+    reviewJob: async (id, quiet) => { reviewed.push([id, quiet]); },
     setStatus() {},
   });
 
@@ -382,7 +387,7 @@ test("Artist and full-album COMP launches submit independent explicit scopes", a
   assert.deepEqual(submitted[1], ["/api/jobs", {kind: "comp", payload: {
     album_id: "comp-1", track_keys: ["artist-track", "other-track"],
   }}]);
-  assert.deepEqual(reviewed, ["job-1", "job-2"]);
+  assert.deepEqual(reviewed, [["job-1", true], ["job-2", true]]);
 });
 
 test("both Artist COMP launch controls route through the scoped COMP action", async () => {
@@ -406,6 +411,32 @@ test("both Artist COMP launch controls route through the scoped COMP action", as
   assert.deepEqual(calls, ["artist-comp", "artist", "full-comp"]);
   assert.match(appSource, /launch\.addEventListener\("click", \(\) => runAction\(launchArtistComp\)\)/);
   assert.match(appSource, /searchButton"\)\.addEventListener\("click", \(\) => runAction\(launchCandidateWork\)\)/);
+});
+
+test("automatic COMP launch uses the status bar without a running-work dialog", async () => {
+  let dialogs = 0, renders = 0, polls = 0;
+  const statuses = [];
+  const job = {
+    id: "comp-running", kind: "comp", state: "running",
+    progress: {message: "MusicBrainz identity lookup · Artist — Track · track 1 of 1"},
+  };
+  const context = load(reviewJobFunction, {
+    state: {jobs: [job], reviewJobId: null, reviewJobState: ""},
+    lastPrompt: "",
+    $: () => ({open: false, close() {}}),
+    setStatus: (...args) => { statuses.push(args); },
+    renderJob: async () => { renders += 1; },
+    dialog: () => { dialogs += 1; },
+    pollJobs: async () => { polls += 1; },
+  });
+
+  await context.reviewJob(job.id, true);
+
+  assert.equal(dialogs, 0);
+  assert.equal(renders, 0);
+  assert.equal(polls, 1);
+  assert.equal(context.state.reviewJobId, job.id);
+  assert.match(statuses[0][0], /track 1 of 1/);
 });
 
 test("Artist COMP renders all album groups and previews only the selected current track", () => {
