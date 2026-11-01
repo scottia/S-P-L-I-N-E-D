@@ -34,7 +34,6 @@ from splined_artist_art import ArtistAlbum, ArtistArtTarget, artist_targets, loc
 from splined_compilation_authority_policy import replace_embedded_artwork
 from interaction.artist_search import discover_artist_images, discover_artist_profile
 from webgui.database import Database
-from webgui import imaging
 
 
 ASSETS = Path(__file__).with_name("static")
@@ -1165,40 +1164,18 @@ class Catalog:
                 completed = {str(row[0]).casefold() for row in db.execute(
                     "SELECT track_path FROM compilation_track_artwork WHERE outcome IN ('embedded-replaced','embedded-existing')",
                 )}
-        tracks = [
-            {
-                "key": row["track_key"], "path": row["path"],
-                "title": row["title"], "artist": row["artist_name"],
-                "file": Path(row["path"]).name,
-                "completed": str(row["path"]).casefold() in completed,
-                "status": (
-                    "checking"
-                    if str(row["path"]).casefold() in completed
-                    else "blue"
-                ),
-                "thumbnail": None,
-            }
-            for row in rows if inside(Path(row["path"]), folder)
-        ]
+        tracks = [{"key": row["track_key"], "path": row["path"],
+                   "title": row["title"], "artist": row["artist_name"],
+                   "file": Path(row["path"]).name,
+                   "completed": str(row["path"]).casefold() in completed}
+                  for row in rows if inside(Path(row["path"]), folder)]
         if not tracks:
             # Windows fills an older uncached fallback from this folder only.
-            tracks = [
-                {
-                    "key": str(path), "path": str(path), "title": path.stem,
-                    "artist": "", "file": path.name,
-                    "completed": str(path).casefold() in completed,
-                    "status": (
-                        "checking" if str(path).casefold() in completed else "blue"
-                    ),
-                    "thumbnail": None,
-                }
-                for path in sorted(
-                    folder.iterdir(), key=lambda item: item.name.casefold()
-                )
-                if path.is_file()
-                and not path.is_symlink()
-                and path.suffix.casefold() in AUDIO_EXTENSIONS
-            ]
+            tracks = [{"key": str(path), "path": str(path), "title": path.stem,
+                       "artist": "", "file": path.name,
+                       "completed": str(path).casefold() in completed}
+                      for path in sorted(folder.iterdir(), key=lambda item: item.name.casefold())
+                      if path.is_file() and not path.is_symlink() and path.suffix.casefold() in AUDIO_EXTENSIONS]
         return tracks
 
     def fallback_track_preview(self, album_id: str, track_key: str) -> dict[str, object]:
@@ -1271,12 +1248,9 @@ class Catalog:
             ).fetchall()
         matching = set()
         for row in rows:
-            if (
-                str(row["album_key"]) in appearance_ids
-                or str(row["artist_key"]) in alias_ids
-                or artist_credit_position(str(row["artist_name"] or ""), name)
-                is not None
-            ):
+            if str(row["artist_key"]) in alias_ids or artist_credit_position(
+                str(row["artist_name"] or ""), name
+            ) is not None:
                 matching.add(str(row["album_key"]))
         return sorted(matching)
 
@@ -1404,31 +1378,14 @@ class Catalog:
                 "width": width, "height": height, "side": self.comp_thumbnail_side,
                 "thumbnail": self.fallback_thumbnail_url(album_id, track_key)}
 
-    def repair_comp_track(
-        self,
-        album_id: str,
-        track_key: str,
-        artist_id: str = "",
-    ) -> dict[str, object]:
+    def repair_artist_comp_track(self, artist_id: str, album_id: str, track_key: str) -> dict[str, object]:
         """Repair one recorded, readable purple thumbnail in the isolated music copy."""
         if not self.allow_comp_repairs:
             raise ValueError("COMP repair is disabled for this browser service")
-        if artist_id:
-            allowed = any(
-                group["id"] == album_id
-                and any(track["key"] == track_key for track in group["tracks"])
-                for group in self.artist_comp_report(artist_id)
-            )
-        else:
-            allowed = any(
-                track["key"] == track_key for track in self.fallback_tracks(album_id)
-            )
+        allowed = any(group["id"] == album_id and any(track["key"] == track_key for track in group["tracks"])
+                      for group in self.artist_comp_report(artist_id))
         if not allowed:
-            raise ValueError(
-                "Track is not in this Artist's COMP report"
-                if artist_id
-                else "Track is not in this full Fallback COMP report"
-            )
+            raise ValueError("Track is not in this Artist's COMP report")
         current = self.comp_track_status(album_id, track_key)
         if current["status"] != "purple" or not current["repairable"]:
             raise ValueError("Only readable purple COMP thumbnails can be repaired")
@@ -1445,9 +1402,9 @@ class Catalog:
             raise ValueError("The completed COMP track has no readable embedded art")
         with Image.open(BytesIO(artwork)) as opened:
             image_format = "png" if opened.format == "PNG" else "jpeg"
-            thumbnail = imaging.prepare_embedded_thumbnail(
-                opened, self.comp_thumbnail_side
-            )
+            thumbnail = ImageOps.fit(ImageOps.exif_transpose(opened).convert("RGB"),
+                                     (self.comp_thumbnail_side, self.comp_thumbnail_side),
+                                     method=Image.Resampling.LANCZOS)
             output = BytesIO()
             thumbnail.save(output, format=image_format.upper(), **({"quality": 92, "optimize": True} if image_format == "jpeg" else {"optimize": True}))
         state_directory = self.cache or (self.database.parent if isinstance(self.database, Path) else self.artist_art.parent)
@@ -1472,14 +1429,6 @@ class Catalog:
                                      "original_image_backup": str(backup)}) + "\n")
         return {"status": "green", "width": self.comp_thumbnail_side,
                 "height": self.comp_thumbnail_side, "backup": str(backup)}
-
-    def repair_artist_comp_track(
-        self,
-        artist_id: str,
-        album_id: str,
-        track_key: str,
-    ) -> dict[str, object]:
-        return self.repair_comp_track(album_id, track_key, artist_id)
 
     def _stored_artist_profile(self, artist_id: str) -> dict[str, str] | None:
         if not isinstance(self.database, Database):
