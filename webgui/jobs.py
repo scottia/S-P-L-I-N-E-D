@@ -185,6 +185,7 @@ class JobQueue:
                     "SELECT kind,payload FROM web_jobs WHERE id=?", (job_id,)
                 ).fetchone()
             payload = row["payload"] if row else {}
+            correlation = payload.get("_audit", {}) if isinstance(payload, dict) else {}
             scope = {
                 key: payload.get(key)
                 for key in ("artist_id", "album_id", "track_key")
@@ -197,6 +198,8 @@ class JobQueue:
                 row["kind"] if row else "job",
                 details or {},
                 severity=severity,
+                action_id=str(correlation.get("action_id") or ""),
+                trace_id=str(correlation.get("trace_id") or ""),
                 job_id=job_id,
                 scope=scope,
                 stage=stage,
@@ -274,6 +277,18 @@ class JobQueue:
                         old["payload"].get("artist_id") == payload.get("artist_id")
                         and old["payload"].get("track_keys") == payload.get("track_keys")
                     ):
+                        correlation = payload.get("_audit", {})
+                        self.services.audit(
+                            "job-deduplicated",
+                            kind,
+                            {"already_queued": True},
+                            action_id=str(correlation.get("action_id") or ""),
+                            trace_id=str(correlation.get("trace_id") or ""),
+                            job_id=old["id"],
+                            scope={"album_id": payload.get("album_id", "")},
+                            stage="queue",
+                            request_status="existing",
+                        )
                         return {"id": old["id"], "already_queued": True}
             db.raw.execute(
                 "INSERT INTO web_jobs(id,kind,state,payload) VALUES(%s,%s,%s,%s)",

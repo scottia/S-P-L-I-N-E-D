@@ -20,7 +20,8 @@ SECRET_TEXT = (
     (re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+"), r"\1[REDACTED]"),
     (
         re.compile(
-            r"(?i)(password|passwd|secret|token|api[_-]?key|authorization)"
+            r"(?i)(password|passwd|secret|token|api[_-]?key|access[_-]?key|"
+            r"client[_-]?secret|authorization|credential|cookie|csrf)"
             r"(\s*[:=]\s*)([^\s,;&]+)"
         ),
         r"\1\2[REDACTED]",

@@ -683,6 +683,15 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
                 stage="provider",
                 request_status="unavailable",
             )
+        if not result.get("similar") and result.get("similar_reason"):
+            services.audit(
+                "similar-artists-unavailable",
+                id,
+                {"artist_id": id, "reason": result["similar_reason"]},
+                severity="warning",
+                stage="similar-artists",
+                request_status="unavailable",
+            )
         return result
 
     @app.get("/api/artist/comp-report")
@@ -743,21 +752,54 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
 
     @app.post("/api/search/artist")
     def search_artist(payload: dict):
-        return context.require().catalog.search_artist(str((payload).get("id", "")))
+        services = context.require()
+        artist_id = str(payload.get("id", ""))
+        result = services.catalog.search_artist(artist_id)
+        services.audit(
+            "artwork-provider-outcome",
+            "Artist search",
+            {"candidates": len(result.get("candidates", [])), "warnings": result.get("warnings", [])},
+            scope={"artist_id": artist_id},
+            stage="provider",
+            request_status="completed-with-warnings" if result.get("warnings") else "completed",
+        )
+        return result
 
     @app.post("/api/search/album")
     def search_album(payload: dict):
         value = payload
-        return context.require().search_album(
-            str(value.get("id", "")), value.get("release_id")
+        services = context.require()
+        album_id = str(value.get("id", ""))
+        result = services.search_album(
+            album_id, value.get("release_id")
         )
+        services.audit(
+            "artwork-provider-outcome",
+            "Album search",
+            {"candidates": len(result.get("candidates", [])), "warnings": result.get("warnings", [])},
+            scope={"album_id": album_id},
+            stage="provider",
+            request_status="completed-with-warnings" if result.get("warnings") else "completed",
+        )
+        return result
 
     @app.post("/api/musicbrainz")
     def musicbrainz(payload: dict):
         value = payload
-        return context.require().musicbrainz(
-            str(value.get("album_id", "")), value.get("artist"), value.get("title")
+        services = context.require()
+        album_id = str(value.get("album_id", ""))
+        result = services.musicbrainz(
+            album_id, value.get("artist"), value.get("title")
         )
+        services.audit(
+            "musicbrainz-outcome",
+            album_id,
+            {"results": len(result)},
+            scope={"album_id": album_id},
+            stage="provider",
+            request_status="completed" if result else "empty",
+        )
+        return result
 
     @app.post("/api/preview/render")
     def preview(payload: dict):
@@ -845,11 +887,15 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
         }
 
     @app.post("/api/jobs")
-    def stage_job(payload: dict):
+    def stage_job(request: Request, payload: dict):
         services = context.require()
         value = payload
         kind = value.get("kind")
-        payload = value.get("payload", {})
+        payload = dict(value.get("payload", {}))
+        audit_context = {
+            "action_id": request.state.action_id,
+            "trace_id": request.state.trace_id,
+        }
         if not context.jobs:
             raise ValueError("The job worker is unavailable")
         if kind == "embed-album":
@@ -864,8 +910,20 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
                 None,
             )
             if old:
+                services.audit(
+                    "job-deduplicated",
+                    str(kind),
+                    {"already_queued": True},
+                    action_id=request.state.action_id,
+                    trace_id=request.state.trace_id,
+                    job_id=old["id"],
+                    scope={"album_id": payload.get("album_id", "")},
+                    stage="queue",
+                    request_status="existing",
+                )
                 return {"id": old["id"], "already_queued": True}
             payload = services.stage_album(payload)
+            payload["_audit"] = audit_context
             try:
                 result = context.jobs.enqueue(str(kind), payload, staged=True)
             except Exception:
@@ -877,6 +935,7 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
         if kind == "comp":
             context.runtime.require_write()
             payload = services.validate_comp_payload(payload)
+        payload["_audit"] = audit_context
         return context.jobs.enqueue(str(kind), payload, staged=kind == "embed-album")
 
     @app.post("/api/jobs/action")

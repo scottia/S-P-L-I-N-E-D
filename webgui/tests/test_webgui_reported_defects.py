@@ -194,6 +194,10 @@ class ReportedDefectTests(unittest.TestCase):
         self.assertIn('id="aboutButton"', document)
         self.assertNotIn("state.artists.filter(item => item.id !== artist.id)", application)
         self.assertNotIn("services.hydrate_tracks(id)\n        return services.catalog.album(id)", (Path(__file__).parents[1] / "server.py").read_text(encoding="utf-8"))
+        self.assertIn(
+            '"similar-artists-unavailable"',
+            (Path(__file__).parents[1] / "server.py").read_text(encoding="utf-8"),
+        )
 
     def test_explicit_cover_replacement_preserves_old_file_but_updates_canonical_name(self):
         with TemporaryDirectory() as directory:
