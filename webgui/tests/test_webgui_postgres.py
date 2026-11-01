@@ -469,7 +469,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             time.sleep(0.05)
         self.assertEqual(row["state"], "done", row["error"])
         self.assertTrue(row["result"]["verified"])
-        corrupt = restarted.stage_album(self.payload())
+        corrupt_payload = self.payload()
+        corrupt_payload["image"] = restarted.catalog.image(self.cover)
+        corrupt = restarted.stage_album(corrupt_payload)
         (self.runtime.cache / "staged-artwork" / corrupt["prepared_file"]).write_bytes(
             b"corrupt"
         )
@@ -479,17 +481,14 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.assertEqual(self.files[0].read_bytes(), before)
 
     def test_album_staging_rejects_comp_before_it_can_enter_the_queue(self):
-        for path in self.files:
-            audio = FLAC(path)
-            del audio["musicbrainz_albumid"]
-            audio.save()
-            stat = path.stat()
-            os.utime(
-                path,
-                ns=(stat.st_atime_ns, stat.st_mtime_ns + 2_000_000_000),
+        # A refresh publishes the current classification to PostgreSQL. Model
+        # that accepted catalog transition directly so this test remains about
+        # the staging boundary rather than tag-reader cache behavior.
+        with closing(self.db.connect()) as db, db:
+            db.execute(
+                "UPDATE albums SET musicbrainz_albumid='' WHERE album_key=?",
+                (self.row["album_key"],),
             )
-        self.services.refresh_index(mode="full")
-        with closing(self.db.connect()) as db:
             fallback = db.execute(
                 "SELECT * FROM albums WHERE path=?", (str(self.cover.parent),)
             ).fetchone()
@@ -519,17 +518,15 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         result = self.queue.enqueue("embed-album", staged, staged=True)
         before = [embedded_track_artwork_bytes(path) for path in self.files]
 
-        for path in self.files:
-            audio = FLAC(path)
-            del audio["musicbrainz_albumid"]
-            audio.save()
-            stat = path.stat()
-            os.utime(
-                path,
-                ns=(stat.st_atime_ns, stat.st_mtime_ns + 2_000_000_000),
-            )
+        # The job survives an index refresh. Then model the refreshed catalog
+        # reclassifying this path as COMP and prove the obsolete Album job is
+        # visible but cannot be started.
         self.services.refresh_index(mode="full")
-        with closing(self.db.connect()) as db:
+        with closing(self.db.connect()) as db, db:
+            db.execute(
+                "UPDATE albums SET musicbrainz_albumid='' WHERE album_key=?",
+                (self.row["album_key"],),
+            )
             fallback = db.execute(
                 "SELECT * FROM albums WHERE path=?", (str(self.cover.parent),)
             ).fetchone()
