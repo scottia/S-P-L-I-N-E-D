@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -9,6 +10,85 @@ import splined_scan as scan
 
 
 class ManualCompilationDecisionTests(unittest.TestCase):
+    def test_webgui_comp_opens_release_results_before_artwork_provider_work(self) -> None:
+        track = SimpleNamespace(
+            path=Path("Because the Night.flac"),
+            artist="10,000 Maniacs",
+            title="Because the Night",
+            artist_mbid="b9a06530-1241-4162-836f-7b8e79deaa58",
+            recording_mbid="2ee5c11c-9e1a-4812-844b-c06530e5e600",
+        )
+        release = SimpleNamespace(release_mbid="release-id")
+        with (
+            mock.patch.object(
+                scan.core,
+                "compilation_manual_album_eligible",
+                return_value=True,
+                create=True,
+            ),
+            mock.patch.object(
+                scan.core,
+                "compilation_manual_track_eligible",
+                return_value=(True, ""),
+                create=True,
+            ),
+            mock.patch.object(
+                scan.core,
+                "compilation_mbids",
+                side_effect=lambda value: {value} if value else set(),
+                create=True,
+            ),
+            mock.patch.object(scan.core, "ui_cancelled", return_value=False),
+            mock.patch.object(scan, "_manual_musicbrainz_options", return_value=object()),
+            mock.patch.object(
+                scan.core,
+                "compilation_discover_releases",
+                return_value=((release,), ""),
+                create=True,
+            ) as discover,
+            mock.patch.object(
+                scan, "_manual_choose_release", return_value=("exit-album", None, {})
+            ) as choose_release,
+            mock.patch.object(scan, "_manual_remote_candidates") as remote,
+            mock.patch.object(scan.core, "emit_ui"),
+            mock.patch.object(scan.core, "debug_log"),
+        ):
+            continued = scan.run_manual_compilation_album(
+                SimpleNamespace(path=Path("Billboard Hot 100 Singles of 1994")),
+                [track],
+                http=object(),
+                config_file=Path("config.toml"),
+                cfg={"mode": "read"},
+                sources=[],
+                cache=Path("cache"),
+                format_order=["jpeg"],
+                summary=SimpleNamespace(unresolved=0),
+                api_queried=set(),
+                unresolved_items=[],
+                state={},
+                target_track_paths={str(track.path)},
+                musicbrainz_results_first=True,
+            )
+
+        self.assertFalse(continued)
+        discover.assert_called_once()
+        choose_release.assert_called_once_with(
+            [release],
+            current_release_id="",
+            inspected_resolutions={},
+            authority={
+                "artist_id": track.artist_mbid,
+                "release_id": "",
+                "recording_id": track.recording_mbid,
+            },
+            friendly={
+                "artist": track.artist,
+                "album": "",
+                "track": track.title,
+            },
+        )
+        remote.assert_not_called()
+
     def test_webgui_candidate_choice_retains_prepared_track_artwork_request(self) -> None:
         candidate = mock.Mock()
         payload = {

@@ -1312,6 +1312,7 @@ def run_manual_compilation_album(
     track_context: Any | None = None,
     prepare_selected_artwork: Any | None = None,
     persist_track_authority: Any | None = None,
+    musicbrainz_results_first: bool = False,
 ) -> bool:
     """Resolve and approve embedded artwork independently for every track."""
     if not core.compilation_manual_album_eligible(tracks):
@@ -1412,7 +1413,16 @@ def run_manual_compilation_album(
         force_musicbrainz = False
         force_sources = False
         interactive_retry = False
-        show_discovery = not authority["artist_id"] or not authority["recording_id"]
+        # Windows always presents the current track's ranked MusicBrainz
+        # releases before querying artwork providers.  Browser COMP review opts
+        # into that sequence so one Recording cannot fan out into provider work
+        # (and diagnostics) for every containing release before the operator
+        # chooses the intended release.
+        show_discovery = (
+            musicbrainz_results_first
+            or not authority["artist_id"]
+            or not authority["recording_id"]
+        )
         discovery_results: list[Any] = []
         selected_release_item: Any | None = None
         selected: core.Candidate | None = None
@@ -1751,7 +1761,10 @@ def run_manual_compilation_album(
                         f"    {core.magenta(provider_label(source))}: "
                         f"{core.yellow(message)}"
                     )
-            visible_diagnostics = list(diagnostics)
+            # A release can expose many references rejected for the same policy
+            # reason.  Surface each actionable diagnostic once, matching the
+            # concise Windows review rather than flooding the candidate dock.
+            visible_diagnostics = list(dict.fromkeys(diagnostics))
             if lookup_error:
                 visible_diagnostics.insert(
                     0, ("musicbrainz", lookup_error)

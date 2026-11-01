@@ -1277,51 +1277,40 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     "number": 1,
                 }
                 emit("fallback_authority", **authority)
-                emit("candidates", items=[dict(option)])
+                release = {
+                    "number": 1,
+                    "title": "Billboard Hot 100 Singles of 1994",
+                    "track": str(track.title),
+                    "artist": str(track.artist),
+                    "recording_artist": str(track.artist),
+                    "release_artist": "Various Artists",
+                    "release_class": "Compilation",
+                    "date": "1994",
+                    "country": "US",
+                    "score": 100,
+                    "recording_id": str(track.recording_mbid or ""),
+                    "artist_id": str(track.artist_mbid or ""),
+                    "release_id": "99999999-9999-4999-8999-999999999999",
+                }
                 answer = read_input(
-                    "Choose COMP artwork",
-                    kind="fallback-picker",
-                    options=[dict(option)],
-                    musicbrainz=True,
+                    "MusicBrainz matches",
+                    kind="musicbrainz-results",
+                    options=[release],
                     track_title=str(track.title),
                     track_artist=str(track.artist),
                     authority=authority,
                 )
-                if answer == "m":
-                    release = {
-                        "number": 1,
-                        "title": "Billboard Hot 100 Singles of 1994",
-                        "track": str(track.title),
-                        "artist": str(track.artist),
-                        "recording_artist": str(track.artist),
-                        "release_artist": "Various Artists",
-                        "release_class": "Compilation",
-                        "date": "1994",
-                        "country": "US",
-                        "score": 100,
-                        "recording_id": str(track.recording_mbid or ""),
-                        "artist_id": str(track.artist_mbid or ""),
-                        "release_id": "99999999-9999-4999-8999-999999999999",
-                    }
+                if answer == "1":
+                    emit("candidates", items=[dict(option)])
                     answer = read_input(
-                        "MusicBrainz matches",
-                        kind="musicbrainz-results",
-                        options=[release],
+                        "Choose release artwork",
+                        kind="fallback-picker",
+                        options=[dict(option)],
+                        musicbrainz=True,
                         track_title=str(track.title),
                         track_artist=str(track.artist),
                         authority=authority,
                     )
-                    if answer == "1":
-                        emit("candidates", items=[dict(option)])
-                        answer = read_input(
-                            "Choose release artwork",
-                            kind="fallback-picker",
-                            options=[dict(option)],
-                            musicbrainz=True,
-                            track_title=str(track.title),
-                            track_artist=str(track.artist),
-                            authority=authority,
-                        )
                 choice = json.loads(answer)
                 self.assertEqual(choice["action"], "webgui-embed-track")
                 body, info, image_format = kwargs["prepare_selected_artwork"](
@@ -1458,12 +1447,14 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         "Other Song"
                     )
                     page.locator("#fallbackReport .fallback-launch").click()
-                    expect(page.locator("#compDecisionTools")).to_be_visible()
-                    page.locator(
-                        "#compDecisionTools button", has_text="Search MusicBrainz"
-                    ).click()
+                    expect(page.locator("#compDecisionTools")).to_be_visible(
+                        timeout=15000
+                    )
                     expect(page.locator(".musicbrainz-result-card")).to_contain_text(
                         "100% match"
+                    )
+                    expect(page.locator("#sourceStrip button", has_text="MusicBrainz")).to_contain_text(
+                        "1 found"
                     )
                     page.locator(".musicbrainz-result-choice").click()
                     page.locator(".candidate-image-button").click()
@@ -1489,6 +1480,10 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         "Other Song"
                     )
                     page.locator("#searchButton").click()
+                    expect(page.locator(".musicbrainz-result-card")).to_contain_text(
+                        "100% match"
+                    )
+                    page.locator(".musicbrainz-result-choice").click()
                     page.locator(".candidate-image-button").click()
                     page.locator("#writeButton").click()
                     wait_for_embedded_art(other)

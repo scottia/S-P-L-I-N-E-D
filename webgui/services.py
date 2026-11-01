@@ -1389,6 +1389,7 @@ class Services:
             track_context=update_track_context,
             prepare_selected_artwork=prepare_selected_artwork,
             persist_track_authority=persist_track_authority,
+            musicbrainz_results_first=True,
         )
         self.refresh_album(row["album_key"])
         self.refresh_embedding_stats(row)

@@ -183,7 +183,19 @@ function sourceKey(value) {
   if (source.includes("fanart")) return "fanart";
   if (source.includes("deezer")) return "deezer";
   if (source.includes("album folder") || source.includes("local")) return "local";
+  if (source.includes("mb / caa") || source.includes("musicbrainz")) return "musicbrainz";
+  if (source.includes("coverart") || source.includes("cover art archive")) return "coverartarchive";
   return source.replace(/[^a-z]/g, "");
+}
+function distinctDiagnostics(items) {
+  const seen = new Set(), result = [];
+  for (const item of items || []) {
+    const source = Array.isArray(item) ? item[0] : item?.source || "lookup";
+    const message = Array.isArray(item) ? item[1] : item?.message || String(item || "");
+    const text = source + " · " + message;
+    if (message && !seen.has(text)) { seen.add(text); result.push(text); }
+  }
+  return result;
 }
 function candidateKind(candidate) {
   const kind = String(candidate.kind || "").toLowerCase();
@@ -869,8 +881,12 @@ async function repairArtistComp() {
 function renderSources() {
   const strip = $("sourceStrip"); clear(strip);
   const artistImageSources = new Set(["local", "fanart", "deezer", "lastfm", "discogs", "navidrome"]);
+  const musicBrainzResultCount = state.queuedDecision?.kind === "musicbrainz-results"
+    ? (state.queuedDecision.options || []).length : 0;
   for (const [label, key, icon] of SOURCES) {
-    const count = state.candidates.filter(candidate => sourceKey(candidate.source) === key).length;
+    const count = key === "musicbrainz" && musicBrainzResultCount
+      ? musicBrainzResultCount
+      : state.candidates.filter(candidate => sourceKey(candidate.source) === key).length;
     const navidromeMetadata = key === "navidrome" && state.artistMetadata?.source === "Navidrome";
     const configured = key === "local" || (state.enabledSources || []).includes(key === "fanart" ? "fanarttv" : key);
     const searchable = state.editorMode === "album" ? configured
@@ -960,11 +976,8 @@ function renderQueuedCompTools() {
   }
   host.append(controls);
   if (decision.authoritySaved?.message) host.append(node("p", "operation-success", decision.authoritySaved.message));
-  for (const item of decision.diagnostics || []) {
-    const source = Array.isArray(item) ? item[0] : item?.source || "lookup";
-    const message = Array.isArray(item) ? item[1] : item?.message || String(item || "");
-    if (message) host.append(node("p", "operation-error", source + " · " + message));
-  }
+  for (const diagnostic of distinctDiagnostics(decision.diagnostics))
+    host.append(node("p", "operation-error", diagnostic));
 }
 function renderCandidates() {
   const skipping = state.queuedDecision?.jobKind === "scan";

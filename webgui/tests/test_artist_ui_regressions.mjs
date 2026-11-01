@@ -70,6 +70,11 @@ const renderMusicBrainzFunction = between(
   "function renderMusicBrainzResults",
   "function renderCandidates",
 );
+const sourceKeyFunction = between(
+  appSource,
+  "function sourceKey",
+  "function candidateKind",
+);
 const renderQueueFunction = between(
   operationsSource,
   "function renderQueue",
@@ -130,6 +135,22 @@ const repairFallbackFunction = between(
   "async function repairFallback",
   "const quickPreview",
 );
+
+test("COMP artwork source labels map to the Windows source counters", () => {
+  const context = load(sourceKeyFunction, {});
+  assert.equal(context.sourceKey("MB / CAA"), "musicbrainz");
+  assert.equal(context.sourceKey("MusicBrainz"), "musicbrainz");
+  assert.equal(context.sourceKey("CoverArt"), "coverartarchive");
+  assert.equal(context.sourceKey("Cover Art Archive"), "coverartarchive");
+  assert.deepEqual(
+    Array.from(context.distinctDiagnostics([
+      ["musicbrainz", "policy-filtered"],
+      ["musicbrainz", "policy-filtered"],
+      {source: "amazon", message: "HTTP 503"},
+    ])),
+    ["musicbrainz · policy-filtered", "amazon · HTTP 503"],
+  );
+});
 
 function queuedContext({groups, album, artistResponse}) {
   const originalArtist = {id: "projected-artist", albums: []};

@@ -123,6 +123,9 @@ class CompJobScopeTests(unittest.TestCase):
                 captured["persist_track_authority"] = kwargs[
                     "persist_track_authority"
                 ]
+                captured["musicbrainz_results_first"] = kwargs[
+                    "musicbrainz_results_first"
+                ]
                 kwargs["track_context"](tracks[0])
                 return True
 
@@ -146,6 +149,7 @@ class CompJobScopeTests(unittest.TestCase):
             self.assertEqual(adapter.context["track_key"], "artist-track")
             self.assertEqual(adapter.context["track_title"], "Target Song")
             self.assertTrue(callable(captured.get("persist_track_authority")))
+            self.assertIs(captured["musicbrainz_results_first"], True)
 
     def test_validated_authority_write_is_atomic_and_preserves_embedded_art(self):
         with TemporaryDirectory() as directory:
