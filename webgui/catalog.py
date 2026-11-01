@@ -540,6 +540,43 @@ class Catalog:
             self.portrait_cache.pop(row_id, None)
         return path
 
+    def _cache_navidrome_similar_thumbnail(
+        self, remote_artist: dict[str, object], credential: dict[str, object]
+    ) -> Path | None:
+        """Cache provider-authorized Similar Artist imagery behind a local URL."""
+        directory = self.cache / "navidrome-thumbnails" / "similar" if self.cache is not None else None
+        cover_id = str(remote_artist.get("coverArt") or "").strip()
+        if directory is None or not cover_id:
+            return None
+        identity = sha256(
+            (str(remote_artist.get("id") or "") + "\0" + str(remote_artist.get("name") or "") + "\0" + cover_id).encode("utf-8")
+        ).hexdigest()[:32]
+        path = directory / ("web-v1-" + identity + ".png")
+        if path.is_file():
+            return path
+        base = str(credential.get("server_url") or "").rstrip("/")
+        response = requests.get(
+            base + "/rest/getCoverArt.view",
+            params={**self._navidrome_auth_query(credential), "id": cover_id, "size": "192"},
+            timeout=20,
+            allow_redirects=False,
+        )
+        response.raise_for_status()
+        if len(response.content) > 8 * 1024 * 1024:
+            raise ValueError("Navidrome Similar Artist image is too large")
+        with Image.open(BytesIO(response.content)) as opened:
+            opened.verify()
+        directory.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(prefix=".navidrome-", suffix=".png", dir=directory)
+        try:
+            os.close(descriptor)
+            with Image.open(BytesIO(response.content)) as opened:
+                opened.convert("RGBA").save(temporary, format="PNG", optimize=True)
+            os.replace(temporary, path)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+        return path
+
     def _navidrome_artists_by_name(self) -> dict[str, dict[str, object]]:
         """Load Navidrome's artist directory with bounded, recoverable retries."""
         credential_path = self.credentials / "navidrome.json"
@@ -1526,7 +1563,7 @@ class Catalog:
             }
         artist = self.artist(artist_id)
         stored_profile = self._stored_artist_profile(artist_id)
-        result: dict[str, object] = {"source": "sample", "biography": "", "similar": [], "top_songs": artist["top_tracks"]}
+        result: dict[str, object] = {"source": "unavailable", "biography": "", "similar": [], "top_songs": artist["top_tracks"]}
         credential_path = self.credentials / "navidrome.json"
         if not credential_path.is_file():
             result["reason"] = "Navidrome credentials are not present in this test bed"
@@ -1566,7 +1603,37 @@ class Catalog:
                     similar = info.get("similarArtist", [])
                     if isinstance(similar, dict):
                         similar = [similar]
-                    result["similar"] = [str(item.get("name")) for item in similar if isinstance(item, dict) and item.get("name")][:10]
+                    local_rows = {}
+                    with closing(self.connect()) as db:
+                        for row in db.execute(
+                            "SELECT artist_key,artist_name,musicbrainz_artistid,primary_path FROM artists"
+                        ):
+                            local_rows.setdefault(normalized_artist_identity(row["artist_name"]), row)
+                    projected = []
+                    for item in similar:
+                        if not isinstance(item, dict) or not str(item.get("name") or "").strip():
+                            continue
+                        name = str(item["name"]).strip()
+                        local = local_rows.get(normalized_artist_identity(name))
+                        portrait = self.artist_thumbnail_path(local) if local is not None else None
+                        if portrait is None:
+                            try:
+                                portrait = self._cache_navidrome_similar_thumbnail(item, credential)
+                            except (OSError, ValueError, KeyError, TypeError, requests.RequestException):
+                                portrait = None
+                        projected.append(
+                            {
+                                "name": name,
+                                "local_id": str(local["artist_key"]) if local is not None else "",
+                                "image": self.image(portrait) if portrait is not None else "",
+                                "provider_id": str(item.get("id") or ""),
+                            }
+                        )
+                        if len(projected) >= 10:
+                            break
+                    result["similar"] = projected
+                    if not projected:
+                        result["similar_reason"] = "Navidrome returned no Similar Artists for this Artist"
                     result["source"] = "Navidrome"
                     try:
                         top = call("getTopSongs", {"artist": str(artist["name"]), "count": "10"}).get("topSongs", {}).get("song", [])
@@ -1581,6 +1648,8 @@ class Catalog:
                     result["reason"] = "Artist was not found in Navidrome"
             except (OSError, ValueError, KeyError, TypeError, AttributeError, requests.RequestException):
                 result["reason"] = "Navidrome metadata is unavailable for this artist"
+        if not result["similar"] and not result.get("similar_reason"):
+            result["similar_reason"] = result.get("reason") or "Similar Artists are unavailable"
         if not str(result.get("biography") or "").strip() and stored_profile:
             result.update(stored_profile)
             result.pop("reason", None)

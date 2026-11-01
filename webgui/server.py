@@ -28,6 +28,8 @@ from webgui.services import Services
 from webgui.jobs import JobQueue
 from webgui.credentials import Credentials
 from webgui.auth import AdminAuth
+from webgui.audit import sanitize, sanitize_text, utc_now
+from webgui.reconciliation import SQLiteReconciler
 
 
 SETTINGS_UI = Path(__file__).resolve().parents[1] / "schema/settings-ui.json"
@@ -45,6 +47,7 @@ class Context:
         self.runtime = None
         self.services = None
         self.jobs = None
+        self.reconciliation = None
         self.url = ""
         self.error = ""
         try:
@@ -59,6 +62,8 @@ class Context:
         except Exception:
             if self.runtime:
                 self.runtime.close()
+            if self.reconciliation:
+                self.reconciliation.close()
             self.runtime = None
             self.services = None
             self.jobs = None
@@ -69,6 +74,13 @@ class Context:
         database.migrate()
         self.runtime = Runtime(self.config_file, database)
         self.services = Services(self.runtime)
+        self.reconciliation = SQLiteReconciler(
+            database,
+            self.runtime.cache,
+            self.runtime.music,
+            self.services.audit,
+            start_scheduler=self.start_worker,
+        )
         if self.start_worker:
             self.jobs = JobQueue(self.services)
         self.url = url
@@ -112,6 +124,15 @@ class Context:
         if self.runtime and url == self.url:
             self.runtime.save_settings(cfg)
             self.services.reload_settings()
+            if self.reconciliation:
+                self.reconciliation.close()
+            self.reconciliation = SQLiteReconciler(
+                self.runtime.database,
+                self.runtime.cache,
+                self.runtime.music,
+                self.services.audit,
+                start_scheduler=self.start_worker,
+            )
         else:
             if self.jobs and any(
                 item["state"] not in {"done", "failed", "cancelled"}
@@ -130,6 +151,8 @@ class Context:
                 raise ValueError("The music library must be an existing directory")
             if self.jobs:
                 self.jobs.close()
+            if self.reconciliation:
+                self.reconciliation.close()
             if self.runtime:
                 self.runtime.close()
             runtime = Runtime(self.config_file, database, cfg)
@@ -137,6 +160,13 @@ class Context:
             self.runtime = runtime
             self.services = Services(runtime)
             self.jobs = JobQueue(self.services) if self.start_worker else None
+            self.reconciliation = SQLiteReconciler(
+                database,
+                runtime.cache,
+                runtime.music,
+                self.services.audit,
+                start_scheduler=self.start_worker,
+            )
             self.url = url
             self.error = ""
         return self.settings()
@@ -195,6 +225,8 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
         yield
         if context.jobs:
             context.jobs.close()
+        if context.reconciliation:
+            context.reconciliation.close()
         if context.runtime:
             context.runtime.close()
 
@@ -203,6 +235,12 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
 
     @app.middleware("http")
     async def browser_session(request, call_next):
+        started = time.perf_counter()
+        supplied_trace = sanitize_text(request.headers.get("x-splined-trace", ""), limit=100)
+        request.state.trace_id = supplied_trace or uuid4().hex
+        request.state.action_id = sanitize_text(
+            request.headers.get("x-splined-action", ""), limit=100
+        )
         origin = request.headers.get("origin")
         if (
             origin
@@ -263,9 +301,55 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
         )
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-SPLINED-Trace"] = request.state.trace_id
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
         )
+        path = request.url.path
+        noisy = (
+            path in {"/api/status", "/api/jobs", "/api/jobs/control-state"}
+            or path.startswith(("/api/image/", "/api/fallback/thumbnail", "/api/audit"))
+        )
+        should_audit = path.startswith("/api/") and (
+            request.method not in {"GET", "HEAD", "OPTIONS"}
+            or path in {
+                "/api/artist",
+                "/api/artist/overview",
+                "/api/artist/metadata",
+                "/api/artist/comp-report",
+                "/api/album",
+                "/api/fallback/tracks",
+                "/api/fallback/track",
+            }
+            or response.status_code >= 400
+        )
+        if context.services and should_audit and not noisy:
+            scope = {
+                "artist_id": request.query_params.get("artist_id")
+                or (request.query_params.get("id") if "/artist" in path else ""),
+                "album_id": request.query_params.get("album_id")
+                or (request.query_params.get("id") if "/album" in path or "/fallback" in path else ""),
+                "track_key": request.query_params.get("key", ""),
+            }
+            try:
+                context.services.audit(
+                    "api-request",
+                    f"{request.method} {path}",
+                    {"http_status": response.status_code},
+                    severity="error" if response.status_code >= 500 else "warning" if response.status_code >= 400 else "debug",
+                    action_id=request.state.action_id,
+                    trace_id=request.state.trace_id,
+                    scope={key: value for key, value in scope.items() if value},
+                    stage="response",
+                    request_status="failed" if response.status_code >= 400 else "completed",
+                    elapsed_ms=(time.perf_counter() - started) * 1000,
+                )
+            except Exception as audit_error:
+                core.runtime_log(
+                    "warning",
+                    "webgui.audit request event unavailable "
+                    + core._redact_log_message(str(audit_error)),
+                )
         return response
 
     @app.exception_handler(PermissionError)
@@ -284,6 +368,20 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
         message = core._redact_log_message(str(error))[:2000]
         if "postgresql://" in message or "postgres://" in message:
             message = "Database operation failed; check the connection in Settings"
+        if context.services:
+            try:
+                context.services.audit(
+                    "api-error",
+                    f"{request.method} {request.url.path}",
+                    severity="error",
+                    action_id=getattr(request.state, "action_id", ""),
+                    trace_id=getattr(request.state, "trace_id", ""),
+                    stage="exception",
+                    request_status="failed",
+                    error=message,
+                )
+            except Exception:
+                pass
         return JSONResponse(
             {"error": message or "Operation failed"}, status_code=status
         )
@@ -421,9 +519,89 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
         return context.configure((payload).get("config"))
 
     @app.get("/api/diagnostics")
-    def diagnostics():
+    def diagnostics(
+        limit: int = 250,
+        severity: str = "",
+        action: str = "",
+        correlation: str = "",
+        since: str = "",
+        until: str = "",
+    ):
         context.require()
-        return context.services.diagnostics()
+        return context.services.diagnostics(
+            limit,
+            severity=severity,
+            action=action,
+            correlation=correlation,
+            since=since,
+            until=until,
+        )
+
+    @app.post("/api/audit/events")
+    def browser_audit(request: Request, payload: dict):
+        services = context.require()
+        value = sanitize(payload)
+        return {
+            "sequence": services.audit(
+                str(value.get("action") or "browser-event"),
+                str(value.get("subject") or "browser"),
+                value.get("details") if isinstance(value.get("details"), dict) else {},
+                severity=str(value.get("severity") or "info"),
+                action_id=str(value.get("action_id") or request.state.action_id),
+                trace_id=str(value.get("trace_id") or request.state.trace_id),
+                job_id=str(value.get("job_id") or ""),
+                scope=value.get("scope") if isinstance(value.get("scope"), dict) else {},
+                stage=str(value.get("stage") or "browser"),
+                request_status=str(value.get("request_status") or "emitted"),
+                elapsed_ms=value.get("elapsed_ms"),
+                state_from=str(value.get("state_from") or ""),
+                state_to=str(value.get("state_to") or ""),
+                error=str(value.get("error") or ""),
+            )
+        }
+
+    @app.get("/api/audit/export")
+    def export_audit(
+        severity: str = "",
+        action: str = "",
+        correlation: str = "",
+        since: str = "",
+        until: str = "",
+    ):
+        services = context.require()
+        events = services.diagnostics(
+            50000,
+            severity=severity,
+            action=action,
+            correlation=correlation,
+            since=since,
+            until=until,
+            maximum=50000,
+        )
+        body = json.dumps(
+            {
+                "format": "splined-web-audit-v1",
+                "generated_at": utc_now(),
+                "filters": sanitize(
+                    {
+                        "severity": severity,
+                        "action": action,
+                        "correlation": correlation,
+                        "since": since,
+                        "until": until,
+                    }
+                ),
+                "events": events,
+            },
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        )
+        return Response(
+            body,
+            media_type="application/json",
+            headers={"Content-Disposition": 'attachment; filename="audit.json"'},
+        )
 
     @app.get("/api/storage")
     def storage():
@@ -494,7 +672,27 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
 
     @app.get("/api/artist/metadata")
     def artist_metadata(id: str, refresh: bool = False):
-        return context.require().catalog.artist_metadata(id, refresh=refresh)
+        services = context.require()
+        result = services.catalog.artist_metadata(id, refresh=refresh)
+        if result.get("reason"):
+            services.audit(
+                "artist-metadata-unavailable",
+                id,
+                {"artist_id": id, "reason": result["reason"]},
+                severity="warning",
+                stage="provider",
+                request_status="unavailable",
+            )
+        if not result.get("similar") and result.get("similar_reason"):
+            services.audit(
+                "similar-artists-unavailable",
+                id,
+                {"artist_id": id, "reason": result["similar_reason"]},
+                severity="warning",
+                stage="similar-artists",
+                request_status="unavailable",
+            )
+        return result
 
     @app.get("/api/artist/comp-report")
     def comp_report(id: str):
@@ -507,13 +705,12 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
     @app.get("/api/album")
     def album(id: str):
         services = context.require()
-        services.hydrate_tracks(id)
         return services.catalog.album(id)
 
     @app.get("/api/fallback/tracks")
     def tracks(id: str):
         services = context.require()
-        services.hydrate_tracks(id)
+        services.ensure_tracks(id)
         return services.catalog.fallback_tracks(id)
 
     @app.get("/api/fallback/track")
@@ -555,21 +752,54 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
 
     @app.post("/api/search/artist")
     def search_artist(payload: dict):
-        return context.require().catalog.search_artist(str((payload).get("id", "")))
+        services = context.require()
+        artist_id = str(payload.get("id", ""))
+        result = services.catalog.search_artist(artist_id)
+        services.audit(
+            "artwork-provider-outcome",
+            "Artist search",
+            {"candidates": len(result.get("candidates", [])), "warnings": result.get("warnings", [])},
+            scope={"artist_id": artist_id},
+            stage="provider",
+            request_status="completed-with-warnings" if result.get("warnings") else "completed",
+        )
+        return result
 
     @app.post("/api/search/album")
     def search_album(payload: dict):
         value = payload
-        return context.require().search_album(
-            str(value.get("id", "")), value.get("release_id")
+        services = context.require()
+        album_id = str(value.get("id", ""))
+        result = services.search_album(
+            album_id, value.get("release_id")
         )
+        services.audit(
+            "artwork-provider-outcome",
+            "Album search",
+            {"candidates": len(result.get("candidates", [])), "warnings": result.get("warnings", [])},
+            scope={"album_id": album_id},
+            stage="provider",
+            request_status="completed-with-warnings" if result.get("warnings") else "completed",
+        )
+        return result
 
     @app.post("/api/musicbrainz")
     def musicbrainz(payload: dict):
         value = payload
-        return context.require().musicbrainz(
-            str(value.get("album_id", "")), value.get("artist"), value.get("title")
+        services = context.require()
+        album_id = str(value.get("album_id", ""))
+        result = services.musicbrainz(
+            album_id, value.get("artist"), value.get("title")
         )
+        services.audit(
+            "musicbrainz-outcome",
+            album_id,
+            {"results": len(result)},
+            scope={"album_id": album_id},
+            stage="provider",
+            request_status="completed" if result else "empty",
+        )
+        return result
 
     @app.post("/api/preview/render")
     def preview(payload: dict):
@@ -657,11 +887,15 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
         }
 
     @app.post("/api/jobs")
-    def stage_job(payload: dict):
+    def stage_job(request: Request, payload: dict):
         services = context.require()
         value = payload
         kind = value.get("kind")
-        payload = value.get("payload", {})
+        payload = dict(value.get("payload", {}))
+        audit_context = {
+            "action_id": request.state.action_id,
+            "trace_id": request.state.trace_id,
+        }
         if not context.jobs:
             raise ValueError("The job worker is unavailable")
         if kind == "embed-album":
@@ -676,8 +910,20 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
                 None,
             )
             if old:
+                services.audit(
+                    "job-deduplicated",
+                    str(kind),
+                    {"already_queued": True},
+                    action_id=request.state.action_id,
+                    trace_id=request.state.trace_id,
+                    job_id=old["id"],
+                    scope={"album_id": payload.get("album_id", "")},
+                    stage="queue",
+                    request_status="existing",
+                )
                 return {"id": old["id"], "already_queued": True}
             payload = services.stage_album(payload)
+            payload["_audit"] = audit_context
             try:
                 result = context.jobs.enqueue(str(kind), payload, staged=True)
             except Exception:
@@ -689,6 +935,7 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
         if kind == "comp":
             context.runtime.require_write()
             payload = services.validate_comp_payload(payload)
+        payload["_audit"] = audit_context
         return context.jobs.enqueue(str(kind), payload, staged=kind == "embed-album")
 
     @app.post("/api/jobs/action")
@@ -737,6 +984,49 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
         if not source.is_file():
             raise ValueError("Choose an existing SQLite snapshot")
         return services.runtime.database.import_sqlite(source)
+
+    @app.get("/api/reconciliation/sources")
+    def reconciliation_sources():
+        context.require()
+        if not context.reconciliation:
+            raise ValueError("SQLite reconciliation is unavailable")
+        return context.reconciliation.sources()
+
+    @app.get("/api/reconciliation")
+    def reconciliation_history(run_id: str = "", resolution: str = "", limit: int = 500):
+        context.require()
+        if not context.reconciliation:
+            raise ValueError("SQLite reconciliation is unavailable")
+        return context.reconciliation.history(
+            run_id=run_id,
+            resolution=resolution,
+            limit=limit,
+        )
+
+    @app.post("/api/reconciliation/compare")
+    def reconciliation_compare(payload: dict):
+        context.require()
+        if not context.reconciliation:
+            raise ValueError("SQLite reconciliation is unavailable")
+        return context.reconciliation.compare(
+            payload.get("source_path", ""),
+            payload.get("source_root", ""),
+            payload.get("target_root", ""),
+        )
+
+    @app.post("/api/reconciliation/apply")
+    def reconciliation_apply(payload: dict):
+        context.require()
+        if not context.reconciliation:
+            raise ValueError("SQLite reconciliation is unavailable")
+        return context.reconciliation.apply(payload.get("run_id", ""))
+
+    @app.post("/api/reconciliation/settings")
+    def reconciliation_settings(payload: dict):
+        context.require()
+        if not context.reconciliation:
+            raise ValueError("SQLite reconciliation is unavailable")
+        return context.reconciliation.save_settings(payload)
 
     @app.get("/guide")
     def guide():

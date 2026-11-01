@@ -2,7 +2,21 @@
 
 // Browser operations use the same prepared pixels and persistent catalog as writes.
 async function runAction(action) {
-  try { return await action(); } catch (error) { setStatus(error.message, "error"); }
+  const inherited = state.activeActionId;
+  const started = performance.now();
+  if (!inherited) state.activeActionId = typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID() : Math.random().toString(16).slice(2);
+  const actionId = state.activeActionId;
+  try {
+    const result = await action();
+    auditEvent("browser-action", "completed", {action_id: actionId, request_status: "completed", elapsed_ms: performance.now() - started});
+    return result;
+  } catch (error) {
+    auditEvent("browser-action", "failed", {severity: "error", action_id: actionId, request_status: "failed", elapsed_ms: performance.now() - started, error: error.message});
+    setStatus(error.message, "error");
+  } finally {
+    if (!inherited) state.activeActionId = "";
+  }
 }
 const post = (path, value = {}) => api(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(value)});
 function actionButton(label, action, host = $("dialogBody")) {
@@ -313,15 +327,34 @@ async function enqueueComp(albumId, keys, artistId = "") {
   const result = await post("/api/jobs", {kind: "comp", payload});
   await reviewJob(result.id, true);
 }
+function fallbackCompLaunchTargets() {
+  const selected = state.fallbackTrack?.key
+    ? state.fallbackTracks.find(track => track.key === state.fallbackTrack.key) : null;
+  return selected && ["blue", "purple", "green"].includes(selected.status)
+    ? [selected] : state.fallbackTracks.filter(track => track.status === "blue");
+}
+function artistCompLaunchGroups() {
+  if (state.compTrack?.albumId && state.compTrack?.key) {
+    const group = state.compGroups.find(item => item.id === state.compTrack.albumId);
+    const selected = group?.tracks.find(track => track.key === state.compTrack.key);
+    if (selected && ["blue", "purple", "green"].includes(selected.status))
+      return [{id: group.id, keys: [selected.key]}];
+  }
+  return state.compGroups.map(group => ({id: group.id, keys: group.tracks.filter(track => track.status === "blue").map(track => track.key)})).filter(group => group.keys.length);
+}
 async function launchFallback() {
   if (!state.album) return;
-  await enqueueComp(state.album.id, state.fallbackTracks.filter(track => track.status === "blue").map(track => track.key));
+  const targets = fallbackCompLaunchTargets();
+  if (!targets.length) { setStatus("Select a blue, purple, or green COMP track to review"); return; }
+  state.fallbackPreviewMode = false;
+  await enqueueComp(state.album.id, targets.map(track => track.key));
 };
 async function launchArtistComp() {
   if (!state.artist || !state.compReportVisible) throw new Error("Open this Artist's COMP Report before launching work");
   const artistId = state.artist.id;
-  const groups = state.compGroups.map(group => ({id: group.id, keys: group.tracks.filter(track => track.status === "blue").map(track => track.key)})).filter(group => group.keys.length);
-  if (!groups.length) { setStatus("No blue COMP tracks need artwork"); return; }
+  const groups = artistCompLaunchGroups();
+  if (!groups.length) { setStatus("Select a blue, purple, or green COMP track to review"); return; }
+  state.compPreviewMode = false;
   const trackCount = groups.reduce((total, group) => total + group.keys.length, 0);
   setStatus(`Opening Artist COMP review · ${groups.length} album${groups.length === 1 ? "" : "s"} · ${trackCount} track${trackCount === 1 ? "" : "s"}`, "busy");
   let first;
@@ -713,10 +746,10 @@ async function reviewJob(id, quietRunning = false) {
   state.reviewJobId = id; lastPrompt = "";
   const job = (state.jobs || []).find(item => item.id === id);
   state.reviewJobState = job?.state || "";
-  if (job && quietRunning && job.kind === "comp" && job.state !== "waiting") {
+  if (job && job.state !== "waiting" && !["failed", "paused"].includes(job.state)) {
     if ($("workspaceDialog").open) $("workspaceDialog").close();
-    setStatus(job.progress?.message || "COMP track review queued", "busy");
-  } else if (job) await renderJob(job); else if (!quietRunning) dialog("Queued work");
+    setStatus(job.progress?.message || `${job.kind} ${job.state || "queued"}`, ["done", "cancelled"].includes(job.state) ? "ready" : "busy");
+  } else if (job) await renderJob(job);
   await pollJobs();
 }
 async function renderJob(job) {
@@ -1069,7 +1102,49 @@ function downloadJsonFile(name, value) {
   const blob = new Blob([JSON.stringify(value, null, 2) + "\n"], {type: "application/json"});
   const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = name; link.click(); URL.revokeObjectURL(link.href);
 }
-function renderCatalogMaintenance(host) {
+async function renderSqliteReconciliation(host) {
+  const section = node("section", "sqlite-reconciliation");
+  section.append(node("h5", "", "SQLite Reconciliation"), node("p", "settings-subcopy", "Compare an authorized read-only SQLite snapshot with this PostgreSQL catalog. Differences remain reviewable in salite_diff; conflicts are never auto-applied."));
+  const source = node("select"), sourceLabel = node("label", "setting-field"); sourceLabel.append(node("span", "", "Authorized SQLite snapshot"), source);
+  const sourceRoot = field(section, "Snapshot library root (source)"), targetRoot = field(section, "WebGUI library root (target)"); targetRoot.value = state.server?.music || ""; targetRoot.readOnly = true;
+  section.insertBefore(sourceLabel, sourceRoot.parentElement || sourceRoot);
+  const summary = node("p", "runtime-summary", "Loading reconciliation status…"), differences = node("pre", "diagnostic-events reconciliation-events", "Loading recorded differences…");
+  const resolution = node("select");
+  for (const [value, label] of [["", "All differences"], ["safe", "Safe pending"], ["conflict", "Conflicts"], ["derived", "Derived"], ["applied", "Applied"], ["skipped", "Failed / skipped"]]) { const option = node("option", "", label); option.value = value; resolution.append(option); }
+  const compare = node("button", "operation-button", "Compare / Dry Run"), apply = node("button", "operation-button", "Apply Safe Differences"), refresh = node("button", "operation-button", "Refresh Differences");
+  compare.type = apply.type = refresh.type = "button"; apply.disabled = true;
+  const actions = node("div", "connection-actions"); actions.append(compare, apply, refresh, resolution); section.append(actions, summary, differences);
+  const schedule = node("section", "reconciliation-schedule"), enabled = node("input"), autoApply = node("input"), interval = node("input");
+  enabled.type = autoApply.type = "checkbox"; interval.type = "number"; interval.min = "15"; interval.max = "10080"; interval.value = "1440";
+  const enabledLabel = node("label", "setting-checkbox"); enabledLabel.append(enabled, node("span", "", "Enable scheduled comparison"));
+  const autoLabel = node("label", "setting-checkbox"); autoLabel.append(autoApply, node("span", "", "Automatically apply safe differences only"));
+  const intervalLabel = node("label", "setting-field"); intervalLabel.append(node("span", "", "Interval (minutes)"), interval);
+  const saveSchedule = node("button", "operation-button", "Save Safe Schedule"); saveSchedule.type = "button";
+  schedule.append(node("h6", "", "Optional schedule · disabled by default"), enabledLabel, autoLabel, intervalLabel, saveSchedule, node("p", "settings-subcopy", "Scheduled runs use these saved paths and can never apply conflicts or delete PostgreSQL records.")); section.append(schedule); host.append(section);
+  let latestRun = "";
+  const describe = result => {
+    const last = result.last_run, settings = result.settings || {};
+    summary.textContent = last ? `Last run ${last.run_id} · ${last.status} · ${last.differences} difference(s) · ${last.conflicts} conflict(s) · ${last.failures} failure(s)` : "No reconciliation run has been recorded.";
+    latestRun = last?.run_id || ""; apply.disabled = !latestRun || !result.pending_safe;
+    differences.textContent = result.differences?.length ? [...result.differences].reverse().map(item => `${String(item.id).padStart(7, "0")}  ${item.entity_table}  ${item.difference_type}  ${item.resolution}  ${item.application_outcome}  ${item.entity_key}${item.error ? "  ERROR=" + item.error : ""}`).join("\n") : "No recorded differences match this filter.";
+    enabled.checked = Boolean(settings.enabled); autoApply.checked = Boolean(settings.auto_apply_safe); interval.value = String(settings.interval_minutes || 1440);
+    if (settings.source_root && !sourceRoot.value) sourceRoot.value = settings.source_root;
+    if (settings.source_path && !source.value) source.value = settings.source_path;
+  };
+  const load = async () => describe(await api("/api/reconciliation?resolution=" + encodeURIComponent(resolution.value)));
+  try {
+    const [sources, result] = await Promise.all([api("/api/reconciliation/sources"), api("/api/reconciliation")]);
+    const blank = node("option", "", sources.length ? "Choose a cache snapshot" : "No authorized snapshots found"); blank.value = ""; source.append(blank);
+    for (const item of sources) { const option = node("option", "", `${item.label} · ${Math.ceil(item.bytes / 1024)} KiB`); option.value = item.path; source.append(option); }
+    if (result.settings?.source_path && ![...source.options].some(option => option.value === result.settings.source_path)) { const option = node("option", "", result.settings.source_path); option.value = result.settings.source_path; source.append(option); }
+    source.value = result.settings?.source_path || ""; sourceRoot.value = result.settings?.source_root || ""; describe(result);
+  } catch (error) { summary.textContent = error.message; summary.classList.add("operation-error"); }
+  compare.addEventListener("click", () => runAction(async () => { const result = await post("/api/reconciliation/compare", {source_path: source.value, source_root: sourceRoot.value, target_root: targetRoot.value}); latestRun = result.run_id; setStatus(`SQLite comparison recorded ${result.differences} difference(s), including ${result.conflicts} conflict(s)`); await load(); }));
+  apply.addEventListener("click", () => runAction(async () => { if (!window.confirm("Apply only the safe, unchanged differences from this run? Conflicts will remain unresolved.")) return; const result = await post("/api/reconciliation/apply", {run_id: latestRun}); setStatus(`Applied ${result.applied} safe SQLite difference(s)`); await load(); }));
+  refresh.addEventListener("click", () => void load()); resolution.addEventListener("change", () => void load());
+  saveSchedule.addEventListener("click", () => runAction(async () => { await post("/api/reconciliation/settings", {enabled: enabled.checked, auto_apply_safe: autoApply.checked, interval_minutes: Number(interval.value), source_path: source.value, source_root: sourceRoot.value, target_root: targetRoot.value}); setStatus(enabled.checked ? "Safe SQLite reconciliation schedule saved" : "SQLite reconciliation schedule disabled"); await load(); }));
+}
+function renderCatalogMaintenance(host, advanced = false) {
   const maintenance = node("section", "catalog-maintenance");
   maintenance.append(node("h4", "", "↕ Catalog Maintenance"), node("p", "settings-subcopy", "Refresh the PostgreSQL catalog or import a deliberate read-only SQLite snapshot."));
   maintenance.append(node("p", "settings-warning", "A full refresh deliberately republishes the complete music catalog. Normal added, changed, and removed files use the faster header update."));
@@ -1078,9 +1153,12 @@ function renderCatalogMaintenance(host) {
   maintenance.append(refresh, node("h5", "", "Import an existing SQLite catalog"), node("p", "settings-subcopy", "Imports a server-side snapshot into an empty PostgreSQL catalog. The source remains unchanged."));
   const path = field(maintenance, "Snapshot path on server"), importButton = node("button", "operation-button full-action", "Import Catalog"); importButton.type = "button";
   importButton.addEventListener("click", () => runAction(async () => { const result = await post("/api/catalog/import", {path: path.value}); setStatus("Imported " + (result.albums || 0) + " albums"); }));
-  maintenance.append(importButton); host.append(maintenance);
+  maintenance.append(importButton);
+  if (advanced) void renderSqliteReconciliation(maintenance);
+  else maintenance.append(node("p", "settings-subcopy", "Enable Advanced to compare and reconcile a SQLite snapshot against an existing PostgreSQL catalog."));
+  host.append(maintenance);
 }
-function renderBackupSettings(host, saved, contract, onRestored) {
+function renderBackupSettings(host, saved, contract, onRestored, advanced = false) {
   const layout = node("div", "backup-layout"), backup = node("section", "backup-column"), restore = node("section", "backup-column");
   backup.append(node("h4", "", "↑ Backup"), node("p", "settings-subcopy", "WebGUI exports its safe Config v5 settings and interface palette. Provider secrets and PostgreSQL data are deliberately excluded."));
   const contents = node("div", "archive-contents"); for (const label of ["Config V5 Settings", "Interface Settings", "Shared UI Contract"]) contents.append(node("span", "", "●  " + label)); backup.append(contents);
@@ -1099,7 +1177,7 @@ function renderBackupSettings(host, saved, contract, onRestored) {
     const restored = await post("/api/settings", {config: value}); applyGraphicalEnhancement(restored.config.webgui_ui?.enhancement); setStatus("Safe WebGUI settings restored"); await onRestored(restored);
   })); restoreActions.append(button); restore.append(restoreActions);
   settingsHelp(restore, "Can I restore a Windows .spl file here?", "No. Windows .spl archives can contain Windows-only SQLite and interface state. Use the WebGUI safe JSON here, and restore PostgreSQL with PostgreSQL tools.");
-  renderCatalogMaintenance(restore);
+  renderCatalogMaintenance(restore, advanced);
   layout.append(backup, restore); host.append(layout);
 }
 function renderRuntimeSettings(host, section, draft, bindings, saved, advanced) {
@@ -1113,13 +1191,25 @@ function renderRuntimeSettings(host, section, draft, bindings, saved, advanced) 
     settingsInput(target, descriptor, descriptor.path, draft, bindings, saved);
   }
   const scope = node("div", "runtime-summary"); scope.append(node("span", "", "Scope  SELECTED / QUEUED"), node("span", "", `Mode  ${(settingValue(draft, "mode", "read") || "read").toUpperCase()}`)); processing.append(scope);
-  const logHeading = node("div", "diagnostic-heading"); logHeading.append(node("strong", "", "WebGUI Events")); const refresh = node("button", "operation-button", "Refresh"); refresh.type = "button"; logHeading.append(refresh); logging.append(logHeading);
-  const events = node("pre", "diagnostic-events", "Loading events…"); logging.append(events);
+  const logHeading = node("div", "diagnostic-heading"); logHeading.append(node("strong", "", "WebGUI Events · Audit")); const refresh = node("button", "operation-button", "Refresh"); refresh.type = "button"; logHeading.append(refresh); logging.append(logHeading);
+  const auditFilters = node("div", "audit-filters");
+  const severity = node("select"), allSeverity = node("option", "", "All severities"); allSeverity.value = ""; severity.append(allSeverity);
+  for (const value of ["critical", "error", "warning", "info", "debug", "verbose"]) { const option = node("option", "", value); option.value = value; severity.append(option); }
+  const action = node("input"); action.placeholder = "Action contains";
+  const correlation = node("input"); correlation.placeholder = "Job / trace / action ID";
+  const since = node("input"); since.type = "datetime-local"; since.setAttribute("aria-label", "Audit start time");
+  const until = node("input"); until.type = "datetime-local"; until.setAttribute("aria-label", "Audit end time");
+  const download = node("a", "operation-button", "Download audit.json"); download.download = "audit.json";
+  auditFilters.append(severity, action, correlation, since, until, download); logging.append(auditFilters);
+  const events = node("pre", "diagnostic-events audit-events", "Loading events…"); logging.append(events);
+  const query = () => new URLSearchParams(Object.fromEntries(Object.entries({severity: severity.value, action: action.value.trim(), correlation: correlation.value.trim(), since: since.value, until: until.value}).filter(([, value]) => value)));
   async function load() {
-    try { const rows = await api("/api/diagnostics"); events.textContent = rows.length ? rows.map(row => `${row.created_at}  ${row.action}  ${row.subject}${row.details && Object.keys(row.details).length ? "  " + JSON.stringify(row.details) : ""}`).join("\n") : "No recorded WebGUI events yet."; }
+    try { const rows = await api("/api/diagnostics?" + query()); events.textContent = rows.length ? rows.map(row => `${String(row.sequence).padStart(8, "0")}  ${row.created_at}  ${row.severity.toUpperCase()}  ${row.action}  ${row.subject}${row.job_id ? "  job=" + row.job_id : ""}${row.trace_id ? "  trace=" + row.trace_id : ""}${row.state_from || row.state_to ? `  ${row.state_from || "—"}→${row.state_to || "—"}` : ""}${row.error ? "  ERROR=" + row.error : ""}${row.details && Object.keys(row.details).length ? "  " + JSON.stringify(row.details) : ""}`).join("\n") : "No recorded Audit events match these filters."; }
     catch (error) { events.textContent = error.message; }
   }
-  refresh.addEventListener("click", load); void load(); layout.append(processing, logging); host.append(layout);
+  const updateDownload = () => download.href = "/api/audit/export?" + query();
+  for (const input of [severity, action, correlation, since, until]) input.addEventListener("change", updateDownload);
+  refresh.addEventListener("click", load); updateDownload(); void load(); layout.append(processing, logging); host.append(layout);
 }
 async function openSettings() {
   state.reviewJobId = null;
@@ -1153,7 +1243,7 @@ async function openSettings() {
       void renderConnectionSettings(fields, credentialProvider);
     }
     if (section.id === "backup") {
-      renderBackupSettings(fields, saved, contract, async restored => { saved = restored; await sessionStatus(); renderAll(); renderSection("backup"); });
+      renderBackupSettings(fields, saved, contract, async restored => { saved = restored; await sessionStatus(); renderAll(); renderSection("backup"); }, advanced);
     }
   }
   async function saveCurrentSection(section, message = section.label + " settings saved") {
@@ -1306,6 +1396,13 @@ $("fullscreenButton").addEventListener("click", () => runAction(async () => {
 }));
 document.addEventListener("fullscreenchange", updateFullscreenButton);
 document.addEventListener("webkitfullscreenchange", updateFullscreenButton);
+document.addEventListener("click", event => {
+  const button = event.target.closest?.("button");
+  if (!button || !document.body.classList.contains("authenticated")) return;
+  auditEvent("button-click", button.id || button.className || "button", {
+    details: {label: String(button.textContent || "").trim().slice(0, 120), disabled: !!button.disabled},
+  });
+}, true);
 $("applyLibraryChanges").addEventListener("click", () => runAction(async () => {
   $("applyLibraryChanges").hidden = true;
   const job = await post("/api/jobs", {kind: "index", payload: {mode: "incremental"}});

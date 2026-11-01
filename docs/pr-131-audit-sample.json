@@ -1,0 +1,84 @@
+{
+  "format": "splined-web-audit-v1",
+  "generated_at": "2026-11-01T18:00:04Z",
+  "filters": {
+    "severity": "",
+    "action": "",
+    "correlation": "trace-acceptance-131",
+    "since": "2026-11-01T18:00:00Z",
+    "until": "2026-11-01T18:01:00Z"
+  },
+  "events": [
+    {
+      "sequence": 1201,
+      "created_at": "2026-11-01T18:00:01Z",
+      "severity": "info",
+      "action": "button-click",
+      "action_id": "action-comp-green",
+      "trace_id": "trace-acceptance-131",
+      "job_id": "",
+      "subject": "artistCompLaunch",
+      "scope": {
+        "artist_id": "artist-acceptance",
+        "album_id": "album-comp",
+        "track_key": "track-green"
+      },
+      "stage": "browser",
+      "request_status": "requested",
+      "elapsed_ms": null,
+      "state_from": "",
+      "state_to": "",
+      "error": "",
+      "details": {
+        "label": "LAUNCH COMP",
+        "disabled": false
+      }
+    },
+    {
+      "sequence": 1202,
+      "created_at": "2026-11-01T18:00:02Z",
+      "severity": "info",
+      "action": "job-transition",
+      "action_id": "action-comp-green",
+      "trace_id": "trace-acceptance-131",
+      "job_id": "job-comp-green",
+      "subject": "comp",
+      "scope": {
+        "artist_id": "artist-acceptance",
+        "album_id": "album-comp",
+        "track_key": "track-green"
+      },
+      "stage": "worker",
+      "request_status": "running",
+      "elapsed_ms": 2.4,
+      "state_from": "queued",
+      "state_to": "running",
+      "error": "",
+      "details": {}
+    },
+    {
+      "sequence": 1203,
+      "created_at": "2026-11-01T18:00:03Z",
+      "severity": "error",
+      "action": "provider-result",
+      "action_id": "action-comp-green",
+      "trace_id": "trace-acceptance-131",
+      "job_id": "job-comp-green",
+      "subject": "Navidrome",
+      "scope": {
+        "artist_id": "artist-acceptance",
+        "album_id": "album-comp",
+        "track_key": "track-green"
+      },
+      "stage": "similar-artists",
+      "request_status": "failed",
+      "elapsed_ms": 2011.8,
+      "state_from": "requested",
+      "state_to": "failed",
+      "error": "Provider unavailable; credential=[REDACTED]",
+      "details": {
+        "provider": "navidrome"
+      }
+    }
+  ]
+}

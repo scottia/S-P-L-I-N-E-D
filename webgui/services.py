@@ -38,6 +38,7 @@ from webgui.catalog import (
 )
 from webgui.runtime import Runtime
 from webgui import imaging
+from webgui.audit import normalize_severity, sanitize, sanitize_text
 
 
 LOGGER = logging.getLogger("uvicorn.error")
@@ -114,6 +115,7 @@ class Services:
             core.resolve_sources(runtime.cfg, None, None, [])
         )
         self.lock = threading.RLock()
+        self._audit_events_written = 0
 
     def reload_settings(self):
         app = self.catalog
@@ -133,30 +135,138 @@ class Services:
         app.appearance_cache.clear()
         app.portrait_cache.clear()
 
-    def audit(self, action, subject, details=None):
+    def audit(
+        self,
+        action,
+        subject="",
+        details=None,
+        *,
+        severity="info",
+        action_id="",
+        trace_id="",
+        job_id="",
+        scope=None,
+        stage="",
+        request_status="",
+        elapsed_ms=None,
+        state_from="",
+        state_to="",
+        error="",
+    ):
+        """Record one ordered, structured event using the existing audit authority."""
+        action = sanitize_text(action, limit=120)
+        subject = sanitize_text(subject, limit=500)
+        details = sanitize(details or {})
+        derived_scope = {
+            key: details[key]
+            for key in ("artist_id", "album_id", "track_key")
+            if isinstance(details, dict) and details.get(key)
+        }
+        clean_scope = sanitize(scope or derived_scope)
+        clean_error = sanitize_text(error)
         core.runtime_log(
-            "info",
-            f"webgui.audit action={action} subject={core._redact_log_message(str(subject))}",
+            normalize_severity(severity),
+            f"webgui.audit action={action} subject={core._redact_log_message(subject)}",
         )
         with closing(self.runtime.database.connect()) as db, db:
-            db.raw.execute(
-                "INSERT INTO web_audit(action,subject,details) VALUES(%s,%s,%s)",
-                (action, str(subject), Jsonb(details or {})),
-            )
+            row = db.raw.execute(
+                "INSERT INTO web_audit"
+                "(action,subject,details,severity,action_id,trace_id,job_id,scope,stage,"
+                "request_status,elapsed_ms,state_from,state_to,error) "
+                "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                (
+                    action,
+                    subject,
+                    Jsonb(details),
+                    normalize_severity(severity),
+                    sanitize_text(action_id, limit=100),
+                    sanitize_text(trace_id, limit=100),
+                    sanitize_text(job_id, limit=100),
+                    Jsonb(clean_scope),
+                    sanitize_text(stage, limit=120),
+                    sanitize_text(request_status, limit=120),
+                    float(elapsed_ms) if elapsed_ms is not None else None,
+                    sanitize_text(state_from, limit=40),
+                    sanitize_text(state_to, limit=40),
+                    clean_error,
+                ),
+            ).fetchone()
+            self._audit_events_written += 1
+            if self._audit_events_written % 256 == 0:
+                retention = max(
+                    1,
+                    min(
+                        int(self.runtime.cfg.get("logging", {}).get("retention_days", 14)),
+                        365,
+                    ),
+                )
+                db.raw.execute(
+                    "DELETE FROM web_audit WHERE created_at < now() - (%s * interval '1 day')",
+                    (retention,),
+                )
+                db.raw.execute(
+                    "DELETE FROM web_audit WHERE id IN "
+                    "(SELECT id FROM web_audit ORDER BY id DESC OFFSET 50000)"
+                )
+        return int(row["id"] if isinstance(row, dict) else row[0])
 
-    def diagnostics(self, limit=250):
-        """Return bounded, credential-free operational events for Settings."""
-        limit = max(1, min(int(limit), 500))
+    def diagnostics(
+        self,
+        limit=250,
+        *,
+        severity="",
+        action="",
+        correlation="",
+        since="",
+        until="",
+        maximum=500,
+    ):
+        """Return bounded, credential-free events in chronological order."""
+        limit = max(1, min(int(limit), max(1, min(int(maximum), 50000))))
+        clauses = []
+        values = []
+        if severity:
+            clauses.append("severity=?")
+            values.append(normalize_severity(severity))
+        if action:
+            clauses.append("action ILIKE ?")
+            values.append("%" + sanitize_text(action, limit=100) + "%")
+        if correlation:
+            clauses.append("(trace_id=? OR job_id=? OR action_id=?)")
+            value = sanitize_text(correlation, limit=100)
+            values.extend((value, value, value))
+        if since:
+            clauses.append("created_at>=?")
+            values.append(sanitize_text(since, limit=80))
+        if until:
+            clauses.append("created_at<=?")
+            values.append(sanitize_text(until, limit=80))
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
         with closing(self.runtime.database.connect()) as db:
             rows = db.execute(
-                "SELECT action,subject,details,created_at FROM web_audit ORDER BY id DESC LIMIT ?",
-                (limit,),
+                "SELECT * FROM (SELECT id,action,subject,details,severity,action_id,"
+                "trace_id,job_id,scope,stage,request_status,elapsed_ms,state_from,state_to,"
+                f"error,created_at FROM web_audit{where} ORDER BY id DESC LIMIT ?) recent "
+                "ORDER BY id",
+                (*values, limit),
             ).fetchall()
         return [
             {
+                "sequence": int(row["id"]),
                 "action": row["action"],
                 "subject": row["subject"],
                 "details": row["details"],
+                "severity": row["severity"],
+                "action_id": row["action_id"],
+                "trace_id": row["trace_id"],
+                "job_id": row["job_id"],
+                "scope": row["scope"],
+                "stage": row["stage"],
+                "request_status": row["request_status"],
+                "elapsed_ms": row["elapsed_ms"],
+                "state_from": row["state_from"],
+                "state_to": row["state_to"],
+                "error": row["error"],
                 "created_at": row["created_at"].isoformat(),
             }
             for row in rows
@@ -466,6 +576,18 @@ class Services:
             self.refresh_embedding_stats(row)
         return records
 
+    def ensure_tracks(self, album_id):
+        """Hydrate only when the durable catalog lacks indexed album tracks."""
+        row = self.album_row(album_id)
+        with closing(self.runtime.database.connect()) as db:
+            indexed = int(
+                db.execute(
+                    "SELECT count(*) FROM tracks WHERE album_key=?", (album_id,)
+                ).fetchone()[0]
+            )
+        expected = int(row["track_count"] or 0)
+        return self.hydrate_tracks(album_id) if indexed < expected else []
+
     def indexed_tracks(self, album_id, track_keys):
         """Return only explicitly requested indexed tracks, in request order."""
         requested = [str(key) for key in track_keys]
@@ -763,17 +885,55 @@ class Services:
         core.validate_filename(stem)
         extension = {"jpeg": ".jpg", "png": ".png", "webp": ".webp"}[fmt]
         destination = Path(row["path"]) / (stem + extension)
-        if self.runtime.cfg.get("output", {}).get("preserve_file", True):
-            number = 1
-            while destination.exists() and destination.read_bytes() != body:
-                number += 1
-                destination = Path(row["path"]) / (
-                    f"{stem}-({number})" + destination.suffix
-                )
+        exact_covers = sorted(
+            (
+                path
+                for path in Path(row["path"]).iterdir()
+                if path.is_file()
+                and not path.is_symlink()
+                and path.stem.casefold() == stem.casefold()
+                and path.suffix.casefold() in {".jpg", ".jpeg", ".png", ".webp"}
+            ),
+            key=lambda path: path.name.casefold(),
+        )
+        preserved = []
+        preserve = bool(self.runtime.cfg.get("output", {}).get("preserve_file", True))
+        for existing in exact_covers:
+            if existing == destination and existing.read_bytes() == body:
+                continue
+            if preserve:
+                number = 2
+                backup = existing.with_name(f"{stem}-({number}){existing.suffix}")
+                while backup.exists():
+                    number += 1
+                    backup = existing.with_name(f"{stem}-({number}){existing.suffix}")
+                os.replace(existing, backup)
+                preserved.append(backup.name)
+            else:
+                existing.unlink()
         self._atomic_artwork(destination, body)
+        verified = destination.read_bytes()
+        if verified != body:
+            raise scan.QueuedArtworkVerificationError(
+                "Written cover did not pass byte-for-byte readback verification"
+            )
+        with Image.open(BytesIO(verified)) as opened:
+            verified_size = [int(opened.width), int(opened.height)]
         self.refresh_album(row["album_key"], source="webgui")
-        self.audit("write-cover", row["album_key"], {"file": destination.name})
-        return {"written": [destination.name], **rendered}
+        self.audit(
+            "write-cover",
+            row["album_key"],
+            {
+                "album_id": row["album_key"],
+                "file": destination.name,
+                "preserved": preserved,
+                "sha256": hashlib.sha256(verified).hexdigest(),
+                "verified_size": verified_size,
+            },
+            stage="write-readback",
+            request_status="verified",
+        )
+        return {"written": [destination.name], "preserved": preserved, **rendered}
 
     @serialized
     def write_artist(self, payload):
