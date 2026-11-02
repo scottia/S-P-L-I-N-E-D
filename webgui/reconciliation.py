@@ -201,7 +201,8 @@ class SQLiteReconciler:
     def sources(self) -> list[dict[str, Any]]:
         result = []
         seen: set[Path] = set()
-        for root in self.allowed_roots:
+        inventory_roots = self.allowed_roots[1:] or self.allowed_roots
+        for root in inventory_roots:
             if not root.is_dir():
                 continue
             for path in root.rglob("*"):

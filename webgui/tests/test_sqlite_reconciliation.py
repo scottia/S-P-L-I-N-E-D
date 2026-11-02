@@ -69,6 +69,8 @@ class SQLiteReconciliationTests(unittest.TestCase):
         with TemporaryDirectory() as cache_directory, TemporaryDirectory() as snapshot_directory, TemporaryDirectory() as outside_directory:
             cache_root = Path(cache_directory)
             snapshot_root = Path(snapshot_directory)
+            cache_snapshot = cache_root / "older-cache-copy.db"
+            cache_snapshot.touch()
             snapshot = snapshot_root / "splined.db"
             with closing(sqlite3.connect(snapshot)) as database, database:
                 database.execute("PRAGMA user_version=2")
@@ -90,7 +92,12 @@ class SQLiteReconciliationTests(unittest.TestCase):
                     str(Path(snapshot_root.name) / "splined.db"),
                 )
                 self.assertEqual(sources[0]["bytes"], snapshot.stat().st_size)
+                self.assertNotIn(str(cache_snapshot.resolve()), {item["path"] for item in sources})
                 self.assertEqual(reconciler._source(snapshot), snapshot.resolve())
+                self.assertEqual(
+                    reconciler._source(cache_snapshot),
+                    cache_snapshot.resolve(),
+                )
                 with self.assertRaises(PermissionError):
                     reconciler._source(outside)
             finally:
