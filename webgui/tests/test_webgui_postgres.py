@@ -2379,6 +2379,89 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     expect(page.locator("#artistName")).to_have_text(
                         "10,000 Maniacs"
                     )
+                    # Artist information is a tiny, theme-driven pop-out over
+                    # the five-line biography. It must preserve the circular
+                    # portrait and never move the Album area or page layout.
+                    expect(page.locator("#artistInfoRows")).to_be_hidden()
+                    expect(page.locator("#artistBiography")).to_be_visible()
+                    portrait_radius = page.locator("#heroPortrait").evaluate(
+                        "element => getComputedStyle(element).borderRadius"
+                    )
+                    self.assertEqual(portrait_radius, "50%")
+                    toggle_box = page.locator("#artistInfoToggle").bounding_box()
+                    artist_radio_box = page.locator("#artistArtEntry").bounding_box()
+                    self.assertEqual(round(toggle_box["width"]), 16)
+                    self.assertEqual(round(toggle_box["height"]), 16)
+                    self.assertGreater(toggle_box["x"], artist_radio_box["x"])
+                    self.assertLess(toggle_box["y"], artist_radio_box["y"])
+                    hero_height = page.locator("#hero").bounding_box()["height"]
+                    album_grid_y = page.locator("#albumGrid").bounding_box()["y"]
+                    page.locator("#artistInfoToggle").click()
+                    expect(page.locator("#artistInfoRows")).to_be_visible()
+                    self.assertEqual(
+                        page.locator("#artistInfoRows > span > b").all_inner_texts(),
+                        [
+                            "ARTIST",
+                            "STATUS",
+                            "ALBUMS",
+                            "ROLES",
+                            "MUSICBRAINZ ID",
+                            "GENRES",
+                        ],
+                    )
+                    expect(page.locator("#artistInfoArtist")).to_have_text(
+                        "10,000 Maniacs"
+                    )
+                    self.assertEqual(
+                        page.locator("#artistInfoMbid").get_attribute("href"),
+                        "https://musicbrainz.org/artist/6c8b9855-ba8b-48f9-ac1d-42167f7f7b18",
+                    )
+                    self.assertEqual(
+                        page.locator("#artistInfoMbid").get_attribute("target"),
+                        "_blank",
+                    )
+                    self.assertEqual(
+                        page.locator("#artistInfoRows").evaluate(
+                            "element => getComputedStyle(element).position"
+                        ),
+                        "absolute",
+                    )
+                    info_cells = page.locator("#artistInfoRows > span")
+                    self.assertEqual(info_cells.count(), 6)
+                    self.assertAlmostEqual(
+                        info_cells.nth(4).bounding_box()["height"],
+                        info_cells.nth(5).bounding_box()["height"],
+                        delta=0.5,
+                    )
+                    theme_rows = {}
+                    for theme in ("dark", "chalk", "light"):
+                        page.evaluate(
+                            "theme => document.documentElement.dataset.theme = theme",
+                            theme,
+                        )
+                        theme_rows[theme] = info_cells.first.evaluate(
+                            "element => getComputedStyle(element).backgroundColor"
+                        )
+                    self.assertEqual(len(set(theme_rows.values())), 3)
+                    for theme, color in theme_rows.items():
+                        self.assertIn(
+                            "/ 0.8)",
+                            color,
+                            f"{theme} metadata row must be exactly 20% transparent",
+                        )
+                    page.evaluate("document.documentElement.dataset.theme = 'dark'")
+                    self.assertAlmostEqual(
+                        page.locator("#hero").bounding_box()["height"],
+                        hero_height,
+                        delta=0.5,
+                    )
+                    self.assertAlmostEqual(
+                        page.locator("#albumGrid").bounding_box()["y"],
+                        album_grid_y,
+                        delta=0.5,
+                    )
+                    page.locator("#artistInfoToggle").click()
+                    expect(page.locator("#artistInfoRows")).to_be_hidden()
                     page.locator("#compReportButton").click()
                     expect(page.locator("#fallbackReport")).to_contain_text(
                         "Because the Night"

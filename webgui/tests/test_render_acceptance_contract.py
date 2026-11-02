@@ -18,6 +18,9 @@ class RenderAcceptanceContractTests(unittest.TestCase):
             document = client.get("/").text
             self.assertIn('id="aboutButton"', document)
             self.assertIn('id="artistInfoRows" class="artist-info-rows" aria-label="Selected Artist information" hidden', document)
+            self.assertIn('id="heroPortrait" class="hero-portrait placeholder"', document)
+            self.assertIn('id="artistInfoArtist"', document)
+            self.assertIn('id="artistInfoMbid" target="_blank"', document)
             self.assertIn('id="mediaFilter" class="filter-body" hidden', document)
             metadata = client.get(
                 "/api/artist/metadata", params={"id": "artist-acceptance"}

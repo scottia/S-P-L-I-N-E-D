@@ -6,7 +6,7 @@ Branch: `fix/webgui-functional-recovery-audit`
 
 Base: `dfe0bf8ce8274d7272882a57a6dc3fc10d4897e2` (`main`, release `2.0.18`)
 
-Implementation revision exercised: `39463bc5a5ae9384d60c98920a8fb8a3e886a493`
+Implementation revision exercised: the current PR branch head. Its exact SHA is recorded in the final PR update and in the authenticated WebGUI audit session after restart.
 
 State: draft, open, unmerged. No release, tag, GHCR publication, production deployment, `dev` change, or Windows-source change was made.
 
@@ -54,6 +54,18 @@ No SQLite differences or conflicts were applied. The reconciliation implementati
 - Windows could briefly hold the disposable FLAC during atomic publication. A bounded retry now surrounds only `os.replace`; source audio is never edited in place.
 - Legacy audit events lacked session/build identity, truthful export completeness, and recoverable storage failure handling. The existing `web_audit` authority now supplies these capabilities without a competing log.
 
+## Owner-adjusted Artist Overview
+
+The final Artist Overview revision preserves the round Artist thumbnail and the small Artist Art radio. A separate `16 x 16` cyan-outlined `⏬` control sits at the thumbnail's upper-right boundary, diagonally opposite the Artist Art radio. The control is collapsed by default, has an accessible name but no visible title, and follows the active theme.
+
+Opening the control displays a two-column metadata surface downward over the biography. It is absolutely positioned, so it does not move the Artist Overview, Album grid, or remainder of the page. The paired rows are:
+
+1. Artist | Status
+2. Albums count | Roles
+3. MusicBrainz ID | Genres
+
+Each pair shares its row height, so long values wrap and both columns expand together. The MusicBrainz ID is a direct external hyperlink to the selected MusicBrainz Artist page. The surface uses exactly 80% of the active theme's `--panel` color and 20% transparency in dark, chalk, and light themes. The Artist name remains in the yellow-backed bar below the thumbnail. The biography remains to the right, justified, limited to five lines when collapsed, and retains its inline more/less control.
+
 ## Functional and rendered results
 
 The disposable PostgreSQL/MP3/FLAC suite and headless installed Brave validated:
@@ -91,11 +103,11 @@ If PostgreSQL audit insertion fails, bounded redacted JSONL records remain recov
 
 ## Exact verification
 
-- Full PC suite with required `PYTHONPATH`, actual PostgreSQL, and installed Brave: `233` tests in `241.488s`, `OK`.
+- Full PC suite with required `PYTHONPATH`, actual PostgreSQL, and installed Brave after the final Artist Overview correction: `233` tests in `239.797s`, `OK`.
 - Focused audit failure/export: `1` test in `3.674s`, `OK`.
 - PostgreSQL integration module before the final audit case: `34` tests in `223.518s`, `OK`.
-- Focused rendered Brave workflow: `1` test in `78.153s`, `OK`.
-- GitHub Actions run `41364590140` on `39463bc`: success (`webgui` success, Windows advisory success, native correctly skipped by scope).
+- Focused rendered Brave workflow after the final Artist Overview correction: `1` test in `85.389s`, `OK`. This verifies the circular thumbnail, `16 x 16` toggle, collapsed default, downward absolute overlay, no layout shift, synchronized row growth, MusicBrainz hyperlink, and exactly 20% transparency in dark, chalk, and light themes.
+- GitHub Actions run `41364590140` on `39463bc`: success (`webgui` success, Windows advisory success, native correctly skipped by scope). The final branch-head result is recorded in the PR timeline after publication.
 - Python compilation, JavaScript syntax checks, boundary tests, and `git diff --check`: passed.
 - Expected non-failing warning: Starlette's installed `httpx` compatibility deprecation. The PC Python 3.12 environment already contains `psycopg 3.3.6` and `httpx 0.28.1`; no dependency download was needed.
 

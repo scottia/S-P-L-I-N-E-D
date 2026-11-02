@@ -170,8 +170,11 @@ class ReportedDefectTests(unittest.TestCase):
         document = (static / "index.html").read_text(encoding="utf-8")
         application = (static / "app.js").read_text(encoding="utf-8")
         operations = (static / "operations.js").read_text(encoding="utf-8")
+        styles = (static / "app.css").read_text(encoding="utf-8")
         for identity in (
+            'id="heroPortrait"',
             'id="artistInfoRows"',
+            'id="artistInfoArtist"',
             'id="artistInfoAlbums"',
             'id="artistInfoStatus"',
             'id="artistInfoMbid"',
@@ -189,6 +192,21 @@ class ReportedDefectTests(unittest.TestCase):
         self.assertIn("track.thumbnail", application)
         self.assertIn("COMP status", application)
         self.assertIn('id="artistInfoRows" class="artist-info-rows" aria-label="Selected Artist information" hidden', document)
+        self.assertIn(
+            'id="artistInfoMbid" target="_blank" rel="noopener noreferrer"',
+            document,
+        )
+        self.assertLess(document.index('id="artistBiography"'), document.index('id="artistInfoRows"'))
+        self.assertIn(".artist-info-rows{position:absolute", styles)
+        self.assertIn(".hero-portrait{width:86px;height:86px;flex:none;border:2px solid var(--cyan);border-radius:50%", styles)
+        self.assertIn("grid-template-columns:repeat(2,minmax(0,1fr))", styles)
+        self.assertIn("inset:34px 0 auto 0", styles)
+        self.assertIn("width:16px;height:16px", styles)
+        self.assertIn("background:color-mix(in srgb,var(--panel) 80%,transparent)", styles)
+        self.assertIn(
+            'artistMbidLink.href = "https://musicbrainz.org/artist/" + encodeURIComponent(artistMbid)',
+            application,
+        )
         self.assertIn('id="mediaFilter" class="filter-body" hidden', document)
         self.assertIn('id="mediaFilterToggle" type="button" aria-expanded="false"', document)
         self.assertIn('id="aboutButton"', document)

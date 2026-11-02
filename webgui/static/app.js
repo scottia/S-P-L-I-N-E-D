@@ -638,9 +638,14 @@ function renderHeroContents() {
   const metadata = state.artistMetadata;
   $("artistName").textContent = artist?.name || "Select an artist";
   $("overviewArtist").textContent = artist?.name || "";
+  $("artistInfoArtist").textContent = artist?.name || "Choose an Artist";
   $("artistInfoAlbums").textContent = artist ? String(artist.albums.length) : "—";
   $("artistInfoStatus").textContent = artist?.status || "Choose an Artist";
-  $("artistInfoMbid").textContent = artist?.mbid || "Not indexed";
+  const artistMbid = String(artist?.mbid || "").trim();
+  const artistMbidLink = $("artistInfoMbid");
+  artistMbidLink.textContent = artistMbid || "Not indexed";
+  if (artistMbid) artistMbidLink.href = "https://musicbrainz.org/artist/" + encodeURIComponent(artistMbid);
+  else artistMbidLink.removeAttribute("href");
   $("artistInfoGenres").textContent = artist?.genres?.join(", ") || "Not available";
   $("artistInfoRoles").textContent = artist?.roles?.join(", ") || "Primary Artist";
   $("artistInfoRows").hidden = !state.artistInfoExpanded;
