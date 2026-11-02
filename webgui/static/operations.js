@@ -18,7 +18,7 @@ async function runAction(action) {
     return result;
   } catch (error) {
     auditEvent("browser-action", "failed", {severity: "error", action_id: actionId, request_status: "failed", elapsed_ms: performance.now() - started, error: error.message});
-    setStatus(error.message, "error");
+    setErrorStatus(error);
   } finally {
     if (!inherited) state.activeActionId = "";
   }
@@ -384,16 +384,52 @@ async function launchCandidateWork() {
   return searchAlbum();
 }
 async function stageAlbum() {
+  if (!state.album) throw new Error("Choose an album first");
+  const albumId = state.album.id, albumName = state.album.name;
   setStatus("Staging cover and Album embedding…", "busy");
   const result = await post("/api/jobs", {kind: "embed-album", payload: coverPayload()});
-  await pollJobs();
+  const followUpErrors = [];
   if (!result.already_queued) {
+    const refreshRequest = ++state.selectionRequest;
+    ++state.searchRequest;
     state.candidates = []; state.selectedCover = null; state.upscalePreview = null;
     state.renderedPreview = {}; state.compare.clear(); state.reviewCleared = true;
-    resetCandidateFilters(); renderSources(); renderCandidates(); renderPanes();
+    const withoutOldCover = album => album?.id === albumId
+      ? {...album, cover: null, cover_meta: null, candidates: []} : album;
+    state.album = withoutOldCover(state.album);
+    if (Array.isArray(state.artist?.albums)) state.artist.albums = state.artist.albums.map(withoutOldCover);
+    if (Array.isArray(state.albumsIndex)) state.albumsIndex = state.albumsIndex.map(withoutOldCover);
+    resetCandidateFilters();
+    try {
+      const refreshed = await api("/api/album?id=" + encodeURIComponent(albumId));
+      if (state.selectionRequest === refreshRequest && state.album?.id === albumId) {
+        state.album = refreshed;
+        state.reviewCleared = false;
+        const useRefreshed = album => album?.id === albumId ? {...album, ...refreshed} : album;
+        if (Array.isArray(state.artist?.albums)) state.artist.albums = state.artist.albums.map(useRefreshed);
+        if (Array.isArray(state.albumsIndex)) state.albumsIndex = state.albumsIndex.map(useRefreshed);
+      }
+    } catch (error) {
+      followUpErrors.push(error);
+      auditEvent("post-write-refresh-failed", error.endpoint || "/api/album", {
+        severity: "warning", trace_id: error.traceId || "", request_status: "failed",
+        error: error.message, details: {operation: "embed-batch", album_id: albumId},
+      });
+    }
   }
-  renderHero(); renderReview();
-  setStatus(result.already_queued ? "Album is already staged" : "Cover written and album staged · " + state.album.name);
+  try {
+    await pollJobs();
+  } catch (error) {
+    followUpErrors.push(error);
+    auditEvent("post-write-refresh-failed", error.endpoint || "/api/jobs", {
+      severity: "warning", trace_id: error.traceId || "", request_status: "failed",
+      error: error.message, details: {operation: "embed-batch", album_id: albumId},
+    });
+  }
+  renderSources(); renderCandidates(); renderPanes(); renderHero(); renderReview();
+  const message = result.already_queued ? "Album is already staged"
+    : "Cover written and album staged · " + (state.album?.name || albumName);
+  setStatus(message + (followUpErrors.length ? " · display refresh will retry" : ""));
 };
 async function queueAction(action, id = null, value = null, nonce = null, kind = null) {
   const result = await post("/api/jobs/action", {action, id, value, nonce, kind}); await pollJobs(); return result;

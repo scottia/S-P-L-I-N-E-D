@@ -371,6 +371,34 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.assertEqual(changes["count"], 1)
         self.assertEqual(changes["changed"], 1)
 
+    def test_cover_format_replacement_stages_and_embeds_without_reusing_stale_handle(self):
+        stale_cover = self.services.catalog.image(self.cover)
+        self.runtime.cfg["output"].update(
+            preserve_file=True,
+            file_formats=["png"],
+        )
+
+        staged = self.services.stage_album(
+            {
+                "album_id": self.row["album_key"],
+                "image": stale_cover,
+                "adjustments": {"Brightness": 20},
+            }
+        )
+
+        destination = self.cover.with_suffix(".png")
+        self.assertTrue(destination.is_file())
+        self.assertTrue(self.cover.with_name("cover-(2).jpg").is_file())
+        with self.assertRaisesRegex(KeyError, "preview expired after the artwork changed"):
+            self.services.catalog.image_source(stale_cover)
+
+        result = self.services.embed_album(staged)
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["tracks"], len(self.files))
+        for path in self.files:
+            with Image.open(BytesIO(embedded_track_artwork_bytes(path))) as image:
+                self.assertEqual(image.size, (300, 300))
+
     def test_postgres_track_credit_projects_featured_album_for_selected_artist(self):
         folder = self.root / "music" / "Album Owner" / "Guest Release"
         folder.mkdir(parents=True)

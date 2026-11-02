@@ -91,6 +91,7 @@ html[data-theme=light] .library-row .status-orbit.selected,html[data-theme=light
 
 /* Source-backed Windows album card structure. */
 .overview-meta{position:relative;z-index:5}
+.album-count-summary{display:inline-flex;align-items:center;gap:5px;font-weight:750;white-space:nowrap}.album-count-shown{color:var(--pink)}.album-count-completed{color:var(--album-complete-color,var(--green))}.album-count-process{color:var(--album-process-color,#efa54e)}.album-count-separator{color:var(--muted);font-weight:500}
 .album-status-help{width:22px;height:22px;flex:none;border:2px solid var(--cyan);border-radius:50%;background:var(--card);color:var(--cyan);font-size:14px;font-weight:900;line-height:16px;cursor:pointer}
 .album-status-help[aria-expanded=true]{background:var(--selected)}
 .album-grid{min-height:0}

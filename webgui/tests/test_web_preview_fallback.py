@@ -134,6 +134,29 @@ class BrowserFallbackTests(unittest.TestCase):
             # that allowed path while new browser renders receive a new URL.
             self.assertEqual(app.image_source(first), source)
 
+    def test_signed_path_handle_distinguishes_stale_from_unauthorized(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            allowed = root / "allowed"
+            replacement = root / "replacement"
+            allowed.mkdir()
+            replacement.mkdir()
+            source = allowed / "cover.jpg"
+            Image.new("RGB", (30, 30), "red").save(source)
+            app = PreviewApp(allowed, root / "index.sqlite", allowed, allowed)
+
+            stale = app.image(source)
+            source.unlink()
+            with self.assertRaisesRegex(KeyError, "preview expired after the artwork changed"):
+                app.image_source(stale)
+
+            Image.new("RGB", (30, 30), "blue").save(source)
+            unauthorized = app.image(source)
+            app.music = replacement
+            app.artist_art = replacement
+            with self.assertRaisesRegex(ValueError, "outside configured artwork locations"):
+                app.image_source(unauthorized)
+
     def test_artist_report_combines_matching_tracks_across_comp_albums(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)

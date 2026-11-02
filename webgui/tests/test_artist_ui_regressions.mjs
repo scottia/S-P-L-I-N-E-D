@@ -110,6 +110,16 @@ const stageAlbumFunction = between(
   "async function stageAlbum",
   "async function queueAction",
 );
+const statusFunctions = between(
+  appSource,
+  "function setStatus",
+  "async function api",
+);
+const albumSummaryFunctions = between(
+  appSource,
+  "function albumCardState",
+  "function renderAlbumStatusKey",
+);
 const stageAllAlbumsFunction = between(
   operationsSource,
   "async function stageAllArtistAlbums",
@@ -1162,35 +1172,105 @@ test("Artist LAUNCH submits every selected eligible release and preserves select
   assert.deepEqual([...selected], ["artist-1", "own", "featured", "complete", "bypassed", "timeout", "comp"]);
 });
 
-test("successful EMBED Batch staging clears stale candidates and review selection only", async () => {
-  const artist = {id: "artist-1"};
+test("successful EMBED Batch invalidates stale handles and refreshes the Album before polling", async () => {
+  const artist = {id: "artist-1", albums: [{id: "album-1", cover: "old-artist-cover"}]};
   const album = {id: "album-1", name: "Album", cover: "cover"};
+  const refreshed = {...album, cover: "fresh-cover", cover_meta: {width: 1800, height: 1800}};
   const embedQueue = [{id: "persistent-job"}];
+  const order = [], statuses = [];
   const state = {
     artist, album, embedQueue,
+    albumsIndex: [{id: "album-1", cover: "old-index-cover"}],
     candidates: [{image: "candidate"}], selectedCover: {image: "candidate"},
     upscalePreview: {image: "upscale"}, renderedPreview: {album: {image: "rendered"}},
     compare: new Set(["candidate"]), reviewCleared: false,
+    selectionRequest: 4, searchRequest: 7,
   };
   const context = load(stageAlbumFunction, {
     state,
-    post: async () => ({id: "job-1", already_queued: false}),
+    post: async () => { order.push("post"); return {id: "job-1", already_queued: false}; },
+    api: async path => {
+      order.push(path);
+      assert.equal(state.selectedCover, null);
+      assert.equal(state.album.cover, null);
+      return refreshed;
+    },
     coverPayload: () => ({album_id: album.id, image: album.cover}),
-    pollJobs: async () => {}, renderHero() {}, renderReview() {}, renderSources() {}, renderCandidates() {}, renderPanes() {},
-    resetCandidateFilters() {}, setStatus() {},
+    pollJobs: async () => { order.push("poll"); }, renderHero() {}, renderReview() {}, renderSources() {}, renderCandidates() {}, renderPanes() {},
+    resetCandidateFilters() {}, setStatus: (...values) => statuses.push(values), auditEvent() {}, encodeURIComponent,
   });
 
   await context.stageAlbum();
 
   assert.equal(state.artist, artist);
-  assert.equal(state.album, album);
+  assert.equal(state.album.cover, "fresh-cover");
+  assert.equal(state.artist.albums[0].cover, "fresh-cover");
+  assert.equal(state.albumsIndex[0].cover, "fresh-cover");
   assert.equal(state.embedQueue, embedQueue);
   assert.equal(state.candidates.length, 0);
   assert.equal(state.selectedCover, null);
   assert.equal(state.upscalePreview, null);
   assert.equal(Object.keys(state.renderedPreview).length, 0);
   assert.equal(state.compare.size, 0);
-  assert.equal(state.reviewCleared, true);
+  assert.equal(state.reviewCleared, false);
+  assert.equal(state.selectionRequest, 5);
+  assert.equal(state.searchRequest, 8);
+  assert.deepEqual(order, ["post", "/api/album?id=album-1", "poll"]);
+  assert.match(statuses.at(-1)[0], /Cover written and album staged/);
+});
+
+test("a late API failure cannot overwrite a newer success and Audit retains its endpoint", () => {
+  const statusText = {textContent: "Embedding completed"};
+  const status = {className: "status"};
+  const events = [];
+  const state = {statusRevision: 9, statusType: "ready", activeActionId: ""};
+  const context = load(statusFunctions, {
+    state,
+    $: id => id === "statusText" ? statusText : status,
+    auditEvent: (...values) => events.push(values),
+  });
+  const error = new Error("Image preview expired");
+  error.endpoint = "/api/preview";
+  error.traceId = "trace-late";
+  error.statusRevision = 8;
+
+  assert.equal(context.setErrorStatus(error), false);
+  assert.equal(statusText.textContent, "Embedding completed");
+  assert.equal(events.length, 1);
+  assert.equal(events[0][0], "late-api-error-suppressed");
+  assert.equal(events[0][1], "/api/preview");
+  assert.equal(events[0][2].trace_id, "trace-late");
+});
+
+test("Artist Albums row reports shown, Completed, and in Process with status colors", () => {
+  const children = [];
+  const styles = {};
+  const host = {
+    className: "", children,
+    style: {setProperty: (key, value) => { styles[key] = value; }},
+    append: (...items) => children.push(...items),
+    replaceChildren: () => { children.length = 0; },
+    setAttribute(key, value) { this[key] = value; },
+  };
+  const node = (tag, className, text) => ({tag, className, text});
+  const state = {graphicalEnhancement: {frame_styles: {
+    complete: {color: "theme-complete"}, in_process: {color: "theme-process"},
+    thumbnail: {color: "theme-thumbnail"},
+  }}};
+  const context = load(albumSummaryFunctions, {
+    state, $: () => host, clear: item => item.replaceChildren(), node,
+    mediaStatusKey: album => album.status,
+  });
+  const artist = {portrait: "artist.jpg"};
+  context.renderAlbumCountSummary([
+    {album_mbid: "release-1", status: "processed", cover_found: true, cover: "cover.jpg", tracks: 2, embedded: 2},
+    {album_mbid: "release-2", status: "incomplete", cover_found: true, cover: "cover.jpg", tracks: 2, embedded: 0},
+  ], artist);
+
+  assert.deepEqual(children.map(item => item.text), ["2 shown", "/", "1 Completed", "/", "1 in Process"]);
+  assert.equal(styles["--album-complete-color"], "theme-complete");
+  assert.equal(styles["--album-process-color"], "theme-process");
+  assert.equal(host["aria-label"], "2 Albums shown, 1 Completed, 1 in Process");
 });
 
 test("queued Album review exposes SKIP ALBUM and submits k without pausing the batch", async () => {

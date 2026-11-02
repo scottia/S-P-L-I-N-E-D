@@ -296,8 +296,20 @@ class Catalog:
                 source = self.images.get(token)
         if source is None:
             raise KeyError("Image preview expired; select the artwork again")
-        if isinstance(source, Path) and not self.allowed_image_path(source):
-            raise ValueError("Image is outside configured artwork locations")
+        if isinstance(source, Path):
+            # A signed handle can outlive the file it described when a cover is
+            # replaced or preserved under another name.  ``inside`` resolves
+            # paths strictly, so testing authorization first used to report a
+            # missing, formerly valid image as a security-boundary violation.
+            # Keep the two cases distinct without weakening the boundary for a
+            # path which still exists outside the configured artwork roots.
+            if not source.is_file():
+                raise KeyError(
+                    "Image preview expired after the artwork changed; "
+                    "reload the Album or select the artwork again"
+                )
+            if not self.allowed_image_path(source):
+                raise ValueError("Image is outside configured artwork locations")
         return source
 
     @staticmethod

@@ -74,6 +74,7 @@ const state = {
   embedQueue: [], queueControls: {pause_after_album: false, pause_all_albums: false}, queuedDecision: null, reviewJobState: "", listRequest: 0, selectionRequest: 0, searchRequest: 0,
   libraryLoading: false, artistMetadataRequest: 0,
   activeActionId: "", artistInfoExpanded: false,
+  statusRevision: 0, statusType: "ready",
 };
 function applyGraphicalEnhancement(value) {
   state.graphicalEnhancement = normalizeGraphicalEnhancement(value);
@@ -133,10 +134,30 @@ const SOURCES = [
 ];
 
 function setStatus(message, type = "ready") {
+  state.statusRevision = Number(state.statusRevision || 0) + 1;
+  state.statusType = type;
   $("statusText").textContent = message;
   $("status").className = "status" + (type === "ready" ? "" : " " + type);
+  return state.statusRevision;
+}
+function setErrorStatus(error) {
+  const requestRevision = Number(error?.statusRevision);
+  const superseded = Number.isFinite(requestRevision)
+    && Number(state.statusRevision || 0) > requestRevision
+    && state.statusType === "ready";
+  if (superseded) {
+    auditEvent("late-api-error-suppressed", error.endpoint || "request", {
+      severity: "warning", trace_id: error.traceId || "", request_status: "superseded",
+      error: error.message, details: {request_status_revision: requestRevision,
+        current_status_revision: Number(state.statusRevision || 0)},
+    });
+    return false;
+  }
+  setStatus(error?.message || "Request failed", "error");
+  return true;
 }
 async function api(path, options) {
+  const statusRevision = Number(state.statusRevision || 0);
   options = {...options, headers: {...options?.headers}};
   if (options.method && options.method !== 'GET' && state.csrf) options.headers['X-SPLINED-CSRF'] = state.csrf;
   const trace = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(16).slice(2);
@@ -146,7 +167,11 @@ async function api(path, options) {
   const payload = await response.json();
   if (!response.ok) {
     auditEvent("api-client-error", path, {severity: "error", trace_id: trace, error: payload.error || "Request failed", request_status: "failed"});
-    throw new Error(payload.error || "Request failed");
+    const error = new Error(payload.error || "Request failed");
+    error.endpoint = path;
+    error.traceId = trace;
+    error.statusRevision = statusRevision;
+    throw error;
   }
   return payload;
 }
@@ -572,6 +597,23 @@ function albumCardState(album, artist) {
     : processed ? frames.in_process.color : bypassed ? "#f4cc4d" : "#ff5268";
   return {dots, frame, fullyComplete, checkEmbedded};
 }
+function renderAlbumCountSummary(albums, artist = state.artist) {
+  const host = $("albumCount"); clear(host);
+  const completed = albums.filter(album => albumCardState(album, artist).fullyComplete).length;
+  const inProcess = albums.length - completed;
+  const frames = state.graphicalEnhancement.frame_styles;
+  host.className = "album-count-summary";
+  host.style.setProperty("--album-complete-color", frames.complete.color);
+  host.style.setProperty("--album-process-color", frames.in_process.color);
+  host.append(
+    node("span", "album-count-shown", `${albums.length} shown`),
+    node("span", "album-count-separator", "/"),
+    node("span", "album-count-completed", `${completed} Completed`),
+    node("span", "album-count-separator", "/"),
+    node("span", "album-count-process", `${inProcess} in Process`),
+  );
+  host.setAttribute("aria-label", `${albums.length} Albums shown, ${completed} Completed, ${inProcess} in Process`);
+}
 function renderAlbumStatusKey(albums, artist) {
   const host = $("albumStatusKey"); clear(host);
   host.append(node("h3", "", "Album Status Key"));
@@ -735,7 +777,7 @@ function renderHeroContents() {
     albumPresentationGroup(a, artist) - albumPresentationGroup(b, artist)
     || (parseInt(b.year, 10) || 0) - (parseInt(a.year, 10) || 0)
     || a.name.localeCompare(b.name));
-  $("albumCount").textContent = albums.length + " shown";
+  renderAlbumCountSummary(albums, artist);
   renderAlbumStatusKey(albums, artist);
   if (!albums.length) { grid.append(node("p", "empty-copy", "Choose an artist to view albums.")); renderArtistCompReport(); return; }
   for (const album of albums) {
@@ -778,7 +820,7 @@ function renderFallbackOverview() {
     $("albumStatusKey").hidden = true;
     document.querySelector(".overview-actions").hidden = true;
     document.querySelector(".meta-heading").textContent = "COMP Albums";
-    $("albumCount").textContent = "0 shown";
+    renderAlbumCountSummary([], state.artist);
     const grid = $("albumGrid"); clear(grid);
     grid.append(node("p", "empty-copy fallback-empty-copy",
       "No missing-ID COMP albums in this isolated test index. Select an artist to open the artist-wide COMP Report when eligible albums are available."));
@@ -793,7 +835,8 @@ function renderFallbackOverview() {
   $("albumStatusHelp").hidden = false;
   document.querySelector(".overview-actions").hidden = true;
   document.querySelector(".meta-heading").textContent = "Albums";
-  $("albumCount").textContent = `1 shown / ${pending ? "0 Completed / 1 in Process" : "1 Completed / 0 in Process"}`;
+  renderAlbumCountSummary([{...album, fallback_complete: !pending,
+    status: pending ? "incomplete" : "processed"}], state.artist);
   const grid = $("albumGrid"); clear(grid);
   if (album) {
     const card = node("div", "album-card windows-card fallback-album-card");
@@ -1941,7 +1984,7 @@ $("upscaleButton").addEventListener("click", async () => {
     const prepared = compContext ? await prepareCompThumbnail({announce: false}) : null;
     renderReview();
     setStatus(upscalePreviewStatus(preview, prepared, compContext), "ready");
-  } catch (error) { if (request === state.selectionRequest) setStatus(error.message, "error"); }
+  } catch (error) { if (request === state.selectionRequest) setErrorStatus(error); }
   finally { if (request === state.selectionRequest) renderReview(); }
 });
 $("embedBatchButton").addEventListener("click", () => runAction(stageAlbum));
