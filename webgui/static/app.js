@@ -70,8 +70,10 @@ const state = {
   sourceDiagnostics: [],
   fx: {artist: {}, banner: {}, album: {}, comp: {}, current: {}, package: {}}, fit: {artist: {zoom: 1, x: 0, y: 0}, banner: {zoom: 1, x: 0, y: 0}},
   theme: "dark", compare: new Set(), graphicalEnhancement: normalizeGraphicalEnhancement(),
+  artworkRange: {min: 1200, ideal: 1800, max: 2400, ladder: 3600},
   embedQueue: [], queueControls: {pause_after_album: false, pause_all_albums: false}, queuedDecision: null, reviewJobState: "", listRequest: 0, selectionRequest: 0, searchRequest: 0,
   libraryLoading: false, artistMetadataRequest: 0,
+  activeActionId: "", artistInfoExpanded: false,
 };
 function applyGraphicalEnhancement(value) {
   state.graphicalEnhancement = normalizeGraphicalEnhancement(value);
@@ -137,10 +139,42 @@ function setStatus(message, type = "ready") {
 async function api(path, options) {
   options = {...options, headers: {...options?.headers}};
   if (options.method && options.method !== 'GET' && state.csrf) options.headers['X-SPLINED-CSRF'] = state.csrf;
+  const trace = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(16).slice(2);
+  options.headers['X-SPLINED-Trace'] = trace;
+  if (state.activeActionId) options.headers['X-SPLINED-Action'] = state.activeActionId;
   const response = await fetch(path, options);
   const payload = await response.json();
-  if (!response.ok) throw new Error(payload.error || "Request failed");
+  if (!response.ok) {
+    auditEvent("api-client-error", path, {severity: "error", trace_id: trace, error: payload.error || "Request failed", request_status: "failed"});
+    throw new Error(payload.error || "Request failed");
+  }
   return payload;
+}
+function activeAuditScope() {
+  const track = state.editorMode === "fallback" ? state.fallbackTrack : state.compTrack;
+  return {
+    artist_id: state.artist?.id || "",
+    album_id: state.album?.id || state.compTrack?.albumId || "",
+    track_key: track?.key || "",
+  };
+}
+function auditEvent(action, subject, values = {}) {
+  if (!state.server?.authenticated || !state.csrf) return;
+  const payload = {
+    action, subject, severity: values.severity || "info",
+    action_id: values.action_id || state.activeActionId || "",
+    trace_id: values.trace_id || "", job_id: values.job_id || "",
+    scope: values.scope || activeAuditScope(), stage: values.stage || "browser",
+    request_status: values.request_status || "emitted",
+    state_from: values.state_from || "", state_to: values.state_to || "",
+    elapsed_ms: values.elapsed_ms, error: values.error || "", details: values.details || {},
+  };
+  void fetch("/api/audit/events", {
+    method: "POST",
+    headers: {"Content-Type": "application/json", "X-SPLINED-CSRF": state.csrf,
+      "X-SPLINED-Action": payload.action_id},
+    body: JSON.stringify(payload),
+  }).catch(() => {});
 }
 function node(tag, className = "", text) {
   const element = document.createElement(tag);
@@ -276,12 +310,17 @@ function markSelectedAlbum(album) {
 }
 function candidateRange(candidate) {
   const shortSide = Math.min(Number(candidate.width) || 0, Number(candidate.height) || 0);
-  if (shortSide < 1200) return "BelowMinimum";
-  if (shortSide < 1800) return "LowerRange";
-  if (shortSide === 1800) return "Ideal";
-  if (shortSide <= 2400) return "UpperRange";
-  if (shortSide <= 3600) return "Ladder";
+  const range = state.artworkRange;
+  if (shortSide < range.min) return "BelowMinimum";
+  if (shortSide < range.ideal) return "LowerRange";
+  if (shortSide === range.ideal) return "Ideal";
+  if (shortSide <= range.max) return "UpperRange";
+  if (shortSide <= range.ladder) return "Ladder";
   return "AboveLadder";
+}
+function artworkRangeClass(candidate) {
+  if (!candidate || !(Number(candidate.width) > 0) || !(Number(candidate.height) > 0)) return "metric-unavailable";
+  return "metric-" + candidateRange(candidate).replace(/([a-z])([A-Z])/g, "$1-$2").toLowerCase();
 }
 function candidateMatches(candidate, dimension, key) {
   const kind = candidateKind(candidate);
@@ -396,6 +435,12 @@ function renderLibraryContents() {
   $("fallbackTab").classList.toggle("active", state.libraryMode === "fallback");
   $("libraryListTitle").textContent = state.libraryMode === "fallback" ? "Fallback Albums" : state.libraryMode === "albums" ? "Albums" : "Artists";
   const list = $("artistList"); clear(list);
+  if (state.libraryLoading) {
+    $("artistCount").textContent = "loading";
+    list.append(node("p", "empty-copy", state.libraryMode === "artists" ? "Loading artists…" : "Loading albums…"));
+    renderMediaStatusChips();
+    return;
+  }
   if (state.libraryMode === "artists") {
     $("artistCount").textContent = state.artists.filter(mediaMatches).length + " shown";
     for (const artist of state.artists.filter(mediaMatches)) {
@@ -476,7 +521,11 @@ function albumRow(album, child) {
   const button = node("button", "library-row album-row" + (child ? " album-child" : "")); button.type = "button";
   const orbit = node("span", "status-orbit" + (selectedMedia(album) ? " selected" : ""), selectedMedia(album) ? "●" : "○"); button.append(orbit);
   applyStatusPalette(button, mediaStatusKey(album));
-  button.append(album.cover ? image(album.cover, "library-thumb", "") : node("span", "library-thumb", "♫"));
+  if (album.cover) {
+    const thumb = image(album.cover, "library-thumb", "");
+    thumb.addEventListener("error", () => thumb.replaceWith(node("span", "library-thumb", "♫")), {once: true});
+    button.append(thumb);
+  } else button.append(node("span", "library-thumb", "♫"));
   const copy = node("span", "row-copy"); copy.append(node("strong", "", album.name), node("small", "", child ? album.tracks + " tracks" : album.artist_name)); button.append(copy);
   button.addEventListener("click", () => chooseAlbum(album.id)); return button;
 }
@@ -582,7 +631,8 @@ function renderArtistBiography(artist, metadata) {
     state.biographyArtistId = artistId;
     state.biographyExpanded = false;
   }
-  state.biographyText = !artist ? "" : metadata?.biography || "No Artist biography available for " + artist.name + ".";
+  state.biographyText = !artist ? "" : metadata?.biography
+    || (!metadata || metadata.pending ? "Loading Artist biography…" : "No Artist biography available for " + artist.name + ".");
   $("biographyText").textContent = state.biographyText;
   requestAnimationFrame(updateBiographyToggle);
 }
@@ -591,6 +641,12 @@ function renderHero() {
     : state.editorMode === "album" && state.album ? "album:" + state.album.id
     : state.artist ? "artist:" + state.artist.id : "";
   renderWithScrollMemory(["overviewContent", "albumGrid", "findView"], context, renderHeroContents);
+}
+function renderArtistInfoVisibility(artist = state.artist) {
+  $("artistInfoRows").hidden = !state.artistInfoExpanded;
+  $("artistInfoToggle").disabled = !artist;
+  $("artistInfoToggle").setAttribute("aria-expanded", String(state.artistInfoExpanded));
+  $("artistInfoToggle").setAttribute("aria-label", state.artistInfoExpanded ? "Hide Artist information" : "Show Artist information");
 }
 function renderHeroContents() {
   if (state.editorMode === "fallback") { renderFallbackOverview(); return; }
@@ -605,26 +661,41 @@ function renderHeroContents() {
   const metadata = state.artistMetadata;
   $("artistName").textContent = artist?.name || "Select an artist";
   $("overviewArtist").textContent = artist?.name || "";
+  $("artistInfoArtist").textContent = artist?.name || "Choose an Artist";
   $("artistInfoAlbums").textContent = artist ? String(artist.albums.length) : "—";
   $("artistInfoStatus").textContent = artist?.status || "Choose an Artist";
-  $("artistInfoMbid").textContent = artist?.mbid || "Not indexed";
+  const artistMbid = String(artist?.mbid || "").trim();
+  const artistMbidLink = $("artistInfoMbid");
+  artistMbidLink.textContent = artistMbid || "Not indexed";
+  if (artistMbid) artistMbidLink.href = "https://musicbrainz.org/artist/" + encodeURIComponent(artistMbid);
+  else artistMbidLink.removeAttribute("href");
   $("artistInfoGenres").textContent = artist?.genres?.join(", ") || "Not available";
   $("artistInfoRoles").textContent = artist?.roles?.join(", ") || "Primary Artist";
+  renderArtistInfoVisibility(artist);
   $("refreshArtistInfo").disabled = !artist;
   $("musicbrainzArtistButton").disabled = !artist?.mbid;
   renderArtistBiography(artist, metadata);
-  $("similarSource").textContent = metadata?.similar?.length ? "· Navidrome"
-    : metadata?.source && metadata.source !== "sample" ? "· " + metadata.source : "· sample layout";
+  $("similarSource").textContent = metadata?.similar?.length ? "· " + (metadata.source || "Provider")
+    : metadata ? "· unavailable" : "· loading";
   const similar = $("similarArtists"); clear(similar);
-  const names = !artist ? [] : metadata?.similar?.length ? metadata.similar : state.artists.filter(item => item.id !== artist.id).slice(0, 6).map(item => item.name);
-  for (const name of names) {
+  const recommendations = !artist || !Array.isArray(metadata?.similar) ? [] : metadata.similar;
+  for (const recommendation of recommendations) {
+    const item = typeof recommendation === "string" ? {name: recommendation} : recommendation;
+    const name = String(item.name || "").trim();
+    if (!name) continue;
     const card = node("button", "similar-card"); card.type = "button";
-    card.append(node("span", "similar-avatar", name.slice(0, 1).toUpperCase()), node("span", "similar-name", name), node("span", "similar-status", "●"));
-    const local = state.artists.find(item => item.name.toLocaleLowerCase() === name.toLocaleLowerCase());
+    const avatar = item.image ? image(item.image, "similar-avatar", name + " artist image") : node("span", "similar-avatar", name.slice(0, 1).toUpperCase());
+    card.append(avatar, node("span", "similar-name", name), node("span", "similar-status", "●"));
+    const local = item.local_id ? state.artists.find(artistItem => artistItem.id === item.local_id)
+      : state.artists.find(artistItem => artistItem.name.toLocaleLowerCase() === name.toLocaleLowerCase());
     card.disabled = !local; card.title = local ? "Open " + name : name + " is not in the indexed library";
     if (local) card.addEventListener("click", () => chooseArtist(local.id));
     similar.append(card);
   }
+  if (artist && !metadata)
+    similar.append(node("p", "similar-unavailable loading", "Loading genuine Similar Artists…"));
+  if (artist && metadata && !similar.childElementCount)
+    similar.append(node("p", "similar-unavailable", metadata.similar_reason || metadata.reason || "No genuine Similar Artists were returned by the configured provider."));
   const facts = $("albumOverviewFacts"); clear(facts);
   if (state.album) {
     const indicator = node("span", "status-indicator", "● " + (state.album.status || "unprocessed"));
@@ -749,8 +820,9 @@ function renderFallbackOverview() {
   repair.title = !state.compRepairEnabled ? "COMP repairs are disabled in this test service" : purple ? "Repair readable purple thumbnails in this full Fallback album" : "No purple thumbnails identified";
   repair.addEventListener("click", () => runAction(repairFallback));
   const launch = node("button", "fallback-launch", "LAUNCH COMP"); launch.type = "button";
-  launch.disabled = state.server?.mode !== "write" || !pending || state.fallbackPreviewMode;
-  launch.title = state.server?.mode !== "write" ? "Enable Live Write to process COMP tracks" : "Review every pending track in this fallback album";
+  const selectedLaunch = state.fallbackTrack && state.fallbackTracks.find(item => item.key === state.fallbackTrack.key && ["blue", "purple", "green"].includes(item.status));
+  launch.disabled = state.server?.mode !== "write" || (!selectedLaunch && !pending);
+  launch.title = state.server?.mode !== "write" ? "Enable Live Write to process COMP tracks" : selectedLaunch ? "Review only the explicitly selected COMP track" : "Review every blue track in this fallback album";
   launch.addEventListener("click", () => runAction(launchFallback));
   toolbar.append(preview, heading, repair, launch); report.append(toolbar);
   report.append(node("div", "fallback-report-summary", `${total} tracks: ${green} green, ${purple} purple, ${blue} blue${checking ? `, ${checking} checking` : ""}${checkErrors ? `, ${checkErrors} retry needed` : ""}`));
@@ -821,8 +893,9 @@ function renderArtistCompReport() {
   repair.title = !state.compRepairEnabled ? "COMP repairs are disabled in this test service" : purple ? "Repair readable purple thumbnails across this Artist's COMP albums" : "No purple thumbnails identified";
   repair.addEventListener("click", repairArtistComp);
   const launch = node("button", "fallback-launch", "LAUNCH COMP"); launch.type = "button";
-  launch.disabled = state.server?.mode !== "write" || !blue || state.compPreviewMode || state.compBusy;
-  launch.title = state.server?.mode !== "write" ? "Enable Live Write to process COMP tracks" : "Review this Artist's blue COMP tracks";
+  const selectedLaunch = state.compTrack && tracks.find(track => track.albumId === state.compTrack.albumId && track.key === state.compTrack.key && ["blue", "purple", "green"].includes(track.status));
+  launch.disabled = state.server?.mode !== "write" || (!selectedLaunch && !blue) || state.compBusy;
+  launch.title = state.server?.mode !== "write" ? "Enable Live Write to process COMP tracks" : selectedLaunch ? "Review only the explicitly selected Artist COMP track" : "Review this Artist's blue COMP tracks";
   launch.addEventListener("click", () => runAction(launchArtistComp));
   const close = node("button", "fallback-close", "CLOSE REPORT"); close.type = "button";
   close.addEventListener("click", closeArtistCompReport);
@@ -1216,8 +1289,8 @@ function renderCandidates() {
   $("searchButton").textContent = skipping ? "SKIP ALBUM" : artistCompLaunch ? "LAUNCH COMP" : "LAUNCH";
   $("searchButton").disabled = skipping ? false
     : decision ? true
-    : artistCompLaunch ? state.server?.mode !== "write" || state.compPreviewMode || state.compBusy || !state.compGroups.some(group => group.tracks.some(track => track.status === "blue"))
-    : state.editorMode === "fallback" ? state.server?.mode !== "write" || !state.fallbackTracks.some(item => !item.completed) : !state.artist && !state.album;
+    : artistCompLaunch ? state.server?.mode !== "write" || state.compBusy || !artistCompLaunchGroups().length
+    : state.editorMode === "fallback" ? state.server?.mode !== "write" || !fallbackCompLaunchTargets().length : !state.artist && !state.album;
   const grid = $("candidateGrid"); clear(grid);
   renderQueuedCompTools();
   const query = $("candidateSearch").value.trim().toLowerCase();
@@ -1235,8 +1308,8 @@ function renderCandidates() {
   $("candidateCount").textContent = candidateItems.length + (candidateItems.length === 1 ? " candidate" : " candidates");
   $("compareButton").disabled = state.compare.size < 2;
   $("candidateHint").textContent = decision ? "Select a candidate to preview; save from Selected Artwork"
-    : artistCompLaunch ? "LAUNCH COMP reviews only this Artist's blue compilation tracks"
-    : state.editorMode === "fallback" ? "LAUNCH COMP to review track artwork in queued work"
+    : artistCompLaunch ? state.compTrack ? "LAUNCH COMP reviews only the explicitly selected Artist track" : "LAUNCH COMP reviews this Artist's blue compilation tracks"
+    : state.editorMode === "fallback" ? state.fallbackTrack ? "LAUNCH COMP reviews only the explicitly selected track" : "LAUNCH COMP reviews blue track artwork"
     : state.editorMode === "album" ? "Select a cover candidate to preview" : "Blue: artist · pink: banner · wheel to browse";
   renderCandidateTypeChips();
   if (!visible.length) { grid.append(node("p", "empty-copy", artistCompLaunch ? "Use LAUNCH COMP to review this Artist's matching compilation tracks."
@@ -1310,7 +1383,7 @@ function paneImage(frame, src, label, portrait = false) {
   if (portrait) { const mask = node("span", "portrait-viewport"); mask.append(image(src, "portrait-preview", label)); frame.append(mask); }
   else frame.append(image(src, "", label));
 }
-function renderSelectedArtworkMetadata({source, type, dimensions, fileSize, prepared, preview, existing, candidate, originSource}) {
+function renderSelectedArtworkMetadata({source, type, dimensions, fileSize, prepared, preview, existing, candidate, originSource, metric}) {
   const host = $("artMetadata"); clear(host);
   const cell = (text, className = "", id = "") => {
     const value = node("div", className, text);
@@ -1323,7 +1396,8 @@ function renderSelectedArtworkMetadata({source, type, dimensions, fileSize, prep
       ["Source", source, "selectedSource"], ["Type", type, "selectedType"],
       ["Dimensions", dimensions, "selectedDimensions"], ["File Size", fileSize, "selectedSize"],
     ]) {
-      const wrapper = node("div"); wrapper.append(node("small", "", label), node("span", "", value));
+      const metricClass = ["Dimensions", "File Size"].includes(label) ? artworkRangeClass(metric) : "";
+      const wrapper = node("div"); wrapper.append(node("small", "", label), node("span", metricClass, value));
       wrapper.lastChild.id = id; host.append(wrapper);
     }
     return;
@@ -1441,6 +1515,7 @@ function selectedImage() {
     prepared: preparedComp, preview: state.upscalePreview, existing,
     candidate: preparedComp ? decision?.selected : candidate,
     originSource: state.upscalePreview ? "Enhancement" : decision?.selected?.source || (existing?.image ? "Embedded track" : source),
+    metric: metadata,
   });
   $("selectedQuality").textContent = quality;
   $("selectedQuality").classList.toggle("comp-thumb-ready", !!preparedComp && !state.pendingCompWrite);
@@ -1458,11 +1533,7 @@ function selectedImage() {
     extra.append(node("span", "", "Tracks " + state.album.tracks), node("span", "", "Embedded " + state.album.embedded + "/" + state.album.tracks));
     if (state.album.cover_meta) extra.append(node("span", "", "Existing cover " + state.album.cover_meta.width + " × " + state.album.cover_meta.height + " · " + size(state.album.cover_meta.bytes)));
     ribbon.hidden = !state.album.embedded; ribbon.textContent = "Embedded artwork on " + state.album.embedded + " of " + state.album.tracks + " tracks";
-  } else {
-    if (state.artist?.portrait_meta) extra.append(node("span", "", "Artist " + state.artist.portrait_meta.width + " × " + state.artist.portrait_meta.height + " · " + size(state.artist.portrait_meta.bytes)));
-    if (state.artist?.banner_meta) extra.append(node("span", "", "Banner " + state.artist.banner_meta.width + " × " + state.artist.banner_meta.height + " · " + size(state.artist.banner_meta.bytes)));
-    ribbon.hidden = true;
-  }
+  } else ribbon.hidden = true;
   applyPreviewEffects();
 }
 function renderReview() {
@@ -1639,14 +1710,17 @@ async function chooseArtist(id, select = true) {
     const overview = await api("/api/artist/overview?id=" + encodeURIComponent(id));
     if (request !== state.selectionRequest) return;
     const artist = overview.artist, compAlbums = overview.comp_albums;
-    state.artist = artist; state.artistMetadata = null; state.compAlbums = compAlbums; state.compGroups = [];
+    state.artist = artist; state.artistMetadata = overview.metadata || null; state.compAlbums = compAlbums; state.compGroups = [];
     const listedArtist = state.artists.find(item => item.id === artist.id);
     if (listedArtist && artist.portrait) listedArtist.portrait = artist.portrait;
     state.album = null; state.editorMode = "artist"; state.workspace = "find";
     if (select) markSelectedArtist(artist);
     state.candidates = state.artist.local_candidates || []; resetCandidateFilters();
     state.radioCurrent = true; state.radioArtist = false; state.radioBanner = false;
-    renderAll(); setStatus("Loaded " + state.artist.name + " · " + state.artist.albums.length + " albums"); loadArtistMetadata(artist.id);
+    state.artistInfoExpanded = false;
+    renderAll(); setStatus("Loaded " + state.artist.name + " · " + state.artist.albums.length + " albums");
+    auditEvent("selection-change", "artist", {scope: {artist_id: artist.id}, details: {library_mode: state.libraryMode}});
+    loadArtistMetadata(artist.id);
   } catch (error) { if (request === state.selectionRequest) setStatus(error.message, "error"); }
 }
 async function chooseAlbum(id) {
@@ -1667,7 +1741,7 @@ async function chooseAlbum(id) {
     if (!albumInCurrentArtistContext(id) && state.artist?.id !== album.artist_id) {
       const overview = await api("/api/artist/overview?id=" + encodeURIComponent(album.artist_id));
       if (request !== state.selectionRequest) return;
-      state.artist = overview.artist; state.artistMetadata = null;
+      state.artist = overview.artist; state.artistMetadata = overview.metadata || null;
       state.compAlbums = overview.comp_albums || [];
       loadArtistMetadata(overview.artist.id);
     }
@@ -1679,6 +1753,7 @@ async function chooseAlbum(id) {
     markSelectedAlbum(album);
     state.candidates = fallback ? [] : album.candidates || []; resetCandidateFilters();
     renderAll();
+    auditEvent("selection-change", fallback ? "comp-album" : "album", {scope: {artist_id: state.artist?.id || album.artist_id, album_id: album.id}, details: {library_mode: state.libraryMode}});
     setStatus(fallback ? `COMP ready · ${tracks.length} tracks · ${tracks.filter(item => !item.completed).length} pending · validating recorded thumbnails`
       : "Loaded " + album.artist_name + " · " + album.name + " · " + album.tracks + " tracks");
     if (fallback) probeFallbackStatuses();
@@ -1760,6 +1835,11 @@ $("biographyToggle").addEventListener("click", () => {
   state.biographyExpanded = !state.biographyExpanded;
   updateBiographyToggle();
 });
+$("artistInfoToggle").addEventListener("click", () => {
+  if (!state.artist) return;
+  state.artistInfoExpanded = !state.artistInfoExpanded;
+  renderArtistInfoVisibility();
+});
 window.addEventListener("resize", () => requestAnimationFrame(updateBiographyToggle));
 $("albumSearch").addEventListener("input", event => { if (state.libraryMode === "artists") renderLibrary(); else loadLibrary(event.target.value); });
 $("candidateSearch").addEventListener("input", renderCandidates);
@@ -1800,6 +1880,7 @@ for (const [buttonId, mode] of [["artistsTab", "artists"], ["albumsTab", "albums
     state.libraryLoading = true;
     state.libraryMode = mode; state.artist = null; state.artistMetadata = null; state.album = null; state.compAlbums = []; state.mediaSelected.clear();
     state.editorMode = mode === "fallback" ? "fallback" : "artist"; state.workspace = "find";
+    auditEvent("navigation", "library-view", {details: {from: document.querySelector(".library-tabs .active")?.id || "", to: mode}});
     clearFocusCandidates(); resetFocusAdjustments(); renderAll();
     loadLibrary(mode === "artists" ? $("artistSearch").value : $("albumSearch").value);
   });
@@ -1933,6 +2014,21 @@ $("themeButton").addEventListener("click", () => {
   $("dialogBody").append(options);
 });
 $("settingsButton").addEventListener("click", () => runAction(openSettings));
+$("aboutButton").addEventListener("click", () => runAction(async () => {
+  const storage = await api("/api/storage");
+  showDialog("About S.P.L.I.N.E.D.", []);
+  const body = $("dialogBody"), card = node("section", "about-card");
+  card.append(node("h3", "", "S.P.L.I.N.E.D."), node("p", "about-tagline", "Searchable · Focused · Linked · Identified · Normalized · Enriched · Defined"));
+  const facts = node("dl", "about-facts");
+  for (const [label, value] of [["Version", state.server?.version || storage.version || "Unknown"], ["Revision", (state.server?.revision || storage.revision || "Unknown").slice(0, 12)], ["Runtime", "WebGUI / PostgreSQL"], ["Mode", String(state.server?.mode || storage.mode || "read").toUpperCase()], ["Catalog", storage.database || "PostgreSQL"]]) {
+    facts.append(node("dt", "", label), node("dd", "", value));
+  }
+  const links = node("div", "about-links");
+  for (const [label, href] of [["Source Code on GitHub ↗", "https://github.com/scottia/S-P-L-I-N-E-D"], ["Release Notes ↗", "https://github.com/scottia/S-P-L-I-N-E-D/releases"]]) {
+    const link = node("a", "guide-link", label); link.href = href; link.target = "_blank"; link.rel = "noopener"; links.append(link);
+  }
+  card.append(facts, links); body.append(card);
+}));
 $("helpButton").addEventListener("click", () => {
   showDialog("SPLINED WebGUI", ["Use Settings to configure your library, PostgreSQL catalog, artwork policy, and provider credentials. Refresh the library index after adding music.", "LAUNCH searches the selected albums, or the current artist when no albums are selected. Review queued decisions in the browser. Artist Art opens portrait and banner search. WRITE saves prepared artwork; EMBED Batch saves the cover and stages track embedding without changing your current view.", "Live Write enables music and tag changes. Read mode supports searching and previewing. The queue and completion ledger persist in PostgreSQL."]);
   const link=node("a","guide-link","Open WebGUI guide");link.href="/guide";link.target="_blank";link.rel="noopener";$("dialogBody").append(link);

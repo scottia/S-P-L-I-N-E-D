@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import sqlite3
 import socket
 import tempfile
 import threading
@@ -40,6 +41,7 @@ from webgui.database import Database
 from webgui.runtime import Runtime
 from webgui.services import Services
 from webgui.jobs import JobAdapter, JobQueue
+from webgui.reconciliation import SQLiteReconciler
 from webgui.server import create_app
 from webgui.catalog import embedded_track_artwork_bytes
 from webgui.credentials import Credentials
@@ -1074,7 +1076,12 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             )
             self.assertEqual(
                 client.post(
-                    "/api/bypass", json={"album_id": self.row["album_key"]}
+                    "/api/bypass",
+                    json={"album_id": self.row["album_key"]},
+                    headers={
+                        "X-SPLINED-Action": "action-bypass",
+                        "X-SPLINED-Trace": "trace-bypass",
+                    },
                 ).status_code,
                 200,
             )
@@ -1088,6 +1095,23 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertEqual(diagnostics.status_code, 200)
             self.assertTrue(
                 any(event["action"] == "bypass" for event in diagnostics.json())
+            )
+            bypass_http = [
+                event
+                for event in diagnostics.json()
+                if event["subject"] == "POST /api/bypass"
+                and event["trace_id"] == "trace-bypass"
+            ]
+            self.assertEqual(
+                [event["action"] for event in bypass_http],
+                ["api-request", "api-response"],
+            )
+            self.assertEqual(
+                [event["request_status"] for event in bypass_http],
+                ["started", "completed"],
+            )
+            self.assertTrue(
+                all(event["action_id"] == "action-bypass" for event in bypass_http)
             )
             storage = client.get("/api/storage")
             self.assertEqual(storage.status_code, 200)
@@ -1142,6 +1166,178 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             )
             self.assertEqual(client.post("/api/logout").status_code, 200)
             self.assertEqual(client.get("/api/artists").status_code, 401)
+        self.runtime = Runtime(self.config, self.db)
+
+    def test_audit_recovers_sanitized_local_fallback_in_order(self):
+        with patch.object(
+            self.runtime.database,
+            "connect",
+            side_effect=OSError("postgres unavailable password=database-secret"),
+        ):
+            fallback_sequence = self.services.audit(
+                "deliberate-test-failure",
+                "audit recovery",
+                {"password": "payload-secret", "album_id": "album-1"},
+                severity="error",
+                action_id="action-recovery",
+                trace_id="trace-recovery",
+                request_status="failed",
+            )
+
+        self.assertLess(fallback_sequence, 0)
+        self.assertTrue(self.services._audit_fallback_path.is_file())
+        current_sequence = self.services.audit(
+            "recovery-check",
+            "audit recovery",
+            action_id="action-recovery",
+            trace_id="trace-recovery",
+            request_status="completed",
+        )
+        self.assertGreater(current_sequence, 0)
+        self.assertFalse(self.services._audit_fallback_path.exists())
+
+        with closing(self.db.connect()) as db:
+            rows = db.execute(
+                "SELECT id,action,details,recovered_from_fallback,session_id,"
+                "application_version,application_revision FROM web_audit "
+                "WHERE action_id=? ORDER BY id",
+                ("action-recovery",),
+            ).fetchall()
+        self.assertEqual(
+            [row["action"] for row in rows],
+            ["deliberate-test-failure", "recovery-check"],
+        )
+        self.assertTrue(rows[0]["recovered_from_fallback"])
+        self.assertFalse(rows[1]["recovered_from_fallback"])
+        self.assertLess(rows[0]["id"], rows[1]["id"])
+        self.assertEqual(rows[0]["details"]["password"], "[REDACTED]")
+        self.assertNotIn("payload-secret", repr(rows))
+        self.assertTrue(all(row["session_id"] for row in rows))
+        self.assertTrue(all(row["application_version"] for row in rows))
+        self.assertTrue(all(row["application_revision"] for row in rows))
+
+    def test_failed_browser_action_exports_complete_correlated_audit(self):
+        """A downloaded audit can reconstruct one deliberately failed action."""
+        self.runtime.close()  # API owns its runtime for this test.
+        app = create_app(self.config, self.url, token="test-access", start_worker=False)
+        with TestClient(app) as client:
+            status = client.get("/api/status").json()
+            client.headers["X-SPLINED-CSRF"] = status["csrf"]
+            setup = client.post(
+                "/api/admin/setup",
+                json={
+                    "username": "administrator",
+                    "password": "StrongPassword123",
+                    "confirmation": "StrongPassword123",
+                    "token": "test-access",
+                },
+            )
+            self.assertEqual(setup.status_code, 200, setup.text)
+
+            action_id = "action-deliberate-audit-failure"
+            trace_id = "trace-deliberate-audit-failure"
+            audit_headers = {
+                "X-SPLINED-Action": action_id,
+                "X-SPLINED-Trace": trace_id,
+            }
+            button = client.post(
+                "/api/audit/events",
+                headers=audit_headers,
+                json={
+                    "action": "button-click",
+                    "subject": "bypassButton",
+                    "action_id": action_id,
+                    "trace_id": trace_id,
+                    "request_status": "requested",
+                    "details": {
+                        "label": "Bypass",
+                        "password": "synthetic-audit-secret",
+                    },
+                },
+            )
+            self.assertEqual(button.status_code, 200, button.text)
+
+            failed = client.post(
+                "/api/bypass",
+                headers=audit_headers,
+                json={"album_id": "missing-deliberate-audit-album"},
+            )
+            self.assertEqual(failed.status_code, 404, failed.text)
+            failure_message = failed.json()["error"]
+            for action, subject in (
+                ("api-client-error", "/api/bypass"),
+                ("browser-action-failed", "bypassButton"),
+            ):
+                browser_failure = client.post(
+                    "/api/audit/events",
+                    headers=audit_headers,
+                    json={
+                        "action": action,
+                        "subject": subject,
+                        "severity": "error",
+                        "action_id": action_id,
+                        "trace_id": trace_id,
+                        "request_status": "failed",
+                        "error": failure_message,
+                    },
+                )
+                self.assertEqual(browser_failure.status_code, 200, browser_failure.text)
+
+            exported = client.get(
+                "/api/audit/export", params={"correlation": action_id}
+            )
+            self.assertEqual(exported.status_code, 200, exported.text)
+            self.assertEqual(
+                exported.headers["content-disposition"],
+                'attachment; filename="audit.json"',
+            )
+            document = exported.json()
+            events = document["events"]
+            self.assertEqual(
+                [event["action"] for event in events],
+                [
+                    "button-click",
+                    "api-request",
+                    "api-error",
+                    "api-response",
+                    "api-client-error",
+                    "browser-action-failed",
+                ],
+            )
+            self.assertEqual(
+                [event["sequence"] for event in events],
+                sorted(event["sequence"] for event in events),
+            )
+            self.assertTrue(
+                all(event["action_id"] == action_id for event in events)
+            )
+            self.assertTrue(
+                all(event["trace_id"] == trace_id for event in events)
+            )
+            self.assertTrue(
+                all(event["session_id"] for event in events)
+            )
+            self.assertTrue(
+                all(event["application_version"] == core.VERSION for event in events)
+            )
+            self.assertTrue(
+                all(event["application_revision"] for event in events)
+            )
+            self.assertEqual(
+                events[0]["details"]["password"], "[REDACTED]"
+            )
+            self.assertNotIn("synthetic-audit-secret", exported.text)
+            self.assertFalse(document["export"]["selected_records_truncated"])
+            self.assertTrue(document["export"]["complete_for_retained_window"])
+
+            artifact = os.environ.get("SPLINED_TEST_AUDIT_EXPORT", "").strip()
+            if artifact:
+                target = Path(artifact).resolve()
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(
+                    json.dumps(document, indent=2, ensure_ascii=False) + "\n",
+                    encoding="utf-8",
+                )
         self.runtime = Runtime(self.config, self.db)
 
     def test_credentials_mask_secrets_and_retain_blank_values(self):
@@ -1323,6 +1519,31 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         )
         self.assertEqual(self.cover.read_bytes(), original_cover)
         self.assertNotIn("musicbrainz_albumid", FLAC(target))
+        # The terminal job row is committed immediately before its structured
+        # Audit transition is written on a separate connection.  Wait for the
+        # correlated diagnostic event instead of racing that deliberate
+        # boundary on fast CI runners.
+        deadline = time.monotonic() + 5.0
+        transitions = []
+        while time.monotonic() < deadline:
+            with closing(self.db.connect()) as db:
+                transitions = db.execute(
+                    "SELECT id,state_from,state_to,request_status FROM web_audit "
+                    "WHERE job_id=? AND action='job-transition' ORDER BY id",
+                    (job["id"],),
+                ).fetchall()
+            if transitions and transitions[-1]["state_to"] == "done":
+                break
+            time.sleep(0.05)
+        states = [event["state_to"] for event in transitions]
+        self.assertEqual(states[:2], ["queued", "running"])
+        self.assertGreaterEqual(states.count("waiting"), 2)
+        self.assertGreaterEqual(states.count("running"), 3)
+        self.assertEqual(states[-1], "done")
+        self.assertEqual(
+            [event["id"] for event in transitions],
+            sorted(event["id"] for event in transitions),
+        )
 
     def test_title_suggested_comp_write_without_apply_ids_stays_blue(self):
         row, track, target = self.make_comp_track(
@@ -1786,6 +2007,159 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 db.execute("SELECT count(*) FROM albums").fetchone()[0], 1
             )
 
+    def test_reconciliation_applies_newer_album_completion_and_is_idempotent(self):
+        snapshot = self.root / "cache" / "processed.sqlite"
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(snapshot)) as source, source:
+            source.execute("PRAGMA user_version=2")
+            source.execute(
+                "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,"
+                "primary_path TEXT)"
+            )
+            source.execute(
+                "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,"
+                "album_name TEXT,path TEXT,processed_at TEXT,selected_source TEXT,updated_at TEXT,"
+                "compilation INTEGER,status TEXT,track_count INTEGER,musicbrainz_albumid TEXT)"
+            )
+            source.execute(
+                "INSERT INTO artists VALUES (?,?,?)",
+                (
+                    self.row["artist_key"],
+                    "Test Artist",
+                    str(self.root / "music" / "Test Artist"),
+                ),
+            )
+            source.execute(
+                "INSERT INTO albums VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    self.row["album_key"],
+                    self.row["artist_key"],
+                    self.row["album_name"],
+                    self.row["path"],
+                    "2099-01-01T00:00:00+00:00",
+                    "embed-queue",
+                    "2099-01-01T00:00:00+00:00",
+                    1,
+                    "processed",
+                    int(self.row["track_count"]),
+                    self.row["musicbrainz_albumid"],
+                ),
+            )
+            source.execute(
+                "INSERT INTO albums VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    "source-only-hidden-comp",
+                    self.row["artist_key"],
+                    "Hidden Windows COMP",
+                    str(self.root / "music" / "Various Artists" / "Hidden Windows COMP"),
+                    "2099-01-01T00:00:00+00:00",
+                    "embed-queue",
+                    "2099-01-01T00:00:00+00:00",
+                    1,
+                    "processed",
+                    1,
+                    "",
+                ),
+            )
+
+        reconciler = SQLiteReconciler(
+            self.db,
+            snapshot.parent,
+            self.root / "music",
+            start_scheduler=False,
+        )
+        try:
+            compared = reconciler.compare(
+                snapshot,
+                str(self.root / "music"),
+                str(self.root / "music"),
+            )
+            self.assertGreaterEqual(compared["safe"], 1)
+            self.assertGreaterEqual(compared["conflicts"], 1)
+            applied = reconciler.apply(compared["run_id"])
+            self.assertEqual(applied["failures"], 0)
+            self.assertEqual(applied["attempted"], applied["applied"])
+            with closing(self.db.connect()) as db:
+                album = db.execute(
+                    "SELECT status,selected_source,processed_at,embedded_tracks,track_count "
+                    "FROM albums WHERE album_key=?",
+                    (self.row["album_key"],),
+                ).fetchone()
+                album_count = db.execute("SELECT count(*) FROM albums").fetchone()[0]
+            self.assertEqual(album["status"], "processed")
+            self.assertEqual(album["selected_source"], "embed-queue")
+            self.assertTrue(album["processed_at"])
+            self.assertEqual(album["embedded_tracks"], album["track_count"])
+            self.assertEqual(album_count, 1)
+
+            repeated = reconciler.compare(
+                snapshot,
+                str(self.root / "music"),
+                str(self.root / "music"),
+            )
+            self.assertEqual(repeated["safe"], 0)
+            self.assertEqual(repeated["conflicts"], 1)
+            repeated_apply = reconciler.apply(repeated["run_id"])
+            self.assertEqual(repeated_apply["attempted"], 0)
+            self.assertEqual(repeated_apply["failures"], 0)
+
+            settings = reconciler.save_settings({
+                "enabled": False,
+                "auto_apply_safe": False,
+                "startup_mode": "compare",
+                "interval_minutes": 1440,
+                "source_path": str(snapshot),
+                "source_root": str(self.root / "music"),
+                "target_root": str(self.root / "music"),
+            })
+            self.assertEqual(settings["startup_mode"], "compare")
+
+            with closing(self.db.connect()) as db, db:
+                db.raw.execute(
+                    "INSERT INTO web_jobs(id,kind,state,payload) VALUES(%s,%s,%s,%s)",
+                    ("busy-album", "embed-album", "running", Jsonb({})),
+                )
+            try:
+                with self.assertRaisesRegex(RuntimeError, "deferred while Album processing"):
+                    reconciler.compare(
+                        snapshot,
+                        str(self.root / "music"),
+                        str(self.root / "music"),
+                    )
+                with self.assertRaisesRegex(RuntimeError, "deferred while Album processing"):
+                    reconciler.apply(repeated["run_id"])
+            finally:
+                with closing(self.db.connect()) as db, db:
+                    db.raw.execute("DELETE FROM web_jobs WHERE id=%s", ("busy-album",))
+
+            # The saved startup radio is operational, not merely persisted:
+            # it runs one comparison after restart and leaves apply disabled
+            # for Compare-only mode.
+            reconciler.close()
+            startup_reconciler = SQLiteReconciler(
+                self.db,
+                snapshot.parent,
+                self.root / "music",
+                start_scheduler=True,
+            )
+            try:
+                deadline = time.monotonic() + 8
+                startup_run = None
+                while time.monotonic() < deadline:
+                    candidate = startup_reconciler.history(limit=1)["last_run"]
+                    if candidate and candidate["run_id"] != repeated["run_id"]:
+                        startup_run = candidate
+                        break
+                    time.sleep(0.1)
+                self.assertIsNotNone(startup_run)
+                self.assertEqual(startup_run["trigger"], "startup")
+                self.assertEqual(startup_run["status"], "compared")
+                self.assertEqual(startup_run["applied"], 0)
+            finally:
+                startup_reconciler.close()
+        finally:
+            reconciler.close()
+
     def test_rendered_browser_comp_workflows_and_persistent_album_queue(self):
         """Drive local FastAPI in a rendered browser; external providers are simulated."""
         try:
@@ -2121,6 +2495,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
 
                     # A regular Album stages through the rendered controls and
                     # its card survives a real browser reload.
+                    expect(page.locator("#mediaFilter")).to_be_hidden()
+                    page.locator("#mediaFilterToggle").click()
+                    expect(page.locator("#mediaFilter")).to_be_visible()
                     page.locator("#artistSearch").fill("Test Artist")
                     page.locator("#artistList button", has_text="Test Artist").click()
                     page.locator("button.album-card", has_text="Test Album").click()
@@ -2137,10 +2514,17 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     self.assertFalse(server_thread.is_alive())
                     app, server, server_thread = launch_test_server()
                     page.reload(wait_until="networkidle")
-                    expect(page.locator("#loginForm")).to_be_visible()
-                    page.locator("#loginUsername").fill("browser-admin")
-                    page.locator("#loginPassword").fill("RenderedBrowser123")
-                    page.locator("#loginForm button[type=submit]").click()
+                    # The authenticated session is intentionally durable. It
+                    # can restore just after the login form first paints, so
+                    # wait for bootstrap to settle and sign in only when the
+                    # prior session was not restored.
+                    page.wait_for_timeout(250)
+                    body_class = page.locator("body").get_attribute("class") or ""
+                    if "authenticated" not in body_class.split():
+                        expect(page.locator("#loginForm")).to_be_visible()
+                        page.locator("#loginUsername").fill("browser-admin")
+                        page.locator("#loginPassword").fill("RenderedBrowser123")
+                        page.locator("#loginForm button[type=submit]").click()
                     expect(page.locator("body")).to_have_class("authenticated")
                     # Authentication becomes visible before the asynchronous
                     # library/bootstrap render completes.  Wait for that load
@@ -2157,13 +2541,131 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     # one 10,000 Maniacs track and presents simulated MB 100%.
                     page.locator("#findTab").click()
                     page.locator("#artistsTab").click()
+                    expect(page.locator("#mediaFilter")).to_be_hidden()
+                    page.locator("#mediaFilterToggle").click()
+                    expect(page.locator("#mediaFilter")).to_be_visible()
                     page.locator("#artistSearch").fill("10,000 Maniacs")
                     page.locator(
                         "#artistList button", has_text="10,000 Maniacs"
                     ).click()
-                    expect(page.locator("#statusText")).to_contain_text(
-                        "Loaded 10,000 Maniacs"
+                    expect(page.locator("#artistName")).to_have_text(
+                        "10,000 Maniacs"
                     )
+                    # Artist information is a tiny, theme-driven pop-out over
+                    # the five-line biography. It must preserve the circular
+                    # portrait and never move the Album area or page layout.
+                    expect(page.locator("#artistInfoRows")).to_be_hidden()
+                    expect(page.locator("#artistBiography")).to_be_visible()
+                    portrait_box = page.locator("#heroPortrait").bounding_box()
+                    self.assertAlmostEqual(
+                        portrait_box["width"], portrait_box["height"], delta=0.5
+                    )
+                    portrait_rule_is_round = page.evaluate(
+                        """() => [...document.styleSheets].some(sheet =>
+                            [...sheet.cssRules].some(rule =>
+                                rule.selectorText === '.hero-portrait' &&
+                                rule.style.getPropertyValue('border-radius') === '50%'
+                            )
+                        )"""
+                    )
+                    self.assertTrue(portrait_rule_is_round)
+                    toggle_box = page.locator("#artistInfoToggle").bounding_box()
+                    artist_radio_box = page.locator("#artistArtEntry").bounding_box()
+                    self.assertEqual(round(toggle_box["width"]), 16)
+                    self.assertEqual(round(toggle_box["height"]), 16)
+                    self.assertGreater(toggle_box["x"], artist_radio_box["x"])
+                    self.assertLess(toggle_box["y"], artist_radio_box["y"])
+                    hero_height = page.locator("#hero").bounding_box()["height"]
+                    album_grid_y = page.locator("#albumGrid").bounding_box()["y"]
+                    page.locator("#artistInfoToggle").click()
+                    expect(page.locator("#artistInfoRows")).to_be_visible()
+                    self.assertEqual(
+                        page.locator("#artistInfoRows > span > b").all_inner_texts(),
+                        [
+                            "ARTIST",
+                            "STATUS",
+                            "ALBUMS",
+                            "ROLES",
+                            "MUSICBRAINZ ID",
+                            "GENRES",
+                        ],
+                    )
+                    expect(page.locator("#artistInfoArtist")).to_have_text(
+                        "10,000 Maniacs"
+                    )
+                    self.assertEqual(
+                        page.locator("#artistInfoMbid").get_attribute("href"),
+                        "https://musicbrainz.org/artist/6c8b9855-ba8b-48f9-ac1d-42167f7f7b18",
+                    )
+                    self.assertEqual(
+                        page.locator("#artistInfoMbid").get_attribute("target"),
+                        "_blank",
+                    )
+                    self.assertEqual(
+                        page.locator("#artistInfoRows").evaluate(
+                            "element => getComputedStyle(element).position"
+                        ),
+                        "absolute",
+                    )
+                    self.assertAlmostEqual(
+                        page.locator("#hero").bounding_box()["height"],
+                        hero_height,
+                        delta=0.5,
+                    )
+                    self.assertAlmostEqual(
+                        page.locator("#albumGrid").bounding_box()["y"],
+                        album_grid_y,
+                        delta=0.5,
+                    )
+                    info_cells = page.locator("#artistInfoRows > span")
+                    self.assertEqual(info_cells.count(), 6)
+                    self.assertAlmostEqual(
+                        info_cells.nth(4).bounding_box()["height"],
+                        info_cells.nth(5).bounding_box()["height"],
+                        delta=0.5,
+                    )
+                    initial_theme = page.evaluate(
+                        "document.documentElement.getAttribute('data-theme')"
+                    )
+                    theme_rows = {}
+                    for theme in ("dark", "chalk", "light"):
+                        page.evaluate(
+                            "theme => document.documentElement.dataset.theme = theme",
+                            theme,
+                        )
+                        theme_rows[theme] = info_cells.first.evaluate(
+                            """element => {
+                                const color = getComputedStyle(element).backgroundColor;
+                                const canvas = document.createElement('canvas');
+                                canvas.width = 1;
+                                canvas.height = 1;
+                                const context = canvas.getContext('2d');
+                                context.clearRect(0, 0, 1, 1);
+                                context.fillStyle = color;
+                                context.fillRect(0, 0, 1, 1);
+                                return {
+                                    color,
+                                    alpha: context.getImageData(0, 0, 1, 1).data[3],
+                                };
+                            }"""
+                        )
+                    self.assertEqual(
+                        len({row["color"] for row in theme_rows.values()}), 3
+                    )
+                    for theme, row in theme_rows.items():
+                        self.assertEqual(
+                            row["alpha"],
+                            204,
+                            f"{theme} metadata row must be exactly 20% transparent",
+                        )
+                    page.evaluate(
+                        """theme => theme === null
+                            ? document.documentElement.removeAttribute('data-theme')
+                            : document.documentElement.setAttribute('data-theme', theme)""",
+                        initial_theme,
+                    )
+                    page.locator("#artistInfoToggle").click()
+                    expect(page.locator("#artistInfoRows")).to_be_hidden()
                     page.locator("#compReportButton").click()
                     expect(page.locator("#fallbackReport")).to_contain_text(
                         "Because the Night"
@@ -2297,10 +2799,30 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     page.locator(
                         '.musicbrainz-authority-fields input[placeholder="Artist MBID"]'
                     ).fill("6c8b9855-ba8b-48f9-ac1d-42167f7f7b18")
-                    page.locator(
-                        ".musicbrainz-authority-fields button",
-                        has_text="Apply IDs",
-                    ).click()
+                    authority_nonce = page.evaluate(
+                        "() => state.queuedDecision?.nonce || ''"
+                    )
+                    with page.expect_response(
+                        lambda response: response.url.endswith("/api/jobs/action")
+                        and response.request.method == "POST"
+                        and "manual-authority-query"
+                        in (response.request.post_data or ""),
+                        timeout=15000,
+                    ) as authority_response:
+                        page.locator(
+                            ".musicbrainz-authority-fields button",
+                            has_text="Apply IDs",
+                        ).click()
+                    self.assertTrue(
+                        authority_response.value.ok,
+                        authority_response.value.text(),
+                    )
+                    page.wait_for_function(
+                        "previous => state.queuedDecision?.nonce"
+                        " && state.queuedDecision.nonce !== previous",
+                        arg=authority_nonce,
+                        timeout=15000,
+                    )
                     expect(page.locator("#musicbrainzReview")).to_contain_text(
                         "Artist ID · valid · Recording ID · valid",
                         timeout=15000,
@@ -2324,22 +2846,59 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     # Job polling can replace this enabled button with an
                     # equivalent node between Playwright's stability checks.
                     # Query and dispatch atomically on the currently enabled node.
-                    page.evaluate("""() => {
-                        const button = document.querySelector('.musicbrainz-review-actions button.primary');
-                        if (!button || button.disabled) throw new Error('selected release was not retained');
-                        button.click();
-                    }""")
-                    expect(page.locator(".candidate-image-button").first).to_be_visible(
-                        timeout=15000
+                    with page.expect_response(
+                        lambda response: response.url.endswith("/api/jobs/action")
+                        and response.request.method == "POST"
+                        and '"value":"1"'
+                        in (response.request.post_data or "").replace(" ", ""),
+                        timeout=15000,
+                    ) as action_response:
+                        page.evaluate("""() => {
+                            const button = document.querySelector('.musicbrainz-review-actions button.primary');
+                            if (!button || button.disabled) throw new Error('selected release was not retained');
+                            button.click();
+                        }""")
+                    self.assertTrue(
+                        action_response.value.ok,
+                        action_response.value.text(),
                     )
+                    expect(page.locator("#statusText")).to_contain_text(
+                        "loading artwork candidates", timeout=15000
+                    )
+                    try:
+                        expect(page.locator(".candidate-image-button").first).to_be_visible(
+                            timeout=15000
+                        )
+                    except AssertionError as error:
+                        job_diagnostics = page.evaluate("""async () => ({
+                            reviewJobId: state.reviewJobId,
+                            reviewJobState: state.reviewJobState,
+                            queuedDecision: state.queuedDecision ? {
+                              jobId: state.queuedDecision.jobId,
+                              nonce: state.queuedDecision.nonce,
+                              kind: state.queuedDecision.kind,
+                              selectedResult: state.queuedDecision.selectedResult,
+                            } : null,
+                            jobs: (await fetch('/api/jobs').then(response => response.json())).map(job => ({
+                              id: job.id, kind: job.kind, state: job.state, error: job.error,
+                              promptKind: job.progress?.prompt?.context?.kind,
+                              promptNonce: job.progress?.prompt?.nonce,
+                              message: job.progress?.message,
+                            })),
+                        })""")
+                        self.fail(
+                            f"candidate handoff did not render: {job_diagnostics!r}; {error}"
+                        )
                     cards = page.locator("#candidateGrid .candidate-card.queued")
                     self.assertGreaterEqual(cards.count(), 5)
                     first_card = cards.first
                     expect(first_card.locator(".candidate-source-label")).not_to_be_empty()
                     expect(first_card.locator(".candidate-resolution")).to_be_visible()
                     expect(first_card.locator(".candidate-quality")).to_be_visible()
-                    first_image_url = first_card.locator("img").evaluate(
-                        "image => image.currentSrc"
+                    first_image = first_card.locator("img")
+                    expect(first_image).to_have_attribute("src", re.compile(r"\S+"))
+                    first_image_url = first_image.evaluate(
+                        "image => new URL(image.getAttribute('src'), document.baseURI).href"
                     )
                     first_image_response = page.request.get(first_image_url)
                     self.assertTrue(first_image_response.ok)
@@ -2449,6 +3008,12 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     )
                     full_launch_call_start = len(http_calls)
                     page.locator("#searchButton").click()
+                    expect(page.locator("#musicbrainzReview")).to_be_visible(
+                        timeout=15000
+                    )
+                    expect(page.locator("#musicbrainzReview")).to_contain_text(
+                        "Other Performer — Other Song", timeout=15000
+                    )
                     expect(page.locator("#musicbrainzReview")).to_contain_text(
                         "100% match · Release Family"
                     )
@@ -2462,6 +3027,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     )
                     page.locator(".musicbrainz-release-row").click()
                     page.locator(".musicbrainz-review-actions button.primary").click()
+                    expect(page.locator(".candidate-image-button").first).to_be_visible(
+                        timeout=15000
+                    )
                     page.locator(".candidate-image-button").first.click()
                     expect(page.locator("#writeButton")).to_have_text("EMBED Comp")
                     expect(page.locator("#embedBatchButton")).to_have_text("EMBED Batch")
@@ -2479,12 +3047,13 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     # Reopen the Artist report and prove full-album work did
                     # not leak the other performer into the Artist scope.
                     page.locator("#artistsTab").click()
+                    expect(page.locator("#mediaFilter")).to_be_visible()
                     page.locator("#artistSearch").fill("10,000 Maniacs")
                     page.locator(
                         "#artistList button", has_text="10,000 Maniacs"
                     ).click()
-                    expect(page.locator("#statusText")).to_contain_text(
-                        "Loaded 10,000 Maniacs"
+                    expect(page.locator("#artistName")).to_have_text(
+                        "10,000 Maniacs"
                     )
                     page.locator("#compReportButton").click()
                     expect(page.locator("#fallbackReport")).to_contain_text(

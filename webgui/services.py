@@ -38,6 +38,13 @@ from webgui.catalog import (
 )
 from webgui.runtime import Runtime
 from webgui import imaging
+from webgui.audit import (
+    application_revision,
+    normalize_severity,
+    sanitize,
+    sanitize_text,
+    utc_now,
+)
 
 
 LOGGER = logging.getLogger("uvicorn.error")
@@ -114,6 +121,25 @@ class Services:
             core.resolve_sources(runtime.cfg, None, None, [])
         )
         self.lock = threading.RLock()
+        self._audit_events_written = 0
+        self.audit_session_id = uuid4().hex
+        self.application_revision = application_revision()
+        self._audit_lock = threading.RLock()
+        self._audit_fallback_counter = 0
+        log_path = Path(runtime.log_path) if runtime.log_path else runtime.cache / "runtime.log"
+        self._audit_fallback_path = log_path.with_name("web-audit-fallback.jsonl")
+
+    def start_audit_session(self):
+        return self.audit(
+            "diagnostic-session-start",
+            "WebGUI",
+            {
+                "application_version": core.VERSION,
+                "application_revision": self.application_revision,
+            },
+            stage="startup",
+            request_status="started",
+        )
 
     def reload_settings(self):
         app = self.catalog
@@ -133,34 +159,301 @@ class Services:
         app.appearance_cache.clear()
         app.portrait_cache.clear()
 
-    def audit(self, action, subject, details=None):
-        core.runtime_log(
-            "info",
-            f"webgui.audit action={action} subject={core._redact_log_message(str(subject))}",
-        )
-        with closing(self.runtime.database.connect()) as db, db:
-            db.raw.execute(
-                "INSERT INTO web_audit(action,subject,details) VALUES(%s,%s,%s)",
-                (action, str(subject), Jsonb(details or {})),
-            )
+    def _audit_fallback_files(self):
+        base = self._audit_fallback_path
+        return [base.with_name(base.name + f".{number}") for number in range(4, 0, -1)] + [base]
 
-    def diagnostics(self, limit=250):
-        """Return bounded, credential-free operational events for Settings."""
-        limit = max(1, min(int(limit), 500))
+    def _append_audit_fallback(self, event, insertion_error):
+        self._audit_fallback_counter += 1
+        fallback = {
+            **event,
+            "fallback_id": (
+                f"{self.audit_session_id}:{self._audit_fallback_counter}:"
+                f"{uuid4().hex}"
+            ),
+            "insertion_error": sanitize_text(insertion_error, limit=1000),
+        }
+        path = self._audit_fallback_path
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.is_file() and path.stat().st_size >= 1024 * 1024:
+                oldest = path.with_name(path.name + ".4")
+                oldest.unlink(missing_ok=True)
+                for number in range(3, 0, -1):
+                    source = path.with_name(path.name + f".{number}")
+                    if source.is_file():
+                        os.replace(source, path.with_name(path.name + f".{number + 1}"))
+                os.replace(path, path.with_name(path.name + ".1"))
+            with path.open("a", encoding="utf-8", newline="\n") as handle:
+                handle.write(json.dumps(fallback, ensure_ascii=False, sort_keys=True) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+        except OSError as fallback_error:
+            core.runtime_log(
+                "critical",
+                "webgui.audit fallback unavailable "
+                + core._redact_log_message(sanitize_text(fallback_error)),
+            )
+        return -self._audit_fallback_counter
+
+    def _load_audit_fallback(self):
+        events = []
+        files = []
+        for path in self._audit_fallback_files():
+            if not path.is_file():
+                continue
+            files.append(path)
+            try:
+                with path.open("r", encoding="utf-8") as handle:
+                    for line in handle:
+                        try:
+                            value = json.loads(line)
+                        except (TypeError, ValueError):
+                            continue
+                        if isinstance(value, dict) and value.get("fallback_id"):
+                            events.append(sanitize(value))
+            except OSError:
+                continue
+        return events, files
+
+    @staticmethod
+    def _insert_audit_event(raw, event, *, recovered=False):
+        raw.execute(
+            "INSERT INTO web_audit_sessions"
+            "(session_id,application_version,application_revision,started_at) "
+            "VALUES(%s,%s,%s,%s) ON CONFLICT(session_id) DO NOTHING",
+            (
+                event["session_id"],
+                event["application_version"],
+                event["application_revision"],
+                event["created_at"],
+            ),
+        )
+        return raw.execute(
+            "INSERT INTO web_audit"
+            "(action,subject,details,severity,action_id,trace_id,job_id,scope,stage,"
+            "request_status,elapsed_ms,state_from,state_to,error,created_at,session_id,"
+            "application_version,application_revision,recovered_from_fallback,fallback_id) "
+            "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+            "ON CONFLICT DO NOTHING RETURNING id",
+            (
+                event["action"],
+                event["subject"],
+                Jsonb(event["details"]),
+                event["severity"],
+                event["action_id"],
+                event["trace_id"],
+                event["job_id"],
+                Jsonb(event["scope"]),
+                event["stage"],
+                event["request_status"],
+                event["elapsed_ms"],
+                event["state_from"],
+                event["state_to"],
+                event["error"],
+                event["created_at"],
+                event["session_id"],
+                event["application_version"],
+                event["application_revision"],
+                recovered,
+                str(event.get("fallback_id") or ""),
+            ),
+        ).fetchone()
+
+    def audit(
+        self,
+        action,
+        subject="",
+        details=None,
+        *,
+        severity="info",
+        action_id="",
+        trace_id="",
+        job_id="",
+        scope=None,
+        stage="",
+        request_status="",
+        elapsed_ms=None,
+        state_from="",
+        state_to="",
+        error="",
+    ):
+        """Record one ordered, structured event using the existing audit authority."""
+        action = sanitize_text(action, limit=120)
+        subject = sanitize_text(subject, limit=500)
+        details = sanitize(details or {})
+        derived_scope = {
+            key: details[key]
+            for key in ("artist_id", "album_id", "track_key")
+            if isinstance(details, dict) and details.get(key)
+        }
+        clean_scope = sanitize(scope or derived_scope)
+        clean_error = sanitize_text(error)
+        event = {
+            "action": action,
+            "subject": subject,
+            "details": details,
+            "severity": normalize_severity(severity),
+            "action_id": sanitize_text(action_id, limit=100),
+            "trace_id": sanitize_text(trace_id, limit=100),
+            "job_id": sanitize_text(job_id, limit=100),
+            "scope": clean_scope,
+            "stage": sanitize_text(stage, limit=120),
+            "request_status": sanitize_text(request_status, limit=120),
+            "elapsed_ms": float(elapsed_ms) if elapsed_ms is not None else None,
+            "state_from": sanitize_text(state_from, limit=40),
+            "state_to": sanitize_text(state_to, limit=40),
+            "error": clean_error,
+            "created_at": utc_now(),
+            "session_id": self.audit_session_id,
+            "application_version": core.VERSION,
+            "application_revision": self.application_revision,
+            "fallback_id": "",
+        }
+        core.runtime_log(
+            normalize_severity(severity),
+            f"webgui.audit action={action} subject={core._redact_log_message(subject)}",
+        )
+        with self._audit_lock:
+            pending, fallback_files = self._load_audit_fallback()
+            try:
+                with closing(self.runtime.database.connect()) as db, db:
+                    for fallback in pending:
+                        self._insert_audit_event(db.raw, fallback, recovered=True)
+                    row = self._insert_audit_event(db.raw, event)
+                    self._audit_events_written += 1
+                    if self._audit_events_written % 256 == 0:
+                        retention = max(
+                            1,
+                            min(
+                                int(self.runtime.cfg.get("logging", {}).get("retention_days", 14)),
+                                365,
+                            ),
+                        )
+                        db.raw.execute(
+                            "DELETE FROM web_audit WHERE created_at < now() - (%s * interval '1 day')",
+                            (retention,),
+                        )
+                        db.raw.execute(
+                            "DELETE FROM web_audit WHERE id IN "
+                            "(SELECT id FROM web_audit ORDER BY id DESC OFFSET 50000)"
+                        )
+            except Exception as insertion_error:
+                core.runtime_log(
+                    "error",
+                    "webgui.audit postgresql insertion failed; event retained locally "
+                    + core._redact_log_message(sanitize_text(insertion_error)),
+                )
+                return self._append_audit_fallback(event, insertion_error)
+            for path in fallback_files:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError as cleanup_error:
+                    # Recovery is idempotent through fallback_id. A cleanup
+                    # failure must not misreport the already committed current
+                    # event as lost or append a duplicate fallback record.
+                    core.runtime_log(
+                        "warning",
+                        "webgui.audit recovered fallback cleanup deferred "
+                        + core._redact_log_message(sanitize_text(cleanup_error)),
+                    )
+            return int(row["id"] if isinstance(row, dict) else row[0])
+
+    def diagnostics(
+        self,
+        limit=250,
+        *,
+        severity="",
+        action="",
+        correlation="",
+        since="",
+        until="",
+        maximum=500,
+    ):
+        """Return bounded, credential-free events in chronological order."""
+        limit = max(1, min(int(limit), max(1, min(int(maximum), 50001))))
+        clauses = []
+        values = []
+        if severity:
+            clauses.append("severity=?")
+            values.append(normalize_severity(severity))
+        if action:
+            clauses.append("action ILIKE ?")
+            values.append("%" + sanitize_text(action, limit=100) + "%")
+        if correlation:
+            clauses.append("(trace_id=? OR job_id=? OR action_id=?)")
+            value = sanitize_text(correlation, limit=100)
+            values.extend((value, value, value))
+        if since:
+            clauses.append("created_at>=?")
+            values.append(sanitize_text(since, limit=80))
+        if until:
+            clauses.append("created_at<=?")
+            values.append(sanitize_text(until, limit=80))
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
         with closing(self.runtime.database.connect()) as db:
             rows = db.execute(
-                "SELECT action,subject,details,created_at FROM web_audit ORDER BY id DESC LIMIT ?",
-                (limit,),
+                "SELECT * FROM (SELECT id,action,subject,details,severity,action_id,"
+                "trace_id,job_id,scope,stage,request_status,elapsed_ms,state_from,state_to,"
+                "error,created_at,session_id,application_version,application_revision,"
+                f"recovered_from_fallback FROM web_audit{where} ORDER BY id DESC LIMIT ?) recent "
+                "ORDER BY id",
+                (*values, limit),
             ).fetchall()
         return [
             {
+                "sequence": int(row["id"]),
                 "action": row["action"],
                 "subject": row["subject"],
                 "details": row["details"],
+                "severity": row["severity"],
+                "action_id": row["action_id"],
+                "trace_id": row["trace_id"],
+                "job_id": row["job_id"],
+                "scope": row["scope"],
+                "stage": row["stage"],
+                "request_status": row["request_status"],
+                "elapsed_ms": row["elapsed_ms"],
+                "state_from": row["state_from"],
+                "state_to": row["state_to"],
+                "error": row["error"],
                 "created_at": row["created_at"].isoformat(),
+                "session_id": row["session_id"],
+                "application_version": row["application_version"],
+                "application_revision": row["application_revision"],
+                "recovered_from_fallback": bool(row["recovered_from_fallback"]),
             }
             for row in rows
         ]
+
+    def audit_bounds(self):
+        """Describe retention and local fallback gaps for truthful exports."""
+        with closing(self.runtime.database.connect()) as db:
+            row = db.execute(
+                "SELECT min(id) AS first_sequence,max(id) AS last_sequence,"
+                "count(*) AS retained_records FROM web_audit"
+            ).fetchone()
+        with self._audit_lock:
+            fallback_records = 0
+            fallback_bytes = 0
+            for path in self._audit_fallback_files():
+                if not path.is_file():
+                    continue
+                try:
+                    fallback_bytes += path.stat().st_size
+                    with path.open("r", encoding="utf-8") as handle:
+                        fallback_records += sum(1 for line in handle if line.strip())
+                except OSError:
+                    continue
+        first = int(row["first_sequence"] or 0)
+        return {
+            "retained_first_sequence": first or None,
+            "retained_last_sequence": int(row["last_sequence"] or 0) or None,
+            "retained_records": int(row["retained_records"] or 0),
+            "records_pruned_before_retained_window": max(0, first - 1),
+            "fallback_records_pending_recovery": fallback_records,
+            "fallback_bytes_pending_recovery": fallback_bytes,
+        }
 
     def storage_summary(self):
         """Describe persistent WebGUI storage without walking network folders."""
@@ -176,6 +469,8 @@ class Services:
             "credentials": str(self.runtime.credentials),
             "configuration": str(self.runtime.config_file),
             "version": core.VERSION,
+            "revision": self.application_revision,
+            "audit_session_id": self.audit_session_id,
             "mode": str(self.runtime.cfg.get("mode", "read")),
         }
 
@@ -465,6 +760,18 @@ class Services:
         if refresh_embedding_stats:
             self.refresh_embedding_stats(row)
         return records
+
+    def ensure_tracks(self, album_id):
+        """Hydrate only when the durable catalog lacks indexed album tracks."""
+        row = self.album_row(album_id)
+        with closing(self.runtime.database.connect()) as db:
+            indexed = int(
+                db.execute(
+                    "SELECT count(*) FROM tracks WHERE album_key=?", (album_id,)
+                ).fetchone()[0]
+            )
+        expected = int(row["track_count"] or 0)
+        return self.hydrate_tracks(album_id) if indexed < expected else []
 
     def indexed_tracks(self, album_id, track_keys):
         """Return only explicitly requested indexed tracks, in request order."""
@@ -763,17 +1070,55 @@ class Services:
         core.validate_filename(stem)
         extension = {"jpeg": ".jpg", "png": ".png", "webp": ".webp"}[fmt]
         destination = Path(row["path"]) / (stem + extension)
-        if self.runtime.cfg.get("output", {}).get("preserve_file", True):
-            number = 1
-            while destination.exists() and destination.read_bytes() != body:
-                number += 1
-                destination = Path(row["path"]) / (
-                    f"{stem}-({number})" + destination.suffix
-                )
+        exact_covers = sorted(
+            (
+                path
+                for path in Path(row["path"]).iterdir()
+                if path.is_file()
+                and not path.is_symlink()
+                and path.stem.casefold() == stem.casefold()
+                and path.suffix.casefold() in {".jpg", ".jpeg", ".png", ".webp"}
+            ),
+            key=lambda path: path.name.casefold(),
+        )
+        preserved = []
+        preserve = bool(self.runtime.cfg.get("output", {}).get("preserve_file", True))
+        for existing in exact_covers:
+            if existing == destination and existing.read_bytes() == body:
+                continue
+            if preserve:
+                number = 2
+                backup = existing.with_name(f"{stem}-({number}){existing.suffix}")
+                while backup.exists():
+                    number += 1
+                    backup = existing.with_name(f"{stem}-({number}){existing.suffix}")
+                os.replace(existing, backup)
+                preserved.append(backup.name)
+            else:
+                existing.unlink()
         self._atomic_artwork(destination, body)
+        verified = destination.read_bytes()
+        if verified != body:
+            raise scan.QueuedArtworkVerificationError(
+                "Written cover did not pass byte-for-byte readback verification"
+            )
+        with Image.open(BytesIO(verified)) as opened:
+            verified_size = [int(opened.width), int(opened.height)]
         self.refresh_album(row["album_key"], source="webgui")
-        self.audit("write-cover", row["album_key"], {"file": destination.name})
-        return {"written": [destination.name], **rendered}
+        self.audit(
+            "write-cover",
+            row["album_key"],
+            {
+                "album_id": row["album_key"],
+                "file": destination.name,
+                "preserved": preserved,
+                "sha256": hashlib.sha256(verified).hexdigest(),
+                "verified_size": verified_size,
+            },
+            stage="write-readback",
+            request_status="verified",
+        )
+        return {"written": [destination.name], "preserved": preserved, **rendered}
 
     @serialized
     def write_artist(self, payload):

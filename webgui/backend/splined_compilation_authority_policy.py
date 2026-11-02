@@ -1974,7 +1974,18 @@ def replace_embedded_artwork(
             _replace_vorbis_front(staged, data, mime, info)
         else:
             raise ValueError(f"unsupported embedded-artwork format: {suffix}")
-        os.replace(staged, path)
+        # Windows, SMB, and antivirus readers can briefly retain a handle after
+        # preview/readback. The staged audio is already complete at this point,
+        # so retry only the atomic publication step; never rewrite the source in
+        # place or weaken the verified-copy behavior.
+        for attempt in range(12):
+            try:
+                os.replace(staged, path)
+                break
+            except PermissionError:
+                if attempt == 11:
+                    raise
+                time.sleep(min(0.05 * (2**attempt), 0.4))
     finally:
         staged.unlink(missing_ok=True)
 

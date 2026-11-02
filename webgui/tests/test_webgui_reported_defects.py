@@ -4,12 +4,17 @@ from __future__ import annotations
 
 from contextlib import closing
 from pathlib import Path
+from io import BytesIO
 import sqlite3
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+from threading import Lock
+from unittest.mock import patch
 import unittest
 
 from webgui.services import Services
+from webgui.catalog import Catalog
+from PIL import Image
 
 
 class _SqliteDatabase:
@@ -23,6 +28,105 @@ class _SqliteDatabase:
 
 
 class ReportedDefectTests(unittest.TestCase):
+    def test_container_context_includes_settings_contract(self):
+        repository = Path(__file__).parents[2]
+        dockerignore = (repository / ".dockerignore").read_text(encoding="utf-8")
+        dockerfile = (repository / "webgui" / "Dockerfile").read_text(encoding="utf-8")
+
+        self.assertIn("COPY schema/media.sql schema/settings-ui.json /app/schema/", dockerfile)
+        self.assertIn("!schema/settings-ui.json", dockerignore.splitlines())
+
+    def test_artist_metadata_projects_only_genuine_provider_similarity_with_local_image(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            credentials = root / "credentials"
+            credentials.mkdir()
+            (credentials / "navidrome.json").write_text(
+                '{"server_url":"https://navidrome.invalid","auth_method":"api_key","api_key":"secret"}',
+                encoding="utf-8",
+            )
+            database = root / "catalog.sqlite"
+            with closing(sqlite3.connect(database)) as db:
+                db.execute(
+                    "CREATE TABLE artists (artist_key TEXT,artist_name TEXT,musicbrainz_artistid TEXT,primary_path TEXT)"
+                )
+                db.executemany(
+                    "INSERT INTO artists VALUES (?,?,?,?)",
+                    [("selected", "Selected Artist", "", str(root)), ("similar", "Real Similar", "", str(root))],
+                )
+                db.commit()
+            portrait = root / "similar.png"
+            Image.new("RGB", (16, 16), "green").save(portrait)
+
+            class Response:
+                status_code = 200
+
+                def __init__(self, payload):
+                    self.payload = payload
+
+                def json(self):
+                    return {"subsonic-response": {"status": "ok", **self.payload}}
+
+            requests_seen = []
+
+            def response(url, **_kwargs):
+                requests_seen.append(url)
+                if "search3" in url:
+                    return Response({"searchResult3": {"artist": [{"id": "remote-selected", "name": "Selected Artist"}]}})
+                if "getArtistInfo2" in url:
+                    return Response({"artistInfo2": {"biography": "Provider biography", "similarArtist": [{"id": "remote-similar", "name": "Real Similar"}]}})
+                return Response({"topSongs": {"song": []}})
+
+            catalog = Catalog.__new__(Catalog)
+            catalog.credentials = credentials
+            catalog.metadata_cache = {}
+            catalog.appearance_cache = {}
+            catalog.lock = Lock()
+            catalog.artist = lambda _artist_id: {"id": "selected", "name": "Selected Artist", "mbid": "", "top_tracks": []}
+            catalog.artist_comp_albums = lambda _artist_id: []
+            catalog.refresh_artist_appearances = lambda _artist_id: {}
+            catalog._stored_artist_profile = lambda _artist_id: None
+            catalog.connect = lambda: sqlite3.connect(database)
+            original_connect = catalog.connect
+
+            def connect():
+                value = original_connect()
+                value.row_factory = sqlite3.Row
+                return value
+
+            catalog.connect = connect
+            catalog.artist_thumbnail_path = lambda row: portrait if row["artist_key"] == "similar" else None
+            catalog.image = lambda path: "/api/image/similar" if path else None
+
+            with patch("webgui.catalog.requests.get", side_effect=response):
+                result = catalog.artist_metadata("selected")
+
+            self.assertEqual(result["source"], "Navidrome")
+            self.assertEqual(
+                result["similar"],
+                [{"name": "Real Similar", "local_id": "similar", "image": "/api/image/similar", "provider_id": "remote-similar"}],
+            )
+            self.assertEqual(
+                [url.rsplit("/", 1)[-1] for url in requests_seen],
+                ["search3.view", "getArtistInfo2.view"],
+                "Artist Overview must not wait for top-song or Similar Artist image requests",
+            )
+
+    def test_webgui_formatting_uses_visible_settings_and_configured_artwork_range(self):
+        repository = Path(__file__).parents[2]
+        stylesheet = (repository / "webgui" / "static" / "app.css").read_text(encoding="utf-8")
+        application = (repository / "webgui" / "static" / "app.js").read_text(encoding="utf-8")
+        operations = (repository / "webgui" / "static" / "operations.js").read_text(encoding="utf-8")
+
+        self.assertIn("top:64px", stylesheet)
+        self.assertIn("resize:both", stylesheet)
+        self.assertIn("text-align:justify", stylesheet)
+        self.assertIn("font-size:15px", stylesheet)
+        self.assertIn("metric-below-minimum", stylesheet)
+        self.assertIn("settings.config.range", operations)
+        self.assertIn("metric: metadata", application)
+        self.assertNotIn('"Artist " + state.artist.portrait_meta.width', application)
+
     def test_comp_report_backfills_only_albums_in_selected_artist_scope(self):
         with TemporaryDirectory() as directory:
             database_path = Path(directory) / "catalog.sqlite"
@@ -97,13 +201,17 @@ class ReportedDefectTests(unittest.TestCase):
         document = (static / "index.html").read_text(encoding="utf-8")
         application = (static / "app.js").read_text(encoding="utf-8")
         operations = (static / "operations.js").read_text(encoding="utf-8")
+        styles = (static / "app.css").read_text(encoding="utf-8")
         for identity in (
+            'id="heroPortrait"',
             'id="artistInfoRows"',
+            'id="artistInfoArtist"',
             'id="artistInfoAlbums"',
             'id="artistInfoStatus"',
             'id="artistInfoMbid"',
             'id="artistInfoGenres"',
             'id="artistInfoRoles"',
+            'id="artistInfoToggle"',
             'id="refreshArtistInfo"',
             'id="musicbrainzArtistButton"',
         ):
@@ -114,6 +222,84 @@ class ReportedDefectTests(unittest.TestCase):
         self.assertNotIn("checkLibraryChanges", initialize)
         self.assertIn("track.thumbnail", application)
         self.assertIn("COMP status", application)
+        self.assertIn('id="artistInfoRows" class="artist-info-rows" aria-label="Selected Artist information" hidden', document)
+        self.assertIn(
+            'id="artistInfoMbid" target="_blank" rel="noopener noreferrer"',
+            document,
+        )
+        self.assertLess(document.index('id="artistBiography"'), document.index('id="artistInfoRows"'))
+        self.assertIn(".artist-info-rows{position:absolute", styles)
+        self.assertIn(".hero-portrait{width:86px;height:86px;flex:none;border:2px solid var(--cyan);border-radius:50%", styles)
+        self.assertIn("grid-template-columns:repeat(2,minmax(0,1fr))", styles)
+        self.assertIn("inset:34px 0 auto 0", styles)
+        self.assertIn("width:16px;height:16px", styles)
+        self.assertIn("background:color-mix(in srgb,var(--panel) 80%,transparent)", styles)
+        self.assertIn(
+            ".portrait-launch h1{width:180px;min-height:30px;margin:5px 0 0;"
+            "padding:4px 0;background:transparent;color:var(--yellow)",
+            styles,
+        )
+        self.assertIn(
+            "state.artistInfoExpanded = !state.artistInfoExpanded;\n"
+            "  renderArtistInfoVisibility();",
+            application,
+        )
+        self.assertNotIn(
+            "state.artistInfoExpanded = !state.artistInfoExpanded;\n"
+            "  renderHero();",
+            application,
+        )
+        self.assertIn(
+            'artistMbidLink.href = "https://musicbrainz.org/artist/" + encodeURIComponent(artistMbid)',
+            application,
+        )
+        self.assertIn('id="mediaFilter" class="filter-body" hidden', document)
+        self.assertIn('id="mediaFilterToggle" type="button" aria-expanded="false"', document)
+        self.assertIn('id="aboutButton"', document)
+        self.assertNotIn("state.artists.filter(item => item.id !== artist.id)", application)
+        self.assertNotIn("services.hydrate_tracks(id)\n        return services.catalog.album(id)", (Path(__file__).parents[1] / "server.py").read_text(encoding="utf-8"))
+        self.assertIn(
+            '"similar-artists-unavailable"',
+            (Path(__file__).parents[1] / "server.py").read_text(encoding="utf-8"),
+        )
+
+    def test_explicit_cover_replacement_preserves_old_file_but_updates_canonical_name(self):
+        with TemporaryDirectory() as directory:
+            folder = Path(directory)
+            Image.new("RGB", (20, 20), "red").save(folder / "cover.jpg")
+            output = BytesIO()
+            Image.new("RGB", (30, 30), "blue").save(output, format="PNG")
+            body = output.getvalue()
+
+            services = Services.__new__(Services)
+            services.runtime = SimpleNamespace(
+                cfg={"output": {"file_name": "cover", "preserve_file": True}},
+                require_write=lambda: None,
+            )
+            services.album_row = lambda _album_id: {
+                "album_key": "album-1",
+                "musicbrainz_albumid": "11111111-1111-4111-8111-111111111111",
+                "path": str(folder),
+            }
+            services.preview = lambda _payload: {
+                "image": "/prepared",
+                "format": "png",
+                "width": 30,
+                "height": 30,
+                "bytes": len(body),
+            }
+            services.catalog = SimpleNamespace(image_bytes=lambda _image: body)
+            services.refresh_album = lambda *_args, **_kwargs: None
+            recorded = []
+            services.audit = lambda *args, **kwargs: recorded.append((args, kwargs))
+
+            result = Services.write_cover.__wrapped__(services, {"album_id": "album-1"})
+
+            self.assertEqual((folder / "cover.png").read_bytes(), body)
+            self.assertFalse((folder / "cover.jpg").exists())
+            self.assertTrue((folder / "cover-(2).jpg").is_file())
+            self.assertEqual(result["preserved"], ["cover-(2).jpg"])
+            self.assertEqual(recorded[0][1]["request_status"], "verified")
 
 
 if __name__ == "__main__":
