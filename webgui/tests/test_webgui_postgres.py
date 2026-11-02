@@ -2349,10 +2349,17 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     self.assertFalse(server_thread.is_alive())
                     app, server, server_thread = launch_test_server()
                     page.reload(wait_until="networkidle")
-                    expect(page.locator("#loginForm")).to_be_visible()
-                    page.locator("#loginUsername").fill("browser-admin")
-                    page.locator("#loginPassword").fill("RenderedBrowser123")
-                    page.locator("#loginForm button[type=submit]").click()
+                    # The authenticated session is intentionally durable. It
+                    # can restore just after the login form first paints, so
+                    # wait for bootstrap to settle and sign in only when the
+                    # prior session was not restored.
+                    page.wait_for_timeout(250)
+                    body_class = page.locator("body").get_attribute("class") or ""
+                    if "authenticated" not in body_class.split():
+                        expect(page.locator("#loginForm")).to_be_visible()
+                        page.locator("#loginUsername").fill("browser-admin")
+                        page.locator("#loginPassword").fill("RenderedBrowser123")
+                        page.locator("#loginForm button[type=submit]").click()
                     expect(page.locator("body")).to_have_class("authenticated")
                     # Authentication becomes visible before the asynchronous
                     # library/bootstrap render completes.  Wait for that load
@@ -2433,6 +2440,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         info_cells.nth(5).bounding_box()["height"],
                         delta=0.5,
                     )
+                    initial_theme = page.evaluate(
+                        "document.documentElement.dataset.theme"
+                    )
                     theme_rows = {}
                     for theme in ("dark", "chalk", "light"):
                         page.evaluate(
@@ -2449,7 +2459,10 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                             color,
                             f"{theme} metadata row must be exactly 20% transparent",
                         )
-                    page.evaluate("document.documentElement.dataset.theme = 'dark'")
+                    page.evaluate(
+                        "theme => document.documentElement.dataset.theme = theme",
+                        initial_theme,
+                    )
                     self.assertAlmostEqual(
                         page.locator("#hero").bounding_box()["height"],
                         hero_height,
