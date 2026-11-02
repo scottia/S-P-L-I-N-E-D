@@ -204,6 +204,11 @@ class ReportedDefectTests(unittest.TestCase):
         self.assertIn("width:16px;height:16px", styles)
         self.assertIn("background:color-mix(in srgb,var(--panel) 80%,transparent)", styles)
         self.assertIn(
+            ".portrait-launch h1{width:180px;min-height:30px;margin:5px 0 0;"
+            "padding:4px 0;background:transparent;color:var(--yellow)",
+            styles,
+        )
+        self.assertIn(
             'artistMbidLink.href = "https://musicbrainz.org/artist/" + encodeURIComponent(artistMbid)',
             application,
         )
