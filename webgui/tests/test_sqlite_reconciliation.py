@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import os
+import sqlite3
+import unittest
 from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
-import os
-import sqlite3
-import unittest
 
 from webgui.reconciliation import (
     SQLiteReconciler,
@@ -18,6 +18,22 @@ from webgui.reconciliation import (
 
 
 class SQLiteReconciliationTests(unittest.TestCase):
+    @staticmethod
+    def _artist(
+        key: str,
+        name: str,
+        mbid: str,
+        path: str,
+        updated_at: str = "2026-01-01T00:00:00Z",
+    ) -> dict[str, str]:
+        return {
+            "artist_key": key,
+            "artist_name": name,
+            "musicbrainz_artistid": mbid,
+            "primary_path": path,
+            "updated_at": updated_at,
+        }
+
     def test_windows_snapshot_paths_require_and_apply_explicit_root_mapping(self):
         mapped = map_library_path(
             r"D:\Music\Artist\Album\01.flac",
@@ -59,6 +75,230 @@ class SQLiteReconciliationTests(unittest.TestCase):
             "album_key": "30",
         }
         self.assertIsNone(SQLiteReconciler._find_match("tracks", source, maps))
+
+    def test_artist_unique_mbid_precedes_duplicate_name_and_is_order_independent(self):
+        first = self._artist(
+            "tag:duplicate-one",
+            "Duplicate Name",
+            "11111111-1111-4111-8111-111111111111",
+            r"E:\Music\Duplicate One",
+        )
+        second = self._artist(
+            "tag:duplicate-two",
+            "Duplicate Name",
+            "22222222-2222-4222-8222-222222222222",
+            r"E:\Music\Duplicate Two",
+        )
+        source = self._artist(
+            "mbid:22222222-2222-4222-8222-222222222222",
+            "Duplicate Name",
+            "22222222-2222-4222-8222-222222222222",
+            r"E:\Other\Duplicate Two",
+        )
+        for rows in ([first, second], [second, first]):
+            match, identity = SQLiteReconciler._find_artist_match(
+                source, SQLiteReconciler._match_maps("artists", rows)
+            )
+            self.assertIs(match, second)
+            self.assertEqual(identity["evidence"], "musicbrainz-artist-id")
+
+    def test_artist_duplicate_normalized_names_are_ambiguous(self):
+        rows = [
+            self._artist("tag:first", "AC/DC", "first-mbid", r"E:\Music\First"),
+            self._artist("tag:second", "AC DC", "second-mbid", r"E:\Music\Second"),
+        ]
+        source = self._artist(
+            "tag:unmatched",
+            "AC-DC",
+            "source-mbid",
+            r"E:\Music\Unmatched",
+        )
+        match, identity = SQLiteReconciler._find_artist_match(
+            source, SQLiteReconciler._match_maps("artists", rows)
+        )
+        self.assertIsNone(match)
+        self.assertEqual(identity["status"], "ambiguous")
+        self.assertEqual(identity["evidence"], "artist-name")
+        self.assertEqual(
+            [item["artist_key"] for item in identity["candidates"]],
+            ["tag:first", "tag:second"],
+        )
+
+    def test_artist_keys_do_not_use_lossy_punctuation_or_spacing_normalization(self):
+        first = self._artist("tag:ab c", "First", "", r"E:\Music\First")
+        second = self._artist("tag:a bc", "Second", "", r"E:\Music\Second")
+        maps = SQLiteReconciler._match_maps("artists", [first, second])
+        exact, identity = SQLiteReconciler._find_artist_match(
+            self._artist("tag:a bc", "Unknown", "", r"E:\Music\Unknown"), maps
+        )
+        self.assertIs(exact, second)
+        self.assertEqual(identity["evidence"], "artist-key")
+        lossy, identity = SQLiteReconciler._find_artist_match(
+            self._artist("tag:abc", "Unknown", "", r"E:\Music\Unknown"), maps
+        )
+        self.assertIsNone(lossy)
+        self.assertEqual(identity["status"], "unmatched")
+
+    def test_artist_duplicate_exact_key_bucket_is_ambiguous(self):
+        rows = [
+            self._artist("tag:duplicate", "First", "first-mbid", r"E:\Music\First"),
+            self._artist("tag:duplicate", "Second", "second-mbid", r"E:\Music\Second"),
+        ]
+        match, identity = SQLiteReconciler._find_artist_match(
+            self._artist(
+                "tag:duplicate", "Source", "source-mbid", r"E:\Music\Source"
+            ),
+            SQLiteReconciler._match_maps("artists", rows),
+        )
+        self.assertIsNone(match)
+        self.assertEqual(identity["status"], "ambiguous")
+        self.assertEqual(identity["evidence"], "artist-key")
+
+    def test_artist_duplicate_mbid_can_be_disambiguated_by_unique_path(self):
+        first = self._artist(
+            "tag:first", "First", "shared-mbid", r"E:\Music\First"
+        )
+        second = self._artist(
+            "tag:second", "Second", "shared-mbid", r"E:\Music\Second"
+        )
+        source = self._artist(
+            "mbid:shared-mbid", "Second", "shared-mbid", r"e:/music/second/"
+        )
+        match, identity = SQLiteReconciler._find_artist_match(
+            source, SQLiteReconciler._match_maps("artists", [first, second])
+        )
+        self.assertIs(match, second)
+        self.assertEqual(identity["evidence"], "primary-path")
+
+    def test_artist_unique_primary_path_proves_conflicting_mbid_identity(self):
+        target = self._artist(
+            "tag:target",
+            "Correct Artist",
+            "stale-target-mbid",
+            r"E:\Music\Correct Artist",
+        )
+        source = self._artist(
+            "mbid:authoritative-source-mbid",
+            "Correct Artist",
+            "authoritative-source-mbid",
+            r"e:/music/correct artist/",
+            "2026-01-02T00:00:00Z",
+        )
+        match, identity = SQLiteReconciler._find_artist_match(
+            source, SQLiteReconciler._match_maps("artists", [target])
+        )
+        self.assertIs(match, target)
+        self.assertEqual(identity["evidence"], "primary-path")
+        projected = dict(source, artist_key=target["artist_key"])
+        self.assertEqual(classify_difference("artists", projected, target), "safe")
+
+    def test_artist_exact_key_cannot_override_conflicting_mbid_without_path_proof(self):
+        target = self._artist(
+            "mbid:authoritative",
+            "Key Match",
+            "stale-target-mbid",
+            r"E:\Music\Target",
+        )
+        source = self._artist(
+            "mbid:authoritative",
+            "Key Match",
+            "authoritative",
+            r"E:\Music\Different",
+            "2026-01-02T00:00:00Z",
+        )
+        match, identity = SQLiteReconciler._find_artist_match(
+            source, SQLiteReconciler._match_maps("artists", [target])
+        )
+        self.assertIsNone(match)
+        self.assertEqual(identity["status"], "conflict")
+        self.assertEqual(identity["evidence"], "artist-key")
+
+        source["primary_path"] = r"e:/music/target/"
+        match, identity = SQLiteReconciler._find_artist_match(
+            source, SQLiteReconciler._match_maps("artists", [target])
+        )
+        self.assertIs(match, target)
+        self.assertEqual(identity["evidence"], "artist-key+primary-path")
+
+    def test_artist_shared_primary_path_is_ambiguous(self):
+        rows = [
+            self._artist("tag:first", "First", "first-mbid", r"E:\Music\Shared"),
+            self._artist("tag:second", "Second", "second-mbid", r"E:\Music\Shared"),
+        ]
+        source = self._artist(
+            "tag:unmatched",
+            "Unmatched",
+            "source-mbid",
+            r"e:/music/shared/",
+        )
+        match, identity = SQLiteReconciler._find_artist_match(
+            source, SQLiteReconciler._match_maps("artists", rows)
+        )
+        self.assertIsNone(match)
+        self.assertEqual(identity["status"], "ambiguous")
+        self.assertEqual(identity["evidence"], "primary-path")
+
+    def test_artist_name_only_conflicting_mbids_remain_a_conflict(self):
+        target = self._artist(
+            "tag:target",
+            "Same Name",
+            "target-mbid",
+            r"E:\Music\Target",
+        )
+        source = self._artist(
+            "mbid:source-mbid",
+            "Same Name",
+            "source-mbid",
+            r"E:\Music\Source",
+            "2026-01-02T00:00:00Z",
+        )
+        match, identity = SQLiteReconciler._find_artist_match(
+            source, SQLiteReconciler._match_maps("artists", [target])
+        )
+        self.assertIsNone(match)
+        self.assertEqual(identity["status"], "conflict")
+        self.assertEqual(
+            identity["reason"], "conflicting-non-empty-musicbrainz-artist-ids"
+        )
+
+    def test_artist_source_mbid_can_fill_unique_unidentified_target(self):
+        target = self._artist(
+            "tag:identified-later",
+            "Identified Later",
+            "",
+            r"E:\Music\Identified Later",
+        )
+        source = self._artist(
+            "mbid:new-authority",
+            "Identified Later",
+            "new-authority",
+            r"E:\Other\Identified Later",
+            "2026-01-02T00:00:00Z",
+        )
+        match, identity = SQLiteReconciler._find_artist_match(
+            source, SQLiteReconciler._match_maps("artists", [target])
+        )
+        self.assertIs(match, target)
+        self.assertEqual(identity["evidence"], "artist-name")
+        projected = dict(source, artist_key=target["artist_key"])
+        self.assertEqual(classify_difference("artists", projected, target), "safe")
+
+    def test_artist_ambiguous_diagnostic_is_stable_when_rows_are_reversed(self):
+        rows = [
+            self._artist("tag:z", "Same Name", "z-mbid", r"E:\Music\Z"),
+            self._artist("tag:a", "Same Name", "a-mbid", r"E:\Music\A"),
+        ]
+        source = self._artist(
+            "tag:source", "Same Name", "source-mbid", r"E:\Music\Source"
+        )
+        outcomes = []
+        for candidates in (rows, list(reversed(rows))):
+            match, identity = SQLiteReconciler._find_artist_match(
+                source, SQLiteReconciler._match_maps("artists", candidates)
+            )
+            self.assertIsNone(match)
+            outcomes.append(identity)
+        self.assertEqual(outcomes[0], outcomes[1])
 
     def test_snapshot_fingerprint_ignores_sqlite_read_sidecars(self):
         with TemporaryDirectory() as directory:

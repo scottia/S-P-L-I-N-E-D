@@ -1177,7 +1177,14 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             fallback_sequence = self.services.audit(
                 "deliberate-test-failure",
                 "audit recovery",
-                {"password": "payload-secret", "album_id": "album-1"},
+                {
+                    "password": "payload-secret",
+                    "album_id": "album-1",
+                    "provider_error": (
+                        "failed at https://recovery-user:recovery-pass@example.invalid/api"
+                        "?api%5Fkey=recovery-query-secret&id=42"
+                    ),
+                },
                 severity="error",
                 action_id="action-recovery",
                 trace_id="trace-recovery",
@@ -1212,6 +1219,10 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.assertLess(rows[0]["id"], rows[1]["id"])
         self.assertEqual(rows[0]["details"]["password"], "[REDACTED]")
         self.assertNotIn("payload-secret", repr(rows))
+        self.assertNotIn("recovery-user", repr(rows))
+        self.assertNotIn("recovery-pass", repr(rows))
+        self.assertNotIn("recovery-query-secret", repr(rows))
+        self.assertIn("id=42", repr(rows))
         self.assertTrue(all(row["session_id"] for row in rows))
         self.assertTrue(all(row["application_version"] for row in rows))
         self.assertTrue(all(row["application_revision"] for row in rows))
@@ -1236,6 +1247,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
 
             action_id = "action-deliberate-audit-failure"
             trace_id = "trace-deliberate-audit-failure"
+            job_id = "job-deliberate-audit-failure"
             audit_headers = {
                 "X-SPLINED-Action": action_id,
                 "X-SPLINED-Trace": trace_id,
@@ -1248,10 +1260,17 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     "subject": "bypassButton",
                     "action_id": action_id,
                     "trace_id": trace_id,
+                    "job_id": job_id,
                     "request_status": "requested",
                     "details": {
                         "label": "Bypass",
                         "password": "synthetic-audit-secret",
+                        "provider_error": (
+                            "first https://export-user:export-pass@example.invalid:8443/api"
+                            "?to%6Ben=export-query-secret&id=42 then "
+                            "postgresql://db-user:db-pass@db.invalid/catalog"
+                            "?credential=export-credential-secret"
+                        ),
                     },
                 },
             )
@@ -1314,6 +1333,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertTrue(
                 all(event["trace_id"] == trace_id for event in events)
             )
+            self.assertEqual(events[0]["job_id"], job_id)
             self.assertTrue(
                 all(event["session_id"] for event in events)
             )
@@ -1327,6 +1347,17 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 events[0]["details"]["password"], "[REDACTED]"
             )
             self.assertNotIn("synthetic-audit-secret", exported.text)
+            for secret in (
+                "export-user",
+                "export-pass",
+                "export-query-secret",
+                "db-user",
+                "db-pass",
+                "export-credential-secret",
+            ):
+                self.assertNotIn(secret, exported.text)
+            self.assertIn("https://example.invalid:8443/api", exported.text)
+            self.assertIn("id=42", exported.text)
             self.assertFalse(document["export"]["selected_records_truncated"])
             self.assertTrue(document["export"]["complete_for_retained_window"])
 
@@ -2157,6 +2188,235 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 self.assertEqual(startup_run["applied"], 0)
             finally:
                 startup_reconciler.close()
+        finally:
+            reconciler.close()
+
+    def test_reconciliation_ambiguous_artist_remains_diagnostic_and_cannot_reparent_album(self):
+        old = "2026-01-01T00:00:00+00:00"
+        newer = "2099-01-01T00:00:00+00:00"
+        first_key = "tag:ambiguous-first"
+        second_key = "tag:ambiguous-second"
+        source_key = "mbid:ambiguous-source"
+        album_key = "ambiguous-target-album"
+        first_path = self.root / "music" / "Ambiguous First"
+        second_path = self.root / "music" / "Ambiguous Second"
+        album_path = first_path / "Album"
+        with closing(self.db.connect()) as db, db:
+            for key, mbid, path in (
+                (first_key, "ambiguous-first-mbid", first_path),
+                (second_key, "ambiguous-second-mbid", second_path),
+            ):
+                db.execute(
+                    "INSERT INTO artists(artist_key,artist_name,musicbrainz_artistid,"
+                    "primary_path,created_at,updated_at,last_seen_at,splined_version) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
+                    (key, "Ambiguous Name", mbid, str(path), old, old, old, "test"),
+                )
+            db.execute(
+                "INSERT INTO albums(album_key,artist_key,album_name,path,tag_signature,"
+                "created_at,updated_at,last_seen_at,splined_version) VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    album_key,
+                    first_key,
+                    "Must Not Move",
+                    str(album_path),
+                    "ambiguous",
+                    old,
+                    old,
+                    old,
+                    "test",
+                ),
+            )
+
+        snapshot = self.root / "cache" / "ambiguous-artist.sqlite"
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(snapshot)) as source, source:
+            source.execute("PRAGMA user_version=2")
+            source.execute(
+                "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,"
+                "musicbrainz_artistid TEXT,primary_path TEXT,updated_at TEXT)"
+            )
+            source.execute(
+                "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,"
+                "album_name TEXT,path TEXT,updated_at TEXT)"
+            )
+            source.execute(
+                "INSERT INTO artists VALUES (?,?,?,?,?)",
+                (
+                    source_key,
+                    "Ambiguous-Name",
+                    "ambiguous-source-mbid",
+                    str(self.root / "music" / "Ambiguous Source"),
+                    newer,
+                ),
+            )
+            # Deliberately reuse the PostgreSQL Album key/path.  An unresolved
+            # Artist must prevent this otherwise strong Album match from
+            # re-parenting the target row.
+            source.execute(
+                "INSERT INTO albums VALUES (?,?,?,?,?)",
+                (album_key, source_key, "Must Not Move", str(album_path), newer),
+            )
+
+        reconciler = SQLiteReconciler(
+            self.db, snapshot.parent, self.root / "music", start_scheduler=False
+        )
+        try:
+            compared = reconciler.compare(
+                snapshot, str(self.root / "music"), str(self.root / "music")
+            )
+            self.assertEqual(compared["safe"], 0)
+            self.assertEqual(compared["conflicts"], 2)
+            with closing(self.db.connect()) as db:
+                differences = db.execute(
+                    "SELECT entity_table,source_value,resolution FROM salite_diff "
+                    "WHERE last_run_id=? ORDER BY entity_table",
+                    (compared["run_id"],),
+                ).fetchall()
+            artist_difference = next(
+                row for row in differences if row["entity_table"] == "artists"
+            )
+            album_difference = next(
+                row for row in differences if row["entity_table"] == "albums"
+            )
+            artist_identity = artist_difference["source_value"][
+                "_reconciliation_identity"
+            ]
+            self.assertEqual(artist_difference["resolution"], "conflict")
+            self.assertEqual(artist_identity["status"], "ambiguous")
+            self.assertEqual(artist_identity["evidence"], "artist-name")
+            self.assertEqual(artist_identity["candidate_count"], 2)
+            self.assertEqual(
+                album_difference["source_value"]["_reconciliation_identity"]["reason"],
+                "artist-association-unresolved",
+            )
+
+            applied = reconciler.apply(compared["run_id"])
+            self.assertEqual(applied["attempted"], 0)
+            with closing(self.db.connect()) as db:
+                target_album = db.execute(
+                    "SELECT artist_key FROM albums WHERE album_key=?", (album_key,)
+                ).fetchone()
+                target_artists = db.execute(
+                    "SELECT artist_key,musicbrainz_artistid FROM artists "
+                    "WHERE artist_key IN (?,?) ORDER BY artist_key",
+                    (first_key, second_key),
+                ).fetchall()
+            self.assertEqual(target_album["artist_key"], first_key)
+            self.assertEqual(
+                [row["musicbrainz_artistid"] for row in target_artists],
+                ["ambiguous-first-mbid", "ambiguous-second-mbid"],
+            )
+
+            repeated = reconciler.compare(
+                snapshot, str(self.root / "music"), str(self.root / "music")
+            )
+            self.assertEqual(repeated["safe"], 0)
+            self.assertEqual(repeated["conflicts"], 2)
+            self.assertEqual(reconciler.apply(repeated["run_id"])["attempted"], 0)
+        finally:
+            reconciler.close()
+
+    def test_reconciliation_unique_artist_identity_updates_without_erasing_known_mbid(self):
+        old = "2026-01-01T00:00:00+00:00"
+        newer = "2099-01-01T00:00:00+00:00"
+        targets = (
+            (
+                "tag:path-proven",
+                "Path Proven",
+                "stale-path-mbid",
+                self.root / "music" / "Path Proven",
+            ),
+            (
+                "tag:identified-later",
+                "Identified Later",
+                "",
+                self.root / "music" / "Identified Later Target",
+            ),
+            (
+                "tag:keep-known",
+                "Keep Known",
+                "known-target-mbid",
+                self.root / "music" / "Keep Known",
+            ),
+        )
+        with closing(self.db.connect()) as db, db:
+            for key, name, mbid, path in targets:
+                db.execute(
+                    "INSERT INTO artists(artist_key,artist_name,musicbrainz_artistid,"
+                    "primary_path,created_at,updated_at,last_seen_at,splined_version) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
+                    (key, name, mbid, str(path), old, old, old, "test"),
+                )
+
+        snapshot = self.root / "cache" / "unique-artists.sqlite"
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(snapshot)) as source, source:
+            source.execute("PRAGMA user_version=2")
+            source.execute(
+                "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,"
+                "musicbrainz_artistid TEXT,primary_path TEXT,updated_at TEXT)"
+            )
+            source.execute("CREATE TABLE albums (album_key TEXT PRIMARY KEY)")
+            source.executemany(
+                "INSERT INTO artists VALUES (?,?,?,?,?)",
+                (
+                    (
+                        "mbid:authoritative-path-mbid",
+                        "Path Proven",
+                        "authoritative-path-mbid",
+                        str(targets[0][3]),
+                        newer,
+                    ),
+                    (
+                        "mbid:newly-identified-mbid",
+                        "Identified Later",
+                        "newly-identified-mbid",
+                        str(self.root / "music" / "Different Source Path"),
+                        newer,
+                    ),
+                    (
+                        "tag:keep-known",
+                        "Keep Known",
+                        "",
+                        str(targets[2][3]),
+                        newer,
+                    ),
+                ),
+            )
+
+        reconciler = SQLiteReconciler(
+            self.db, snapshot.parent, self.root / "music", start_scheduler=False
+        )
+        try:
+            compared = reconciler.compare(
+                snapshot, str(self.root / "music"), str(self.root / "music")
+            )
+            self.assertEqual(compared["safe"], 3)
+            self.assertEqual(compared["conflicts"], 0)
+            applied = reconciler.apply(compared["run_id"])
+            self.assertEqual(applied["attempted"], 3)
+            self.assertEqual(applied["failures"], 0)
+            with closing(self.db.connect()) as db:
+                rows = db.execute(
+                    "SELECT artist_key,musicbrainz_artistid FROM artists "
+                    "WHERE artist_key IN (?,?,?) ORDER BY artist_key",
+                    tuple(item[0] for item in targets),
+                ).fetchall()
+            self.assertEqual(
+                {row["artist_key"]: row["musicbrainz_artistid"] for row in rows},
+                {
+                    "tag:path-proven": "authoritative-path-mbid",
+                    "tag:identified-later": "newly-identified-mbid",
+                    "tag:keep-known": "known-target-mbid",
+                },
+            )
+            repeated = reconciler.compare(
+                snapshot, str(self.root / "music"), str(self.root / "music")
+            )
+            self.assertEqual(repeated["safe"], 0)
+            self.assertEqual(repeated["conflicts"], 0)
+            self.assertEqual(reconciler.apply(repeated["run_id"])["attempted"], 0)
         finally:
             reconciler.close()
 
