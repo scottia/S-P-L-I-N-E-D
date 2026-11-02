@@ -812,7 +812,19 @@ test("COMP Selected Artwork keeps the Windows button contract", () => {
   assert.match(operationsSource, /\$\("embedBatchButton"\)\.textContent = "EMBED Batch"/);
   assert.match(operationsSource, /\$\("embedBatchButton"\)\.disabled = compContext \|\|/);
   assert.doesNotMatch(operationsSource, /textContent = compContext \? "EMBED Thumbs"/);
+  assert.match(appSource, /\$\("writeButton"\)\.addEventListener\("click", \(\) => runAction\(writeArtwork\)\)/);
   assert.match(appSource, /\$\("embedBatchButton"\)\.addEventListener\("click", \(\) => runAction\(stageAlbum\)\)/);
+  assert.match(operationsSource, /Writing selected cover…/);
+  assert.match(operationsSource, /Writing selected Artist Art…/);
+  assert.match(operationsSource, /Embedding selected COMP artwork…/);
+  assert.match(operationsSource, /Staging cover and Album embedding…/);
+});
+
+test("saved panel sizes restore only after the authenticated workspace is visible", () => {
+  assert.doesNotMatch(appSource, /\nrestoreLayout\(\);\ninstallSplitter/);
+  assert.match(operationsSource, /document\.body\.className = "authenticated";[\s\S]*renderAll\(\);[\s\S]*requestAnimationFrame\(\(\) => \{ restoreLayout\(\); fitReviewToViewport\(\); \}\)/);
+  assert.match(appSource, /const layoutStorageKey = "splined\.browser-preview\.layout"/);
+  assert.match(appSource, /function saveLayout\(\)[\s\S]*localStorage\.setItem\(layoutStorageKey/);
 });
 
 test("changing report tracks cancels an unrelated transient COMP job", async () => {

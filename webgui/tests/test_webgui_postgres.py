@@ -220,6 +220,61 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             time.sleep(0.05)
         self.fail(f"job {job_id} did not reach the expected state: {item}")
 
+    def test_waiting_scan_does_not_block_explicit_writes_or_batch_staging(self):
+        self.queue = JobQueue(self.services)
+
+        def interactive_scan(_payload, adapter):
+            decision = adapter.read(
+                "Choose album artwork",
+                {"kind": "normal-picker", "options": []},
+            )
+            return {"decision": decision}
+
+        with patch.object(self.services, "run_scan", side_effect=interactive_scan):
+            queued = self.queue.enqueue(
+                "scan", {"album_ids": [self.row["album_key"]]}
+            )
+            waiting = self.wait_for_job(
+                queued["id"], lambda item: item["state"] == "waiting"
+            )
+
+            # The interactive job still owns job_scope, so Settings cannot
+            # retarget the library while its decision is outstanding.
+            with self.assertRaisesRegex(ValueError, "active artwork work"):
+                self.runtime.save_settings(self.cfg)
+
+            # Direct writes use the independent processing lock and must not
+            # wait behind the browser prompt.
+            self.assertTrue(self.runtime.processing.acquire(blocking=False))
+            self.runtime.processing.release()
+            artist_result = self.services.write_artist(
+                {
+                    "artist_id": self.row["artist_key"],
+                    "components": [
+                        {
+                            "kind": "artist",
+                            "image": self.services.catalog.image(self.cover),
+                        }
+                    ],
+                }
+            )
+            self.assertTrue(artist_result["written"])
+
+            # EMBED Batch is a separate button, but its synchronous staging
+            # operation must be available under the same waiting-scan state.
+            staged = self.services.stage_album(self.payload())
+            self.assertTrue(staged["prepared_file"])
+            self.services.remove_staged_artwork(staged)
+
+            prompt = waiting["progress"]["prompt"]
+            self.queue.action(
+                "decision", queued["id"], "k", prompt["nonce"]
+            )
+            completed = self.wait_for_job(
+                queued["id"], lambda item: item["state"] == "done"
+            )
+            self.assertEqual(completed["result"]["decision"], "k")
+
     def drive_comp_candidate(self, row, track):
         result = self.queue.enqueue(
             "comp",
@@ -2752,6 +2807,26 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     page.locator("#setupToken").fill("rendered-browser-token")
                     page.locator("#adminSetupForm button[type=submit]").click()
                     expect(page.locator("body")).to_have_class("authenticated")
+
+                    # Panel proportions are browser-local preferences. They
+                    # must be restored only after authentication reveals a
+                    # measurable workspace, not clamped while it is hidden.
+                    page.evaluate(
+                        """() => localStorage.setItem(
+                            'splined.browser-preview.layout',
+                            JSON.stringify({library: 315, review: 390, candidates: 275})
+                        )"""
+                    )
+                    page.reload(wait_until="domcontentloaded")
+                    expect(page.locator("body")).to_have_class("authenticated")
+                    page.wait_for_function(
+                        """() => {
+                            const style = getComputedStyle(document.querySelector('.workspace'));
+                            return style.getPropertyValue('--library-width').trim() === '315px'
+                                && style.getPropertyValue('--review-width').trim() === '390px'
+                                && style.getPropertyValue('--dock-height').trim() === '275px';
+                        }"""
+                    )
 
                     # A regular Album stages through the rendered controls and
                     # its card survives a real browser reload.

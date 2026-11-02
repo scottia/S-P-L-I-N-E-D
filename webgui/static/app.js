@@ -2100,7 +2100,6 @@ function installSplitter(id, axis, direction, measure, limit, apply) {
     apply(clamp(measure() + direction * delta * step, ...limit())); saveLayout(); event.preventDefault();
   });
 }
-restoreLayout();
 installSplitter("librarySplitter", "x", 1,
   () => $("libraryBody").parentElement.getBoundingClientRect().width,
   () => [200, Math.min(480, availablePaneWidth() - $("review").getBoundingClientRect().width - 380)],
