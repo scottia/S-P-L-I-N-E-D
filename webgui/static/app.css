@@ -308,3 +308,33 @@ body.authenticated .auth-screen{display:none}body.auth-pending>.app-header,body.
 .art-metadata span.metric-ladder{color:var(--blue)}
 .art-metadata span.metric-above-ladder{color:var(--violet)}
 .art-metadata span.metric-unavailable{color:var(--muted)}
+
+/* Reconciliation always reads the selected immutable snapshot, never the live
+   Windows database. Keep its capture time visible beside the picker. */
+.snapshot-state{margin:2px 0 9px;padding:6px 8px;border-left:2px solid var(--yellow);background:color-mix(in srgb,var(--yellow) 8%,transparent);color:var(--yellow);font-size:11px}
+.snapshot-state.snapshot-stale{border-left-color:var(--danger);color:var(--danger)}
+.startup-snap-options{margin:10px 0;padding:9px;border:1px solid color-mix(in srgb,var(--cyan) 60%,transparent);background:color-mix(in srgb,var(--panel) 80%,transparent)}
+.startup-snap-options legend{padding:0 6px;color:var(--cyan);font-weight:800}
+.setting-radio{display:inline-flex;align-items:center;gap:6px;margin:3px 12px 8px 0;color:var(--text)}
+.setting-radio input{accent-color:var(--cyan)}
+
+/* Responsive desktop typography. The original dense 9–11 px labels became
+   unreadable as the three workspace panes were resized. These shared sizes
+   grow smoothly with the viewport while retaining the compact layout. */
+:root{--ui-font-xs:clamp(11px,calc(7px + .3vw),13px);--ui-font-sm:clamp(12px,calc(8px + .3vw),14px);--ui-font-md:clamp(14px,calc(9px + .35vw),16px);--ui-font-lg:clamp(17px,calc(11px + .45vw),22px)}
+html,body{font-size:var(--ui-font-md)}
+.status,.panel-title h2,.section-heading h2,.candidate-heading h2,.embed-view h2{font-size:var(--ui-font-md)}
+.header-actions button,.library-tabs button,.filter-tabs button,.workspace-tabs button,.overview-actions button,.review-actions button,.review-choice button,.candidate-toolbar button,.launch-button,.minor-button,.operation-button,.settings-dialog button,.settings-dialog input,.settings-dialog select,.settings-dialog textarea{font-size:var(--ui-font-sm)}
+.library-list-header,.library-row strong,.section-end,.source-card strong,.similar-heading,.album-overview-facts,.overview-meta,.album-card.windows-card strong,.album-card-foot,.candidate-card strong,.candidate-hint,.art-metadata span,.read-only-note,.top-songs,.settings-subcopy,.setting-field,.settings-help,.runtime-summary{font-size:var(--ui-font-sm)}
+.library-row small,.count,.source-card small,.source-card .source-state,.similar-name,.art-metadata small,.candidate-card small,.artist-info-rows b,.artist-info-rows strong,.artist-info-rows a,.snapshot-state{font-size:var(--ui-font-xs)}
+.hero-copy .artist-biography{font-size:clamp(15px,calc(10px + .4vw),18px)}
+.portrait-launch h1{font-size:var(--ui-font-lg)}
+
+/* The Artist thumbnail follows the available overview pane instead of staying
+   fixed at 86 px. It remains circular and keeps both controls anchored to it. */
+.hero-main{container-type:inline-size;--artist-thumb-size:clamp(104px,17cqi,170px)}
+.hero-portrait{width:var(--artist-thumb-size);height:var(--artist-thumb-size)}
+.portrait-launch{width:max(180px,calc(var(--artist-thumb-size) + 28px));height:calc(var(--artist-thumb-size) + 42px)}
+.portrait-launch h1{width:max(180px,calc(var(--artist-thumb-size) + 28px))}
+.portrait-launch .artist-art-entry{top:calc(var(--artist-thumb-size) - 10px)}
+.artist-info-toggle{left:calc(var(--artist-thumb-size) + 5px);top:8px;font-size:9px}

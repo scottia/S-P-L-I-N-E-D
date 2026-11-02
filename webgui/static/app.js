@@ -435,6 +435,12 @@ function renderLibraryContents() {
   $("fallbackTab").classList.toggle("active", state.libraryMode === "fallback");
   $("libraryListTitle").textContent = state.libraryMode === "fallback" ? "Fallback Albums" : state.libraryMode === "albums" ? "Albums" : "Artists";
   const list = $("artistList"); clear(list);
+  if (state.libraryLoading) {
+    $("artistCount").textContent = "loading";
+    list.append(node("p", "empty-copy", state.libraryMode === "artists" ? "Loading artists…" : "Loading albums…"));
+    renderMediaStatusChips();
+    return;
+  }
   if (state.libraryMode === "artists") {
     $("artistCount").textContent = state.artists.filter(mediaMatches).length + " shown";
     for (const artist of state.artists.filter(mediaMatches)) {
@@ -515,7 +521,11 @@ function albumRow(album, child) {
   const button = node("button", "library-row album-row" + (child ? " album-child" : "")); button.type = "button";
   const orbit = node("span", "status-orbit" + (selectedMedia(album) ? " selected" : ""), selectedMedia(album) ? "●" : "○"); button.append(orbit);
   applyStatusPalette(button, mediaStatusKey(album));
-  button.append(album.cover ? image(album.cover, "library-thumb", "") : node("span", "library-thumb", "♫"));
+  if (album.cover) {
+    const thumb = image(album.cover, "library-thumb", "");
+    thumb.addEventListener("error", () => thumb.replaceWith(node("span", "library-thumb", "♫")), {once: true});
+    button.append(thumb);
+  } else button.append(node("span", "library-thumb", "♫"));
   const copy = node("span", "row-copy"); copy.append(node("strong", "", album.name), node("small", "", child ? album.tracks + " tracks" : album.artist_name)); button.append(copy);
   button.addEventListener("click", () => chooseAlbum(album.id)); return button;
 }

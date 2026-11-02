@@ -29,12 +29,79 @@ class SQLiteReconciliationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "outside the mapped source"):
             map_library_path(r"D:\Other\01.flac", r"D:\Music", r"E:\Music")
 
-    def test_only_missing_or_strictly_newer_supported_authority_is_safe(self):
+    def test_path_backed_track_key_is_mapped_with_track_path(self):
+        source = {
+            "track_key": r"D:\Music\Adele\30\01.flac",
+            "path": r"D:\Music\Adele\30\01.flac",
+        }
+        mapped = SQLiteReconciler._map_row(
+            "tracks", source, r"D:\Music", r"E:\WebGUI Music"
+        )
+        self.assertEqual(mapped["track_key"], mapped["path"])
+        self.assertTrue(
+            mapped["track_key"].replace("\\", "/").endswith(
+                "WebGUI Music/Adele/30/01.flac"
+            )
+        )
+
+    def test_track_identity_never_falls_back_to_another_track_by_artist_name(self):
+        target = {
+            "track_key": r"E:\Music\Billboard\Adele.mp3",
+            "path": r"E:\Music\Billboard\Adele.mp3",
+            "artist_name": "Adele",
+            "album_key": "billboard",
+        }
+        maps = SQLiteReconciler._match_maps("tracks", [target])
+        source = {
+            "track_key": r"E:\Music\Adele\30\01.mp3",
+            "path": r"E:\Music\Adele\30\01.mp3",
+            "artist_name": "Adele",
+            "album_key": "30",
+        }
+        self.assertIsNone(SQLiteReconciler._find_match("tracks", source, maps))
+
+    def test_album_without_mbid_can_match_only_within_its_artist_identity(self):
+        target = {
+            "album_key": "target-key",
+            "artist_key": "adele",
+            "album_name": "30",
+            "path": r"E:\Music\Adele\30",
+        }
+        maps = SQLiteReconciler._match_maps("albums", [target])
+        self.assertIs(
+            SQLiteReconciler._find_match(
+                "albums",
+                {
+                    "album_key": "source-key",
+                    "artist_key": "adele",
+                    "album_name": "30",
+                    "path": r"E:\Other\30",
+                },
+                maps,
+            ),
+            target,
+        )
+        self.assertIsNone(
+            SQLiteReconciler._find_match(
+                "albums",
+                {
+                    "album_key": "other-source-key",
+                    "artist_key": "other-artist",
+                    "album_name": "30",
+                    "path": r"E:\Other\Other Artist\30",
+                },
+                maps,
+            )
+        )
+
+    def test_only_matched_newer_catalog_authority_is_safe(self):
         newer = {"updated_at": "2026-01-02T00:00:00+00:00"}
         older = {"updated_at": "2026-01-01T00:00:00+00:00"}
         self.assertEqual(classify_difference("albums", newer, older), "safe")
         self.assertEqual(classify_difference("albums", older, newer), "conflict")
-        self.assertEqual(classify_difference("tracks", newer, None), "safe")
+        self.assertEqual(classify_difference("artists", newer, None), "conflict")
+        self.assertEqual(classify_difference("albums", newer, None), "conflict")
+        self.assertEqual(classify_difference("tracks", newer, None), "conflict")
         self.assertEqual(classify_difference("cache_entries", newer, None), "conflict")
         self.assertEqual(
             classify_difference("compilation_album_progress", newer, older),
@@ -120,6 +187,11 @@ class SQLiteReconciliationTests(unittest.TestCase):
         self.assertIn("UNIQUE (\n        source_fingerprint", migration)
         self.assertIn("enabled BOOLEAN NOT NULL DEFAULT FALSE", migration)
         self.assertIn("auto_apply_safe BOOLEAN NOT NULL DEFAULT FALSE", migration)
+        startup = (
+            Path(__file__).parents[1] / "migrations" / "012_reconciliation_startup_mode.sql"
+        ).read_text(encoding="utf-8")
+        self.assertIn("startup_mode TEXT NOT NULL DEFAULT 'off'", startup)
+        self.assertIn("'compare', 'apply-safe'", startup)
 
     def test_ui_and_apply_contract_never_offer_conflict_application(self):
         root = Path(__file__).parents[1]
@@ -129,13 +201,16 @@ class SQLiteReconciliationTests(unittest.TestCase):
         self.assertIn("Save Snapshot & Paths", operations)
         self.assertIn("Saved SQLite snapshot and library path mapping", operations)
         self.assertIn("Apply Safe Differences", operations)
+        self.assertIn("Auto SNAP on start", operations)
+        self.assertIn('input.type = "radio"', operations)
         self.assertIn("Automatically apply safe differences only", operations)
         self.assertIn("Choose an authorized snapshot", operations)
         self.assertIn("not the folder containing the .db file", operations)
         self.assertIn("resolution='safe'", reconciliation)
         self.assertIn('source.as_uri() + "?mode=ro"', reconciliation)
         self.assertIn('"conflicts_applied": 0', reconciliation)
-        self.assertNotIn("web_jobs", reconciliation)
+        reconciled_tables = reconciliation.split("table_names = [", 1)[1].split("]", 1)[0]
+        self.assertNotIn("web_jobs", reconciled_tables)
 
 
 if __name__ == "__main__":

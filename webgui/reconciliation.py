@@ -56,12 +56,8 @@ TABLE_TIMESTAMPS = {
     "cache_entries": "updated_at",
 }
 SAFE_INSERT_TABLES = {
-    "artists",
-    "albums",
-    "tracks",
     "recording_release_lookups",
     "recording_release_candidates",
-    "compilation_track_artwork",
     "cache_history",
 }
 SAFE_UPDATE_TABLES = {
@@ -170,6 +166,22 @@ class SQLiteReconciler:
     def _event(self, action: str, details: dict[str, Any], **fields: Any) -> None:
         if self.audit:
             self.audit(action, "SQLite reconciliation", details, **fields)
+
+    def _processing_active(self) -> bool:
+        """Keep catalog reconciliation invisible while Album work is active."""
+        with closing(self.database.connect()) as db:
+            return bool(
+                db.raw.execute(
+                    "SELECT 1 FROM web_jobs "
+                    "WHERE state IN ('staged','queued','running','waiting') LIMIT 1"
+                ).fetchone()
+            )
+
+    def _require_idle(self) -> None:
+        if self._processing_active():
+            raise RuntimeError(
+                "SQLite reconciliation is deferred while Album processing is active"
+            )
 
     def _authorized_root(self, path: Path) -> Path | None:
         for root in self.allowed_roots:
@@ -300,6 +312,15 @@ class SQLiteReconciler:
         for name in path_fields:
             if mapped.get(name):
                 mapped[name] = map_library_path(mapped[name], source_root, target_root)
+        # Native SQLite uses the absolute media path as track_key.  The key is
+        # part of the PostgreSQL identity, so map it with the track path when
+        # both source values identify the same file.  Opaque/non-path keys are
+        # deliberately left untouched.
+        if table == "tracks" and row.get("track_key") and row.get("path"):
+            source_key = str(row["track_key"]).replace("\\", "/").rstrip("/")
+            source_path = str(row["path"]).replace("\\", "/").rstrip("/")
+            if source_key.casefold() == source_path.casefold():
+                mapped["track_key"] = mapped["path"]
         return mapped
 
     @staticmethod
@@ -313,10 +334,16 @@ class SQLiteReconciler:
                 ("key", row.get(TABLE_KEYS.get(table, ("",))[0])),
                 ("mbid", row.get("musicbrainz_artistid") or row.get("musicbrainz_albumid")),
                 ("path", row.get("path") or row.get("track_path") or row.get("album_path")),
-                ("name", row.get("artist_name")),
             ):
                 if value:
                     maps.setdefault(prefix + ":" + _identity(value), row)
+            if table == "artists" and row.get("artist_name"):
+                maps.setdefault("name:" + _identity(row["artist_name"]), row)
+            if table == "albums" and row.get("artist_key") and row.get("album_name"):
+                maps.setdefault(
+                    "album:" + _identity(str(row["artist_key"]) + "\0" + str(row["album_name"])),
+                    row,
+                )
             if table == "tracks" and row.get("musicbrainz_recordingid") and row.get("album_key"):
                 maps.setdefault(
                     "recording:" + _identity(str(row["musicbrainz_recordingid"]) + "\0" + str(row["album_key"])),
@@ -332,8 +359,11 @@ class SQLiteReconciler:
             ("key", source.get(TABLE_KEYS.get(table, ("",))[0])),
             ("mbid", source.get("musicbrainz_artistid") or source.get("musicbrainz_albumid")),
             ("path", source.get("path") or source.get("track_path") or source.get("album_path")),
-            ("name", source.get("artist_name")),
         ]
+        if table == "artists":
+            values.append(("name", source.get("artist_name")))
+        if table == "albums" and source.get("artist_key") and source.get("album_name"):
+            values.append(("album", str(source["artist_key"]) + "\0" + str(source["album_name"])))
         if table == "tracks" and source.get("musicbrainz_recordingid") and source.get("album_key"):
             values.insert(1, ("recording", str(source["musicbrainz_recordingid"]) + "\0" + str(source["album_key"])))
         return next((maps.get(prefix + ":" + _identity(value)) for prefix, value in values if value and maps.get(prefix + ":" + _identity(value))), None)
@@ -387,6 +417,7 @@ class SQLiteReconciler:
         trigger: str = "manual",
     ) -> dict[str, Any]:
         with self._operation_lock:
+            self._require_idle()
             source = self._source(source_path)
             target = Path(str(target_root or self.target_root)).resolve()
             if target != self.target_root:
@@ -423,6 +454,18 @@ class SQLiteReconciler:
                         raise ValueError("Enter the SQLite snapshot's original library root")
 
                     raw = db.raw
+                    # A queued job must not start after the preliminary idle
+                    # check and while catalog authority is being compared.
+                    # SHARE blocks enqueue/claim updates for this transaction;
+                    # the state check also refuses work already in the queue.
+                    raw.execute("LOCK TABLE web_jobs IN SHARE MODE")
+                    if raw.execute(
+                        "SELECT 1 FROM web_jobs "
+                        "WHERE state IN ('staged','queued','running','waiting') LIMIT 1"
+                    ).fetchone():
+                        raise RuntimeError(
+                            "SQLite reconciliation is deferred while Album processing is active"
+                        )
                     raw.execute("SELECT pg_advisory_xact_lock(741520213)")
                     raw.execute(
                         "INSERT INTO sqlite_reconciliation_runs(run_id,source_fingerprint,source_label,trigger,status) "
@@ -443,6 +486,11 @@ class SQLiteReconciler:
                     target_rows = {name: self._target_rows(raw, name) for name in table_names}
                     target_columns = {name: self._target_columns(raw, name) for name in table_names}
                     source_rows = {name: self._read_source(legacy, name, available) for name in table_names}
+                    target_track_paths = {
+                        str(row.get("path") or "").replace("\\", "/").casefold()
+                        for row in target_rows["tracks"]
+                        if row.get("path")
+                    }
 
                     artist_maps = self._match_maps("artists", target_rows["artists"])
                     artist_keys: dict[str, str] = {}
@@ -511,6 +559,13 @@ class SQLiteReconciler:
                             if target_value is not None and _digest(source_value) == _digest(target_value):
                                 continue
                             resolution = classify_difference(table, source_value, target_value)
+                            # A completion record may be inserted only for a
+                            # track that the WebGUI catalog already indexes.
+                            # Source-only/hidden Windows folders remain visible
+                            # conflicts and cannot expand the target catalog.
+                            if table == "compilation_track_artwork" and target_row is None:
+                                track_path = str(source_value.get("track_path") or "").replace("\\", "/").casefold()
+                                resolution = "safe" if track_path in target_track_paths else "conflict"
                             self._record_difference(
                                 raw,
                                 run_id=run_id,
@@ -672,6 +727,17 @@ class SQLiteReconciler:
             raise ValueError("Choose a reconciliation run")
         with self._operation_lock, closing(self.database.connect()) as db, db:
             raw = db.raw
+            # Hold the jobs table stable for the whole apply transaction. A
+            # worker cannot transition a queued Album into running between the
+            # idle check and status reconciliation.
+            raw.execute("LOCK TABLE web_jobs IN SHARE MODE")
+            if raw.execute(
+                "SELECT 1 FROM web_jobs "
+                "WHERE state IN ('staged','queued','running','waiting') LIMIT 1"
+            ).fetchone():
+                raise RuntimeError(
+                    "SQLite reconciliation is deferred while Album processing is active"
+                )
             raw.execute("SELECT pg_advisory_xact_lock(741520213)")
             if not raw.execute(
                 "SELECT 1 FROM sqlite_reconciliation_runs WHERE run_id=%s", (run,)
@@ -730,7 +796,14 @@ class SQLiteReconciler:
                 "UPDATE sqlite_reconciliation_runs SET status=%s,applied=%s,failures=failures+%s,finished_at=now() WHERE run_id=%s",
                 ("applied" if failures == 0 else "applied-with-failures", applied, failures, run),
             )
-        result = {"run_id": run, "applied": applied, "failures": failures, "conflicts_applied": 0}
+        result = {
+            "run_id": run,
+            "attempted": len(rows),
+            "applied": applied,
+            "failures": failures,
+            "complete": failures == 0 and applied == len(rows),
+            "conflicts_applied": 0,
+        }
         self._event(
             "sqlite-reconciliation",
             result,
@@ -786,37 +859,97 @@ class SQLiteReconciler:
     def save_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
         enabled = bool(payload.get("enabled", False))
         auto_apply = bool(payload.get("auto_apply_safe", False))
+        startup_mode = str(payload.get("startup_mode", "off") or "off").strip().casefold()
+        if startup_mode not in {"off", "compare", "apply-safe"}:
+            raise ValueError("Startup SNAP mode must be Off, Compare only, or Apply safe")
         interval = int(payload.get("interval_minutes", 1440))
         if not 15 <= interval <= 10080:
             raise ValueError("Scheduled reconciliation interval must be 15 to 10080 minutes")
         source_path = str(payload.get("source_path", "")).strip()
         source_root = str(payload.get("source_root", "")).strip()
-        if enabled:
+        if enabled or startup_mode != "off":
             self._source(source_path)
             if not source_root:
-                raise ValueError("Scheduled reconciliation requires the SQLite source library root")
+                raise ValueError("Automatic reconciliation requires the SQLite source library root")
         target = Path(str(payload.get("target_root") or self.target_root)).resolve()
         if target != self.target_root:
             raise PermissionError("Scheduled reconciliation target must be the configured music library")
         next_run = datetime.now(timezone.utc) + timedelta(minutes=interval) if enabled else None
         with closing(self.database.connect()) as db, db:
             db.raw.execute(
-                "UPDATE sqlite_reconciliation_settings SET enabled=%s,auto_apply_safe=%s,interval_minutes=%s,"
+                "UPDATE sqlite_reconciliation_settings SET enabled=%s,auto_apply_safe=%s,startup_mode=%s,interval_minutes=%s,"
                 "source_path=%s,source_root=%s,target_root=%s,updated_at=now(),next_run_at=%s WHERE singleton=TRUE",
-                (enabled, auto_apply, interval, source_path, source_root, str(target), next_run),
+                (enabled, auto_apply, startup_mode, interval, source_path, source_root, str(target), next_run),
             )
         return self.history(limit=1)["settings"]
 
     def _scheduler(self) -> None:
         state: dict[str, Any] = {}
-        while not self._stop.wait(30):
+        startup_pending = True
+        deferred_reported = False
+        delay = 5
+        while not self._stop.wait(delay):
+            delay = 30
             try:
                 state = self.history(limit=1)["settings"]
+                if startup_pending:
+                    startup_mode = str(state.get("startup_mode") or "off")
+                    if startup_mode == "off":
+                        startup_pending = False
+                    elif self._processing_active():
+                        if not deferred_reported:
+                            self._event(
+                                "sqlite-reconciliation",
+                                {"trigger": "startup", "startup_mode": startup_mode},
+                                severity="info",
+                                stage="startup",
+                                request_status="waiting",
+                            )
+                            deferred_reported = True
+                        continue
+                    else:
+                        try:
+                            result = self.compare(
+                                state.get("source_path", ""),
+                                state.get("source_root", ""),
+                                state.get("target_root", ""),
+                                trigger="startup",
+                            )
+                            if startup_mode == "apply-safe":
+                                self.apply(result["run_id"])
+                            with closing(self.database.connect()) as db, db:
+                                db.raw.execute(
+                                    "UPDATE sqlite_reconciliation_settings SET last_run_at=now() WHERE singleton=TRUE"
+                                )
+                        except Exception as error:
+                            self._event(
+                                "sqlite-reconciliation",
+                                {"trigger": "startup", "startup_mode": startup_mode},
+                                severity="error",
+                                stage="startup",
+                                request_status="failed",
+                                error=sanitize_text(error, limit=1000),
+                            )
+                        startup_pending = False
+                        deferred_reported = False
+                    continue
                 if not state or not state.get("enabled"):
                     continue
                 due = state.get("next_run_at")
                 if due and _timestamp(due) and _timestamp(due) > datetime.now(timezone.utc):
                     continue
+                if self._processing_active():
+                    if not deferred_reported:
+                        self._event(
+                            "sqlite-reconciliation",
+                            {"trigger": "scheduled"},
+                            severity="info",
+                            stage="schedule",
+                            request_status="waiting",
+                        )
+                        deferred_reported = True
+                    continue
+                deferred_reported = False
                 result = self.compare(
                     state.get("source_path", ""),
                     state.get("source_root", ""),

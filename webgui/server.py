@@ -719,6 +719,13 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
     def albums(q: str = "", view: str = "albums"):
         return context.require().catalog.albums(q, view == "fallback")
 
+    @app.get("/api/album/thumbnail")
+    def album_thumbnail(id: str):
+        return FileResponse(
+            context.require().catalog.album_thumbnail(id),
+            headers={"Cache-Control": "private, max-age=300"},
+        )
+
     @app.get("/api/library/changes")
     def library_changes():
         return context.require().index_changes()

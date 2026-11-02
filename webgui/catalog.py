@@ -314,6 +314,10 @@ class Catalog:
         return "/api/artist/thumbnail?id=" + quote(str(artist_id), safe="")
 
     @staticmethod
+    def album_thumbnail_url(album_id: str) -> str:
+        return "/api/album/thumbnail?id=" + quote(str(album_id), safe="")
+
+    @staticmethod
     def fallback_thumbnail_keys(db) -> dict[str, str]:
         """Return one recorded embedded-art track per fallback album."""
         tables = {
@@ -933,6 +937,7 @@ class Catalog:
                 "SELECT artists.artist_key, artists.artist_name, artists.musicbrainz_artistid, "
                 "artists.primary_path, COUNT(albums.album_key) AS album_count, artists.status "
                 "FROM artists LEFT JOIN albums ON albums.artist_key=artists.artist_key "
+                "AND COALESCE(albums.compilation,0)=0 "
                 "WHERE artists.artist_name LIKE ? ESCAPE '\\' "
                 "GROUP BY artists.artist_key ORDER BY artists.artist_name COLLATE NOCASE ",
                 ("%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%",),
@@ -961,6 +966,7 @@ class Catalog:
                 "SELECT artists.artist_key, artists.artist_name, artists.musicbrainz_artistid, "
                 "artists.primary_path, COUNT(albums.album_key) AS album_count, artists.status "
                 "FROM artists LEFT JOIN albums ON albums.artist_key=artists.artist_key "
+                "AND COALESCE(albums.compilation,0)=0 "
                 "GROUP BY artists.artist_key ORDER BY artists.artist_name COLLATE NOCASE"
             ).fetchall()
         remote_artists = self._navidrome_artists_by_name()
@@ -1064,16 +1070,37 @@ class Catalog:
             ).fetchall()
         items = []
         for row in rows:
-            cover = self.album_cover_path(row)
-            cover_url = self.image(cover)
+            cover_url = (
+                self.image(self.album_cover_path(row))
+                if fallback_only
+                else self.album_thumbnail_url(str(row["album_key"]))
+            )
             items.append({
                 "id": row["album_key"], "name": row["album_name"],
                 "artist_id": row["artist_key"], "artist_name": row["artist_name"],
-                "cover": cover_url, "tracks": row["track_count"],
+                # Keep the full Albums index database-first.  Resolving every
+                # cover on a network-mounted library makes the request appear
+                # empty for minutes.  Native lazy-loading fetches only visible
+                # thumbnails through the authenticated per-album endpoint.
+                "cover": cover_url,
+                "tracks": row["track_count"],
                 "status": row["status"], "compilation": bool(row["compilation"]),
                 "album_mbid": row["musicbrainz_albumid"] or "",
             })
         return items
+
+    def album_thumbnail(self, album_id: str) -> Path:
+        with closing(self.connect()) as db:
+            row = db.execute(
+                "SELECT album_key,path,cover_path FROM albums WHERE album_key=?",
+                (album_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError("Album not found")
+        cover = self.album_cover_path(row)
+        if cover is None:
+            raise KeyError("Saved album artwork is unavailable")
+        return cover
 
     def artist(self, artist_id: str) -> dict[str, object]:
         with closing(self.connect()) as db:
@@ -1083,7 +1110,9 @@ class Catalog:
             primary_rows = db.execute(
                 "SELECT albums.*,artists.artist_name AS album_artist "
                 "FROM albums JOIN artists ON artists.artist_key=albums.artist_key "
-                f"WHERE albums.artist_key IN ({placeholders}) ORDER BY albums.album_name COLLATE NOCASE",
+                f"WHERE albums.artist_key IN ({placeholders}) "
+                "AND COALESCE(albums.compilation,0)=0 "
+                "ORDER BY albums.album_name COLLATE NOCASE",
                 tuple(alias_ids),
             ).fetchall()
             appearance = self._artist_appearance_context(artist, aliases, db)
@@ -1101,7 +1130,9 @@ class Catalog:
                 appearance_rows = []
             top_tracks = [item["title"] for item in db.execute(
                 "SELECT tracks.title FROM tracks JOIN albums ON albums.album_key=tracks.album_key "
-                f"WHERE albums.artist_key IN ({placeholders}) ORDER BY tracks.title COLLATE NOCASE LIMIT 10",
+                f"WHERE albums.artist_key IN ({placeholders}) "
+                "AND COALESCE(albums.compilation,0)=0 "
+                "ORDER BY tracks.title COLLATE NOCASE LIMIT 10",
                 tuple(alias_ids),
             ).fetchall()]
         featured_keys = set(appearance.get("featured_album_keys", set()))

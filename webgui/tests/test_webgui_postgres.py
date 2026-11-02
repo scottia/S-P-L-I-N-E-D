@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import sqlite3
 import socket
 import tempfile
 import threading
@@ -40,6 +41,7 @@ from webgui.database import Database
 from webgui.runtime import Runtime
 from webgui.services import Services
 from webgui.jobs import JobAdapter, JobQueue
+from webgui.reconciliation import SQLiteReconciler
 from webgui.server import create_app
 from webgui.catalog import embedded_track_artwork_bytes
 from webgui.credentials import Credentials
@@ -1994,6 +1996,151 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertEqual(
                 db.execute("SELECT count(*) FROM albums").fetchone()[0], 1
             )
+
+    def test_reconciliation_applies_newer_album_completion_and_is_idempotent(self):
+        snapshot = self.root / "cache" / "processed.sqlite"
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(snapshot)) as source, source:
+            source.execute("PRAGMA user_version=2")
+            source.execute(
+                "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,"
+                "primary_path TEXT)"
+            )
+            source.execute(
+                "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,"
+                "album_name TEXT,path TEXT,processed_at TEXT,selected_source TEXT,updated_at TEXT,"
+                "compilation INTEGER)"
+            )
+            source.execute(
+                "INSERT INTO artists VALUES (?,?,?)",
+                (
+                    self.row["artist_key"],
+                    "Test Artist",
+                    str(self.root / "music" / "Test Artist"),
+                ),
+            )
+            source.execute(
+                "INSERT INTO albums VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    self.row["album_key"],
+                    self.row["artist_key"],
+                    self.row["album_name"],
+                    self.row["path"],
+                    "2099-01-01T00:00:00+00:00",
+                    "embed-queue",
+                    "2099-01-01T00:00:00+00:00",
+                    0,
+                ),
+            )
+            source.execute(
+                "INSERT INTO albums VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    "source-only-hidden-comp",
+                    self.row["artist_key"],
+                    "Hidden Windows COMP",
+                    str(self.root / "music" / "Various Artists" / "Hidden Windows COMP"),
+                    "2099-01-01T00:00:00+00:00",
+                    "embed-queue",
+                    "2099-01-01T00:00:00+00:00",
+                    1,
+                ),
+            )
+
+        reconciler = SQLiteReconciler(
+            self.db,
+            snapshot.parent,
+            self.root / "music",
+            start_scheduler=False,
+        )
+        try:
+            compared = reconciler.compare(
+                snapshot,
+                str(self.root / "music"),
+                str(self.root / "music"),
+            )
+            self.assertGreaterEqual(compared["safe"], 1)
+            self.assertGreaterEqual(compared["conflicts"], 1)
+            applied = reconciler.apply(compared["run_id"])
+            self.assertEqual(applied["failures"], 0)
+            self.assertEqual(applied["attempted"], applied["applied"])
+            with closing(self.db.connect()) as db:
+                album = db.execute(
+                    "SELECT status,selected_source,processed_at FROM albums WHERE album_key=?",
+                    (self.row["album_key"],),
+                ).fetchone()
+                album_count = db.execute("SELECT count(*) FROM albums").fetchone()[0]
+            self.assertEqual(album["status"], "processed")
+            self.assertEqual(album["selected_source"], "embed-queue")
+            self.assertTrue(album["processed_at"])
+            self.assertEqual(album_count, 1)
+
+            repeated = reconciler.compare(
+                snapshot,
+                str(self.root / "music"),
+                str(self.root / "music"),
+            )
+            self.assertEqual(repeated["safe"], 0)
+            self.assertEqual(repeated["conflicts"], 1)
+            repeated_apply = reconciler.apply(repeated["run_id"])
+            self.assertEqual(repeated_apply["attempted"], 0)
+            self.assertEqual(repeated_apply["failures"], 0)
+
+            settings = reconciler.save_settings({
+                "enabled": False,
+                "auto_apply_safe": False,
+                "startup_mode": "compare",
+                "interval_minutes": 1440,
+                "source_path": str(snapshot),
+                "source_root": str(self.root / "music"),
+                "target_root": str(self.root / "music"),
+            })
+            self.assertEqual(settings["startup_mode"], "compare")
+
+            with closing(self.db.connect()) as db, db:
+                db.raw.execute(
+                    "INSERT INTO web_jobs(id,kind,state,payload) VALUES(%s,%s,%s,%s)",
+                    ("busy-album", "embed-album", "running", Jsonb({})),
+                )
+            try:
+                with self.assertRaisesRegex(RuntimeError, "deferred while Album processing"):
+                    reconciler.compare(
+                        snapshot,
+                        str(self.root / "music"),
+                        str(self.root / "music"),
+                    )
+                with self.assertRaisesRegex(RuntimeError, "deferred while Album processing"):
+                    reconciler.apply(repeated["run_id"])
+            finally:
+                with closing(self.db.connect()) as db, db:
+                    db.raw.execute("DELETE FROM web_jobs WHERE id=%s", ("busy-album",))
+
+            # The saved startup radio is operational, not merely persisted:
+            # it runs one comparison after restart and leaves apply disabled
+            # for Compare-only mode.
+            reconciler.close()
+            startup_reconciler = SQLiteReconciler(
+                self.db,
+                snapshot.parent,
+                self.root / "music",
+                start_scheduler=True,
+            )
+            try:
+                deadline = time.monotonic() + 8
+                startup_run = None
+                while time.monotonic() < deadline:
+                    candidate = startup_reconciler.history(limit=1)["last_run"]
+                    if candidate and candidate["run_id"] != repeated["run_id"]:
+                        startup_run = candidate
+                        break
+                    time.sleep(0.1)
+                self.assertIsNotNone(startup_run)
+                self.assertEqual(startup_run["trigger"], "startup")
+                self.assertEqual(startup_run["status"], "compared")
+                self.assertEqual(startup_run["applied"], 0)
+            finally:
+                startup_reconciler.close()
+        finally:
+            reconciler.close()
 
     def test_rendered_browser_comp_workflows_and_persistent_album_queue(self):
         """Drive local FastAPI in a rendered browser; external providers are simulated."""
