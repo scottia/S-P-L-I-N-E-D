@@ -6,7 +6,7 @@ Branch: `fix/webgui-functional-recovery-audit`
 
 Base: `dfe0bf8ce8274d7272882a57a6dc3fc10d4897e2` (`main`, release `2.0.18`)
 
-Implementation revision exercised: `0e0a077e40b76e91496c0b27afb42c3a8d5927b1`.
+Implementation revision exercised: `aa6b79e5bb3b5e97547e97e70bd88ad9ed4dd76d`.
 
 State: draft, open, unmerged. No release, tag, GHCR publication, production deployment, `dev` change, or Windows-source change was made.
 
@@ -114,10 +114,11 @@ If PostgreSQL audit insertion fails, bounded redacted JSONL records remain recov
 ## Exact verification
 
 - Full PC suite with required `PYTHONPATH`, actual PostgreSQL, and installed Brave after the dedicated-snapshot and saved-path corrections: `236` tests in `260.347s`, `OK`.
+- Focused current-head Artist/UI and installed-Brave acceptance after isolating the dropdown visibility update from the asynchronous Artist Overview render: `7` tests in `77.435s`, `OK`.
 - Focused audit failure/export: `1` test in `3.674s`, `OK`.
 - PostgreSQL integration module before the final audit case: `34` tests in `223.518s`, `OK`.
 - Focused rendered Brave workflow after the final cross-platform assertions: `1` test in `83.753s`, `OK`. This verifies the circular thumbnail, `16 x 16` toggle, collapsed default, downward absolute overlay, no layout shift, synchronized row growth, MusicBrainz hyperlink, and exactly 20% transparency in dark, chalk, and light themes.
-- GitHub Actions run `41379073577` on `0e0a077`: success (`webgui` success, Windows advisory success, native correctly skipped by scope).
+- GitHub Actions run `41379863812` on `aa6b79e`: success (`webgui` success, Windows advisory success, native correctly skipped by scope).
 - Python compilation, JavaScript syntax checks, boundary tests, and `git diff --check`: passed.
 - Expected non-failing warning: Starlette's installed `httpx` compatibility deprecation. The PC Python 3.12 environment already contains `psycopg 3.3.6` and `httpx 0.28.1`; no dependency download was needed.
 
