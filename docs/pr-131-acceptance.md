@@ -6,7 +6,7 @@ Branch: `fix/webgui-functional-recovery-audit`
 
 Base: `dfe0bf8ce8274d7272882a57a6dc3fc10d4897e2` (`main`, release `2.0.18`)
 
-Implementation revision exercised: `aa6b79e5bb3b5e97547e97e70bd88ad9ed4dd76d`.
+Implementation revision exercised: `72bd9fd4b409dc1656188ad48d69822c6e26e1fe`.
 
 State: draft, open, unmerged. No release, tag, GHCR publication, production deployment, `dev` change, or Windows-source change was made.
 
@@ -39,17 +39,50 @@ Before migration/restart, the existing test configuration and PostgreSQL databas
 - Automatic safe application: `auto_apply_safe=false`
 - Saved SQLite source: none
 
-No SQLite differences or conflicts were applied. The reconciliation implementation remains Compare/Dry Run only for owner acceptance; Apply Safe Differences, scheduling, and automatic application remain disabled.
+The initial migration did not apply SQLite differences or conflicts. A later
+owner-directed, five-row safe apply for the isolated Adele/Aaron acceptance
+fixtures is recorded below. Scheduling and automatic application remain
+disabled, and no conflict was applied.
 
 The dedicated Windows snapshot directory is authorized independently from the
 persistent artwork cache. The PC launcher uses
-`SPLINED_SQLITE_SNAPSHOT_ROOT=N:\downloads\0_backups\splined\windows\_db`;
+`SPLINED_SQLITE_SNAPSHOT_ROOT=E:\apps\SPLINED\test-state\snapshots`;
 container deployments may mount the same directory at `/sqlite_snap:ro`.
 The picker lists the specific `splined.db` file without walking the shared
 artwork cache first. **Save Snapshot & Paths** persists the selected file and
 the source/target library-root mapping without enabling scheduling or automatic
-application. The inspected SQLite snapshot is schema v2, records `/music` as
-its original library root, and remains opened with SQLite `mode=ro`.
+application. The current isolated SQLite snapshot is schema v2, records
+`E:\apps\ChatGpt\SPLINED-local-test-library\music` as its original library
+root, and remains opened with SQLite `mode=ro&immutable=1`.
+
+## Aaron Tippin snapshot reconciliation
+
+After all five Aaron Tippin Albums completed successfully in the isolated
+Windows test app, a consistent online SQLite snapshot was created at:
+
+`E:\apps\SPLINED\test-state\snapshots\splined-MEDIAPC-database-1793597921.sqlite`
+
+- SQLite `PRAGMA quick_check`: `ok`.
+- Source authority: five Albums `processed`, `processed_count=5`,
+  `unprocessed_count=0`, and `selected_source=embed-queue`.
+- Root cause: native schema v2 records `embed-queue` only after all track
+  writes succeed, but it has no WebGUI-only `embedded_tracks` column. The
+  Album status therefore reconciled while four WebGUI cards still appeared
+  orange/purple as `processed` with `0` embedded tracks.
+- Correction: reconciliation now projects `embedded_tracks=track_count` only
+  for a non-COMP, processed native `embed-queue` outcome with durable
+  `processed_at` evidence. Equal timestamps are safe only when every other
+  source field is semantically unchanged; any newer or differing PostgreSQL
+  authority remains a visible conflict.
+- Compare run `be10bef9bbe74985a2b4e8b971208b80`: five safe differences—four
+  Aaron Tippin Albums plus the previously requested Adele `30` fixture.
+- Apply result: `5/5` applied, `0` failures, `0` conflicts applied.
+- Aaron Tippin PostgreSQL result: `10/10`, `11/11`, `11/11`, `16/16`, and
+  `11/11` embedded tracks across the five Albums.
+- Adele `30` result: `15/15` embedded tracks.
+- Repeat run `4b6fcfcf5a9e4e489d032d9c082d81e9`: `0` safe differences, confirming
+  idempotence.
+- The saved schedule remains disabled and `auto_apply_safe=false`.
 
 ## Root causes corrected
 
@@ -113,6 +146,13 @@ If PostgreSQL audit insertion fails, bounded redacted JSONL records remain recov
 
 ## Exact verification
 
+- Current embedded-completion correction: `13` isolated reconciliation tests
+  plus the real-PostgreSQL apply/idempotence test passed in `9.237s`.
+- Full current PC run: `242` tests passed; its two invocation-only errors were
+  the absent CI `PYTHONPATH` and an uninstalled default Chrome channel. Both
+  were rerun with CI's `PYTHONPATH=.:webgui/backend` and the installed Brave
+  executable; all `3` affected tests passed in `86.777s`. Application result:
+  `245` passing tests.
 - Full PC suite with required `PYTHONPATH`, actual PostgreSQL, and installed Brave after the dedicated-snapshot and saved-path corrections: `236` tests in `260.347s`, `OK`.
 - Focused current-head Artist/UI and installed-Brave acceptance after isolating the dropdown visibility update from the asynchronous Artist Overview render: `7` tests in `77.435s`, `OK`.
 - Focused audit failure/export: `1` test in `3.674s`, `OK`.
@@ -124,10 +164,11 @@ If PostgreSQL audit insertion fails, bounded redacted JSONL records remain recov
 
 ## Owner acceptance state
 
-The owner has authenticated to the restarted PC-hosted WebGUI and will repeat
+The restarted PC-hosted WebGUI is ready for the owner to sign in and repeat
 the manual pass after the final draft update. Automated acceptance uses the
 installed Brave executable against disposable PostgreSQL schemas and media
-fixtures. No owner credential was read, reset, guessed, or recorded.
+fixtures. Restarting invalidated the prior browser session; no owner credential
+was read, reset, guessed, or recorded.
 
 ## Changed areas
 
