@@ -937,7 +937,8 @@ class Catalog:
                 "SELECT artists.artist_key, artists.artist_name, artists.musicbrainz_artistid, "
                 "artists.primary_path, COUNT(albums.album_key) AS album_count, artists.status "
                 "FROM artists LEFT JOIN albums ON albums.artist_key=artists.artist_key "
-                "AND COALESCE(albums.compilation,0)=0 "
+                "AND (COALESCE(albums.compilation,0)=0 "
+                "OR TRIM(COALESCE(albums.musicbrainz_albumid,''))<>'') "
                 "WHERE artists.artist_name LIKE ? ESCAPE '\\' "
                 "GROUP BY artists.artist_key ORDER BY artists.artist_name COLLATE NOCASE ",
                 ("%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%",),
@@ -966,7 +967,8 @@ class Catalog:
                 "SELECT artists.artist_key, artists.artist_name, artists.musicbrainz_artistid, "
                 "artists.primary_path, COUNT(albums.album_key) AS album_count, artists.status "
                 "FROM artists LEFT JOIN albums ON albums.artist_key=artists.artist_key "
-                "AND COALESCE(albums.compilation,0)=0 "
+                "AND (COALESCE(albums.compilation,0)=0 "
+                "OR TRIM(COALESCE(albums.musicbrainz_albumid,''))<>'') "
                 "GROUP BY artists.artist_key ORDER BY artists.artist_name COLLATE NOCASE"
             ).fetchall()
         remote_artists = self._navidrome_artists_by_name()
@@ -1111,7 +1113,8 @@ class Catalog:
                 "SELECT albums.*,artists.artist_name AS album_artist "
                 "FROM albums JOIN artists ON artists.artist_key=albums.artist_key "
                 f"WHERE albums.artist_key IN ({placeholders}) "
-                "AND COALESCE(albums.compilation,0)=0 "
+                "AND (COALESCE(albums.compilation,0)=0 "
+                "OR TRIM(COALESCE(albums.musicbrainz_albumid,''))<>'') "
                 "ORDER BY albums.album_name COLLATE NOCASE",
                 tuple(alias_ids),
             ).fetchall()
@@ -1131,7 +1134,8 @@ class Catalog:
             top_tracks = [item["title"] for item in db.execute(
                 "SELECT tracks.title FROM tracks JOIN albums ON albums.album_key=tracks.album_key "
                 f"WHERE albums.artist_key IN ({placeholders}) "
-                "AND COALESCE(albums.compilation,0)=0 "
+                "AND (COALESCE(albums.compilation,0)=0 "
+                "OR TRIM(COALESCE(albums.musicbrainz_albumid,''))<>'') "
                 "ORDER BY tracks.title COLLATE NOCASE LIMIT 10",
                 tuple(alias_ids),
             ).fetchall()]

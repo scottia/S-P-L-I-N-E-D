@@ -369,7 +369,14 @@ class SQLiteReconciler:
         if (
             table == "albums"
             and "embedded_tracks" not in row
-            and not bool(row.get("compilation"))
+            # A compilation tag alone does not make an identified release a
+            # COMP fallback.  Only unidentified compilation folders use the
+            # per-track COMP authority; MusicBrainz-identified compilations
+            # remain normal Album embedding work.
+            and (
+                not bool(row.get("compilation"))
+                or bool(str(row.get("musicbrainz_albumid") or "").strip())
+            )
             and str(row.get("status") or "").strip().casefold() == "processed"
             and str(row.get("selected_source") or "").strip().casefold() == "embed-queue"
             and str(row.get("processed_at") or "").strip()
@@ -714,7 +721,8 @@ class SQLiteReconciler:
 
         rows = list(
             db.execute(
-                "SELECT a.album_key,a.artist_key,a.path,a.compilation,a.processed_at,a.selected_source,"
+                "SELECT a.album_key,a.artist_key,a.path,a.compilation,a.musicbrainz_albumid,"
+                "a.processed_at,a.selected_source,"
                 "a.bypassed,a.timeout_until,p.total_tracks,p.completed_tracks,p.status AS progress_status "
                 "FROM albums a LEFT JOIN compilation_album_progress p ON p.album_path=a.path"
             )
@@ -732,7 +740,11 @@ class SQLiteReconciler:
             elif timeout:
                 status = "processed"
                 timeout_value = ""
-            elif bool(row["compilation"]) and row["total_tracks"] is not None:
+            elif (
+                bool(row["compilation"])
+                and not str(row["musicbrainz_albumid"] or "").strip()
+                and row["total_tracks"] is not None
+            ):
                 total = int(row["total_tracks"] or 0)
                 completed = int(row["completed_tracks"] or 0)
                 status = "processed" if total > 0 and completed >= total else "incomplete"
@@ -753,7 +765,12 @@ class SQLiteReconciler:
 
     @staticmethod
     def _recalculate_comp_progress(db) -> None:
-        albums = list(db.execute("SELECT path FROM albums WHERE compilation<>0"))
+        albums = list(
+            db.execute(
+                "SELECT path FROM albums WHERE compilation<>0 "
+                "AND TRIM(COALESCE(musicbrainz_albumid,''))=''"
+            )
+        )
         for album in albums:
             album_path = str(album["path"])
             tracks = list(db.execute("SELECT path FROM tracks WHERE album_key=(SELECT album_key FROM albums WHERE path=?)", (album_path,)))

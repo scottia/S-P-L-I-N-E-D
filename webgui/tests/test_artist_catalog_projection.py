@@ -24,13 +24,14 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                     "musicbrainz_artistid TEXT,primary_path TEXT,status TEXT)"
                 )
                 db.execute(
-                    "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,compilation INTEGER)"
+                    "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,"
+                    "compilation INTEGER,musicbrainz_albumid TEXT)"
                 )
                 db.execute(
                     "INSERT INTO artists VALUES ('artist-1','Artist','',?,'unprocessed')",
                     (str(root / "Artist"),),
                 )
-                db.execute("INSERT INTO albums VALUES ('album-1','artist-1',0)")
+                db.execute("INSERT INTO albums VALUES ('album-1','artist-1',0,'')")
                 db.commit()
             app = PreviewApp(root, database, root, root)
             with mock.patch.object(
@@ -116,6 +117,60 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                 albums = app.albums("")
             self.assertEqual({item["id"] for item in albums}, {"30", "billboard"})
             self.assertTrue(all(item["cover"].startswith("/api/album/thumbnail?id=") for item in albums))
+
+    def test_identified_compilation_is_a_primary_artist_album(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "index.sqlite"
+            credentials = root / "credentials"
+            credentials.mkdir()
+            standard = root / "Aaron Neville" / "The Grand Tour"
+            identified_compilation = root / "Aaron Neville" / "Gold"
+            hidden_comp = root / "Various Artists" / "Hidden COMP"
+            for folder in (standard, identified_compilation, hidden_comp):
+                folder.mkdir(parents=True)
+                (folder / "song.mp3").touch()
+
+            with closing(connect(database)) as db:
+                db.execute(
+                    "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,"
+                    "musicbrainz_artistid TEXT,primary_path TEXT,status TEXT)"
+                )
+                db.execute(
+                    "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,album_name TEXT,"
+                    "path TEXT,cover_path TEXT,track_count INTEGER,status TEXT,compilation INTEGER,"
+                    "musicbrainz_albumid TEXT,release_year TEXT,embedded_tracks INTEGER,webp_found INTEGER)"
+                )
+                db.execute(
+                    "CREATE TABLE tracks (track_key TEXT PRIMARY KEY,album_key TEXT,path TEXT,title TEXT,artist_name TEXT)"
+                )
+                db.execute(
+                    "INSERT INTO artists VALUES ('aaron','Aaron Neville','artist-mbid',?,'processed')",
+                    (str(root / "Aaron Neville"),),
+                )
+                db.executemany(
+                    "INSERT INTO albums VALUES (?,?,?,?,NULL,1,'processed',?,?, '2026',1,0)",
+                    [
+                        ("tour", "aaron", "The Grand Tour", str(standard), 0, "release-tour"),
+                        ("gold", "aaron", "Gold", str(identified_compilation), 1, "release-gold"),
+                        ("hidden", "aaron", "Hidden COMP", str(hidden_comp), 1, ""),
+                    ],
+                )
+                db.executemany(
+                    "INSERT INTO tracks VALUES (?,?,?,?,?)",
+                    [
+                        ("tour-track", "tour", str(standard / "song.mp3"), "Tour Song", "Aaron Neville"),
+                        ("gold-track", "gold", str(identified_compilation / "song.mp3"), "Gold Song", "Aaron Neville"),
+                        ("hidden-track", "hidden", str(hidden_comp / "song.mp3"), "Hidden Song", "Aaron Neville"),
+                    ],
+                )
+                db.commit()
+
+            app = PreviewApp(root, database, root, credentials, cache=root / "cache")
+            self.assertEqual(app.artists("")[0]["albums"], 2)
+            artist = app.artist("aaron")
+            self.assertEqual({item["id"] for item in artist["albums"]}, {"tour", "gold"})
+            self.assertEqual(set(artist["top_tracks"]), {"Tour Song", "Gold Song"})
 
     def test_conflicting_musicbrainz_ids_merge_when_library_path_is_identical(self):
         rows = [

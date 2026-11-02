@@ -134,6 +134,42 @@ class SQLiteReconciliationTests(unittest.TestCase):
         )
         self.assertEqual(mapped["embedded_tracks"], 10)
 
+    def test_identified_compilation_projects_normal_album_completion(self):
+        mapped = SQLiteReconciler._map_row(
+            "albums",
+            {
+                "album_key": "identified-compilation",
+                "path": r"D:\Music\Aaron Neville\Gold",
+                "musicbrainz_albumid": "308a6440-3c1c-448c-85ce-84b7e53cc756",
+                "status": "processed",
+                "processed_at": "2026-11-02T05:58:16Z",
+                "selected_source": "embed-queue",
+                "track_count": 36,
+                "compilation": 1,
+            },
+            r"D:\Music",
+            r"E:\WebGUI Music",
+        )
+        self.assertEqual(mapped["embedded_tracks"], 36)
+
+    def test_unidentified_compilation_keeps_comp_track_authority(self):
+        mapped = SQLiteReconciler._map_row(
+            "albums",
+            {
+                "album_key": "hidden-comp",
+                "path": r"D:\Music\Various Artists\Hidden COMP",
+                "musicbrainz_albumid": "",
+                "status": "processed",
+                "processed_at": "2026-11-02T05:58:16Z",
+                "selected_source": "embed-queue",
+                "track_count": 36,
+                "compilation": 1,
+            },
+            r"D:\Music",
+            r"E:\WebGUI Music",
+        )
+        self.assertNotIn("embedded_tracks", mapped)
+
     def test_equal_windows_embed_completion_is_safe_only_when_other_authority_matches(self):
         source = {
             "album_key": "album",
