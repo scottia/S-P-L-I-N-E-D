@@ -142,20 +142,35 @@ pub struct UiPreferences {
     pub upscale_preview_only: bool,
     pub disable_intro_message: bool,
     pub disable_confirmation_messages: bool,
+    /// Legacy shared Backup / Restore directory. It remains serialized so old
+    /// Settings Archives and UI preferences can seed the split locations once.
     pub backup_directory: String,
     pub restore_path: String,
+    #[serde(default = "legacy_backup_preferences_revision")]
+    pub backup_preferences_revision: u32,
     pub backup_selected_type: String,
+    pub restore_selected_type: String,
+    pub settings_backup_directory: String,
+    pub database_backup_directory: String,
+    pub diagnostics_backup_directory: String,
+    pub snapshot_backup_directory: String,
+    pub settings_restore_path: String,
+    pub database_restore_path: String,
+    pub diagnostics_restore_path: String,
+    pub snapshot_restore_path: String,
     /// Zero keeps every matching file. Limits apply only to SPLINED's own
     /// timestamped backups in the selected backup directory.
     pub max_settings_backup_files: String,
     pub max_database_backup_files: String,
     pub max_diagnostic_backup_files: String,
+    pub max_snapshot_backup_files: String,
     pub backup_prompt_dismissed: bool,
     /// Settings/credentials/interface `.spl` schedule. The original field name
     /// is retained so existing portable UI preferences migrate without loss.
     pub backup_schedule: String,
     pub database_backup_schedule: String,
     pub diagnostics_backup_schedule: String,
+    pub snapshot_backup_schedule: String,
     pub backup_mode: String,
     pub backup_settings: bool,
     pub backup_credentials: bool,
@@ -242,14 +257,26 @@ impl Default for UiPreferences {
             disable_confirmation_messages: false,
             backup_directory: String::new(),
             restore_path: String::new(),
-            backup_selected_type: "Settings Archive".to_string(),
-            max_settings_backup_files: "0".to_string(),
-            max_database_backup_files: "0".to_string(),
-            max_diagnostic_backup_files: "0".to_string(),
+            backup_preferences_revision: CURRENT_BACKUP_PREFERENCES_REVISION,
+            backup_selected_type: "Backup Saved Settings".to_string(),
+            restore_selected_type: "Restore Saved Settings".to_string(),
+            settings_backup_directory: String::new(),
+            database_backup_directory: String::new(),
+            diagnostics_backup_directory: String::new(),
+            snapshot_backup_directory: String::new(),
+            settings_restore_path: String::new(),
+            database_restore_path: String::new(),
+            diagnostics_restore_path: String::new(),
+            snapshot_restore_path: String::new(),
+            max_settings_backup_files: "5".to_string(),
+            max_database_backup_files: "5".to_string(),
+            max_diagnostic_backup_files: "5".to_string(),
+            max_snapshot_backup_files: "5".to_string(),
             backup_prompt_dismissed: false,
             backup_schedule: "Off".to_string(),
             database_backup_schedule: "Off".to_string(),
             diagnostics_backup_schedule: "Off".to_string(),
+            snapshot_backup_schedule: "Off".to_string(),
             backup_mode: "Backup".to_string(),
             backup_settings: true,
             backup_credentials: true,
@@ -316,12 +343,83 @@ impl Default for UiPreferences {
 }
 
 pub const CURRENT_WORKSPACE_LAYOUT_REVISION: u32 = 5;
+pub const CURRENT_BACKUP_PREFERENCES_REVISION: u32 = 1;
 
 const fn legacy_workspace_layout_revision() -> u32 {
     0
 }
 
+const fn legacy_backup_preferences_revision() -> u32 {
+    0
+}
+
 impl UiPreferences {
+    /// Split the former shared Backup / Restore directory without discarding
+    /// any existing operator choice. Snapshot settings are new and therefore
+    /// retain their safe defaults until explicitly saved.
+    pub fn migrate_backup_preferences(&mut self) -> bool {
+        if self.backup_preferences_revision >= CURRENT_BACKUP_PREFERENCES_REVISION {
+            return false;
+        }
+
+        let legacy_directory = self.backup_directory.trim().to_string();
+        for destination in [
+            &mut self.settings_backup_directory,
+            &mut self.database_backup_directory,
+            &mut self.diagnostics_backup_directory,
+        ] {
+            if destination.trim().is_empty() && !legacy_directory.is_empty() {
+                *destination = legacy_directory.clone();
+            }
+        }
+
+        self.backup_selected_type = match self.backup_selected_type.trim() {
+            "SQLite Database" | "Backup SQLite Database" => "Backup SQLite Database",
+            "Diagnostic Summary" | "Backup .JSON Diagnostic Summaries" => {
+                "Backup .JSON Diagnostic Summaries"
+            }
+            "SQLite Database Snapshots" | "Backup SQLite Database Snapshots" => {
+                "Backup SQLite Database Snapshots"
+            }
+            _ => "Backup Saved Settings",
+        }
+        .to_string();
+
+        let legacy_restore = self.restore_path.trim().to_string();
+        if !legacy_restore.is_empty() {
+            let extension = Path::new(&legacy_restore)
+                .extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default();
+            if extension.eq_ignore_ascii_case("spl") {
+                if self.settings_restore_path.trim().is_empty() {
+                    self.settings_restore_path = legacy_restore;
+                }
+                self.restore_selected_type = "Restore Saved Settings".to_string();
+            } else if extension.eq_ignore_ascii_case("json") {
+                if self.diagnostics_restore_path.trim().is_empty() {
+                    self.diagnostics_restore_path = legacy_restore;
+                }
+                self.restore_selected_type = "Restore .JSON Diagnostic Summary".to_string();
+            } else if extension.eq_ignore_ascii_case("sqlite")
+                || extension.eq_ignore_ascii_case("db")
+            {
+                if self.database_restore_path.trim().is_empty() {
+                    self.database_restore_path = legacy_restore;
+                }
+                self.restore_selected_type = "Restore SQLite Database".to_string();
+            }
+        }
+
+        if self.max_snapshot_backup_files.trim().is_empty() {
+            self.max_snapshot_backup_files = "5".to_string();
+        }
+        self.snapshot_backup_schedule =
+            normalize_saved_schedule(&self.snapshot_backup_schedule).to_string();
+        self.backup_preferences_revision = CURRENT_BACKUP_PREFERENCES_REVISION;
+        true
+    }
+
     /// Migrates only presentation geometry after the numbered-screen workspace
     /// replaced the validation shell. Workflow, filters, appearance, and all
     /// Config v5-backed values remain untouched.
@@ -347,6 +445,15 @@ impl UiPreferences {
         self.primary_adjustments = defaults.primary_adjustments;
         self.workspace_layout_revision = CURRENT_WORKSPACE_LAYOUT_REVISION;
         true
+    }
+}
+
+fn normalize_saved_schedule(value: &str) -> &'static str {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "daily" => "Daily",
+        "weekly" => "Weekly",
+        "monthly" => "Monthly",
+        _ => "Off",
     }
 }
 
@@ -990,6 +1097,76 @@ window_height = 700
         assert!(restored.media_selector_expanded);
         assert_eq!(restored.primary_adjustments.len(), 11);
         assert!(!restored.migrate_workspace_layout());
+    }
+
+    #[test]
+    fn legacy_shared_backup_preferences_migrate_without_losing_existing_values() {
+        let mut restored: UiPreferences = toml::from_str(
+            r#"
+backup_directory = 'E:\legacy-backups'
+restore_path = 'E:\legacy-backups\splined-database.sqlite'
+backup_selected_type = 'SQLite Database'
+backup_schedule = 'Daily'
+database_backup_schedule = 'Weekly'
+diagnostics_backup_schedule = 'Monthly'
+max_settings_backup_files = '9'
+max_database_backup_files = '7'
+max_diagnostic_backup_files = '0'
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(restored.backup_preferences_revision, 0);
+        assert!(restored.migrate_backup_preferences());
+        assert_eq!(
+            restored.backup_preferences_revision,
+            CURRENT_BACKUP_PREFERENCES_REVISION
+        );
+        assert_eq!(restored.backup_selected_type, "Backup SQLite Database");
+        assert_eq!(restored.restore_selected_type, "Restore SQLite Database");
+        assert_eq!(restored.settings_backup_directory, r"E:\legacy-backups");
+        assert_eq!(restored.database_backup_directory, r"E:\legacy-backups");
+        assert_eq!(restored.diagnostics_backup_directory, r"E:\legacy-backups");
+        assert!(restored.snapshot_backup_directory.is_empty());
+        assert_eq!(
+            restored.database_restore_path,
+            r"E:\legacy-backups\splined-database.sqlite"
+        );
+        assert_eq!(restored.backup_schedule, "Daily");
+        assert_eq!(restored.database_backup_schedule, "Weekly");
+        assert_eq!(restored.diagnostics_backup_schedule, "Monthly");
+        assert_eq!(restored.snapshot_backup_schedule, "Off");
+        assert_eq!(restored.max_settings_backup_files, "9");
+        assert_eq!(restored.max_database_backup_files, "7");
+        assert_eq!(restored.max_diagnostic_backup_files, "0");
+        assert_eq!(restored.max_snapshot_backup_files, "5");
+        assert!(!restored.migrate_backup_preferences());
+    }
+
+    #[test]
+    fn four_independent_backup_preferences_round_trip() {
+        let preferences = UiPreferences {
+            settings_backup_directory: r"E:\state\settings".to_string(),
+            database_backup_directory: r"E:\state\sqlite".to_string(),
+            diagnostics_backup_directory: r"E:\state\diagnostics".to_string(),
+            snapshot_backup_directory: r"E:\state\snapshots".to_string(),
+            backup_schedule: "Daily".to_string(),
+            database_backup_schedule: "Weekly".to_string(),
+            diagnostics_backup_schedule: "Monthly".to_string(),
+            snapshot_backup_schedule: "Off".to_string(),
+            max_settings_backup_files: "1".to_string(),
+            max_database_backup_files: "2".to_string(),
+            max_diagnostic_backup_files: "3".to_string(),
+            max_snapshot_backup_files: "4".to_string(),
+            settings_restore_path: r"E:\state\settings\one.spl".to_string(),
+            database_restore_path: r"E:\state\sqlite\one.sqlite".to_string(),
+            diagnostics_restore_path: r"E:\state\diagnostics\one.json".to_string(),
+            snapshot_restore_path: r"E:\state\snapshots\one.sqlite".to_string(),
+            ..UiPreferences::default()
+        };
+        let serialized = toml::to_string(&preferences).unwrap();
+        let restored: UiPreferences = toml::from_str(&serialized).unwrap();
+        assert_eq!(restored, preferences);
     }
 
     #[test]

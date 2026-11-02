@@ -385,11 +385,15 @@ WebGUI backups use consistent PostgreSQL dumps plus its config, credential,
 cache/staged-artwork, external Artist Art, and music volumes. Retired terminal
 backup commands are not part of the WebGUI. A SQLite snapshot is not a
 PostgreSQL backup. See the [server deployment guide](../docker/README.md).
-On Windows use **Settings > Backup / Restore**. Settings, interface state, and
-credential JSON are stored in `.spl`; SQLite uses a consistent standalone
-`.sqlite` snapshot; and secret-free diagnostic metadata uses a readable `.json`.
-Each file type has an independent schedule. The `.spl` export may be password
-protected. On Windows, opening an associated
+On Windows use **Settings > Backup / Restore**. Rust-owned UI preferences keep
+independent directories, schedules, and retention limits for Settings `.spl`,
+restorable SQLite Database Backups, secret-free Diagnostic `.json`, and
+authoritative SQLite Database Snapshots used by read-only WebGUI
+reconciliation. These are interface preferences, not a second Config v5
+authority. Both SQLite artifact types use SQLite's online backup API; the
+authoritative snapshot is separately schema/library-root/quick-check/digest
+validated and never includes backup-only image tables. The `.spl` export may
+be password protected. On Windows, opening an associated
 unprotected `.spl` automatically imports only its Config v5 settings before
 startup. Password-protected archives and settings-import failures open the
 guided restore surface with the archive preselected; remaining categories are
