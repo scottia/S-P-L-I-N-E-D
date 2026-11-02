@@ -1214,6 +1214,130 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.assertTrue(all(row["application_version"] for row in rows))
         self.assertTrue(all(row["application_revision"] for row in rows))
 
+    def test_failed_browser_action_exports_complete_correlated_audit(self):
+        """A downloaded audit can reconstruct one deliberately failed action."""
+        self.runtime.close()  # API owns its runtime for this test.
+        app = create_app(self.config, self.url, token="test-access", start_worker=False)
+        with TestClient(app) as client:
+            status = client.get("/api/status").json()
+            client.headers["X-SPLINED-CSRF"] = status["csrf"]
+            setup = client.post(
+                "/api/admin/setup",
+                json={
+                    "username": "administrator",
+                    "password": "StrongPassword123",
+                    "confirmation": "StrongPassword123",
+                    "token": "test-access",
+                },
+            )
+            self.assertEqual(setup.status_code, 200, setup.text)
+
+            action_id = "action-deliberate-audit-failure"
+            trace_id = "trace-deliberate-audit-failure"
+            audit_headers = {
+                "X-SPLINED-Action": action_id,
+                "X-SPLINED-Trace": trace_id,
+            }
+            button = client.post(
+                "/api/audit/events",
+                headers=audit_headers,
+                json={
+                    "action": "button-click",
+                    "subject": "bypassButton",
+                    "action_id": action_id,
+                    "trace_id": trace_id,
+                    "request_status": "requested",
+                    "details": {
+                        "label": "Bypass",
+                        "password": "synthetic-audit-secret",
+                    },
+                },
+            )
+            self.assertEqual(button.status_code, 200, button.text)
+
+            failed = client.post(
+                "/api/bypass",
+                headers=audit_headers,
+                json={"album_id": "missing-deliberate-audit-album"},
+            )
+            self.assertEqual(failed.status_code, 404, failed.text)
+            failure_message = failed.json()["error"]
+            for action, subject in (
+                ("api-client-error", "/api/bypass"),
+                ("browser-action-failed", "bypassButton"),
+            ):
+                browser_failure = client.post(
+                    "/api/audit/events",
+                    headers=audit_headers,
+                    json={
+                        "action": action,
+                        "subject": subject,
+                        "severity": "error",
+                        "action_id": action_id,
+                        "trace_id": trace_id,
+                        "request_status": "failed",
+                        "error": failure_message,
+                    },
+                )
+                self.assertEqual(browser_failure.status_code, 200, browser_failure.text)
+
+            exported = client.get(
+                "/api/audit/export", params={"correlation": action_id}
+            )
+            self.assertEqual(exported.status_code, 200, exported.text)
+            self.assertEqual(
+                exported.headers["content-disposition"],
+                'attachment; filename="audit.json"',
+            )
+            document = exported.json()
+            events = document["events"]
+            self.assertEqual(
+                [event["action"] for event in events],
+                [
+                    "button-click",
+                    "api-request",
+                    "api-error",
+                    "api-response",
+                    "api-client-error",
+                    "browser-action-failed",
+                ],
+            )
+            self.assertEqual(
+                [event["sequence"] for event in events],
+                sorted(event["sequence"] for event in events),
+            )
+            self.assertTrue(
+                all(event["action_id"] == action_id for event in events)
+            )
+            self.assertTrue(
+                all(event["trace_id"] == trace_id for event in events)
+            )
+            self.assertTrue(
+                all(event["session_id"] for event in events)
+            )
+            self.assertTrue(
+                all(event["application_version"] == core.VERSION for event in events)
+            )
+            self.assertTrue(
+                all(event["application_revision"] for event in events)
+            )
+            self.assertEqual(
+                events[0]["details"]["password"], "[REDACTED]"
+            )
+            self.assertNotIn("synthetic-audit-secret", exported.text)
+            self.assertFalse(document["export"]["selected_records_truncated"])
+            self.assertTrue(document["export"]["complete_for_retained_window"])
+
+            artifact = os.environ.get("SPLINED_TEST_AUDIT_EXPORT", "").strip()
+            if artifact:
+                target = Path(artifact).resolve()
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(
+                    json.dumps(document, indent=2, ensure_ascii=False) + "\n",
+                    encoding="utf-8",
+                )
+        self.runtime = Runtime(self.config, self.db)
+
     def test_credentials_mask_secrets_and_retain_blank_values(self):
         credentials = Credentials(self.runtime)
         credentials.save(
