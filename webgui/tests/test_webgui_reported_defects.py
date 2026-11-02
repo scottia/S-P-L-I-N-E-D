@@ -28,6 +28,14 @@ class _SqliteDatabase:
 
 
 class ReportedDefectTests(unittest.TestCase):
+    def test_container_context_includes_settings_contract(self):
+        repository = Path(__file__).parents[2]
+        dockerignore = (repository / ".dockerignore").read_text(encoding="utf-8")
+        dockerfile = (repository / "webgui" / "Dockerfile").read_text(encoding="utf-8")
+
+        self.assertIn("COPY schema/media.sql schema/settings-ui.json /app/schema/", dockerfile)
+        self.assertIn("!schema/settings-ui.json", dockerignore.splitlines())
+
     def test_artist_metadata_projects_only_genuine_provider_similarity_with_local_image(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
