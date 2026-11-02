@@ -820,6 +820,13 @@ test("COMP Selected Artwork keeps the Windows button contract", () => {
   assert.match(operationsSource, /Staging cover and Album embedding…/);
 });
 
+test("saved panel sizes restore only after the authenticated workspace is visible", () => {
+  assert.doesNotMatch(appSource, /\nrestoreLayout\(\);\ninstallSplitter/);
+  assert.match(operationsSource, /document\.body\.className = "authenticated";[\s\S]*renderAll\(\);[\s\S]*requestAnimationFrame\(\(\) => \{ restoreLayout\(\); fitReviewToViewport\(\); \}\)/);
+  assert.match(appSource, /const layoutStorageKey = "splined\.browser-preview\.layout"/);
+  assert.match(appSource, /function saveLayout\(\)[\s\S]*localStorage\.setItem\(layoutStorageKey/);
+});
+
 test("changing report tracks cancels an unrelated transient COMP job", async () => {
   const calls = [];
   const state = {

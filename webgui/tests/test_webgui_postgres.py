@@ -2548,6 +2548,26 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     page.locator("#adminSetupForm button[type=submit]").click()
                     expect(page.locator("body")).to_have_class("authenticated")
 
+                    # Panel proportions are browser-local preferences. They
+                    # must be restored only after authentication reveals a
+                    # measurable workspace, not clamped while it is hidden.
+                    page.evaluate(
+                        """() => localStorage.setItem(
+                            'splined.browser-preview.layout',
+                            JSON.stringify({library: 315, review: 390, candidates: 275})
+                        )"""
+                    )
+                    page.reload(wait_until="domcontentloaded")
+                    expect(page.locator("body")).to_have_class("authenticated")
+                    page.wait_for_function(
+                        """() => {
+                            const style = getComputedStyle(document.querySelector('.workspace'));
+                            return style.getPropertyValue('--library-width').trim() === '315px'
+                                && style.getPropertyValue('--review-width').trim() === '390px'
+                                && style.getPropertyValue('--dock-height').trim() === '275px';
+                        }"""
+                    )
+
                     # A regular Album stages through the rendered controls and
                     # its card survives a real browser reload.
                     expect(page.locator("#mediaFilter")).to_be_hidden()

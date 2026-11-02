@@ -60,7 +60,11 @@ async function initialize() {
   applyGraphicalEnhancement(settings.config.webgui_ui?.enhancement);
   state.artworkRange = {...state.artworkRange, ...(settings.config.range || {})};
   state.enabledSources = (settings.config.sources?.cover_sources || []).filter(key=>!settings.config.sources?.exclude_cover_sources?.includes(key) && settings.config.source_policies?.[key]?.enabled!==false);
-  renderAll(); await loadLibrary(); await pollJobs();
+  renderAll();
+  // The workspace is display:none until authentication succeeds.  Restore
+  // saved panel dimensions only after it has measurable width and height.
+  requestAnimationFrame(() => { restoreLayout(); fitReviewToViewport(); });
+  await loadLibrary(); await pollJobs();
 }
 function showAuthentication(status) {
   document.body.className = "auth-required";
