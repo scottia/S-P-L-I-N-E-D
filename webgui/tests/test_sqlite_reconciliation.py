@@ -117,6 +117,48 @@ class SQLiteReconciliationTests(unittest.TestCase):
             "derived",
         )
 
+    def test_windows_embed_queue_completion_projects_webgui_embedded_count(self):
+        mapped = SQLiteReconciler._map_row(
+            "albums",
+            {
+                "album_key": "album",
+                "path": r"D:\Music\Artist\Album",
+                "status": "processed",
+                "processed_at": "2026-01-02T00:00:00Z",
+                "selected_source": "embed-queue",
+                "track_count": 10,
+                "compilation": 0,
+            },
+            r"D:\Music",
+            r"E:\WebGUI Music",
+        )
+        self.assertEqual(mapped["embedded_tracks"], 10)
+
+    def test_equal_windows_embed_completion_is_safe_only_when_other_authority_matches(self):
+        source = {
+            "album_key": "album",
+            "processed_at": "2026-01-02T00:00:00Z",
+            "selected_source": "embed-queue",
+            "track_count": 10,
+            "embedded_tracks": 10,
+            "timeout_until": None,
+            "updated_at": "2026-01-02T00:00:00Z",
+        }
+        target = dict(source, embedded_tracks=0, timeout_until="")
+        self.assertEqual(classify_difference("albums", source, target), "safe")
+        self.assertEqual(
+            classify_difference(
+                "albums",
+                source,
+                dict(target, updated_at="2026-01-03T00:00:00Z"),
+            ),
+            "conflict",
+        )
+        self.assertEqual(
+            classify_difference("albums", source, dict(target, cover_found=0)),
+            "conflict",
+        )
+
     def test_authorized_source_inventory_is_bounded_to_cache_database_files(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

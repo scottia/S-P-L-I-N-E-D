@@ -90,6 +90,44 @@ def _timestamp(value: Any) -> datetime | None:
         return None
 
 
+def _same_authority_except_embedded(
+    source: dict[str, Any], target: dict[str, Any]
+) -> bool:
+    """Recognize the WebGUI-only completion count in a Windows outcome.
+
+    Native Windows records ``selected_source=embed-queue`` only after every
+    track was embedded successfully, but schema v2 has no ``embedded_tracks``
+    column.  Reconciliation projects that durable outcome to the WebGUI-only
+    count.  Equal timestamps are safe only when every other source field is
+    semantically unchanged; a newer PostgreSQL row remains a conflict.
+    """
+    source_time = _timestamp(source.get("updated_at"))
+    target_time = _timestamp(target.get("updated_at"))
+    if not source_time or source_time != target_time:
+        return False
+    if str(source.get("selected_source") or "").strip().casefold() != "embed-queue":
+        return False
+    if not str(source.get("processed_at") or "").strip():
+        return False
+    try:
+        tracks = int(source.get("track_count") or 0)
+        source_embedded = int(source.get("embedded_tracks") or 0)
+        target_embedded = int(target.get("embedded_tracks") or 0)
+    except (TypeError, ValueError):
+        return False
+    if tracks <= 0 or source_embedded != tracks or target_embedded >= tracks:
+        return False
+
+    def normalized(value: Any) -> Any:
+        return "" if value is None or value == "" else value
+
+    return all(
+        normalized(source.get(name)) == normalized(target.get(name))
+        for name in set(source) | set(target)
+        if name != "embedded_tracks"
+    )
+
+
 def classify_difference(table: str, source: dict[str, Any], target: dict[str, Any] | None) -> str:
     """Return the only automatic resolution that is safe for this difference."""
     if table == "compilation_album_progress":
@@ -98,6 +136,8 @@ def classify_difference(table: str, source: dict[str, Any], target: dict[str, An
         return "safe" if table in SAFE_INSERT_TABLES else "conflict"
     if table not in SAFE_UPDATE_TABLES:
         return "conflict"
+    if table == "albums" and _same_authority_except_embedded(source, target):
+        return "safe"
     field = TABLE_TIMESTAMPS.get(table)
     source_time = _timestamp(source.get(field)) if field else None
     target_time = _timestamp(target.get(field)) if field else None
@@ -322,6 +362,20 @@ class SQLiteReconciler:
             source_path = str(row["path"]).replace("\\", "/").rstrip("/")
             if source_key.casefold() == source_path.casefold():
                 mapped["track_key"] = mapped["path"]
+        # Windows schema v2 records an embed-queue outcome only after all
+        # tracks have completed and verified, but does not store the
+        # WebGUI-only embedded_tracks counter.  Project that durable authority
+        # so album completion renders consistently after reconciliation.
+        if (
+            table == "albums"
+            and "embedded_tracks" not in row
+            and not bool(row.get("compilation"))
+            and str(row.get("status") or "").strip().casefold() == "processed"
+            and str(row.get("selected_source") or "").strip().casefold() == "embed-queue"
+            and str(row.get("processed_at") or "").strip()
+            and int(row.get("track_count") or 0) > 0
+        ):
+            mapped["embedded_tracks"] = int(row["track_count"])
         return mapped
 
     @staticmethod

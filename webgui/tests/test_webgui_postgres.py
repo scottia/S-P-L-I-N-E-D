@@ -2009,7 +2009,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             source.execute(
                 "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,"
                 "album_name TEXT,path TEXT,processed_at TEXT,selected_source TEXT,updated_at TEXT,"
-                "compilation INTEGER)"
+                "compilation INTEGER,status TEXT,track_count INTEGER)"
             )
             source.execute(
                 "INSERT INTO artists VALUES (?,?,?)",
@@ -2020,7 +2020,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 ),
             )
             source.execute(
-                "INSERT INTO albums VALUES (?,?,?,?,?,?,?,?)",
+                "INSERT INTO albums VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (
                     self.row["album_key"],
                     self.row["artist_key"],
@@ -2030,10 +2030,12 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     "embed-queue",
                     "2099-01-01T00:00:00+00:00",
                     0,
+                    "processed",
+                    int(self.row["track_count"]),
                 ),
             )
             source.execute(
-                "INSERT INTO albums VALUES (?,?,?,?,?,?,?,?)",
+                "INSERT INTO albums VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (
                     "source-only-hidden-comp",
                     self.row["artist_key"],
@@ -2042,6 +2044,8 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     "2099-01-01T00:00:00+00:00",
                     "embed-queue",
                     "2099-01-01T00:00:00+00:00",
+                    1,
+                    "processed",
                     1,
                 ),
             )
@@ -2065,13 +2069,15 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertEqual(applied["attempted"], applied["applied"])
             with closing(self.db.connect()) as db:
                 album = db.execute(
-                    "SELECT status,selected_source,processed_at FROM albums WHERE album_key=?",
+                    "SELECT status,selected_source,processed_at,embedded_tracks,track_count "
+                    "FROM albums WHERE album_key=?",
                     (self.row["album_key"],),
                 ).fetchone()
                 album_count = db.execute("SELECT count(*) FROM albums").fetchone()[0]
             self.assertEqual(album["status"], "processed")
             self.assertEqual(album["selected_source"], "embed-queue")
             self.assertTrue(album["processed_at"])
+            self.assertEqual(album["embedded_tracks"], album["track_count"])
             self.assertEqual(album_count, 1)
 
             repeated = reconciler.compare(
