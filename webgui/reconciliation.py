@@ -7,6 +7,9 @@ retains every conflict in ``salite_diff`` for authenticated review.
 
 from __future__ import annotations
 
+import json
+import re
+import sqlite3
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
@@ -14,15 +17,11 @@ from pathlib import Path
 from threading import Event, Lock, Thread
 from typing import Any, Callable
 from uuid import uuid4
-import json
-import re
-import sqlite3
 
 from psycopg import sql
 from psycopg.types.json import Jsonb
 
 from webgui.audit import sanitize_text
-
 
 SQLITE_SCHEMA_VERSION = 2
 SOURCE_SUFFIXES = {".db", ".sqlite", ".sqlite3"}
@@ -386,7 +385,56 @@ class SQLiteReconciler:
         return mapped
 
     @staticmethod
-    def _match_maps(table: str, target_rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    def _artist_path_identity(value: Any) -> str:
+        return str(value or "").strip().replace("\\", "/").rstrip("/").casefold()
+
+    @staticmethod
+    def _artist_candidate_summary(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
+        return sorted(
+            (
+                {
+                    "artist_key": str(row.get("artist_key") or ""),
+                    "artist_name": str(row.get("artist_name") or ""),
+                    "musicbrainz_artistid": str(row.get("musicbrainz_artistid") or ""),
+                    "primary_path": str(row.get("primary_path") or ""),
+                }
+                for row in rows
+            ),
+            key=lambda row: (
+                row["artist_key"],
+                row["musicbrainz_artistid"],
+                row["primary_path"],
+                row["artist_name"],
+            ),
+        )
+
+    @staticmethod
+    def _match_maps(table: str, target_rows: list[dict[str, Any]]) -> dict[str, Any]:
+        if table == "artists":
+            # Artist identities require unique candidates.  Keeping buckets rather
+            # than the first row prevents PostgreSQL row order from deciding which
+            # Artist receives authoritative Windows state.
+            artist_maps: dict[str, list[dict[str, Any]]] = {}
+
+            def add(prefix: str, value: str, row: dict[str, Any]) -> None:
+                if value:
+                    artist_maps.setdefault(prefix + ":" + value, []).append(row)
+
+            for row in target_rows:
+                add("key", str(row.get("artist_key") or ""), row)
+                add(
+                    "mbid",
+                    str(row.get("musicbrainz_artistid") or "").strip().casefold(),
+                    row,
+                )
+                add(
+                    "primary-path",
+                    SQLiteReconciler._artist_path_identity(row.get("primary_path")),
+                    row,
+                )
+                add("name", _identity(row.get("artist_name")), row)
+            return artist_maps
+
         maps: dict[str, dict[str, Any]] = {}
         for row in target_rows:
             keys = TABLE_KEYS.get(table, ())
@@ -414,7 +462,101 @@ class SQLiteReconciler:
         return maps
 
     @staticmethod
-    def _find_match(table: str, source: dict[str, Any], maps: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    def _find_artist_match(
+        source: dict[str, Any], maps: dict[str, Any]
+    ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        source_mbid = str(source.get("musicbrainz_artistid") or "").strip()
+        values = (
+            ("artist-key", "key", str(source.get("artist_key") or "")),
+            ("musicbrainz-artist-id", "mbid", source_mbid.casefold()),
+            (
+                "primary-path",
+                "primary-path",
+                SQLiteReconciler._artist_path_identity(source.get("primary_path")),
+            ),
+            ("artist-name", "name", _identity(source.get("artist_name"))),
+        )
+        deferred_mbid_ambiguity: dict[str, Any] | None = None
+        for evidence, prefix, value in values:
+            if not value:
+                continue
+            if evidence == "artist-name" and deferred_mbid_ambiguity:
+                return None, deferred_mbid_ambiguity
+            candidates = maps.get(prefix + ":" + value, [])
+            if not candidates:
+                continue
+            if len(candidates) != 1:
+                ambiguity = {
+                    "status": "ambiguous",
+                    "evidence": evidence,
+                    "candidate_count": len(candidates),
+                    "candidates": SQLiteReconciler._artist_candidate_summary(candidates),
+                }
+                # A duplicated MBID is not itself authoritative enough to
+                # choose a row, but a subsequent unique mapped path may still
+                # independently prove the intended PostgreSQL Artist.
+                if evidence == "musicbrainz-artist-id":
+                    deferred_mbid_ambiguity = ambiguity
+                    continue
+                return None, ambiguity
+            target = candidates[0]
+            target_mbid = str(target.get("musicbrainz_artistid") or "").strip()
+            mbids_conflict = bool(
+                source_mbid
+                and target_mbid
+                and source_mbid.casefold() != target_mbid.casefold()
+            )
+            if evidence == "artist-key" and mbids_conflict:
+                source_path = SQLiteReconciler._artist_path_identity(
+                    source.get("primary_path")
+                )
+                path_candidates = (
+                    maps.get("primary-path:" + source_path, []) if source_path else []
+                )
+                if len(path_candidates) == 1 and path_candidates[0] is target:
+                    return target, {
+                        "status": "matched",
+                        "evidence": "artist-key+primary-path",
+                        "candidate_count": 1,
+                    }
+                diagnostic_candidates = path_candidates or candidates
+                return None, {
+                    "status": "conflict",
+                    "evidence": "artist-key",
+                    "reason": "conflicting-non-empty-musicbrainz-artist-ids-require-unique-path",
+                    "candidate_count": len(diagnostic_candidates),
+                    "candidates": SQLiteReconciler._artist_candidate_summary(
+                        diagnostic_candidates
+                    ),
+                }
+            if (
+                evidence == "artist-name"
+                and mbids_conflict
+            ):
+                return None, {
+                    "status": "conflict",
+                    "evidence": evidence,
+                    "reason": "conflicting-non-empty-musicbrainz-artist-ids",
+                    "candidate_count": 1,
+                    "candidates": SQLiteReconciler._artist_candidate_summary(candidates),
+                }
+            return target, {
+                "status": "matched",
+                "evidence": evidence,
+                "candidate_count": 1,
+            }
+        return None, deferred_mbid_ambiguity or {
+            "status": "unmatched",
+            "evidence": "none",
+            "reason": "no-unique-postgresql-artist-candidate",
+            "candidate_count": 0,
+            "candidates": [],
+        }
+
+    @staticmethod
+    def _find_match(table: str, source: dict[str, Any], maps: dict[str, Any]) -> dict[str, Any] | None:
+        if table == "artists":
+            return SQLiteReconciler._find_artist_match(source, maps)[0]
         keys = TABLE_KEYS.get(table, ())
         values = [
             ("entity", _canonical([source.get(name) for name in keys]) if keys else ""),
@@ -556,26 +698,50 @@ class SQLiteReconciler:
 
                     artist_maps = self._match_maps("artists", target_rows["artists"])
                     artist_keys: dict[str, str] = {}
+                    unresolved_artist_keys: set[str] = set()
                     projected_artists = []
                     for row in source_rows["artists"]:
                         mapped = self._map_row("artists", row, str(source_root), str(target))
-                        match = self._find_match("artists", mapped, artist_maps)
+                        match, identity = self._find_artist_match(mapped, artist_maps)
                         source_key = str(row.get("artist_key") or "")
                         if match:
                             mapped["artist_key"] = match["artist_key"]
+                            # An unidentified Windows row can update other newer
+                            # authority, but absence of an MBID must not erase a
+                            # PostgreSQL identity that is already known.
+                            if (
+                                not str(mapped.get("musicbrainz_artistid") or "").strip()
+                                and str(match.get("musicbrainz_artistid") or "").strip()
+                            ):
+                                mapped["musicbrainz_artistid"] = match["musicbrainz_artistid"]
+                        else:
+                            mapped["_reconciliation_identity"] = identity
+                            unresolved_artist_keys.add(source_key)
                         artist_keys[source_key] = str(mapped.get("artist_key") or source_key)
                         projected_artists.append((mapped, match))
 
                     album_maps = self._match_maps("albums", target_rows["albums"])
                     album_keys: dict[str, str] = {}
+                    unresolved_album_keys: set[str] = set()
                     projected_albums = []
                     for row in source_rows["albums"]:
                         mapped = self._map_row("albums", row, str(source_root), str(target))
-                        mapped["artist_key"] = artist_keys.get(str(row.get("artist_key") or ""), row.get("artist_key"))
-                        match = self._find_match("albums", mapped, album_maps)
+                        source_artist_key = str(row.get("artist_key") or "")
+                        mapped["artist_key"] = artist_keys.get(source_artist_key, row.get("artist_key"))
+                        if source_artist_key in unresolved_artist_keys:
+                            match = None
+                            mapped["_reconciliation_identity"] = {
+                                "status": "blocked",
+                                "reason": "artist-association-unresolved",
+                                "source_artist_key": source_artist_key,
+                            }
+                        else:
+                            match = self._find_match("albums", mapped, album_maps)
                         source_key = str(row.get("album_key") or "")
                         if match:
                             mapped["album_key"] = match["album_key"]
+                        elif source_artist_key in unresolved_artist_keys:
+                            unresolved_album_keys.add(source_key)
                         album_keys[source_key] = str(mapped.get("album_key") or source_key)
                         projected_albums.append((mapped, match))
 
@@ -583,8 +749,17 @@ class SQLiteReconciler:
                     projected_tracks = []
                     for row in source_rows["tracks"]:
                         mapped = self._map_row("tracks", row, str(source_root), str(target))
-                        mapped["album_key"] = album_keys.get(str(row.get("album_key") or ""), row.get("album_key"))
-                        match = self._find_match("tracks", mapped, track_maps)
+                        source_album_key = str(row.get("album_key") or "")
+                        mapped["album_key"] = album_keys.get(source_album_key, row.get("album_key"))
+                        if source_album_key in unresolved_album_keys:
+                            match = None
+                            mapped["_reconciliation_identity"] = {
+                                "status": "blocked",
+                                "reason": "artist-association-unresolved",
+                                "source_album_key": source_album_key,
+                            }
+                        else:
+                            match = self._find_match("tracks", mapped, track_maps)
                         if match:
                             mapped["track_key"] = match["track_key"]
                         projected_tracks.append((mapped, match))
@@ -615,6 +790,10 @@ class SQLiteReconciler:
                         columns = target_columns[table]
                         for source_row, target_row in prepared[table]:
                             source_value = self._projection(table, source_row, columns)
+                            if source_row.get("_reconciliation_identity"):
+                                source_value["_reconciliation_identity"] = source_row[
+                                    "_reconciliation_identity"
+                                ]
                             target_value = self._projection(
                                 table, target_row, list(source_value)
                             ) if target_row else None

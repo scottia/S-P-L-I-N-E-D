@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from datetime import datetime, timezone
-from hashlib import sha256
-from pathlib import Path
 import json
 import os
 import re
 import subprocess
+from collections.abc import Mapping, Sequence
+from datetime import datetime, timezone
+from hashlib import sha256
+from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
-
+from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
 SECRET_KEYS = re.compile(
     r"(?:authorization|cookie|password|passwd|secret|token|api[_-]?key|"
@@ -31,6 +30,11 @@ SECRET_TEXT = (
     ),
     (re.compile(r"(?i)(postgres(?:ql)?://)([^/@\s]+)@"), r"\1[REDACTED]@"),
 )
+SUPPORTED_URL = re.compile(
+    r"(?i)\b(?:https?|postgres(?:ql)?)://[^\s<>\"']*?"
+    r"(?=(?:\b(?:https?|postgres(?:ql)?)://)|[\s<>\"']|$)"
+)
+URL_TRAILING_PUNCTUATION = ".,;!?)]}"
 ALLOWED_SEVERITIES = {"verbose", "debug", "info", "warning", "error", "critical"}
 
 
@@ -41,26 +45,60 @@ def utc_now() -> str:
 def _redact_url(value: str) -> str:
     try:
         parsed = urlsplit(value)
-    except ValueError:
-        return value
-    if parsed.scheme not in {"http", "https", "postgres", "postgresql"}:
-        return value
-    hostname = parsed.hostname or ""
-    if parsed.port:
-        hostname += f":{parsed.port}"
-    query = "&".join(
-        f"{name}={'[REDACTED]' if SECRET_KEYS.search(name) else item}"
-        for pair in parsed.query.split("&")
-        if pair
-        for name, _, item in [pair.partition("=")]
-    )
-    return urlunsplit((parsed.scheme, hostname, parsed.path, query, ""))
+        if parsed.scheme.casefold() not in {"http", "https", "postgres", "postgresql"}:
+            return value
+        hostname = parsed.hostname or ""
+        if ":" in hostname and not hostname.startswith("["):
+            hostname = f"[{hostname}]"
+        if parsed.port is not None:
+            hostname += f":{parsed.port}"
+        query_parts = []
+        for pair in parsed.query.split("&"):
+            if not pair:
+                continue
+            name, separator, _item = pair.partition("=")
+            decoded_name = name
+            # Classification must see encoded separators/letters without
+            # rewriting safe query fields in the diagnostic text.
+            for _ in range(3):
+                expanded = unquote_plus(decoded_name)
+                if expanded == decoded_name:
+                    break
+                decoded_name = expanded
+            if separator and SECRET_KEYS.search(decoded_name):
+                query_parts.append(f"{name}=[REDACTED]")
+            else:
+                query_parts.append(pair)
+        return urlunsplit((parsed.scheme, hostname, parsed.path, "&".join(query_parts), ""))
+    except (TypeError, UnicodeError, ValueError):
+        # A malformed credential URL must not break Audit or be persisted
+        # verbatim.  Retain the scheme so the diagnostic remains meaningful.
+        scheme = value.split("://", 1)[0]
+        return f"{scheme}://[REDACTED-MALFORMED-URL]"
+
+
+def _redact_embedded_urls(text: str) -> str:
+    def replacement(match: re.Match[str]) -> str:
+        candidate = match.group(0)
+        suffix = ""
+        while candidate and candidate[-1] in URL_TRAILING_PUNCTUATION:
+            character = candidate[-1]
+            if character == ")" and candidate.count("(") >= candidate.count(")"):
+                break
+            if character == "]" and candidate.count("[") >= candidate.count("]"):
+                break
+            if character == "}" and candidate.count("{") >= candidate.count("}"):
+                break
+            candidate = candidate[:-1]
+            suffix = character + suffix
+        return _redact_url(candidate) + suffix
+
+    return SUPPORTED_URL.sub(replacement, text)
 
 
 def sanitize_text(value: Any, *, limit: int = 2000) -> str:
     text = str(value or "")
-    if "://" in text and not any(character.isspace() for character in text):
-        text = _redact_url(text)
+    text = _redact_embedded_urls(text)
     for pattern, replacement in SECRET_TEXT:
         text = pattern.sub(replacement, text)
     return text[:limit]
