@@ -534,7 +534,11 @@ class JobQueue:
                 )
                 adapter = JobAdapter(self, job["id"])
                 try:
-                    with self.services.runtime.processing, use_adapter(adapter):
+                    # Keep configuration stable for the full queued operation,
+                    # but let an interactive scan release the media-write lock
+                    # while it waits for a browser decision.  Each mutating
+                    # service operation still serializes on runtime.processing.
+                    with self.services.runtime.job_scope, use_adapter(adapter):
                         payload = job["payload"]
                         kind = job["kind"]
                         if payload.get("library_root") and payload[

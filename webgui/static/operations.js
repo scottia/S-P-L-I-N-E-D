@@ -60,7 +60,11 @@ async function initialize() {
   applyGraphicalEnhancement(settings.config.webgui_ui?.enhancement);
   state.artworkRange = {...state.artworkRange, ...(settings.config.range || {})};
   state.enabledSources = (settings.config.sources?.cover_sources || []).filter(key=>!settings.config.sources?.exclude_cover_sources?.includes(key) && settings.config.source_policies?.[key]?.enabled!==false);
-  renderAll(); await loadLibrary(); await pollJobs();
+  renderAll();
+  // The workspace is display:none until authentication succeeds.  Restore
+  // saved panel dimensions only after it has measurable width and height.
+  requestAnimationFrame(() => { restoreLayout(); fitReviewToViewport(); });
+  await loadLibrary(); await pollJobs();
 }
 function showAuthentication(status) {
   document.body.className = "auth-required";
@@ -213,6 +217,7 @@ async function writeArtwork() {
     const prepared = typeof activeCompPrepared === "function" ? activeCompPrepared() : null;
     if (prepared) Object.assign(scope, {prepared_id: prepared.prepared_id, prepared_sha256: prepared.sha256});
     if (prepared) state.pendingCompWrite = {preview: prepared, owner: prepared.owner};
+    setStatus("Embedding selected COMP artwork…", "busy");
     const result = await post(endpoint, componentPayload("comp", track.image, scope));
     if (result.image) Object.assign(track, {image: result.image, width: result.width, height: result.height, bytes: result.bytes});
     await refreshQueuedAlbumAfterSave();
@@ -226,6 +231,7 @@ async function writeArtwork() {
     return;
   }
   if (state.editorMode === "album") {
+    setStatus("Writing selected cover…", "busy");
     await post("/api/artwork/cover", coverPayload());
     state.album = await api("/api/album?id=" + encodeURIComponent(state.album.id));
     renderHero(); renderReview(); setStatus("Cover written · " + state.album.name); return;
@@ -244,6 +250,7 @@ async function writeArtwork() {
     if (state.radioBanner && (state.selectedBanner?.image || state.artist.banner)) components.push(componentPayload("banner", state.selectedBanner?.image || state.artist.banner));
   }
   if (!components.length) throw new Error("Choose the artist image or banner radio before writing");
+  setStatus("Writing selected Artist Art…", "busy");
   const result = await post("/api/artwork/artist", {artist_id: state.artist.id, components});
   state.artist = await api("/api/artist?id=" + encodeURIComponent(state.artist.id));
   const listedArtist = state.artists.find(artist => artist.id === state.artist.id);
@@ -377,6 +384,7 @@ async function launchCandidateWork() {
   return searchAlbum();
 }
 async function stageAlbum() {
+  setStatus("Staging cover and Album embedding…", "busy");
   const result = await post("/api/jobs", {kind: "embed-album", payload: coverPayload()});
   await pollJobs();
   if (!result.already_queued) {
