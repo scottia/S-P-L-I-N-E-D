@@ -35,6 +35,14 @@ from webgui.reconciliation import SQLiteReconciler
 SETTINGS_UI = Path(__file__).resolve().parents[1] / "schema/settings-ui.json"
 
 
+def _sqlite_snapshot_roots() -> tuple[Path, ...]:
+    configured = os.environ.get("SPLINED_SQLITE_SNAPSHOT_ROOT", "").strip()
+    if configured:
+        return (Path(configured),)
+    conventional = Path("/sqlite_snap")
+    return (conventional,) if conventional.is_dir() else ()
+
+
 class Context:
     def __init__(self, config_file, database_url=None, *, start_worker=True):
         self.config_file = Path(config_file).resolve()
@@ -80,6 +88,7 @@ class Context:
             self.runtime.cache,
             self.runtime.music,
             self.services.audit,
+            snapshot_roots=_sqlite_snapshot_roots(),
             start_scheduler=self.start_worker,
         )
         if self.start_worker:
@@ -132,6 +141,7 @@ class Context:
                 self.runtime.cache,
                 self.runtime.music,
                 self.services.audit,
+                snapshot_roots=_sqlite_snapshot_roots(),
                 start_scheduler=self.start_worker,
             )
         else:
@@ -167,6 +177,7 @@ class Context:
                 runtime.cache,
                 runtime.music,
                 self.services.audit,
+                snapshot_roots=_sqlite_snapshot_roots(),
                 start_scheduler=self.start_worker,
             )
             self.url = url

@@ -1111,14 +1111,16 @@ async function renderSqliteReconciliation(host) {
   const section = node("section", "sqlite-reconciliation");
   section.append(node("h5", "", "SQLite Reconciliation"), node("p", "settings-subcopy", "Compare an authorized read-only SQLite snapshot with this PostgreSQL catalog. Differences remain reviewable in salite_diff; conflicts are never auto-applied."));
   const source = node("select"), sourceLabel = node("label", "setting-field"); sourceLabel.append(node("span", "", "Authorized SQLite snapshot"), source);
-  const sourceRoot = field(section, "Snapshot library root (source)"), targetRoot = field(section, "WebGUI library root (target)"); targetRoot.value = state.server?.music || ""; targetRoot.readOnly = true;
+  const sourceRoot = field(section, "Original library root recorded in snapshot (source)"), targetRoot = field(section, "WebGUI library root (target)"); targetRoot.value = state.server?.music || ""; targetRoot.readOnly = true;
   section.insertBefore(sourceLabel, sourceRoot.parentElement || sourceRoot);
+  const sourceRootHelp = node("p", "settings-subcopy", "Use the media root stored in the SQLite paths (for example /music), not the folder containing the .db file. Leave blank to use picker_inventory when the snapshot records it.");
+  section.insertBefore(sourceRootHelp, targetRoot.parentElement || targetRoot);
   const summary = node("p", "runtime-summary", "Loading reconciliation status…"), differences = node("pre", "diagnostic-events reconciliation-events", "Loading recorded differences…");
   const resolution = node("select");
   for (const [value, label] of [["", "All differences"], ["safe", "Safe pending"], ["conflict", "Conflicts"], ["derived", "Derived"], ["applied", "Applied"], ["skipped", "Failed / skipped"]]) { const option = node("option", "", label); option.value = value; resolution.append(option); }
-  const compare = node("button", "operation-button", "Compare / Dry Run"), apply = node("button", "operation-button", "Apply Safe Differences"), refresh = node("button", "operation-button", "Refresh Differences");
-  compare.type = apply.type = refresh.type = "button"; apply.disabled = true;
-  const actions = node("div", "connection-actions"); actions.append(compare, apply, refresh, resolution); section.append(actions, summary, differences);
+  const compare = node("button", "operation-button", "Compare / Dry Run"), savePaths = node("button", "operation-button", "Save Snapshot & Paths"), apply = node("button", "operation-button", "Apply Safe Differences"), refresh = node("button", "operation-button", "Refresh Differences");
+  compare.type = savePaths.type = apply.type = refresh.type = "button"; apply.disabled = true;
+  const actions = node("div", "connection-actions"); actions.append(compare, savePaths, apply, refresh, resolution); section.append(actions, summary, differences);
   const schedule = node("section", "reconciliation-schedule"), enabled = node("input"), autoApply = node("input"), interval = node("input");
   enabled.type = autoApply.type = "checkbox"; interval.type = "number"; interval.min = "15"; interval.max = "10080"; interval.value = "1440";
   const enabledLabel = node("label", "setting-checkbox"); enabledLabel.append(enabled, node("span", "", "Enable scheduled comparison"));
@@ -1126,9 +1128,10 @@ async function renderSqliteReconciliation(host) {
   const intervalLabel = node("label", "setting-field"); intervalLabel.append(node("span", "", "Interval (minutes)"), interval);
   const saveSchedule = node("button", "operation-button", "Save Safe Schedule"); saveSchedule.type = "button";
   schedule.append(node("h6", "", "Optional schedule · disabled by default"), enabledLabel, autoLabel, intervalLabel, saveSchedule, node("p", "settings-subcopy", "Scheduled runs use these saved paths and can never apply conflicts or delete PostgreSQL records.")); section.append(schedule); host.append(section);
-  let latestRun = "";
+  let latestRun = "", savedSettings = {};
   const describe = result => {
     const last = result.last_run, settings = result.settings || {};
+    savedSettings = {...settings};
     summary.textContent = last ? `Last run ${last.run_id} · ${last.status} · ${last.differences} difference(s) · ${last.conflicts} conflict(s) · ${last.failures} failure(s)` : "No reconciliation run has been recorded.";
     latestRun = last?.run_id || ""; apply.disabled = !latestRun || !result.pending_safe;
     differences.textContent = result.differences?.length ? [...result.differences].reverse().map(item => `${String(item.id).padStart(7, "0")}  ${item.entity_table}  ${item.difference_type}  ${item.resolution}  ${item.application_outcome}  ${item.entity_key}${item.error ? "  ERROR=" + item.error : ""}`).join("\n") : "No recorded differences match this filter.";
@@ -1139,11 +1142,16 @@ async function renderSqliteReconciliation(host) {
   const load = async () => describe(await api("/api/reconciliation?resolution=" + encodeURIComponent(resolution.value)));
   try {
     const [sources, result] = await Promise.all([api("/api/reconciliation/sources"), api("/api/reconciliation")]);
-    const blank = node("option", "", sources.length ? "Choose a cache snapshot" : "No authorized snapshots found"); blank.value = ""; source.append(blank);
+    const blank = node("option", "", sources.length ? "Choose an authorized snapshot" : "No authorized snapshots found"); blank.value = ""; source.append(blank);
     for (const item of sources) { const option = node("option", "", `${item.label} · ${Math.ceil(item.bytes / 1024)} KiB`); option.value = item.path; source.append(option); }
     if (result.settings?.source_path && ![...source.options].some(option => option.value === result.settings.source_path)) { const option = node("option", "", result.settings.source_path); option.value = result.settings.source_path; source.append(option); }
     source.value = result.settings?.source_path || ""; sourceRoot.value = result.settings?.source_root || ""; describe(result);
   } catch (error) { summary.textContent = error.message; summary.classList.add("operation-error"); }
+  savePaths.addEventListener("click", () => runAction(async () => {
+    if (!source.value) throw new Error("Choose an authorized SQLite snapshot before saving paths");
+    await post("/api/reconciliation/settings", {enabled: Boolean(savedSettings.enabled), auto_apply_safe: Boolean(savedSettings.auto_apply_safe), interval_minutes: Number(savedSettings.interval_minutes || 1440), source_path: source.value, source_root: sourceRoot.value, target_root: targetRoot.value});
+    setStatus("Saved SQLite snapshot and library path mapping"); await load();
+  }));
   compare.addEventListener("click", () => runAction(async () => { const result = await post("/api/reconciliation/compare", {source_path: source.value, source_root: sourceRoot.value, target_root: targetRoot.value}); latestRun = result.run_id; setStatus(`SQLite comparison recorded ${result.differences} difference(s), including ${result.conflicts} conflict(s)`); await load(); }));
   apply.addEventListener("click", () => runAction(async () => { if (!window.confirm("Apply only the safe, unchanged differences from this run? Conflicts will remain unresolved.")) return; const result = await post("/api/reconciliation/apply", {run_id: latestRun}); setStatus(`Applied ${result.applied} safe SQLite difference(s)`); await load(); }));
   refresh.addEventListener("click", () => void load()); resolution.addEventListener("change", () => void load());
@@ -1155,8 +1163,8 @@ function renderCatalogMaintenance(host, advanced = false) {
   maintenance.append(node("p", "settings-warning", "A full refresh deliberately republishes the complete music catalog. Normal added, changed, and removed files use the faster header update."));
   const refresh = node("button", "operation-button full-action", "Full Refresh Library Index"); refresh.type = "button";
   refresh.addEventListener("click", () => runAction(async () => { $("workspaceDialog").close(); const job = await post("/api/jobs", {kind: "index", payload: {mode: "full"}}); await reviewJob(job.id); }));
-  maintenance.append(refresh, node("h5", "", "Import an existing SQLite catalog"), node("p", "settings-subcopy", "Imports a server-side snapshot into an empty PostgreSQL catalog. The source remains unchanged."));
-  const path = field(maintenance, "Snapshot path on server"), importButton = node("button", "operation-button full-action", "Import Catalog"); importButton.type = "button";
+  maintenance.append(refresh, node("h5", "", "Import an existing SQLite catalog"), node("p", "settings-subcopy", "Empty PostgreSQL catalogs only. Choose one server-side .db, .sqlite, or .sqlite3 file—not its containing directory. The source remains unchanged."));
+  const path = field(maintenance, "SQLite snapshot file on server (.db)"), importButton = node("button", "operation-button full-action", "Import Catalog"); importButton.type = "button";
   importButton.addEventListener("click", () => runAction(async () => { const result = await post("/api/catalog/import", {path: path.value}); setStatus("Imported " + (result.albums || 0) + " albums"); }));
   maintenance.append(importButton);
   if (advanced) void renderSqliteReconciliation(maintenance);

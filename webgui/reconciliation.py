@@ -142,10 +142,17 @@ class SQLiteReconciler:
         target_root: Path,
         audit: Callable[..., Any] | None = None,
         *,
+        snapshot_roots: tuple[Path, ...] = (),
         start_scheduler: bool = True,
     ):
         self.database = database
-        self.allowed_root = allowed_root.resolve()
+        roots: list[Path] = []
+        for candidate in (allowed_root, *snapshot_roots):
+            resolved = Path(candidate).expanduser().resolve()
+            if resolved not in roots:
+                roots.append(resolved)
+        self.allowed_roots = tuple(roots)
+        self.allowed_root = self.allowed_roots[0]
         self.target_root = target_root.resolve()
         self.audit = audit
         self._operation_lock = Lock()
@@ -164,42 +171,66 @@ class SQLiteReconciler:
         if self.audit:
             self.audit(action, "SQLite reconciliation", details, **fields)
 
+    def _authorized_root(self, path: Path) -> Path | None:
+        for root in self.allowed_roots:
+            try:
+                path.relative_to(root)
+                return root
+            except ValueError:
+                continue
+        return None
+
+    def _source_label(self, path: Path) -> str:
+        root = self._authorized_root(path)
+        if root is None:
+            raise PermissionError("SQLite reconciliation source is outside the authorized snapshot directories")
+        relative = path.relative_to(root)
+        return str(relative) if root == self.allowed_root else str(Path(root.name) / relative)
+
     def _source(self, value: Any) -> Path:
         selected = Path(str(value or "")).expanduser()
         if selected.is_symlink():
             raise ValueError("SQLite reconciliation does not follow snapshot symlinks")
         path = selected.resolve(strict=True)
         if not path.is_file() or path.suffix.casefold() not in SOURCE_SUFFIXES:
-            raise ValueError("Choose a .db, .sqlite, or .sqlite3 snapshot from the authorized cache directory")
-        try:
-            path.relative_to(self.allowed_root)
-        except ValueError as error:
-            raise PermissionError("SQLite reconciliation sources must be inside the configured persistent cache") from error
+            raise ValueError("Choose a .db, .sqlite, or .sqlite3 file from an authorized snapshot directory")
+        if self._authorized_root(path) is None:
+            raise PermissionError("SQLite reconciliation sources must be inside an authorized snapshot directory")
         return path
 
     def sources(self) -> list[dict[str, Any]]:
         result = []
-        if not self.allowed_root.is_dir():
-            return result
-        for path in self.allowed_root.rglob("*"):
+        seen: set[Path] = set()
+        for root in self.allowed_roots:
+            if not root.is_dir():
+                continue
+            for path in root.rglob("*"):
+                if len(result) >= 200:
+                    break
+                try:
+                    resolved = path.resolve(strict=True)
+                    if (
+                        path.is_symlink()
+                        or resolved in seen
+                        or not resolved.is_file()
+                        or resolved.suffix.casefold() not in SOURCE_SUFFIXES
+                    ):
+                        continue
+                    resolved.relative_to(root)
+                    stat = resolved.stat()
+                except (OSError, ValueError):
+                    continue
+                seen.add(resolved)
+                result.append(
+                    {
+                        "path": str(resolved),
+                        "label": self._source_label(resolved),
+                        "bytes": int(stat.st_size),
+                        "modified_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+                    }
+                )
             if len(result) >= 200:
                 break
-            try:
-                resolved = path.resolve(strict=True)
-                if path.is_symlink() or not resolved.is_file() or resolved.suffix.casefold() not in SOURCE_SUFFIXES:
-                    continue
-                resolved.relative_to(self.allowed_root)
-                stat = resolved.stat()
-            except (OSError, ValueError):
-                continue
-            result.append(
-                {
-                    "path": str(resolved),
-                    "label": str(resolved.relative_to(self.allowed_root)),
-                    "bytes": int(stat.st_size),
-                    "modified_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
-                }
-            )
         return sorted(result, key=lambda item: item["label"].casefold())
 
     @staticmethod
@@ -361,7 +392,7 @@ class SQLiteReconciler:
                 raise PermissionError("The target mapping must be the configured WebGUI music library")
             before = self._fingerprint(source)
             run_id = uuid4().hex
-            label = str(source.relative_to(self.allowed_root))
+            label = self._source_label(source)
             counts = {"differences": 0, "safe": 0, "conflicts": 0, "derived": 0}
             self._event(
                 "sqlite-reconciliation",

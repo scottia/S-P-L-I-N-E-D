@@ -5,6 +5,8 @@ from __future__ import annotations
 from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
+import os
 import sqlite3
 import unittest
 
@@ -63,6 +65,46 @@ class SQLiteReconciliationTests(unittest.TestCase):
             finally:
                 reconciler.close()
 
+    def test_dedicated_snapshot_root_is_authorized_without_widening_filesystem_access(self):
+        with TemporaryDirectory() as cache_directory, TemporaryDirectory() as snapshot_directory, TemporaryDirectory() as outside_directory:
+            cache_root = Path(cache_directory)
+            snapshot_root = Path(snapshot_directory)
+            snapshot = snapshot_root / "splined.db"
+            with closing(sqlite3.connect(snapshot)) as database, database:
+                database.execute("PRAGMA user_version=2")
+            outside = Path(outside_directory) / "outside.db"
+            outside.touch()
+            reconciler = SQLiteReconciler(
+                object(),
+                cache_root,
+                cache_root / "music",
+                snapshot_roots=(snapshot_root,),
+                start_scheduler=False,
+            )
+            try:
+                sources = reconciler.sources()
+                self.assertEqual(len(sources), 1)
+                self.assertEqual(sources[0]["path"], str(snapshot.resolve()))
+                self.assertEqual(
+                    sources[0]["label"],
+                    str(Path(snapshot_root.name) / "splined.db"),
+                )
+                self.assertEqual(sources[0]["bytes"], snapshot.stat().st_size)
+                self.assertEqual(reconciler._source(snapshot), snapshot.resolve())
+                with self.assertRaises(PermissionError):
+                    reconciler._source(outside)
+            finally:
+                reconciler.close()
+
+    def test_snapshot_root_environment_is_explicit_and_container_default_is_bounded(self):
+        from webgui.server import _sqlite_snapshot_roots
+
+        with TemporaryDirectory() as directory, patch.dict(
+            os.environ,
+            {"SPLINED_SQLITE_SNAPSHOT_ROOT": directory},
+        ):
+            self.assertEqual(_sqlite_snapshot_roots(), (Path(directory),))
+
     def test_migration_has_exact_history_name_idempotence_key_and_disabled_schedule(self):
         migration = (
             Path(__file__).parents[1] / "migrations" / "010_sqlite_reconciliation.sql"
@@ -77,9 +119,14 @@ class SQLiteReconciliationTests(unittest.TestCase):
         operations = (root / "static" / "operations.js").read_text(encoding="utf-8")
         reconciliation = (root / "reconciliation.py").read_text(encoding="utf-8")
         self.assertIn("Compare / Dry Run", operations)
+        self.assertIn("Save Snapshot & Paths", operations)
+        self.assertIn("Saved SQLite snapshot and library path mapping", operations)
         self.assertIn("Apply Safe Differences", operations)
         self.assertIn("Automatically apply safe differences only", operations)
+        self.assertIn("Choose an authorized snapshot", operations)
+        self.assertIn("not the folder containing the .db file", operations)
         self.assertIn("resolution='safe'", reconciliation)
+        self.assertIn('source.as_uri() + "?mode=ro"', reconciliation)
         self.assertIn('"conflicts_applied": 0', reconciliation)
         self.assertNotIn("web_jobs", reconciliation)
 
