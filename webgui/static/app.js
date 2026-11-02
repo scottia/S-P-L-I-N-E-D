@@ -625,6 +625,12 @@ function renderHero() {
     : state.artist ? "artist:" + state.artist.id : "";
   renderWithScrollMemory(["overviewContent", "albumGrid", "findView"], context, renderHeroContents);
 }
+function renderArtistInfoVisibility(artist = state.artist) {
+  $("artistInfoRows").hidden = !state.artistInfoExpanded;
+  $("artistInfoToggle").disabled = !artist;
+  $("artistInfoToggle").setAttribute("aria-expanded", String(state.artistInfoExpanded));
+  $("artistInfoToggle").setAttribute("aria-label", state.artistInfoExpanded ? "Hide Artist information" : "Show Artist information");
+}
 function renderHeroContents() {
   if (state.editorMode === "fallback") { renderFallbackOverview(); return; }
   $("hero").classList.remove("fallback-overview");
@@ -648,10 +654,7 @@ function renderHeroContents() {
   else artistMbidLink.removeAttribute("href");
   $("artistInfoGenres").textContent = artist?.genres?.join(", ") || "Not available";
   $("artistInfoRoles").textContent = artist?.roles?.join(", ") || "Primary Artist";
-  $("artistInfoRows").hidden = !state.artistInfoExpanded;
-  $("artistInfoToggle").disabled = !artist;
-  $("artistInfoToggle").setAttribute("aria-expanded", String(state.artistInfoExpanded));
-  $("artistInfoToggle").setAttribute("aria-label", state.artistInfoExpanded ? "Hide Artist information" : "Show Artist information");
+  renderArtistInfoVisibility(artist);
   $("refreshArtistInfo").disabled = !artist;
   $("musicbrainzArtistButton").disabled = !artist?.mbid;
   renderArtistBiography(artist, metadata);
@@ -1818,7 +1821,7 @@ $("biographyToggle").addEventListener("click", () => {
 $("artistInfoToggle").addEventListener("click", () => {
   if (!state.artist) return;
   state.artistInfoExpanded = !state.artistInfoExpanded;
-  renderHero();
+  renderArtistInfoVisibility();
 });
 window.addEventListener("resize", () => requestAnimationFrame(updateBiographyToggle));
 $("albumSearch").addEventListener("input", event => { if (state.libraryMode === "artists") renderLibrary(); else loadLibrary(event.target.value); });

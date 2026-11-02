@@ -217,6 +217,16 @@ class ReportedDefectTests(unittest.TestCase):
             styles,
         )
         self.assertIn(
+            "state.artistInfoExpanded = !state.artistInfoExpanded;\n"
+            "  renderArtistInfoVisibility();",
+            application,
+        )
+        self.assertNotIn(
+            "state.artistInfoExpanded = !state.artistInfoExpanded;\n"
+            "  renderHero();",
+            application,
+        )
+        self.assertIn(
             'artistMbidLink.href = "https://musicbrainz.org/artist/" + encodeURIComponent(artistMbid)',
             application,
         )
