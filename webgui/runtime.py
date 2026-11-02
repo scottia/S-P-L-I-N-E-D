@@ -40,6 +40,10 @@ class Runtime:
         self.database = database
         self.lock = threading.RLock()
         self.processing = threading.RLock()
+        # Queued work must keep Settings stable for its full lifetime, including
+        # interactive browser prompts.  Actual media writes use ``processing``
+        # separately so a waiting scan cannot block unrelated explicit writes.
+        self.job_scope = threading.RLock()
         self.cfg = deepcopy(cfg) if cfg is not None else self.load()
         self.validate(self.cfg)
         self._ensure_cache_directories(self.cfg)
@@ -150,30 +154,37 @@ class Runtime:
             raise ValueError("The music library must be an existing directory")
         self._ensure_cache_directories(cfg)
         with self.lock:
-            if not self.processing.acquire(blocking=False):
+            if not self.job_scope.acquire(blocking=False):
                 raise ValueError(
                     "Wait for active artwork work to finish before changing settings"
                 )
             try:
-                self.config_file.parent.mkdir(parents=True, exist_ok=True)
-                descriptor, temporary = tempfile.mkstemp(
-                    prefix=".splined-config-",
-                    suffix=".toml",
-                    dir=self.config_file.parent,
-                )
+                if not self.processing.acquire(blocking=False):
+                    raise ValueError(
+                        "Wait for active artwork work to finish before changing settings"
+                    )
                 try:
-                    with os.fdopen(
-                        descriptor, "w", encoding="utf-8", newline="\n"
-                    ) as handle:
-                        handle.write(tomlkit.dumps(cfg))
-                        handle.flush()
-                        os.fsync(handle.fileno())
-                    os.replace(temporary, self.config_file)
+                    self.config_file.parent.mkdir(parents=True, exist_ok=True)
+                    descriptor, temporary = tempfile.mkstemp(
+                        prefix=".splined-config-",
+                        suffix=".toml",
+                        dir=self.config_file.parent,
+                    )
+                    try:
+                        with os.fdopen(
+                            descriptor, "w", encoding="utf-8", newline="\n"
+                        ) as handle:
+                            handle.write(tomlkit.dumps(cfg))
+                            handle.flush()
+                            os.fsync(handle.fileno())
+                        os.replace(temporary, self.config_file)
+                    finally:
+                        Path(temporary).unlink(missing_ok=True)
+                    self.cfg = cfg
                 finally:
-                    Path(temporary).unlink(missing_ok=True)
-                self.cfg = cfg
+                    self.processing.release()
             finally:
-                self.processing.release()
+                self.job_scope.release()
         return self.settings()
 
     def load_cache(self, _path, cache_key):

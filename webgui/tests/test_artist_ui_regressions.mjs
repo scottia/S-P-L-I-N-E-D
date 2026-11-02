@@ -812,7 +812,12 @@ test("COMP Selected Artwork keeps the Windows button contract", () => {
   assert.match(operationsSource, /\$\("embedBatchButton"\)\.textContent = "EMBED Batch"/);
   assert.match(operationsSource, /\$\("embedBatchButton"\)\.disabled = compContext \|\|/);
   assert.doesNotMatch(operationsSource, /textContent = compContext \? "EMBED Thumbs"/);
+  assert.match(appSource, /\$\("writeButton"\)\.addEventListener\("click", \(\) => runAction\(writeArtwork\)\)/);
   assert.match(appSource, /\$\("embedBatchButton"\)\.addEventListener\("click", \(\) => runAction\(stageAlbum\)\)/);
+  assert.match(operationsSource, /Writing selected cover…/);
+  assert.match(operationsSource, /Writing selected Artist Art…/);
+  assert.match(operationsSource, /Embedding selected COMP artwork…/);
+  assert.match(operationsSource, /Staging cover and Album embedding…/);
 });
 
 test("changing report tracks cancels an unrelated transient COMP job", async () => {
