@@ -1519,12 +1519,22 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         )
         self.assertEqual(self.cover.read_bytes(), original_cover)
         self.assertNotIn("musicbrainz_albumid", FLAC(target))
-        with closing(self.db.connect()) as db:
-            transitions = db.execute(
-                "SELECT id,state_from,state_to,request_status FROM web_audit "
-                "WHERE job_id=? AND action='job-transition' ORDER BY id",
-                (job["id"],),
-            ).fetchall()
+        # The terminal job row is committed immediately before its structured
+        # Audit transition is written on a separate connection.  Wait for the
+        # correlated diagnostic event instead of racing that deliberate
+        # boundary on fast CI runners.
+        deadline = time.monotonic() + 5.0
+        transitions = []
+        while time.monotonic() < deadline:
+            with closing(self.db.connect()) as db:
+                transitions = db.execute(
+                    "SELECT id,state_from,state_to,request_status FROM web_audit "
+                    "WHERE job_id=? AND action='job-transition' ORDER BY id",
+                    (job["id"],),
+                ).fetchall()
+            if transitions and transitions[-1]["state_to"] == "done":
+                break
+            time.sleep(0.05)
         states = [event["state_to"] for event in transitions]
         self.assertEqual(states[:2], ["queued", "running"])
         self.assertGreaterEqual(states.count("waiting"), 2)
@@ -2883,8 +2893,10 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     expect(first_card.locator(".candidate-source-label")).not_to_be_empty()
                     expect(first_card.locator(".candidate-resolution")).to_be_visible()
                     expect(first_card.locator(".candidate-quality")).to_be_visible()
-                    first_image_url = first_card.locator("img").evaluate(
-                        "image => image.currentSrc"
+                    first_image = first_card.locator("img")
+                    expect(first_image).to_have_attribute("src", re.compile(r"\S+"))
+                    first_image_url = first_image.evaluate(
+                        "image => new URL(image.getAttribute('src'), document.baseURI).href"
                     )
                     first_image_response = page.request.get(first_image_url)
                     self.assertTrue(first_image_response.ok)

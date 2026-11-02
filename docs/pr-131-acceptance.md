@@ -148,11 +148,15 @@ If PostgreSQL audit insertion fails, bounded redacted JSONL records remain recov
 
 - Current embedded-completion correction: `13` isolated reconciliation tests
   plus the real-PostgreSQL apply/idempotence test passed in `9.237s`.
-- Full current PC run: `242` tests passed; its two invocation-only errors were
-  the absent CI `PYTHONPATH` and an uninstalled default Chrome channel. Both
-  were rerun with CI's `PYTHONPATH=.:webgui/backend` and the installed Brave
-  executable; all `3` affected tests passed in `86.777s`. Application result:
-  `245` passing tests.
+- Full current PC run with CI's `PYTHONPATH`, actual PostgreSQL, and the
+  installed Brave executable: `245` tests in `276.229s`, `OK`.
+- GitHub run `41396167849` exposed two test synchronization races: the COMP
+  test could observe a terminal job row before its separately committed Audit
+  transition, and the rendered test could read an image's `currentSrc` before
+  the browser resolved its relative `src`. Tests now wait for the correlated
+  terminal Audit event and resolve a non-empty image `src` against the document
+  base URL. The COMP case passed `10/10` repeated PostgreSQL runs; both failed
+  cases then passed together with installed Brave in `96.581s`.
 - Full PC suite with required `PYTHONPATH`, actual PostgreSQL, and installed Brave after the dedicated-snapshot and saved-path corrections: `236` tests in `260.347s`, `OK`.
 - Focused current-head Artist/UI and installed-Brave acceptance after isolating the dropdown visibility update from the asynchronous Artist Overview render: `7` tests in `77.435s`, `OK`.
 - Focused audit failure/export: `1` test in `3.674s`, `OK`.
