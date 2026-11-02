@@ -103,10 +103,10 @@ If PostgreSQL audit insertion fails, bounded redacted JSONL records remain recov
 
 ## Exact verification
 
-- Full PC suite with required `PYTHONPATH`, actual PostgreSQL, and installed Brave after the final Artist Overview and CI-test corrections: `233` tests in `238.984s`, `OK`.
+- Full PC suite with required `PYTHONPATH`, actual PostgreSQL, and installed Brave after the Artist Overview and restart-state corrections: `233` tests in `238.984s`, `OK`.
 - Focused audit failure/export: `1` test in `3.674s`, `OK`.
 - PostgreSQL integration module before the final audit case: `34` tests in `223.518s`, `OK`.
-- Focused rendered Brave workflow after the final Artist Overview and CI-test corrections: `1` test in `80.436s`, `OK`. This verifies the circular thumbnail, `16 x 16` toggle, collapsed default, downward absolute overlay, no layout shift, synchronized row growth, MusicBrainz hyperlink, and exactly 20% transparency in dark, chalk, and light themes.
+- Focused rendered Brave workflow after the final cross-platform assertions: `1` test in `83.753s`, `OK`. This verifies the circular thumbnail, `16 x 16` toggle, collapsed default, downward absolute overlay, no layout shift, synchronized row growth, MusicBrainz hyperlink, and exactly 20% transparency in dark, chalk, and light themes.
 - GitHub Actions run `41364590140` on `39463bc`: success (`webgui` success, Windows advisory success, native correctly skipped by scope). The final branch-head result is recorded in the PR timeline after publication.
 - Python compilation, JavaScript syntax checks, boundary tests, and `git diff --check`: passed.
 - Expected non-failing warning: Starlette's installed `httpx` compatibility deprecation. The PC Python 3.12 environment already contains `psycopg 3.3.6` and `httpx 0.28.1`; no dependency download was needed.

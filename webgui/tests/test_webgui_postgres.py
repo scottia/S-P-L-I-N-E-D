@@ -2391,10 +2391,19 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     # portrait and never move the Album area or page layout.
                     expect(page.locator("#artistInfoRows")).to_be_hidden()
                     expect(page.locator("#artistBiography")).to_be_visible()
-                    portrait_radius = page.locator("#heroPortrait").evaluate(
-                        "element => getComputedStyle(element).borderRadius"
+                    portrait_box = page.locator("#heroPortrait").bounding_box()
+                    self.assertAlmostEqual(
+                        portrait_box["width"], portrait_box["height"], delta=0.5
                     )
-                    self.assertEqual(portrait_radius, "50%")
+                    portrait_rule_is_round = page.evaluate(
+                        """() => [...document.styleSheets].some(sheet =>
+                            [...sheet.cssRules].some(rule =>
+                                rule.selectorText === '.hero-portrait' &&
+                                rule.style.getPropertyValue('border-radius') === '50%'
+                            )
+                        )"""
+                    )
+                    self.assertTrue(portrait_rule_is_round)
                     toggle_box = page.locator("#artistInfoToggle").bounding_box()
                     artist_radio_box = page.locator("#artistArtEntry").bounding_box()
                     self.assertEqual(round(toggle_box["width"]), 16)
@@ -2433,36 +2442,6 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         ),
                         "absolute",
                     )
-                    info_cells = page.locator("#artistInfoRows > span")
-                    self.assertEqual(info_cells.count(), 6)
-                    self.assertAlmostEqual(
-                        info_cells.nth(4).bounding_box()["height"],
-                        info_cells.nth(5).bounding_box()["height"],
-                        delta=0.5,
-                    )
-                    initial_theme = page.evaluate(
-                        "document.documentElement.dataset.theme"
-                    )
-                    theme_rows = {}
-                    for theme in ("dark", "chalk", "light"):
-                        page.evaluate(
-                            "theme => document.documentElement.dataset.theme = theme",
-                            theme,
-                        )
-                        theme_rows[theme] = info_cells.first.evaluate(
-                            "element => getComputedStyle(element).backgroundColor"
-                        )
-                    self.assertEqual(len(set(theme_rows.values())), 3)
-                    for theme, color in theme_rows.items():
-                        self.assertIn(
-                            "/ 0.8)",
-                            color,
-                            f"{theme} metadata row must be exactly 20% transparent",
-                        )
-                    page.evaluate(
-                        "theme => document.documentElement.dataset.theme = theme",
-                        initial_theme,
-                    )
                     self.assertAlmostEqual(
                         page.locator("#hero").bounding_box()["height"],
                         hero_height,
@@ -2472,6 +2451,53 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         page.locator("#albumGrid").bounding_box()["y"],
                         album_grid_y,
                         delta=0.5,
+                    )
+                    info_cells = page.locator("#artistInfoRows > span")
+                    self.assertEqual(info_cells.count(), 6)
+                    self.assertAlmostEqual(
+                        info_cells.nth(4).bounding_box()["height"],
+                        info_cells.nth(5).bounding_box()["height"],
+                        delta=0.5,
+                    )
+                    initial_theme = page.evaluate(
+                        "document.documentElement.getAttribute('data-theme')"
+                    )
+                    theme_rows = {}
+                    for theme in ("dark", "chalk", "light"):
+                        page.evaluate(
+                            "theme => document.documentElement.dataset.theme = theme",
+                            theme,
+                        )
+                        theme_rows[theme] = info_cells.first.evaluate(
+                            """element => {
+                                const color = getComputedStyle(element).backgroundColor;
+                                const canvas = document.createElement('canvas');
+                                canvas.width = 1;
+                                canvas.height = 1;
+                                const context = canvas.getContext('2d');
+                                context.clearRect(0, 0, 1, 1);
+                                context.fillStyle = color;
+                                context.fillRect(0, 0, 1, 1);
+                                return {
+                                    color,
+                                    alpha: context.getImageData(0, 0, 1, 1).data[3],
+                                };
+                            }"""
+                        )
+                    self.assertEqual(
+                        len({row["color"] for row in theme_rows.values()}), 3
+                    )
+                    for theme, row in theme_rows.items():
+                        self.assertEqual(
+                            row["alpha"],
+                            204,
+                            f"{theme} metadata row must be exactly 20% transparent",
+                        )
+                    page.evaluate(
+                        """theme => theme === null
+                            ? document.documentElement.removeAttribute('data-theme')
+                            : document.documentElement.setAttribute('data-theme', theme)""",
+                        initial_theme,
                     )
                     page.locator("#artistInfoToggle").click()
                     expect(page.locator("#artistInfoRows")).to_be_hidden()
