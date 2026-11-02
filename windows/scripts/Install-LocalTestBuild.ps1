@@ -8,6 +8,18 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
+function Get-Sha256([string]$Path) {
+    $algorithm = [System.Security.Cryptography.SHA256]::Create()
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        return ([System.BitConverter]::ToString($algorithm.ComputeHash($stream))).Replace('-', '')
+    }
+    finally {
+        $stream.Dispose()
+        $algorithm.Dispose()
+    }
+}
+
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
 $manifestPath = Join-Path $repositoryRoot 'windows\Cargo.toml'
 $targetRoot = [System.IO.Path]::GetFullPath(
@@ -93,9 +105,9 @@ if ($signature[0] -ne 0x4D -or $signature[1] -ne 0x5A) {
     throw 'The local build output is not a Windows executable.'
 }
 
-$builtHash = (Get-FileHash -LiteralPath $resolvedBuildPath -Algorithm SHA256).Hash
+$builtHash = Get-Sha256 $resolvedBuildPath
 Copy-Item -LiteralPath $resolvedBuildPath -Destination $resolvedInstallPath -Force
-$installedHash = (Get-FileHash -LiteralPath $resolvedInstallPath -Algorithm SHA256).Hash
+$installedHash = Get-Sha256 $resolvedInstallPath
 if ($builtHash -ne $installedHash) {
     throw 'The installed executable does not match the completed local test build.'
 }
