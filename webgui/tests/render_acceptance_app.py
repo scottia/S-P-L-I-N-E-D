@@ -51,6 +51,7 @@ ARTIST = {
     "roles": ["Primary Artist"],
     "local_candidates": [],
     "portrait": "/assets/splined-app-icon.png",
+    "portrait_meta": {"width": 1024, "height": 1024, "bytes": 914432},
     "banner": "",
     "top_tracks": ["Recovery", "Trace", "Reconcile"],
 }
@@ -114,7 +115,18 @@ def albums(view: str = "albums", q: str = ""):
 
 @app.get("/api/artist/overview")
 def artist_overview(id: str):
-    return {"artist": ARTIST, "comp_albums": []}
+    return {
+        "artist": ARTIST,
+        "comp_albums": [],
+        "metadata": {
+            "source": "Navidrome",
+            "biography": "A disposable Artist projection used to verify the recovered WebGUI layout without touching production music or databases.",
+            "similar": [],
+            "top_songs": ARTIST["top_tracks"],
+            "similar_reason": "Loading genuine Similar Artists from the configured provider",
+            "pending": True,
+        },
+    }
 
 
 @app.get("/api/artist")

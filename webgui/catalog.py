@@ -577,6 +577,21 @@ class Catalog:
             Path(temporary).unlink(missing_ok=True)
         return path
 
+    def _navidrome_similar_thumbnail_path(
+        self, remote_artist: dict[str, object]
+    ) -> Path | None:
+        """Return an already cached Similar Artist image without blocking metadata."""
+        cache = getattr(self, "cache", None)
+        directory = cache / "navidrome-thumbnails" / "similar" if cache is not None else None
+        cover_id = str(remote_artist.get("coverArt") or "").strip()
+        if directory is None or not cover_id:
+            return None
+        identity = sha256(
+            (str(remote_artist.get("id") or "") + "\0" + str(remote_artist.get("name") or "") + "\0" + cover_id).encode("utf-8")
+        ).hexdigest()[:32]
+        path = directory / ("web-v1-" + identity + ".png")
+        return path if path.is_file() else None
+
     def _navidrome_artists_by_name(self) -> dict[str, dict[str, object]]:
         """Load Navidrome's artist directory with bounded, recoverable retries."""
         credential_path = self.credentials / "navidrome.json"
@@ -1548,6 +1563,23 @@ class Catalog:
                 ),
             )
 
+    def artist_metadata_seed(self, artist_id: str) -> dict[str, object] | None:
+        """Return immediately displayable cached biography data for Artist Overview."""
+        with self.lock:
+            cached = self.metadata_cache.get(artist_id)
+        if cached is not None:
+            return {**cached, "pending": False}
+        stored = self._stored_artist_profile(artist_id)
+        if not stored:
+            return None
+        return {
+            **stored,
+            "similar": [],
+            "top_songs": [],
+            "similar_reason": "Loading genuine Similar Artists from the configured provider",
+            "pending": True,
+        }
+
     def artist_metadata(self, artist_id: str, *, refresh: bool = False) -> dict[str, object]:
         if refresh:
             with self.lock:
@@ -1563,7 +1595,7 @@ class Catalog:
             }
         artist = self.artist(artist_id)
         stored_profile = self._stored_artist_profile(artist_id)
-        result: dict[str, object] = {"source": "unavailable", "biography": "", "similar": [], "top_songs": artist["top_tracks"]}
+        result: dict[str, object] = {"source": "unavailable", "biography": "", "similar": [], "top_songs": []}
         credential_path = self.credentials / "navidrome.json"
         if not credential_path.is_file():
             result["reason"] = "Navidrome credentials are not present in this test bed"
@@ -1617,10 +1649,16 @@ class Catalog:
                         local = local_rows.get(normalized_artist_identity(name))
                         portrait = self.artist_thumbnail_path(local) if local is not None else None
                         if portrait is None:
-                            try:
-                                portrait = self._cache_navidrome_similar_thumbnail(item, credential)
-                            except (OSError, ValueError, KeyError, TypeError, requests.RequestException):
-                                portrait = None
+                            # Similar names must not wait behind as many as ten
+                            # sequential 20-second artwork downloads.  Reuse an
+                            # authorized cached provider image when one exists;
+                            # the browser supplies an initial-letter fallback.
+                            portrait = self._navidrome_similar_thumbnail_path(item)
+                            if portrait is None and refresh:
+                                try:
+                                    portrait = self._cache_navidrome_similar_thumbnail(item, credential)
+                                except (OSError, ValueError, KeyError, TypeError, requests.RequestException):
+                                    portrait = None
                         projected.append(
                             {
                                 "name": name,
@@ -1635,15 +1673,17 @@ class Catalog:
                     if not projected:
                         result["similar_reason"] = "Navidrome returned no Similar Artists for this Artist"
                     result["source"] = "Navidrome"
-                    try:
-                        top = call("getTopSongs", {"artist": str(artist["name"]), "count": "10"}).get("topSongs", {}).get("song", [])
-                        if isinstance(top, dict):
-                            top = [top]
-                        songs = [str(item.get("title")) for item in top if isinstance(item, dict) and item.get("title")]
-                        if songs:
-                            result["top_songs"] = list(dict((song.casefold(), song) for song in songs).values())[:10]
-                    except (OSError, ValueError, KeyError, TypeError, AttributeError, requests.RequestException):
-                        pass  # Biography and similar artists remain useful without top songs.
+                    if str(result.get("biography") or "").strip():
+                        self._save_artist_profile(
+                            artist_id,
+                            {
+                                "lookup_name": str(artist["name"]),
+                                "musicbrainz_id": str(artist.get("mbid") or ""),
+                                "biography": str(result["biography"]),
+                                "external_url": str(info.get("lastFmUrl") or ""),
+                                "source": "Navidrome",
+                            },
+                        )
                 else:
                     result["reason"] = "Artist was not found in Navidrome"
             except (OSError, ValueError, KeyError, TypeError, AttributeError, requests.RequestException):
@@ -1668,10 +1708,14 @@ class Catalog:
                 self._save_artist_profile(artist_id, profile)
         with self.lock:
             self.metadata_cache[artist_id] = result
-        try:
-            self.refresh_artist_appearances(artist_id)
-        except (OSError, ValueError, KeyError, TypeError, requests.RequestException):
-            pass
+        # Album appearances are refreshed by the explicit Refresh Artist Info
+        # path.  Normal Artist selection returns biography/similarity without
+        # waiting for a second provider catalog traversal.
+        if refresh:
+            try:
+                self.refresh_artist_appearances(artist_id)
+            except (OSError, ValueError, KeyError, TypeError, requests.RequestException):
+                pass
         return {
             **result,
             "artist": self.artist(artist_id),

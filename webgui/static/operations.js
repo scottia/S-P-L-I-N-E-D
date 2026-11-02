@@ -58,6 +58,7 @@ async function initialize() {
   if (status.setup_required) { await openSettings(); setStatus("Complete library and database setup in Settings"); return; }
   const settings = await api("/api/settings");
   applyGraphicalEnhancement(settings.config.webgui_ui?.enhancement);
+  state.artworkRange = {...state.artworkRange, ...(settings.config.range || {})};
   state.enabledSources = (settings.config.sources?.cover_sources || []).filter(key=>!settings.config.sources?.exclude_cover_sources?.includes(key) && settings.config.source_policies?.[key]?.enabled!==false);
   renderAll(); await loadLibrary(); await pollJobs();
 }
@@ -1263,6 +1264,7 @@ async function openSettings() {
     applySettingsInputs(draft, bindings);
     saved = await post("/api/settings", {config: draft}); await sessionStatus();
     applyGraphicalEnhancement(saved.config.webgui_ui?.enhancement);
+    state.artworkRange = {...state.artworkRange, ...(saved.config.range || {})};
     state.enabledSources = (saved.config.sources?.cover_sources || []).filter(key => !saved.config.sources?.exclude_cover_sources?.includes(key) && saved.config.source_policies?.[key]?.enabled !== false);
     renderAll(); setStatus(message); renderSection(active);
   }

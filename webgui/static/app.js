@@ -70,6 +70,7 @@ const state = {
   sourceDiagnostics: [],
   fx: {artist: {}, banner: {}, album: {}, comp: {}, current: {}, package: {}}, fit: {artist: {zoom: 1, x: 0, y: 0}, banner: {zoom: 1, x: 0, y: 0}},
   theme: "dark", compare: new Set(), graphicalEnhancement: normalizeGraphicalEnhancement(),
+  artworkRange: {min: 1200, ideal: 1800, max: 2400, ladder: 3600},
   embedQueue: [], queueControls: {pause_after_album: false, pause_all_albums: false}, queuedDecision: null, reviewJobState: "", listRequest: 0, selectionRequest: 0, searchRequest: 0,
   libraryLoading: false, artistMetadataRequest: 0,
   activeActionId: "", artistInfoExpanded: false,
@@ -309,12 +310,17 @@ function markSelectedAlbum(album) {
 }
 function candidateRange(candidate) {
   const shortSide = Math.min(Number(candidate.width) || 0, Number(candidate.height) || 0);
-  if (shortSide < 1200) return "BelowMinimum";
-  if (shortSide < 1800) return "LowerRange";
-  if (shortSide === 1800) return "Ideal";
-  if (shortSide <= 2400) return "UpperRange";
-  if (shortSide <= 3600) return "Ladder";
+  const range = state.artworkRange;
+  if (shortSide < range.min) return "BelowMinimum";
+  if (shortSide < range.ideal) return "LowerRange";
+  if (shortSide === range.ideal) return "Ideal";
+  if (shortSide <= range.max) return "UpperRange";
+  if (shortSide <= range.ladder) return "Ladder";
   return "AboveLadder";
+}
+function artworkRangeClass(candidate) {
+  if (!candidate || !(Number(candidate.width) > 0) || !(Number(candidate.height) > 0)) return "metric-unavailable";
+  return "metric-" + candidateRange(candidate).replace(/([a-z])([A-Z])/g, "$1-$2").toLowerCase();
 }
 function candidateMatches(candidate, dimension, key) {
   const kind = candidateKind(candidate);
@@ -615,7 +621,8 @@ function renderArtistBiography(artist, metadata) {
     state.biographyArtistId = artistId;
     state.biographyExpanded = false;
   }
-  state.biographyText = !artist ? "" : metadata?.biography || "No Artist biography available for " + artist.name + ".";
+  state.biographyText = !artist ? "" : metadata?.biography
+    || (!metadata || metadata.pending ? "Loading Artist biography…" : "No Artist biography available for " + artist.name + ".");
   $("biographyText").textContent = state.biographyText;
   requestAnimationFrame(updateBiographyToggle);
 }
@@ -675,6 +682,8 @@ function renderHeroContents() {
     if (local) card.addEventListener("click", () => chooseArtist(local.id));
     similar.append(card);
   }
+  if (artist && !metadata)
+    similar.append(node("p", "similar-unavailable loading", "Loading genuine Similar Artists…"));
   if (artist && metadata && !similar.childElementCount)
     similar.append(node("p", "similar-unavailable", metadata.similar_reason || metadata.reason || "No genuine Similar Artists were returned by the configured provider."));
   const facts = $("albumOverviewFacts"); clear(facts);
@@ -1364,7 +1373,7 @@ function paneImage(frame, src, label, portrait = false) {
   if (portrait) { const mask = node("span", "portrait-viewport"); mask.append(image(src, "portrait-preview", label)); frame.append(mask); }
   else frame.append(image(src, "", label));
 }
-function renderSelectedArtworkMetadata({source, type, dimensions, fileSize, prepared, preview, existing, candidate, originSource}) {
+function renderSelectedArtworkMetadata({source, type, dimensions, fileSize, prepared, preview, existing, candidate, originSource, metric}) {
   const host = $("artMetadata"); clear(host);
   const cell = (text, className = "", id = "") => {
     const value = node("div", className, text);
@@ -1377,7 +1386,8 @@ function renderSelectedArtworkMetadata({source, type, dimensions, fileSize, prep
       ["Source", source, "selectedSource"], ["Type", type, "selectedType"],
       ["Dimensions", dimensions, "selectedDimensions"], ["File Size", fileSize, "selectedSize"],
     ]) {
-      const wrapper = node("div"); wrapper.append(node("small", "", label), node("span", "", value));
+      const metricClass = ["Dimensions", "File Size"].includes(label) ? artworkRangeClass(metric) : "";
+      const wrapper = node("div"); wrapper.append(node("small", "", label), node("span", metricClass, value));
       wrapper.lastChild.id = id; host.append(wrapper);
     }
     return;
@@ -1495,6 +1505,7 @@ function selectedImage() {
     prepared: preparedComp, preview: state.upscalePreview, existing,
     candidate: preparedComp ? decision?.selected : candidate,
     originSource: state.upscalePreview ? "Enhancement" : decision?.selected?.source || (existing?.image ? "Embedded track" : source),
+    metric: metadata,
   });
   $("selectedQuality").textContent = quality;
   $("selectedQuality").classList.toggle("comp-thumb-ready", !!preparedComp && !state.pendingCompWrite);
@@ -1512,11 +1523,7 @@ function selectedImage() {
     extra.append(node("span", "", "Tracks " + state.album.tracks), node("span", "", "Embedded " + state.album.embedded + "/" + state.album.tracks));
     if (state.album.cover_meta) extra.append(node("span", "", "Existing cover " + state.album.cover_meta.width + " × " + state.album.cover_meta.height + " · " + size(state.album.cover_meta.bytes)));
     ribbon.hidden = !state.album.embedded; ribbon.textContent = "Embedded artwork on " + state.album.embedded + " of " + state.album.tracks + " tracks";
-  } else {
-    if (state.artist?.portrait_meta) extra.append(node("span", "", "Artist " + state.artist.portrait_meta.width + " × " + state.artist.portrait_meta.height + " · " + size(state.artist.portrait_meta.bytes)));
-    if (state.artist?.banner_meta) extra.append(node("span", "", "Banner " + state.artist.banner_meta.width + " × " + state.artist.banner_meta.height + " · " + size(state.artist.banner_meta.bytes)));
-    ribbon.hidden = true;
-  }
+  } else ribbon.hidden = true;
   applyPreviewEffects();
 }
 function renderReview() {
@@ -1693,7 +1700,7 @@ async function chooseArtist(id, select = true) {
     const overview = await api("/api/artist/overview?id=" + encodeURIComponent(id));
     if (request !== state.selectionRequest) return;
     const artist = overview.artist, compAlbums = overview.comp_albums;
-    state.artist = artist; state.artistMetadata = null; state.compAlbums = compAlbums; state.compGroups = [];
+    state.artist = artist; state.artistMetadata = overview.metadata || null; state.compAlbums = compAlbums; state.compGroups = [];
     const listedArtist = state.artists.find(item => item.id === artist.id);
     if (listedArtist && artist.portrait) listedArtist.portrait = artist.portrait;
     state.album = null; state.editorMode = "artist"; state.workspace = "find";
@@ -1724,7 +1731,7 @@ async function chooseAlbum(id) {
     if (!albumInCurrentArtistContext(id) && state.artist?.id !== album.artist_id) {
       const overview = await api("/api/artist/overview?id=" + encodeURIComponent(album.artist_id));
       if (request !== state.selectionRequest) return;
-      state.artist = overview.artist; state.artistMetadata = null;
+      state.artist = overview.artist; state.artistMetadata = overview.metadata || null;
       state.compAlbums = overview.comp_albums || [];
       loadArtistMetadata(overview.artist.id);
     }

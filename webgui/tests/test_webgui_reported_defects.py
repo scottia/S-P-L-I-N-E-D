@@ -67,7 +67,10 @@ class ReportedDefectTests(unittest.TestCase):
                 def json(self):
                     return {"subsonic-response": {"status": "ok", **self.payload}}
 
+            requests_seen = []
+
             def response(url, **_kwargs):
+                requests_seen.append(url)
                 if "search3" in url:
                     return Response({"searchResult3": {"artist": [{"id": "remote-selected", "name": "Selected Artist"}]}})
                 if "getArtistInfo2" in url:
@@ -103,6 +106,26 @@ class ReportedDefectTests(unittest.TestCase):
                 result["similar"],
                 [{"name": "Real Similar", "local_id": "similar", "image": "/api/image/similar", "provider_id": "remote-similar"}],
             )
+            self.assertEqual(
+                [url.rsplit("/", 1)[-1] for url in requests_seen],
+                ["search3.view", "getArtistInfo2.view"],
+                "Artist Overview must not wait for top-song or Similar Artist image requests",
+            )
+
+    def test_webgui_formatting_uses_visible_settings_and_configured_artwork_range(self):
+        repository = Path(__file__).parents[2]
+        stylesheet = (repository / "webgui" / "static" / "app.css").read_text(encoding="utf-8")
+        application = (repository / "webgui" / "static" / "app.js").read_text(encoding="utf-8")
+        operations = (repository / "webgui" / "static" / "operations.js").read_text(encoding="utf-8")
+
+        self.assertIn("top:64px", stylesheet)
+        self.assertIn("resize:both", stylesheet)
+        self.assertIn("text-align:justify", stylesheet)
+        self.assertIn("font-size:15px", stylesheet)
+        self.assertIn("metric-below-minimum", stylesheet)
+        self.assertIn("settings.config.range", operations)
+        self.assertIn("metric: metadata", application)
+        self.assertNotIn('"Artist " + state.artist.portrait_meta.width', application)
 
     def test_comp_report_backfills_only_albums_in_selected_artist_scope(self):
         with TemporaryDirectory() as directory:

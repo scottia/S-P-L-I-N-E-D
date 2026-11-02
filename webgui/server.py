@@ -731,7 +731,12 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
     def artist_overview(id: str):
         catalog = context.require().catalog
         artist = catalog.artist(id)
-        return {"artist": artist, "comp_albums": catalog.artist_comp_albums(str(artist["id"]))}
+        artist_id = str(artist["id"])
+        return {
+            "artist": artist,
+            "comp_albums": catalog.artist_comp_albums(artist_id),
+            "metadata": catalog.artist_metadata_seed(artist_id),
+        }
 
     @app.get("/api/artist/thumbnail")
     def artist_thumbnail(id: str):
