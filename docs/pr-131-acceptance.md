@@ -6,7 +6,7 @@ Branch: `fix/webgui-functional-recovery-audit`
 
 Base: `dfe0bf8ce8274d7272882a57a6dc3fc10d4897e2` (`main`, release `2.0.18`)
 
-Implementation revision exercised: the current PR branch head. Its exact SHA is recorded in the final PR update and in the authenticated WebGUI audit session after restart.
+Implementation revision exercised: `0e0a077e40b76e91496c0b27afb42c3a8d5927b1`.
 
 State: draft, open, unmerged. No release, tag, GHCR publication, production deployment, `dev` change, or Windows-source change was made.
 
@@ -41,6 +41,16 @@ Before migration/restart, the existing test configuration and PostgreSQL databas
 
 No SQLite differences or conflicts were applied. The reconciliation implementation remains Compare/Dry Run only for owner acceptance; Apply Safe Differences, scheduling, and automatic application remain disabled.
 
+The dedicated Windows snapshot directory is authorized independently from the
+persistent artwork cache. The PC launcher uses
+`SPLINED_SQLITE_SNAPSHOT_ROOT=N:\downloads\0_backups\splined\windows\_db`;
+container deployments may mount the same directory at `/sqlite_snap:ro`.
+The picker lists the specific `splined.db` file without walking the shared
+artwork cache first. **Save Snapshot & Paths** persists the selected file and
+the source/target library-root mapping without enabling scheduling or automatic
+application. The inspected SQLite snapshot is schema v2, records `/music` as
+its original library root, and remains opened with SQLite `mode=ro`.
+
 ## Root causes corrected
 
 - COMP launch filtered selected rows back to blue-only pending work. Explicit blue, purple, and green selections now retain exact Artist/Album/track scope through both Artist COMP and full Fallback launch controls. REPAIR COMP remains separate.
@@ -64,7 +74,7 @@ Opening the control displays a two-column metadata surface downward over the bio
 2. Albums count | Roles
 3. MusicBrainz ID | Genres
 
-Each pair shares its row height, so long values wrap and both columns expand together. The MusicBrainz ID is a direct external hyperlink to the selected MusicBrainz Artist page. The surface uses exactly 80% of the active theme's `--panel` color and 20% transparency in dark, chalk, and light themes. The Artist name remains in the yellow-backed bar below the thumbnail. The biography remains to the right, justified, limited to five lines when collapsed, and retains its inline more/less control.
+Each pair shares its row height, so long values wrap and both columns expand together. The MusicBrainz ID is a direct external hyperlink to the selected MusicBrainz Artist page. The surface uses exactly 80% of the active theme's `--panel` color and 20% transparency in dark, chalk, and light themes. The Artist name is plain theme-driven yellow text below the thumbnail with no banner background. The biography remains to the right, justified, limited to five lines when collapsed, and retains its inline more/less control.
 
 ## Functional and rendered results
 
@@ -103,19 +113,20 @@ If PostgreSQL audit insertion fails, bounded redacted JSONL records remain recov
 
 ## Exact verification
 
-- Full PC suite with required `PYTHONPATH`, actual PostgreSQL, and installed Brave after the Artist Overview and restart-state corrections: `233` tests in `238.984s`, `OK`.
+- Full PC suite with required `PYTHONPATH`, actual PostgreSQL, and installed Brave after the dedicated-snapshot and saved-path corrections: `236` tests in `260.347s`, `OK`.
 - Focused audit failure/export: `1` test in `3.674s`, `OK`.
 - PostgreSQL integration module before the final audit case: `34` tests in `223.518s`, `OK`.
 - Focused rendered Brave workflow after the final cross-platform assertions: `1` test in `83.753s`, `OK`. This verifies the circular thumbnail, `16 x 16` toggle, collapsed default, downward absolute overlay, no layout shift, synchronized row growth, MusicBrainz hyperlink, and exactly 20% transparency in dark, chalk, and light themes.
-- GitHub Actions run `41364590140` on `39463bc`: success (`webgui` success, Windows advisory success, native correctly skipped by scope). The final branch-head result is recorded in the PR timeline after publication.
+- GitHub Actions run `41379073577` on `0e0a077`: success (`webgui` success, Windows advisory success, native correctly skipped by scope).
 - Python compilation, JavaScript syntax checks, boundary tests, and `git diff --check`: passed.
 - Expected non-failing warning: Starlette's installed `httpx` compatibility deprecation. The PC Python 3.12 environment already contains `psycopg 3.3.6` and `httpx 0.28.1`; no dependency download was needed.
 
-## Live Brave limitation
+## Owner acceptance state
 
-Native Brave is open at the restarted PC-hosted WebGUI login page. The existing administrator is `user`, but its saved password is not available to automation. The PostgreSQL service credential is intentionally not a WebGUI administrator credential. No password was guessed, reset, or extracted.
-
-Therefore, the rendered Brave acceptance above is real and passed against the installed Brave executable, but an owner-authenticated manual pass against the long-running service is not claimed. After the owner signs in with the existing saved password, the same live URL is ready for final visual/interactive acceptance without changing the PR #130 paths.
+The owner has authenticated to the restarted PC-hosted WebGUI and will repeat
+the manual pass after the final draft update. Automated acceptance uses the
+installed Brave executable against disposable PostgreSQL schemas and media
+fixtures. No owner credential was read, reset, guessed, or recorded.
 
 ## Changed areas
 
