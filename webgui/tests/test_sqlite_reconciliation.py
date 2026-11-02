@@ -60,6 +60,15 @@ class SQLiteReconciliationTests(unittest.TestCase):
         }
         self.assertIsNone(SQLiteReconciler._find_match("tracks", source, maps))
 
+    def test_snapshot_fingerprint_ignores_sqlite_read_sidecars(self):
+        with TemporaryDirectory() as directory:
+            snapshot = Path(directory) / "snapshot.sqlite"
+            snapshot.write_bytes(b"standalone snapshot")
+            before = SQLiteReconciler._fingerprint(snapshot)
+            Path(str(snapshot) + "-shm").write_bytes(b"reader state")
+            Path(str(snapshot) + "-wal").write_bytes(b"")
+            self.assertEqual(SQLiteReconciler._fingerprint(snapshot), before)
+
     def test_album_without_mbid_can_match_only_within_its_artist_identity(self):
         target = {
             "album_key": "target-key",
@@ -207,7 +216,7 @@ class SQLiteReconciliationTests(unittest.TestCase):
         self.assertIn("Choose an authorized snapshot", operations)
         self.assertIn("not the folder containing the .db file", operations)
         self.assertIn("resolution='safe'", reconciliation)
-        self.assertIn('source.as_uri() + "?mode=ro"', reconciliation)
+        self.assertIn('source.as_uri() + "?mode=ro&immutable=1"', reconciliation)
         self.assertIn('"conflicts_applied": 0', reconciliation)
         reconciled_tables = reconciliation.split("table_names = [", 1)[1].split("]", 1)[0]
         self.assertNotIn("web_jobs", reconciled_tables)

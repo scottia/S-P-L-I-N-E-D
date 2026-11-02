@@ -248,15 +248,16 @@ class SQLiteReconciler:
 
     @staticmethod
     def _fingerprint(path: Path) -> str:
+        # Authorized reconciliation inputs are standalone snapshots produced
+        # through SQLite's online-backup API.  Read and identify that immutable
+        # artifact only; read-only SQLite connections must not create or make
+        # the fingerprint depend on adjacent -wal/-shm sidecars.
         digest = sha256()
-        for candidate in (path, Path(str(path) + "-wal"), Path(str(path) + "-shm")):
-            if not candidate.is_file():
-                continue
-            digest.update(candidate.name.encode("utf-8", "surrogateescape"))
-            digest.update(b"\0")
-            with candidate.open("rb") as handle:
-                while chunk := handle.read(1024 * 1024):
-                    digest.update(chunk)
+        digest.update(path.name.encode("utf-8", "surrogateescape"))
+        digest.update(b"\0")
+        with path.open("rb") as handle:
+            while chunk := handle.read(1024 * 1024):
+                digest.update(chunk)
         return digest.hexdigest()
 
     @staticmethod
@@ -433,7 +434,7 @@ class SQLiteReconciler:
                 request_status="running",
             )
             try:
-                uri = source.as_uri() + "?mode=ro"
+                uri = source.as_uri() + "?mode=ro&immutable=1"
                 with closing(sqlite3.connect(uri, uri=True)) as legacy, legacy, closing(self.database.connect()) as db, db:
                     legacy.row_factory = sqlite3.Row
                     legacy.execute("BEGIN")
