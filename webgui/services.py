@@ -10,6 +10,7 @@ from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
 import hashlib
+import json
 import os
 import shutil
 import tempfile
@@ -37,6 +38,13 @@ from webgui.catalog import (
 )
 from webgui.runtime import Runtime
 from webgui import imaging
+from webgui.audit import (
+    application_revision,
+    normalize_severity,
+    sanitize,
+    sanitize_text,
+    utc_now,
+)
 
 
 LOGGER = logging.getLogger("uvicorn.error")
@@ -113,6 +121,25 @@ class Services:
             core.resolve_sources(runtime.cfg, None, None, [])
         )
         self.lock = threading.RLock()
+        self._audit_events_written = 0
+        self.audit_session_id = uuid4().hex
+        self.application_revision = application_revision()
+        self._audit_lock = threading.RLock()
+        self._audit_fallback_counter = 0
+        log_path = Path(runtime.log_path) if runtime.log_path else runtime.cache / "runtime.log"
+        self._audit_fallback_path = log_path.with_name("web-audit-fallback.jsonl")
+
+    def start_audit_session(self):
+        return self.audit(
+            "diagnostic-session-start",
+            "WebGUI",
+            {
+                "application_version": core.VERSION,
+                "application_revision": self.application_revision,
+            },
+            stage="startup",
+            request_status="started",
+        )
 
     def reload_settings(self):
         app = self.catalog
@@ -132,34 +159,301 @@ class Services:
         app.appearance_cache.clear()
         app.portrait_cache.clear()
 
-    def audit(self, action, subject, details=None):
-        core.runtime_log(
-            "info",
-            f"webgui.audit action={action} subject={core._redact_log_message(str(subject))}",
-        )
-        with closing(self.runtime.database.connect()) as db, db:
-            db.raw.execute(
-                "INSERT INTO web_audit(action,subject,details) VALUES(%s,%s,%s)",
-                (action, str(subject), Jsonb(details or {})),
-            )
+    def _audit_fallback_files(self):
+        base = self._audit_fallback_path
+        return [base.with_name(base.name + f".{number}") for number in range(4, 0, -1)] + [base]
 
-    def diagnostics(self, limit=250):
-        """Return bounded, credential-free operational events for Settings."""
-        limit = max(1, min(int(limit), 500))
+    def _append_audit_fallback(self, event, insertion_error):
+        self._audit_fallback_counter += 1
+        fallback = {
+            **event,
+            "fallback_id": (
+                f"{self.audit_session_id}:{self._audit_fallback_counter}:"
+                f"{uuid4().hex}"
+            ),
+            "insertion_error": sanitize_text(insertion_error, limit=1000),
+        }
+        path = self._audit_fallback_path
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.is_file() and path.stat().st_size >= 1024 * 1024:
+                oldest = path.with_name(path.name + ".4")
+                oldest.unlink(missing_ok=True)
+                for number in range(3, 0, -1):
+                    source = path.with_name(path.name + f".{number}")
+                    if source.is_file():
+                        os.replace(source, path.with_name(path.name + f".{number + 1}"))
+                os.replace(path, path.with_name(path.name + ".1"))
+            with path.open("a", encoding="utf-8", newline="\n") as handle:
+                handle.write(json.dumps(fallback, ensure_ascii=False, sort_keys=True) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+        except OSError as fallback_error:
+            core.runtime_log(
+                "critical",
+                "webgui.audit fallback unavailable "
+                + core._redact_log_message(sanitize_text(fallback_error)),
+            )
+        return -self._audit_fallback_counter
+
+    def _load_audit_fallback(self):
+        events = []
+        files = []
+        for path in self._audit_fallback_files():
+            if not path.is_file():
+                continue
+            files.append(path)
+            try:
+                with path.open("r", encoding="utf-8") as handle:
+                    for line in handle:
+                        try:
+                            value = json.loads(line)
+                        except (TypeError, ValueError):
+                            continue
+                        if isinstance(value, dict) and value.get("fallback_id"):
+                            events.append(sanitize(value))
+            except OSError:
+                continue
+        return events, files
+
+    @staticmethod
+    def _insert_audit_event(raw, event, *, recovered=False):
+        raw.execute(
+            "INSERT INTO web_audit_sessions"
+            "(session_id,application_version,application_revision,started_at) "
+            "VALUES(%s,%s,%s,%s) ON CONFLICT(session_id) DO NOTHING",
+            (
+                event["session_id"],
+                event["application_version"],
+                event["application_revision"],
+                event["created_at"],
+            ),
+        )
+        return raw.execute(
+            "INSERT INTO web_audit"
+            "(action,subject,details,severity,action_id,trace_id,job_id,scope,stage,"
+            "request_status,elapsed_ms,state_from,state_to,error,created_at,session_id,"
+            "application_version,application_revision,recovered_from_fallback,fallback_id) "
+            "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+            "ON CONFLICT DO NOTHING RETURNING id",
+            (
+                event["action"],
+                event["subject"],
+                Jsonb(event["details"]),
+                event["severity"],
+                event["action_id"],
+                event["trace_id"],
+                event["job_id"],
+                Jsonb(event["scope"]),
+                event["stage"],
+                event["request_status"],
+                event["elapsed_ms"],
+                event["state_from"],
+                event["state_to"],
+                event["error"],
+                event["created_at"],
+                event["session_id"],
+                event["application_version"],
+                event["application_revision"],
+                recovered,
+                str(event.get("fallback_id") or ""),
+            ),
+        ).fetchone()
+
+    def audit(
+        self,
+        action,
+        subject="",
+        details=None,
+        *,
+        severity="info",
+        action_id="",
+        trace_id="",
+        job_id="",
+        scope=None,
+        stage="",
+        request_status="",
+        elapsed_ms=None,
+        state_from="",
+        state_to="",
+        error="",
+    ):
+        """Record one ordered, structured event using the existing audit authority."""
+        action = sanitize_text(action, limit=120)
+        subject = sanitize_text(subject, limit=500)
+        details = sanitize(details or {})
+        derived_scope = {
+            key: details[key]
+            for key in ("artist_id", "album_id", "track_key")
+            if isinstance(details, dict) and details.get(key)
+        }
+        clean_scope = sanitize(scope or derived_scope)
+        clean_error = sanitize_text(error)
+        event = {
+            "action": action,
+            "subject": subject,
+            "details": details,
+            "severity": normalize_severity(severity),
+            "action_id": sanitize_text(action_id, limit=100),
+            "trace_id": sanitize_text(trace_id, limit=100),
+            "job_id": sanitize_text(job_id, limit=100),
+            "scope": clean_scope,
+            "stage": sanitize_text(stage, limit=120),
+            "request_status": sanitize_text(request_status, limit=120),
+            "elapsed_ms": float(elapsed_ms) if elapsed_ms is not None else None,
+            "state_from": sanitize_text(state_from, limit=40),
+            "state_to": sanitize_text(state_to, limit=40),
+            "error": clean_error,
+            "created_at": utc_now(),
+            "session_id": self.audit_session_id,
+            "application_version": core.VERSION,
+            "application_revision": self.application_revision,
+            "fallback_id": "",
+        }
+        core.runtime_log(
+            normalize_severity(severity),
+            f"webgui.audit action={action} subject={core._redact_log_message(subject)}",
+        )
+        with self._audit_lock:
+            pending, fallback_files = self._load_audit_fallback()
+            try:
+                with closing(self.runtime.database.connect()) as db, db:
+                    for fallback in pending:
+                        self._insert_audit_event(db.raw, fallback, recovered=True)
+                    row = self._insert_audit_event(db.raw, event)
+                    self._audit_events_written += 1
+                    if self._audit_events_written % 256 == 0:
+                        retention = max(
+                            1,
+                            min(
+                                int(self.runtime.cfg.get("logging", {}).get("retention_days", 14)),
+                                365,
+                            ),
+                        )
+                        db.raw.execute(
+                            "DELETE FROM web_audit WHERE created_at < now() - (%s * interval '1 day')",
+                            (retention,),
+                        )
+                        db.raw.execute(
+                            "DELETE FROM web_audit WHERE id IN "
+                            "(SELECT id FROM web_audit ORDER BY id DESC OFFSET 50000)"
+                        )
+            except Exception as insertion_error:
+                core.runtime_log(
+                    "error",
+                    "webgui.audit postgresql insertion failed; event retained locally "
+                    + core._redact_log_message(sanitize_text(insertion_error)),
+                )
+                return self._append_audit_fallback(event, insertion_error)
+            for path in fallback_files:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError as cleanup_error:
+                    # Recovery is idempotent through fallback_id. A cleanup
+                    # failure must not misreport the already committed current
+                    # event as lost or append a duplicate fallback record.
+                    core.runtime_log(
+                        "warning",
+                        "webgui.audit recovered fallback cleanup deferred "
+                        + core._redact_log_message(sanitize_text(cleanup_error)),
+                    )
+            return int(row["id"] if isinstance(row, dict) else row[0])
+
+    def diagnostics(
+        self,
+        limit=250,
+        *,
+        severity="",
+        action="",
+        correlation="",
+        since="",
+        until="",
+        maximum=500,
+    ):
+        """Return bounded, credential-free events in chronological order."""
+        limit = max(1, min(int(limit), max(1, min(int(maximum), 50001))))
+        clauses = []
+        values = []
+        if severity:
+            clauses.append("severity=?")
+            values.append(normalize_severity(severity))
+        if action:
+            clauses.append("action ILIKE ?")
+            values.append("%" + sanitize_text(action, limit=100) + "%")
+        if correlation:
+            clauses.append("(trace_id=? OR job_id=? OR action_id=?)")
+            value = sanitize_text(correlation, limit=100)
+            values.extend((value, value, value))
+        if since:
+            clauses.append("created_at>=?")
+            values.append(sanitize_text(since, limit=80))
+        if until:
+            clauses.append("created_at<=?")
+            values.append(sanitize_text(until, limit=80))
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
         with closing(self.runtime.database.connect()) as db:
             rows = db.execute(
-                "SELECT action,subject,details,created_at FROM web_audit ORDER BY id DESC LIMIT ?",
-                (limit,),
+                "SELECT * FROM (SELECT id,action,subject,details,severity,action_id,"
+                "trace_id,job_id,scope,stage,request_status,elapsed_ms,state_from,state_to,"
+                "error,created_at,session_id,application_version,application_revision,"
+                f"recovered_from_fallback FROM web_audit{where} ORDER BY id DESC LIMIT ?) recent "
+                "ORDER BY id",
+                (*values, limit),
             ).fetchall()
         return [
             {
+                "sequence": int(row["id"]),
                 "action": row["action"],
                 "subject": row["subject"],
                 "details": row["details"],
+                "severity": row["severity"],
+                "action_id": row["action_id"],
+                "trace_id": row["trace_id"],
+                "job_id": row["job_id"],
+                "scope": row["scope"],
+                "stage": row["stage"],
+                "request_status": row["request_status"],
+                "elapsed_ms": row["elapsed_ms"],
+                "state_from": row["state_from"],
+                "state_to": row["state_to"],
+                "error": row["error"],
                 "created_at": row["created_at"].isoformat(),
+                "session_id": row["session_id"],
+                "application_version": row["application_version"],
+                "application_revision": row["application_revision"],
+                "recovered_from_fallback": bool(row["recovered_from_fallback"]),
             }
             for row in rows
         ]
+
+    def audit_bounds(self):
+        """Describe retention and local fallback gaps for truthful exports."""
+        with closing(self.runtime.database.connect()) as db:
+            row = db.execute(
+                "SELECT min(id) AS first_sequence,max(id) AS last_sequence,"
+                "count(*) AS retained_records FROM web_audit"
+            ).fetchone()
+        with self._audit_lock:
+            fallback_records = 0
+            fallback_bytes = 0
+            for path in self._audit_fallback_files():
+                if not path.is_file():
+                    continue
+                try:
+                    fallback_bytes += path.stat().st_size
+                    with path.open("r", encoding="utf-8") as handle:
+                        fallback_records += sum(1 for line in handle if line.strip())
+                except OSError:
+                    continue
+        first = int(row["first_sequence"] or 0)
+        return {
+            "retained_first_sequence": first or None,
+            "retained_last_sequence": int(row["last_sequence"] or 0) or None,
+            "retained_records": int(row["retained_records"] or 0),
+            "records_pruned_before_retained_window": max(0, first - 1),
+            "fallback_records_pending_recovery": fallback_records,
+            "fallback_bytes_pending_recovery": fallback_bytes,
+        }
 
     def storage_summary(self):
         """Describe persistent WebGUI storage without walking network folders."""
@@ -175,6 +469,8 @@ class Services:
             "credentials": str(self.runtime.credentials),
             "configuration": str(self.runtime.config_file),
             "version": core.VERSION,
+            "revision": self.application_revision,
+            "audit_session_id": self.audit_session_id,
             "mode": str(self.runtime.cfg.get("mode", "read")),
         }
 
@@ -465,6 +761,53 @@ class Services:
             self.refresh_embedding_stats(row)
         return records
 
+    def ensure_tracks(self, album_id):
+        """Hydrate only when the durable catalog lacks indexed album tracks."""
+        row = self.album_row(album_id)
+        with closing(self.runtime.database.connect()) as db:
+            indexed = int(
+                db.execute(
+                    "SELECT count(*) FROM tracks WHERE album_key=?", (album_id,)
+                ).fetchone()[0]
+            )
+        expected = int(row["track_count"] or 0)
+        return self.hydrate_tracks(album_id) if indexed < expected else []
+
+    def indexed_tracks(self, album_id, track_keys):
+        """Return only explicitly requested indexed tracks, in request order."""
+        requested = [str(key) for key in track_keys]
+        if not requested:
+            return []
+        placeholders = ",".join("?" for _ in requested)
+        with closing(self.runtime.database.connect()) as db:
+            rows = list(
+                db.execute(
+                    "SELECT * FROM tracks WHERE album_key=? "
+                    f"AND track_key IN ({placeholders})",
+                    (album_id, *requested),
+                )
+            )
+        by_key = {str(row["track_key"]): row for row in rows}
+        return [by_key[key] for key in requested if key in by_key]
+
+    def hydrate_selected_tracks(self, album_id, track_keys):
+        """Refresh tag metadata for selected tracks without scanning the album."""
+        row = self.album_row(album_id)
+        indexed = self.indexed_tracks(album_id, track_keys)
+        if len(indexed) != len(track_keys):
+            raise ValueError("Choose indexed COMP tracks")
+        files = [Path(item["path"]) for item in indexed]
+        old = {str(item["path"]): item for item in indexed}
+        records, _, _ = tags.inspect_album_tracks(
+            core.AlbumDir(Path(row["path"]), files), album_id, old
+        )
+        with closing(self.runtime.database.connect()) as db, db:
+            for record in records:
+                record["splined_version"] = core.VERSION
+                self._upsert(db, "tracks", record, "track_key")
+        refreshed = {str(item["track_key"]): item for item in records}
+        return [refreshed[key] for key in track_keys if key in refreshed]
+
     def refresh_embedding_stats(self, row):
         count = sum(
             bool(embedded_track_artwork_bytes(path)) for path in self.album_files(row)
@@ -607,6 +950,7 @@ class Services:
             fit=payload.get("fit"),
             kind=kind,
         )
+        policy_source_width, policy_source_height = image.size
         upscaled = False
         if upscale_requested and upscale_enabled and kind != "cover":
             image, upscaled, _ = imaging.upscale_to_policy(
@@ -639,12 +983,38 @@ class Services:
                 path.unlink(missing_ok=True)
         else:
             width, height = image.size
+        policy_source_short = min(policy_source_width, policy_source_height)
+        output_short = min(width, height)
+        applied_percent = (
+            output_short / policy_source_short * 100.0
+            if policy_source_short > 0
+            else 100.0
+        )
+        requested_percent = (
+            ideal / policy_source_short * 100.0
+            if 0 < policy_source_short < ideal
+            else 100.0
+        )
+        upscale_limited = bool(upscaled and output_short < ideal)
         if upscaled:
-            reason = f"Prepared toward {ideal}px Ideal within the {max_percent}% ceiling; original artwork is unchanged until written"
+            if upscale_limited:
+                reason = (
+                    f"Upscaled {policy_source_width} × {policy_source_height} → "
+                    f"{width} × {height} ({applied_percent:.0f}% ceiling; "
+                    f"below {ideal}px Ideal)"
+                )
+            else:
+                reason = (
+                    f"Upscaled {policy_source_width} × {policy_source_height} → "
+                    f"{width} × {height} ({applied_percent:.0f}% to "
+                    f"{ideal}px Ideal)"
+                )
         elif upscale_requested and not upscale_enabled:
             reason = "Actual source resolution preserved because Upscale Below Ideal is off in Settings"
+        elif upscale_requested and policy_source_short >= ideal:
+            reason = f"Source already meets or exceeds {ideal}px Ideal; no enlargement applied"
         elif upscale_requested:
-            reason = "Actual source resolution already meets Ideal or the configured ceiling prevents enlargement"
+            reason = "The configured upscale ceiling prevents enlargement; source resolution preserved"
         else:
             reason = "Prepared preview; original artwork is unchanged until written"
         return {
@@ -655,6 +1025,16 @@ class Services:
             "kind": kind,
             "format": target,
             "upscaled": upscaled,
+            "source_width": policy_source_width,
+            "source_height": policy_source_height,
+            "ideal": ideal,
+            "upscale_percent": applied_percent,
+            "upscale_requested_percent": requested_percent,
+            "upscale_max_percent": max_percent,
+            "upscale_limited": upscale_limited,
+            "embedded_thumbnail_size": int(
+                output.get("embedded_thumbnail_size", 1200)
+            ),
             "reason": reason,
         }
 
@@ -690,17 +1070,55 @@ class Services:
         core.validate_filename(stem)
         extension = {"jpeg": ".jpg", "png": ".png", "webp": ".webp"}[fmt]
         destination = Path(row["path"]) / (stem + extension)
-        if self.runtime.cfg.get("output", {}).get("preserve_file", True):
-            number = 1
-            while destination.exists() and destination.read_bytes() != body:
-                number += 1
-                destination = Path(row["path"]) / (
-                    f"{stem}-({number})" + destination.suffix
-                )
+        exact_covers = sorted(
+            (
+                path
+                for path in Path(row["path"]).iterdir()
+                if path.is_file()
+                and not path.is_symlink()
+                and path.stem.casefold() == stem.casefold()
+                and path.suffix.casefold() in {".jpg", ".jpeg", ".png", ".webp"}
+            ),
+            key=lambda path: path.name.casefold(),
+        )
+        preserved = []
+        preserve = bool(self.runtime.cfg.get("output", {}).get("preserve_file", True))
+        for existing in exact_covers:
+            if existing == destination and existing.read_bytes() == body:
+                continue
+            if preserve:
+                number = 2
+                backup = existing.with_name(f"{stem}-({number}){existing.suffix}")
+                while backup.exists():
+                    number += 1
+                    backup = existing.with_name(f"{stem}-({number}){existing.suffix}")
+                os.replace(existing, backup)
+                preserved.append(backup.name)
+            else:
+                existing.unlink()
         self._atomic_artwork(destination, body)
+        verified = destination.read_bytes()
+        if verified != body:
+            raise scan.QueuedArtworkVerificationError(
+                "Written cover did not pass byte-for-byte readback verification"
+            )
+        with Image.open(BytesIO(verified)) as opened:
+            verified_size = [int(opened.width), int(opened.height)]
         self.refresh_album(row["album_key"], source="webgui")
-        self.audit("write-cover", row["album_key"], {"file": destination.name})
-        return {"written": [destination.name], **rendered}
+        self.audit(
+            "write-cover",
+            row["album_key"],
+            {
+                "album_id": row["album_key"],
+                "file": destination.name,
+                "preserved": preserved,
+                "sha256": hashlib.sha256(verified).hexdigest(),
+                "verified_size": verified_size,
+            },
+            stage="write-readback",
+            request_status="verified",
+        )
+        return {"written": [destination.name], "preserved": preserved, **rendered}
 
     @serialized
     def write_artist(self, payload):
@@ -842,7 +1260,87 @@ class Services:
         finally:
             staged.unlink(missing_ok=True)
 
-    def _prepare_comp_embedded(self, payload):
+    def _comp_target(self, payload):
+        artist_id = str(payload.get("artist_id", "")).strip()
+        album_id = str(payload.get("album_id", "")).strip()
+        track_key = str(payload.get("track_key", "")).strip()
+        selection = {"album_id": album_id, "track_keys": [track_key]}
+        if artist_id:
+            selection["artist_id"] = artist_id
+        normalized = self._validate_comp_payload(selection)
+        row = self.album_row(normalized["album_id"])
+        selected = self.indexed_tracks(row["album_key"], [track_key])
+        record = selected[0] if selected else None
+        if record is None:
+            raise KeyError("COMP track not found")
+        path, folder = Path(record["path"]), Path(row["path"])
+        if (
+            not inside(folder, self.runtime.music)
+            or not inside(path, folder)
+            or not path.is_file()
+        ):
+            raise ValueError("COMP track is outside the configured music library")
+        return normalized, row, record, path
+
+    def _prepared_comp_directory(self):
+        directory = self.runtime.cache / "prepared-comp"
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory
+
+    def _prepared_comp_target(self, payload, normalized):
+        return {
+            "artist_id": str(normalized.get("artist_id", "")),
+            "album_id": str(normalized["album_id"]),
+            "track_key": str(payload.get("track_key", "")),
+        }
+
+    def _load_prepared_comp(self, payload, normalized):
+        prepared_id = str(payload.get("prepared_id", "")).strip().casefold()
+        if not prepared_id:
+            return None
+        if len(prepared_id) != 32 or any(c not in "0123456789abcdef" for c in prepared_id):
+            raise ValueError("Invalid prepared COMP thumbnail identity")
+        directory = self._prepared_comp_directory()
+        image_path = directory / (prepared_id + ".jpg")
+        manifest_path = directory / (prepared_id + ".json")
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            body = image_path.read_bytes()
+        except (OSError, ValueError, TypeError) as error:
+            raise ValueError("Prepared COMP thumbnail is unavailable; prepare it again") from error
+        if manifest.get("target") != self._prepared_comp_target(payload, normalized):
+            raise ValueError("Prepared COMP thumbnail belongs to a different track")
+        digest = hashlib.sha256(body).hexdigest()
+        if digest != str(manifest.get("sha256", "")):
+            raise ValueError("Prepared COMP thumbnail failed integrity validation")
+        supplied = str(payload.get("prepared_sha256", "")).strip().casefold()
+        if supplied and supplied != digest:
+            raise ValueError("Prepared COMP thumbnail selection changed; prepare it again")
+        try:
+            with Image.open(BytesIO(body)) as opened:
+                width, height = opened.size
+                image_format = str(opened.format or "").casefold()
+        except OSError as error:
+            raise ValueError("Prepared COMP thumbnail is not a supported image") from error
+        side = int(self.runtime.cfg.get("output", {}).get("embedded_thumbnail_size", 1200))
+        if (width, height) != (side, side) or image_format != "jpeg":
+            raise ValueError("Prepared COMP thumbnail no longer matches the configured size")
+        return body, {"width": width, "height": height}, "jpeg", manifest
+
+    def _remove_prepared_comp(self, prepared_id):
+        token = str(prepared_id or "").strip().casefold()
+        if len(token) != 32 or any(c not in "0123456789abcdef" for c in token):
+            return
+        directory = self._prepared_comp_directory()
+        (directory / (token + ".jpg")).unlink(missing_ok=True)
+        (directory / (token + ".json")).unlink(missing_ok=True)
+
+    def _prepare_comp_embedded(self, payload, normalized=None):
+        if payload.get("prepared_id"):
+            normalized = normalized or self._comp_target(payload)[0]
+            prepared = self._load_prepared_comp(payload, normalized)
+            if prepared is not None:
+                return prepared
         rendered = self.preview(dict(payload, kind="comp"))
         source = self.catalog.image_bytes(rendered["image"])
         side = int(
@@ -853,33 +1351,162 @@ class Services:
             body = imaging.encode(image, "jpeg")
         return body, {"width": side, "height": side}, "jpeg", rendered
 
-    def _record_comp_track_artwork(self, row, record, body, outcome):
+    def prepare_comp_thumbnail(self, payload):
+        normalized, row, record, _ = self._comp_target(payload)
+        fresh = dict(payload)
+        fresh.pop("prepared_id", None)
+        fresh.pop("prepared_sha256", None)
+        body, info, image_format, rendered = self._prepare_comp_embedded(
+            fresh, normalized
+        )
+        prepared_id = uuid4().hex
+        digest = hashlib.sha256(body).hexdigest()
+        manifest = {
+            "version": 1,
+            "prepared_id": prepared_id,
+            "sha256": digest,
+            "format": image_format,
+            "width": info["width"],
+            "height": info["height"],
+            "bytes": len(body),
+            "upscaled": bool(rendered.get("upscaled")),
+            "target": self._prepared_comp_target(payload, normalized),
+        }
+        directory = self._prepared_comp_directory()
+        image_path = directory / (prepared_id + ".jpg")
+        manifest_path = directory / (prepared_id + ".json")
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=".prepared-", suffix=".jpg", dir=directory
+        )
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(body)
+            os.replace(temporary, image_path)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=".prepared-", suffix=".json", dir=directory
+        )
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                json.dump(manifest, handle, sort_keys=True)
+            os.replace(temporary, manifest_path)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+        self.audit(
+            "prepare-comp-thumbnail",
+            record["track_key"],
+            {"album_id": row["album_key"], "side": info["width"], "sha256": digest},
+        )
+        return {
+            **manifest,
+            "image": self.catalog.image(body),
+            "upscaled": bool(manifest.get("upscaled")),
+            "audio_written": False,
+        }
+
+    @staticmethod
+    def _verify_comp_embedded(track, body, info):
+        """Read back one queued COMP write before completion can be recorded."""
+        raw_path = getattr(track, "path", None)
+        if raw_path is None and hasattr(track, "get"):
+            raw_path = track.get("path")
+        path = Path(raw_path)
+        verified = embedded_track_artwork_bytes(path)
+        if (
+            not verified
+            or hashlib.sha256(verified).digest() != hashlib.sha256(body).digest()
+        ):
+            raise scan.QueuedArtworkVerificationError(
+                "Embedded COMP artwork verification failed for " + path.name
+            )
+        expected = (int(info.get("width", 0)), int(info.get("height", 0)))
+        if expected[0] <= 0 or expected[0] != expected[1]:
+            raise scan.QueuedArtworkVerificationError(
+                "Preferred COMP artwork dimensions are not square"
+            )
+        try:
+            with Image.open(BytesIO(verified)) as opened:
+                if opened.size != expected:
+                    raise scan.QueuedArtworkVerificationError(
+                        "Embedded COMP artwork did not verify at the preferred square size"
+                    )
+        except OSError as error:
+            raise scan.QueuedArtworkVerificationError(
+                "Embedded COMP artwork readback is not a supported image"
+            ) from error
+        return True
+
+    def _comp_track_authority_validated(self, path):
+        """Validate the file's current Recording/Artist relationship."""
+        try:
+            track = core.read_track(Path(path))
+            options = core.compilation_credential_options(
+                self.runtime.config_file, self.runtime.cfg
+            )
+            resolution = core.compilation_resolve_interactive_identity(
+                core.Http(),
+                self.runtime.config_file,
+                self.runtime.cfg,
+                track,
+                options,
+            )
+        except Exception as error:
+            core.debug_log(
+                "compilation.direct.authority_validation_failed "
+                f"file={str(path)!r} error={type(error).__name__!r}"
+            )
+            return False
+        return bool(
+            getattr(resolution, "identity_status", "") == "valid"
+            and getattr(resolution, "recording_status", "") == "valid"
+            and getattr(resolution, "artist_status", "") == "valid"
+        )
+
+    def _record_comp_track_artwork(
+        self, row, record, body, outcome, *, authority_validated
+    ):
         now = tags.utc_now()
         track_path = str(record["path"])
+        recording = core.valid_mbid(
+            str(record.get("musicbrainz_recordingid") or "")
+        )
+        artists = sorted(
+            compilation._mbids(record.get("musicbrainz_artistid") or "")
+        )
+        authoritative = bool(authority_validated and recording and artists)
         with closing(self.runtime.database.connect()) as db, db:
-            db.execute(
-                "INSERT INTO compilation_track_artwork"
-                "(track_path,recording_mbid,artist_mbid,source_kind,source_locator,"
-                "release_mbid,artwork_sha256,outcome,applied_at,splined_version) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(track_path) DO UPDATE SET "
-                "recording_mbid=excluded.recording_mbid,artist_mbid=excluded.artist_mbid,"
-                "source_kind=excluded.source_kind,source_locator=excluded.source_locator,"
-                "release_mbid=excluded.release_mbid,artwork_sha256=excluded.artwork_sha256,"
-                "outcome=excluded.outcome,applied_at=excluded.applied_at,"
-                "splined_version=excluded.splined_version",
-                (
-                    track_path,
-                    str(record.get("musicbrainz_recordingid") or ""),
-                    str(record.get("musicbrainz_artistid") or ""),
-                    "webgui-selected-artwork",
-                    "comp-report",
-                    None,
-                    hashlib.sha256(body).hexdigest(),
-                    outcome,
-                    now,
-                    core.VERSION,
-                ),
-            )
+            if authoritative:
+                db.execute(
+                    "INSERT INTO compilation_track_artwork"
+                    "(track_path,recording_mbid,artist_mbid,source_kind,source_locator,"
+                    "release_mbid,artwork_sha256,outcome,applied_at,splined_version) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(track_path) DO UPDATE SET "
+                    "recording_mbid=excluded.recording_mbid,artist_mbid=excluded.artist_mbid,"
+                    "source_kind=excluded.source_kind,source_locator=excluded.source_locator,"
+                    "release_mbid=excluded.release_mbid,artwork_sha256=excluded.artwork_sha256,"
+                    "outcome=excluded.outcome,applied_at=excluded.applied_at,"
+                    "splined_version=excluded.splined_version",
+                    (
+                        track_path,
+                        recording,
+                        "; ".join(artists),
+                        "webgui-selected-artwork",
+                        "comp-report",
+                        None,
+                        hashlib.sha256(body).hexdigest(),
+                        outcome,
+                        now,
+                        core.VERSION,
+                    ),
+                )
+            else:
+                # A verified artwork write is not authoritative completion.
+                # Remove any stale row so refresh cannot leave the track green.
+                db.execute(
+                    "DELETE FROM compilation_track_artwork WHERE track_path=?",
+                    (track_path,),
+                )
             total = int(
                 db.execute(
                     "SELECT count(*) FROM tracks WHERE album_key=?",
@@ -911,36 +1538,17 @@ class Services:
                     core.VERSION,
                 ),
             )
+        return authoritative
 
     @serialized
     def embed_comp_track(self, payload):
         self.runtime.require_write()
         artist_id = str(payload.get("artist_id", "")).strip()
-        album_id = str(payload.get("album_id", "")).strip()
         track_key = str(payload.get("track_key", "")).strip()
-        selection = {"album_id": album_id, "track_keys": [track_key]}
-        if artist_id:
-            selection["artist_id"] = artist_id
-        normalized = self.validate_comp_payload(selection)
-        row = self.album_row(normalized["album_id"])
-        record = next(
-            (
-                item
-                for item in self.hydrate_tracks(row["album_key"])
-                if item["track_key"] == track_key
-            ),
-            None,
+        normalized, row, record, path = self._comp_target(payload)
+        body, info, image_format, rendered = self._prepare_comp_embedded(
+            payload, normalized
         )
-        if record is None:
-            raise KeyError("COMP track not found")
-        path, folder = Path(record["path"]), Path(row["path"])
-        if (
-            not inside(folder, self.runtime.music)
-            or not inside(path, folder)
-            or not path.is_file()
-        ):
-            raise ValueError("COMP track is outside the configured music library")
-        body, info, image_format, rendered = self._prepare_comp_embedded(payload)
         original = embedded_track_artwork_bytes(path)
         outcome = "embedded-existing" if original == body else "embedded-replaced"
         if original != body:
@@ -956,23 +1564,20 @@ class Services:
                 if not backup.exists():
                     backup.write_bytes(original)
             compilation.replace_embedded_artwork(path, body, image_format, info)
-        verified = embedded_track_artwork_bytes(path)
-        if not verified or hashlib.sha256(verified).digest() != hashlib.sha256(body).digest():
-            raise ValueError("Embedded COMP artwork verification failed for " + path.name)
-        with Image.open(BytesIO(verified)) as opened:
-            if opened.size != (info["width"], info["height"]):
-                raise ValueError("Embedded COMP artwork did not verify at the requested size")
-        refreshed = next(
-            (
-                item
-                for item in self.hydrate_tracks(
-                    row["album_key"], refresh_embedding_stats=False
-                )
-                if item["track_key"] == track_key
-            ),
-            record,
+        self._verify_comp_embedded(record, body, info)
+        verified_body = embedded_track_artwork_bytes(path)
+        refreshed_rows = self.hydrate_selected_tracks(
+            row["album_key"], [track_key]
         )
-        self._record_comp_track_artwork(row, refreshed, body, outcome)
+        refreshed = refreshed_rows[0] if refreshed_rows else record
+        authority_validated = self._comp_track_authority_validated(path)
+        completed = self._record_comp_track_artwork(
+            row,
+            refreshed,
+            body,
+            outcome,
+            authority_validated=authority_validated,
+        )
         self.refresh_embedding_stats(row)
         self.audit(
             "embed-comp-track",
@@ -982,17 +1587,22 @@ class Services:
                 "album_id": row["album_key"],
                 "side": info["width"],
                 "outcome": outcome,
+                "completion_recorded": completed,
             },
         )
+        self._remove_prepared_comp(payload.get("prepared_id"))
         return {
             "album_id": row["album_key"],
             "track_key": track_key,
             "file": path.name,
-            "status": "green",
-            "completed": True,
+            "status": "green" if completed else "blue",
+            "completed": completed,
+            "authority_required": not completed,
             "width": info["width"],
             "height": info["height"],
             "bytes": len(body),
+            "image": self.catalog.image(verified_body),
+            "artwork_sha256": hashlib.sha256(verified_body).hexdigest(),
             "upscaled": bool(rendered.get("upscaled")),
             "outcome": outcome,
         }
@@ -1004,8 +1614,11 @@ class Services:
             row, files, source = self.validate_staged_album(payload)
         else:
             row = self.album_row(str(payload.get("album_id", "")))
-            if not str(row["musicbrainz_albumid"] or "").strip():
-                raise ValueError("COMP albums require individual track processing")
+            if not core.valid_mbid(str(row["musicbrainz_albumid"] or "")):
+                raise ValueError(
+                    "Album Track Embedding requires a valid MusicBrainz Release ID; "
+                    "COMP albums require individual track processing"
+                )
             files = self.album_files(row)
             if not files:
                 raise ValueError("Album has no supported tracks")
@@ -1131,9 +1744,10 @@ class Services:
         self.runtime.require_write()
         row = self.album_row(str(payload.get("album_id", "")))
         album_mbid = str(row["musicbrainz_albumid"] or "").strip()
-        if not album_mbid:
+        if not core.valid_mbid(album_mbid):
             raise ValueError(
-                "COMP Fallback Albums use the separate track-scoped EMBED Track workflow"
+                "Album Track Embedding requires a valid MusicBrainz Release ID; "
+                "COMP Fallback Albums use the separate track-scoped EMBED Comp workflow"
             )
         files = self.album_files(row)
         if not files:
@@ -1230,10 +1844,20 @@ class Services:
         current_mbid = str(row["musicbrainz_albumid"] or "").strip()
         if not current_mbid:
             raise ValueError(
-                "The staged Album is now COMP Fallback; remove this Album job and use EMBED Track"
+                "The staged Album is now COMP Fallback; remove this Album job "
+                "and use track-scoped COMP work"
+            )
+        if not core.valid_mbid(current_mbid):
+            raise ValueError(
+                "The staged Album no longer has a valid MusicBrainz Release ID; "
+                "remove this Album job and use track-scoped COMP work when applicable"
             )
         staged_mbid = str(payload.get("album_mbid", "")).strip()
-        if staged_mbid and current_mbid.casefold() != staged_mbid.casefold():
+        if not core.valid_mbid(staged_mbid):
+            raise ValueError(
+                "The staged Album identity is invalid; remove it and stage the current Album"
+            )
+        if current_mbid.casefold() != staged_mbid.casefold():
             raise ValueError(
                 "The staged Album identity changed; remove it and stage the current Album"
             )
@@ -1289,8 +1913,7 @@ class Services:
             if name and path.name == name and inside(path, directory):
                 path.unlink(missing_ok=True)
 
-    @serialized
-    def validate_comp_payload(self, payload):
+    def _validate_comp_payload(self, payload):
         """Resolve an explicit COMP selection without widening its scope."""
         album_id = str(payload.get("album_id", "")).strip()
         row = self.album_row(album_id)
@@ -1306,7 +1929,7 @@ class Services:
         ):
             raise ValueError("Choose explicit indexed COMP tracks")
 
-        records = self.hydrate_tracks(album_id)
+        records = self.indexed_tracks(album_id, requested)
         indexed = {item["track_key"] for item in records}
         if any(key not in indexed for key in requested):
             raise ValueError("Choose indexed COMP tracks")
@@ -1332,6 +1955,10 @@ class Services:
         return normalized
 
     @serialized
+    def validate_comp_payload(self, payload):
+        return self._validate_comp_payload(payload)
+
+    @serialized
     def run_comp(self, payload, adapter):
         self.runtime.require_write()
         r = self.runtime
@@ -1345,24 +1972,72 @@ class Services:
             "scope_artist_id": scope_artist_id,
             "scope_artist": payload.get("artist_name", ""),
         }
-        records = self.hydrate_tracks(row["album_key"])
-        allowed = {item["track_key"]: item["path"] for item in records}
         requested = payload["track_keys"]
+        records = self.indexed_tracks(row["album_key"], requested)
+        allowed = {item["track_key"]: item["path"] for item in records}
         selected_files = [Path(allowed[key]) for key in requested]
+        progress = getattr(adapter, "progress", None)
+        if callable(progress):
+            progress({
+                "completed": 0,
+                "total": len(requested),
+                "message": (
+                    f"Loading {len(requested)} explicitly selected COMP "
+                    f"track{'s' if len(requested) != 1 else ''} · "
+                    "no other compilation tracks are included"
+                ),
+            })
         tracks = [core.read_track(path) for path in selected_files]
         keys_by_path = {str(Path(allowed[key])): key for key in requested}
+        positions_by_path = {
+            str(Path(allowed[key])): position
+            for position, key in enumerate(requested, 1)
+        }
 
         def update_track_context(track):
+            position = positions_by_path.get(str(track.path), 1)
             adapter.context.update(
                 track_key=keys_by_path.get(str(track.path), ""),
                 track_file=track.path.name,
                 track_title=str(track.title or track.path.name),
                 track_artist=str(track.artist or ""),
             )
+            track_progress = getattr(adapter, "progress", None)
+            if callable(track_progress):
+                focused_artist = str(
+                    payload.get("artist_name") or track.artist or "Unknown Artist"
+                )
+                track_progress({
+                    "completed": position - 1,
+                    "total": len(requested),
+                    "message": (
+                        "MusicBrainz identity lookup · "
+                        f"{focused_artist} — {track.title or track.path.name} · "
+                        f"track {position} of {len(requested)}"
+                    ),
+                })
 
         def prepare_selected_artwork(request):
-            body, info, image_format, _ = self._prepare_comp_embedded(request)
+            request = dict(
+                request,
+                artist_id=scope_artist_id,
+                album_id=row["album_key"],
+                track_key=str(adapter.context.get("track_key", "")),
+            )
+            normalized = {
+                "artist_id": scope_artist_id,
+                "album_id": row["album_key"],
+            }
+            body, info, image_format, _ = self._prepare_comp_embedded(
+                request, normalized
+            )
+            adapter.context["prepared_id"] = str(request.get("prepared_id", ""))
             return body, info, image_format
+
+        def verify_selected_artwork(track, body, info):
+            result = self._verify_comp_embedded(track, body, info)
+            self._remove_prepared_comp(adapter.context.pop("prepared_id", ""))
+            return result
 
         def persist_track_authority(track, recording_mbid, artist_mbids):
             self._persist_comp_track_authority(
@@ -1389,6 +2064,8 @@ class Services:
             track_context=update_track_context,
             prepare_selected_artwork=prepare_selected_artwork,
             persist_track_authority=persist_track_authority,
+            verify_embedded_artwork=verify_selected_artwork,
+            musicbrainz_results_first=True,
         )
         self.refresh_album(row["album_key"])
         self.refresh_embedding_stats(row)

@@ -29,6 +29,34 @@ Every supported container deployment needs:
 - long, different values for the PostgreSQL password and
   `SPLINED_WEB_TOKEN`.
 
+### Optional read-only SQLite reconciliation snapshots
+
+To compare a Windows SQLite snapshot with an existing PostgreSQL catalog,
+mount the directory at `/sqlite_snap` read-only. WebGUI authorizes that
+conventional mount automatically. A custom container path must be explicitly
+authorized with `SPLINED_SQLITE_SNAPSHOT_ROOT`:
+
+```yaml
+services:
+  webgui:
+    environment:
+      SPLINED_SQLITE_SNAPSHOT_ROOT: /sqlite_snap
+    volumes:
+      - ${SPLINED_SQLITE_SNAPSHOT_DIRECTORY}:/sqlite_snap:ro
+```
+
+In **Advanced → Backup & Recovery → SQLite Reconciliation**, select a
+specific `.db`, `.sqlite`, or `.sqlite3` file. The source-library root is the
+original media root recorded in the snapshot (for example `/music`), not the
+directory containing that database file. Use **Save Snapshot & Paths** to
+retain that selection and mapping without enabling a schedule. Keep scheduling
+disabled and use **Compare / Dry Run** until the recorded differences have
+been reviewed.
+
+The legacy **Import Catalog** control is only for importing one specific
+SQLite file into an empty PostgreSQL catalog. It does not perform incremental
+reconciliation.
+
 The image runs as UID/GID 1000. That account needs read access to the music
 mount in Read mode and write access before Write mode can change covers or
 tags. It also needs write access to `/config`, `/credentials`, `/_cache`,

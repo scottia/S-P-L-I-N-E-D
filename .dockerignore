@@ -5,6 +5,7 @@
 !docker/config.example.toml
 !schema/
 !schema/media.sql
+!schema/settings-ui.json
 webgui/tests/
 webgui/**/__pycache__/
 webgui/**/*.pyc

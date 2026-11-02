@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import closing
 from pathlib import Path
 from uuid import uuid4
+import json
 import threading
 
 from psycopg.types.json import Jsonb
@@ -25,7 +26,7 @@ class JobAdapter:
 
     def emit(self, event, payload):
         payload = dict(payload)
-        if event == "candidates":
+        if event in {"candidates", "musicbrainz_existing"}:
             for item in payload.get("items", []):
                 if item.get("path"):
                     item["image"] = self.queue.services.catalog.image(
@@ -42,6 +43,17 @@ class JobAdapter:
                 "UPDATE web_jobs SET progress=progress || %s,updated_at=now() WHERE id=%s",
                 (Jsonb(value), self.id),
             )
+        if value.get("message"):
+            self.queue.audit_job(
+                self.id,
+                "job-progress",
+                stage="progress",
+                details={
+                    key: value[key]
+                    for key in ("message", "completed", "total")
+                    if key in value
+                },
+            )
 
     def cancelled(self):
         return self.queue.cancel_requested(self.id)
@@ -57,6 +69,14 @@ class JobAdapter:
                 "UPDATE web_jobs SET state='waiting',decision=NULL,updated_at=now() WHERE id=? AND state='running'",
                 (self.id,),
             )
+        self.queue.audit_job(
+            self.id,
+            "job-transition",
+            stage=str(context.get("kind") or "decision"),
+            state_from="running",
+            state_to="waiting",
+            request_status="waiting",
+        )
         while not self.cancelled():
             with closing(self.queue.db.connect()) as db, db:
                 row = db.execute(
@@ -64,9 +84,34 @@ class JobAdapter:
                 ).fetchone()
                 if row and row["decision"] and row["decision"].get("nonce") == nonce:
                     value = str(row["decision"].get("value", ""))
+                    try:
+                        selected = json.loads(value)
+                    except (TypeError, ValueError):
+                        selected = None
+                    artwork = selected.get("artwork") if isinstance(selected, dict) else None
+                    if isinstance(artwork, dict) and artwork.get("prepared_id"):
+                        self.progress(
+                            {
+                                "prepared_comp": {
+                                    "prepared_id": str(artwork.get("prepared_id", "")),
+                                    "sha256": str(artwork.get("prepared_sha256", "")),
+                                    "album_id": str(self.context.get("album_id", "")),
+                                    "track_key": str(self.context.get("track_key", "")),
+                                    "artist_id": str(self.context.get("scope_artist_id", "")),
+                                }
+                            }
+                        )
                     db.execute(
                         "UPDATE web_jobs SET state='running',decision=NULL,progress=progress - 'prompt',updated_at=now() WHERE id=?",
                         (self.id,),
+                    )
+                    self.queue.audit_job(
+                        self.id,
+                        "job-transition",
+                        stage=str(context.get("kind") or "decision"),
+                        state_from="waiting",
+                        state_to="running",
+                        request_status="accepted",
                     )
                     return value
             self.queue.stopped.wait(0.25)
@@ -91,10 +136,26 @@ class JobQueue:
             self.lease.close()
             raise ValueError("Another WebGUI worker already owns this catalog")
         with closing(self.db.connect()) as db, db:
-            # Interrupted writes resume only after an explicit operator start.
-            db.execute(
-                "UPDATE web_jobs SET state='paused',decision=NULL,error='Interrupted by server restart',updated_at=now() WHERE state IN ('running','waiting')"
+            # COMP review is interactive, track-scoped browser work rather
+            # than a durable embedding queue.  Never resume or retain it
+            # across a server lifecycle: authority/candidate state must be
+            # rebuilt from the current Artist report and selected track.
+            comp_rows = list(
+                db.execute(
+                    "SELECT progress FROM web_jobs WHERE kind='comp'"
+                )
             )
+            db.execute("DELETE FROM web_jobs WHERE kind='comp'")
+            # Durable non-COMP writes resume only after an explicit operator
+            # action. Album staging and its prepared snapshots remain intact.
+            db.execute(
+                "UPDATE web_jobs SET state='paused',decision=NULL,error='Interrupted by server restart',updated_at=now() "
+                "WHERE kind<>'comp' AND state IN ('running','waiting')"
+            )
+        for row in comp_rows:
+            prepared = row["progress"].get("prepared_comp", {})
+            if isinstance(prepared, dict):
+                self.services._remove_prepared_comp(prepared.get("prepared_id", ""))
         self.thread = threading.Thread(
             target=self.run, name="splined-web-worker", daemon=True
         )
@@ -104,6 +165,55 @@ class JobQueue:
         self.stopped.set()
         self.wake.set()
         self.thread.join(timeout=15)
+
+    def audit_job(
+        self,
+        job_id,
+        action,
+        *,
+        stage="",
+        details=None,
+        state_from="",
+        state_to="",
+        request_status="",
+        severity="info",
+        error="",
+    ):
+        try:
+            with closing(self.db.connect()) as db:
+                row = db.execute(
+                    "SELECT kind,payload FROM web_jobs WHERE id=?", (job_id,)
+                ).fetchone()
+            payload = row["payload"] if row else {}
+            correlation = payload.get("_audit", {}) if isinstance(payload, dict) else {}
+            scope = {
+                key: payload.get(key)
+                for key in ("artist_id", "album_id", "track_key")
+                if payload.get(key)
+            }
+            if not scope and len(payload.get("track_keys") or []) == 1:
+                scope["track_key"] = payload["track_keys"][0]
+            self.services.audit(
+                action,
+                row["kind"] if row else "job",
+                details or {},
+                severity=severity,
+                action_id=str(correlation.get("action_id") or ""),
+                trace_id=str(correlation.get("trace_id") or ""),
+                job_id=job_id,
+                scope=scope,
+                stage=stage,
+                request_status=request_status,
+                state_from=state_from,
+                state_to=state_to,
+                error=error,
+            )
+        except Exception as audit_error:
+            core.runtime_log(
+                "warning",
+                "webgui.job audit unavailable "
+                + core._redact_log_message(str(audit_error)),
+            )
 
     def list(self):
         with closing(self.db.connect()) as db:
@@ -167,12 +277,31 @@ class JobQueue:
                         old["payload"].get("artist_id") == payload.get("artist_id")
                         and old["payload"].get("track_keys") == payload.get("track_keys")
                     ):
+                        correlation = payload.get("_audit", {})
+                        self.services.audit(
+                            "job-deduplicated",
+                            kind,
+                            {"already_queued": True},
+                            action_id=str(correlation.get("action_id") or ""),
+                            trace_id=str(correlation.get("trace_id") or ""),
+                            job_id=old["id"],
+                            scope={"album_id": payload.get("album_id", "")},
+                            stage="queue",
+                            request_status="existing",
+                        )
                         return {"id": old["id"], "already_queued": True}
             db.raw.execute(
                 "INSERT INTO web_jobs(id,kind,state,payload) VALUES(%s,%s,%s,%s)",
                 (job_id, kind, "staged" if staged else "queued", Jsonb(payload)),
             )
         self.wake.set()
+        self.audit_job(
+            job_id,
+            "job-transition",
+            stage="queue",
+            state_to="staged" if staged else "queued",
+            request_status="queued",
+        )
         return {"id": job_id, "state": "staged" if staged else "queued"}
 
     def action(self, action, job_id=None, value=None, nonce=None, kind=None):
@@ -364,6 +493,14 @@ class JobQueue:
         for payload in cleanup_payloads:
             self.services.remove_staged_artwork(payload)
         self.wake.set()
+        if job_id:
+            self.audit_job(
+                job_id,
+                "job-action",
+                stage="queue-control",
+                details={"action": action, "kind": kind},
+                request_status="accepted",
+            )
         return {"ok": True, **self.control_state()}
 
     def claim(self):
@@ -387,6 +524,14 @@ class JobQueue:
                     self.wake.wait(1)
                     self.wake.clear()
                     continue
+                self.audit_job(
+                    job["id"],
+                    "job-transition",
+                    stage="worker",
+                    state_from="queued",
+                    state_to="running",
+                    request_status="running",
+                )
                 adapter = JobAdapter(self, job["id"])
                 try:
                     with self.services.runtime.processing, use_adapter(adapter):
@@ -417,12 +562,29 @@ class JobQueue:
                             "UPDATE web_jobs SET state='done',result=%s,progress=progress-'prompt',updated_at=now() WHERE id=%s AND state NOT IN ('cancelled','paused')",
                             (Jsonb(result), job["id"]),
                         )
+                    self.audit_job(
+                        job["id"],
+                        "job-transition",
+                        stage="worker",
+                        state_from="running",
+                        state_to="done",
+                        request_status="completed",
+                        details={"result": result},
+                    )
                 except (core.InteractionCancelled, core.InteractionReturn):
                     with closing(self.db.connect()) as db, db:
                         db.execute(
                             "UPDATE web_jobs SET state='paused',updated_at=now() WHERE id=? AND state NOT IN ('cancelled','paused')",
                             (job["id"],),
                         )
+                    self.audit_job(
+                        job["id"],
+                        "job-transition",
+                        stage="worker",
+                        state_from="running",
+                        state_to="paused",
+                        request_status="paused",
+                    )
                 except Exception as error:
                     message = core._redact_log_message(str(error))[:2000]
                     core.runtime_log(
@@ -434,5 +596,15 @@ class JobQueue:
                             "UPDATE web_jobs SET state='failed',error=?,updated_at=now() WHERE id=? AND state NOT IN ('cancelled','paused')",
                             (message, job["id"]),
                         )
+                    self.audit_job(
+                        job["id"],
+                        "job-transition",
+                        stage="worker",
+                        state_from="running",
+                        state_to="failed",
+                        request_status="failed",
+                        severity="error",
+                        error=message,
+                    )
         finally:
             self.lease.close()

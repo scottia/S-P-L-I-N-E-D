@@ -8,7 +8,7 @@ import unittest
 from io import BytesIO
 
 from PIL import Image
-from mutagen.id3 import APIC, ID3
+from mutagen.id3 import APIC, ID3, TIT2, TPE1, TXXX
 
 from webgui.catalog import PreviewApp
 from webgui.services import Services
@@ -85,7 +85,9 @@ class BrowserFallbackTests(unittest.TestCase):
         self.assertIn("delete draft.scan.sqlite_shared", operations)
         self.assertIn("presentQueuedCandidates(job, prompt, options)", operations)
         self.assertIn("await focusQueuedAlbum(state.queuedDecision)", operations)
-        self.assertIn('\"EMBED Track\"', operations)
+        self.assertIn('\"EMBED Comp\"', operations)
+        self.assertIn('$("embedBatchButton").textContent = "EMBED Batch"', operations)
+        self.assertNotIn('textContent = compContext ? "EMBED Thumbs"', operations)
         self.assertIn('job.kind === "embed-album"', operations)
         self.assertIn('kind === "musicbrainz-results"', operations)
         self.assertIn('"__manual_candidates__"', application)
@@ -154,11 +156,14 @@ class BrowserFallbackTests(unittest.TestCase):
             third.touch()
             uncredited.touch()
             other_artist.touch()
-            for path, side in [(paths[0], 1200), (paths[1], 400)]:
+            for path, side in [(paths[0], 1200), (paths[1], 400), (other_artist, 400)]:
                 picture = BytesIO()
                 Image.new("RGB", (side, side), "blue").save(picture, "PNG")
                 tags = ID3()
                 tags.add(APIC(encoding=3, mime="image/png", type=3, desc="Cover", data=picture.getvalue()))
+                tags.add(TIT2(encoding=3, text=[path.stem]))
+                tags.add(TPE1(encoding=3, text=["Preserved Performer"]))
+                tags.add(TXXX(encoding=3, desc="Unrelated", text=["keep-me"]))
                 tags.save(path)
             with closing(connect(database)) as db:
                 db.execute("CREATE TABLE artists (artist_key TEXT PRIMARY KEY, artist_name TEXT)")
@@ -191,6 +196,7 @@ class BrowserFallbackTests(unittest.TestCase):
                 )
                 db.execute("INSERT INTO compilation_track_artwork VALUES (?, 'embedded-existing')", (str(paths[0]),))
                 db.execute("INSERT INTO compilation_track_artwork VALUES (?, 'embedded-existing')", (str(paths[1]),))
+                db.execute("INSERT INTO compilation_track_artwork VALUES (?, 'embedded-existing')", (str(other_artist),))
                 db.commit()
             app = PreviewApp(root, database, root, root, allow_comp_repairs=True)
             with closing(app.connect()) as db:
@@ -231,10 +237,22 @@ class BrowserFallbackTests(unittest.TestCase):
             )
             self.assertEqual(app.comp_track_status("one", "first")["status"], "green")
             self.assertEqual(app.comp_track_status("two", "second")["status"], "purple")
+            self.assertEqual(app.comp_track_status("two", "other")["status"], "purple")
             self.assertEqual(app.comp_track_status("two", "blue")["status"], "blue")
-            app.repair_comp_track("two", "second")
+            app.repair_comp_track("two", "second", "target")
             self.assertEqual(app.comp_track_status("two", "second")["status"], "green")
-            self.assertEqual(len(list((root / "comp-repair-backups").glob("*.original-image"))), 1)
+            with self.assertRaisesRegex(ValueError, "not in this Artist"):
+                app.repair_comp_track("two", "other", "target")
+            app.repair_comp_track("two", "other")
+            self.assertEqual(app.comp_track_status("two", "other")["status"], "green")
+            repaired_tags = ID3(other_artist)
+            self.assertEqual(repaired_tags.getall("TIT2")[0].text, [other_artist.stem])
+            self.assertEqual(repaired_tags.getall("TPE1")[0].text, ["Preserved Performer"])
+            self.assertEqual(
+                next(frame.text for frame in repaired_tags.getall("TXXX") if frame.desc == "Unrelated"),
+                ["keep-me"],
+            )
+            self.assertEqual(len(list((root / "comp-repair-backups").glob("*.original-image"))), 2)
 
     def test_only_missing_musicbrainz_album_ids_appear_in_fallback(self) -> None:
         with TemporaryDirectory() as directory:

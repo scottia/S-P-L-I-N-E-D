@@ -35,10 +35,25 @@ const queuedAlbumFunction = between(
   "async function focusQueuedAlbum",
   "async function submitQueuedDecision",
 );
-const writeArtworkFunction = between(
+const compDecisionFunctions = between(
+  appSource,
+  "function currentCompSelectionScope",
+  "function currentCandidate",
+);
+const writeArtworkFunction = compDecisionFunctions + "\n" + between(
   operationsSource,
   "async function writeArtwork",
   "const previewReview",
+);
+const compThumbnailFunctions = compDecisionFunctions + "\n" + between(
+  operationsSource,
+  "function compContextActive",
+  "function coverPayload",
+);
+const upscalePreviewStatusFunction = between(
+  appSource,
+  "function upscalePreviewStatus",
+  '$("upscaleButton").addEventListener',
 );
 const launchArtistFunction = between(
   operationsSource,
@@ -65,15 +80,30 @@ const renderJobFunction = between(
   "async function renderJob",
   "function settingValue",
 );
+const reviewJobFunction = between(
+  operationsSource,
+  "async function reviewJob",
+  "async function renderJob",
+);
 const renderMusicBrainzFunction = between(
   appSource,
-  "function renderMusicBrainzResults",
-  "function renderCandidates",
+  "function musicBrainzFamilyKey",
+  "function renderQueuedCompTools",
+);
+const sourceKeyFunction = between(
+  appSource,
+  "function sourceKey",
+  "function candidateKind",
 );
 const renderQueueFunction = between(
   operationsSource,
   "function renderQueue",
   "async function refreshCompletedAlbum",
+);
+const pollJobsFunction = between(
+  operationsSource,
+  "let jobsPolling",
+  "async function reviewJob",
 );
 const stageAlbumFunction = between(
   operationsSource,
@@ -87,7 +117,7 @@ const stageAllAlbumsFunction = between(
 );
 const albumEligibilityFunctions = between(
   appSource,
-  "function artistAlbumEligible",
+  "function validMusicBrainzId",
   "function markSelectedArtist",
 );
 const artistMetadataFunction = between(
@@ -115,6 +145,38 @@ const renderArtistCompReportFunction = between(
   "function renderArtistCompReport",
   "function closeArtistCompReport",
 );
+const repairArtistCompFunction = between(
+  appSource,
+  "async function repairArtistComp",
+  "function renderSources",
+);
+const repairFallbackFunction = between(
+  operationsSource,
+  "async function repairFallback",
+  "const quickPreview",
+);
+
+test("COMP artwork source labels map to the Windows source counters", () => {
+  const context = load(sourceKeyFunction, {SOURCES: [
+    ["Amazon", "amazon"], ["MusicBrainz", "musicbrainz"], ["Discogs", "discogs"], ["Fanart.tv", "fanart"],
+  ]});
+  assert.equal(context.sourceKey("MB / CAA"), "musicbrainz");
+  assert.equal(context.sourceKey("MusicBrainz"), "musicbrainz");
+  assert.equal(context.sourceKey("CoverArt"), "coverartarchive");
+  assert.equal(context.sourceKey("Cover Art Archive"), "coverartarchive");
+  assert.deepEqual(
+    Array.from(context.distinctDiagnostics([
+      ["musicbrainz", "policy-filtered"],
+      ["musicbrainz", "policy-filtered"],
+      {source: "amazon", message: "HTTP 503"},
+    ])),
+    ["musicbrainz · policy-filtered", "amazon · HTTP 503"],
+  );
+  assert.equal(context.sourceDiagnosticStatus([["amazon", "Amazon Store search returned HTTP 503"]], "amazon").status, "unavailable");
+  assert.equal(context.sourceDiagnosticStatus([["discogs", "policy-filtered: Short side is below the global minimum"]], "discogs").status, "filtered");
+  assert.equal(context.sourceDiagnosticStatus(["Fanart.tv: request failed (ConnectionError)"], "fanart").status, "unavailable");
+  assert.match(appSource, /runtime\.status === "unavailable" \? "⚠ Unavailable"/);
+});
 
 function queuedContext({groups, album, artistResponse}) {
   const originalArtist = {id: "projected-artist", albums: []};
@@ -253,6 +315,55 @@ test("Artist-scoped queued COMP review restores its Artist after switching", asy
   assert.equal(calls.some(path => path.startsWith("/api/fallback/tracks")), false);
 });
 
+test("a new queued COMP prompt clears the previous Artist track before async hydration", async () => {
+  let resolveOverview;
+  const overviewReady = new Promise(resolve => { resolveOverview = resolve; });
+  let reviewRenders = 0;
+  const decision = {
+    context: {album_id: "new-comp", track_key: "new-track"},
+    jobKind: "comp",
+    payload: {artist_id: "new-artist", album_id: "new-comp", track_keys: ["new-track"]},
+  };
+  const state = {
+    artist: {id: "previous-artist"}, artistMetadata: null, album: null,
+    compAlbums: [], compGroups: [{id: "previous-comp", tracks: [{key: "previous-track"}]}],
+    compReportVisible: true, compReportLoading: false, compPreviewMode: false,
+    compTrack: {albumId: "previous-comp", key: "previous-track", file: "previous.mp3"},
+    compReportRequest: 0, compStatusRequest: 0, compTrackRequest: 0,
+    fallbackTracks: [], fallbackTrack: null, upscalePreview: {image: "stale-preview"},
+    renderedPreview: {comp: {image: "stale-render"}}, compThumbnailPreview: {image: "stale-thumb"},
+    pendingCompWrite: {owner: "stale"}, editorMode: "artist", workspace: "find",
+    queuedDecision: decision, selectionRequest: 0, candidates: [],
+  };
+  const context = load(queuedAlbumFunction, {
+    state,
+    api: async path => {
+      if (path.startsWith("/api/artist/overview")) return overviewReady;
+      if (path.startsWith("/api/artist/comp-report")) return [
+        {id: "new-comp", tracks: [{key: "new-track"}]},
+      ];
+      throw new Error(`unexpected API call: ${path}`);
+    },
+    $: () => ({textContent: "COMP Report"}),
+    renderReview: () => { reviewRenders += 1; },
+    renderLibrary() {}, renderHero() {}, renderSources() {}, renderCandidates() {}, renderWorkspace() {},
+    loadArtistMetadata() {}, selectArtistCompTrack: async () => {},
+  });
+
+  const focusing = context.focusQueuedAlbum(decision);
+  await Promise.resolve();
+  assert.equal(state.compTrack, null);
+  assert.equal(state.upscalePreview, null);
+  assert.equal(state.renderedPreview.comp, null);
+  assert.equal(state.compThumbnailPreview, null);
+  assert.equal(state.pendingCompWrite, null);
+  assert.equal(reviewRenders, 1);
+
+  resolveOverview({artist: {id: "new-artist"}, comp_albums: []});
+  await focusing;
+  assert.equal(state.artist.id, "new-artist");
+});
+
 test("Artist and full-album COMP launches submit independent explicit scopes", async () => {
   const calls = [];
   const reviewed = [];
@@ -272,7 +383,7 @@ test("Artist and full-album COMP launches submit independent explicit scopes", a
   const context = load(launchCompFunctions, {
     state,
     post: async (path, body) => { calls.push([path, body]); return {id: `job-${calls.length}`}; },
-    reviewJob: async id => { reviewed.push(id); },
+    reviewJob: async (id, quiet) => { reviewed.push([id, quiet]); },
     setStatus() {},
   });
 
@@ -286,7 +397,32 @@ test("Artist and full-album COMP launches submit independent explicit scopes", a
   assert.deepEqual(submitted[1], ["/api/jobs", {kind: "comp", payload: {
     album_id: "comp-1", track_keys: ["artist-track", "other-track"],
   }}]);
-  assert.deepEqual(reviewed, ["job-1", "job-2"]);
+  assert.deepEqual(reviewed, [["job-1", true], ["job-2", true]]);
+});
+
+test("explicit blue, purple, and green tracks launch through both COMP controls without scope expansion", async () => {
+  for (const status of ["blue", "purple", "green"]) {
+    const calls = [];
+    const selected = {key: `${status}-track`, status};
+    const state = {
+      artist: {id: "artist-1"}, compReportVisible: true,
+      compTrack: {albumId: "comp-1", key: selected.key},
+      compGroups: [{id: "comp-1", tracks: [selected, {key: "unrelated-blue", status: "blue"}]}],
+      album: {id: "comp-1"}, fallbackTrack: {key: selected.key},
+      fallbackTracks: [selected, {key: "other-blue", status: "blue"}],
+    };
+    const context = load(launchCompFunctions, {
+      state,
+      post: async (path, body) => { calls.push([path, body]); return {id: `job-${calls.length}`}; },
+      reviewJob: async () => {}, setStatus() {},
+    });
+    await context.launchArtistComp();
+    await context.launchFallback();
+    assert.deepEqual(JSON.parse(JSON.stringify(calls.map(call => call[1].payload))), [
+      {artist_id: "artist-1", album_id: "comp-1", track_keys: [selected.key]},
+      {album_id: "comp-1", track_keys: [selected.key]},
+    ]);
+  }
 });
 
 test("both Artist COMP launch controls route through the scoped COMP action", async () => {
@@ -310,6 +446,45 @@ test("both Artist COMP launch controls route through the scoped COMP action", as
   assert.deepEqual(calls, ["artist-comp", "artist", "full-comp"]);
   assert.match(appSource, /launch\.addEventListener\("click", \(\) => runAction\(launchArtistComp\)\)/);
   assert.match(appSource, /searchButton"\)\.addEventListener\("click", \(\) => runAction\(launchCandidateWork\)\)/);
+});
+
+test("automatic COMP launch uses the status bar without a running-work dialog", async () => {
+  let dialogs = 0, renders = 0, polls = 0;
+  const statuses = [];
+  const job = {
+    id: "comp-running", kind: "comp", state: "running",
+    progress: {message: "MusicBrainz identity lookup · Artist — Track · track 1 of 1"},
+  };
+  const context = load(reviewJobFunction, {
+    state: {jobs: [job], reviewJobId: null, reviewJobState: ""},
+    lastPrompt: "",
+    $: () => ({open: false, close() {}}),
+    setStatus: (...args) => { statuses.push(args); },
+    renderJob: async () => { renders += 1; },
+    dialog: () => { dialogs += 1; },
+    pollJobs: async () => { polls += 1; },
+  });
+
+  await context.reviewJob(job.id, true);
+
+  assert.equal(dialogs, 0);
+  assert.equal(renders, 0);
+  assert.equal(polls, 1);
+  assert.equal(context.state.reviewJobId, job.id);
+  assert.match(statuses[0][0], /track 1 of 1/);
+});
+
+test("ordinary queued scan work also stays in the status area without a modal", async () => {
+  let dialogs = 0, renders = 0;
+  const job = {id: "scan-queued", kind: "scan", state: "queued", progress: {}};
+  const context = load(reviewJobFunction, {
+    state: {jobs: [job], reviewJobId: null, reviewJobState: ""}, lastPrompt: "",
+    $: () => ({open: false, close() {}}), setStatus() {},
+    renderJob: async () => { renders += 1; }, dialog: () => { dialogs += 1; }, pollJobs: async () => {},
+  });
+  await context.reviewJob(job.id);
+  assert.equal(dialogs, 0);
+  assert.equal(renders, 0);
 });
 
 test("Artist COMP renders all album groups and previews only the selected current track", () => {
@@ -361,7 +536,7 @@ test("Artist COMP renders all album groups and previews only the selected curren
   assert.equal(previewsWhenOff.length, 0);
 });
 
-test("EMBED Track writes only the selected Artist COMP track with its prepared artwork", async () => {
+test("EMBED Comp writes only the selected Artist COMP track at the preferred size", async () => {
   const calls = [];
   const state = {
     queuedDecision: null,
@@ -381,7 +556,7 @@ test("EMBED Track writes only the selected Artist COMP track with its prepared a
 
   await context.writeArtwork();
 
-  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [["/api/comp/embed", {
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [["/api/artist/comp-embed", {
     kind: "comp", image: "/track-art", adjustments: {Brightness: 12}, artist_id: "10k-maniacs",
     album_id: "billboard-1994", track_key: "10k-because-the-night", upscale: true,
   }]]);
@@ -389,7 +564,7 @@ test("EMBED Track writes only the selected Artist COMP track with its prepared a
   assert.deepEqual(JSON.parse(JSON.stringify(state.fx.comp)), {});
 });
 
-test("Full Fallback EMBED Track uses the same direct prepared-track write", async () => {
+test("Full Fallback EMBED Comp uses the same direct preferred-size write", async () => {
   const calls = [];
   const state = {
     queuedDecision: null, editorMode: "fallback", compReportVisible: false,
@@ -417,10 +592,98 @@ test("Full Fallback EMBED Track uses the same direct prepared-track write", asyn
   assert.match(appSource, /url = state\.renderedPreview\.comp\?\.image \|\| state\.upscalePreview\?\.image \|\| state\.fallbackTrack\?\.image/);
 });
 
+test("COMP repair keeps full-Fallback and Artist membership validation independent", async () => {
+  const fullCalls = [], messages = [];
+  const fullState = {
+    editorMode: "fallback", album: {id: "billboard-1994"},
+    fallbackTracks: [
+      {key: "10k-because-the-night", file: "Because the Night.flac", completed: true},
+      {key: "other-performer", file: "Other Performer.flac", completed: true},
+    ],
+  };
+  const full = load(repairFallbackFunction, {
+    state: fullState,
+    api: async path => path.startsWith("/api/fallback/tracks") ? fullState.fallbackTracks : {status: "purple", repairable: true},
+    post: async (path, payload) => {
+      fullCalls.push([path, payload]);
+      if (payload.track_key === "10k-because-the-night") throw new Error("simulated first-track failure");
+      return {status: "green", width: 1200, height: 1200};
+    },
+    renderHero() {}, probeFallbackStatuses: async () => {},
+    setStatus: (message, kind) => messages.push([message, kind]),
+  });
+
+  await full.repairFallback();
+
+  assert.deepEqual(JSON.parse(JSON.stringify(fullCalls)), [
+    ["/api/comp/repair", {album_id: "billboard-1994", track_key: "10k-because-the-night"}],
+    ["/api/comp/repair", {album_id: "billboard-1994", track_key: "other-performer"}],
+  ]);
+  assert.match(messages.at(-1)[0], /1 green.*1 failed.*simulated first-track failure/);
+
+  const artistCalls = [];
+  const artistState = {
+    compBusy: false, compRepairEnabled: true,
+    artist: {id: "10k-maniacs"}, compTrack: null,
+    compGroups: [{id: "billboard-1994", tracks: [
+      {key: "10k-because-the-night", file: "Because the Night.flac", status: "purple", repairable: true},
+    ]}],
+  };
+  const artist = load(repairArtistCompFunction, {
+    state: artistState, window: {confirm: () => true},
+    api: async (path, options) => { artistCalls.push([path, JSON.parse(options.body)]); return {status: "green"}; },
+    renderArtistCompReport() {}, setStatus() {}, selectArtistCompTrack: async () => {},
+  });
+
+  await artist.repairArtistComp();
+
+  assert.deepEqual(JSON.parse(JSON.stringify(artistCalls)), [["/api/artist/comp-repair", {
+    artist_id: "10k-maniacs", album_id: "billboard-1994", track_key: "10k-because-the-night",
+  }]]);
+});
+
+test("completed COMP work chains only within an explicit Artist scope", async () => {
+  async function completedReview(current, returned) {
+    const state = {
+      server: {authenticated: true, setup_required: false}, embedQueue: [],
+      jobs: [{...current, state: "waiting"}], reviewJobId: current.id,
+      reviewJobState: "waiting",
+    };
+    const context = load(pollJobsFunction, {
+      state,
+      api: async path => path === "/api/jobs" ? returned.map(job => ({progress: {}, ...job}))
+        : {pause_after_album: false, pause_all_albums: false},
+      renderQueue() {}, refreshCompletedAlbum: async () => {}, refreshQueuedAlbumAfterSave: async () => {},
+      renderHero() {}, renderReview() {}, renderJob: async () => {}, setStatus() {},
+      $: () => ({open: false}),
+    });
+    await context.pollJobs();
+    return state.reviewJobId;
+  }
+
+  const full = {id: "full-1", kind: "comp", payload: {album_id: "comp-1"}};
+  assert.equal(await completedReview(full, [
+    {...full, state: "done", result: {}},
+    {id: "unrelated-full", kind: "comp", state: "queued", payload: {album_id: "comp-2"}},
+  ]), null);
+
+  const scoped = {id: "artist-1", kind: "comp", payload: {artist_id: "10k", album_id: "comp-1"}};
+  assert.equal(await completedReview(scoped, [
+    {...scoped, state: "done", result: {}},
+    {id: "artist-2", kind: "comp", state: "queued", payload: {artist_id: "10k", album_id: "comp-2"}},
+    {id: "other-artist", kind: "comp", state: "queued", payload: {artist_id: "other", album_id: "comp-3"}},
+  ]), "artist-2");
+});
+
 test("queued COMP candidates submit adjustment and upscale intent with the exact candidate number", async () => {
   const submitted = [];
   const state = {
-    queuedDecision: {jobKind: "comp", selected: {queueValue: 4, image: "/candidate-4"}},
+    queuedDecision: {
+      jobKind: "comp", payload: {artist_id: "artist-1", album_id: "comp-1", track_keys: ["track-1"]},
+      context: {album_id: "comp-1", track_key: "track-1"}, selected: {queueValue: 4, image: "/candidate-4"},
+    },
+    editorMode: "artist", compReportVisible: true, artist: {id: "artist-1"},
+    compTrack: {albumId: "comp-1", key: "track-1", image: "/current"},
     fx: {comp: {Contrast: 8}}, upscalePreview: {image: "/preview"},
   };
   const context = load(writeArtworkFunction, {
@@ -434,6 +697,144 @@ test("queued COMP candidates submit adjustment and upscale intent with the exact
     action: "webgui-embed-track", number: 4,
     artwork: {image: "/candidate-4", adjustments: {Contrast: 8}, upscale: true},
   }]);
+});
+
+test("the internal COMP thumbnail preparation remains bound to the selected track", async () => {
+  const requests = [];
+  const statuses = [];
+  const state = {
+    queuedDecision: {
+      jobKind: "comp", jobId: "job-1", nonce: "prompt-1",
+      payload: {artist_id: "artist-1", album_id: "comp-1", track_keys: ["track-1"]},
+      context: {album_id: "comp-1", track_key: "track-1"},
+      selected: {image: "/candidate-1"},
+    },
+    editorMode: "artist", compReportVisible: true, artist: {id: "artist-1"},
+    compTrack: {albumId: "comp-1", key: "track-1", image: "/current"}, fx: {comp: {Brightness: 7}},
+    upscalePreview: {image: "/upscaled", width: 1800, height: 1800},
+    compThumbnailPreview: null, pendingCompWrite: null,
+  };
+  const context = load(compThumbnailFunctions, {
+    state,
+    componentPayload: (_kind, image, extra) => ({image, adjustments: state.fx.comp, ...extra}),
+    post: async (path, payload) => {
+      requests.push({path, payload});
+      return {prepared_id: "a".repeat(32), sha256: "b".repeat(64), image: "/prepared", width: 1200, height: 1200, bytes: 900, audio_written: false};
+    },
+    setStatus(...values) { statuses.push(values); }, renderPanes() {}, renderReview() {},
+  });
+
+  await context.prepareCompThumbnail({announce: false});
+
+  assert.equal(requests[0].path, "/api/artist/comp-thumbnail-preview");
+  assert.deepEqual(JSON.parse(JSON.stringify(requests[0].payload)), {
+    image: "/candidate-1", adjustments: {Brightness: 7}, artist_id: "artist-1",
+    album_id: "comp-1", track_key: "track-1", upscale: true,
+  });
+  assert.equal(state.compThumbnailPreview.image, "/prepared");
+  assert.equal(state.compThumbnailPreview.audio_written, false);
+  assert.deepEqual(statuses, []);
+});
+
+test("COMP Upscale Preview reports the applied scale and prepared embedded size", () => {
+  const context = load(upscalePreviewStatusFunction, {});
+  const status = context.upscalePreviewStatus(
+    {
+      width: 1800, height: 1800,
+      reason: "Upscaled 1500 × 1500 → 1800 × 1800 (120% to 1800px Ideal)",
+    },
+    {width: 1200, height: 1200},
+    true,
+  );
+  assert.equal(
+    status,
+    "Upscale preview · Upscaled 1500 × 1500 → 1800 × 1800 (120% to 1800px Ideal) · Embedded Thumb Ready · 1200 × 1200 · no audio written",
+  );
+  assert.doesNotMatch(status, /200%/);
+});
+
+test("queued EMBED Comp accepts an already prepared thumbnail identity and digest", async () => {
+  const decisions = [];
+  const prepared = {prepared_id: "a".repeat(32), sha256: "b".repeat(64), image: "/prepared", owner: "owner"};
+  const state = {
+    queuedDecision: {
+      jobKind: "comp", jobId: "job-1",
+      payload: {artist_id: "artist-1", album_id: "comp-1", track_keys: ["track-1"]},
+      context: {album_id: "comp-1", track_key: "track-1"}, selected: {queueValue: 2, image: "/candidate-2"},
+    },
+    editorMode: "artist", compReportVisible: true, artist: {id: "artist-1"},
+    compTrack: {albumId: "comp-1", key: "track-1", image: "/current"},
+    fx: {comp: {}}, upscalePreview: null, pendingCompWrite: null,
+  };
+  const context = load(writeArtworkFunction, {
+    state, activeCompPrepared: () => prepared,
+    submitQueuedDecision: async value => decisions.push(JSON.parse(value)),
+  });
+
+  await context.writeArtwork();
+
+  assert.equal(decisions[0].artwork.prepared_id, prepared.prepared_id);
+  assert.equal(decisions[0].artwork.prepared_sha256, prepared.sha256);
+  assert.equal(state.pendingCompWrite.preview.image, "/prepared");
+});
+
+test("Selected Artwork follows the report track instead of an unrelated queued COMP decision", async () => {
+  const calls = [];
+  const state = {
+    queuedDecision: {
+      jobKind: "comp", jobId: "old-job",
+      payload: {artist_id: "old-artist", album_id: "old-comp", track_keys: ["old-track"]},
+      context: {album_id: "old-comp", track_key: "old-track"},
+      selected: {queueValue: 5, image: "/old-candidate"},
+    },
+    editorMode: "artist", compReportVisible: true,
+    artist: {id: "a-ha"},
+    compTrack: {albumId: "new-comp", key: "take-on-me", image: "/current-thumb"},
+    fx: {comp: {}}, upscalePreview: {image: "/current-upscale"}, renderedPreview: {comp: null},
+  };
+  const context = load(writeArtworkFunction, {
+    state,
+    post: async (path, payload) => { calls.push([path, payload]); return {file: "Take on Me.flac", width: 1200, height: 1200}; },
+    componentPayload: (kind, image, extra) => ({kind, image, ...extra}),
+    refreshQueuedAlbumAfterSave: async () => {}, setStatus() {}, submitQueuedDecision() { throw new Error("stale queue was submitted"); },
+  });
+
+  await context.writeArtwork();
+
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [["/api/artist/comp-embed", {
+    kind: "comp", image: "/current-thumb", artist_id: "a-ha", album_id: "new-comp",
+    track_key: "take-on-me", upscale: true,
+  }]]);
+});
+
+test("COMP Selected Artwork keeps the Windows button contract", () => {
+  assert.match(operationsSource, /\$\("writeButton"\)\.textContent = compContext \? "EMBED Comp"/);
+  assert.match(operationsSource, /\$\("embedBatchButton"\)\.textContent = "EMBED Batch"/);
+  assert.match(operationsSource, /\$\("embedBatchButton"\)\.disabled = compContext \|\|/);
+  assert.doesNotMatch(operationsSource, /textContent = compContext \? "EMBED Thumbs"/);
+  assert.match(appSource, /\$\("embedBatchButton"\)\.addEventListener\("click", \(\) => runAction\(stageAlbum\)\)/);
+});
+
+test("changing report tracks cancels an unrelated transient COMP job", async () => {
+  const calls = [];
+  const state = {
+    queuedDecision: {
+      jobKind: "comp", jobId: "old-job",
+      payload: {artist_id: "old-artist", album_id: "old-comp", track_keys: ["old-track"]},
+      context: {album_id: "old-comp", track_key: "old-track"},
+    },
+    reviewJobId: "old-job", reviewJobState: "waiting", jobs: [],
+  };
+  const context = load(compDecisionFunctions, {
+    state,
+    post: async (path, payload) => calls.push([path, payload]),
+  });
+
+  await context.cancelMismatchedCompWork({artist_id: "new-artist", album_id: "new-comp", track_key: "new-track"});
+
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [["/api/jobs/action", {action: "cancel", id: "old-job"}]]);
+  assert.equal(state.queuedDecision, null);
+  assert.equal(state.reviewJobId, null);
 });
 
 test("MusicBrainz release prompt stays on the Artist COMP track", async () => {
@@ -450,10 +851,15 @@ test("MusicBrainz release prompt stays on the Artist COMP track", async () => {
   const job = {
     id: "job-1", kind: "comp",
     payload: {artist_id: "10k-maniacs", album_id: "billboard-1994", track_keys: ["10k-because-the-night"]},
-    progress: {current: {fallback_authority: {artist: "10,000 Maniacs", track: "Because the Night"}}},
+    progress: {current: {
+      fallback_authority: {artist: "10,000 Maniacs", track: "Because the Night"},
+      musicbrainz_existing: {items: [{title: "Campfire Songs", image: "/api/image/existing"}]},
+    }},
   };
   const prompt = {nonce: "nonce-1", context: {
     kind: "musicbrainz-results", album_id: "billboard-1994", track_key: "10k-because-the-night",
+    identity: {status: "valid", friendly_artist: "10,000 Maniacs", friendly_title: "Because the Night"},
+    current_album: {artist: "Various Artists", title: "Billboard Hot 100 Singles of 1994"},
   }};
   const context = load(queuedMusicBrainzFunction, {
     state,
@@ -472,7 +878,16 @@ test("MusicBrainz release prompt stays on the Artist COMP track", async () => {
   assert.equal(state.queuedDecision.context.track_title, "Because the Night");
   assert.deepEqual(state.queuedDecision.payload.track_keys, ["10k-because-the-night"]);
   assert.equal(state.queuedDecision.options[0].recording_id, "recording-because-the-night");
+  assert.equal(state.queuedDecision.existingArtwork[0].title, "Campfire Songs");
+  assert.equal(state.queuedDecision.context.identity.status, "valid");
+  assert.equal(state.queuedDecision.selectedResult, null);
   assert.equal(focused.length, 1);
+
+  state.queuedDecision.selectedResult = 0;
+  state.queuedDecision.artistFilter = "10,000 Maniacs";
+  await context.presentQueuedMusicBrainz(job, prompt, options);
+  assert.equal(state.queuedDecision.selectedResult, 0);
+  assert.equal(state.queuedDecision.artistFilter, "10,000 Maniacs");
 });
 
 test("MusicBrainz result decisions ignore stale image candidates and preserve result numbering", async () => {
@@ -496,24 +911,34 @@ test("MusicBrainz result decisions ignore stale image candidates and preserve re
   assert.equal(presented[0], job);
   assert.deepEqual(presented[2], options);
 
-  const submitted = [];
-  const elements = {candidateCount: {textContent: ""}};
-  const node = (tag, className = "", text = "") => ({
-    tag, className, text, children: [], listeners: {},
-    append(...children) { this.children.push(...children); },
-    setAttribute() {},
-    addEventListener(event, handler) { this.listeners[event] = handler; },
+  const renderer = load(renderMusicBrainzFunction, {});
+  const grouped = renderer.musicBrainzFamilies([
+    {...options[1], family_id: "campfire", family_title: "Campfire Songs", score: "95", release_class: "Compilation", release_artist: "10,000 Maniacs"},
+    {...options[1], id: "release-2004-eu", family_id: "campfire", family_title: "Campfire Songs", score: "95", release_class: "Compilation", release_artist: "10,000 Maniacs"},
+    {...options[0], family_id: "appearance", family_title: "Other Release", score: "70", release_class: "Soundtrack", release_artist: "Various Artists"},
+  ]);
+  assert.equal(grouped.length, 2);
+  assert.equal(grouped[0].title, "Campfire Songs");
+  assert.equal(grouped[0].score, 95);
+  assert.equal(grouped[0].options.length, 2);
+  assert.equal(grouped[0].section, 0);
+  assert.equal(grouped[1].section, 2);
+  assert.match(appSource, /originalIndex[\s\S]*decision\.selectedResult = resultIndex/);
+});
+
+test("MusicBrainz zero-result prompts open the authority workspace", async () => {
+  let presented;
+  const job = {id: "job-empty", kind: "comp", state: "waiting", payload: {}, error: "", progress: {
+    prompt: {nonce: "nonce-empty", context: {kind: "musicbrainz-results", options: [], identity: {status: "failed"}}},
+    current: {diagnostics: {items: [["musicbrainz", "No recording matched the supplied identity"]]}},
+  }};
+  const context = load(renderJobFunction, {
+    presentQueuedMusicBrainz: async (...args) => { presented = args; },
+    presentQueuedCandidates: async () => { throw new Error("candidate dock opened"); },
   });
-  const renderer = load(renderMusicBrainzFunction, {
-    $: id => elements[id], node,
-    runAction: action => action(),
-    submitQueuedDecision: async value => { submitted.push(value); },
-  });
-  const grid = {children: [], append(...children) { this.children.push(...children); }};
-  renderer.renderMusicBrainzResults(grid, {options, context: {track_title: "Because the Night"}}, "billboard");
-  assert.equal(grid.children.length, 1);
-  await grid.children[0].children[0].listeners.click();
-  assert.deepEqual(submitted, [2]);
+  await context.renderJob(job);
+  assert.equal(presented[0], job);
+  assert.deepEqual(presented[2], []);
 });
 
 test("a MusicBrainz lookup without matches surfaces diagnostics instead of a silent prompt", async () => {
@@ -528,6 +953,7 @@ test("a MusicBrainz lookup without matches surfaces diagnostics instead of a sil
     setStatus: (...args) => { statuses.push(args); },
     queueAction() {}, pollJobs() {}, refreshQueuedAlbumAfterSave() {}, runAction() {},
     state: {jobs: [], artist: null, compReportVisible: false},
+    distinctDiagnostics: items => items.map(item => Array.isArray(item) ? item.join(" · ") : String(item)),
     $: () => ({close() {}}),
   });
   const job = {
@@ -544,6 +970,32 @@ test("a MusicBrainz lookup without matches surfaces diagnostics instead of a sil
   assert.ok(statuses.some(([message, level]) => message.includes("Because the Night") && level === "error"));
   assert.equal(messages.includes("Use suggested"), false);
   assert.equal(messages.includes("MusicBrainz matches"), true);
+});
+
+test("a restart pause moves provider failures to source status instead of repeating the diagnostic list", async () => {
+  const body = {children: [], append(...children) { this.children.push(...children); }};
+  const actions = [], state = {jobs: [], artist: null, compReportVisible: false, sourceDiagnostics: []};
+  let sourceRenders = 0;
+  const context = load(renderJobFunction, {
+    dialog: () => body,
+    node: (tag, className, text) => ({tag, className, text, children: [], append(...children) { this.children.push(...children); }}),
+    field: () => ({value: ""}),
+    actionButton(label) { actions.push(label); },
+    setStatus() {}, queueAction() {}, pollJobs() {}, refreshQueuedAlbumAfterSave() {}, runAction() {},
+    renderSources() { sourceRenders += 1; }, state,
+    distinctDiagnostics: items => items.map(item => Array.isArray(item) ? item.join(" · ") : String(item)),
+  });
+  const diagnostics = [["amazon", "Amazon Store search returned HTTP 503"], ["discogs", "policy-filtered: below minimum"]];
+  await context.renderJob({
+    id: "paused-comp", kind: "comp", state: "paused", payload: {name: "Billboard Hot 100 Singles of 1994"},
+    error: "Interrupted by server restart", progress: {current: {diagnostics: {items: diagnostics}}},
+  });
+
+  assert.deepEqual(state.sourceDiagnostics, diagnostics);
+  assert.equal(sourceRenders, 1);
+  assert.equal(body.children.some(item => item.text?.includes("HTTP 503")), false);
+  assert.equal(body.children.some(item => item.text?.includes("policy-filtered")), false);
+  assert.equal(actions.includes("Resume"), true);
 });
 
 test("Album Track Embedding shows album details and excludes COMP and scan jobs", () => {
@@ -601,10 +1053,12 @@ test("EMBED All Albums stages only identified Artist Albums with saved covers", 
   const calls = [];
   const statuses = [];
   const state = {artist: {albums: [
-    {id: "regular", name: "Regular", album_mbid: "release-1", tracks: 10, cover: "/regular.jpg"},
-    {id: "featured", name: "Featured", album_mbid: "release-2", tracks: 1, cover: "/featured.jpg"},
+    {id: "regular", name: "Regular", album_mbid: "11111111-1111-4111-8111-111111111111", tracks: 10, cover: "/regular.jpg"},
+    {id: "featured", name: "Featured", album_mbid: "22222222-2222-4222-8222-222222222222", tracks: 1, cover: "/featured.jpg"},
+    {id: "identified-compilation", name: "Compilation Release", album_mbid: "33333333-3333-4333-8333-333333333333", compilation: true, tracks: 2, cover: "/compilation.jpg"},
+    {id: "malformed", name: "Malformed", album_mbid: "release-not-a-uuid", tracks: 3, cover: "/malformed.jpg"},
     {id: "fallback", name: "Fallback", album_mbid: "", tracks: 20, cover: "/fallback.jpg"},
-    {id: "no-cover", name: "No Cover", album_mbid: "release-3", tracks: 8, cover: null},
+    {id: "no-cover", name: "No Cover", album_mbid: "44444444-4444-4444-8444-444444444444", tracks: 8, cover: null},
   ]}};
   const context = load(albumEligibilityFunctions + stageAllAlbumsFunction, {
     state,
@@ -618,9 +1072,28 @@ test("EMBED All Albums stages only identified Artist Albums with saved covers", 
 
   await context.stageAllArtistAlbums();
 
-  assert.deepEqual(calls, ["regular", "featured"]);
-  assert.ok(statuses.at(-1)[0].includes("1 Albums staged"));
+  assert.deepEqual(calls, ["regular", "featured", "identified-compilation"]);
+  assert.ok(statuses.at(-1)[0].includes("2 Albums staged"));
   assert.ok(statuses.at(-1)[0].includes("1 already queued"));
+});
+
+test("Album embedding eligibility requires a UUID but permits identified compilation releases", () => {
+  const context = load(albumEligibilityFunctions, {});
+  const valid = {album_mbid: "33333333-3333-4333-8333-333333333333", compilation: true, tracks: 2, status: "incomplete"};
+  assert.equal(context.albumEmbeddingEligible(valid), true);
+  assert.equal(context.artistAlbumEligible(valid), true);
+  assert.equal(context.albumEmbeddingEligible({...valid, album_mbid: "release-not-a-uuid"}), false);
+  assert.equal(context.artistAlbumEligible({...valid, album_mbid: "release-not-a-uuid"}), false);
+  assert.equal(context.albumEmbeddingEligible({...valid, album_mbid: ""}), false);
+});
+
+test("COMP Advanced IDs omit editable Release IDs and candidate cards retain compact metadata", () => {
+  assert.doesNotMatch(appSource, /placeholder = "Release MBID/);
+  assert.doesNotMatch(operationsSource, /field\(details, "Release ID"/);
+  assert.match(appSource, /candidate-resolution/);
+  assert.match(appSource, /candidate-quality/);
+  assert.match(appSource, /Diagnostics \(\$\{diagnostics\.length\}\)/);
+  assert.match(appSource, /artist_id: artist\.value, recording_id: recording\.value/);
 });
 
 test("lazy thumbnail hydration updates matching artists and rerenders", async () => {
@@ -780,14 +1253,47 @@ test("Album navigation preserves the selected Artist COMP card inventory", async
     },
     resetFocusAdjustments() {}, renderSources() {}, renderCandidates() {}, renderWorkspace() {},
     resetCandidateFilters() {}, markSelectedAlbum() {}, renderAll() {}, loadArtistMetadata() {},
-    setStatus() {},
+    setStatus() {}, cancelActiveCompWork: async () => {}, auditEvent() {},
   });
 
   await context.chooseAlbum("own-1");
 
   assert.equal(context.albumInCurrentArtistContext("comp-1"), true);
+  assert.equal(state.album.id, "own-1");
   assert.deepEqual(state.compAlbums.map(group => group.id), ["comp-1"]);
   assert.equal(state.compGroups.length, 0);
+});
+
+test("fresh Albums view selection establishes Artist context and remains responsive", async () => {
+  const state = {
+    artist: null, artistMetadata: null, artistMetadataRequest: 0, artists: [],
+    album: null, compAlbums: [], compGroups: [], compCollapsed: new Set(), compare: new Set(),
+    candidates: [], selectedPortrait: null, selectedBanner: null, selectedCover: null,
+    upscalePreview: null, renderedPreview: {}, fallbackTracks: [], fallbackTrack: null,
+    fallbackPreviewOnly: false, fallbackRun: false, fallbackTrackRequest: 0,
+    fallbackPreviewMode: false, fallbackReportExpanded: true, fallbackHelpExpanded: false,
+    compReportVisible: false, compReportLoading: false, compPreviewMode: false, compTrack: null,
+    compRunIndex: -1, compTrackRequest: 0, compStatusRequest: 0, compReportRequest: 0,
+    queuedDecision: null, reviewJobId: null, candidateFilterLocked: true,
+    selectionRequest: 0, searchRequest: 0, reviewCleared: false, libraryMode: "albums",
+  };
+  const paths = [];
+  const context = load(clearFocusFunction + contextFunctions + chooseAlbumFunction, {
+    state,
+    api: async path => {
+      paths.push(path);
+      if (path.startsWith("/api/album")) return {id: "album-1", artist_id: "artist-1", artist_name: "Artist", album_mbid: "release-1", candidates: [], tracks: 1};
+      return {artist: {id: "artist-1", albums: [{id: "album-1"}], local_candidates: []}, comp_albums: []};
+    },
+    resetFocusAdjustments() {}, renderSources() {}, renderCandidates() {}, renderWorkspace() {},
+    resetCandidateFilters() {}, markSelectedAlbum() {}, renderAll() {}, loadArtistMetadata() {},
+    setStatus() {}, cancelActiveCompWork: async () => {}, auditEvent() {},
+  });
+  await context.chooseAlbum("album-1");
+  assert.deepEqual(paths.map(path => path.split("?")[0]), ["/api/album", "/api/artist/overview"]);
+  assert.equal(state.artist.id, "artist-1");
+  assert.equal(state.album.id, "album-1");
+  assert.equal(state.editorMode, "album");
 });
 
 test("late Artist metadata cannot replace an already scoped COMP report", async () => {

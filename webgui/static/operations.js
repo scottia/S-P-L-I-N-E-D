@@ -1,8 +1,27 @@
 "use strict";
 
 // Browser operations use the same prepared pixels and persistent catalog as writes.
+function newActionId() {
+  return typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID() : Math.random().toString(16).slice(2);
+}
 async function runAction(action) {
-  try { return await action(); } catch (error) { setStatus(error.message, "error"); }
+  const inherited = state.activeActionId;
+  const pending = inherited ? "" : state.pendingActionId || "";
+  const started = performance.now();
+  if (!inherited) state.activeActionId = pending || newActionId();
+  if (pending) state.pendingActionId = "";
+  const actionId = state.activeActionId;
+  try {
+    const result = await action();
+    auditEvent("browser-action", "completed", {action_id: actionId, request_status: "completed", elapsed_ms: performance.now() - started});
+    return result;
+  } catch (error) {
+    auditEvent("browser-action", "failed", {severity: "error", action_id: actionId, request_status: "failed", elapsed_ms: performance.now() - started, error: error.message});
+    setStatus(error.message, "error");
+  } finally {
+    if (!inherited) state.activeActionId = "";
+  }
 }
 const post = (path, value = {}) => api(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(value)});
 function actionButton(label, action, host = $("dialogBody")) {
@@ -39,6 +58,7 @@ async function initialize() {
   if (status.setup_required) { await openSettings(); setStatus("Complete library and database setup in Settings"); return; }
   const settings = await api("/api/settings");
   applyGraphicalEnhancement(settings.config.webgui_ui?.enhancement);
+  state.artworkRange = {...state.artworkRange, ...(settings.config.range || {})};
   state.enabledSources = (settings.config.sources?.cover_sources || []).filter(key=>!settings.config.sources?.exclude_cover_sources?.includes(key) && settings.config.source_policies?.[key]?.enabled!==false);
   renderAll(); await loadLibrary(); await pollJobs();
 }
@@ -99,21 +119,82 @@ function componentPayload(kind, imageURL, extra = {}) {
   return {kind, image: imageURL, adjustments: state.fx[target] || {},
     package_adjustments: state.themedPackaging ? state.fx.package : {}, fit: state.fit[target], ...extra};
 }
+function compContextActive() {
+  return activeArtworkDecision()?.jobKind === "comp" || state.editorMode === "fallback"
+    || state.editorMode === "artist" && state.compReportVisible;
+}
+function compTargetScope() {
+  const decision = activeArtworkDecision();
+  if (decision?.jobKind === "comp") {
+    return {
+      artist_id: String(decision.payload?.artist_id || ""),
+      album_id: String(decision.context?.album_id || decision.payload?.album_id || ""),
+      track_key: String(decision.context?.track_key || (decision.payload?.track_keys?.length === 1 ? decision.payload.track_keys[0] : "")),
+    };
+  }
+  if (state.editorMode === "artist" && state.compReportVisible) return {
+    artist_id: String(state.artist?.id || ""), album_id: String(state.compTrack?.albumId || ""), track_key: String(state.compTrack?.key || ""),
+  };
+  return {artist_id: "", album_id: String(state.album?.id || ""), track_key: String(state.fallbackTrack?.key || "")};
+}
+function compCandidateSource() {
+  const decision = activeArtworkDecision();
+  return decision?.jobKind === "comp" && decision.selected
+    ? decision.selected.image
+    : state.editorMode === "fallback" ? state.fallbackTrack?.image : state.compTrack?.image;
+}
+function compThumbnailOwner() {
+  const decision = activeArtworkDecision();
+  return JSON.stringify({
+    ...compTargetScope(),
+    job: decision?.jobId || "",
+    nonce: decision?.nonce || "",
+    candidate: compCandidateSource() || "",
+    adjustments: state.fx.comp || {},
+    upscale: !!state.upscalePreview,
+  });
+}
+function activeCompPrepared() {
+  if (state.pendingCompWrite?.preview && (!activeArtworkDecision() || state.pendingCompWrite.owner === compThumbnailOwner())) return state.pendingCompWrite.preview;
+  return state.compThumbnailPreview?.owner === compThumbnailOwner() ? state.compThumbnailPreview : null;
+}
+function invalidateCompThumbnail() {
+  state.compThumbnailPreview = null;
+}
+async function prepareCompThumbnail({announce = true} = {}) {
+  if (!compContextActive()) throw new Error("Choose a COMP track first");
+  const source = compCandidateSource(), scope = compTargetScope();
+  if (!source || !scope.album_id || !scope.track_key) throw new Error("Choose COMP artwork and a track before preparing its thumbnail");
+  const owner = compThumbnailOwner();
+  const endpoint = scope.artist_id ? "/api/artist/comp-thumbnail-preview" : "/api/comp/thumbnail-preview";
+  if (announce) setStatus("Preparing configured COMP thumbnail…", "busy");
+  const result = await post(endpoint, componentPayload("comp", source, {...scope, upscale: !!state.upscalePreview}));
+  if (owner !== compThumbnailOwner()) return null;
+  state.compThumbnailPreview = {...result, owner};
+  state.pendingCompWrite = null;
+  renderPanes(); renderReview();
+  if (announce) setStatus(`Embedded Thumb Ready · ${result.width} × ${result.height} · no audio written`, "ready");
+  return state.compThumbnailPreview;
+}
 function coverPayload() {
   if (!state.album) throw new Error("Choose an album first");
   return componentPayload("cover", state.selectedCover?.image || state.album.cover,
     {album_id: state.album.id, upscale: !!state.upscalePreview});
 }
 async function writeArtwork() {
-  if (state.queuedDecision) {
-    const candidate = state.queuedDecision.selected;
+  const decision = activeArtworkDecision();
+  if (decision) {
+    const candidate = decision.selected;
     if (!candidate) throw new Error("Preview a queued candidate before choosing it");
-    const value = state.queuedDecision.jobKind === "comp"
+    const prepared = decision.jobKind === "comp" && typeof activeCompPrepared === "function" ? activeCompPrepared() : null;
+    const value = decision.jobKind === "comp"
       ? JSON.stringify({
         action: "webgui-embed-track", number: candidate.queueValue,
-        artwork: {image: candidate.image, adjustments: state.fx.comp || {}, upscale: !!state.upscalePreview},
+        artwork: {image: candidate.image, adjustments: state.fx.comp || {}, upscale: !!state.upscalePreview,
+          ...(prepared ? {prepared_id: prepared.prepared_id, prepared_sha256: prepared.sha256} : {})},
       })
       : candidate.queueValue;
+    if (prepared) state.pendingCompWrite = {preview: prepared, owner: prepared.owner, jobId: decision.jobId};
     await submitQueuedDecision(value);
     return;
   }
@@ -128,10 +209,20 @@ async function writeArtwork() {
       upscale: !!state.upscalePreview,
     };
     if (artistComp) scope.artist_id = state.artist?.id || "";
-    const result = await post("/api/comp/embed", componentPayload("comp", track.image, scope));
-    state.upscalePreview = null; state.renderedPreview.comp = null; state.fx.comp = {};
+    const endpoint = artistComp ? "/api/artist/comp-embed" : "/api/comp/embed";
+    const prepared = typeof activeCompPrepared === "function" ? activeCompPrepared() : null;
+    if (prepared) Object.assign(scope, {prepared_id: prepared.prepared_id, prepared_sha256: prepared.sha256});
+    if (prepared) state.pendingCompWrite = {preview: prepared, owner: prepared.owner};
+    const result = await post(endpoint, componentPayload("comp", track.image, scope));
+    if (result.image) Object.assign(track, {image: result.image, width: result.width, height: result.height, bytes: result.bytes});
     await refreshQueuedAlbumAfterSave();
-    setStatus(`Embedded COMP track · ${result.file} · ${result.width} × ${result.height}`, "ready");
+    state.upscalePreview = null; state.renderedPreview.comp = null; state.fx.comp = {};
+    state.compThumbnailPreview = null; state.pendingCompWrite = null;
+    if (typeof renderPanes === "function") renderPanes();
+    if (typeof renderReview === "function") renderReview();
+    setStatus(result.completed
+      ? `Embedded COMP track · ${result.file} · ${result.width} × ${result.height}`
+      : `Artwork embedded and verified · ${result.file} · authoritative IDs remain unresolved, so this track stays blue`, "ready");
     return;
   }
   if (state.editorMode === "album") {
@@ -174,10 +265,17 @@ renderReview = function () {
     && !!(state.selectedPortrait?.image || state.selectedBanner?.image || state.artist?.portrait || state.artist?.banner);
   $("writeButton").disabled = entry ? !state.artist : !writable || (state.editorMode === "album" ? !(state.selectedCover?.image || state.album?.cover)
     : state.editorMode === "fallback" ? !state.fallbackTrack?.image : state.compReportVisible ? !state.compTrack?.image : !(currentPackage || (state.radioArtist && (state.selectedPortrait || state.artist?.portrait)) || (state.radioBanner && (state.selectedBanner || state.artist?.banner))));
+  const compContext = compContextActive();
   const staged = state.editorMode === "album" && state.embedQueue.some(item => item.id === state.album?.id);
-  $("embedBatchButton").disabled = !writable || state.editorMode !== "album" || !albumEmbeddingEligible(state.album) || !(state.selectedCover?.image || state.album?.cover);
+  $("writeButton").textContent = compContext ? "EMBED Comp" : $("writeButton").textContent;
+  $("embedBatchButton").textContent = "EMBED Batch";
+  $("embedBatchButton").classList.add("action-purple");
+  $("embedBatchButton").classList.remove("action-cyan");
+  $("embedBatchButton").disabled = compContext || !writable || state.editorMode !== "album"
+    || !albumEmbeddingEligible(state.album) || !(state.selectedCover?.image || state.album?.cover);
   $("embedBatchButton").classList.toggle("staged", staged);
-  $("embedBatchButton").title = staged ? "Already staged; press again to confirm the existing queue entry" : "Write the cover and stage track embedding";
+  $("embedBatchButton").title = compContext ? "Album EMBED Batch is unavailable for track-scoped COMP artwork"
+    : staged ? "Already staged; press again to confirm the existing queue entry" : "Write the cover and stage track embedding";
   $("musicbrainzButton").disabled = !state.album || state.editorMode !== "album";
   $("bypassButton").disabled = !state.album || state.editorMode !== "album";
   $("writeNotice").textContent = writable ? "Live Write · WRITE saves artwork. EMBED Batch saves the cover and stages track embedding. COMP work asks for track artwork in queued review." : "Read mode · searching and previewing are enabled. Enable Live Write in Settings to save artwork or track tags.";
@@ -188,26 +286,32 @@ renderReview = function () {
     $("embedBatchButton").disabled = true;
     $("writeNotice").textContent = "COMP preview mode · turn preview off before changing or embedding track artwork.";
   }
-  if (state.queuedDecision) {
-    const musicBrainzResults = state.queuedDecision.kind === "musicbrainz-results";
-    const compCandidate = state.queuedDecision.jobKind === "comp" && !!state.queuedDecision.selected;
-    $("upscaleButton").disabled = state.compPreviewMode || !compCandidate;
-    $("writeButton").textContent = musicBrainzResults ? "CHOOSE RESULT" : state.queuedDecision.jobKind === "comp" ? "EMBED Track" : "WRITE Cover";
-    $("writeButton").disabled = !writable || state.compPreviewMode || musicBrainzResults || !state.queuedDecision.selected;
-    $("embedBatchButton").disabled = true;
+  const decision = activeArtworkDecision();
+  if (decision) {
+    const musicBrainzResults = decision.kind === "musicbrainz-results";
+    const compCandidate = decision.jobKind === "comp" && !!decision.selected;
+    $("upscaleButton").disabled = state.compPreviewMode || decision.jobKind === "comp" && !compCandidate;
+    $("writeButton").textContent = decision.jobKind === "comp" ? "EMBED Comp" : "WRITE Cover";
+    $("writeButton").disabled = !writable || state.compPreviewMode || musicBrainzResults || !decision.selected;
+    if (decision.jobKind === "comp") $("embedBatchButton").disabled = true;
     $("writeNotice").textContent = musicBrainzResults ? "Choose a MusicBrainz release in Candidate Artwork; its artwork candidates load next."
       : !writable ? "Read-only queued review · choices are evaluated but files are not saved."
-      : compCandidate ? "Live Write · adjust or upscale this candidate, then EMBED Track writes only the active COMP track."
+      : compCandidate ? "EMBED Comp prepares the preferred square thumbnail and writes only the active COMP track."
       : "Live Write · select one candidate, then save it here.";
+  } else if (compContext) {
+    $("writeNotice").textContent = !writable ? "Read mode · enable Live Write to embed the selected COMP track."
+      : "Track-scoped COMP · current artwork, Upscale Preview, and enhancements can be embedded without MusicBrainz.";
   }
+  $("writeNotice").hidden = compContext;
 };
 async function searchAlbum(releaseId = null) {
   if (!state.album) return;
   const id = state.album.id, request = ++state.searchRequest;
+  state.sourceDiagnostics = [];
   setStatus("Searching configured artwork sources…", "busy");
   const result = await post("/api/search/album", {id, release_id: releaseId});
   if (request !== state.searchRequest || state.album?.id !== id) return;
-  state.candidates = [...(state.album.candidates || []), ...result.candidates]; resetCandidateFilters();
+  state.candidates = [...(state.album.candidates || []), ...result.candidates]; state.sourceDiagnostics = result.warnings || []; resetCandidateFilters();
   renderSources(); renderCandidates(); renderReview();
   setStatus(result.candidates.length + " online candidates" + (result.warnings.length ? " · " + result.warnings.join("; ") : ""));
 };
@@ -225,22 +329,45 @@ async function skipQueuedAlbum() {
 async function enqueueComp(albumId, keys, artistId = "") {
   const payload = {album_id: albumId, track_keys: [...keys]};
   if (artistId) payload.artist_id = artistId;
+  state.sourceDiagnostics = [];
   const result = await post("/api/jobs", {kind: "comp", payload});
-  await reviewJob(result.id);
+  await reviewJob(result.id, true);
+}
+function fallbackCompLaunchTargets() {
+  const selected = state.fallbackTrack?.key
+    ? state.fallbackTracks.find(track => track.key === state.fallbackTrack.key) : null;
+  return selected && ["blue", "purple", "green"].includes(selected.status)
+    ? [selected] : state.fallbackTracks.filter(track => track.status === "blue");
+}
+function artistCompLaunchGroups() {
+  if (state.compTrack?.albumId && state.compTrack?.key) {
+    const group = state.compGroups.find(item => item.id === state.compTrack.albumId);
+    const selected = group?.tracks.find(track => track.key === state.compTrack.key);
+    if (selected && ["blue", "purple", "green"].includes(selected.status))
+      return [{id: group.id, keys: [selected.key]}];
+  }
+  return state.compGroups.map(group => ({id: group.id, keys: group.tracks.filter(track => track.status === "blue").map(track => track.key)})).filter(group => group.keys.length);
 }
 async function launchFallback() {
   if (!state.album) return;
-  await enqueueComp(state.album.id, state.fallbackTracks.filter(track => track.status === "blue").map(track => track.key));
+  const targets = fallbackCompLaunchTargets();
+  if (!targets.length) { setStatus("Select a blue, purple, or green COMP track to review"); return; }
+  state.fallbackPreviewMode = false;
+  await enqueueComp(state.album.id, targets.map(track => track.key));
 };
 async function launchArtistComp() {
   if (!state.artist || !state.compReportVisible) throw new Error("Open this Artist's COMP Report before launching work");
   const artistId = state.artist.id;
-  const groups = state.compGroups.map(group => ({id: group.id, keys: group.tracks.filter(track => track.status === "blue").map(track => track.key)})).filter(group => group.keys.length);
+  const groups = artistCompLaunchGroups();
+  if (!groups.length) { setStatus("Select a blue, purple, or green COMP track to review"); return; }
+  state.compPreviewMode = false;
+  const trackCount = groups.reduce((total, group) => total + group.keys.length, 0);
+  setStatus(`Opening Artist COMP review · ${groups.length} album${groups.length === 1 ? "" : "s"} · ${trackCount} track${trackCount === 1 ? "" : "s"}`, "busy");
   let first;
   for (const group of groups) {
     const result = await post("/api/jobs", {kind: "comp", payload: {artist_id: artistId, album_id: group.id, track_keys: group.keys}}); first ||= result.id;
   }
-  if (first) await reviewJob(first); else setStatus("No blue COMP tracks need artwork");
+  await reviewJob(first, true);
 };
 async function launchCandidateWork() {
   if (state.queuedDecision?.jobKind === "scan") return skipQueuedAlbum();
@@ -278,22 +405,36 @@ function queuedCandidate(option, index) {
 }
 function clearQueuedDecision() {
   const previous = state.queuedDecision?.previousCandidates || [];
+  const previousDiagnostics = state.queuedDecision?.previousSourceDiagnostics || [];
   state.queuedDecision = null;
   state.candidates = previous;
+  state.sourceDiagnostics = previousDiagnostics;
   state.compare.clear();
   resetCandidateFilters();
-  renderSources(); renderCandidates(); renderReview();
+  renderSources(); renderCandidates(); renderWorkspace(); renderReview();
 }
 async function focusQueuedAlbum(decision) {
   const albumId = decision?.context?.album_id;
   const scopeArtistId = decision?.jobKind === "comp" ? String(decision?.payload?.artist_id || "") : "";
   const scopeKeys = Array.isArray(decision?.payload?.track_keys) ? decision.payload.track_keys : [];
+  const promptTrackKey = String(decision?.context?.track_key || (scopeKeys.length === 1 ? scopeKeys[0] : ""));
+  const staleCompTrack = decision?.jobKind === "comp" && state.compTrack
+    && (state.compTrack.albumId !== albumId || (promptTrackKey && state.compTrack.key !== promptTrackKey));
+  if (staleCompTrack) {
+    // A queued prompt can arrive after the operator changes Artists.  Clear
+    // the old Selected Artwork immediately, before the async Artist/report
+    // hydration below, so it can never look attached to the new COMP result.
+    state.compTrack = null; state.upscalePreview = null;
+    if (state.renderedPreview) state.renderedPreview.comp = null;
+    state.compThumbnailPreview = null; state.pendingCompWrite = null;
+    if (typeof renderReview === "function") renderReview();
+  }
   const scopedGroup = scopeArtistId === state.artist?.id && state.editorMode === "artist" && state.compReportVisible
     ? state.compGroups.find(group => group.id === albumId && scopeKeys.every(key => group.tracks.some(track => track.key === key)))
     : null;
   if (scopedGroup) {
     decision.previousCandidates = [];
-    const trackKey = decision.context?.track_key || (scopeKeys.length === 1 ? scopeKeys[0] : "");
+    const trackKey = promptTrackKey;
     if (trackKey && scopedGroup.tracks.some(track => track.key === trackKey)
       && (state.compTrack?.albumId !== albumId || state.compTrack?.key !== trackKey))
       await selectArtistCompTrack(albumId, trackKey);
@@ -320,12 +461,18 @@ async function focusQueuedAlbum(decision) {
     $("compReportButton").textContent = "CLOSE REPORT";
     renderLibrary(); renderHero(); renderSources(); renderCandidates(); renderWorkspace();
     loadArtistMetadata(scopeArtistId);
-    const trackKey = decision.context?.track_key || (scopeKeys.length === 1 ? scopeKeys[0] : "");
+    const trackKey = promptTrackKey;
     if (trackKey && group.tracks.some(track => track.key === trackKey))
       await selectArtistCompTrack(albumId, trackKey);
     return;
   }
-  if (!albumId || state.album?.id === albumId) return;
+  if (!albumId) return;
+  if (state.album?.id === albumId) {
+    if (decision.jobKind === "comp" && state.editorMode === "fallback" && promptTrackKey
+      && state.fallbackTrack?.key !== promptTrackKey)
+      await selectFallbackTrack(promptTrackKey, false);
+    return;
+  }
   const request = ++state.selectionRequest;
   const album = await api("/api/album?id=" + encodeURIComponent(albumId));
   if (request !== state.selectionRequest || state.queuedDecision !== decision) return;
@@ -346,6 +493,8 @@ async function focusQueuedAlbum(decision) {
   if (decision.jobKind !== "scan") markSelectedAlbum(album);
   renderLibrary(); renderHero(); renderSources(); renderCandidates(); renderWorkspace();
   loadArtistMetadata(album.artist_id);
+  if (fallback && promptTrackKey && tracks.some(track => track.key === promptTrackKey))
+    await selectFallbackTrack(promptTrackKey, false);
 }
 async function submitQueuedDecision(value) {
   const decision = state.queuedDecision;
@@ -364,46 +513,73 @@ async function submitQueuedDecision(value) {
 }
 async function presentQueuedCandidates(job, prompt, options) {
   if ($("workspaceDialog").open) $("workspaceDialog").close();
+  const currentDecision = state.queuedDecision;
+  const samePrompt = currentDecision?.jobId === job.id && currentDecision?.nonce === prompt.nonce;
+  const preserveSelection = samePrompt && currentDecision?.selected;
   const previousCandidates = state.queuedDecision?.previousCandidates || state.candidates;
+  const previousSourceDiagnostics = state.queuedDecision?.previousSourceDiagnostics || state.sourceDiagnostics;
   const authority = job.progress?.current?.fallback_authority || {};
   const context = {...(prompt.context || {})};
   context.track_title ||= authority.track || "";
   context.track_artist ||= authority.artist || "";
   state.queuedDecision = {
     jobId: job.id, jobKind: job.kind, nonce: prompt.nonce, kind: context.kind || "", context,
-    payload: job.payload || {}, previousCandidates, selected: null,
+    payload: job.payload || {}, previousCandidates, previousSourceDiagnostics,
+    selected: preserveSelection ? currentDecision.selected : null,
     authority: {...authority, ...(context.authority || {})},
     diagnostics: job.progress?.current?.diagnostics?.items || [], authoritySaved: job.progress?.current?.authority_saved || null,
   };
   state.workspace = "find";
   state.candidates = options.map(queuedCandidate);
+  state.sourceDiagnostics = state.queuedDecision.diagnostics;
   state.activeSource = ""; state.compare.clear(); resetCandidateFilters();
-  await focusQueuedAlbum(state.queuedDecision);
+  if (!samePrompt) await focusQueuedAlbum(state.queuedDecision);
   if (!state.queuedDecision || state.queuedDecision.jobId !== job.id) return;
+  if (state.pendingCompWrite && state.pendingCompWrite.owner !== compThumbnailOwner()) state.pendingCompWrite = null;
   renderWorkspace(); renderSources(); renderCandidates(); renderReview();
   setStatus("Queued artwork review · select a candidate, then save from Selected Artwork", "busy");
 }
 async function presentQueuedMusicBrainz(job, prompt, options) {
   if ($("workspaceDialog").open) $("workspaceDialog").close();
+  const currentDecision = state.queuedDecision;
+  // Polling may return the same waiting prompt while the operator is choosing
+  // an edition.  Keep that browser-local choice until a decision is submitted;
+  // submitQueuedDecision clears queuedDecision before a genuinely new prompt.
+  const samePrompt = currentDecision?.jobId === job.id && currentDecision?.nonce === prompt.nonce;
+  const preserveSelection = samePrompt && currentDecision?.kind === "musicbrainz-results";
   const previousCandidates = state.queuedDecision?.previousCandidates || state.candidates;
+  const previousSourceDiagnostics = state.queuedDecision?.previousSourceDiagnostics || state.sourceDiagnostics;
   const authority = job.progress?.current?.fallback_authority || {};
   const context = {...(prompt.context || {})};
   context.track_title ||= authority.track || "";
   context.track_artist ||= authority.artist || "";
   state.queuedDecision = {
     jobId: job.id, jobKind: job.kind, nonce: prompt.nonce, kind: "musicbrainz-results", context,
-    payload: job.payload || {}, previousCandidates, selected: null, options: [...options],
+    payload: job.payload || {}, previousCandidates, previousSourceDiagnostics, selected: null, options: [...options],
+    selectedResult: preserveSelection ? currentDecision.selectedResult : null,
+    selectedExisting: preserveSelection ? currentDecision.selectedExisting : null,
+    artistFilter: preserveSelection ? currentDecision.artistFilter : "",
+    releaseTypeFilter: preserveSelection ? currentDecision.releaseTypeFilter : "",
+    existingArtwork: job.progress?.current?.musicbrainz_existing?.items || [],
     authority: {...authority, ...(context.authority || {})},
     diagnostics: job.progress?.current?.diagnostics?.items || [], authoritySaved: job.progress?.current?.authority_saved || null,
   };
   state.workspace = "find";
   state.candidates = [];
+  state.sourceDiagnostics = state.queuedDecision.diagnostics;
   state.activeSource = ""; state.compare.clear(); resetCandidateFilters();
-  await focusQueuedAlbum(state.queuedDecision);
+  if (!samePrompt) await focusQueuedAlbum(state.queuedDecision);
   if (!state.queuedDecision || state.queuedDecision.jobId !== job.id) return;
   renderWorkspace(); renderSources(); renderCandidates(); renderReview();
   const track = [context.track_artist, context.track_title].filter(Boolean).join(" — ");
-  setStatus("MusicBrainz results" + (track ? " · " + track : "") + " · choose a release", "busy");
+  const familyCount = new Set(options.map(option => String(option.family_id || option.release_group_id || option.id || "")).filter(Boolean)).size;
+  const identity = context.identity || {};
+  const message = identity.status === "valid"
+    ? "MusicBrainz Recording ID verified" + (identity.used_fuzzy_search ? " · same-artist title suggestions available" : "")
+      + ` · ${familyCount} release ${familyCount === 1 ? "family" : "families"}`
+    : "MusicBrainz identity review" + (track ? " · " + track : "")
+      + (familyCount ? ` · ${familyCount} release ${familyCount === 1 ? "family" : "families"}` : " · no selectable release families");
+  setStatus(message, familyCount ? "busy" : "error");
 }
 function renderQueue() {
   const host = $("embedQueue"); clear(host);
@@ -541,7 +717,12 @@ async function pollJobs() {
     if (stagedChanged && !completedAlbums.length) { renderHero(); renderReview(); }
     if (state.reviewJobId) {
       const job = state.jobs.find(item => item.id === state.reviewJobId);
-      const key = job?.id + ":" + job?.state + ":" + job?.progress.prompt?.nonce;
+      const key = job?.id + ":" + job?.state + ":" + job?.progress.prompt?.nonce
+        + ":" + (job?.progress?.message || "");
+      if (job?.kind === "comp" && ["queued", "running"].includes(job.state)
+        && job.progress?.message && key !== lastPrompt) {
+        setStatus(job.progress.message, "busy");
+      }
       if (job && key !== lastPrompt && (job.state === "waiting" || $("workspaceDialog").open)) {
         lastPrompt = key; await renderJob(job);
       }
@@ -549,13 +730,15 @@ async function pollJobs() {
         state.reviewJobState = job.state;
         if (job.state === "done") {
           await refreshQueuedAlbumAfterSave(job);
-          const nextComp = job.kind === "comp" ? state.jobs.filter(item => item.kind === "comp" && item.id !== job.id
-            && item.payload?.artist_id === job.payload?.artist_id && !["done", "failed", "cancelled"].includes(item.state))
+          const scopeArtistId = job.kind === "comp" ? String(job.payload?.artist_id || "") : "";
+          const nextComp = scopeArtistId ? state.jobs.filter(item => item.kind === "comp" && item.id !== job.id
+            && String(item.payload?.artist_id || "") === scopeArtistId && !["done", "failed", "cancelled"].includes(item.state))
             .sort((left, right) => String(left.created_at || "").localeCompare(String(right.created_at || "")))[0] : null;
           state.reviewJobId = nextComp?.id || null;
           state.reviewJobState = nextComp?.state || "";
           if (job.kind === "embed-album") setStatus("Album track embedding completed and verified · " + (state.album?.name || job.payload?.name || "Album"));
           else if (job.kind === "scan") setStatus(`Album batch complete · ${job.result?.reviewed ?? 0} reviewed · ${job.result?.mode === "write" ? "approved covers written" : "Read mode, no covers written"}`);
+          else if (Number(job.result?.unresolved || 0) > 0) setStatus("COMP artwork written and verified · authoritative completion remains pending for " + job.result.unresolved + " track(s)", "error");
           else setStatus("COMP track artwork work complete · " + (job.payload?.name || "Album") + (nextComp ? " · continuing this Artist's next COMP album" : ""));
           if (nextComp?.state === "waiting") await renderJob(nextComp);
         } else if (job.state === "failed") {
@@ -565,11 +748,14 @@ async function pollJobs() {
     }
   } finally { jobsPolling = false; }
 }
-async function reviewJob(id) {
+async function reviewJob(id, quietRunning = false) {
   state.reviewJobId = id; lastPrompt = "";
   const job = (state.jobs || []).find(item => item.id === id);
   state.reviewJobState = job?.state || "";
-  if (job) await renderJob(job); else dialog("Queued work");
+  if (job && job.state !== "waiting" && !["failed", "paused"].includes(job.state)) {
+    if ($("workspaceDialog").open) $("workspaceDialog").close();
+    setStatus(job.progress?.message || `${job.kind} ${job.state || "queued"}`, ["done", "cancelled"].includes(job.state) ? "ready" : "busy");
+  } else if (job) await renderJob(job);
   await pollJobs();
 }
 async function renderJob(job) {
@@ -579,7 +765,7 @@ async function renderJob(job) {
   const currentOptions = prompt ? job.progress.current?.candidates?.items || [] : [];
   const options = kind === "musicbrainz-results" ? contextualOptions
     : currentOptions.some(option => option.image) ? currentOptions : contextualOptions;
-  if (job.state === "waiting" && prompt && kind === "musicbrainz-results" && options.length) {
+  if (job.state === "waiting" && prompt && kind === "musicbrainz-results") {
     await presentQueuedMusicBrainz(job, prompt, options);
     return;
   }
@@ -588,14 +774,17 @@ async function renderJob(job) {
     return;
   }
   const body = dialog("Queued work · " + job.kind);
-  body.append(node("p", "", job.payload.name || job.progress.message || job.state));
+  body.append(node("p", "", job.payload.name || job.state));
+  if (job.progress.message) body.append(node("p", "operation-progress", job.progress.message));
   if (job.error) body.append(node("p", "operation-error", job.error));
   const diagnostics = job.progress.current?.diagnostics?.items || [];
-  for (const item of diagnostics) {
-    const source = Array.isArray(item) ? item[0] : item?.source || "lookup";
-    const message = Array.isArray(item) ? item[1] : item?.message || String(item || "");
-    if (message) body.append(node("p", "operation-error", source + " · " + message));
+  if (job.kind === "comp" && diagnostics.length) {
+    state.sourceDiagnostics = diagnostics;
+    if (typeof renderSources === "function") renderSources();
   }
+  const restartPause = job.state === "paused" && job.error === "Interrupted by server restart";
+  if (!restartPause) for (const message of distinctDiagnostics(diagnostics))
+    body.append(node("p", "operation-error", message));
   if (job.state !== "waiting" || !prompt) {
     body.append(node("p", "", job.state === "done" ? "Finished" : job.state));
     if(job.result) for(const [key,value] of Object.entries(job.result)) if(typeof value!=="object") body.append(node("p","",key.replaceAll("_"," ")+": "+value));
@@ -629,8 +818,8 @@ async function renderJob(job) {
   if (kind === "fallback-picker") {
     const details = node("details", "settings-section"); details.append(node("summary", "", "Find by MusicBrainz authority")); body.append(details);
     const artist = field(details, "Artist ID", context.authority?.artist_mbids || "");
-    const release = field(details, "Release ID", ""); const recording = field(details, "Recording ID", "");
-    actionButton("Search IDs", () => decide(JSON.stringify({action: "manual-authority-query", artist_id: artist.value, release_id: release.value, recording_id: recording.value, edited: "all"})), details);
+    const recording = field(details, "Recording ID", context.authority?.recording_mbid || "");
+    actionButton("Search IDs", () => decide(JSON.stringify({action: "manual-authority-query", artist_id: artist.value, recording_id: recording.value, edited: "all"})), details);
   }
   actionButton("Pause work", () => queueAction("pause", job.id));
 }
@@ -919,18 +1108,106 @@ function downloadJsonFile(name, value) {
   const blob = new Blob([JSON.stringify(value, null, 2) + "\n"], {type: "application/json"});
   const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = name; link.click(); URL.revokeObjectURL(link.href);
 }
-function renderCatalogMaintenance(host) {
+async function renderSqliteReconciliation(host) {
+  const section = node("section", "sqlite-reconciliation");
+  section.append(node("h5", "", "SQLite Reconciliation"), node("p", "settings-subcopy", "Compare an authorized read-only SQLite snapshot with this PostgreSQL catalog. Differences remain reviewable in salite_diff; conflicts are never auto-applied."));
+  const source = node("select"), sourceLabel = node("label", "setting-field"); sourceLabel.append(node("span", "", "Authorized SQLite snapshot"), source);
+  const sourceState = node("p", "snapshot-state", "Choose a snapshot created after the Windows processing you want to reconcile.");
+  const sourceRoot = field(section, "Original library root recorded in snapshot (source)"), targetRoot = field(section, "WebGUI library root (target)"); targetRoot.value = state.server?.music || ""; targetRoot.readOnly = true;
+  section.insertBefore(sourceLabel, sourceRoot.parentElement || sourceRoot);
+  section.insertBefore(sourceState, sourceRoot.parentElement || sourceRoot);
+  const sourceRootHelp = node("p", "settings-subcopy", "Use the media root stored in the SQLite paths (for example /music), not the folder containing the .db file. Leave blank to use picker_inventory when the snapshot records it.");
+  section.insertBefore(sourceRootHelp, targetRoot.parentElement || targetRoot);
+  const summary = node("p", "runtime-summary", "Loading reconciliation status…"), differences = node("pre", "diagnostic-events reconciliation-events", "Loading recorded differences…");
+  const resolution = node("select");
+  for (const [value, label] of [["", "All differences"], ["safe", "Safe pending"], ["conflict", "Conflicts"], ["derived", "Derived"], ["applied", "Applied"], ["skipped", "Failed / skipped"]]) { const option = node("option", "", label); option.value = value; resolution.append(option); }
+  const compare = node("button", "operation-button", "Compare / Dry Run"), savePaths = node("button", "operation-button", "Save Snapshot & Paths"), apply = node("button", "operation-button", "Apply Safe Differences"), refresh = node("button", "operation-button", "Refresh Differences");
+  compare.type = savePaths.type = apply.type = refresh.type = "button"; apply.disabled = true;
+  const actions = node("div", "connection-actions"); actions.append(compare, savePaths, apply, refresh, resolution); section.append(actions, summary, differences);
+  const startup = node("fieldset", "startup-snap-options");
+  startup.append(node("legend", "", "Auto SNAP on start · Advanced"));
+  const startupRadios = new Map();
+  for (const [value, label] of [["off", "Off (default)"], ["compare", "Compare only"], ["apply-safe", "Compare + Apply safe"]]) {
+    const input = node("input"); input.type = "radio"; input.name = "sqlite-startup-mode"; input.value = value;
+    const option = node("label", "setting-radio"); option.append(input, node("span", "", label));
+    startupRadios.set(value, input); startup.append(option);
+  }
+  startupRadios.get("off").checked = true;
+  const saveStartup = node("button", "operation-button", "Save Startup SNAP"); saveStartup.type = "button";
+  startup.append(saveStartup, node("p", "settings-subcopy", "Runs once after WebGUI starts, using this saved snapshot. Compare + Apply safe is opt-in, never imports source-only Artist/Album/track rows, and waits until Album processing is idle."));
+  section.append(startup);
+  const schedule = node("section", "reconciliation-schedule"), enabled = node("input"), autoApply = node("input"), interval = node("input");
+  enabled.type = autoApply.type = "checkbox"; interval.type = "number"; interval.min = "15"; interval.max = "10080"; interval.value = "1440";
+  const enabledLabel = node("label", "setting-checkbox"); enabledLabel.append(enabled, node("span", "", "Enable scheduled comparison"));
+  const autoLabel = node("label", "setting-checkbox"); autoLabel.append(autoApply, node("span", "", "Automatically apply safe differences only"));
+  const intervalLabel = node("label", "setting-field"); intervalLabel.append(node("span", "", "Interval (minutes)"), interval);
+  const saveSchedule = node("button", "operation-button", "Save Safe Schedule"); saveSchedule.type = "button";
+  schedule.append(node("h6", "", "Optional schedule · disabled by default"), enabledLabel, autoLabel, intervalLabel, saveSchedule, node("p", "settings-subcopy", "Scheduled runs use these saved paths and can never apply conflicts or delete PostgreSQL records.")); section.append(schedule); host.append(section);
+  let latestRun = "", savedSettings = {}, sourceItems = new Map();
+  const describeSource = () => {
+    const item = sourceItems.get(source.value);
+    if (!source.value) {
+      sourceState.textContent = "Choose a snapshot created after the Windows processing you want to reconcile.";
+      sourceState.classList.remove("snapshot-stale");
+      return;
+    }
+    if (!item) {
+      sourceState.textContent = "Saved snapshot is not currently present in the authorized snapshot directory.";
+      sourceState.classList.add("snapshot-stale");
+      return;
+    }
+    const modified = new Date(item.modified_at);
+    sourceState.textContent = `Snapshot captured ${modified.toLocaleString()} · ${Math.ceil(item.bytes / 1024)} KiB · comparisons read this file only; they do not read the live Windows database.`;
+    sourceState.classList.remove("snapshot-stale");
+  };
+  const describe = result => {
+    const last = result.last_run, settings = result.settings || {};
+    savedSettings = {...settings};
+    summary.textContent = last ? `Last run ${last.run_id} · ${last.status} · ${last.differences} difference(s) · ${last.applied || 0} applied · ${last.conflicts} conflict(s) · ${last.failures} failure(s)` : "No reconciliation run has been recorded.";
+    summary.classList.toggle("operation-error", Boolean(last?.failures));
+    latestRun = last?.run_id || ""; apply.disabled = !latestRun || !result.pending_safe;
+    differences.textContent = result.differences?.length ? [...result.differences].reverse().map(item => `${String(item.id).padStart(7, "0")}  ${item.entity_table}  ${item.difference_type}  ${item.resolution}  ${item.application_outcome}  ${item.entity_key}${item.error ? "  ERROR=" + item.error : ""}`).join("\n") : "No recorded differences match this filter.";
+    enabled.checked = Boolean(settings.enabled); autoApply.checked = Boolean(settings.auto_apply_safe); interval.value = String(settings.interval_minutes || 1440);
+    (startupRadios.get(settings.startup_mode || "off") || startupRadios.get("off")).checked = true;
+    if (settings.source_root && !sourceRoot.value) sourceRoot.value = settings.source_root;
+    if (settings.source_path && !source.value) source.value = settings.source_path;
+  };
+  const load = async () => describe(await api("/api/reconciliation?resolution=" + encodeURIComponent(resolution.value)));
+  try {
+    const [sources, result] = await Promise.all([api("/api/reconciliation/sources"), api("/api/reconciliation")]);
+    const blank = node("option", "", sources.length ? "Choose an authorized snapshot" : "No authorized snapshots found"); blank.value = ""; source.append(blank);
+    sourceItems = new Map(sources.map(item => [item.path, item]));
+    for (const item of sources) { const option = node("option", "", `${item.label} · ${new Date(item.modified_at).toLocaleString()} · ${Math.ceil(item.bytes / 1024)} KiB`); option.value = item.path; source.append(option); }
+    if (result.settings?.source_path && ![...source.options].some(option => option.value === result.settings.source_path)) { const option = node("option", "", result.settings.source_path); option.value = result.settings.source_path; source.append(option); }
+    source.value = result.settings?.source_path || ""; sourceRoot.value = result.settings?.source_root || ""; describeSource(); describe(result);
+  } catch (error) { summary.textContent = error.message; summary.classList.add("operation-error"); }
+  savePaths.addEventListener("click", () => runAction(async () => {
+    if (!source.value) throw new Error("Choose an authorized SQLite snapshot before saving paths");
+    await post("/api/reconciliation/settings", {enabled: Boolean(savedSettings.enabled), auto_apply_safe: Boolean(savedSettings.auto_apply_safe), startup_mode: savedSettings.startup_mode || "off", interval_minutes: Number(savedSettings.interval_minutes || 1440), source_path: source.value, source_root: sourceRoot.value, target_root: targetRoot.value});
+    setStatus("Saved SQLite snapshot and library path mapping"); await load();
+  }));
+  compare.addEventListener("click", () => runAction(async () => { if (!source.value) throw new Error("Choose the new Windows snapshot before comparing"); const result = await post("/api/reconciliation/compare", {source_path: source.value, source_root: sourceRoot.value, target_root: targetRoot.value}); latestRun = result.run_id; setStatus(`SQLite comparison recorded ${result.differences} difference(s) · ${result.safe} safe · ${result.conflicts} conflict(s)`); await load(); }));
+  apply.addEventListener("click", () => runAction(async () => { if (!window.confirm("Apply only the safe, unchanged differences from this snapshot? Conflicts will remain unresolved.")) return; const result = await post("/api/reconciliation/apply", {run_id: latestRun}); setStatus(result.failures ? `SQLite apply incomplete · ${result.applied}/${result.attempted} applied · ${result.failures} failed; review Failed / skipped` : `Applied all ${result.applied} safe SQLite difference(s) and recalculated statuses`, result.failures ? "error" : "ready"); await load(); }));
+  source.addEventListener("change", describeSource); refresh.addEventListener("click", () => void load()); resolution.addEventListener("change", () => void load());
+  const startupMode = () => [...startupRadios.entries()].find(([, input]) => input.checked)?.[0] || "off";
+  saveStartup.addEventListener("click", () => runAction(async () => { const mode = startupMode(); await post("/api/reconciliation/settings", {enabled: enabled.checked, auto_apply_safe: autoApply.checked, startup_mode: mode, interval_minutes: Number(interval.value), source_path: source.value, source_root: sourceRoot.value, target_root: targetRoot.value}); setStatus(mode === "off" ? "Auto SNAP on start disabled" : `Auto SNAP on start saved · ${mode === "compare" ? "Compare only" : "Compare + Apply safe"}`); await load(); }));
+  saveSchedule.addEventListener("click", () => runAction(async () => { await post("/api/reconciliation/settings", {enabled: enabled.checked, auto_apply_safe: autoApply.checked, startup_mode: startupMode(), interval_minutes: Number(interval.value), source_path: source.value, source_root: sourceRoot.value, target_root: targetRoot.value}); setStatus(enabled.checked ? "Safe SQLite reconciliation schedule saved" : "SQLite reconciliation schedule disabled"); await load(); }));
+}
+function renderCatalogMaintenance(host, advanced = false) {
   const maintenance = node("section", "catalog-maintenance");
   maintenance.append(node("h4", "", "↕ Catalog Maintenance"), node("p", "settings-subcopy", "Refresh the PostgreSQL catalog or import a deliberate read-only SQLite snapshot."));
   maintenance.append(node("p", "settings-warning", "A full refresh deliberately republishes the complete music catalog. Normal added, changed, and removed files use the faster header update."));
   const refresh = node("button", "operation-button full-action", "Full Refresh Library Index"); refresh.type = "button";
   refresh.addEventListener("click", () => runAction(async () => { $("workspaceDialog").close(); const job = await post("/api/jobs", {kind: "index", payload: {mode: "full"}}); await reviewJob(job.id); }));
-  maintenance.append(refresh, node("h5", "", "Import an existing SQLite catalog"), node("p", "settings-subcopy", "Imports a server-side snapshot into an empty PostgreSQL catalog. The source remains unchanged."));
-  const path = field(maintenance, "Snapshot path on server"), importButton = node("button", "operation-button full-action", "Import Catalog"); importButton.type = "button";
+  maintenance.append(refresh, node("h5", "", "Import an existing SQLite catalog"), node("p", "settings-subcopy", "Empty PostgreSQL catalogs only. Choose one server-side .db, .sqlite, or .sqlite3 file—not its containing directory. The source remains unchanged."));
+  const path = field(maintenance, "SQLite snapshot file on server (.db)"), importButton = node("button", "operation-button full-action", "Import Catalog"); importButton.type = "button";
   importButton.addEventListener("click", () => runAction(async () => { const result = await post("/api/catalog/import", {path: path.value}); setStatus("Imported " + (result.albums || 0) + " albums"); }));
-  maintenance.append(importButton); host.append(maintenance);
+  maintenance.append(importButton);
+  if (advanced) void renderSqliteReconciliation(maintenance);
+  else maintenance.append(node("p", "settings-subcopy", "Enable Advanced to compare and reconcile a SQLite snapshot against an existing PostgreSQL catalog."));
+  host.append(maintenance);
 }
-function renderBackupSettings(host, saved, contract, onRestored) {
+function renderBackupSettings(host, saved, contract, onRestored, advanced = false) {
   const layout = node("div", "backup-layout"), backup = node("section", "backup-column"), restore = node("section", "backup-column");
   backup.append(node("h4", "", "↑ Backup"), node("p", "settings-subcopy", "WebGUI exports its safe Config v5 settings and interface palette. Provider secrets and PostgreSQL data are deliberately excluded."));
   const contents = node("div", "archive-contents"); for (const label of ["Config V5 Settings", "Interface Settings", "Shared UI Contract"]) contents.append(node("span", "", "●  " + label)); backup.append(contents);
@@ -949,7 +1226,7 @@ function renderBackupSettings(host, saved, contract, onRestored) {
     const restored = await post("/api/settings", {config: value}); applyGraphicalEnhancement(restored.config.webgui_ui?.enhancement); setStatus("Safe WebGUI settings restored"); await onRestored(restored);
   })); restoreActions.append(button); restore.append(restoreActions);
   settingsHelp(restore, "Can I restore a Windows .spl file here?", "No. Windows .spl archives can contain Windows-only SQLite and interface state. Use the WebGUI safe JSON here, and restore PostgreSQL with PostgreSQL tools.");
-  renderCatalogMaintenance(restore);
+  renderCatalogMaintenance(restore, advanced);
   layout.append(backup, restore); host.append(layout);
 }
 function renderRuntimeSettings(host, section, draft, bindings, saved, advanced) {
@@ -963,13 +1240,25 @@ function renderRuntimeSettings(host, section, draft, bindings, saved, advanced) 
     settingsInput(target, descriptor, descriptor.path, draft, bindings, saved);
   }
   const scope = node("div", "runtime-summary"); scope.append(node("span", "", "Scope  SELECTED / QUEUED"), node("span", "", `Mode  ${(settingValue(draft, "mode", "read") || "read").toUpperCase()}`)); processing.append(scope);
-  const logHeading = node("div", "diagnostic-heading"); logHeading.append(node("strong", "", "WebGUI Events")); const refresh = node("button", "operation-button", "Refresh"); refresh.type = "button"; logHeading.append(refresh); logging.append(logHeading);
-  const events = node("pre", "diagnostic-events", "Loading events…"); logging.append(events);
+  const logHeading = node("div", "diagnostic-heading"); logHeading.append(node("strong", "", "WebGUI Events · Audit")); const refresh = node("button", "operation-button", "Refresh"); refresh.type = "button"; logHeading.append(refresh); logging.append(logHeading);
+  const auditFilters = node("div", "audit-filters");
+  const severity = node("select"), allSeverity = node("option", "", "All severities"); allSeverity.value = ""; severity.append(allSeverity);
+  for (const value of ["critical", "error", "warning", "info", "debug", "verbose"]) { const option = node("option", "", value); option.value = value; severity.append(option); }
+  const action = node("input"); action.placeholder = "Action contains";
+  const correlation = node("input"); correlation.placeholder = "Job / trace / action ID";
+  const since = node("input"); since.type = "datetime-local"; since.setAttribute("aria-label", "Audit start time");
+  const until = node("input"); until.type = "datetime-local"; until.setAttribute("aria-label", "Audit end time");
+  const download = node("a", "operation-button", "Download audit.json"); download.download = "audit.json";
+  auditFilters.append(severity, action, correlation, since, until, download); logging.append(auditFilters);
+  const events = node("pre", "diagnostic-events audit-events", "Loading events…"); logging.append(events);
+  const query = () => new URLSearchParams(Object.fromEntries(Object.entries({severity: severity.value, action: action.value.trim(), correlation: correlation.value.trim(), since: since.value, until: until.value}).filter(([, value]) => value)));
   async function load() {
-    try { const rows = await api("/api/diagnostics"); events.textContent = rows.length ? rows.map(row => `${row.created_at}  ${row.action}  ${row.subject}${row.details && Object.keys(row.details).length ? "  " + JSON.stringify(row.details) : ""}`).join("\n") : "No recorded WebGUI events yet."; }
+    try { const rows = await api("/api/diagnostics?" + query()); events.textContent = rows.length ? rows.map(row => `${String(row.sequence).padStart(8, "0")}  ${row.created_at}  ${row.severity.toUpperCase()}  ${row.action}  ${row.subject}${row.application_version ? "  v=" + row.application_version : ""}${row.application_revision ? "  rev=" + row.application_revision.slice(0, 12) : ""}${row.session_id ? "  session=" + row.session_id.slice(0, 12) : ""}${row.job_id ? "  job=" + row.job_id : ""}${row.trace_id ? "  trace=" + row.trace_id : ""}${row.state_from || row.state_to ? `  ${row.state_from || "—"}→${row.state_to || "—"}` : ""}${row.recovered_from_fallback ? "  RECOVERED" : ""}${row.error ? "  ERROR=" + row.error : ""}${row.details && Object.keys(row.details).length ? "  " + JSON.stringify(row.details) : ""}`).join("\n") : "No recorded Audit events match these filters."; }
     catch (error) { events.textContent = error.message; }
   }
-  refresh.addEventListener("click", load); void load(); layout.append(processing, logging); host.append(layout);
+  const updateDownload = () => download.href = "/api/audit/export?" + query();
+  for (const input of [severity, action, correlation, since, until]) input.addEventListener("change", updateDownload);
+  refresh.addEventListener("click", load); updateDownload(); void load(); layout.append(processing, logging); host.append(layout);
 }
 async function openSettings() {
   state.reviewJobId = null;
@@ -1003,13 +1292,14 @@ async function openSettings() {
       void renderConnectionSettings(fields, credentialProvider);
     }
     if (section.id === "backup") {
-      renderBackupSettings(fields, saved, contract, async restored => { saved = restored; await sessionStatus(); renderAll(); renderSection("backup"); });
+      renderBackupSettings(fields, saved, contract, async restored => { saved = restored; await sessionStatus(); renderAll(); renderSection("backup"); }, advanced);
     }
   }
   async function saveCurrentSection(section, message = section.label + " settings saved") {
     applySettingsInputs(draft, bindings);
     saved = await post("/api/settings", {config: draft}); await sessionStatus();
     applyGraphicalEnhancement(saved.config.webgui_ui?.enhancement);
+    state.artworkRange = {...state.artworkRange, ...(saved.config.range || {})};
     state.enabledSources = (saved.config.sources?.cover_sources || []).filter(key => !saved.config.sources?.exclude_cover_sources?.includes(key) && saved.config.source_policies?.[key]?.enabled !== false);
     renderAll(); setStatus(message); renderSection(active);
   }
@@ -1156,6 +1446,21 @@ $("fullscreenButton").addEventListener("click", () => runAction(async () => {
 }));
 document.addEventListener("fullscreenchange", updateFullscreenButton);
 document.addEventListener("webkitfullscreenchange", updateFullscreenButton);
+document.addEventListener("click", event => {
+  const button = event.target.closest?.("button");
+  if (!button || !document.body.classList.contains("authenticated")) return;
+  const actionId = state.activeActionId || state.pendingActionId || newActionId();
+  if (!state.activeActionId) {
+    state.pendingActionId = actionId;
+    queueMicrotask(() => {
+      if (state.pendingActionId === actionId) state.pendingActionId = "";
+    });
+  }
+  auditEvent("button-click", button.id || button.className || "button", {
+    action_id: actionId,
+    details: {label: String(button.textContent || "").trim().slice(0, 120), disabled: !!button.disabled},
+  });
+}, true);
 $("applyLibraryChanges").addEventListener("click", () => runAction(async () => {
   $("applyLibraryChanges").hidden = true;
   const job = await post("/api/jobs", {kind: "index", payload: {mode: "incremental"}});
@@ -1229,21 +1534,42 @@ initialize().catch(error => { document.body.className = "auth-required"; $("auth
 
 async function repairFallback() {
   if (!state.album) return;
-  let repaired=0;
-  for (const track of state.fallbackTracks.filter(item=>item.completed)) {
-    const status=await api('/api/fallback/track-status?id='+encodeURIComponent(state.album.id)+'&key='+encodeURIComponent(track.key));
-    if (status.status==='purple' && status.repairable) {
-      await post('/api/comp/repair',{album_id:state.album.id,track_key:track.key});repaired++;
+  const albumId = state.album.id;
+  let repaired = 0, failed = 0;
+  const failures = [];
+  for (const track of state.fallbackTracks.filter(item => item.completed)) {
+    if (state.editorMode !== "fallback" || state.album?.id !== albumId) break;
+    try {
+      const status = await api('/api/fallback/track-status?id=' + encodeURIComponent(albumId) + '&key=' + encodeURIComponent(track.key));
+      Object.assign(track, status);
+      if (status.status === 'purple' && status.repairable) {
+        const result = await post('/api/comp/repair', {album_id: albumId, track_key: track.key});
+        Object.assign(track, result, {status: "green", completed: true, repairable: false});
+        repaired++;
+      }
+    } catch (error) {
+      failed++;
+      track.repairError = error.message;
+      failures.push(`${track.file}: ${error.message}`);
     }
+    renderHero();
   }
-  state.fallbackTracks = await api('/api/fallback/tracks?id='+encodeURIComponent(state.album.id));
+  if (state.editorMode !== "fallback" || state.album?.id !== albumId) return;
+  state.fallbackTracks = await api('/api/fallback/tracks?id=' + encodeURIComponent(albumId));
   await probeFallbackStatuses();
-  setStatus(repaired+' COMP thumbnails repaired');
+  setStatus(`COMP repair complete · ${repaired} green${failed ? ` · ${failed} failed · ${failures.join("; ")}` : ""}`, failed ? "error" : "ready");
 }
 const quickPreview=applyPreviewEffects;
 let previewTimer,previewGeneration=0;
 applyPreviewEffects=function () {
-  quickPreview();clearTimeout(previewTimer);const generation=++previewGeneration;
+  clearTimeout(previewTimer);const generation=++previewGeneration;
+  if (activeCompPrepared()) {
+    for (const element of document.querySelectorAll('#selectedFrame .selected-image,#albumPane img')) {
+      element.style.filter='none';element.style.transform='none';
+    }
+    return;
+  }
+  quickPreview();
   if (!state.server?.authenticated) return;
   previewTimer=setTimeout(()=>runAction(async()=>{
     const requests=[];
@@ -1256,9 +1582,10 @@ applyPreviewEffects=function () {
         element.src=result.image;element.style.filter='none';element.style.transform='none';
       })());
     };
-    if (state.queuedDecision?.jobKind==='comp' && state.queuedDecision.selected || state.editorMode==='fallback' || state.editorMode==='artist' && state.compReportVisible) {
-      const source=state.queuedDecision?.jobKind==='comp' && state.queuedDecision.selected
-        ? state.queuedDecision.selected.image : state.editorMode==='fallback' ? state.fallbackTrack?.image : state.compTrack?.image;
+    const decision=activeArtworkDecision();
+    if (decision?.jobKind==='comp' && decision.selected || state.editorMode==='fallback' || state.editorMode==='artist' && state.compReportVisible) {
+      const source=decision?.jobKind==='comp' && decision.selected
+        ? decision.selected.image : state.editorMode==='fallback' ? state.fallbackTrack?.image : state.compTrack?.image;
       add('#selectedFrame .selected-image','comp',source,{upscale:!!state.upscalePreview});
       add('#albumPane img','comp',source,{upscale:!!state.upscalePreview});
     } else if (state.editorMode==='album') {

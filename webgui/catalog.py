@@ -314,6 +314,10 @@ class Catalog:
         return "/api/artist/thumbnail?id=" + quote(str(artist_id), safe="")
 
     @staticmethod
+    def album_thumbnail_url(album_id: str) -> str:
+        return "/api/album/thumbnail?id=" + quote(str(album_id), safe="")
+
+    @staticmethod
     def fallback_thumbnail_keys(db) -> dict[str, str]:
         """Return one recorded embedded-art track per fallback album."""
         tables = {
@@ -539,6 +543,58 @@ class Catalog:
         for row_id in list(self.portrait_cache):
             self.portrait_cache.pop(row_id, None)
         return path
+
+    def _cache_navidrome_similar_thumbnail(
+        self, remote_artist: dict[str, object], credential: dict[str, object]
+    ) -> Path | None:
+        """Cache provider-authorized Similar Artist imagery behind a local URL."""
+        directory = self.cache / "navidrome-thumbnails" / "similar" if self.cache is not None else None
+        cover_id = str(remote_artist.get("coverArt") or "").strip()
+        if directory is None or not cover_id:
+            return None
+        identity = sha256(
+            (str(remote_artist.get("id") or "") + "\0" + str(remote_artist.get("name") or "") + "\0" + cover_id).encode("utf-8")
+        ).hexdigest()[:32]
+        path = directory / ("web-v1-" + identity + ".png")
+        if path.is_file():
+            return path
+        base = str(credential.get("server_url") or "").rstrip("/")
+        response = requests.get(
+            base + "/rest/getCoverArt.view",
+            params={**self._navidrome_auth_query(credential), "id": cover_id, "size": "192"},
+            timeout=20,
+            allow_redirects=False,
+        )
+        response.raise_for_status()
+        if len(response.content) > 8 * 1024 * 1024:
+            raise ValueError("Navidrome Similar Artist image is too large")
+        with Image.open(BytesIO(response.content)) as opened:
+            opened.verify()
+        directory.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(prefix=".navidrome-", suffix=".png", dir=directory)
+        try:
+            os.close(descriptor)
+            with Image.open(BytesIO(response.content)) as opened:
+                opened.convert("RGBA").save(temporary, format="PNG", optimize=True)
+            os.replace(temporary, path)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+        return path
+
+    def _navidrome_similar_thumbnail_path(
+        self, remote_artist: dict[str, object]
+    ) -> Path | None:
+        """Return an already cached Similar Artist image without blocking metadata."""
+        cache = getattr(self, "cache", None)
+        directory = cache / "navidrome-thumbnails" / "similar" if cache is not None else None
+        cover_id = str(remote_artist.get("coverArt") or "").strip()
+        if directory is None or not cover_id:
+            return None
+        identity = sha256(
+            (str(remote_artist.get("id") or "") + "\0" + str(remote_artist.get("name") or "") + "\0" + cover_id).encode("utf-8")
+        ).hexdigest()[:32]
+        path = directory / ("web-v1-" + identity + ".png")
+        return path if path.is_file() else None
 
     def _navidrome_artists_by_name(self) -> dict[str, dict[str, object]]:
         """Load Navidrome's artist directory with bounded, recoverable retries."""
@@ -881,6 +937,8 @@ class Catalog:
                 "SELECT artists.artist_key, artists.artist_name, artists.musicbrainz_artistid, "
                 "artists.primary_path, COUNT(albums.album_key) AS album_count, artists.status "
                 "FROM artists LEFT JOIN albums ON albums.artist_key=artists.artist_key "
+                "AND (COALESCE(albums.compilation,0)=0 "
+                "OR TRIM(COALESCE(albums.musicbrainz_albumid,''))<>'') "
                 "WHERE artists.artist_name LIKE ? ESCAPE '\\' "
                 "GROUP BY artists.artist_key ORDER BY artists.artist_name COLLATE NOCASE ",
                 ("%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%",),
@@ -909,6 +967,8 @@ class Catalog:
                 "SELECT artists.artist_key, artists.artist_name, artists.musicbrainz_artistid, "
                 "artists.primary_path, COUNT(albums.album_key) AS album_count, artists.status "
                 "FROM artists LEFT JOIN albums ON albums.artist_key=artists.artist_key "
+                "AND (COALESCE(albums.compilation,0)=0 "
+                "OR TRIM(COALESCE(albums.musicbrainz_albumid,''))<>'') "
                 "GROUP BY artists.artist_key ORDER BY artists.artist_name COLLATE NOCASE"
             ).fetchall()
         remote_artists = self._navidrome_artists_by_name()
@@ -1012,16 +1072,37 @@ class Catalog:
             ).fetchall()
         items = []
         for row in rows:
-            cover = self.album_cover_path(row)
-            cover_url = self.image(cover)
+            cover_url = (
+                self.image(self.album_cover_path(row))
+                if fallback_only
+                else self.album_thumbnail_url(str(row["album_key"]))
+            )
             items.append({
                 "id": row["album_key"], "name": row["album_name"],
                 "artist_id": row["artist_key"], "artist_name": row["artist_name"],
-                "cover": cover_url, "tracks": row["track_count"],
+                # Keep the full Albums index database-first.  Resolving every
+                # cover on a network-mounted library makes the request appear
+                # empty for minutes.  Native lazy-loading fetches only visible
+                # thumbnails through the authenticated per-album endpoint.
+                "cover": cover_url,
+                "tracks": row["track_count"],
                 "status": row["status"], "compilation": bool(row["compilation"]),
                 "album_mbid": row["musicbrainz_albumid"] or "",
             })
         return items
+
+    def album_thumbnail(self, album_id: str) -> Path:
+        with closing(self.connect()) as db:
+            row = db.execute(
+                "SELECT album_key,path,cover_path FROM albums WHERE album_key=?",
+                (album_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError("Album not found")
+        cover = self.album_cover_path(row)
+        if cover is None:
+            raise KeyError("Saved album artwork is unavailable")
+        return cover
 
     def artist(self, artist_id: str) -> dict[str, object]:
         with closing(self.connect()) as db:
@@ -1031,7 +1112,10 @@ class Catalog:
             primary_rows = db.execute(
                 "SELECT albums.*,artists.artist_name AS album_artist "
                 "FROM albums JOIN artists ON artists.artist_key=albums.artist_key "
-                f"WHERE albums.artist_key IN ({placeholders}) ORDER BY albums.album_name COLLATE NOCASE",
+                f"WHERE albums.artist_key IN ({placeholders}) "
+                "AND (COALESCE(albums.compilation,0)=0 "
+                "OR TRIM(COALESCE(albums.musicbrainz_albumid,''))<>'') "
+                "ORDER BY albums.album_name COLLATE NOCASE",
                 tuple(alias_ids),
             ).fetchall()
             appearance = self._artist_appearance_context(artist, aliases, db)
@@ -1049,7 +1133,10 @@ class Catalog:
                 appearance_rows = []
             top_tracks = [item["title"] for item in db.execute(
                 "SELECT tracks.title FROM tracks JOIN albums ON albums.album_key=tracks.album_key "
-                f"WHERE albums.artist_key IN ({placeholders}) ORDER BY tracks.title COLLATE NOCASE LIMIT 10",
+                f"WHERE albums.artist_key IN ({placeholders}) "
+                "AND (COALESCE(albums.compilation,0)=0 "
+                "OR TRIM(COALESCE(albums.musicbrainz_albumid,''))<>'') "
+                "ORDER BY tracks.title COLLATE NOCASE LIMIT 10",
                 tuple(alias_ids),
             ).fetchall()]
         featured_keys = set(appearance.get("featured_album_keys", set()))
@@ -1511,6 +1598,23 @@ class Catalog:
                 ),
             )
 
+    def artist_metadata_seed(self, artist_id: str) -> dict[str, object] | None:
+        """Return immediately displayable cached biography data for Artist Overview."""
+        with self.lock:
+            cached = self.metadata_cache.get(artist_id)
+        if cached is not None:
+            return {**cached, "pending": False}
+        stored = self._stored_artist_profile(artist_id)
+        if not stored:
+            return None
+        return {
+            **stored,
+            "similar": [],
+            "top_songs": [],
+            "similar_reason": "Loading genuine Similar Artists from the configured provider",
+            "pending": True,
+        }
+
     def artist_metadata(self, artist_id: str, *, refresh: bool = False) -> dict[str, object]:
         if refresh:
             with self.lock:
@@ -1526,7 +1630,7 @@ class Catalog:
             }
         artist = self.artist(artist_id)
         stored_profile = self._stored_artist_profile(artist_id)
-        result: dict[str, object] = {"source": "sample", "biography": "", "similar": [], "top_songs": artist["top_tracks"]}
+        result: dict[str, object] = {"source": "unavailable", "biography": "", "similar": [], "top_songs": []}
         credential_path = self.credentials / "navidrome.json"
         if not credential_path.is_file():
             result["reason"] = "Navidrome credentials are not present in this test bed"
@@ -1566,21 +1670,61 @@ class Catalog:
                     similar = info.get("similarArtist", [])
                     if isinstance(similar, dict):
                         similar = [similar]
-                    result["similar"] = [str(item.get("name")) for item in similar if isinstance(item, dict) and item.get("name")][:10]
+                    local_rows = {}
+                    with closing(self.connect()) as db:
+                        for row in db.execute(
+                            "SELECT artist_key,artist_name,musicbrainz_artistid,primary_path FROM artists"
+                        ):
+                            local_rows.setdefault(normalized_artist_identity(row["artist_name"]), row)
+                    projected = []
+                    for item in similar:
+                        if not isinstance(item, dict) or not str(item.get("name") or "").strip():
+                            continue
+                        name = str(item["name"]).strip()
+                        local = local_rows.get(normalized_artist_identity(name))
+                        portrait = self.artist_thumbnail_path(local) if local is not None else None
+                        if portrait is None:
+                            # Similar names must not wait behind as many as ten
+                            # sequential 20-second artwork downloads.  Reuse an
+                            # authorized cached provider image when one exists;
+                            # the browser supplies an initial-letter fallback.
+                            portrait = self._navidrome_similar_thumbnail_path(item)
+                            if portrait is None and refresh:
+                                try:
+                                    portrait = self._cache_navidrome_similar_thumbnail(item, credential)
+                                except (OSError, ValueError, KeyError, TypeError, requests.RequestException):
+                                    portrait = None
+                        projected.append(
+                            {
+                                "name": name,
+                                "local_id": str(local["artist_key"]) if local is not None else "",
+                                "image": self.image(portrait) if portrait is not None else "",
+                                "provider_id": str(item.get("id") or ""),
+                            }
+                        )
+                        if len(projected) >= 10:
+                            break
+                    result["similar"] = projected
+                    if not projected:
+                        result["similar_reason"] = "Navidrome returned no Similar Artists for this Artist"
                     result["source"] = "Navidrome"
-                    try:
-                        top = call("getTopSongs", {"artist": str(artist["name"]), "count": "10"}).get("topSongs", {}).get("song", [])
-                        if isinstance(top, dict):
-                            top = [top]
-                        songs = [str(item.get("title")) for item in top if isinstance(item, dict) and item.get("title")]
-                        if songs:
-                            result["top_songs"] = list(dict((song.casefold(), song) for song in songs).values())[:10]
-                    except (OSError, ValueError, KeyError, TypeError, AttributeError, requests.RequestException):
-                        pass  # Biography and similar artists remain useful without top songs.
+                    if str(result.get("biography") or "").strip():
+                        self._save_artist_profile(
+                            artist_id,
+                            {
+                                "lookup_name": str(artist["name"]),
+                                "musicbrainz_id": str(artist.get("mbid") or ""),
+                                "biography": str(result["biography"]),
+                                "external_url": str(info.get("lastFmUrl") or ""),
+                                "source": "Navidrome",
+                            },
+                        )
                 else:
                     result["reason"] = "Artist was not found in Navidrome"
             except (OSError, ValueError, KeyError, TypeError, AttributeError, requests.RequestException):
                 result["reason"] = "Navidrome metadata is unavailable for this artist"
+        if not result["similar"] and not result.get("similar_reason"):
+            result["similar_reason"] = result.get("reason") or "Similar Artists are unavailable"
         if not str(result.get("biography") or "").strip() and stored_profile:
             result.update(stored_profile)
             result.pop("reason", None)
@@ -1599,10 +1743,14 @@ class Catalog:
                 self._save_artist_profile(artist_id, profile)
         with self.lock:
             self.metadata_cache[artist_id] = result
-        try:
-            self.refresh_artist_appearances(artist_id)
-        except (OSError, ValueError, KeyError, TypeError, requests.RequestException):
-            pass
+        # Album appearances are refreshed by the explicit Refresh Artist Info
+        # path.  Normal Artist selection returns biography/similarity without
+        # waiting for a second provider catalog traversal.
+        if refresh:
+            try:
+                self.refresh_artist_appearances(artist_id)
+            except (OSError, ValueError, KeyError, TypeError, requests.RequestException):
+                pass
         return {
             **result,
             "artist": self.artist(artist_id),
