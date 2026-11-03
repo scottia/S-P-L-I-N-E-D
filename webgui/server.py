@@ -90,6 +90,7 @@ class Context:
             self.services.audit,
             snapshot_roots=_sqlite_snapshot_roots(),
             start_scheduler=self.start_worker,
+            album_validator=self.services.validate_album_embedding,
         )
         if self.start_worker:
             self.jobs = JobQueue(self.services)
@@ -143,6 +144,7 @@ class Context:
                 self.services.audit,
                 snapshot_roots=_sqlite_snapshot_roots(),
                 start_scheduler=self.start_worker,
+                album_validator=self.services.validate_album_embedding,
             )
         else:
             if self.jobs and any(
@@ -179,6 +181,7 @@ class Context:
                 self.services.audit,
                 snapshot_roots=_sqlite_snapshot_roots(),
                 start_scheduler=self.start_worker,
+                album_validator=self.services.validate_album_embedding,
             )
             self.url = url
             self.error = ""
@@ -788,6 +791,10 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
     def album(id: str):
         services = context.require()
         return services.catalog.album(id)
+
+    @app.get("/api/album/embedded-status")
+    def album_embedded_status(id: str):
+        return context.require().validate_album_embedding(id)
 
     @app.get("/api/fallback/tracks")
     def tracks(id: str):

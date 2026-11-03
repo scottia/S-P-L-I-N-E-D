@@ -580,22 +580,26 @@ function albumCardState(album, artist) {
   const incomplete = fallback ? album.fallback_complete === false
     : status === "incomplete" || status === "partial" || status === "unprocessed";
   const processed = status === "processed" || status === "artistComplete";
-  const embeddedComplete = Number(album.tracks) > 0 && Number(album.embedded) >= Number(album.tracks);
+  const embeddedValidation = String(album.embedded_validation || "unknown").toLowerCase();
+  const embeddedKnown = embeddedValidation === "verified";
+  const embeddedComplete = embeddedKnown && Number(album.tracks) > 0 && Number(album.embedded) >= Number(album.tracks);
   const fullyComplete = fallback ? album.fallback_complete === true
     : processed && !missingCover && embeddedComplete;
-  const checkEmbedded = !fallback && processed && !embeddedComplete;
+  const checkEmbedded = !fallback && processed && embeddedKnown && !embeddedComplete;
+  const embeddedRetry = !fallback && processed && embeddedValidation === "retry";
+  const embeddedPending = !fallback && processed && !embeddedKnown;
   const dots = [];
   if (missingArtist) dots.push(["#f4cc4d", "Artist artwork missing"]);
   if (bypassed) dots.push(["#f4cc4d", "Bypassed"]);
   if (missingCover || incomplete) dots.push(["#ff5268", missingCover ? "Album artwork missing" : fallback ? "Selected Artist's COMP tracks incomplete" : "Album not complete"]);
-  if (processed && !fullyComplete) dots.push(["#efa54e", "Processed; track artwork review pending"]);
-  if ((fallback && fullyComplete) || (!fallback && processed && !missingCover && !missingArtist)) dots.push(["#32dda0", fallback ? "Selected Artist's COMP tracks complete" : "Artist and album artwork complete"]);
+  if (processed && !fullyComplete) dots.push(["#efa54e", embeddedRetry ? "Embedded thumbnail validation needs retry" : embeddedPending ? "Embedded thumbnail validation pending" : "Processed; track artwork review pending"]);
+  if ((fallback && fullyComplete) || (!fallback && fullyComplete && !missingArtist)) dots.push(["#32dda0", fallback ? "Selected Artist's COMP tracks complete" : "Artist and album artwork complete"]);
   if (checkEmbedded) dots.push(["#7c4dff", "Embedded thumbnail needs attention"]);
   if (album.webp_found) dots.push(["#3478ff", "cover.webp present"]);
   const frames = state.graphicalEnhancement.frame_styles;
   const frame = fullyComplete ? frames.complete.color : checkEmbedded || status === "partial" ? frames.thumbnail.color
     : processed ? frames.in_process.color : bypassed ? "#f4cc4d" : "#ff5268";
-  return {dots, frame, fullyComplete, checkEmbedded};
+  return {dots, frame, fullyComplete, checkEmbedded, embeddedPending, embeddedRetry};
 }
 function renderAlbumCountSummary(albums, artist = state.artist) {
   const host = $("albumCount"); clear(host);
@@ -1740,6 +1744,29 @@ async function hydrateArtistThumbnails(request) {
     if (changed) { renderLibrary(); if (typeof renderHero === "function") renderHero(); }
   } catch { /* Local Artist Art remains available when Navidrome is offline. */ }
 }
+async function probeArtistAlbumStatuses(artistId, selectionRequest) {
+  const unresolved = (state.artist?.albums || []).filter(album =>
+    String(album.album_mbid || "").trim()
+    && String(album.embedded_validation || "unknown").toLowerCase() !== "verified");
+  for (let offset = 0; offset < unresolved.length; offset += 3) {
+    const batch = unresolved.slice(offset, offset + 3);
+    const results = await Promise.allSettled(batch.map(album =>
+      api("/api/album/embedded-status?id=" + encodeURIComponent(album.id))));
+    if (selectionRequest !== state.selectionRequest || state.artist?.id !== artistId) return;
+    results.forEach((result, index) => {
+      const current = state.artist.albums.find(album => album.id === batch[index].id);
+      if (!current) return;
+      if (result.status === "fulfilled") {
+        current.embedded = Number(result.value.embedded_tracks || 0);
+        current.embedded_validation = result.value.status || "unknown";
+        if (state.album?.id === current.id) Object.assign(state.album, current);
+      } else {
+        current.embedded_validation = "retry";
+      }
+    });
+    renderHero();
+  }
+}
 async function chooseArtist(id, select = true) {
   await cancelActiveCompWork();
   const request = ++state.selectionRequest;
@@ -1764,6 +1791,7 @@ async function chooseArtist(id, select = true) {
     renderAll(); setStatus("Loaded " + state.artist.name + " · " + state.artist.albums.length + " albums");
     auditEvent("selection-change", "artist", {scope: {artist_id: artist.id}, details: {library_mode: state.libraryMode}});
     loadArtistMetadata(artist.id);
+    probeArtistAlbumStatuses(artist.id, request);
   } catch (error) { if (request === state.selectionRequest) setStatus(error.message, "error"); }
 }
 async function chooseAlbum(id) {
@@ -1800,6 +1828,7 @@ async function chooseAlbum(id) {
     setStatus(fallback ? `COMP ready · ${tracks.length} tracks · ${tracks.filter(item => !item.completed).length} pending · validating recorded thumbnails`
       : "Loaded " + album.artist_name + " · " + album.name + " · " + album.tracks + " tracks");
     if (fallback) probeFallbackStatuses();
+    else if (state.artist) probeArtistAlbumStatuses(state.artist.id, request);
   } catch (error) { if (request === state.selectionRequest) setStatus(error.message, "error"); }
 }
 async function selectFallbackTrack(key, previewOnly) {

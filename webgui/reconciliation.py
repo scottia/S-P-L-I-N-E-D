@@ -179,6 +179,7 @@ class SQLiteReconciler:
         *,
         snapshot_roots: tuple[Path, ...] = (),
         start_scheduler: bool = True,
+        album_validator: Callable[[str], dict[str, Any]] | None = None,
     ):
         self.database = database
         roots: list[Path] = []
@@ -190,6 +191,7 @@ class SQLiteReconciler:
         self.allowed_root = self.allowed_roots[0]
         self.target_root = target_root.resolve()
         self.audit = audit
+        self.album_validator = album_validator
         self._operation_lock = Lock()
         self._stop = Event()
         self._thread = None
@@ -976,6 +978,7 @@ class SQLiteReconciler:
         run = sanitize_text(run_id, limit=100)
         if not run:
             raise ValueError("Choose a reconciliation run")
+        affected_album_keys: set[str] = set()
         with self._operation_lock, closing(self.database.connect()) as db, db:
             raw = db.raw
             # Hold the jobs table stable for the whole apply transaction. A
@@ -1034,6 +1037,15 @@ class SQLiteReconciler:
                             "UPDATE salite_diff SET resolution='applied',application_outcome='applied',applied_at=now(),error='' WHERE id=%s",
                             (difference["id"],),
                         )
+                    if table in {"albums", "tracks"} and source.get("album_key"):
+                        affected_album_keys.add(str(source["album_key"]))
+                    elif table == "compilation_track_artwork" and source.get("track_path"):
+                        album = raw.execute(
+                            "SELECT album_key FROM tracks WHERE path=%s",
+                            (source["track_path"],),
+                        ).fetchone()
+                        if album:
+                            affected_album_keys.add(str(album["album_key"]))
                     applied += 1
                 except Exception as error:
                     raw.execute(
@@ -1047,6 +1059,23 @@ class SQLiteReconciler:
                 "UPDATE sqlite_reconciliation_runs SET status=%s,applied=%s,failures=failures+%s,finished_at=now() WHERE run_id=%s",
                 ("applied" if failures == 0 else "applied-with-failures", applied, failures, run),
             )
+        validations: list[dict[str, Any]] = []
+        if self.album_validator:
+            for album_key in sorted(affected_album_keys, key=str.casefold):
+                try:
+                    validations.append(dict(self.album_validator(album_key)))
+                except Exception as error:
+                    validations.append(
+                        {
+                            "album_id": album_key,
+                            "status": "retry",
+                            "error": sanitize_text(error, limit=500),
+                        }
+                    )
+        validation_retries = sum(
+            str(item.get("status") or "").casefold() != "verified"
+            for item in validations
+        )
         result = {
             "run_id": run,
             "attempted": len(rows),
@@ -1054,13 +1083,15 @@ class SQLiteReconciler:
             "failures": failures,
             "complete": failures == 0 and applied == len(rows),
             "conflicts_applied": 0,
+            "album_validations": validations,
+            "album_validation_retries": validation_retries,
         }
         self._event(
             "sqlite-reconciliation",
             result,
-            severity="warning" if failures else "info",
+            severity="warning" if failures or validation_retries else "info",
             stage="apply-safe",
-            request_status="failed" if failures else "completed",
+            request_status="failed" if failures else "retry" if validation_retries else "completed",
         )
         return result
 

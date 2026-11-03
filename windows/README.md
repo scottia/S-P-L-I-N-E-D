@@ -109,7 +109,9 @@ operator explicitly selects credentials for a protected `.spl` export.
 - `src/scan_runtime.rs`: real provider/artwork processing.
 - `src/settings.rs` and `src/credential_store.rs`: Config v5 and provider
   credential services.
-- `src/backup.rs`: selective `.spl` backup/restore.
+- `src/backup.rs`: selective `.spl` backup/restore, normal restorable SQLite
+  online backups, secret-safe diagnostic summaries, and validated authoritative
+  Windows SQLite reconciliation snapshots.
 - `src/update.rs`: native Store query or pinned portable release notification.
 - `ui/app.slint`: functional validation surface only; it does not own business
   decisions.
@@ -143,3 +145,4 @@ PR advisory diagnostics are informational and never modify source. Their
 summary reports the tested revision, commands, exit results, and logs as
 Passed, Warnings, Failed, or Not run. Release and recovery workflows keep their
 existing build, package, smoke, and strict-validation responsibilities.
+

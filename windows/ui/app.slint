@@ -1688,12 +1688,24 @@ export component AppWindow inherits Window {
     in-out property <string> credential-secret;
     in-out property <string> credential-status;
     in-out property <string> backup-mode: "Backup";
+    // Legacy fields remain available to Setup and migration. The Backup /
+    // Restore page below uses the four independent lifecycle fields.
     in-out property <string> backup-directory;
     in-out property <string> restore-path;
-    in-out property <string> backup-selected-type: "Settings Archive";
-    in-out property <string> max-settings-backup-files: "0";
-    in-out property <string> max-database-backup-files: "0";
-    in-out property <string> max-diagnostic-backup-files: "0";
+    in-out property <string> backup-selected-type: "Backup Saved Settings";
+    in-out property <string> restore-selected-type: "Restore Saved Settings";
+    in-out property <string> settings-backup-directory;
+    in-out property <string> database-backup-directory;
+    in-out property <string> diagnostics-backup-directory;
+    in-out property <string> snapshot-backup-directory;
+    in-out property <string> settings-restore-path;
+    in-out property <string> database-restore-path;
+    in-out property <string> diagnostics-restore-path;
+    in-out property <string> snapshot-restore-path;
+    in-out property <string> max-settings-backup-files: "5";
+    in-out property <string> max-database-backup-files: "5";
+    in-out property <string> max-diagnostic-backup-files: "5";
+    in-out property <string> max-snapshot-backup-files: "5";
     in-out property <bool> backup-prompt-dismissed: false;
     in-out property <bool> backup-first-run-prompt-visible: false;
     in-out property <[string]> archived-backup-files;
@@ -1702,6 +1714,15 @@ export component AppWindow inherits Window {
     in-out property <string> backup-schedule: "Off";
     in-out property <string> database-backup-schedule: "Off";
     in-out property <string> diagnostics-backup-schedule: "Off";
+    in-out property <string> snapshot-backup-schedule: "Off";
+    in property <string> backup-settings-summary;
+    in property <string> backup-database-summary;
+    in property <string> backup-diagnostics-summary;
+    in property <string> backup-snapshot-summary;
+    in property <string> snapshot-current-max;
+    in property <string> snapshot-total-size;
+    in property <string> snapshot-latest-status;
+    in property <string> webgui-runtime-label: "Separate service · status and configuration are not available to Windows";
     in-out property <string> backup-password;
     in-out property <bool> backup-settings: true;
     in-out property <bool> backup-credentials: true;
@@ -1784,10 +1805,10 @@ export component AppWindow inherits Window {
     callback embed-panel-start-staged(); callback embed-panel-set-paused(bool); callback embed-panel-set-pause-all(bool);
     callback embed-panel-retry(int); callback embed-panel-remove(int); callback embed-panel-remove-all();
     callback apply-enhancement-defaults(); callback browse-setting-directory(string); callback browse-sample-directory();
-    callback browse-backup-directory(); callback browse-restore-file(); callback browse-setup-settings-file(); callback load-setup-settings-file();
+    callback browse-backup-directory(string); callback browse-restore-file(); callback browse-setup-settings-file(); callback load-setup-settings-file();
     callback refresh-archived-backups();
     callback completion-acknowledged(); callback apply-selected-sample();
-    callback load-settings(); callback save-settings(); callback save-interface-settings(); callback reset-advanced-settings(); callback save-setup();
+    callback load-settings(); callback save-settings(); callback save-interface-settings(); callback save-backup-preferences(); callback reset-advanced-settings(); callback save-setup();
     callback load-source-policy(string); callback update-source-policy(); callback load-credential(string);
     callback save-credential(string, string, string, string, string, string, string);
     callback test-credential(string, string, string, string, string, string, string);
@@ -2981,7 +3002,7 @@ export component AppWindow inherits Window {
                     }
                     Rectangle { horizontal-stretch: 1; background: transparent; }
                     NeonAction { width: 142px; height: 38px; label: "Settings HELP ↗"; clicked => root.open-about-link("settings-help"); }
-                    NeonAction { width: 132px; height: 38px; label: root.settings-advanced-visible ? "Advanced ON" : "Advanced"; tone: root.settings-advanced-visible ? "purple" : "cyan"; clicked => { root.settings-advanced-visible = !root.settings-advanced-visible; if (!root.settings-advanced-visible && root.backup-selected-type == "Diagnostic Summary") { root.backup-selected-type = "Settings Archive"; } } }
+                    NeonAction { width: 132px; height: 38px; label: root.settings-advanced-visible ? "Advanced ON" : "Advanced"; tone: root.settings-advanced-visible ? "purple" : "cyan"; clicked => { root.settings-advanced-visible = !root.settings-advanced-visible; } }
                 }
             }
             HorizontalLayout { spacing: 7px; vertical-stretch: 1;
@@ -3041,6 +3062,10 @@ export component AppWindow inherits Window {
                                 Heading { text: "Runtime"; height: 27px; color: AppTheme.violet; }
                                 Text { text: root.version-label; color: AppTheme.foreground; font-size: 14px; height: 24px; }
                                 Text { text: root.database-label; color: AppTheme.secondary-foreground; font-size: 14px; wrap: word-wrap; height: 42px; }
+                                HorizontalLayout { min-height: 28px; spacing: 10px;
+                                    Text { text: "WebGUI Runtime"; color: AppTheme.foreground; font-size: 14px; font-weight: 700; width: 210px; vertical-alignment: center; }
+                                    Text { text: root.webgui-runtime-label; color: AppTheme.yellow; font-size: 14px; wrap: word-wrap; horizontal-stretch: 1; vertical-alignment: center; }
+                                }
                                 Text { text: root.running ? "SPLINED run: active" : "SPLINED run: idle"; color: root.running ? AppTheme.yellow : AppTheme.green; font-size: 14px; height: 22px; }
                             }
                         }
@@ -3434,7 +3459,7 @@ export component AppWindow inherits Window {
                         Text { text: "Save each section separately. Advanced reveals specialist controls in context."; color: AppTheme.secondary-foreground; font-size: 14px; }
                     }
                     Rectangle { horizontal-stretch: 1; background: transparent; }
-                    NeonAction { width: 132px; height: 38px; label: root.settings-advanced-visible ? "Advanced ON" : "Advanced"; tone: root.settings-advanced-visible ? "purple" : "cyan"; clicked => { root.settings-advanced-visible = !root.settings-advanced-visible; if (!root.settings-advanced-visible && root.backup-selected-type == "Diagnostic Summary") { root.backup-selected-type = "Settings Archive"; } } }
+                    NeonAction { width: 132px; height: 38px; label: root.settings-advanced-visible ? "Advanced ON" : "Advanced"; tone: root.settings-advanced-visible ? "purple" : "cyan"; clicked => { root.settings-advanced-visible = !root.settings-advanced-visible; } }
                 }
             }
             HorizontalLayout { spacing: 7px; vertical-stretch: 1;
@@ -3455,73 +3480,132 @@ export component AppWindow inherits Window {
             NeonPanel { horizontal-stretch: 1;
                 ScrollView {
                 VerticalLayout { padding: 12px; spacing: 8px;
-                    Heading { text: "↑  Backup"; height: 32px; color: AppTheme.cyan; }
-                        PathSettingField { label: "Backup Directory"; value <=> root.backup-directory; hint: "Portable Backup Directory"; browse => root.browse-backup-directory(); }
-                        HorizontalLayout { height: 38px; spacing: 8px;
-                            Label { text: "Backup Type"; width: 210px; }
-                            ComboBox { horizontal-stretch: 1; model: root.settings-advanced-visible ? ["Settings Archive", "SQLite Database", "Diagnostic Summary"] : ["Settings Archive", "SQLite Database"]; current-value <=> root.backup-selected-type; }
+                    HorizontalLayout { height: 34px; spacing: 8px;
+                        Heading { text: "↑  Backup"; color: AppTheme.cyan; horizontal-stretch: 1; }
+                        NeonAction { width: 208px; height: 32px; label: "SAVE Backup Preferences"; tone: "active"; clicked => root.save-backup-preferences(); }
+                    }
+                    Text { text: "SAVE stores the four independent paths, schedules, and retention limits. It does not create a backup."; color: AppTheme.secondary-foreground; font-size: 13px; height: 28px; wrap: word-wrap; }
+                    HorizontalLayout { height: 38px; spacing: 8px;
+                        Label { text: "Backup Type"; width: 230px; }
+                        ComboBox { horizontal-stretch: 1; model: ["Backup Saved Settings", "Backup SQLite Database", "Backup .JSON Diagnostic Summaries", "Backup SQLite Database Snapshots"]; current-value <=> root.backup-selected-type; }
+                    }
+                    if root.backup-selected-type == "Backup Saved Settings": PathSettingField { label: "Backup Directory"; value <=> root.settings-backup-directory; hint: "Settings Archive directory"; browse => root.browse-backup-directory("settings"); }
+                    if root.backup-selected-type == "Backup SQLite Database": PathSettingField { label: "Backup Directory"; value <=> root.database-backup-directory; hint: "Restorable SQLite Database Backup directory"; browse => root.browse-backup-directory("database"); }
+                    if root.backup-selected-type == "Backup .JSON Diagnostic Summaries": PathSettingField { label: "Backup Directory"; value <=> root.diagnostics-backup-directory; hint: "Diagnostic Summary directory"; browse => root.browse-backup-directory("diagnostics"); }
+                    if root.backup-selected-type == "Backup SQLite Database Snapshots": PathSettingField { label: "Backup Directory"; value <=> root.snapshot-backup-directory; hint: "Authoritative reconciliation snapshot directory"; browse => root.browse-backup-directory("snapshot"); }
+                    HorizontalLayout { height: 38px; spacing: 8px;
+                        Label { text: "Schedule"; width: 230px; }
+                        ComboBox {
+                            horizontal-stretch: 1; model: ["Off", "Daily", "Weekly", "Monthly"];
+                            current-value: root.backup-selected-type == "Backup SQLite Database" ? root.database-backup-schedule : (root.backup-selected-type == "Backup .JSON Diagnostic Summaries" ? root.diagnostics-backup-schedule : (root.backup-selected-type == "Backup SQLite Database Snapshots" ? root.snapshot-backup-schedule : root.backup-schedule));
+                            selected(value) => { if (root.backup-selected-type == "Backup SQLite Database") { root.database-backup-schedule = value; } else if (root.backup-selected-type == "Backup .JSON Diagnostic Summaries") { root.diagnostics-backup-schedule = value; } else if (root.backup-selected-type == "Backup SQLite Database Snapshots") { root.snapshot-backup-schedule = value; } else { root.backup-schedule = value; } }
                         }
-                        HorizontalLayout { height: 38px; spacing: 8px;
-                            Label { text: "Schedule"; width: 210px; }
-                            ComboBox {
-                                horizontal-stretch: 1; model: ["Off", "Daily", "Weekly", "Monthly"];
-                                current-value: root.backup-selected-type == "SQLite Database" ? root.database-backup-schedule : (root.backup-selected-type == "Diagnostic Summary" ? root.diagnostics-backup-schedule : root.backup-schedule);
-                                selected(value) => { if (root.backup-selected-type == "SQLite Database") { root.database-backup-schedule = value; } else if (root.backup-selected-type == "Diagnostic Summary") { root.diagnostics-backup-schedule = value; } else { root.backup-schedule = value; } }
-                            }
+                    }
+                    HorizontalLayout { height: 38px; spacing: 8px;
+                        Label { text: "Max Files"; width: 230px; }
+                        LineEdit { horizontal-stretch: 1; text: root.backup-selected-type == "Backup SQLite Database" ? root.max-database-backup-files : (root.backup-selected-type == "Backup .JSON Diagnostic Summaries" ? root.max-diagnostic-backup-files : (root.backup-selected-type == "Backup SQLite Database Snapshots" ? root.max-snapshot-backup-files : root.max-settings-backup-files)); placeholder-text: "0 = Keep All";
+                            edited(value) => { if (root.backup-selected-type == "Backup SQLite Database") { root.max-database-backup-files = value; } else if (root.backup-selected-type == "Backup .JSON Diagnostic Summaries") { root.max-diagnostic-backup-files = value; } else if (root.backup-selected-type == "Backup SQLite Database Snapshots") { root.max-snapshot-backup-files = value; } else { root.max-settings-backup-files = value; } }
                         }
-                        HorizontalLayout { height: 38px; spacing: 8px;
-                            Label { text: "Max Backup File Count"; width: 210px; }
-                            LineEdit { horizontal-stretch: 1; text: root.backup-selected-type == "SQLite Database" ? root.max-database-backup-files : (root.backup-selected-type == "Diagnostic Summary" ? root.max-diagnostic-backup-files : root.max-settings-backup-files); placeholder-text: "0 = Keep All";
-                                edited(value) => { if (root.backup-selected-type == "SQLite Database") { root.max-database-backup-files = value; } else if (root.backup-selected-type == "Diagnostic Summary") { root.max-diagnostic-backup-files = value; } else { root.max-settings-backup-files = value; } }
-                            }
+                    }
+                    SettingsHelpTip { summary: "How do independent schedules and retention work?"; detail: "Each type owns its directory, schedule and Max Files value. Zero keeps all matching files. Retention manages only timestamped SPLINED files of that type inside that directory and never removes unrelated files."; }
+                    if root.backup-selected-type == "Backup Saved Settings": VerticalLayout { spacing: 7px;
+                        Heading { text: "Saved Settings Archive (.spl)"; height: 28px; }
+                        HorizontalLayout { height: 34px; spacing: 8px;
+                            RadioToggle { horizontal-stretch: 1; label: "Config V5 Settings"; checked <=> root.backup-settings; }
+                            RadioToggle { horizontal-stretch: 1; label: "Provider Credentials"; checked <=> root.backup-credentials; }
+                            RadioToggle { horizontal-stretch: 1; label: "Interface Settings"; checked <=> root.backup-interface; }
                         }
-                        SettingsHelpTip { summary: "How does backup retention work?"; detail: "A limit of zero keeps all files. At startup, SPLINED removes only older timestamped files of the selected backup type from this directory. Other files and backup types are left alone."; }
-                        if root.backup-selected-type == "Settings Archive": VerticalLayout { spacing: 7px;
-                            Heading { text: "Settings Archive (.spl)"; height: 28px; }
-                            HorizontalLayout { height: 34px; spacing: 8px;
-                                RadioToggle { horizontal-stretch: 1; label: "Config V5 Settings"; checked <=> root.backup-settings; }
-                                RadioToggle { horizontal-stretch: 1; label: "Provider Credentials"; checked <=> root.backup-credentials; }
-                                RadioToggle { horizontal-stretch: 1; label: "Interface Settings"; checked <=> root.backup-interface; }
-                            }
-                            if root.settings-advanced-visible: HorizontalLayout { height: 36px; spacing: 8px;
-                                Label { text: "Optional Archive Password"; width: 210px; }
-                                LineEdit { text <=> root.backup-password; input-type: InputType.password; horizontal-stretch: 1; }
-                            }
-                            NeonAction { label: "Back Up Settings .spl"; height: 36px; emphasized: true; enabled: !root.running; clicked => root.backup-action("backup-settings", root.backup-directory, root.backup-password, root.backup-settings, root.backup-credentials, false, root.backup-interface, false); }
-                            SettingsHelpTip { summary: "Will this preserve sliders, locks, panes, and banner colors?"; detail: "Yes, after you Save Enhancement: Config V5 stores global slider defaults, while Interface Settings stores named slider presets, filter locks and locked choices, pane sizes, Theme, Banner and Frame styles, and their original Baselines. Keep both categories selected. A Settings Archive never includes the music database; back it up separately."; }
+                        if root.settings-advanced-visible: HorizontalLayout { height: 36px; spacing: 8px;
+                            Label { text: "Optional Archive Password"; width: 230px; }
+                            LineEdit { text <=> root.backup-password; input-type: InputType.password; horizontal-stretch: 1; }
                         }
-                        if root.backup-selected-type == "SQLite Database": VerticalLayout { spacing: 7px;
-                            Heading { text: "SQLite Database Snapshot (.sqlite)"; height: 28px; }
-                            RadioToggle { label: "Include V/A / OST Artist images (manual and scheduled)"; checked <=> root.backup-artist-images; }
-                            NeonAction { label: "Back Up SQLite .sqlite"; height: 36px; emphasized: true; enabled: !root.running; clicked => root.backup-action("backup-database", root.backup-directory, "", false, false, true, false, false); }
-                        }
-                        if root.backup-selected-type == "Diagnostic Summary" && root.settings-advanced-visible: VerticalLayout { spacing: 7px;
-                            Heading { text: "Diagnostic Summary (.json)"; height: 28px; }
-                            SettingsHelpTip { summary: "Why create a Diagnostic Summary?"; detail: "Generate this reference-only JSON when reporting a problem to the maintainer. It describes the app version, configuration shape and paths, database state, and recent diagnostics; it does not contain provider secrets. Review the file before sharing it. It never restores settings."; }
-                            NeonAction { label: "Write Diagnostic Summary .json"; height: 36px; emphasized: true; enabled: !root.running; clicked => root.backup-action("backup-diagnostics", root.backup-directory, "", false, false, false, false, true); }
-                        }
-                    Text { text: "Automatic jobs run only while SPLINED is open and idle. SQLite uses a consistent online snapshot."; color: AppTheme.secondary-foreground; wrap: word-wrap; height: 44px; }
-                }
-                }
-            }
-            NeonPanel { horizontal-stretch: 1;
-                ScrollView {
-                VerticalLayout { padding: 12px; spacing: 8px;
+                        NeonAction { label: "Backup Saved Settings"; height: 38px; emphasized: true; enabled: !root.running; clicked => root.backup-action("backup-settings", root.settings-backup-directory, root.backup-password, root.backup-settings, root.backup-credentials, false, root.backup-interface, false); }
+                    }
+                    if root.backup-selected-type == "Backup SQLite Database": VerticalLayout { spacing: 7px;
+                        Heading { text: "SQLite Database Backup"; height: 28px; }
+                        if root.settings-advanced-visible: RadioToggle { label: "Include legacy V/A / OST Artist images for compatible backups"; checked <=> root.backup-artist-images; }
+                        NeonAction { label: "Backup SQLite Database"; height: 38px; emphasized: true; enabled: !root.running; clicked => root.backup-action("backup-database", root.database-backup-directory, "", false, false, true, false, false); }
+                    }
+                    if root.backup-selected-type == "Backup .JSON Diagnostic Summaries": VerticalLayout { spacing: 7px;
+                        Heading { text: ".JSON Diagnostic Summary"; height: 28px; }
+                        SettingsHelpTip { summary: "What can a Diagnostic Summary change?"; detail: "Nothing. It is a secret-safe reference artifact for review. Loading it later displays the JSON in Verbose / Run Details without restoring application state."; }
+                        NeonAction { label: "Backup .JSON Diagnostic Summary"; height: 38px; emphasized: true; enabled: !root.running; clicked => root.backup-action("backup-diagnostics", root.diagnostics-backup-directory, "", false, false, false, false, true); }
+                    }
+                    if root.backup-selected-type == "Backup SQLite Database Snapshots": VerticalLayout { spacing: 7px;
+                        Heading { text: "Authoritative SQLite Database Snapshot"; height: 28px; }
+                        Text { text: "Windows online backup · schema and library_root validation · quick_check · SHA-256 · atomic publication"; color: AppTheme.secondary-foreground; font-size: 13px; height: 26px; wrap: word-wrap; }
+                        NeonAction { label: "Create SQLite Snapshot"; height: 38px; emphasized: true; tone: "yellow"; enabled: !root.running; clicked => root.backup-action("create-snapshot", root.snapshot-backup-directory, "", false, false, false, false, false); }
+                    }
+                    Text { text: "Automatic jobs run only while SPLINED is open and idle."; color: AppTheme.secondary-foreground; wrap: word-wrap; height: 28px; }
+                    Rectangle { height: 1px; background: AppTheme.border; }
+                    Text { text: "BACKUP STATUS SUMMARY"; color: AppTheme.cyan; font-size: 13px; font-weight: 800; height: 24px; }
+                    Text { text: root.backup-settings-summary; color: AppTheme.yellow; font-size: 13px; height: 28px; overflow: elide; }
+                    Text { text: root.backup-database-summary; color: AppTheme.yellow; font-size: 13px; height: 28px; overflow: elide; }
+                    Text { text: root.backup-diagnostics-summary; color: AppTheme.yellow; font-size: 13px; height: 28px; overflow: elide; }
+                    Text { text: root.backup-snapshot-summary; color: AppTheme.yellow; font-size: 13px; height: 28px; overflow: elide; }
+
+                    Rectangle { height: 1px; background: AppTheme.border; }
+                    Heading { text: "▦  SQL Database Snapshots"; height: 32px; color: AppTheme.cyan; }
+                    PathSettingField { label: "Snapshot Directory"; value <=> root.snapshot-backup-directory; hint: "Windows → WebGUI reconciliation snapshots"; browse => root.browse-backup-directory("snapshot"); }
+                    NeonAction { label: "Create SQLite Snapshot"; height: 38px; emphasized: true; tone: "yellow"; enabled: !root.running; clicked => root.backup-action("create-snapshot", root.snapshot-backup-directory, "", false, false, false, false, false); }
+                    HorizontalLayout { height: 26px; spacing: 8px;
+                        Text { text: "Current / Max Files"; color: AppTheme.foreground; width: 230px; }
+                        Text { text: root.snapshot-current-max; color: AppTheme.yellow; }
+                    }
+                    HorizontalLayout { height: 26px; spacing: 8px;
+                        Text { text: "Total File Size"; color: AppTheme.foreground; width: 230px; }
+                        Text { text: root.snapshot-total-size; color: AppTheme.yellow; }
+                    }
+                    HorizontalLayout { min-height: 34px; spacing: 8px;
+                        Text { text: "Latest Snapshot"; color: AppTheme.foreground; width: 230px; }
+                        Text { text: root.snapshot-latest-status; color: AppTheme.yellow; wrap: word-wrap; horizontal-stretch: 1; }
+                    }
+
+                    Rectangle { height: 1px; background: AppTheme.border; }
                     Heading { text: "↓  Restore"; height: 32px; color: AppTheme.violet; }
-                        PathSettingField { label: "Restore File"; value <=> root.restore-path; hint: "Existing .spl Settings Or .sqlite Database"; browse => root.browse-restore-file(); }
-                        Heading { text: "Settings Archive Contents (.spl Only)"; height: 28px; }
-                        RadioToggle { label: "Config V5 Settings"; checked <=> root.backup-settings; }
-                        RadioToggle { label: "Provider Credentials"; checked <=> root.backup-credentials; }
-                        RadioToggle { label: "Interface Settings"; checked <=> root.backup-interface; }
-                        RadioToggle { label: "SQLite Database Backup"; checked <=> root.backup-database; }
-                        RadioToggle { label: "Restore V/A / OST Artist images from .sqlite when present"; checked <=> root.restore-artist-images; }
-                        NeonAction { label: "Restore Selected File"; height: 38px; emphasized: true; enabled: !root.running; clicked => root.backup-action("restore", root.restore-path, root.backup-password, root.backup-settings, root.backup-credentials, root.backup-database, root.backup-interface, false); }
-                        HorizontalLayout { height: 38px; spacing: 8px;
-                            Label { text: "Archived Backup File"; width: 210px; }
-                            ComboBox { horizontal-stretch: 1; model: root.archived-backup-files; current-value <=> root.archived-backup-selection; selected(value) => { root.restore-path = value; } }
+                    Text { text: "Restore actions are always explicit and manual. No restore is scheduled."; color: AppTheme.secondary-foreground; font-size: 13px; height: 28px; }
+                    HorizontalLayout { height: 38px; spacing: 8px;
+                        Label { text: "Restore Type"; width: 230px; }
+                        ComboBox { horizontal-stretch: 1; model: ["Restore Saved Settings", "Restore SQLite Database", "Restore .JSON Diagnostic Summary", "Restore SQLite Database Snapshot"]; current-value <=> root.restore-selected-type; selected(value) => { root.restore-selected-type = value; root.refresh-archived-backups(); } }
+                    }
+                    if root.restore-selected-type == "Restore Saved Settings": PathSettingField { label: "Selected File"; value <=> root.settings-restore-path; hint: "Existing .spl Settings Archive"; browse => root.browse-restore-file(); }
+                    if root.restore-selected-type == "Restore SQLite Database": PathSettingField { label: "Selected File"; value <=> root.database-restore-path; hint: "Existing restorable .sqlite database"; browse => root.browse-restore-file(); }
+                    if root.restore-selected-type == "Restore .JSON Diagnostic Summary": PathSettingField { label: "Selected File"; value <=> root.diagnostics-restore-path; hint: "Existing SPLINED diagnostic .json"; browse => root.browse-restore-file(); }
+                    if root.restore-selected-type == "Restore SQLite Database Snapshot": PathSettingField { label: "Selected File"; value <=> root.snapshot-restore-path; hint: "Existing authoritative .sqlite snapshot"; browse => root.browse-restore-file(); }
+                    HorizontalLayout { height: 38px; spacing: 8px;
+                        Label { text: "Available Matching File"; width: 230px; }
+                        ComboBox { horizontal-stretch: 1; model: root.archived-backup-files; current-value <=> root.archived-backup-selection; selected(value) => {
+                            if (root.restore-selected-type == "Restore SQLite Database") { root.database-restore-path = value; }
+                            else if (root.restore-selected-type == "Restore .JSON Diagnostic Summary") { root.diagnostics-restore-path = value; }
+                            else if (root.restore-selected-type == "Restore SQLite Database Snapshot") { root.snapshot-restore-path = value; }
+                            else { root.settings-restore-path = value; }
+                        } }
+                    }
+                    if root.restore-selected-type == "Restore Saved Settings": VerticalLayout { spacing: 7px;
+                        Heading { text: "Saved Settings Contents"; height: 28px; }
+                        HorizontalLayout { height: 34px; spacing: 8px;
+                            RadioToggle { horizontal-stretch: 1; label: "Config V5 Settings"; checked <=> root.backup-settings; }
+                            RadioToggle { horizontal-stretch: 1; label: "Provider Credentials"; checked <=> root.backup-credentials; }
+                            RadioToggle { horizontal-stretch: 1; label: "Interface Settings"; checked <=> root.backup-interface; }
                         }
-                        SettingsHelpTip { summary: "Can I open a .spl file directly?"; detail: "Yes. Double-clicking an associated unprotected .spl backup opens SPLINED and restores its Config V5 settings. Review the backup before opening it. Password-protected archives require the Restore flow."; }
-                    Text { text: ".spl restores selected settings. If Interface Settings is selected, close and reopen SPLINED afterward before changing anything else. .sqlite restores only the database. Diagnostic .json files are reference-only."; color: AppTheme.secondary-foreground; wrap: word-wrap; height: 58px; }
+                        if root.settings-advanced-visible: HorizontalLayout { height: 36px; spacing: 8px;
+                            Label { text: "Archive Password"; width: 230px; }
+                            LineEdit { text <=> root.backup-password; input-type: InputType.password; horizontal-stretch: 1; }
+                        }
+                        NeonAction { label: "Restore Saved Settings"; height: 38px; emphasized: true; enabled: !root.running; clicked => root.backup-action("restore", root.settings-restore-path, root.backup-password, root.backup-settings, root.backup-credentials, false, root.backup-interface, false); }
+                    }
+                    if root.restore-selected-type == "Restore SQLite Database": VerticalLayout { spacing: 7px;
+                        if root.settings-advanced-visible: RadioToggle { label: "Restore legacy V/A / OST Artist images when present"; checked <=> root.restore-artist-images; }
+                        NeonAction { label: "Restore SQLite Database"; height: 38px; emphasized: true; enabled: !root.running; clicked => root.backup-action("restore", root.database-restore-path, "", false, false, true, false, false); }
+                    }
+                    if root.restore-selected-type == "Restore .JSON Diagnostic Summary": VerticalLayout { spacing: 7px;
+                        Text { text: "Loads reference-only JSON into Processing & Logs → Verbose / Run Details. No settings, database, credentials, media, UI preferences, or processing state is changed."; color: AppTheme.secondary-foreground; font-size: 13px; height: 44px; wrap: word-wrap; }
+                        NeonAction { label: "Load .JSON Diagnostic Summary"; height: 38px; emphasized: true; enabled: !root.running; clicked => root.backup-action("load-diagnostics", root.diagnostics-restore-path, "", false, false, false, false, false); }
+                    }
+                    if root.restore-selected-type == "Restore SQLite Database Snapshot": VerticalLayout { spacing: 7px;
+                        NeonAction { label: "Restore SQLite Database Snapshot"; height: 38px; emphasized: true; enabled: !root.running; clicked => root.backup-action("restore-snapshot", root.snapshot-restore-path, "", false, false, true, false, false); }
+                    }
+                    SettingsHelpTip { summary: "Can I open a .spl file directly?"; detail: "Yes. Double-clicking an associated unprotected .spl backup opens SPLINED and restores its Config V5 settings. Password-protected archives require this Restore flow."; }
                 }
                 }
             }
@@ -3618,7 +3702,7 @@ export component AppWindow inherits Window {
                 HorizontalLayout { height: 38px; spacing: 10px;
                     NeonAction { width: 120px; label: "Later"; clicked => { root.backup-prompt-dismissed = true; root.backup-first-run-prompt-visible = false; } }
                     Rectangle { horizontal-stretch: 1; background: transparent; }
-                    NeonAction { width: 220px; label: "Create Settings Backup"; tone: "active"; clicked => { root.backup-prompt-dismissed = true; root.backup-first-run-prompt-visible = false; root.backup-action("backup-settings", root.backup-directory, "", true, false, false, true, false); } }
+                    NeonAction { width: 220px; label: "Create Settings Backup"; tone: "active"; clicked => { root.backup-prompt-dismissed = true; root.backup-first-run-prompt-visible = false; root.backup-action("backup-settings", root.settings-backup-directory, "", true, false, false, true, false); } }
                 }
             }
         }

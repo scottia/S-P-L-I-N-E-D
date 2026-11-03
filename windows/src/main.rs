@@ -13,8 +13,9 @@ use splined_core::application::{
 };
 use splined_core::backup::{
     BackupSelection, export_backup, export_database_backup_with_artist_art,
-    export_diagnostic_summary, read_backup_settings, restore_backup,
-    restore_database_backup_with_artist_art,
+    export_diagnostic_summary, export_reconciliation_snapshot, load_diagnostic_summary,
+    read_backup_settings, restore_backup, restore_database_backup_with_artist_art,
+    validate_reconciliation_snapshot,
 };
 use splined_core::candidate::{Candidate, StaticFormat};
 use splined_core::config::{
@@ -581,6 +582,12 @@ fn recent_debug_lines(path: &Path, limit: usize) -> Result<Vec<String>, String> 
 }
 
 fn diagnostic_log_view(state: &ApplicationState, level: &str, backup_directory: &Path) -> String {
+    if level == "Verbose" && !state.loaded_diagnostic_summary.trim().is_empty() {
+        return format!(
+            "Loaded .JSON Diagnostic Summary (reference-only)\n\n{}",
+            state.loaded_diagnostic_summary
+        );
+    }
     if level == "Error" {
         let errors = state
             .log
@@ -1182,12 +1189,23 @@ fn capture_ui_preferences(
         upscale_preview_only: true,
         disable_intro_message: state.disable_intro_message,
         disable_confirmation_messages: state.disable_confirmation_messages,
-        backup_directory: ui.get_backup_directory().to_string(),
-        restore_path: ui.get_restore_path().to_string(),
+        backup_directory: ui.get_settings_backup_directory().to_string(),
+        restore_path: selected_restore_path(ui),
+        backup_preferences_revision: splined_core::settings::CURRENT_BACKUP_PREFERENCES_REVISION,
         backup_selected_type: ui.get_backup_selected_type().to_string(),
+        restore_selected_type: ui.get_restore_selected_type().to_string(),
+        settings_backup_directory: ui.get_settings_backup_directory().to_string(),
+        database_backup_directory: ui.get_database_backup_directory().to_string(),
+        diagnostics_backup_directory: ui.get_diagnostics_backup_directory().to_string(),
+        snapshot_backup_directory: ui.get_snapshot_backup_directory().to_string(),
+        settings_restore_path: ui.get_settings_restore_path().to_string(),
+        database_restore_path: ui.get_database_restore_path().to_string(),
+        diagnostics_restore_path: ui.get_diagnostics_restore_path().to_string(),
+        snapshot_restore_path: ui.get_snapshot_restore_path().to_string(),
         max_settings_backup_files: ui.get_max_settings_backup_files().to_string(),
         max_database_backup_files: ui.get_max_database_backup_files().to_string(),
         max_diagnostic_backup_files: ui.get_max_diagnostic_backup_files().to_string(),
+        max_snapshot_backup_files: ui.get_max_snapshot_backup_files().to_string(),
         backup_prompt_dismissed: ui.get_backup_prompt_dismissed(),
         backup_schedule: normalize_backup_schedule(ui.get_backup_schedule().as_str()).to_string(),
         database_backup_schedule: normalize_backup_schedule(
@@ -1196,6 +1214,10 @@ fn capture_ui_preferences(
         .to_string(),
         diagnostics_backup_schedule: normalize_backup_schedule(
             ui.get_diagnostics_backup_schedule().as_str(),
+        )
+        .to_string(),
+        snapshot_backup_schedule: normalize_backup_schedule(
+            ui.get_snapshot_backup_schedule().as_str(),
         )
         .to_string(),
         backup_mode: if ui.get_backup_mode() == "Restore" {
@@ -1262,6 +1284,38 @@ fn capture_ui_preferences(
         custom_window_height: custom_layout.normal_window_height,
         custom_window_maximized: custom_layout.maximized,
     })
+}
+
+fn retain_saved_backup_preferences(current: &mut UiPreferences, saved: &UiPreferences) {
+    current.backup_directory = saved.backup_directory.clone();
+    current.restore_path = saved.restore_path.clone();
+    current.backup_preferences_revision = saved.backup_preferences_revision;
+    current.backup_selected_type = saved.backup_selected_type.clone();
+    current.restore_selected_type = saved.restore_selected_type.clone();
+    current.settings_backup_directory = saved.settings_backup_directory.clone();
+    current.database_backup_directory = saved.database_backup_directory.clone();
+    current.diagnostics_backup_directory = saved.diagnostics_backup_directory.clone();
+    current.snapshot_backup_directory = saved.snapshot_backup_directory.clone();
+    current.settings_restore_path = saved.settings_restore_path.clone();
+    current.database_restore_path = saved.database_restore_path.clone();
+    current.diagnostics_restore_path = saved.diagnostics_restore_path.clone();
+    current.snapshot_restore_path = saved.snapshot_restore_path.clone();
+    current.max_settings_backup_files = saved.max_settings_backup_files.clone();
+    current.max_database_backup_files = saved.max_database_backup_files.clone();
+    current.max_diagnostic_backup_files = saved.max_diagnostic_backup_files.clone();
+    current.max_snapshot_backup_files = saved.max_snapshot_backup_files.clone();
+    current.backup_schedule = saved.backup_schedule.clone();
+    current.database_backup_schedule = saved.database_backup_schedule.clone();
+    current.diagnostics_backup_schedule = saved.diagnostics_backup_schedule.clone();
+    current.snapshot_backup_schedule = saved.snapshot_backup_schedule.clone();
+    current.backup_mode = saved.backup_mode.clone();
+    current.backup_settings = saved.backup_settings;
+    current.backup_credentials = saved.backup_credentials;
+    current.backup_database = saved.backup_database;
+    current.backup_artist_images = saved.backup_artist_images;
+    current.restore_artist_images = saved.restore_artist_images;
+    current.backup_interface = saved.backup_interface;
+    current.backup_diagnostics = saved.backup_diagnostics;
 }
 
 async fn navidrome_artist_catalog(
@@ -3184,24 +3238,23 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     }
     let mut preferences = splined_core::settings::load_ui_preferences().unwrap_or_default();
-    preferences.migrate_workspace_layout();
-    let cleanup_directory = if preferences.backup_directory.trim().is_empty() {
-        splined_core::portable::app_layout()
-            .ok()
-            .map(|layout| layout.root.join("backups"))
-    } else {
-        Some(PathBuf::from(&preferences.backup_directory))
-    };
-    if let Some(directory) = cleanup_directory {
-        match enforce_backup_file_limits(&directory, &preferences) {
-            Ok(removed) if removed > 0 => state.push_log(format!(
-                "Backup retention removed {removed} older SPLINED backup file(s)."
-            )),
-            Err(error) => state.push_log(format!(
-                "WARNING: Backup retention could not complete: {error}"
-            )),
-            _ => {}
-        }
+    let preferences_migrated =
+        preferences.migrate_workspace_layout() | preferences.migrate_backup_preferences();
+    if preferences_migrated
+        && let Err(error) = splined_core::settings::save_ui_preferences(&preferences)
+    {
+        state.push_log(format!(
+            "WARNING: Migrated interface settings could not be saved: {error}"
+        ));
+    }
+    match enforce_backup_file_limits(&preferences) {
+        Ok(removed) if removed > 0 => state.push_log(format!(
+            "Backup retention removed {removed} older SPLINED backup file(s)."
+        )),
+        Err(error) => state.push_log(format!(
+            "WARNING: Backup retention could not complete: {error}"
+        )),
+        _ => {}
     }
     apply_ui_preferences(&mut state, &preferences);
     let mut workspace_layout = WorkspaceLayout::from_preferences(&preferences);
@@ -3280,29 +3333,35 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_settings_animate_webp_preview(preferences.animate_webp_preview);
     ui.set_musicbrainz_id_editor_expanded(preferences.musicbrainz_id_editor_expanded);
     ui.set_selected_source_name(SharedString::from(preferences.selected_source_name.clone()));
-    let default_backup_directory = splined_core::portable::app_layout()
-        .map(|layout| layout.root.join("backups").to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "backups".to_string());
-    let backup_directory = if preferences.backup_directory.trim().is_empty() {
-        default_backup_directory
-    } else {
-        preferences.backup_directory.clone()
-    };
-    ui.set_backup_directory(SharedString::from(backup_directory.clone()));
-    let archived = archived_backup_files(Path::new(&backup_directory));
-    let latest = archived
-        .first()
-        .map(|path| path.to_string_lossy().into_owned());
-    let restore_path = latest.unwrap_or_else(|| preferences.restore_path.clone());
-    ui.set_restore_path(SharedString::from(restore_path.clone()));
-    ui.set_archived_backup_selection(SharedString::from(restore_path));
-    ui.set_archived_backup_files(model(
-        archived
-            .iter()
-            .map(|path| SharedString::from(path.to_string_lossy().into_owned()))
-            .collect(),
-    ));
+    let defaults = backup_default_directories();
+    let settings_backup_directory =
+        configured_or_default(&preferences.settings_backup_directory, &defaults.settings);
+    let database_backup_directory =
+        configured_or_default(&preferences.database_backup_directory, &defaults.database);
+    let diagnostics_backup_directory = configured_or_default(
+        &preferences.diagnostics_backup_directory,
+        &defaults.diagnostics,
+    );
+    let snapshot_backup_directory =
+        configured_or_default(&preferences.snapshot_backup_directory, &defaults.snapshots);
+    // Legacy UI/setup consumers retain the Settings Archive directory.
+    ui.set_backup_directory(settings_backup_directory.clone().into());
+    ui.set_settings_backup_directory(settings_backup_directory.clone().into());
+    ui.set_database_backup_directory(database_backup_directory.into());
+    ui.set_diagnostics_backup_directory(diagnostics_backup_directory.into());
+    ui.set_snapshot_backup_directory(snapshot_backup_directory.into());
     ui.set_backup_selected_type(SharedString::from(preferences.backup_selected_type.clone()));
+    ui.set_restore_selected_type(SharedString::from(
+        preferences.restore_selected_type.clone(),
+    ));
+    ui.set_settings_restore_path(preferences.settings_restore_path.clone().into());
+    ui.set_database_restore_path(preferences.database_restore_path.clone().into());
+    ui.set_diagnostics_restore_path(preferences.diagnostics_restore_path.clone().into());
+    ui.set_snapshot_restore_path(preferences.snapshot_restore_path.clone().into());
+    if let Some(path) = restore_request.as_deref() {
+        ui.set_settings_restore_path(path.to_string_lossy().into_owned().into());
+        ui.set_restore_selected_type(RESTORE_TYPE_SETTINGS.into());
+    }
     ui.set_max_settings_backup_files(SharedString::from(
         preferences.max_settings_backup_files.clone(),
     ));
@@ -3312,15 +3371,17 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_max_diagnostic_backup_files(SharedString::from(
         preferences.max_diagnostic_backup_files.clone(),
     ));
+    ui.set_max_snapshot_backup_files(SharedString::from(
+        preferences.max_snapshot_backup_files.clone(),
+    ));
+    refresh_archived_backups_ui(&ui, true);
+    let settings_archived = archived_backup_files_for_type(
+        Path::new(&settings_backup_directory),
+        RESTORE_TYPE_SETTINGS,
+    );
     ui.set_backup_prompt_dismissed(preferences.backup_prompt_dismissed);
     ui.set_backup_first_run_prompt_visible(
-        !setup_required
-            && !preferences.backup_prompt_dismissed
-            && !archived.iter().any(|path| {
-                path.extension()
-                    .and_then(std::ffi::OsStr::to_str)
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("spl"))
-            }),
+        !setup_required && !preferences.backup_prompt_dismissed && settings_archived.is_empty(),
     );
     ui.set_backup_schedule(SharedString::from(normalize_backup_schedule(
         &preferences.backup_schedule,
@@ -3331,6 +3392,10 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_diagnostics_backup_schedule(SharedString::from(normalize_backup_schedule(
         &preferences.diagnostics_backup_schedule,
     )));
+    ui.set_snapshot_backup_schedule(SharedString::from(normalize_backup_schedule(
+        &preferences.snapshot_backup_schedule,
+    )));
+    refresh_backup_status_ui(&ui);
     ui.set_backup_mode(SharedString::from(
         if preferences.backup_mode.eq_ignore_ascii_case("restore") {
             "Restore"
@@ -3394,6 +3459,7 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     }
     sync_ui(&ui, &state);
+    let last_preferences = Rc::new(RefCell::new(preferences.clone()));
     let interface_restore_pending_restart = Arc::new(AtomicBool::new(false));
     bind_callbacks(
         &ui,
@@ -3408,6 +3474,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 ui_debug_log: ui_debug_log.clone(),
             },
             interface_restore_pending_restart: Arc::clone(&interface_restore_pending_restart),
+            last_preferences: Rc::clone(&last_preferences),
         },
     );
     let embed_queue_stop = match bind_embed_queue(&ui, Arc::clone(&state), Arc::clone(&controller))
@@ -3699,7 +3766,6 @@ fn main() -> Result<(), slint::PlatformError> {
     let preference_layout = Rc::clone(&workspace_layout);
     let preference_appearance = Rc::clone(&appearance);
     let preference_custom_window = custom_window_state.clone();
-    let last_preferences = Rc::new(RefCell::new(preferences.clone()));
     let timer_last_preferences = Rc::clone(&last_preferences);
     let timer_restore_pending = Arc::clone(&interface_restore_pending_restart);
     let diagnostic_last_poll = Rc::new(RefCell::new(Instant::now() - Duration::from_secs(3)));
@@ -3736,7 +3802,8 @@ fn main() -> Result<(), slint::PlatformError> {
                 && (level != *diagnostic_last_level.borrow()
                     || diagnostic_last_poll.borrow().elapsed() >= Duration::from_secs(3))
             {
-                let backup_directory = PathBuf::from(ui.get_backup_directory().as_str());
+                let backup_directory =
+                    PathBuf::from(ui.get_diagnostics_backup_directory().as_str());
                 if let Ok(app) = preference_state.lock() {
                     ui.set_diagnostic_log_detail(SharedString::from(diagnostic_log_view(
                         &app,
@@ -3773,6 +3840,10 @@ fn main() -> Result<(), slint::PlatformError> {
             current.banner_theme_baseline_styles = saved.banner_theme_baseline_styles.clone();
             current.album_frame_theme_baseline_styles =
                 saved.album_frame_theme_baseline_styles.clone();
+        }
+        {
+            let saved = timer_last_preferences.borrow();
+            retain_saved_backup_preferences(&mut current, &saved);
         }
         if current != *timer_last_preferences.borrow()
             && splined_core::settings::save_ui_preferences(&current).is_ok()
@@ -3939,6 +4010,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let scheduled_layout = Rc::clone(&workspace_layout);
     let scheduled_appearance = Rc::clone(&appearance);
     let scheduled_custom_window = custom_window_state.clone();
+    let scheduled_backup_preferences = Rc::clone(&last_preferences);
     scheduled_backup_timer.start(TimerMode::Repeated, Duration::from_secs(60), move || {
         if scheduled_restore_pending.load(Ordering::SeqCst) {
             return;
@@ -3949,33 +4021,56 @@ fn main() -> Result<(), slint::PlatformError> {
         if ui.get_setup_required() {
             return;
         }
-        let directory = PathBuf::from(ui.get_backup_directory().as_str());
-        let settings_schedule = normalize_backup_schedule(ui.get_backup_schedule().as_str());
-        let database_schedule =
-            normalize_backup_schedule(ui.get_database_backup_schedule().as_str());
-        let backup_artist_images = ui.get_backup_artist_images();
+        let preferences = scheduled_backup_preferences.borrow().clone();
+        let defaults = backup_default_directories();
+        let settings_directory = PathBuf::from(configured_or_default(
+            &preferences.settings_backup_directory,
+            &defaults.settings,
+        ));
+        let database_directory = PathBuf::from(configured_or_default(
+            &preferences.database_backup_directory,
+            &defaults.database,
+        ));
+        let diagnostics_directory = PathBuf::from(configured_or_default(
+            &preferences.diagnostics_backup_directory,
+            &defaults.diagnostics,
+        ));
+        let snapshot_directory = PathBuf::from(configured_or_default(
+            &preferences.snapshot_backup_directory,
+            &defaults.snapshots,
+        ));
+        let settings_schedule = normalize_backup_schedule(&preferences.backup_schedule);
+        let database_schedule = normalize_backup_schedule(&preferences.database_backup_schedule);
+        let backup_artist_images = preferences.backup_artist_images;
         let diagnostics_schedule =
-            normalize_backup_schedule(ui.get_diagnostics_backup_schedule().as_str());
+            normalize_backup_schedule(&preferences.diagnostics_backup_schedule);
+        let snapshot_schedule = normalize_backup_schedule(&preferences.snapshot_backup_schedule);
         let mut settings_due = scheduled_backup_state
             .lock()
             .is_ok_and(|app| !app.enhancement_settings_dirty && !unsaved_adjustment_defaults(&app))
             && automatic_backup_is_due(
-                &directory,
+                &settings_directory,
                 settings_schedule,
                 "splined-settings-auto",
                 "spl",
             );
         let database_due = automatic_backup_is_due(
-            &directory,
+            &database_directory,
             database_schedule,
             "splined-database-auto",
             "sqlite",
         );
         let diagnostics_due = automatic_backup_is_due(
-            &directory,
+            &diagnostics_directory,
             diagnostics_schedule,
             "splined-diagnostics-auto",
             "json",
+        );
+        let snapshot_due = automatic_backup_is_due(
+            &snapshot_directory,
+            snapshot_schedule,
+            "splined-snapshot-auto",
+            "sqlite",
         );
         if settings_due {
             let snapshot = capture_ui_preferences(
@@ -3998,16 +4093,16 @@ fn main() -> Result<(), slint::PlatformError> {
                 }
             }
         }
-        if (!settings_due && !database_due && !diagnostics_due)
+        if (!settings_due && !database_due && !diagnostics_due && !snapshot_due)
             || scheduled_backup_guard.swap(true, Ordering::SeqCst)
         {
             return;
         }
         let selection = BackupSelection {
-            settings: ui.get_backup_settings(),
-            credentials: ui.get_backup_credentials(),
+            settings: preferences.backup_settings,
+            credentials: preferences.backup_credentials,
             database: false,
-            interface: ui.get_backup_interface(),
+            interface: preferences.backup_interface,
             diagnostics: false,
         };
         let config = scheduled_backup_state
@@ -4025,7 +4120,7 @@ fn main() -> Result<(), slint::PlatformError> {
             let mut created = Vec::new();
             let mut failed = Vec::new();
             if settings_due {
-                match backup_file_in_directory(&directory, "splined-settings-auto", "spl")
+                match backup_file_in_directory(&settings_directory, "splined-settings-auto", "spl")
                     .and_then(|path| export_backup(&path, &config, selection, ""))
                 {
                     Ok(path) => created.push(path),
@@ -4033,20 +4128,40 @@ fn main() -> Result<(), slint::PlatformError> {
                 }
             }
             if database_due {
-                match backup_file_in_directory(&directory, "splined-database-auto", "sqlite")
-                    .and_then(|path| {
-                        export_database_backup_with_artist_art(&path, &config, backup_artist_images)
-                    }) {
+                match backup_file_in_directory(
+                    &database_directory,
+                    "splined-database-auto",
+                    "sqlite",
+                )
+                .and_then(|path| {
+                    export_database_backup_with_artist_art(&path, &config, backup_artist_images)
+                }) {
                     Ok(path) => created.push(path),
                     Err(error) => failed.push(format!("SQLite: {error}")),
                 }
             }
             if diagnostics_due {
-                match backup_file_in_directory(&directory, "splined-diagnostics-auto", "json")
-                    .and_then(|path| export_diagnostic_summary(&path, &config))
+                match backup_file_in_directory(
+                    &diagnostics_directory,
+                    "splined-diagnostics-auto",
+                    "json",
+                )
+                .and_then(|path| export_diagnostic_summary(&path, &config))
                 {
                     Ok(path) => created.push(path),
                     Err(error) => failed.push(format!("diagnostics: {error}")),
+                }
+            }
+            if snapshot_due {
+                match backup_file_in_directory(
+                    &snapshot_directory,
+                    "splined-snapshot-auto",
+                    "sqlite",
+                )
+                .and_then(|path| export_reconciliation_snapshot(&path, &config))
+                {
+                    Ok(snapshot) => created.push(snapshot.path),
+                    Err(error) => failed.push(format!("SQLite snapshot: {error}")),
                 }
             }
             if let Ok(mut app) = state.lock() {
@@ -4068,8 +4183,15 @@ fn main() -> Result<(), slint::PlatformError> {
                     app.push_log(format!("ERROR: {message}"));
                 }
             }
+            let _ = enforce_backup_file_limits(&preferences);
             guard.store(false, Ordering::SeqCst);
-            let _ = slint::invoke_from_event_loop(move || refresh_weak(&weak, &state));
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = weak.upgrade() {
+                    refresh_backup_status_ui(&ui);
+                    refresh_archived_backups_ui(&ui, false);
+                }
+                refresh_weak(&weak, &state)
+            });
         });
     });
 
@@ -5667,6 +5789,7 @@ fn run_slint_library_diagnostics() -> Result<String, String> {
                 ui_debug_log: None,
             },
             interface_restore_pending_restart: Arc::new(AtomicBool::new(false)),
+            last_preferences: Rc::new(RefCell::new(preferences.clone())),
         },
     );
 
@@ -5884,6 +6007,227 @@ fn is_sqlite_backup_path(path: &Path) -> bool {
         })
 }
 
+const RESTORE_TYPE_SETTINGS: &str = "Restore Saved Settings";
+const RESTORE_TYPE_DATABASE: &str = "Restore SQLite Database";
+const RESTORE_TYPE_DIAGNOSTICS: &str = "Restore .JSON Diagnostic Summary";
+const RESTORE_TYPE_SNAPSHOT: &str = "Restore SQLite Database Snapshot";
+
+#[derive(Debug, Clone)]
+struct BackupDefaultDirectories {
+    settings: PathBuf,
+    database: PathBuf,
+    diagnostics: PathBuf,
+    snapshots: PathBuf,
+}
+
+fn backup_default_directories() -> BackupDefaultDirectories {
+    let root = splined_core::portable::app_layout()
+        .map(|layout| layout.root)
+        .unwrap_or_else(|_| PathBuf::from("."));
+    let test_state = root.join("test-state");
+    BackupDefaultDirectories {
+        settings: test_state.join("settings"),
+        database: test_state.join("sqlite"),
+        diagnostics: test_state.join("_logs").join("_diagnostics"),
+        snapshots: test_state.join("sqlite").join("_backups").join("snapshots"),
+    }
+}
+
+fn configured_or_default(value: &str, default: &Path) -> String {
+    if value.trim().is_empty() {
+        default.to_string_lossy().into_owned()
+    } else {
+        value.trim().to_string()
+    }
+}
+
+fn selected_restore_path(ui: &AppWindow) -> String {
+    match ui.get_restore_selected_type().as_str() {
+        RESTORE_TYPE_DATABASE => ui.get_database_restore_path().to_string(),
+        RESTORE_TYPE_DIAGNOSTICS => ui.get_diagnostics_restore_path().to_string(),
+        RESTORE_TYPE_SNAPSHOT => ui.get_snapshot_restore_path().to_string(),
+        _ => ui.get_settings_restore_path().to_string(),
+    }
+}
+
+fn selected_restore_directory(ui: &AppWindow) -> PathBuf {
+    match ui.get_restore_selected_type().as_str() {
+        RESTORE_TYPE_DATABASE => PathBuf::from(ui.get_database_backup_directory().as_str()),
+        RESTORE_TYPE_DIAGNOSTICS => PathBuf::from(ui.get_diagnostics_backup_directory().as_str()),
+        RESTORE_TYPE_SNAPSHOT => PathBuf::from(ui.get_snapshot_backup_directory().as_str()),
+        _ => PathBuf::from(ui.get_settings_backup_directory().as_str()),
+    }
+}
+
+fn restore_artifact_spec(restore_type: &str) -> (&'static str, &'static str) {
+    match restore_type {
+        RESTORE_TYPE_DATABASE => ("splined-database", "sqlite"),
+        RESTORE_TYPE_DIAGNOSTICS => ("splined-diagnostics", "json"),
+        RESTORE_TYPE_SNAPSHOT => ("splined-snapshot", "sqlite"),
+        _ => ("splined-settings", "spl"),
+    }
+}
+
+#[derive(Debug, Clone)]
+struct BackupDirectoryStats {
+    count: usize,
+    total_bytes: u64,
+    latest: Option<PathBuf>,
+}
+
+fn backup_directory_stats(directory: &Path, stem: &str, extension: &str) -> BackupDirectoryStats {
+    let mut matching = fs::read_dir(directory)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(Result::ok))
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| is_managed_backup_name(name, stem, extension))
+        })
+        .collect::<Vec<_>>();
+    matching.sort_by_key(|entry| {
+        std::cmp::Reverse(
+            entry
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .unwrap_or(UNIX_EPOCH),
+        )
+    });
+    BackupDirectoryStats {
+        count: matching.len(),
+        total_bytes: matching
+            .iter()
+            .filter_map(|entry| entry.metadata().ok().map(|metadata| metadata.len()))
+            .sum(),
+        latest: matching.first().map(std::fs::DirEntry::path),
+    }
+}
+
+fn human_file_size(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = 1024.0 * 1024.0;
+    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
+    let bytes = bytes as f64;
+    if bytes >= GIB {
+        format!("{:.1} GB", bytes / GIB)
+    } else if bytes >= MIB {
+        format!("{:.1} MB", bytes / MIB)
+    } else if bytes >= KIB {
+        format!("{:.0} KB", bytes / KIB)
+    } else {
+        format!("{} B", bytes as u64)
+    }
+}
+
+fn max_files_display(value: &str) -> String {
+    backup_file_limit(value)
+        .map(|limit| limit.to_string())
+        .unwrap_or_else(|| "All".to_string())
+}
+
+fn backup_summary_text(
+    label: &str,
+    directory: &Path,
+    schedule: &str,
+    maximum: &str,
+    stem: &str,
+    extension: &str,
+) -> String {
+    let stats = backup_directory_stats(directory, stem, extension);
+    format!(
+        "{label} · {} · {} · {} / {} · {}",
+        directory.display(),
+        normalize_backup_schedule(schedule),
+        stats.count,
+        max_files_display(maximum),
+        human_file_size(stats.total_bytes)
+    )
+}
+
+fn refresh_backup_status_ui(ui: &AppWindow) {
+    let settings = PathBuf::from(ui.get_settings_backup_directory().as_str());
+    let database = PathBuf::from(ui.get_database_backup_directory().as_str());
+    let diagnostics = PathBuf::from(ui.get_diagnostics_backup_directory().as_str());
+    let snapshots = PathBuf::from(ui.get_snapshot_backup_directory().as_str());
+    ui.set_backup_settings_summary(
+        backup_summary_text(
+            "Saved Settings Directory",
+            &settings,
+            ui.get_backup_schedule().as_str(),
+            ui.get_max_settings_backup_files().as_str(),
+            "splined-settings",
+            "spl",
+        )
+        .into(),
+    );
+    ui.set_backup_database_summary(
+        backup_summary_text(
+            "SQLite Database Directory",
+            &database,
+            ui.get_database_backup_schedule().as_str(),
+            ui.get_max_database_backup_files().as_str(),
+            "splined-database",
+            "sqlite",
+        )
+        .into(),
+    );
+    ui.set_backup_diagnostics_summary(
+        backup_summary_text(
+            "Diagnostic Summary",
+            &diagnostics,
+            ui.get_diagnostics_backup_schedule().as_str(),
+            ui.get_max_diagnostic_backup_files().as_str(),
+            "splined-diagnostics",
+            "json",
+        )
+        .into(),
+    );
+    ui.set_backup_snapshot_summary(
+        backup_summary_text(
+            "SQLite Database Snapshots",
+            &snapshots,
+            ui.get_snapshot_backup_schedule().as_str(),
+            ui.get_max_snapshot_backup_files().as_str(),
+            "splined-snapshot",
+            "sqlite",
+        )
+        .into(),
+    );
+    let stats = backup_directory_stats(&snapshots, "splined-snapshot", "sqlite");
+    ui.set_snapshot_current_max(
+        format!(
+            "{} / {}",
+            stats.count,
+            max_files_display(ui.get_max_snapshot_backup_files().as_str())
+        )
+        .into(),
+    );
+    ui.set_snapshot_total_size(human_file_size(stats.total_bytes).into());
+    let latest = stats.latest.map_or_else(
+        || "No authoritative snapshot has been created yet.".to_string(),
+        |path| match validate_reconciliation_snapshot(&path) {
+            Ok(validation) => format!(
+                "{} · quick_check = ok · schema v{} · SHA-256 {}…",
+                path.file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("snapshot.sqlite"),
+                validation.schema_version,
+                &validation.sha256[..12.min(validation.sha256.len())]
+            ),
+            Err(error) => format!(
+                "{} · INVALID: {error}",
+                path.file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("snapshot.sqlite")
+            ),
+        },
+    );
+    ui.set_snapshot_latest_status(latest.into());
+}
+
 fn normalize_backup_schedule(value: &str) -> &'static str {
     match value.trim().to_ascii_lowercase().as_str() {
         "daily" => "Daily",
@@ -6054,18 +6398,26 @@ fn backup_stem_for_machine(stem: &str, machine: &str) -> String {
     }
 }
 
-fn archived_backup_files(directory: &Path) -> Vec<PathBuf> {
+fn is_managed_backup_name(name: &str, stem: &str, extension: &str) -> bool {
+    let kind = stem.strip_prefix("splined-").unwrap_or(stem);
+    name.starts_with("splined-")
+        && name.ends_with(&format!(".{extension}"))
+        && (name.starts_with(&format!("{stem}-")) || name.contains(&format!("-{kind}-")))
+}
+
+fn archived_backup_files_for_type(directory: &Path, restore_type: &str) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(directory) else {
         return Vec::new();
     };
+    let (stem, extension) = restore_artifact_spec(restore_type);
     let mut files = entries
         .filter_map(Result::ok)
         .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
         .filter(|entry| {
-            entry.file_name().to_str().is_some_and(|name| {
-                name.starts_with("splined-")
-                    && (name.ends_with(".spl") || name.ends_with(".sqlite"))
-            })
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| is_managed_backup_name(name, stem, extension))
         })
         .map(|entry| entry.path())
         .collect::<Vec<_>>();
@@ -6082,12 +6434,25 @@ fn archived_backup_files(directory: &Path) -> Vec<PathBuf> {
     files
 }
 
+fn set_selected_restore_path(ui: &AppWindow, value: SharedString) {
+    match ui.get_restore_selected_type().as_str() {
+        RESTORE_TYPE_DATABASE => ui.set_database_restore_path(value),
+        RESTORE_TYPE_DIAGNOSTICS => ui.set_diagnostics_restore_path(value),
+        RESTORE_TYPE_SNAPSHOT => ui.set_snapshot_restore_path(value),
+        _ => ui.set_settings_restore_path(value),
+    }
+}
+
 fn refresh_archived_backups_ui(ui: &AppWindow, select_latest: bool) {
-    let files = archived_backup_files(Path::new(ui.get_backup_directory().as_str()));
+    let restore_type = ui.get_restore_selected_type().to_string();
+    let directory = selected_restore_directory(ui);
+    let files = archived_backup_files_for_type(&directory, &restore_type);
     if select_latest && let Some(latest) = files.first() {
         let latest = SharedString::from(latest.to_string_lossy().into_owned());
-        ui.set_restore_path(latest.clone());
+        set_selected_restore_path(ui, latest.clone());
         ui.set_archived_backup_selection(latest);
+    } else if files.is_empty() {
+        ui.set_archived_backup_selection(selected_restore_path(ui).into());
     }
     ui.set_archived_backup_files(model(
         files
@@ -6151,31 +6516,77 @@ fn prune_timestamped_backups(
         }
         fs::remove_file(&resolved)
             .map_err(|error| format!("Unable to prune backup {}: {error}", resolved.display()))?;
+        if let Some(name) = path.file_name().and_then(|value| value.to_str()) {
+            let provenance = path.with_file_name(format!("{name}.snapshot.json"));
+            if provenance.is_file() {
+                let resolved_provenance = provenance.canonicalize().map_err(|error| {
+                    format!(
+                        "Unable to resolve snapshot provenance {}: {error}",
+                        provenance.display()
+                    )
+                })?;
+                if resolved_provenance.parent() != Some(canonical_directory.as_path()) {
+                    return Err(format!(
+                        "Refusing to prune snapshot provenance outside {}",
+                        canonical_directory.display()
+                    ));
+                }
+                fs::remove_file(&resolved_provenance).map_err(|error| {
+                    format!(
+                        "Unable to prune snapshot provenance {}: {error}",
+                        resolved_provenance.display()
+                    )
+                })?;
+            }
+        }
         removed += 1;
     }
     Ok(removed)
 }
 
-fn enforce_backup_file_limits(
-    directory: &Path,
-    preferences: &UiPreferences,
-) -> Result<usize, String> {
+fn enforce_backup_file_limits(preferences: &UiPreferences) -> Result<usize, String> {
+    let defaults = backup_default_directories();
+    let settings = PathBuf::from(configured_or_default(
+        &preferences.settings_backup_directory,
+        &defaults.settings,
+    ));
+    let database = PathBuf::from(configured_or_default(
+        &preferences.database_backup_directory,
+        &defaults.database,
+    ));
+    let diagnostics = PathBuf::from(configured_or_default(
+        &preferences.diagnostics_backup_directory,
+        &defaults.diagnostics,
+    ));
+    let snapshots = PathBuf::from(configured_or_default(
+        &preferences.snapshot_backup_directory,
+        &defaults.snapshots,
+    ));
     let mut removed = 0;
-    for (prefix, extension, requested) in [
+    for (directory, prefix, extension, requested) in [
         (
+            settings.as_path(),
             "splined-settings-",
             "spl",
             preferences.max_settings_backup_files.as_str(),
         ),
         (
+            database.as_path(),
             "splined-database-",
             "sqlite",
             preferences.max_database_backup_files.as_str(),
         ),
         (
+            diagnostics.as_path(),
             "splined-diagnostics-",
             "json",
             preferences.max_diagnostic_backup_files.as_str(),
+        ),
+        (
+            snapshots.as_path(),
+            "splined-snapshot-",
+            "sqlite",
+            preferences.max_snapshot_backup_files.as_str(),
         ),
     ] {
         if let Some(limit) = backup_file_limit(requested) {
@@ -7916,6 +8327,7 @@ struct WindowCallbackContext {
     custom_window_state: CustomWindowState,
     diagnostics: UiWindowDiagnostics,
     interface_restore_pending_restart: Arc<AtomicBool>,
+    last_preferences: Rc<RefCell<UiPreferences>>,
 }
 
 fn bind_callbacks(
@@ -7930,6 +8342,7 @@ fn bind_callbacks(
         custom_window_state,
         diagnostics,
         interface_restore_pending_restart,
+        last_preferences,
     } = context;
     let UiWindowDiagnostics {
         maximize_guard,
@@ -8207,6 +8620,62 @@ fn bind_callbacks(
                     window.set_appearance_mode(normalized.into());
                 }
             });
+            refresh_weak(&weak, &state);
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let weak = ui.as_weak();
+        let layout = Rc::clone(&workspace_layout);
+        let appearance = Rc::clone(&appearance);
+        let custom_window = custom_window_state.clone();
+        let saved_preferences = Rc::clone(&last_preferences);
+        let restore_pending = Arc::clone(&interface_restore_pending_restart);
+        ui.on_save_backup_preferences(move || {
+            let result = (|| {
+                if restore_pending.load(Ordering::SeqCst) {
+                    return Err("Restart SPLINED to finish restoring Interface Settings before saving Backup preferences.".to_string());
+                }
+                let ui = weak
+                    .upgrade()
+                    .ok_or_else(|| "The SPLINED Backup / Restore window is unavailable.".to_string())?;
+                let captured = capture_ui_preferences(
+                    &ui,
+                    &state,
+                    &layout,
+                    &appearance,
+                    &custom_window,
+                )
+                .ok_or_else(|| "Unable to capture Backup preferences.".to_string())?;
+                let mut preferences = splined_core::settings::load_ui_preferences()?;
+                retain_saved_backup_preferences(&mut preferences, &captured);
+                for (label, value) in [
+                    ("Saved Settings Max Files", preferences.max_settings_backup_files.as_str()),
+                    ("SQLite Database Max Files", preferences.max_database_backup_files.as_str()),
+                    ("Diagnostic Summary Max Files", preferences.max_diagnostic_backup_files.as_str()),
+                    ("SQLite Snapshot Max Files", preferences.max_snapshot_backup_files.as_str()),
+                ] {
+                    value.trim().parse::<usize>().map_err(|_| {
+                        format!("{label} must be zero or a positive whole number.")
+                    })?;
+                }
+                splined_core::settings::save_ui_preferences(&preferences)?;
+                *saved_preferences.borrow_mut() = preferences.clone();
+                let removed = enforce_backup_file_limits(&preferences)?;
+                refresh_backup_status_ui(&ui);
+                refresh_archived_backups_ui(&ui, false);
+                if let Ok(mut app) = state.lock() {
+                    app.service_status = if removed == 0 {
+                        "Saved independent Backup / Restore preferences.".to_string()
+                    } else {
+                        format!(
+                            "Saved Backup preferences and removed {removed} older managed file(s) under the selected retention limits."
+                        )
+                    };
+                }
+                Ok(())
+            })();
+            record_action_result(&state, result);
             refresh_weak(&weak, &state);
         });
     }
@@ -12689,17 +13158,37 @@ fn bind_callbacks(
     }
     {
         let weak = ui.as_weak();
-        ui.on_browse_backup_directory(move || {
+        ui.on_browse_backup_directory(move |kind| {
+            let kind = kind.to_string();
             let current = weak
                 .upgrade()
-                .map(|ui| ui.get_backup_directory().to_string())
+                .map(|ui| match kind.as_str() {
+                    "database" => ui.get_database_backup_directory().to_string(),
+                    "diagnostics" => ui.get_diagnostics_backup_directory().to_string(),
+                    "snapshot" => ui.get_snapshot_backup_directory().to_string(),
+                    _ => ui.get_settings_backup_directory().to_string(),
+                })
                 .unwrap_or_default();
             let weak = weak.clone();
             std::thread::spawn(move || {
-                let selected = browse_for_folder(&current, "Choose the SPLINED backup directory");
+                let selected = browse_for_folder(
+                    &current,
+                    match kind.as_str() {
+                        "database" => "Choose the SQLite Database Backup directory",
+                        "diagnostics" => "Choose the Diagnostic Summary directory",
+                        "snapshot" => "Choose the authoritative SQLite Snapshot directory",
+                        _ => "Choose the Saved Settings Archive directory",
+                    },
+                );
                 let _ = slint::invoke_from_event_loop(move || {
                     if let (Some(path), Some(ui)) = (selected, weak.upgrade()) {
-                        ui.set_backup_directory(path.into());
+                        match kind.as_str() {
+                            "database" => ui.set_database_backup_directory(path.into()),
+                            "diagnostics" => ui.set_diagnostics_backup_directory(path.into()),
+                            "snapshot" => ui.set_snapshot_backup_directory(path.into()),
+                            _ => ui.set_settings_backup_directory(path.into()),
+                        }
+                        refresh_backup_status_ui(&ui);
                         refresh_archived_backups_ui(&ui, true);
                     }
                 });
@@ -12717,16 +13206,21 @@ fn bind_callbacks(
     {
         let weak = ui.as_weak();
         ui.on_browse_restore_file(move || {
-            let current = weak
+            let (current, restore_type) = weak
                 .upgrade()
-                .map(|ui| ui.get_restore_path().to_string())
+                .map(|ui| {
+                    (
+                        selected_restore_path(&ui),
+                        ui.get_restore_selected_type().to_string(),
+                    )
+                })
                 .unwrap_or_default();
             let weak = weak.clone();
             std::thread::spawn(move || {
-                let selected = browse_for_backup_file(&current, false);
+                let selected = browse_for_backup_file(&current, &restore_type);
                 let _ = slint::invoke_from_event_loop(move || {
                     if let (Some(path), Some(ui)) = (selected, weak.upgrade()) {
-                        ui.set_restore_path(path.into());
+                        set_selected_restore_path(&ui, path.into());
                     }
                 });
             });
@@ -12741,7 +13235,7 @@ fn bind_callbacks(
                 .unwrap_or_default();
             let weak = weak.clone();
             std::thread::spawn(move || {
-                let selected = browse_for_backup_file(&current, true);
+                let selected = browse_for_backup_file(&current, RESTORE_TYPE_SETTINGS);
                 let _ = slint::invoke_from_event_loop(move || {
                     if let (Some(path), Some(ui)) = (selected, weak.upgrade()) {
                         ui.set_restore_path(path.into());
@@ -13479,7 +13973,11 @@ fn bind_service_callbacks(
                         &backup_custom_window,
                     )
                     .ok_or_else(|| "Unable to snapshot the current Interface Settings.".to_string())
-                    .and_then(|preferences| splined_core::settings::save_ui_preferences(&preferences));
+                    .and_then(|mut preferences| {
+                        let saved = splined_core::settings::load_ui_preferences()?;
+                        retain_saved_backup_preferences(&mut preferences, &saved);
+                        splined_core::settings::save_ui_preferences(&preferences)
+                    });
                     if let Err(error) = result {
                         ui.set_service_status(format!("Settings Archive not created: {error}").into());
                         return;
@@ -13500,7 +13998,7 @@ fn bind_service_callbacks(
                 let setup_required = weak.upgrade().is_some_and(|ui| ui.get_setup_required());
                 // Arm the guard on the UI thread, before the worker starts. The
                 // preference timer also runs here and must not race the restore.
-                if action.as_str() == "restore"
+                if matches!(action.as_str(), "restore" | "restore-snapshot")
                     && selection.interface
                     && config.is_some()
                     && (!setup_required || selection.settings)
@@ -13515,6 +14013,9 @@ fn bind_service_callbacks(
                 let state = Arc::clone(&state);
                 let settings_draft = Arc::clone(&settings_draft);
                 let restore_pending = Arc::clone(&restore_pending);
+                let retention_preferences =
+                    splined_core::settings::load_ui_preferences().unwrap_or_default();
+                let load_diagnostics_action = action.as_str() == "load-diagnostics";
                 std::thread::spawn(move || {
                     let result: Result<(String, Option<(Config, ApplicationState)>), String> =
                         match (action.as_str(), config) {
@@ -13560,6 +14061,35 @@ fn bind_service_callbacks(
                                     )
                                 })
                         }
+                        ("create-snapshot", Some(config)) => {
+                            backup_file_in_directory(&path, "splined-snapshot", "sqlite")
+                                .and_then(|path| export_reconciliation_snapshot(&path, &config))
+                                .map(|snapshot| {
+                                    (
+                                        format!(
+                                            "Authoritative SQLite snapshot created and validated: {} · SHA-256 {}",
+                                            snapshot.path.display(), snapshot.validation.sha256
+                                        ),
+                                        None,
+                                    )
+                                })
+                        }
+                        ("load-diagnostics", Some(_)) => {
+                            load_diagnostic_summary(&path).map(|summary| {
+                                if let Ok(mut app) = state.lock() {
+                                    app.loaded_diagnostic_summary = summary;
+                                    app.push_log(format!(
+                                        "Loaded read-only Diagnostic Summary: {}",
+                                        path.display()
+                                    ));
+                                }
+                                (
+                                    "Diagnostic Summary loaded into Verbose / Run Details without changing application state."
+                                        .to_string(),
+                                    None,
+                                )
+                            })
+                        }
                         ("restore", _)
                             if setup_required
                                 && !is_sqlite_backup_path(&path)
@@ -13588,6 +14118,31 @@ fn bind_service_callbacks(
                                         .to_string(),
                                     Some((config, replacement)),
                                 ))
+                            })
+                        }
+                        ("restore-snapshot", Some(config)) if is_sqlite_backup_path(&path) => {
+                            validate_reconciliation_snapshot(&path).and_then(|validation| {
+                                restore_database_backup_with_artist_art(&path, &config, false)
+                                    .and_then(|restored_path| {
+                                        let snapshot = media_snapshot(&config, false)?;
+                                        let diagnostics = startup_diagnostics(&config, &snapshot);
+                                        let mut replacement =
+                                            ApplicationState::new(config.clone(), snapshot)?;
+                                        replacement.push_log(format!(
+                                            "Validated authoritative SQLite snapshot restored: {} · library_root {} · SHA-256 {}",
+                                            restored_path.display(),
+                                            validation.library_root,
+                                            validation.sha256
+                                        ));
+                                        for diagnostic in diagnostics {
+                                            replacement.push_log(diagnostic);
+                                        }
+                                        Ok((
+                                            "Validated SQLite snapshot restored and Media Library reloaded."
+                                                .to_string(),
+                                            Some((config, replacement)),
+                                        ))
+                                    })
                             })
                         }
                         ("restore", Some(config)) => {
@@ -13653,11 +14208,26 @@ fn bind_service_callbacks(
                                 }
                             }
                             Ok((message, None)) => {
+                                if matches!(
+                                    action.as_str(),
+                                    "backup-settings"
+                                        | "backup-database"
+                                        | "backup-diagnostics"
+                                        | "create-snapshot"
+                                ) {
+                                    let _ = enforce_backup_file_limits(&retention_preferences);
+                                }
                                 if let Ok(mut app) = state.lock() {
                                     app.service_status = message;
                                 }
                                 if let Some(ui) = weak.upgrade() {
+                                    if load_diagnostics_action {
+                                        ui.set_settings_section("Runtime".into());
+                                        ui.set_settings_verbosity("Verbose".into());
+                                        ui.set_page_index(1);
+                                    }
                                     refresh_archived_backups_ui(&ui, true);
+                                    refresh_backup_status_ui(&ui);
                                     ui.set_backup_password(SharedString::default());
                                 }
                             }
@@ -20389,18 +20959,33 @@ fn browse_for_folder(_initial: &str, _description: &str) -> Option<String> {
 }
 
 #[cfg(windows)]
-fn browse_for_backup_file(initial: &str, settings_only: bool) -> Option<String> {
+fn browse_for_backup_file(initial: &str, restore_type: &str) -> Option<String> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let script = r#"
 Add-Type -AssemblyName PresentationFramework
 $dialog = New-Object Microsoft.Win32.OpenFileDialog
-if ($env:SPLINED_SETTINGS_ARCHIVE_ONLY -eq '1') {
+switch ($env:SPLINED_RESTORE_TYPE) {
+  'settings' {
     $dialog.Title = 'Choose a SPLINED Settings Archive'
     $dialog.Filter = 'Settings archives (*.spl)|*.spl'
-} else {
-    $dialog.Title = 'Choose a SPLINED backup to restore'
-    $dialog.Filter = 'SPLINED backups (*.spl;*.sqlite)|*.spl;*.sqlite|Settings archives (*.spl)|*.spl|SQLite snapshots (*.sqlite)|*.sqlite|All files (*.*)|*.*'
+  }
+  'database' {
+    $dialog.Title = 'Choose a restorable SPLINED SQLite Database Backup'
+    $dialog.Filter = 'SQLite database backups (*.sqlite;*.db)|*.sqlite;*.db'
+  }
+  'diagnostics' {
+    $dialog.Title = 'Choose a SPLINED Diagnostic Summary'
+    $dialog.Filter = 'Diagnostic summaries (*.json)|*.json'
+  }
+  'snapshot' {
+    $dialog.Title = 'Choose an authoritative SPLINED SQLite Snapshot'
+    $dialog.Filter = 'SQLite snapshots (*.sqlite;*.db)|*.sqlite;*.db'
+  }
+  default {
+    $dialog.Title = 'Choose a SPLINED backup artifact'
+    $dialog.Filter = 'SPLINED backups (*.spl;*.sqlite;*.db;*.json)|*.spl;*.sqlite;*.db;*.json|All files (*.*)|*.*'
+  }
 }
 $dialog.CheckFileExists = $true
 $dialog.Multiselect = $false
@@ -20420,8 +21005,13 @@ if ($dialog.ShowDialog()) {
         .args(["-NoLogo", "-NoProfile", "-STA", "-Command", script])
         .env("SPLINED_RESTORE_INITIAL", initial)
         .env(
-            "SPLINED_SETTINGS_ARCHIVE_ONLY",
-            if settings_only { "1" } else { "0" },
+            "SPLINED_RESTORE_TYPE",
+            match restore_type {
+                RESTORE_TYPE_DATABASE => "database",
+                RESTORE_TYPE_DIAGNOSTICS => "diagnostics",
+                RESTORE_TYPE_SNAPSHOT => "snapshot",
+                _ => "settings",
+            },
         )
         .creation_flags(CREATE_NO_WINDOW)
         .output()
@@ -20434,7 +21024,7 @@ if ($dialog.ShowDialog()) {
 }
 
 #[cfg(not(windows))]
-fn browse_for_backup_file(_initial: &str, _settings_only: bool) -> Option<String> {
+fn browse_for_backup_file(_initial: &str, _restore_type: &str) -> Option<String> {
     None
 }
 
@@ -24478,6 +25068,13 @@ mod tests {
         ] {
             std::fs::write(directory.path().join(name), b"fixture").unwrap();
         }
+        for name in [
+            "splined-MEDIAPC-settings-1.spl.snapshot.json",
+            "splined-MEDIAPC-settings-2.spl.snapshot.json",
+            "splined-MEDIAPC-settings-3.spl.snapshot.json",
+        ] {
+            std::fs::write(directory.path().join(name), b"{}").unwrap();
+        }
         assert_eq!(
             super::prune_timestamped_backups(
                 directory.path(),
@@ -24488,7 +25085,11 @@ mod tests {
             .unwrap(),
             2
         );
-        assert_eq!(super::archived_backup_files(directory.path()).len(), 4);
+        assert_eq!(
+            super::archived_backup_files_for_type(directory.path(), super::RESTORE_TYPE_SETTINGS,)
+                .len(),
+            3
+        );
         assert!(
             directory
                 .path()
@@ -24508,8 +25109,73 @@ mod tests {
                 .exists()
         );
         assert!(directory.path().join("other-settings-1.spl").exists());
+        assert_eq!(
+            std::fs::read_dir(directory.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .ends_with(".spl.snapshot.json")
+                })
+                .count(),
+            1
+        );
         assert_eq!(super::backup_file_limit("0"), None);
         assert_eq!(super::backup_file_limit("invalid"), None);
+    }
+
+    #[test]
+    fn backup_filename_matching_is_type_specific_and_machine_independent() {
+        assert!(super::is_managed_backup_name(
+            "splined-PC1-settings-100.spl",
+            "splined-settings",
+            "spl"
+        ));
+        assert!(super::is_managed_backup_name(
+            "splined-settings-legacy.spl",
+            "splined-settings",
+            "spl"
+        ));
+        assert!(super::is_managed_backup_name(
+            "splined-PC2-snapshot-auto-100.sqlite",
+            "splined-snapshot",
+            "sqlite"
+        ));
+        assert!(!super::is_managed_backup_name(
+            "splined-PC1-database-100.sqlite",
+            "splined-snapshot",
+            "sqlite"
+        ));
+        assert!(!super::is_managed_backup_name(
+            "unrelated-splined-settings-100.spl",
+            "splined-settings",
+            "spl"
+        ));
+    }
+
+    #[test]
+    fn autosave_retains_last_explicit_backup_preferences_only() {
+        let mut current = UiPreferences {
+            appearance: "Chalk".to_string(),
+            settings_backup_directory: r"E:\unsaved\settings".to_string(),
+            snapshot_backup_schedule: "Daily".to_string(),
+            max_snapshot_backup_files: "12".to_string(),
+            ..UiPreferences::default()
+        };
+        let saved = UiPreferences {
+            appearance: "Dark".to_string(),
+            settings_backup_directory: r"E:\saved\settings".to_string(),
+            snapshot_backup_schedule: "Off".to_string(),
+            max_snapshot_backup_files: "5".to_string(),
+            ..UiPreferences::default()
+        };
+        super::retain_saved_backup_preferences(&mut current, &saved);
+        assert_eq!(current.appearance, "Chalk");
+        assert_eq!(current.settings_backup_directory, r"E:\saved\settings");
+        assert_eq!(current.snapshot_backup_schedule, "Off");
+        assert_eq!(current.max_snapshot_backup_files, "5");
     }
 
     #[test]

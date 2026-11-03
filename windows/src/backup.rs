@@ -19,6 +19,7 @@ use crate::safe_write::{replace_binary_file, replace_file_from, replace_text_fil
 use crate::settings::{config_text, save_config_text, ui_preferences_path};
 use rusqlite::{Connection, MAIN_DB, OpenFlags};
 use serde_json::json;
+use std::io::Read;
 
 const FORMAT: &str = "SPLINED-BACKUP";
 const FORMAT_VERSION: u32 = 1;
@@ -177,6 +178,188 @@ pub fn export_backup(
 /// be updating them.
 pub fn export_database_backup(requested_path: &Path, config: &Config) -> Result<PathBuf, String> {
     export_database_backup_with_artist_art(requested_path, config, false)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SqliteSnapshotValidation {
+    pub schema_version: i64,
+    pub library_root: String,
+    pub size_bytes: u64,
+    pub sha256: String,
+    pub quick_check: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PublishedSqliteSnapshot {
+    pub path: PathBuf,
+    pub provenance_path: PathBuf,
+    pub validation: SqliteSnapshotValidation,
+}
+
+/// Publish the authoritative Windows SQLite artifact consumed read-only by the
+/// WebGUI reconciliation workflow. This deliberately excludes backup-only
+/// Artist-image tables and never opens the live database for writing.
+pub fn export_reconciliation_snapshot(
+    requested_path: &Path,
+    config: &Config,
+) -> Result<PublishedSqliteSnapshot, String> {
+    let path = with_extension(requested_path, "sqlite");
+    let source_path = Path::new(&config.scan.cache_dir).join("splined.db");
+    let _shared_lock = (config.scan.sqlite_shared && config.scan.windows_client_lock)
+        .then(|| claim_shared_database(&source_path))
+        .transpose()?;
+    if !source_path.is_file() {
+        return Err(format!(
+            "The authoritative Windows SPLINED database does not exist: {}",
+            source_path.display()
+        ));
+    }
+
+    let (_temporary, staged_path) = create_sqlite_snapshot(&source_path)?;
+    let staged_validation = validate_reconciliation_snapshot(&staged_path)?;
+    replace_file_from(
+        &path,
+        &staged_path,
+        "authoritative SQLite snapshot",
+        |candidate| validate_reconciliation_snapshot(candidate).map(|_| ()),
+    )?;
+    let published_validation = validate_reconciliation_snapshot(&path)?;
+    if staged_validation.sha256 != published_validation.sha256 {
+        return Err(
+            "The published SQLite snapshot digest differs from the validated staged artifact."
+                .to_string(),
+        );
+    }
+
+    let provenance_path = snapshot_provenance_path(&path);
+    let provenance = json!({
+        "format": "SPLINED-WINDOWS-SQLITE-SNAPSHOT",
+        "version": 1,
+        "producer": "SPLINED Windows",
+        "splined_version": env!("CARGO_PKG_VERSION"),
+        "created_utc": unix_timestamp().to_string(),
+        "schema_version": published_validation.schema_version,
+        "library_root": published_validation.library_root,
+        "snapshot_filename": path.file_name().and_then(|value| value.to_str()).unwrap_or_default(),
+        "size_bytes": published_validation.size_bytes,
+        "sha256": published_validation.sha256,
+        "quick_check": published_validation.quick_check,
+    });
+    let body = serde_json::to_string_pretty(&provenance)
+        .map_err(|error| format!("Unable to serialize SQLite snapshot provenance: {error}"))?;
+    replace_text_file(
+        &provenance_path,
+        &body,
+        "SQLite snapshot provenance",
+        |candidate| {
+            let parsed: serde_json::Value = serde_json::from_str(candidate)
+                .map_err(|error| format!("Invalid SQLite snapshot provenance JSON: {error}"))?;
+            if parsed.get("format").and_then(serde_json::Value::as_str)
+                != Some("SPLINED-WINDOWS-SQLITE-SNAPSHOT")
+            {
+                return Err("SQLite snapshot provenance format marker is missing.".to_string());
+            }
+            Ok(())
+        },
+    )?;
+
+    Ok(PublishedSqliteSnapshot {
+        path,
+        provenance_path,
+        validation: published_validation,
+    })
+}
+
+pub fn validate_reconciliation_snapshot(path: &Path) -> Result<SqliteSnapshotValidation, String> {
+    let connection =
+        Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|error| {
+            format!(
+                "Unable to open authoritative SQLite snapshot {}: {error}",
+                path.display()
+            )
+        })?;
+    let quick_check = connection
+        .query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))
+        .map_err(|error| {
+            format!(
+                "Unable to verify authoritative SQLite snapshot {}: {error}",
+                path.display()
+            )
+        })?;
+    if !quick_check.eq_ignore_ascii_case("ok") {
+        return Err(format!(
+            "Authoritative SQLite snapshot {} failed quick_check: {quick_check}",
+            path.display()
+        ));
+    }
+    let schema_version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(|error| format!("Unable to read SQLite snapshot schema version: {error}"))?;
+    if schema_version != crate::media_database::SCHEMA_VERSION {
+        return Err(format!(
+            "Authoritative SQLite snapshot schema v{schema_version} is incompatible with required v{}.",
+            crate::media_database::SCHEMA_VERSION
+        ));
+    }
+    let signature: String = connection
+        .query_row(
+            "SELECT signature_json FROM picker_inventory WHERE inventory_key='splined-media-library'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Unable to read SQLite snapshot library identity: {error}"))?;
+    let signature: serde_json::Value = serde_json::from_str(&signature)
+        .map_err(|error| format!("SQLite snapshot library identity is invalid JSON: {error}"))?;
+    let library_root = signature
+        .get("library_root")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "SQLite snapshot has no canonical library_root.".to_string())?
+        .to_string();
+    drop(connection);
+
+    let size_bytes = std::fs::metadata(path)
+        .map_err(|error| {
+            format!(
+                "Unable to inspect SQLite snapshot {}: {error}",
+                path.display()
+            )
+        })?
+        .len();
+    let sha256 = sha256_file(path)?;
+    Ok(SqliteSnapshotValidation {
+        schema_version,
+        library_root,
+        size_bytes,
+        sha256,
+        quick_check: "ok".to_string(),
+    })
+}
+
+fn snapshot_provenance_path(path: &Path) -> PathBuf {
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("splined-snapshot.sqlite");
+    path.with_file_name(format!("{name}.snapshot.json"))
+}
+
+fn sha256_file(path: &Path) -> Result<String, String> {
+    let mut file = std::fs::File::open(path)
+        .map_err(|error| format!("Unable to hash SQLite snapshot {}: {error}", path.display()))?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(|error| {
+            format!("Unable to hash SQLite snapshot {}: {error}", path.display())
+        })?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
 }
 
 /// Include managed V/A and soundtrack Artist Art inside the standalone SQLite
@@ -517,6 +700,45 @@ pub fn export_diagnostic_summary(
         Ok(())
     })?;
     Ok(path)
+}
+
+/// Validate and format an existing SPLINED diagnostic summary for display in
+/// the live Run Details panel. Loading diagnostics is deliberately read-only.
+pub fn load_diagnostic_summary(path: &Path) -> Result<String, String> {
+    const MAX_DIAGNOSTIC_SUMMARY_BYTES: u64 = 10 * 1024 * 1024;
+    let metadata = std::fs::metadata(path).map_err(|error| {
+        format!(
+            "Unable to inspect diagnostic summary {}: {error}",
+            path.display()
+        )
+    })?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "The selected diagnostic summary is not a file: {}",
+            path.display()
+        ));
+    }
+    if metadata.len() > MAX_DIAGNOSTIC_SUMMARY_BYTES {
+        return Err(
+            "The selected diagnostic summary exceeds the 10 MiB display limit.".to_string(),
+        );
+    }
+    let body = std::fs::read_to_string(path).map_err(|error| {
+        format!(
+            "Unable to read diagnostic summary {}: {error}",
+            path.display()
+        )
+    })?;
+    let parsed: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|error| format!("The selected diagnostic summary is invalid JSON: {error}"))?;
+    if parsed.get("format").and_then(serde_json::Value::as_str)
+        != Some("SPLINED-DIAGNOSTIC-SUMMARY")
+        || parsed.get("version").and_then(serde_json::Value::as_u64) != Some(1)
+    {
+        return Err("The selected JSON is not a supported SPLINED Diagnostic Summary.".to_string());
+    }
+    serde_json::to_string_pretty(&parsed)
+        .map_err(|error| format!("Unable to format diagnostic summary: {error}"))
 }
 
 pub fn restore_backup(
@@ -1056,6 +1278,140 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(diagnostics).unwrap()).unwrap();
         assert_eq!(summary["format"], "SPLINED-DIAGNOSTIC-SUMMARY");
         assert_eq!(summary["database"]["quick_check"], "ok");
+    }
+
+    #[test]
+    fn authoritative_reconciliation_snapshot_is_standalone_valid_and_provenanced() {
+        let root = TempDir::new().unwrap();
+        let cache = root.path().join("cache");
+        let snapshots = root.path().join("snapshots");
+        std::fs::create_dir(&cache).unwrap();
+        let database = cache.join("splined.db");
+        let writer = Connection::open(&database).unwrap();
+        writer
+            .execute_batch(&format!(
+                "PRAGMA journal_mode=WAL;
+                 PRAGMA user_version={};
+                 CREATE TABLE picker_inventory(
+                    inventory_key TEXT PRIMARY KEY,
+                    signature_json TEXT NOT NULL,
+                    folders_json TEXT NOT NULL,
+                    generated_at INTEGER NOT NULL,
+                    splined_version TEXT NOT NULL
+                 );
+                 CREATE TABLE fixture(value TEXT NOT NULL);
+                 INSERT INTO picker_inventory VALUES(
+                    'splined-media-library',
+                    '{{\"schema_version\":{},\"library_root\":\"E:/media/music\"}}',
+                    '{{}}', 1, 'test'
+                 );
+                 INSERT INTO fixture VALUES('committed-in-wal');",
+                crate::media_database::SCHEMA_VERSION,
+                crate::media_database::SCHEMA_VERSION,
+            ))
+            .unwrap();
+
+        let mut config = Config::default();
+        config.scan.cache_dir = cache.to_string_lossy().into_owned();
+        let published = export_reconciliation_snapshot(&snapshots.join("manual"), &config).unwrap();
+        assert_eq!(
+            published.path.extension().and_then(|value| value.to_str()),
+            Some("sqlite")
+        );
+        assert!(published.path.is_file());
+        assert!(published.provenance_path.is_file());
+        assert_eq!(published.validation.quick_check, "ok");
+        assert_eq!(
+            published.validation.schema_version,
+            crate::media_database::SCHEMA_VERSION
+        );
+        assert_eq!(published.validation.library_root, "E:/media/music");
+        assert_eq!(
+            published.validation.sha256,
+            sha256_file(&published.path).unwrap()
+        );
+
+        let snapshot_value: String = Connection::open(&published.path)
+            .unwrap()
+            .query_row("SELECT value FROM fixture", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(snapshot_value, "committed-in-wal");
+        assert!(!backup_has_artist_images(&published.path));
+        let source_value: String = writer
+            .query_row("SELECT value FROM fixture", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(source_value, "committed-in-wal");
+        assert!(!backup_has_artist_images(&database));
+
+        let provenance: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&published.provenance_path).unwrap())
+                .unwrap();
+        assert_eq!(provenance["format"], "SPLINED-WINDOWS-SQLITE-SNAPSHOT");
+        assert_eq!(provenance["producer"], "SPLINED Windows");
+        assert_eq!(provenance["library_root"], "E:/media/music");
+        assert_eq!(provenance["sha256"], published.validation.sha256);
+
+        drop(writer);
+        let _ = std::fs::remove_file(database.with_extension("db-wal"));
+        let _ = std::fs::remove_file(database.with_extension("db-shm"));
+        assert_eq!(
+            validate_reconciliation_snapshot(&published.path)
+                .unwrap()
+                .sha256,
+            published.validation.sha256
+        );
+    }
+
+    #[test]
+    fn invalid_authoritative_snapshot_is_not_published() {
+        let root = TempDir::new().unwrap();
+        let cache = root.path().join("cache");
+        let snapshots = root.path().join("snapshots");
+        std::fs::create_dir(&cache).unwrap();
+        let database = cache.join("splined.db");
+        let connection = Connection::open(&database).unwrap();
+        connection
+            .execute_batch(
+                "PRAGMA user_version=1;
+                 CREATE TABLE picker_inventory(
+                    inventory_key TEXT PRIMARY KEY,
+                    signature_json TEXT NOT NULL
+                 );
+                 INSERT INTO picker_inventory VALUES(
+                    'splined-media-library',
+                    '{\"library_root\":\"E:/media/music\"}'
+                 );",
+            )
+            .unwrap();
+        drop(connection);
+        let mut config = Config::default();
+        config.scan.cache_dir = cache.to_string_lossy().into_owned();
+        let requested = snapshots.join("invalid");
+        let error = export_reconciliation_snapshot(&requested, &config).unwrap_err();
+        assert!(error.contains("incompatible"));
+        assert!(!requested.with_extension("sqlite").exists());
+    }
+
+    #[test]
+    fn diagnostic_summary_loader_is_read_only_and_rejects_malformed_json() {
+        let root = TempDir::new().unwrap();
+        let valid = root.path().join("valid.json");
+        let invalid = root.path().join("invalid.json");
+        std::fs::write(
+            &valid,
+            r#"{"format":"SPLINED-DIAGNOSTIC-SUMMARY","version":1,"status":"fixture"}"#,
+        )
+        .unwrap();
+        std::fs::write(&invalid, "{not-json").unwrap();
+        let before = std::fs::read(&valid).unwrap();
+        let loaded = load_diagnostic_summary(&valid).unwrap();
+        assert!(loaded.contains("SPLINED-DIAGNOSTIC-SUMMARY"));
+        assert_eq!(std::fs::read(&valid).unwrap(), before);
+        assert!(
+            load_diagnostic_summary(&invalid)
+                .unwrap_err()
+                .contains("invalid JSON")
+        );
     }
 
     #[test]

@@ -324,7 +324,7 @@ Settings uses task-based sections:
 | **Enhancement** | Defaults, presets, palette, banner/frame styles, and resolution ranges |
 | **Artwork Sources** | Provider enablement, exclusion, policy, and search priority |
 | **Connections** | Provider credential files and connection tests |
-| **Backup / Restore** | Settings archives, SQLite snapshots, diagnostics, and restore |
+| **Backup / Restore** | Independent Settings archives, restorable SQLite backups, diagnostics, authoritative reconciliation snapshots, and manual restore/load actions |
 | **Processing & Logs** | Read/Write default, history, timeouts, logging, retention, and status bar |
 
 Each section saves its own draft into one validated Config v5 document. There
@@ -368,37 +368,60 @@ to the music library.
 
 ### Back up
 
-Windows keeps three backup types separate:
+Windows keeps four backup types separate. Select **SAVE Backup Preferences**
+to persist only the selected paths, schedules, retention limits, and backup
+options; SAVE does not create an artifact.
 
 | Type | File | Contents |
 | --- | --- | --- |
 | Settings Archive | `.spl` | Selected Config v5, credentials, and interface categories; optional password |
-| SQLite Database | `.sqlite` | Consistent online snapshot of `splined.db`; can optionally include managed V/A / OST Artist images |
+| SQLite Database Backup | `.sqlite` | Consistent, restorable online backup of `splined.db`; Advanced can optionally include managed V/A / OST Artist images for compatibility |
 | Diagnostic Summary | `.json` | Secret-free support information; not restorable |
+| SQLite Database Snapshot | `.sqlite` | Validated authoritative Windows snapshot for read-only WebGUI reconciliation; never includes backup-only image tables |
 
-Each type can have its own Off, Daily, Weekly, or Monthly schedule and maximum
-file count. Scheduled work runs only while SPLINED is open and idle; it does
-not install a Windows background task. A limit of zero keeps all backups.
-Retention removes only older timestamped SPLINED files of the selected type,
-not unrelated files in the directory.
+Each type has its own directory, Off/Daily/Weekly/Monthly schedule, and maximum
+file count. The default maximum is five; zero keeps all matching files.
+Scheduled work uses the last explicitly saved Backup preferences, runs only
+while SPLINED is open and idle, and does not install a Windows background task.
+Retention removes only older timestamped SPLINED files of that type and current
+Windows producer, never unrelated files or artifacts belonging to another type.
+The four yellow status rows report the configured directory, full schedule,
+matching file count/limit, and total matching artifact size.
 
 For complete protection:
 
 1. Save pending Settings changes.
 2. Back up both **Config V5 Settings** and **Interface Settings** when you want
    presets, theme, pane sizes, filter locks, banner/frame styles, and baselines.
-3. Create a separate SQLite snapshot.
-4. Select **Include V/A / OST Artist images** or separately back up that
-   directory.
-5. Back up the music library itself. SPLINED state backups cannot restore
+3. Create a normal **SQLite Database Backup** for Windows recovery.
+4. When WebGUI reconciliation is required, separately choose **Create SQLite
+   Snapshot**. Windows uses SQLite's online backup API, validates schema,
+   canonical `library_root`, and `quick_check`, closes the database, publishes
+   it atomically, and records a stable SHA-256. The optional adjacent
+   `.snapshot.json` file is diagnostic provenance only.
+5. Under Advanced, select the legacy V/A / OST image option for a compatible
+   normal database backup, or separately back up that image directory.
+6. Back up the music library itself. SPLINED state backups cannot restore
    externally changed covers or audio tags.
 
 ### Restore
 
-Restore detects `.spl` and `.sqlite`, validates the selected file, and
-changes only the selected categories. Settings and credentials use atomic
-replacement; SQLite restore uses its online backup API and reloads the Media
-Library.
+Restore Type filters the available files to Settings Archive, normal SQLite
+Database Backup, Diagnostic Summary, or authoritative SQLite Database
+Snapshot. Every restore remains explicit and manual. Settings and credentials
+use atomic replacement; SQLite restore validates the selected database, uses
+the established safe replacement path, and reloads the Media Library.
+
+**Load .JSON Diagnostic Summary** is read-only: it validates the summary and
+shows it in **Processing & Logs → Verbose / Run Details**. It does not restore
+Config v5, SQLite, credentials, media, UI preferences, or processing state.
+Malformed or unsupported JSON remains a visible error.
+
+Older `ui.toml` files retain their shared backup directory as the initial
+Settings, normal SQLite, and Diagnostic directories. Existing schedules and
+retention values are preserved. Snapshot directory/schedule/retention fields
+start with safe independent defaults until saved. Existing `.spl`, `.sqlite`,
+and `.json` artifacts remain supported.
 
 After restoring Interface Settings, close and reopen SPLINED before making
 more interface changes so the restored window state wins over the running

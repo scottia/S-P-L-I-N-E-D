@@ -104,28 +104,48 @@ def image_metadata(path: Path) -> dict[str, object]:
     }
 
 
-def embedded_track_artwork_bytes(path: Path) -> bytes | None:
-    """Read one track's embedded cover; never substitute the album folder cover."""
+def embedded_track_artwork_bytes(path: Path, *, strict: bool = False) -> bytes | None:
+    """Read the typed front cover that Windows/Lofty treats as CoverFront."""
     artwork: bytes | None = None
     try:
         if path.suffix.casefold() == ".mp3":
             frames = ID3(path).getall("APIC")
-            if frames:
-                artwork = next((frame.data for frame in frames if frame.type == 3), frames[0].data)
+            artwork = next((frame.data for frame in frames if frame.type == 3), None)
         else:
             audio = MutagenFile(path)
             if audio is not None:
                 pictures = getattr(audio, "pictures", None)
                 if pictures:
-                    artwork = next((picture.data for picture in pictures if picture.type == 3), pictures[0].data)
-                elif audio.tags:
-                    covers = audio.tags.get("covr")
+                    artwork = next(
+                        (picture.data for picture in pictures if picture.type == 3),
+                        None,
+                    )
+                tags = audio.tags
+                getall = getattr(tags, "getall", None)
+                if artwork is None and callable(getall):
+                    # WAV and AIFF carry ID3 APIC frames even though their
+                    # audio container is not MP3.
+                    artwork = next(
+                        (frame.data for frame in getall("APIC") if frame.type == 3),
+                        None,
+                    )
+                if artwork is None and tags:
+                    # MP4 covr is an explicitly cover-art atom and does not
+                    # expose the ID3/FLAC picture-type distinction.
+                    covers = tags.get("covr")
                     if covers:
                         artwork = bytes(covers[0])
-                    elif audio.tags.get("metadata_block_picture"):
-                        raw = audio.tags["metadata_block_picture"][0]
-                        artwork = Picture(base64.b64decode(raw)).data
-    except (OSError, ValueError, ID3NoHeaderError):
+                    else:
+                        for raw in tags.get("metadata_block_picture", []):
+                            picture = Picture(base64.b64decode(raw))
+                            if picture.type == 3:
+                                artwork = picture.data
+                                break
+    except ID3NoHeaderError:
+        return None
+    except (OSError, ValueError):
+        if strict:
+            raise
         return None
     return artwork
 
@@ -1182,6 +1202,8 @@ class Catalog:
                 "various_artists": normalized_artist_identity(row["album_artist"] or "")
                     == "variousartists",
                 "embedded": int(row["embedded_tracks"] or 0) if "embedded_tracks" in row.keys() else 0,
+                "embedded_validation": str(row["embedded_validation_status"] or "unknown")
+                    if "embedded_validation_status" in row else "unknown",
                 "album_mbid": row["musicbrainz_albumid"] or "",
                 "year": row["release_year"] or "",
                 "soundtrack": bool(row["musicbrainz_albumid"]) and (
@@ -1239,6 +1261,8 @@ class Catalog:
             "tracks": row["track_count"], "compilation": bool(row["compilation"]),
             "album_mbid": row["musicbrainz_albumid"] or "", "year": row["release_year"] or "",
             "embedded": int(row["embedded_tracks"] or 0) if "embedded_tracks" in row.keys() else 0,
+            "embedded_validation": str(row["embedded_validation_status"] or "unknown")
+                if "embedded_validation_status" in row else "unknown",
             "cover": self.image(cover), "cover_meta": image_metadata(cover) if cover and cover.is_file() else None,
             "candidates": candidates, "track_titles": track_titles,
         }

@@ -28,7 +28,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 import numpy as np
 import soundfile as sf
-from mutagen.flac import FLAC
+from mutagen.flac import FLAC, Picture
 from mutagen.id3 import COMM, ID3, TALB, TCON, TIT2, TPE1, TPE2, TRCK, TXXX, UFID
 from mutagen.mp3 import MP3
 from psycopg.types.json import Jsonb
@@ -128,6 +128,23 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             "image": self.services.catalog.image(self.cover),
             "adjustments": {"Brightness": 40},
         }
+
+    @staticmethod
+    def set_flac_embedded_cover(path: Path, side: int | None):
+        audio = FLAC(path)
+        audio.clear_pictures()
+        if side is not None:
+            rendered = BytesIO()
+            Image.new("RGB", (side, side), "purple").save(rendered, format="JPEG")
+            picture = Picture()
+            picture.type = 3
+            picture.mime = "image/jpeg"
+            picture.width = side
+            picture.height = side
+            picture.depth = 24
+            picture.data = rendered.getvalue()
+            audio.add_picture(picture)
+        audio.save()
 
     def make_comp_track(self, folder_name, *, recording_id=True):
         folder = self.root / "music" / "Various Artists" / folder_name
@@ -358,7 +375,30 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.assertEqual(
             self.services.catalog.album(self.row["album_key"])["embedded"], 2
         )
+        self.assertEqual(
+            self.services.catalog.album(self.row["album_key"])["embedded_validation"],
+            "verified",
+        )
         self.assertEqual(self.services.index_changes()["count"], 0)
+
+    def test_album_embedding_validation_preserves_unknown_on_read_failure(self):
+        with closing(self.db.connect()) as db, db:
+            db.execute(
+                "UPDATE albums SET embedded_tracks=1,embedded_validation_status='verified' "
+                "WHERE album_key=?",
+                (self.row["album_key"],),
+            )
+        with patch(
+            "webgui.services.embedded_track_artwork_bytes",
+            side_effect=OSError("synthetic read failure"),
+        ):
+            result = self.services.validate_album_embedding(self.row["album_key"])
+
+        self.assertEqual(result["status"], "retry")
+        self.assertEqual(result["embedded_tracks"], 1)
+        projected = self.services.catalog.album(self.row["album_key"])
+        self.assertEqual(projected["embedded_validation"], "retry")
+        self.assertEqual(projected["embedded"], 1)
 
         # WebGUI-owned writes advance the saved inventory baseline, while a
         # later external change to the same Album still requires review.
@@ -370,6 +410,43 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         changes = self.services.index_changes()
         self.assertEqual(changes["count"], 1)
         self.assertEqual(changes["changed"], 1)
+
+    def test_album_embedding_validation_requires_preferred_size_on_every_track(self):
+        album_id = self.row["album_key"]
+        with closing(self.db.connect()) as db, db:
+            db.execute(
+                "UPDATE albums SET embedded_tracks=2,embedded_validation_status='unknown',"
+                "embedded_validated_at=NULL WHERE album_key=?",
+                (album_id,),
+            )
+
+        # A projected historical count is not evidence.  Physical readback of
+        # two readable tracks with no artwork confirms attention instead.
+        missing = self.services.validate_album_embedding(album_id)
+        self.assertEqual(
+            (missing["status"], missing["embedded_tracks"], missing["preferred_side"]),
+            ("verified", 0, 300),
+        )
+
+        self.set_flac_embedded_cover(self.files[0], 300)
+        partial = self.services.validate_album_embedding(album_id)
+        self.assertEqual(
+            (partial["status"], partial["embedded_tracks"]), ("verified", 1)
+        )
+
+        self.set_flac_embedded_cover(self.files[1], 299)
+        wrong_size = self.services.validate_album_embedding(album_id)
+        self.assertEqual(
+            (wrong_size["status"], wrong_size["embedded_tracks"]),
+            ("verified", 1),
+        )
+
+        self.set_flac_embedded_cover(self.files[1], 300)
+        complete = self.services.validate_album_embedding(album_id)
+        self.assertEqual(
+            (complete["status"], complete["embedded_tracks"], complete["track_count"]),
+            ("verified", 2, 2),
+        )
 
     def test_cover_format_replacement_stages_and_embeds_without_reusing_stale_handle(self):
         stale_cover = self.services.catalog.image(self.cover)
@@ -2151,7 +2228,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     self.row["album_name"],
                     self.row["path"],
                     "2099-01-01T00:00:00+00:00",
-                    "embed-queue",
+                    "existing",
                     "2099-01-01T00:00:00+00:00",
                     1,
                     "processed",
@@ -2176,11 +2253,25 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 ),
             )
 
+        # Physical media is authoritative for the WebGUI-only embedded count.
+        # Leave PostgreSQL deliberately stale so apply must validate the mapped
+        # files instead of treating the source's absent counter as zero.
+        staged = self.services.stage_album(self.payload())
+        self.services.embed_album(staged)
+        with closing(self.db.connect()) as db, db:
+            db.execute(
+                "UPDATE albums SET embedded_tracks=0,embedded_validation_status='unknown',"
+                "processed_at=NULL,selected_source=NULL,status='unprocessed',updated_at=? "
+                "WHERE album_key=?",
+                ("2026-01-01T00:00:00+00:00", self.row["album_key"]),
+            )
+
         reconciler = SQLiteReconciler(
             self.db,
             snapshot.parent,
             self.root / "music",
             start_scheduler=False,
+            album_validator=self.services.validate_album_embedding,
         )
         try:
             compared = reconciler.compare(
@@ -2195,15 +2286,21 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertEqual(applied["attempted"], applied["applied"])
             with closing(self.db.connect()) as db:
                 album = db.execute(
-                    "SELECT status,selected_source,processed_at,embedded_tracks,track_count "
+                    "SELECT status,selected_source,processed_at,embedded_tracks,track_count,"
+                    "embedded_validation_status "
                     "FROM albums WHERE album_key=?",
                     (self.row["album_key"],),
                 ).fetchone()
                 album_count = db.execute("SELECT count(*) FROM albums").fetchone()[0]
             self.assertEqual(album["status"], "processed")
-            self.assertEqual(album["selected_source"], "embed-queue")
+            self.assertEqual(album["selected_source"], "existing")
             self.assertTrue(album["processed_at"])
             self.assertEqual(album["embedded_tracks"], album["track_count"])
+            self.assertEqual(album["embedded_validation_status"], "verified")
+            self.assertEqual(applied["album_validation_retries"], 0)
+            self.assertEqual(
+                applied["album_validations"][0]["album_id"], self.row["album_key"]
+            )
             self.assertEqual(album_count, 1)
 
             repeated = reconciler.compare(

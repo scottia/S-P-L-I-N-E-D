@@ -30,6 +30,11 @@ const hydrateFunction = between(
   "async function hydrateArtistThumbnails",
   "async function chooseArtist",
 );
+const artistAlbumStatusFunction = between(
+  appSource,
+  "async function probeArtistAlbumStatuses",
+  "async function chooseArtist",
+);
 const queuedAlbumFunction = between(
   operationsSource,
   "async function focusQueuedAlbum",
@@ -1263,7 +1268,7 @@ test("Artist Albums row reports shown, Completed, and in Process with status col
   });
   const artist = {portrait: "artist.jpg"};
   context.renderAlbumCountSummary([
-    {album_mbid: "release-1", status: "processed", cover_found: true, cover: "cover.jpg", tracks: 2, embedded: 2},
+    {album_mbid: "release-1", status: "processed", cover_found: true, cover: "cover.jpg", tracks: 2, embedded: 2, embedded_validation: "verified"},
     {album_mbid: "release-2", status: "incomplete", cover_found: true, cover: "cover.jpg", tracks: 2, embedded: 0},
   ], artist);
 
@@ -1271,6 +1276,100 @@ test("Artist Albums row reports shown, Completed, and in Process with status col
   assert.equal(styles["--album-complete-color"], "theme-complete");
   assert.equal(styles["--album-process-color"], "theme-process");
   assert.equal(host["aria-label"], "2 Albums shown, 1 Completed, 1 in Process");
+});
+
+test("Album cards keep unknown validation separate from confirmed missing thumbnails", () => {
+  const state = {graphicalEnhancement: {frame_styles: {
+    complete: {color: "theme-complete"}, in_process: {color: "theme-process"},
+    thumbnail: {color: "theme-thumbnail"},
+  }}};
+  const context = load(albumSummaryFunctions, {
+    state, mediaStatusKey: album => album.status,
+  });
+  const artist = {portrait: "artist.jpg"};
+  const albumTypes = [
+    {name: "Artist", album_artist: "Artist"},
+    {name: "Various Artists", various_artists: true},
+    {name: "Soundtrack", soundtrack: true},
+    {name: "Featured", featured: true},
+  ];
+
+  for (const type of albumTypes) {
+    const base = {
+      ...type, album_mbid: `release-${type.name}`, status: "processed",
+      cover_found: true, cover: "cover.jpg", tracks: 2, embedded: 0,
+    };
+    const unknown = context.albumCardState({...base, embedded_validation: "unknown"}, artist);
+    assert.equal(unknown.embeddedPending, true, `${type.name} remains pending`);
+    assert.equal(unknown.checkEmbedded, false, `${type.name} is not falsely purple`);
+    assert.equal(unknown.dots.some(([color]) => color === "#7c4dff"), false);
+
+    const retry = context.albumCardState({...base, embedded_validation: "retry"}, artist);
+    assert.equal(retry.embeddedRetry, true, `${type.name} exposes retry`);
+    assert.equal(retry.checkEmbedded, false, `${type.name} retry is not repair`);
+
+    const missing = context.albumCardState({...base, embedded_validation: "verified"}, artist);
+    assert.equal(missing.checkEmbedded, true, `${type.name} confirmed missing is purple`);
+
+    const partialOrWrongSize = context.albumCardState({...base, embedded: 1, embedded_validation: "verified"}, artist);
+    assert.equal(partialOrWrongSize.checkEmbedded, true, `${type.name} confirmed partial or wrong-size is purple`);
+
+    const complete = context.albumCardState({...base, embedded: 2, embedded_validation: "verified"}, artist);
+    assert.equal(complete.fullyComplete, true, `${type.name} verified complete is green`);
+    assert.equal(complete.dots.some(([color]) => color === "#32dda0"), true);
+  }
+
+  const fallback = context.albumCardState({
+    album_mbid: "", status: "processed", fallback_complete: true,
+    tracks: 2, embedded: 0, embedded_validation: "unknown",
+  }, artist);
+  assert.equal(fallback.fullyComplete, true);
+  assert.equal(fallback.checkEmbedded, false);
+});
+
+test("Artist overview lazily verifies unresolved regular Albums without touching COMP fallback", async () => {
+  let renders = 0;
+  const state = {
+    selectionRequest: 4,
+    artist: {id: "artist-1", albums: [
+      {id: "artist-album", album_mbid: "release-1", embedded: 0, embedded_validation: "unknown"},
+      {id: "various-album", album_mbid: "release-2", embedded: 0, embedded_validation: "unknown", various_artists: true},
+      {id: "soundtrack-album", album_mbid: "release-3", embedded: 0, embedded_validation: "retry", soundtrack: true},
+      {id: "featured-album", album_mbid: "release-4", embedded: 0, embedded_validation: "unknown", featured: true},
+      {id: "comp", album_mbid: "", embedded: 0, embedded_validation: "unknown"},
+    ]},
+    album: null,
+  };
+  const calls = [];
+  const context = load(artistAlbumStatusFunction, {
+    state,
+    api: async path => {
+      calls.push(path);
+      const id = decodeURIComponent(path.split("id=")[1]);
+      return {embedded_tracks: {
+        "artist-album": 12, "various-album": 10,
+        "soundtrack-album": 8, "featured-album": 6,
+      }[id], status: "verified"};
+    },
+    renderHero: () => { renders += 1; },
+  });
+
+  await context.probeArtistAlbumStatuses("artist-1", 4);
+
+  assert.deepEqual(calls, [
+    "/api/album/embedded-status?id=artist-album",
+    "/api/album/embedded-status?id=various-album",
+    "/api/album/embedded-status?id=soundtrack-album",
+    "/api/album/embedded-status?id=featured-album",
+  ]);
+  assert.deepEqual(state.artist.albums.map(album => [album.id, album.embedded, album.embedded_validation]), [
+    ["artist-album", 12, "verified"],
+    ["various-album", 10, "verified"],
+    ["soundtrack-album", 8, "verified"],
+    ["featured-album", 6, "verified"],
+    ["comp", 0, "unknown"],
+  ]);
+  assert.equal(renders, 2);
 });
 
 test("queued Album review exposes SKIP ALBUM and submits k without pausing the batch", async () => {

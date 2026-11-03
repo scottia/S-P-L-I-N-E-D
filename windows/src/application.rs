@@ -2514,6 +2514,9 @@ pub struct ApplicationState {
     pub compilation_report_close_pending: bool,
     pub compilation_report_generation: u64,
     pub log: Vec<String>,
+    /// A manually selected diagnostic JSON displayed in Verbose / Run Details.
+    /// It is reference-only and never participates in application state restore.
+    pub loaded_diagnostic_summary: String,
     pub last_error: Option<String>,
     pub service_status: String,
     pub operation_busy: bool,
@@ -2732,6 +2735,7 @@ impl ApplicationState {
             compilation_report_close_pending: false,
             compilation_report_generation: 0,
             log: vec!["SPLINED Rust application initialized.".to_string()],
+            loaded_diagnostic_summary: String::new(),
             last_error: None,
             service_status: "Ready".to_string(),
             operation_busy: false,
