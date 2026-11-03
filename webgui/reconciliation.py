@@ -997,6 +997,7 @@ class SQLiteReconciler:
         if not run:
             raise ValueError("Choose a reconciliation run")
         affected_album_keys: set[str] = set()
+        applied_artist_timestamps: dict[str, Any] = {}
         with self._operation_lock, closing(self.database.connect()) as db, db:
             raw = db.raw
             # Hold the jobs table stable for the whole apply transaction. A
@@ -1064,6 +1065,10 @@ class SQLiteReconciler:
                         ).fetchone()
                         if album:
                             affected_album_keys.add(str(album["album_key"]))
+                    if table == "artists" and source.get("updated_at"):
+                        applied_artist_timestamps[str(source["artist_key"])] = source[
+                            "updated_at"
+                        ]
                     applied += 1
                 except Exception as error:
                     raw.execute(
@@ -1073,6 +1078,15 @@ class SQLiteReconciler:
                     failures += 1
             self._recalculate_comp_progress(db)
             self._recalculate(db)
+            # Aggregate recalculation derives Artist counters and status, but
+            # its generic catalog helper also stamps ``updated_at``. Preserve
+            # the authoritative Windows timestamp for Artist rows that were
+            # actually applied so a repeated comparison remains idempotent.
+            for artist_key, updated_at in applied_artist_timestamps.items():
+                raw.execute(
+                    "UPDATE artists SET updated_at=%s WHERE artist_key=%s",
+                    (updated_at, artist_key),
+                )
             raw.execute(
                 "UPDATE sqlite_reconciliation_runs SET status=%s,applied=%s,failures=failures+%s,finished_at=now() WHERE run_id=%s",
                 ("applied" if failures == 0 else "applied-with-failures", applied, failures, run),
