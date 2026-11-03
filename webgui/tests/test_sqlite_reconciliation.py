@@ -45,6 +45,21 @@ class SQLiteReconciliationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "outside the mapped source"):
             map_library_path(r"D:\Other\01.flac", r"D:\Music", r"E:\Music")
 
+    def test_album_validation_migrations_do_not_trust_historical_counters(self):
+        migrations = Path(__file__).parents[1] / "migrations"
+        original = (migrations / "013_album_embedded_validation.sql").read_text(
+            encoding="utf-8"
+        )
+        correction = (
+            migrations / "014_reset_projected_album_validation.sql"
+        ).read_text(encoding="utf-8")
+
+        self.assertNotIn("UPDATE albums", original)
+        self.assertIn("embedded_validation_status = 'unknown'", correction)
+        self.assertIn("embedded_validated_at = NULL", correction)
+        self.assertIn("embedded_validation_status = 'verified'", correction)
+        self.assertNotIn("embedded_tracks =", correction)
+
     def test_path_backed_track_key_is_mapped_with_track_path(self):
         source = {
             "track_key": r"D:\Music\Adele\30\01.flac",

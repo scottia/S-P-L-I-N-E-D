@@ -28,7 +28,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 import numpy as np
 import soundfile as sf
-from mutagen.flac import FLAC
+from mutagen.flac import FLAC, Picture
 from mutagen.id3 import COMM, ID3, TALB, TCON, TIT2, TPE1, TPE2, TRCK, TXXX, UFID
 from mutagen.mp3 import MP3
 from psycopg.types.json import Jsonb
@@ -128,6 +128,23 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             "image": self.services.catalog.image(self.cover),
             "adjustments": {"Brightness": 40},
         }
+
+    @staticmethod
+    def set_flac_embedded_cover(path: Path, side: int | None):
+        audio = FLAC(path)
+        audio.clear_pictures()
+        if side is not None:
+            rendered = BytesIO()
+            Image.new("RGB", (side, side), "purple").save(rendered, format="JPEG")
+            picture = Picture()
+            picture.type = 3
+            picture.mime = "image/jpeg"
+            picture.width = side
+            picture.height = side
+            picture.depth = 24
+            picture.data = rendered.getvalue()
+            audio.add_picture(picture)
+        audio.save()
 
     def make_comp_track(self, folder_name, *, recording_id=True):
         folder = self.root / "music" / "Various Artists" / folder_name
@@ -393,6 +410,43 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         changes = self.services.index_changes()
         self.assertEqual(changes["count"], 1)
         self.assertEqual(changes["changed"], 1)
+
+    def test_album_embedding_validation_requires_preferred_size_on_every_track(self):
+        album_id = self.row["album_key"]
+        with closing(self.db.connect()) as db, db:
+            db.execute(
+                "UPDATE albums SET embedded_tracks=2,embedded_validation_status='unknown',"
+                "embedded_validated_at=NULL WHERE album_key=?",
+                (album_id,),
+            )
+
+        # A projected historical count is not evidence.  Physical readback of
+        # two readable tracks with no artwork confirms attention instead.
+        missing = self.services.validate_album_embedding(album_id)
+        self.assertEqual(
+            (missing["status"], missing["embedded_tracks"], missing["preferred_side"]),
+            ("verified", 0, 300),
+        )
+
+        self.set_flac_embedded_cover(self.files[0], 300)
+        partial = self.services.validate_album_embedding(album_id)
+        self.assertEqual(
+            (partial["status"], partial["embedded_tracks"]), ("verified", 1)
+        )
+
+        self.set_flac_embedded_cover(self.files[1], 299)
+        wrong_size = self.services.validate_album_embedding(album_id)
+        self.assertEqual(
+            (wrong_size["status"], wrong_size["embedded_tracks"]),
+            ("verified", 1),
+        )
+
+        self.set_flac_embedded_cover(self.files[1], 300)
+        complete = self.services.validate_album_embedding(album_id)
+        self.assertEqual(
+            (complete["status"], complete["embedded_tracks"], complete["track_count"]),
+            ("verified", 2, 2),
+        )
 
     def test_cover_format_replacement_stages_and_embeds_without_reusing_stale_handle(self):
         stale_cover = self.services.catalog.image(self.cover)

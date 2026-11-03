@@ -1311,6 +1311,9 @@ test("Album cards keep unknown validation separate from confirmed missing thumbn
     const missing = context.albumCardState({...base, embedded_validation: "verified"}, artist);
     assert.equal(missing.checkEmbedded, true, `${type.name} confirmed missing is purple`);
 
+    const partialOrWrongSize = context.albumCardState({...base, embedded: 1, embedded_validation: "verified"}, artist);
+    assert.equal(partialOrWrongSize.checkEmbedded, true, `${type.name} confirmed partial or wrong-size is purple`);
+
     const complete = context.albumCardState({...base, embedded: 2, embedded_validation: "verified"}, artist);
     assert.equal(complete.fullyComplete, true, `${type.name} verified complete is green`);
     assert.equal(complete.dots.some(([color]) => color === "#32dda0"), true);
@@ -1330,7 +1333,9 @@ test("Artist overview lazily verifies unresolved regular Albums without touching
     selectionRequest: 4,
     artist: {id: "artist-1", albums: [
       {id: "artist-album", album_mbid: "release-1", embedded: 0, embedded_validation: "unknown"},
-      {id: "soundtrack", album_mbid: "release-2", embedded: 0, embedded_validation: "retry", soundtrack: true},
+      {id: "various-album", album_mbid: "release-2", embedded: 0, embedded_validation: "unknown", various_artists: true},
+      {id: "soundtrack-album", album_mbid: "release-3", embedded: 0, embedded_validation: "retry", soundtrack: true},
+      {id: "featured-album", album_mbid: "release-4", embedded: 0, embedded_validation: "unknown", featured: true},
       {id: "comp", album_mbid: "", embedded: 0, embedded_validation: "unknown"},
     ]},
     album: null,
@@ -1340,7 +1345,11 @@ test("Artist overview lazily verifies unresolved regular Albums without touching
     state,
     api: async path => {
       calls.push(path);
-      return {embedded_tracks: path.includes("soundtrack") ? 8 : 12, status: "verified"};
+      const id = decodeURIComponent(path.split("id=")[1]);
+      return {embedded_tracks: {
+        "artist-album": 12, "various-album": 10,
+        "soundtrack-album": 8, "featured-album": 6,
+      }[id], status: "verified"};
     },
     renderHero: () => { renders += 1; },
   });
@@ -1349,14 +1358,18 @@ test("Artist overview lazily verifies unresolved regular Albums without touching
 
   assert.deepEqual(calls, [
     "/api/album/embedded-status?id=artist-album",
-    "/api/album/embedded-status?id=soundtrack",
+    "/api/album/embedded-status?id=various-album",
+    "/api/album/embedded-status?id=soundtrack-album",
+    "/api/album/embedded-status?id=featured-album",
   ]);
   assert.deepEqual(state.artist.albums.map(album => [album.id, album.embedded, album.embedded_validation]), [
     ["artist-album", 12, "verified"],
-    ["soundtrack", 8, "verified"],
+    ["various-album", 10, "verified"],
+    ["soundtrack-album", 8, "verified"],
+    ["featured-album", 6, "verified"],
     ["comp", 0, "unknown"],
   ]);
-  assert.equal(renders, 1);
+  assert.equal(renders, 2);
 });
 
 test("queued Album review exposes SKIP ALBUM and submits k without pausing the batch", async () => {

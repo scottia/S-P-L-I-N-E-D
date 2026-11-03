@@ -68,12 +68,20 @@ not inspected the mapped media.
 - The Windows snapshot is valid and contains the committed authoritative SQLite
   state.
 - PostgreSQL successfully received the applicable safe differences.
-- After safe apply, WebGUI now verifies the mapped target Album through the
-  existing embedded-artwork reader before assigning complete or repair state.
+- After safe apply, WebGUI now verifies every mapped target track through the
+  existing embedded-artwork reader and requires PR #130's exact square
+  preferred-thumbnail dimensions before assigning complete state.
 - Albums reconciled before this verifier existed are checked lazily when their
   Artist Overview opens; a repeated SQLite difference is not required.
+- Migration 013 no longer promotes historical `embedded_tracks` counters to
+  verified. Migration 014 invalidates the optimistic verification produced by
+  earlier PR-branch deployments without changing those counters, so the first
+  Artist Overview readback supplies the actual evidence.
 - A read/access failure records `retry` and preserves the prior counter instead
   of presenting a false purple repair condition.
+- A successful read that finds missing, partial, corrupt, or wrong-size artwork
+  is confirmed attention evidence; only every track at the configured preferred
+  embedded-thumbnail side is verified complete/green.
 - The rule applies to regular Artist Albums, Various Artists, Soundtracks, and
   Featured appearances because they share the Album-card state authority.
 - COMP fallback retains PR #130's lazy per-track `checking` / `check-error`

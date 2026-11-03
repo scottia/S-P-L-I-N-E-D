@@ -53,6 +53,21 @@ NAME_INVENTORY_PREFIX = "names-v1:"
 TRACK_INVENTORY_PREFIX = "tracks-v1:"
 
 
+def _track_has_preferred_embedded_artwork(path: Path, preferred_side: int) -> bool:
+    """Return physical thumbnail compliance while preserving track read failures."""
+    artwork = embedded_track_artwork_bytes(path, strict=True)
+    if not artwork:
+        return False
+    try:
+        with Image.open(BytesIO(artwork)) as opened:
+            width, height = opened.size
+    except (OSError, ValueError):
+        # The track was readable, so corrupt/unreadable artwork is confirmed
+        # attention evidence rather than a transient media access failure.
+        return False
+    return width == height == preferred_side
+
+
 def _album_inventory_fingerprint(album, fallback=False):
     if fallback:
         return TRACK_INVENTORY_PREFIX + core.album_scan_fingerprint(album)
@@ -812,6 +827,7 @@ class Services:
         current = int(row["embedded_tracks"] or 0) if "embedded_tracks" in row else 0
         validation = "verified"
         error = ""
+        preferred_side = int(self.catalog.comp_thumbnail_side)
         try:
             files = self.album_files(row)
             expected = int(row["track_count"] or 0)
@@ -820,7 +836,8 @@ class Services:
                     f"Indexed track count {expected} does not match readable files {len(files)}"
                 )
             count = sum(
-                bool(embedded_track_artwork_bytes(path, strict=True)) for path in files
+                _track_has_preferred_embedded_artwork(path, preferred_side)
+                for path in files
             )
         except (OSError, ValueError) as exception:
             count = current
@@ -836,7 +853,12 @@ class Services:
             self.audit(
                 "embedded-artwork-validation",
                 str(row["album_key"]),
-                {"status": validation, "error": error},
+                {
+                    "status": validation,
+                    "error": error,
+                    "preferred_side": preferred_side,
+                    "preserved_embedded_tracks": current,
+                },
                 severity="warning",
                 stage="readback",
                 request_status="retry",
@@ -860,6 +882,7 @@ class Services:
             "track_count": int(verified["track_count"] or 0),
             "status": str(verified["embedded_validation_status"] or "unknown"),
             "validated_at": str(verified["embedded_validated_at"] or ""),
+            "preferred_side": int(self.catalog.comp_thumbnail_side),
         }
 
     def comp_report(self, artist_id):
