@@ -46,6 +46,51 @@ class SQLiteReconciliationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "outside the mapped source"):
             map_library_path(r"D:\Other\01.flac", r"D:\Music", r"E:\Music")
 
+    def test_recalculation_excludes_comp_fallback_from_artist_rollup(self):
+        with closing(sqlite3.connect(":memory:")) as db:
+            db.row_factory = sqlite3.Row
+            db.execute(
+                "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,status TEXT,"
+                "album_count INTEGER,unprocessed_count INTEGER,processed_count INTEGER,"
+                "bypassed_count INTEGER,timeout_count INTEGER)"
+            )
+            db.execute(
+                "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,path TEXT,"
+                "compilation INTEGER,musicbrainz_albumid TEXT,processed_at TEXT,"
+                "selected_source TEXT,bypassed INTEGER,timeout_until TEXT,status TEXT)"
+            )
+            db.execute(
+                "CREATE TABLE compilation_album_progress (album_path TEXT PRIMARY KEY,"
+                "total_tracks INTEGER,completed_tracks INTEGER,status TEXT)"
+            )
+            db.execute(
+                "INSERT INTO artists VALUES ('artist','partial',2,1,1,0,0)"
+            )
+            db.executemany(
+                "INSERT INTO albums VALUES (?,?,?,?,?,?,?,?,?,?)",
+                [
+                    ("owned", "artist", "/music/Artist/Album", 0, "release", "now", "local", 0, "", "processed"),
+                    ("comp", "artist", "/music/Various/COMP", 1, "", "", "", 0, "", "incomplete"),
+                ],
+            )
+            db.execute(
+                "INSERT INTO compilation_album_progress VALUES "
+                "('/music/Various/COMP',100,29,'incomplete')"
+            )
+
+            SQLiteReconciler._recalculate(db)
+            artist = db.execute(
+                "SELECT status,album_count,unprocessed_count,processed_count "
+                "FROM artists WHERE artist_key='artist'"
+            ).fetchone()
+            albums = {
+                row["album_key"]: row["status"]
+                for row in db.execute("SELECT album_key,status FROM albums")
+            }
+
+        self.assertEqual(tuple(artist), ("complete", 1, 0, 1))
+        self.assertEqual(albums, {"owned": "processed", "comp": "incomplete"})
+
     def test_production_bom_musicbrainz_identities_normalize_without_changing_metadata(self):
         mbid = "b9a06530-1241-4162-836f-7b8e79deaa58"
         row = _normalize_sqlite_row(

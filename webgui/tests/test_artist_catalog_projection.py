@@ -11,6 +11,7 @@ import unittest
 from unittest import mock
 
 from webgui.catalog import PreviewApp
+from splined_media_database import update_artist_aggregate
 
 
 class ArtistCatalogProjectionTests(unittest.TestCase):
@@ -91,10 +92,10 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                     (str(root / "Adele"),),
                 )
                 db.executemany(
-                    "INSERT INTO albums VALUES (?,?,?,?,NULL,1,'unprocessed',?,?, '2021',0,0)",
+                    "INSERT INTO albums VALUES (?,?,?,?,NULL,1,?,?,?, '2021',0,0)",
                     [
-                        ("30", "adele", "30", str(studio), 0, "release-30"),
-                        ("billboard", "adele", "Billboard Hot 100", str(compilation), 1, ""),
+                        ("30", "adele", "30", str(studio), "processed", 0, "release-30"),
+                        ("billboard", "adele", "Billboard Hot 100", str(compilation), "incomplete", 1, ""),
                     ],
                 )
                 db.executemany("INSERT INTO tracks VALUES (?,?,?,?,?)", [
@@ -104,9 +105,12 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                 db.commit()
 
             app = PreviewApp(root, database, root, credentials, cache=root / "cache")
-            self.assertEqual(app.artists("")[0]["albums"], 1)
+            listed = app.artists("")[0]
+            self.assertEqual(listed["albums"], 1)
+            self.assertEqual(listed["status"], "complete")
             artist = app.artist("adele")
             self.assertEqual([item["id"] for item in artist["albums"]], ["30"])
+            self.assertEqual(artist["status"], "complete")
             self.assertEqual(artist["top_tracks"], ["Easy on Me"])
 
             with mock.patch.object(
@@ -117,6 +121,37 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                 albums = app.albums("")
             self.assertEqual({item["id"] for item in albums}, {"30", "billboard"})
             self.assertTrue(all(item["cover"].startswith("/api/album/thumbnail?id=") for item in albums))
+
+    def test_persisted_artist_aggregate_excludes_unidentified_comp_fallback(self):
+        with closing(connect(":memory:")) as db:
+            db.execute(
+                "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,status TEXT,"
+                "album_count INTEGER,unprocessed_count INTEGER,processed_count INTEGER,"
+                "bypassed_count INTEGER,timeout_count INTEGER,updated_at TEXT)"
+            )
+            db.execute(
+                "CREATE TABLE albums (artist_key TEXT,status TEXT,compilation INTEGER,"
+                "musicbrainz_albumid TEXT)"
+            )
+            db.execute(
+                "INSERT INTO artists VALUES ('artist','partial',2,1,1,0,0,'old')"
+            )
+            db.executemany(
+                "INSERT INTO albums VALUES ('artist',?,?,?)",
+                [
+                    ("processed", 0, "release-owned"),
+                    ("processed", 1, "release-identified-compilation"),
+                    ("incomplete", 1, ""),
+                ],
+            )
+
+            update_artist_aggregate(db, "artist")
+            row = db.execute(
+                "SELECT status,album_count,unprocessed_count,processed_count "
+                "FROM artists WHERE artist_key='artist'"
+            ).fetchone()
+
+        self.assertEqual(row, ("complete", 2, 0, 2))
 
     def test_identified_compilation_is_a_primary_artist_album(self):
         with TemporaryDirectory() as directory:

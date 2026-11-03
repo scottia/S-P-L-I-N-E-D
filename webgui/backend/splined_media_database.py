@@ -300,6 +300,32 @@ def aggregate_artist(statuses: list[str]) -> str:
     return "unprocessed"
 
 
+def album_counts_toward_artist_status(
+    compilation: object, musicbrainz_albumid: object
+) -> bool:
+    """Match the Artist file-list boundary used by Windows and the WebGUI.
+
+    An unidentified COMP fallback is track-scoped and may be associated with
+    any credited Artist. Its folder-wide progress must not make that Artist
+    partial. Identified compilations remain ordinary Artist Album cards.
+    """
+    return not bool(compilation) or bool(str(musicbrainz_albumid or "").strip())
+
+
+def artist_album_statuses(
+    connection: sqlite3.Connection, artist_key: str
+) -> list[str]:
+    return [
+        str(row[0])
+        for row in connection.execute(
+            "SELECT status FROM albums WHERE artist_key=? "
+            "AND (COALESCE(compilation,0)=0 "
+            "OR TRIM(COALESCE(musicbrainz_albumid,''))<>'')",
+            (artist_key,),
+        )
+    ]
+
+
 def _insert_snapshot(
     connection: sqlite3.Connection,
     artists: dict[str, dict[str, Any]],
@@ -600,9 +626,12 @@ def project_statuses(
     rows = connection.execute(
         "SELECT album_key, artist_key, path, local_art_json, "
         "inventory_fingerprint, status, bypassed, cover_found, "
-        "timeout_until, processed_at, selected_source FROM albums"
+        "timeout_until, processed_at, selected_source, compilation, "
+        "musicbrainz_albumid FROM albums"
     )
     for row in rows:
+        artist_key = str(row["artist_key"])
+        by_artist.setdefault(artist_key, [])
         path = str(row["path"])
         history_entry = history_albums.get(path)
         outcome = (
@@ -674,7 +703,10 @@ def project_statuses(
             status = "processed"
         else:
             status = "unprocessed"
-        by_artist.setdefault(str(row["artist_key"]), []).append(status)
+        if album_counts_toward_artist_status(
+            row["compilation"], row["musicbrainz_albumid"]
+        ):
+            by_artist[artist_key].append(status)
         updates.append(
             (
                 status,
@@ -701,13 +733,7 @@ def update_artist_aggregate(
     statuses: list[str] | None = None,
 ) -> None:
     if statuses is None:
-        statuses = [
-            str(row[0])
-            for row in connection.execute(
-                "SELECT status FROM albums WHERE artist_key=?",
-                (artist_key,),
-            )
-        ]
+        statuses = artist_album_statuses(connection, artist_key)
     counts = {name: statuses.count(name) for name in VALID_ALBUM_STATUSES}
     connection.execute(
         "UPDATE artists SET status=?, album_count=?, unprocessed_count=?, "
