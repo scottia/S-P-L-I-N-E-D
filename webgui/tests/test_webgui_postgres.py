@@ -3,6 +3,7 @@
 from __future__ import annotations
 from contextlib import closing
 from dataclasses import replace
+from datetime import timezone
 from io import BytesIO
 import hashlib
 import json
@@ -2198,7 +2199,8 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 db.execute("SELECT count(*) FROM albums").fetchone()[0], 1
             )
 
-    def test_reconciliation_applies_newer_album_completion_and_is_idempotent(self):
+    def test_reconciliation_applies_windows_album_authority_and_is_idempotent(self):
+        authoritative_time = "2000-01-01T00:00:00+00:00"
         snapshot = self.root / "cache" / "processed.sqlite"
         snapshot.parent.mkdir(parents=True, exist_ok=True)
         with closing(sqlite3.connect(snapshot)) as source, source:
@@ -2227,9 +2229,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     self.row["artist_key"],
                     self.row["album_name"],
                     self.row["path"],
-                    "2099-01-01T00:00:00+00:00",
+                    authoritative_time,
                     "existing",
-                    "2099-01-01T00:00:00+00:00",
+                    authoritative_time,
                     1,
                     "processed",
                     int(self.row["track_count"]),
@@ -2243,9 +2245,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     self.row["artist_key"],
                     "Hidden Windows COMP",
                     str(self.root / "music" / "Various Artists" / "Hidden Windows COMP"),
-                    "2099-01-01T00:00:00+00:00",
+                    authoritative_time,
                     "embed-queue",
-                    "2099-01-01T00:00:00+00:00",
+                    authoritative_time,
                     1,
                     "processed",
                     1,
@@ -2368,6 +2370,336 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 self.assertEqual(startup_run["applied"], 0)
             finally:
                 startup_reconciler.close()
+        finally:
+            reconciler.close()
+
+    def test_reconciliation_populates_empty_catalog_with_accounted_controlled_inserts(self):
+        snapshot = self.root / "cache" / "empty-target-source.sqlite"
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        with closing(self.db.connect()) as db:
+            source_rows = {
+                "artists": [
+                    dict(
+                        db.execute(
+                            "SELECT * FROM artists WHERE artist_key=?",
+                            (self.row["artist_key"],),
+                        ).fetchone()
+                    )
+                ],
+                "albums": [
+                    dict(
+                        db.execute(
+                            "SELECT * FROM albums WHERE album_key=?",
+                            (self.row["album_key"],),
+                        ).fetchone()
+                    )
+                ],
+                "tracks": [
+                    dict(row)
+                    for row in db.execute(
+                        "SELECT * FROM tracks WHERE album_key=? ORDER BY track_key",
+                        (self.row["album_key"],),
+                    )
+                ],
+            }
+
+        schema_sql = (
+            Path(__file__).parents[2] / "schema" / "media.sql"
+        ).read_text(encoding="utf-8")
+        with closing(sqlite3.connect(snapshot)) as source, source:
+            source.executescript(schema_sql)
+            source.execute("PRAGMA user_version=2")
+            for table, rows in source_rows.items():
+                sqlite_columns = {
+                    str(row[1])
+                    for row in source.execute(f'PRAGMA table_info("{table}")')
+                }
+                names = [name for name in rows[0] if name in sqlite_columns]
+                placeholders = ",".join("?" for _ in names)
+                source.executemany(
+                    f'INSERT INTO "{table}" ({",".join(names)}) VALUES ({placeholders})',
+                    [[row.get(name) for name in names] for row in rows],
+                )
+
+        with closing(self.db.connect()) as db, db:
+            db.raw.execute("TRUNCATE artists,albums,tracks CASCADE")
+
+        audit_events = []
+
+        def audit(action, subject, details, **fields):
+            audit_events.append({"action": action, "details": details, **fields})
+
+        reconciler = SQLiteReconciler(
+            self.db,
+            snapshot.parent,
+            self.root / "music",
+            audit=audit,
+            start_scheduler=False,
+        )
+        try:
+            compared = reconciler.compare(
+                snapshot, str(self.root / "music"), str(self.root / "music")
+            )
+            self.assertEqual(compared["differences"], 4)
+            self.assertEqual(compared["safe"], 4)
+            self.assertEqual(compared["conflicts"], 0)
+            self.assertEqual(compared["tables"]["artists"]["inserts"], 1)
+            self.assertEqual(compared["tables"]["albums"]["inserts"], 1)
+            self.assertEqual(compared["tables"]["tracks"]["inserts"], 2)
+            self.assertEqual(compared["tables"]["tracks"]["rejected"], 0)
+
+            completed_event = next(
+                event
+                for event in audit_events
+                if event.get("stage") == "compare"
+                and event.get("request_status") == "completed"
+            )
+            self.assertEqual(
+                completed_event["details"]["tables"]["tracks"]["safe"], 2
+            )
+
+            applied = reconciler.apply(compared["run_id"])
+            self.assertEqual(applied["attempted"], 4)
+            self.assertEqual(applied["applied"], 4)
+            self.assertEqual(applied["failures"], 0)
+            self.assertEqual(applied["tables"]["tracks"]["applied"], 2)
+            with closing(self.db.connect()) as db:
+                counts = {
+                    table: db.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+                    for table in ("artists", "albums", "tracks")
+                }
+                stored_counts = db.execute(
+                    "SELECT table_counts FROM sqlite_reconciliation_runs WHERE run_id=?",
+                    (compared["run_id"],),
+                ).fetchone()["table_counts"]
+            self.assertEqual(counts, {"artists": 1, "albums": 1, "tracks": 2})
+            self.assertEqual(stored_counts["artists"]["applied"], 1)
+
+            repeated = reconciler.compare(
+                snapshot, str(self.root / "music"), str(self.root / "music")
+            )
+            self.assertEqual(repeated["differences"], 0)
+            self.assertEqual(reconciler.apply(repeated["run_id"])["attempted"], 0)
+        finally:
+            reconciler.close()
+
+    def test_reconciliation_older_windows_fields_override_without_erasing_postgresql_only_fields(self):
+        snapshot = self.root / "cache" / "windows-authority.sqlite"
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        with closing(self.db.connect()) as db:
+            artist = db.execute(
+                "SELECT artist_key,artist_name,primary_path FROM artists WHERE artist_key=?",
+                (self.row["artist_key"],),
+            ).fetchone()
+            album = db.execute(
+                "SELECT album_key,artist_key,album_name,path FROM albums WHERE album_key=?",
+                (self.row["album_key"],),
+            ).fetchone()
+        with closing(sqlite3.connect(snapshot)) as source, source:
+            source.execute("PRAGMA user_version=2")
+            source.execute(
+                "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,primary_path TEXT)"
+            )
+            source.execute(
+                "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,"
+                "album_name TEXT,path TEXT,release_year TEXT,updated_at TEXT,"
+                "timeout_until TEXT)"
+            )
+            source.execute(
+                "INSERT INTO artists VALUES (?,?,?)",
+                (artist["artist_key"], artist["artist_name"], artist["primary_path"]),
+            )
+            source.execute(
+                "INSERT INTO albums VALUES (?,?,?,?,?,?,?)",
+                (
+                    album["album_key"],
+                    album["artist_key"],
+                    album["album_name"],
+                    album["path"],
+                    "1999",
+                    "2000-01-01T00:00:00+00:00",
+                    "2001-01-01T00:00:00+00:00",
+                ),
+            )
+        with closing(self.db.connect()) as db, db:
+            db.execute(
+                "UPDATE albums SET release_year='2001',updated_at=?,timeout_until=NULL,embedded_tracks=1,"
+                "embedded_validation_status='retry',embedded_validated_at=? "
+                "WHERE album_key=?",
+                (
+                    "2099-01-01T00:00:00+00:00",
+                    "2026-01-01T00:00:00+00:00",
+                    self.row["album_key"],
+                ),
+            )
+
+        reconciler = SQLiteReconciler(
+            self.db, snapshot.parent, self.root / "music", start_scheduler=False
+        )
+        try:
+            compared = reconciler.compare(
+                snapshot, str(self.root / "music"), str(self.root / "music")
+            )
+            self.assertEqual(compared["safe"], 1)
+            self.assertEqual(compared["conflicts"], 0)
+            applied = reconciler.apply(compared["run_id"])
+            self.assertEqual(applied["failures"], 0)
+            with closing(self.db.connect()) as db:
+                saved = db.execute(
+                    "SELECT release_year,updated_at,timeout_until,embedded_tracks,"
+                    "embedded_validation_status,embedded_validated_at "
+                    "FROM albums WHERE album_key=?",
+                    (self.row["album_key"],),
+                ).fetchone()
+            self.assertEqual(saved["release_year"], "1999")
+            self.assertEqual(saved["updated_at"], "2000-01-01T00:00:00+00:00")
+            self.assertEqual(saved["timeout_until"], "2001-01-01T00:00:00+00:00")
+            self.assertEqual(saved["embedded_tracks"], 1)
+            self.assertEqual(saved["embedded_validation_status"], "retry")
+            self.assertEqual(
+                saved["embedded_validated_at"].astimezone(timezone.utc).isoformat(),
+                "2026-01-01T00:00:00+00:00",
+            )
+            repeated = reconciler.compare(
+                snapshot, str(self.root / "music"), str(self.root / "music")
+            )
+            self.assertEqual(repeated["differences"], 0)
+        finally:
+            reconciler.close()
+
+    def test_reconciliation_apply_audit_identifies_failed_table_key_and_error(self):
+        snapshot = self.root / "cache" / "stale-target.sqlite"
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        with closing(self.db.connect()) as db:
+            artist = db.execute(
+                "SELECT artist_key,artist_name,primary_path FROM artists WHERE artist_key=?",
+                (self.row["artist_key"],),
+            ).fetchone()
+            album = db.execute(
+                "SELECT album_key,artist_key,album_name,path FROM albums WHERE album_key=?",
+                (self.row["album_key"],),
+            ).fetchone()
+        with closing(sqlite3.connect(snapshot)) as source, source:
+            source.execute("PRAGMA user_version=2")
+            source.execute(
+                "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,primary_path TEXT)"
+            )
+            source.execute(
+                "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,"
+                "album_name TEXT,path TEXT,release_year TEXT)"
+            )
+            source.execute(
+                "INSERT INTO artists VALUES (?,?,?)",
+                (artist["artist_key"], artist["artist_name"], artist["primary_path"]),
+            )
+            source.execute(
+                "INSERT INTO albums VALUES (?,?,?,?,?)",
+                (
+                    album["album_key"],
+                    album["artist_key"],
+                    album["album_name"],
+                    album["path"],
+                    "1999",
+                ),
+            )
+
+        audit_events = []
+
+        def audit(action, subject, details, **fields):
+            audit_events.append({"action": action, "details": details, **fields})
+
+        reconciler = SQLiteReconciler(
+            self.db,
+            snapshot.parent,
+            self.root / "music",
+            audit=audit,
+            start_scheduler=False,
+        )
+        try:
+            compared = reconciler.compare(
+                snapshot, str(self.root / "music"), str(self.root / "music")
+            )
+            self.assertEqual(compared["safe"], 1)
+            with closing(self.db.connect()) as db, db:
+                db.execute(
+                    "UPDATE albums SET release_year='changed-after-compare' WHERE album_key=?",
+                    (self.row["album_key"],),
+                )
+            applied = reconciler.apply(compared["run_id"])
+            self.assertEqual(applied["attempted"], 1)
+            self.assertEqual(applied["applied"], 0)
+            self.assertEqual(applied["failures"], 1)
+            self.assertEqual(applied["tables"]["albums"]["apply_failed"], 1)
+            self.assertEqual(applied["failure_details"][0]["table"], "albums")
+            self.assertIn(
+                self.row["album_key"], applied["failure_details"][0]["entity_key"]
+            )
+            self.assertIn(
+                "state changed", applied["failure_details"][0]["error"].lower()
+            )
+            failed_event = next(
+                event
+                for event in audit_events
+                if event.get("stage") == "apply-safe"
+            )
+            self.assertEqual(
+                failed_event["details"]["failure_details"][0]["table"], "albums"
+            )
+            with closing(self.db.connect()) as db:
+                difference = db.execute(
+                    "SELECT resolution,application_outcome,error FROM salite_diff "
+                    "WHERE last_run_id=? AND entity_table='albums'",
+                    (compared["run_id"],),
+                ).fetchone()
+            self.assertEqual(difference["resolution"], "skipped")
+            self.assertEqual(difference["application_outcome"], "failed")
+            self.assertIn("state changed", difference["error"].lower())
+        finally:
+            reconciler.close()
+
+    def test_reconciliation_advances_legacy_cache_history_identity_before_insert(self):
+        snapshot = self.root / "cache" / "cache-history.sqlite"
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(snapshot)) as source, source:
+            source.execute("PRAGMA user_version=2")
+            source.execute("CREATE TABLE artists (artist_key TEXT PRIMARY KEY)")
+            source.execute("CREATE TABLE albums (album_key TEXT PRIMARY KEY)")
+            source.execute(
+                "CREATE TABLE cache_history (history_id INTEGER PRIMARY KEY,"
+                "cache_key TEXT,cache_type TEXT,album_key TEXT,action TEXT,"
+                "payload_json TEXT,splined_version TEXT,event_at TEXT)"
+            )
+            source.execute(
+                "INSERT INTO cache_history VALUES (2,'source','test',NULL,"
+                "'processed','{}','windows','2026-01-02T00:00:00Z')"
+            )
+        with closing(self.db.connect()) as db, db:
+            db.raw.execute(
+                "INSERT INTO cache_history(history_id,cache_key,cache_type,album_key,"
+                "action,payload_json,splined_version,event_at) OVERRIDING SYSTEM VALUE "
+                "VALUES(1,'existing','test',NULL,'processed','{}','postgres',"
+                "'2026-01-01T00:00:00Z')"
+            )
+
+        reconciler = SQLiteReconciler(
+            self.db, snapshot.parent, self.root / "music", start_scheduler=False
+        )
+        try:
+            compared = reconciler.compare(
+                snapshot, str(self.root / "music"), str(self.root / "music")
+            )
+            self.assertEqual(compared["safe"], 1)
+            applied = reconciler.apply(compared["run_id"])
+            self.assertEqual(applied["failures"], 0)
+            self.assertEqual(applied["applied"], 1)
+            with closing(self.db.connect()) as db:
+                rows = db.execute(
+                    "SELECT history_id,cache_key FROM cache_history ORDER BY history_id"
+                ).fetchall()
+            self.assertEqual(
+                [(row["history_id"], row["cache_key"]) for row in rows],
+                [(1, "existing"), (2, "source")],
+            )
         finally:
             reconciler.close()
 
@@ -2570,7 +2902,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         finally:
             reconciler.close()
 
-    def test_reconciliation_unique_artist_identity_updates_without_erasing_known_mbid(self):
+    def test_reconciliation_unique_artist_identity_applies_windows_authority(self):
         old = "2026-01-01T00:00:00+00:00"
         newer = "2099-01-01T00:00:00+00:00"
         targets = (
@@ -2661,7 +2993,10 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 {
                     "tag:path-proven": "authoritative-path-mbid",
                     "tag:identified-later": "newly-identified-mbid",
-                    "tag:keep-known": "known-target-mbid",
+                    # The exact key and unique mapped path prove the entity;
+                    # the authoritative unidentified Windows value therefore
+                    # clears the stale synchronized PostgreSQL MBID.
+                    "tag:keep-known": "",
                 },
             )
             repeated = reconciler.compare(
