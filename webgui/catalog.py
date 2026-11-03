@@ -1131,19 +1131,12 @@ class Catalog:
                 ("%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%",) * 2
                 + (1 if fallback_only else 0,),
             ).fetchall()
-            fallback_thumbnails = (
-                self.fallback_thumbnail_keys(db) if fallback_only else {}
-            )
         items = []
         for row in rows:
             album_key = str(row["album_key"])
             cover_url = self.album_thumbnail_url(album_key)
             if fallback_only:
                 cover_url = self.image(self.album_cover_path(row))
-                if not cover_url and album_key in fallback_thumbnails:
-                    cover_url = self.fallback_thumbnail_url(
-                        album_key, fallback_thumbnails[album_key]
-                    )
             items.append({
                 "id": row["album_key"], "name": row["album_name"],
                 "artist_id": row["artist_key"], "artist_name": row["artist_name"],
@@ -1494,7 +1487,6 @@ class Catalog:
             has_ledger = db.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='compilation_track_artwork'"
             ).fetchone() is not None
-            fallback_thumbnails = self.fallback_thumbnail_keys(db)
             completed = {str(row[0]) for row in db.execute(
                 "SELECT track_path FROM compilation_track_artwork "
                 "WHERE outcome IN ('embedded-replaced','embedded-existing')",
@@ -1535,17 +1527,12 @@ class Catalog:
             seen.add(path_key)
             key = str(row["album_key"])
             if key not in groups:
-                cover = self.album_cover_path(row)
-                cover_url = self.image(cover)
-                if not cover_url and key in fallback_thumbnails:
-                    cover_url = self.fallback_thumbnail_url(
-                        key, fallback_thumbnails[key]
-                    )
                 groups[key] = {
                     "id": key, "name": row["album_name"], "year": row["release_year"] or "",
-                    # The album card uses the indexed folder cover. Embedded
-                    # track art remains isolated to COMP report track previews.
-                    "cover": cover_url,
+                    # Selected Artist COMP cards lazily load the folder's
+                    # cover.* through the standard Album thumbnail endpoint.
+                    # Embedded track art remains exclusive to COMP Report.
+                    "cover": self.album_thumbnail_url(key),
                     "compilation": True, "album_mbid": "", "tracks": [],
                 }
             completed_track = str(track_path) in completed
