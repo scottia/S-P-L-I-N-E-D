@@ -36,6 +36,12 @@ from webgui.catalog import (
     inside,
     embedded_track_artwork_bytes,
 )
+from webgui.catalog_authority import (
+    index_update_columns,
+    windows_managed,
+    windows_managed_keys,
+    windows_managed_track_keys,
+)
 from webgui.runtime import Runtime
 from webgui import imaging
 from webgui.audit import (
@@ -516,20 +522,60 @@ class Services:
 
     def _upsert(self, db, table, row, key):
         columns = list(row)
+        managed = windows_managed(db.raw, table, row.get(key))
+        updates = index_update_columns(table, row, managed)
+        conflict = (
+            sql.SQL("DO UPDATE SET {}").format(
+                sql.SQL(",").join(
+                    sql.SQL("{}=excluded.{}").format(
+                        sql.Identifier(column), sql.Identifier(column)
+                    )
+                    for column in updates
+                )
+            )
+            if updates
+            else sql.SQL("DO NOTHING")
+        )
         statement = sql.SQL(
-            "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT ({}) DO UPDATE SET {}"
+            "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT ({}) {}"
         ).format(
             sql.Identifier(table),
             sql.SQL(",").join(map(sql.Identifier, columns)),
             sql.SQL(",").join(sql.Placeholder() for _ in columns),
             sql.Identifier(key),
-            sql.SQL(",").join(
-                sql.SQL("{}=excluded.{}").format(sql.Identifier(c), sql.Identifier(c))
-                for c in columns
-                if c != key
-            ),
+            conflict,
         )
         db.raw.execute(statement, list(row.values()))
+
+    @staticmethod
+    def _update_artist_presentation(db, artist_key, managed):
+        """Recalculate display counters without claiming Windows timestamps."""
+        if not managed:
+            media.update_artist_aggregate(db, artist_key)
+            return
+        statuses = [
+            str(row[0])
+            for row in db.execute(
+                "SELECT status FROM albums WHERE artist_key=?", (artist_key,)
+            )
+        ]
+        counts = {
+            name: statuses.count(name)
+            for name in ("unprocessed", "incomplete", "processed", "bypassed", "timeout")
+        }
+        db.execute(
+            "UPDATE artists SET status=?,album_count=?,unprocessed_count=?,"
+            "processed_count=?,bypassed_count=?,timeout_count=? WHERE artist_key=?",
+            (
+                media.aggregate_artist(statuses),
+                len(statuses),
+                counts["unprocessed"] + counts["incomplete"],
+                counts["processed"],
+                counts["bypassed"],
+                counts["timeout"],
+                artist_key,
+            ),
+        )
 
     @serialized
     def index_changes(self, cancelled=None):
@@ -595,6 +641,9 @@ class Services:
                     "SELECT albums.*,artists.artist_name,artists.artist_sort,artists.musicbrainz_artistid,artists.primary_path FROM albums JOIN artists ON artists.artist_key=albums.artist_key"
                 )
             )
+            managed_artists = windows_managed_keys(db.raw, "artists")
+            managed_albums = windows_managed_keys(db.raw, "albums")
+        windows_authority_configured = bool(managed_artists or managed_albums)
         old_keys = {row["album_key"]: row for row in old}
         old_paths = {row["path"]: row for row in old}
         albums, _ = core.inventory(
@@ -627,6 +676,7 @@ class Services:
         seen = set()
         touched_artists = set()
         changed_albums = 0
+        deferred_albums = 0
         now = tags.utc_now()
         for number, album in enumerate(albums, 1):
             if cancelled and cancelled():
@@ -648,6 +698,26 @@ class Services:
                 old_paths,
                 used,
             )
+            if prior_at_path is not None and str(
+                prior_at_path["album_key"]
+            ) in managed_albums:
+                row["album_key"] = str(prior_at_path["album_key"])
+                row["artist_key"] = str(prior_at_path["artist_key"])
+                artist["artist_key"] = str(prior_at_path["artist_key"])
+            elif str(row["album_key"]) in managed_albums:
+                authoritative = old_keys[str(row["album_key"])]
+                row["artist_key"] = str(authoritative["artist_key"])
+                artist["artist_key"] = str(authoritative["artist_key"])
+            elif (
+                windows_authority_configured
+                and prior_at_path is None
+                and str(row["album_key"]) not in old_keys
+            ):
+                # A new synchronized identity must arrive through the next
+                # Windows SNAP. Full Refresh may still inventory and validate
+                # known entities but cannot create a competing catalog row.
+                deferred_albums += 1
+                continue
             artist["splined_version"] = core.VERSION
             row["splined_version"] = core.VERSION
             row["last_seen_at"] = now
@@ -700,16 +770,23 @@ class Services:
         with closing(r.database.connect()) as db, db:
             # Removal happens only after a complete inventory, never after cancellation.
             if mode == "full":
-                stale = list(
-                    db.execute(
-                        "SELECT album_key,artist_key FROM albums WHERE last_seen_at<>?",
-                        (now,),
-                    )
-                )
+                stale_candidates = [
+                    row for row in old if str(row["album_key"]) not in seen
+                ]
             else:
-                stale = [
+                stale_candidates = [
                     row for row in old if str(row["path"]) not in current_paths
                 ]
+            protected_stale = [
+                row
+                for row in stale_candidates
+                if str(row["album_key"]) in managed_albums
+            ]
+            stale = [
+                row
+                for row in stale_candidates
+                if str(row["album_key"]) not in managed_albums
+            ]
             for row in stale:
                 touched_artists.add(str(row["artist_key"]))
                 db.execute(
@@ -719,7 +796,12 @@ class Services:
                     "DELETE FROM albums WHERE album_key=?", (row["album_key"],)
                 )
             db.raw.execute(
-                "DELETE FROM artists WHERE NOT EXISTS (SELECT 1 FROM albums WHERE albums.artist_key=artists.artist_key)"
+                "DELETE FROM artists WHERE NOT EXISTS "
+                "(SELECT 1 FROM albums WHERE albums.artist_key=artists.artist_key) "
+                "AND NOT EXISTS (SELECT 1 FROM catalog_sync_authority authority "
+                "WHERE authority.entity_table='artists' "
+                "AND authority.entity_key=artists.artist_key "
+                "AND authority.authority='windows')"
             )
             artists = (
                 list(db.execute("SELECT artist_key FROM artists"))
@@ -733,12 +815,18 @@ class Services:
                 ]
             )
             for artist in artists:
-                media.update_artist_aggregate(db, artist["artist_key"])
+                artist_key = str(artist["artist_key"])
+                self._update_artist_presentation(
+                    db, artist_key, artist_key in managed_artists
+                )
         result = {
             "mode": mode,
             "albums": len(current_paths),
             "changed_albums": changed_albums,
             "removed_albums": len(stale),
+            "protected_albums": len(protected_stale),
+            "deferred_albums": deferred_albums,
+            "windows_managed_albums": len(managed_albums),
         }
         # Artist appearances come from the refreshed catalog plus Navidrome.
         # Never retain an empty or partial artist projection across a refresh.
@@ -758,16 +846,20 @@ class Services:
                     "SELECT * FROM tracks WHERE album_key=?", (album_id,)
                 )
             }
+            album_managed = windows_managed(db.raw, "albums", album_id)
+            managed_tracks = windows_managed_track_keys(db.raw, album_id)
         records, _, _ = tags.inspect_album_tracks(
             core.AlbumDir(Path(row["path"]), files), album_id, old
         )
         with closing(self.runtime.database.connect()) as db, db:
             for record in records:
+                if album_managed and str(record["track_key"]) not in managed_tracks:
+                    continue
                 record["splined_version"] = core.VERSION
                 self._upsert(db, "tracks", record, "track_key")
             existing = {str(p) for p in files}
             for path in old:
-                if path not in existing:
+                if path not in existing and path not in managed_tracks:
                     db.execute(
                         "DELETE FROM tracks WHERE album_key=? AND path=?",
                         (album_id, path),

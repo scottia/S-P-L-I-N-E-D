@@ -22,6 +22,11 @@ from psycopg import sql
 from psycopg.types.json import Jsonb
 
 from webgui.audit import sanitize_text
+from webgui.catalog_authority import (
+    TABLE_KEYS as AUTHORITY_TABLE_KEYS,
+    WINDOWS_MANAGED_TABLES,
+    mark_windows_authority,
+)
 
 SQLITE_SCHEMA_VERSION = 2
 SOURCE_SUFFIXES = {".db", ".sqlite", ".sqlite3"}
@@ -722,6 +727,9 @@ class SQLiteReconciler:
                     projected_artists = []
                     for row in source_rows["artists"]:
                         mapped = self._map_row("artists", row, str(source_root), str(target))
+                        mapped["_reconciliation_source_key"] = str(
+                            mapped.get("artist_key") or ""
+                        )
                         match, identity = self._find_artist_match(mapped, artist_maps)
                         source_key = str(row.get("artist_key") or "")
                         if match:
@@ -746,6 +754,9 @@ class SQLiteReconciler:
                     projected_albums = []
                     for row in source_rows["albums"]:
                         mapped = self._map_row("albums", row, str(source_root), str(target))
+                        mapped["_reconciliation_source_key"] = str(
+                            mapped.get("album_key") or ""
+                        )
                         source_artist_key = str(row.get("artist_key") or "")
                         mapped["artist_key"] = artist_keys.get(source_artist_key, row.get("artist_key"))
                         if source_artist_key in unresolved_artist_keys:
@@ -769,6 +780,9 @@ class SQLiteReconciler:
                     projected_tracks = []
                     for row in source_rows["tracks"]:
                         mapped = self._map_row("tracks", row, str(source_root), str(target))
+                        mapped["_reconciliation_source_key"] = str(
+                            mapped.get("track_key") or ""
+                        )
                         source_album_key = str(row.get("album_key") or "")
                         mapped["album_key"] = album_keys.get(source_album_key, row.get("album_key"))
                         if source_album_key in unresolved_album_keys:
@@ -805,6 +819,30 @@ class SQLiteReconciler:
                                 match = self._find_match(table, mapped, maps)
                             rows.append((mapped, match))
                         prepared[table] = rows
+
+                    # Exact unchanged associations are Windows-managed even
+                    # when this comparison produces no difference to Apply.
+                    # Non-key identity matches are promoted only after a
+                    # successful Apply, while ambiguous/blocked rows are never
+                    # marked as authoritative.
+                    for table in WINDOWS_MANAGED_TABLES:
+                        key_name = AUTHORITY_TABLE_KEYS[table]
+                        for source_row, target_row in prepared[table]:
+                            identity = source_row.get("_reconciliation_identity") or {}
+                            if (
+                                target_row is not None
+                                and str(identity.get("status") or "")
+                                not in {"ambiguous", "blocked", "conflict", "rejected"}
+                                and str(source_row.get("_reconciliation_source_key") or "")
+                                == str(target_row.get(key_name) or "")
+                            ):
+                                mark_windows_authority(
+                                    raw,
+                                    table,
+                                    target_row[key_name],
+                                    before,
+                                    label,
+                                )
 
                     for table in table_names:
                         columns = target_columns[table]
@@ -1056,6 +1094,14 @@ class SQLiteReconciler:
                             "UPDATE salite_diff SET resolution='applied',application_outcome='applied',applied_at=now(),error='' WHERE id=%s",
                             (difference["id"],),
                         )
+                        if table in WINDOWS_MANAGED_TABLES:
+                            mark_windows_authority(
+                                raw,
+                                table,
+                                source[AUTHORITY_TABLE_KEYS[table]],
+                                str(difference["source_fingerprint"]),
+                                str(difference["source_label"]),
+                            )
                     if table in {"albums", "tracks"} and source.get("album_key"):
                         affected_album_keys.add(str(source["album_key"]))
                     elif table == "compilation_track_artwork" and source.get("track_path"):

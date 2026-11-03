@@ -41,6 +41,9 @@ opening every normal track. The header reports separate added, changed, and
 removed counts before applying that delta. Changed COMP/Fallback Albums rebuild
 their complete track identity inventory during the explicit update. Use
 **Settings → Full Refresh Library Index** only for a deliberate full rebuild.
+When Windows SNAP reconciliation is in use, Full Refresh preserves reconciled
+fields and updates only the WebGUI/derived portions described in the
+[catalog authority contract](catalog-authority.md).
 
 ### Settings map
 

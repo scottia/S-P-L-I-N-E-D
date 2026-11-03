@@ -53,6 +53,11 @@ retain that selection and mapping without enabling a schedule. Keep scheduling
 disabled and use **Compare / Dry Run** until the recorded differences have
 been reviewed.
 
+After an unambiguous entity is reconciled, its synchronized Windows fields are
+protected from later Full Refresh replacement. See the
+[catalog authority contract](../docs/catalog-authority.md) for the exact field
+ownership and standalone-WebGUI behavior.
+
 The legacy **Import Catalog** control is only for importing one specific
 SQLite file into an empty PostgreSQL catalog. It does not perform incremental
 reconciliation.
