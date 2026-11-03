@@ -110,6 +110,8 @@ Media Filter retains the existing selected-item counter behavior. Status toggles
 
 Navidrome supplies biography, similar artists, and top songs when available. If Navidrome has no matching Artist or biography, WebGUI confirms MusicBrainz identity and obtains biography text from Last.fm; that fallback profile is retained in PostgreSQL. Indexed songs are identified separately from ranked metadata. Artwork counts refer to actual embedded track images, not folder sidecars.
 
+Artist overview cards include owned Albums plus exact indexed Featured credits. Historical numbered filenames such as `1-02 - Artist A & Artist B - Title` can supply an exact multi-Artist credit when the track Artist tag contains only the Album Artist. Unidentified COMP cards use a folder `cover.*` when available and otherwise lazily display the first recorded embedded front-cover thumbnail; the physical track artwork remains the validation authority.
+
 ## Data, recovery, and deployment
 
 PostgreSQL is the live WebGUI catalog, job, Audit, and runtime store. Windows
@@ -121,6 +123,8 @@ only job, Audit, validation, and browser fields are preserved. Ambiguous or
 unmapped entities remain visible conflicts, target-only rows are not deleted,
 and reconciliation is deferred while Album work is active. Avoid simultaneous
 media writers even though the databases are separate.
+
+**Settings → Processing & Logs → Reconciliation Conflicts** provides a read-only, filterable view of the latest or selected reconciliation run. Entries are grouped by root Artist and can be filtered by entity, root cause, Album class, path, MBID, or text. Each entry compares the Windows SNAP value with PostgreSQL. The same report can be downloaded as standalone HTML or JSON; viewing or exporting it never applies a difference.
 
 **Catalog Maintenance → Import an existing SQLite catalog** is an explicit
 one-time initialization operation. The path names a snapshot readable by the

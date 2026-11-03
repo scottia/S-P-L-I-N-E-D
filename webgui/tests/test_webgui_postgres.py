@@ -3055,7 +3055,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         finally:
             reconciler.close()
 
-    def test_reconciliation_normalizes_bom_identity_and_refuses_alias_collision(self):
+    def test_reconciliation_normalizes_and_coalesces_identical_bom_alias(self):
         with closing(self.db.connect()) as db:
             artist = dict(
                 db.execute(
@@ -3131,22 +3131,11 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 str(self.root / "music"),
             )
             self.assertEqual(collision["safe"], 0)
-            self.assertEqual(collision["conflicts"], 1)
-            with closing(self.db.connect()) as db:
-                difference = db.execute(
-                    "SELECT source_value,resolution FROM salite_diff "
-                    "WHERE last_run_id=?",
-                    (collision["run_id"],),
-                ).fetchone()
-            self.assertEqual(difference["resolution"], "conflict")
-            identity = difference["source_value"]["_reconciliation_identity"]
-            self.assertEqual(identity["candidate_count"], 2)
+            self.assertEqual(collision["conflicts"], 0)
+            self.assertEqual(collision["differences"], 0)
             self.assertEqual(
-                identity["reason"],
-                "multiple-windows-entities-share-one-canonical-key",
-            )
-            self.assertTrue(
-                any("\ufeff" in value for value in identity["source_keys"])
+                collision["tables"]["artists"]["transport_aliases_coalesced"],
+                1,
             )
             self.assertEqual(reconciler.apply(collision["run_id"])["attempted"], 0)
         finally:
@@ -3338,6 +3327,19 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 album_difference["source_value"]["_reconciliation_identity"]["reason"],
                 "artist-association-unresolved",
             )
+
+            report = reconciler.conflict_report(run_id=compared["run_id"])
+            self.assertEqual(report["total"], 2)
+            self.assertEqual(
+                {item["entity_table"] for item in report["items"]},
+                {"artists", "albums"},
+            )
+            self.assertEqual(len(report["roots"]), 1)
+            self.assertEqual(report["roots"][0]["count"], 2)
+            self.assertIn("ambiguous", report["facets"]["reasons"])
+            html = reconciler.conflict_report_html(run_id=compared["run_id"])
+            self.assertIn("SPLINED Reconciliation Conflicts", html)
+            self.assertIn("Ambiguous-Name", html)
 
             applied = reconciler.apply(compared["run_id"])
             self.assertEqual(applied["attempted"], 0)

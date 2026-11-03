@@ -67,6 +67,25 @@ def artist_credit_position(track_artist: str, artist: str) -> int | None:
     return None
 
 
+def indexed_track_credit_values(
+    track_artist: str, title: str = "", path: str = ""
+) -> tuple[str, ...]:
+    """Return explicit tags plus strict numbered-filename Artist credits.
+
+    Some historical media stores the Album Artist in the track Artist field
+    while preserving the real multi-Artist credit in the canonical
+    ``disc-track - Artists - Title`` name. Windows/Navidrome exposes those
+    appearances. Accept only that numbered convention so ordinary song titles
+    containing an Artist name cannot manufacture a Featured appearance.
+    """
+    values = [str(track_artist or "").strip()]
+    for candidate in (str(title or ""), Path(str(path or "")).stem):
+        match = re.match(r"^\s*(?:\d+-)?\d+\s+-\s+(.+?)\s+-\s+.+$", candidate)
+        if match:
+            values.append(match.group(1).strip())
+    return tuple(dict.fromkeys(value for value in values if value))
+
+
 def normalized_artist_identity(value: str) -> str:
     """Collapse invisible/tag-only differences without merging distinct MBIDs."""
     normalized = unicodedata.normalize("NFKC", str(value or ""))
@@ -734,12 +753,14 @@ class Catalog:
                 escaped = name.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
                 matches.extend(db.execute(
                     "SELECT albums.album_key,albums.artist_key,owner.artist_name AS album_artist_name,"
-                    "tracks.path,tracks.artist_name FROM tracks "
+                    "tracks.path,tracks.title,tracks.artist_name FROM tracks "
                     "JOIN albums ON albums.album_key=tracks.album_key "
                     "JOIN artists owner ON owner.artist_key=albums.artist_key "
                     "WHERE TRIM(COALESCE(albums.musicbrainz_albumid,''))<>'' "
-                    "AND tracks.artist_name LIKE ? ESCAPE '\\'",
-                    ("%" + escaped + "%",),
+                    "AND (tracks.artist_name LIKE ? ESCAPE '\\' "
+                    "OR tracks.title LIKE ? ESCAPE '\\' "
+                    "OR tracks.path LIKE ? ESCAPE '\\')",
+                    (("%" + escaped + "%",) * 3),
                 ).fetchall())
         except sqlite3.OperationalError:
             return {"album_keys": set(), "featured_album_keys": set(), "song_paths": {}}
@@ -748,7 +769,15 @@ class Catalog:
         paths: dict[str, set[str]] = {}
         normalized_names = {normalized_artist_identity(name) for name in names}
         for row in matches:
-            if not any(artist_credit_position(str(row["artist_name"] or ""), name) is not None for name in names):
+            if not any(
+                artist_credit_position(credit, name) is not None
+                for name in names
+                for credit in indexed_track_credit_values(
+                    str(row["artist_name"] or ""),
+                    str(row["title"] or ""),
+                    str(row["path"] or ""),
+                )
+            ):
                 continue
             if (
                 str(row["artist_key"]) not in alias_ids
@@ -1102,13 +1131,19 @@ class Catalog:
                 ("%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%",) * 2
                 + (1 if fallback_only else 0,),
             ).fetchall()
+            fallback_thumbnails = (
+                self.fallback_thumbnail_keys(db) if fallback_only else {}
+            )
         items = []
         for row in rows:
-            cover_url = (
-                self.image(self.album_cover_path(row))
-                if fallback_only
-                else self.album_thumbnail_url(str(row["album_key"]))
-            )
+            album_key = str(row["album_key"])
+            cover_url = self.album_thumbnail_url(album_key)
+            if fallback_only:
+                cover_url = self.image(self.album_cover_path(row))
+                if not cover_url and album_key in fallback_thumbnails:
+                    cover_url = self.fallback_thumbnail_url(
+                        album_key, fallback_thumbnails[album_key]
+                    )
             items.append({
                 "id": row["album_key"], "name": row["album_name"],
                 "artist_id": row["artist_key"], "artist_name": row["artist_name"],
@@ -1384,21 +1419,36 @@ class Catalog:
                 appearance_clause = (
                     "OR albums.album_key IN (" + ",".join("?" for _ in appearance_ids) + ") "
                 )
+            escaped_name = (
+                "%"
+                + name.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                + "%"
+            )
             rows = db.execute(
-                "SELECT albums.album_key,albums.artist_key,tracks.artist_name "
+                "SELECT albums.album_key,albums.artist_key,tracks.artist_name,"
+                "tracks.title,tracks.path "
                 "FROM albums LEFT JOIN tracks ON tracks.album_key=albums.album_key "
                 "WHERE TRIM(COALESCE(albums.musicbrainz_albumid,''))='' "
-                f"AND (albums.artist_key IN ({placeholders}) OR tracks.artist_name LIKE ? ESCAPE '\\' "
+                f"AND (albums.artist_key IN ({placeholders}) "
+                "OR tracks.artist_name LIKE ? ESCAPE '\\' "
+                "OR tracks.title LIKE ? ESCAPE '\\' "
+                "OR tracks.path LIKE ? ESCAPE '\\' "
                 f"{appearance_clause})",
-                (*alias_ids, "%" + name.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%", *appearance_ids),
+                (*alias_ids, escaped_name, escaped_name, escaped_name, *appearance_ids),
             ).fetchall()
         matching = set()
         for row in rows:
             if (
                 str(row["album_key"]) in appearance_ids
                 or str(row["artist_key"]) in alias_ids
-                or artist_credit_position(str(row["artist_name"] or ""), name)
-                is not None
+                or any(
+                    artist_credit_position(credit, name) is not None
+                    for credit in indexed_track_credit_values(
+                        str(row["artist_name"] or ""),
+                        str(row["title"] or ""),
+                        str(row["path"] or ""),
+                    )
+                )
             ):
                 matching.add(str(row["album_key"]))
         return sorted(matching)
@@ -1428,14 +1478,23 @@ class Catalog:
                 "JOIN tracks ON tracks.album_key=albums.album_key "
                 "WHERE TRIM(COALESCE(albums.musicbrainz_albumid,''))='' "
                 "AND (tracks.artist_name LIKE ? ESCAPE '\\' "
+                "OR tracks.title LIKE ? ESCAPE '\\' "
+                "OR tracks.path LIKE ? ESCAPE '\\' "
                 f"OR (albums.artist_key IN ({placeholders}) AND TRIM(COALESCE(tracks.artist_name,''))='') "
                 f"{appearance_clause}) "
                 "ORDER BY albums.album_name COLLATE NOCASE, tracks.path COLLATE NOCASE",
-                ("%" + escaped_name + "%", *alias_ids, *appearance_ids),
+                (
+                    "%" + escaped_name + "%",
+                    "%" + escaped_name + "%",
+                    "%" + escaped_name + "%",
+                    *alias_ids,
+                    *appearance_ids,
+                ),
             ).fetchall()
             has_ledger = db.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='compilation_track_artwork'"
             ).fetchone() is not None
+            fallback_thumbnails = self.fallback_thumbnail_keys(db)
             completed = {str(row[0]) for row in db.execute(
                 "SELECT track_path FROM compilation_track_artwork "
                 "WHERE outcome IN ('embedded-replaced','embedded-existing')",
@@ -1444,7 +1503,11 @@ class Catalog:
         seen: set[str] = set()
         appearance_paths = appearance.get("song_paths", {})
         for row in rows:
-            credits = str(row["artist_name"] or "").replace("\0", ";")
+            credits = indexed_track_credit_values(
+                str(row["artist_name"] or "").replace("\0", ";"),
+                str(row["title"] or ""),
+                str(row["path"] or ""),
+            )
             row_path = str(row["path"]).replace("\\", "/").strip("/")
             expected_paths = [
                 str(value).replace("\\", "/").strip("/")
@@ -1455,8 +1518,8 @@ class Catalog:
                 or expected.endswith("/" + row_path)
                 for expected in expected_paths if expected
             )
-            if not (artist_credit_position(credits, name) is not None
-                    or not credits.strip() and row["artist_key"] in alias_ids
+            if not (any(artist_credit_position(credit, name) is not None for credit in credits)
+                    or not credits and row["artist_key"] in alias_ids
                     or appearance_match):
                 continue
             folder, track_path = Path(row["album_path"]), Path(row["path"])
@@ -1473,11 +1536,16 @@ class Catalog:
             key = str(row["album_key"])
             if key not in groups:
                 cover = self.album_cover_path(row)
+                cover_url = self.image(cover)
+                if not cover_url and key in fallback_thumbnails:
+                    cover_url = self.fallback_thumbnail_url(
+                        key, fallback_thumbnails[key]
+                    )
                 groups[key] = {
                     "id": key, "name": row["album_name"], "year": row["release_year"] or "",
                     # The album card uses the indexed folder cover. Embedded
                     # track art remains isolated to COMP report track previews.
-                    "cover": self.image(cover),
+                    "cover": cover_url,
                     "compilation": True, "album_mbid": "", "tracks": [],
                 }
             completed_track = str(track_path) in completed

@@ -89,6 +89,9 @@ class BrowserFallbackTests(unittest.TestCase):
         self.assertIn('$("embedBatchButton").textContent = "EMBED Batch"', operations)
         self.assertNotIn('textContent = compContext ? "EMBED Thumbs"', operations)
         self.assertIn('job.kind === "embed-album"', operations)
+        self.assertIn("renderReconciliationConflicts(logging)", operations)
+        self.assertIn("/api/reconciliation/conflicts?", operations)
+        self.assertIn("Download conflicts.html", operations)
         self.assertIn('kind === "musicbrainz-results"', operations)
         self.assertIn('"__manual_candidates__"', application)
         self.assertIn('"Advanced IDs / Apply IDs"', application)
@@ -305,6 +308,39 @@ class BrowserFallbackTests(unittest.TestCase):
             self.assertEqual(app.image_bytes(projected["cover"]), folder_cover.read_bytes())
             self.assertNotIn("/api/fallback/thumbnail", projected["cover"])
             self.assertEqual(len(app.albums("", False)), 3)
+
+    def test_comp_card_uses_embedded_thumbnail_when_cover_file_is_absent(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            folder = root / "Billboard"
+            folder.mkdir()
+            track = folder / "01 Track.mp3"
+            picture = BytesIO()
+            Image.new("RGB", (1200, 1200), "gold").save(picture, "JPEG")
+            tags = ID3()
+            tags.add(APIC(encoding=3, mime="image/jpeg", type=3, desc="Cover", data=picture.getvalue()))
+            tags.save(track)
+            database = root / "index.sqlite"
+            with closing(connect(database)) as db:
+                db.execute("CREATE TABLE artists (artist_key TEXT PRIMARY KEY, artist_name TEXT)")
+                db.execute("CREATE TABLE albums (album_key TEXT PRIMARY KEY, album_name TEXT, "
+                           "artist_key TEXT, path TEXT, cover_path TEXT, track_count INTEGER, "
+                           "status TEXT, compilation INTEGER, musicbrainz_albumid TEXT)")
+                db.execute("CREATE TABLE tracks (track_key TEXT PRIMARY KEY, album_key TEXT, "
+                           "path TEXT, title TEXT, artist_name TEXT)")
+                db.execute("CREATE TABLE compilation_track_artwork (track_path TEXT, outcome TEXT)")
+                db.execute("INSERT INTO artists VALUES ('various', 'Various Artists')")
+                db.execute("INSERT INTO albums VALUES "
+                           "('comp','Billboard','various',?,NULL,1,'processed',1,'')", (str(folder),))
+                db.execute("INSERT INTO tracks VALUES ('track','comp',?,'Track','Adele')", (str(track),))
+                db.execute("INSERT INTO compilation_track_artwork VALUES (?, 'embedded-replaced')", (str(track),))
+                db.commit()
+            app = PreviewApp(root, database, root, root)
+            projected = app.albums("", True)[0]
+            self.assertEqual(projected["cover"], "/api/fallback/thumbnail?id=comp&key=track")
+            body = app.fallback_thumbnail("comp", "track")
+            with Image.open(BytesIO(body)) as opened:
+                self.assertEqual((opened.format, opened.size), ("PNG", (1200, 1200)))
 
     def test_fallback_tracks_use_embedded_art_not_folder_cover(self) -> None:
         with TemporaryDirectory() as directory:

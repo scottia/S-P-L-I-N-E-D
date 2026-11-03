@@ -616,6 +616,10 @@ class SQLiteReconciler:
         source: dict[str, Any], maps: dict[str, Any]
     ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
         source_mbid = _identity_text(source.get("musicbrainz_artistid")).strip()
+        source_key = _identity_text(source.get("artist_key")).strip()
+        authoritative_mbid_key = bool(
+            source_mbid and source_key.casefold() == ("mbid:" + source_mbid).casefold()
+        )
         values = (
             ("artist-key", "key", _identity_text(source.get("artist_key"))),
             ("musicbrainz-artist-id", "mbid", source_mbid.casefold()),
@@ -647,6 +651,15 @@ class SQLiteReconciler:
                 # independently prove the intended PostgreSQL Artist.
                 if evidence == "musicbrainz-artist-id":
                     deferred_mbid_ambiguity = ambiguity
+                    continue
+                # A shared Various Artists/Soundtracks directory is not an
+                # identity collision when Windows supplies a new, exact MBID
+                # key which PostgreSQL does not contain. Continue to the name
+                # check; if no target identity exists, the authoritative
+                # entity can be inserted instead of blocking all child Albums.
+                # Unidentified/tag Artists retain the strict shared-path
+                # ambiguity rule established by PR #132.
+                if evidence == "primary-path" and authoritative_mbid_key:
                     continue
                 return None, ambiguity
             target = candidates[0]
@@ -702,6 +715,96 @@ class SQLiteReconciler:
             "candidate_count": 0,
             "candidates": [],
         }
+
+    @staticmethod
+    def _coalesce_transport_artist_aliases(
+        rows: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Merge only provably identical clean/U+FEFF Artist aliases.
+
+        Historical Windows databases can contain both ``mbid:<id>`` and
+        ``mbid:\ufeff<id>`` rows for the same Artist. Their Album children are
+        still distinct and complete; refusing the duplicate parent prevents
+        those children from reconciling. Coalesce the parent only when every
+        non-transport identity field agrees. Real fan-in remains visible to
+        the existing collision checks.
+        """
+        groups: dict[str, list[dict[str, Any]]] = {}
+        order: list[str] = []
+        for row in rows:
+            key = _identity_text(row.get("artist_key"))
+            if key not in groups:
+                groups[key] = []
+                order.append(key)
+            groups[key].append(row)
+
+        result: list[dict[str, Any]] = []
+        for key in order:
+            aliases = groups[key]
+            if len(aliases) < 2 or not any(
+                row.get("_reconciliation_original_identity_values") for row in aliases
+            ):
+                result.extend(aliases)
+                continue
+            signatures = {
+                _canonical(
+                    {
+                        "artist_key": _identity_text(row.get("artist_key")),
+                        "artist_name": str(row.get("artist_name") or ""),
+                        "artist_sort": str(row.get("artist_sort") or ""),
+                        "musicbrainz_artistid": _identity_text(
+                            row.get("musicbrainz_artistid")
+                        ),
+                        "primary_path": SQLiteReconciler._artist_path_identity(
+                            row.get("primary_path")
+                        ),
+                    }
+                )
+                for row in aliases
+            }
+            if len(signatures) != 1:
+                result.extend(aliases)
+                continue
+
+            def newest(row: dict[str, Any]) -> tuple[datetime, datetime, str]:
+                floor = datetime.min.replace(tzinfo=timezone.utc)
+                return (
+                    _timestamp(row.get("last_seen_at")) or floor,
+                    _timestamp(row.get("updated_at")) or floor,
+                    str(row.get("splined_version") or ""),
+                )
+
+            merged = dict(max(aliases, key=newest))
+            for field, chooser in (
+                ("created_at", min),
+                ("updated_at", max),
+                ("last_seen_at", max),
+            ):
+                values = [
+                    str(row.get(field) or "")
+                    for row in aliases
+                    if str(row.get(field) or "").strip()
+                ]
+                if values:
+                    merged[field] = chooser(
+                        values,
+                        key=lambda value: (
+                            _timestamp(value)
+                            or datetime.min.replace(tzinfo=timezone.utc)
+                        ),
+                    )
+            merged["_reconciliation_transport_aliases"] = sorted(
+                {
+                    str(
+                        dict(
+                            row.get("_reconciliation_original_identity_values") or {}
+                        ).get("artist_key", row.get("artist_key") or "")
+                    )
+                    for row in aliases
+                }
+            )
+            result.append(merged)
+        return result
 
     @staticmethod
     def _entity_candidate_summary(
@@ -1075,7 +1178,13 @@ class SQLiteReconciler:
                     ready_artist_keys: set[str] = set()
                     projected_artists = []
                     active_table = "artists"
-                    for row in source_rows["artists"]:
+                    logical_artist_rows = self._coalesce_transport_artist_aliases(
+                        source_rows["artists"]
+                    )
+                    table_counts["artists"]["transport_aliases_coalesced"] = len(
+                        source_rows["artists"]
+                    ) - len(logical_artist_rows)
+                    for row in logical_artist_rows:
                         mapped = self._map_row("artists", row, str(source_root), str(target))
                         mapped["_reconciliation_source_key"] = str(
                             mapped.get("artist_key") or ""
@@ -1738,6 +1847,213 @@ class SQLiteReconciler:
             request_status="failed" if failures else "retry" if validation_retries else "completed",
         )
         return result
+
+    @staticmethod
+    def _conflict_album_class(
+        source: dict[str, Any], album: dict[str, Any] | None = None
+    ) -> str:
+        values = album or source
+        mbid = str(values.get("musicbrainz_albumid") or "").strip()
+        path = str(values.get("path") or values.get("album_path") or "").replace("\\", "/").casefold()
+        if not mbid:
+            return "COMP fallback"
+        if "/[soundtracks]/" in path or "/soundtracks/" in path:
+            return "Soundtrack"
+        if "/[various artists]/" in path or bool(values.get("compilation")):
+            return "Various Artists"
+        return "Artist Album"
+
+    @staticmethod
+    def _conflict_changes(
+        source: dict[str, Any], target: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        ignored = {
+            "_reconciliation_identity",
+            "_reconciliation_source_key",
+            "_reconciliation_transport_aliases",
+        }
+        return [
+            {"field": name, "windows": source.get(name), "postgresql": target.get(name)}
+            for name in sorted(set(source) | set(target))
+            if name not in ignored and source.get(name) != target.get(name)
+        ]
+
+    def conflict_report(
+        self,
+        *,
+        run_id: str = "",
+        query: str = "",
+        entity_table: str = "",
+        reason: str = "",
+        album_class: str = "",
+        offset: int = 0,
+        limit: int = 200,
+        _maximum: int = 500,
+    ) -> dict[str, Any]:
+        """Return a readable, grouped view of unresolved reconciliation rows."""
+        requested_run = sanitize_text(run_id, limit=100)
+        with closing(self.database.connect()) as db:
+            raw = db.raw
+            selected = raw.execute(
+                "SELECT * FROM sqlite_reconciliation_runs "
+                "WHERE (%s='' OR run_id=%s) ORDER BY started_at DESC LIMIT 1",
+                (requested_run, requested_run),
+            ).fetchone()
+            runs = [
+                dict(row)
+                for row in raw.execute(
+                    "SELECT run_id,source_label,status,conflicts,started_at,finished_at "
+                    "FROM sqlite_reconciliation_runs WHERE conflicts>0 "
+                    "ORDER BY started_at DESC LIMIT 50"
+                )
+            ]
+            size = max(1, min(int(limit), _maximum))
+            if not selected:
+                return {
+                    "run": None,
+                    "runs": runs,
+                    "summary": {"total": 0, "tables": {}, "reasons": {}, "album_classes": {}},
+                    "facets": {"tables": [], "reasons": [], "album_classes": []},
+                    "roots": [], "items": [], "total": 0, "offset": 0, "limit": size,
+                }
+            active_run = str(selected["run_id"])
+            rows = [
+                dict(row)
+                for row in raw.execute(
+                    "SELECT id,last_run_id AS run_id,source_label,entity_table,entity_key,"
+                    "difference_type,source_value,target_value,resolution,application_outcome,"
+                    "error,created_at,last_seen_at FROM salite_diff "
+                    "WHERE last_run_id=%s AND resolution='conflict' ORDER BY id",
+                    (active_run,),
+                )
+            ]
+
+        album_rows: dict[str, dict[str, Any]] = {}
+        artist_rows: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            source = dict(row.get("source_value") or {})
+            if row["entity_table"] == "albums":
+                album_rows[str(source.get("album_key") or "")] = source
+            elif row["entity_table"] == "artists":
+                artist_rows[str(source.get("artist_key") or "")] = source
+
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            source = dict(row.get("source_value") or {})
+            target = dict(row.get("target_value") or {})
+            identity = dict(source.get("_reconciliation_identity") or {})
+            table = str(row.get("entity_table") or "")
+            parent_album: dict[str, Any] | None = None
+            root_key = str(source.get("artist_key") or "") if table == "artists" else ""
+            if table == "albums":
+                root_key = str(identity.get("source_artist_key") or source.get("artist_key") or "")
+                parent_album = source
+            elif table in {"tracks", "cache_entries", "cache_history"}:
+                album_key = str(identity.get("source_album_key") or source.get("album_key") or "")
+                parent_album = album_rows.get(album_key)
+                album_identity = dict((parent_album or {}).get("_reconciliation_identity") or {})
+                root_key = str(
+                    album_identity.get("source_artist_key")
+                    or (parent_album or {}).get("artist_key")
+                    or album_key
+                )
+            if not root_key:
+                root_key = str(row.get("entity_key") or "")
+            root_artist = artist_rows.get(root_key, {})
+            root_identity = dict(root_artist.get("_reconciliation_identity") or {})
+            row_reason = str(
+                identity.get("reason")
+                or identity.get("status")
+                or identity.get("evidence")
+                or "unresolved-reconciliation-conflict"
+            )
+            root_reason = str(root_identity.get("reason") or row_reason)
+            root_label = str(root_artist.get("artist_name") or root_key)
+            item = {
+                "id": int(row["id"]),
+                "run_id": active_run,
+                "entity_table": table,
+                "entity_key": str(row.get("entity_key") or ""),
+                "difference_type": str(row.get("difference_type") or ""),
+                "application_outcome": str(row.get("application_outcome") or ""),
+                "reason": row_reason,
+                "root_reason": root_reason,
+                "evidence": str(identity.get("evidence") or ""),
+                "identity_status": str(identity.get("status") or ""),
+                "album_class": (
+                    "Artist identity"
+                    if table == "artists"
+                    else self._conflict_album_class(source, parent_album)
+                ),
+                "root_key": root_key,
+                "root_label": root_label,
+                "source": source,
+                "target": target,
+                "changes": self._conflict_changes(source, target),
+                "error": str(row.get("error") or ""),
+            }
+            item["search"] = " ".join(
+                (
+                    root_label, root_key, table, item["entity_key"], row_reason,
+                    root_reason, item["album_class"], _canonical(source), _canonical(target),
+                )
+            ).casefold()
+            items.append(item)
+
+        def counts(field: str) -> dict[str, int]:
+            result: dict[str, int] = {}
+            for item in items:
+                value = str(item.get(field) or "Unknown")
+                result[value] = result.get(value, 0) + 1
+            return dict(sorted(result.items(), key=lambda pair: (-pair[1], pair[0].casefold())))
+
+        tables = counts("entity_table")
+        reasons = counts("root_reason")
+        album_classes = counts("album_class")
+        needle = str(query or "").strip().casefold()
+        filtered = [
+            item for item in items
+            if (not entity_table or item["entity_table"] == entity_table)
+            and (not reason or item["root_reason"] == reason)
+            and (not album_class or item["album_class"] == album_class)
+            and (not needle or needle in item["search"])
+        ]
+        filtered.sort(key=lambda item: (
+            item["root_label"].casefold(),
+            {"artists": 0, "albums": 1, "tracks": 2}.get(item["entity_table"], 3),
+            item["entity_key"].casefold(), item["id"],
+        ))
+        root_groups: dict[str, dict[str, Any]] = {}
+        for item in filtered:
+            group = root_groups.setdefault(
+                item["root_key"],
+                {"key": item["root_key"], "label": item["root_label"],
+                 "reason": item["root_reason"], "count": 0, "tables": {}},
+            )
+            group["count"] += 1
+            group["tables"][item["entity_table"]] = group["tables"].get(item["entity_table"], 0) + 1
+        start = max(0, int(offset))
+        for item in filtered:
+            item.pop("search", None)
+        return {
+            "run": dict(selected), "runs": runs,
+            "summary": {"total": len(items), "tables": tables, "reasons": reasons,
+                        "album_classes": album_classes},
+            "facets": {"tables": list(tables), "reasons": list(reasons),
+                       "album_classes": list(album_classes)},
+            "roots": sorted(root_groups.values(), key=lambda group: (-group["count"], group["label"].casefold())),
+            "items": filtered[start : start + size], "total": len(filtered),
+            "offset": start, "limit": size,
+        }
+
+    def conflict_report_html(self, *, run_id: str = "") -> str:
+        report = self.conflict_report(run_id=run_id, limit=100_000, _maximum=100_000)
+        payload = json.dumps(report, ensure_ascii=False, default=str).replace("<", "\\u003c")
+        return """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>SPLINED reconciliation conflicts</title>
+<style>body{margin:0;background:#111820;color:#e8edf2;font:14px system-ui,sans-serif}header{position:sticky;top:0;padding:18px;background:#17232d;border-bottom:1px solid #4f9fb4}h1{margin:0 0 8px;color:#8ed8e8}main{padding:16px}.controls{display:flex;flex-wrap:wrap;gap:8px}.controls>*{min-width:180px;padding:8px;background:#202b34;color:#fff;border:1px solid #566774;border-radius:4px}.summary{color:#e6c55f;margin:10px 0}.entry{margin:7px 0;border:1px solid #41505c;border-radius:5px;background:#19232c}.entry>summary{cursor:pointer;padding:10px;color:#9ee7ba}.meta{color:#aab6bf}.changes{width:100%;border-collapse:collapse}.changes th,.changes td{padding:6px;border:1px solid #3b4852;text-align:left;vertical-align:top}.changes th{color:#8ed8e8}</style></head><body>
+<header><h1>SPLINED Reconciliation Conflicts</h1><div class="controls"><input id="search" placeholder="Search Artist, Album, path, MBID, reason"><select id="table"></select><select id="reason"></select><select id="klass"></select></div><div id="summary" class="summary"></div></header><main id="entries"></main>
+<script>const report=""" + payload + """;const $=id=>document.getElementById(id);function options(id,label,values){const s=$(id);s.append(new Option(label,''));values.forEach(v=>s.append(new Option(v,v)));s.onchange=render}options('table','All tables',report.facets.tables);options('reason','All root causes',report.facets.reasons);options('klass','All Album classes',report.facets.album_classes);$('search').oninput=render;function cell(row,value){const td=document.createElement('td');td.textContent=value==null?'—':typeof value==='object'?JSON.stringify(value):String(value);row.append(td)}function render(){const q=$('search').value.toLowerCase(),table=$('table').value,reason=$('reason').value,klass=$('klass').value;const rows=report.items.filter(x=>(!q||JSON.stringify(x).toLowerCase().includes(q))&&(!table||x.entity_table===table)&&(!reason||x.root_reason===reason)&&(!klass||x.album_class===klass));$('summary').textContent=`${rows.length} shown · ${report.summary.total} conflicts · run ${report.run?.run_id||'none'}`;const host=$('entries');host.replaceChildren();for(const item of rows){const details=document.createElement('details');details.className='entry';const summary=document.createElement('summary');summary.textContent=`${item.root_label} · ${item.entity_table} · ${item.album_class} · ${item.reason}`;details.append(summary);const body=document.createElement('div');body.className='detail';const meta=document.createElement('p');meta.className='meta';meta.textContent=`${item.entity_key} · root ${item.root_key} · ${item.evidence||'no evidence label'}`;body.append(meta);const t=document.createElement('table');t.className='changes';const head=document.createElement('tr');['Field','Windows SNAP','PostgreSQL'].forEach(v=>{const th=document.createElement('th');th.textContent=v;head.append(th)});t.append(head);item.changes.forEach(change=>{const row=document.createElement('tr');cell(row,change.field);cell(row,change.windows);cell(row,change.postgresql);t.append(row)});body.append(t);details.append(body);host.append(details)}}render()</script></body></html>"""
 
     def history(self, *, run_id: str = "", resolution: str = "", limit: int = 500) -> dict[str, Any]:
         clauses = []
