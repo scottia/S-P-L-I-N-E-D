@@ -30,6 +30,11 @@ const hydrateFunction = between(
   "async function hydrateArtistThumbnails",
   "async function chooseArtist",
 );
+const artistAlbumStatusFunction = between(
+  appSource,
+  "async function probeArtistAlbumStatuses",
+  "async function chooseArtist",
+);
 const queuedAlbumFunction = between(
   operationsSource,
   "async function focusQueuedAlbum",
@@ -1317,6 +1322,41 @@ test("Album cards keep unknown validation separate from confirmed missing thumbn
   }, artist);
   assert.equal(fallback.fullyComplete, true);
   assert.equal(fallback.checkEmbedded, false);
+});
+
+test("Artist overview lazily verifies unresolved regular Albums without touching COMP fallback", async () => {
+  let renders = 0;
+  const state = {
+    selectionRequest: 4,
+    artist: {id: "artist-1", albums: [
+      {id: "artist-album", album_mbid: "release-1", embedded: 0, embedded_validation: "unknown"},
+      {id: "soundtrack", album_mbid: "release-2", embedded: 0, embedded_validation: "retry", soundtrack: true},
+      {id: "comp", album_mbid: "", embedded: 0, embedded_validation: "unknown"},
+    ]},
+    album: null,
+  };
+  const calls = [];
+  const context = load(artistAlbumStatusFunction, {
+    state,
+    api: async path => {
+      calls.push(path);
+      return {embedded_tracks: path.includes("soundtrack") ? 8 : 12, status: "verified"};
+    },
+    renderHero: () => { renders += 1; },
+  });
+
+  await context.probeArtistAlbumStatuses("artist-1", 4);
+
+  assert.deepEqual(calls, [
+    "/api/album/embedded-status?id=artist-album",
+    "/api/album/embedded-status?id=soundtrack",
+  ]);
+  assert.deepEqual(state.artist.albums.map(album => [album.id, album.embedded, album.embedded_validation]), [
+    ["artist-album", 12, "verified"],
+    ["soundtrack", 8, "verified"],
+    ["comp", 0, "unknown"],
+  ]);
+  assert.equal(renders, 1);
 });
 
 test("queued Album review exposes SKIP ALBUM and submits k without pausing the batch", async () => {

@@ -1744,6 +1744,29 @@ async function hydrateArtistThumbnails(request) {
     if (changed) { renderLibrary(); if (typeof renderHero === "function") renderHero(); }
   } catch { /* Local Artist Art remains available when Navidrome is offline. */ }
 }
+async function probeArtistAlbumStatuses(artistId, selectionRequest) {
+  const unresolved = (state.artist?.albums || []).filter(album =>
+    String(album.album_mbid || "").trim()
+    && String(album.embedded_validation || "unknown").toLowerCase() !== "verified");
+  for (let offset = 0; offset < unresolved.length; offset += 3) {
+    const batch = unresolved.slice(offset, offset + 3);
+    const results = await Promise.allSettled(batch.map(album =>
+      api("/api/album/embedded-status?id=" + encodeURIComponent(album.id))));
+    if (selectionRequest !== state.selectionRequest || state.artist?.id !== artistId) return;
+    results.forEach((result, index) => {
+      const current = state.artist.albums.find(album => album.id === batch[index].id);
+      if (!current) return;
+      if (result.status === "fulfilled") {
+        current.embedded = Number(result.value.embedded_tracks || 0);
+        current.embedded_validation = result.value.status || "unknown";
+        if (state.album?.id === current.id) Object.assign(state.album, current);
+      } else {
+        current.embedded_validation = "retry";
+      }
+    });
+    renderHero();
+  }
+}
 async function chooseArtist(id, select = true) {
   await cancelActiveCompWork();
   const request = ++state.selectionRequest;
@@ -1768,6 +1791,7 @@ async function chooseArtist(id, select = true) {
     renderAll(); setStatus("Loaded " + state.artist.name + " · " + state.artist.albums.length + " albums");
     auditEvent("selection-change", "artist", {scope: {artist_id: artist.id}, details: {library_mode: state.libraryMode}});
     loadArtistMetadata(artist.id);
+    probeArtistAlbumStatuses(artist.id, request);
   } catch (error) { if (request === state.selectionRequest) setStatus(error.message, "error"); }
 }
 async function chooseAlbum(id) {
@@ -1804,6 +1828,7 @@ async function chooseAlbum(id) {
     setStatus(fallback ? `COMP ready · ${tracks.length} tracks · ${tracks.filter(item => !item.completed).length} pending · validating recorded thumbnails`
       : "Loaded " + album.artist_name + " · " + album.name + " · " + album.tracks + " tracks");
     if (fallback) probeFallbackStatuses();
+    else if (state.artist) probeArtistAlbumStatuses(state.artist.id, request);
   } catch (error) { if (request === state.selectionRequest) setStatus(error.message, "error"); }
 }
 async function selectFallbackTrack(key, previewOnly) {

@@ -70,6 +70,8 @@ not inspected the mapped media.
 - PostgreSQL successfully received the applicable safe differences.
 - After safe apply, WebGUI now verifies the mapped target Album through the
   existing embedded-artwork reader before assigning complete or repair state.
+- Albums reconciled before this verifier existed are checked lazily when their
+  Artist Overview opens; a repeated SQLite difference is not required.
 - A read/access failure records `retry` and preserves the prior counter instead
   of presenting a false purple repair condition.
 - The rule applies to regular Artist Albums, Various Artists, Soundtracks, and

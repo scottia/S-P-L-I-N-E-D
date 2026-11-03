@@ -792,6 +792,10 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
         services = context.require()
         return services.catalog.album(id)
 
+    @app.get("/api/album/embedded-status")
+    def album_embedded_status(id: str):
+        return context.require().validate_album_embedding(id)
+
     @app.get("/api/fallback/tracks")
     def tracks(id: str):
         services = context.require()
