@@ -62,6 +62,11 @@ untouched. Ambiguous identity, invalid mapped paths, and unsupported expansion
 remain reviewable conflicts in `salite_diff`; reconciliation never implicitly
 deletes PostgreSQL rows.
 
+After an unambiguous entity is reconciled, its synchronized Windows fields are
+protected from later Full Refresh replacement. See the
+[catalog authority contract](../docs/catalog-authority.md) for the exact field
+ownership and standalone-WebGUI behavior.
+
 The legacy **Import Catalog** control is only for importing one specific
 SQLite file into an empty PostgreSQL catalog. It does not perform incremental
 reconciliation.

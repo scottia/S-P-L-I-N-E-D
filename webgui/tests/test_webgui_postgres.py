@@ -39,6 +39,7 @@ import splined as core
 import splined_compilation_authority_policy as compilation
 
 from webgui.database import Database
+from webgui.catalog_authority import WINDOWS_SYNCHRONIZED_FIELDS
 from webgui.runtime import Runtime
 from webgui.services import Services
 from webgui.jobs import JobAdapter, JobQueue
@@ -2203,6 +2204,14 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         authoritative_time = "2000-01-01T00:00:00+00:00"
         snapshot = self.root / "cache" / "processed.sqlite"
         snapshot.parent.mkdir(parents=True, exist_ok=True)
+        with closing(self.db.connect()) as db:
+            indexed_tracks = [
+                dict(row)
+                for row in db.execute(
+                    "SELECT * FROM tracks WHERE album_key=? ORDER BY track_key",
+                    (self.row["album_key"],),
+                )
+            ]
         with closing(sqlite3.connect(snapshot)) as source, source:
             source.execute("PRAGMA user_version=2")
             source.execute(
@@ -2254,6 +2263,31 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     "",
                 ),
             )
+            source.execute(
+                "CREATE TABLE tracks (track_key TEXT PRIMARY KEY,album_key TEXT,path TEXT,"
+                "title TEXT,artist_name TEXT,musicbrainz_recordingid TEXT,"
+                "musicbrainz_artistid TEXT,file_size INTEGER,file_mtime_ns INTEGER,"
+                "updated_at TEXT,splined_version TEXT)"
+            )
+            source.executemany(
+                "INSERT INTO tracks VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                [
+                    (
+                        row["track_key"],
+                        row["album_key"],
+                        row["path"],
+                        f"Windows Authoritative Track {number}",
+                        row["artist_name"],
+                        row["musicbrainz_recordingid"],
+                        row["musicbrainz_artistid"],
+                        row["file_size"],
+                        row["file_mtime_ns"],
+                        "2099-01-01T00:00:00+00:00",
+                        "windows-authority-test",
+                    )
+                    for number, row in enumerate(indexed_tracks, 1)
+                ],
+            )
 
         # Physical media is authoritative for the WebGUI-only embedded count.
         # Leave PostgreSQL deliberately stale so apply must validate the mapped
@@ -2304,6 +2338,124 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 applied["album_validations"][0]["album_id"], self.row["album_key"]
             )
             self.assertEqual(album_count, 1)
+
+            with closing(self.db.connect()) as db, db:
+                before_refresh = {
+                    "artist": dict(
+                        db.execute(
+                            "SELECT * FROM artists WHERE artist_key=?",
+                            (self.row["artist_key"],),
+                        ).fetchone()
+                    ),
+                    "album": dict(
+                        db.execute(
+                            "SELECT * FROM albums WHERE album_key=?",
+                            (self.row["album_key"],),
+                        ).fetchone()
+                    ),
+                    "tracks": [
+                        dict(row)
+                        for row in db.execute(
+                            "SELECT * FROM tracks WHERE album_key=? ORDER BY track_key",
+                            (self.row["album_key"],),
+                        )
+                    ],
+                }
+                authority_counts = {
+                    row["entity_table"]: int(row["count"])
+                    for row in db.raw.execute(
+                        "SELECT entity_table,count(*) AS count "
+                        "FROM catalog_sync_authority GROUP BY entity_table"
+                    )
+                }
+                db.execute(
+                    "UPDATE albums SET embedded_validation_status='unknown',"
+                    "embedded_validated_at=NULL WHERE album_key=?",
+                    (self.row["album_key"],),
+                )
+            self.assertEqual(authority_counts["artists"], 1)
+            self.assertEqual(authority_counts["albums"], 1)
+            self.assertEqual(authority_counts["tracks"], len(indexed_tracks))
+
+            # Force physical tag and file metadata changes that a normal Full
+            # Refresh would otherwise project over reconciled PostgreSQL rows.
+            for number, path in enumerate(self.files, 1):
+                audio = FLAC(path)
+                audio["title"] = f"WebGUI Refresh Track {number}"
+                audio["album"] = "WebGUI Refresh Album"
+                audio["albumartist"] = "WebGUI Refresh Artist"
+                audio["musicbrainz_albumid"] = (
+                    "88888888-8888-4888-8888-888888888888"
+                )
+                audio["musicbrainz_artistid"] = (
+                    "99999999-9999-4999-8999-999999999999"
+                )
+                audio.save()
+
+            refreshed = self.services.refresh_index(mode="full")
+            self.assertEqual(refreshed["removed_albums"], 0)
+            self.assertEqual(refreshed["deferred_albums"], 0)
+            self.assertGreaterEqual(refreshed["windows_managed_albums"], 1)
+            validation = self.services.validate_album_embedding(
+                self.row["album_key"]
+            )
+            self.assertEqual(validation["status"], "verified")
+
+            with closing(self.db.connect()) as db:
+                after_refresh = {
+                    "artist": dict(
+                        db.execute(
+                            "SELECT * FROM artists WHERE artist_key=?",
+                            (self.row["artist_key"],),
+                        ).fetchone()
+                    ),
+                    "album": dict(
+                        db.execute(
+                            "SELECT * FROM albums WHERE album_key=?",
+                            (self.row["album_key"],),
+                        ).fetchone()
+                    ),
+                    "tracks": [
+                        dict(row)
+                        for row in db.execute(
+                            "SELECT * FROM tracks WHERE album_key=? ORDER BY track_key",
+                            (self.row["album_key"],),
+                        )
+                    ],
+                }
+            for table, singular in (
+                ("artists", "artist"),
+                ("albums", "album"),
+            ):
+                self.assertEqual(
+                    {
+                        name: before_refresh[singular][name]
+                        for name in WINDOWS_SYNCHRONIZED_FIELDS[table]
+                    },
+                    {
+                        name: after_refresh[singular][name]
+                        for name in WINDOWS_SYNCHRONIZED_FIELDS[table]
+                    },
+                )
+            self.assertEqual(
+                [
+                    {
+                        name: row[name]
+                        for name in WINDOWS_SYNCHRONIZED_FIELDS["tracks"]
+                    }
+                    for row in before_refresh["tracks"]
+                ],
+                [
+                    {
+                        name: row[name]
+                        for name in WINDOWS_SYNCHRONIZED_FIELDS["tracks"]
+                    }
+                    for row in after_refresh["tracks"]
+                ],
+            )
+            self.assertEqual(
+                after_refresh["album"]["embedded_validation_status"], "verified"
+            )
 
             repeated = reconciler.compare(
                 snapshot,
@@ -3198,7 +3350,13 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     "WHERE artist_key IN (?,?) ORDER BY artist_key",
                     (first_key, second_key),
                 ).fetchall()
+                authority_count = db.raw.execute(
+                    "SELECT count(*) AS count FROM catalog_sync_authority "
+                    "WHERE entity_key IN (%s,%s,%s)",
+                    (first_key, second_key, album_key),
+                ).fetchone()["count"]
             self.assertEqual(target_album["artist_key"], first_key)
+            self.assertEqual(authority_count, 0)
             self.assertEqual(
                 [row["musicbrainz_artistid"] for row in target_artists],
                 ["ambiguous-first-mbid", "ambiguous-second-mbid"],
