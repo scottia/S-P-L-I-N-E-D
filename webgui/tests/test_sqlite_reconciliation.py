@@ -66,7 +66,7 @@ class SQLiteReconciliationTests(unittest.TestCase):
             },
         )
 
-    def test_production_bom_alias_pair_is_a_visible_collision(self):
+    def test_production_bom_alias_pair_coalesces_when_identity_is_identical(self):
         mbid = "6958e806-1e14-4844-a0a7-07a27756aa0f"
         clean = _normalize_sqlite_row(
             {
@@ -82,24 +82,36 @@ class SQLiteReconciliationTests(unittest.TestCase):
                 "musicbrainz_artistid": "\ufeff" + mbid,
             }
         )
-        for row in (clean, bom):
-            row["_reconciliation_source_key"] = row["artist_key"]
-        rows = [(clean, None), (bom, None)]
-        rejected = SQLiteReconciler._reject_normalized_source_collisions(
-            "artists", rows
+        aliases = SQLiteReconciler._coalesce_transport_artist_aliases([clean, bom])
+        self.assertEqual(len(aliases), 1)
+        self.assertEqual(aliases[0]["artist_key"], "mbid:" + mbid)
+        self.assertEqual(
+            aliases[0]["_reconciliation_transport_aliases"],
+            ["mbid:" + mbid, "mbid:\ufeff" + mbid],
         )
+
+    def test_bom_key_collision_with_different_artist_identity_remains_conflict(self):
+        mbid = "6958e806-1e14-4844-a0a7-07a27756aa0f"
+        clean = _normalize_sqlite_row({
+            "artist_key": "mbid:" + mbid,
+            "artist_name": "A Great Big World",
+            "musicbrainz_artistid": mbid,
+            "primary_path": "/music/A Great Big World",
+        })
+        bom = _normalize_sqlite_row({
+            "artist_key": "mbid:\ufeff" + mbid,
+            "artist_name": "Different Artist",
+            "musicbrainz_artistid": "\ufeff" + mbid,
+            "primary_path": "/music/Different Artist",
+        })
+        aliases = SQLiteReconciler._coalesce_transport_artist_aliases([clean, bom])
+        self.assertEqual(len(aliases), 2)
+        rows = []
+        for row in aliases:
+            row["_reconciliation_source_key"] = row["artist_key"]
+            rows.append((row, None))
+        rejected = SQLiteReconciler._reject_normalized_source_collisions("artists", rows)
         self.assertEqual(rejected, {"mbid:" + mbid})
-        for row in (clean, bom):
-            identity = row["_reconciliation_identity"]
-            self.assertEqual(identity["status"], "conflict")
-            self.assertEqual(
-                identity["reason"],
-                "multiple-windows-entities-share-one-canonical-key",
-            )
-            self.assertEqual(identity["candidate_count"], 2)
-            self.assertTrue(
-                any("\ufeff" in source_key for source_key in identity["source_keys"])
-            )
 
     def test_album_validation_migrations_do_not_trust_historical_counters(self):
         migrations = Path(__file__).parents[1] / "migrations"
@@ -308,6 +320,24 @@ class SQLiteReconciliationTests(unittest.TestCase):
         self.assertIsNone(match)
         self.assertEqual(identity["status"], "ambiguous")
         self.assertEqual(identity["evidence"], "primary-path")
+
+    def test_new_authoritative_mbid_artist_can_insert_from_shared_category_path(self):
+        rows = [
+            self._artist("mbid:first-mbid", "First Composer", "first-mbid", r"E:\Music\[Soundtracks]"),
+            self._artist("mbid:second-mbid", "Second Composer", "second-mbid", r"E:\Music\[Soundtracks]"),
+        ]
+        source = self._artist(
+            "mbid:new-soundtrack-mbid",
+            "New Soundtrack Composer",
+            "new-soundtrack-mbid",
+            r"E:\Music\[Soundtracks]",
+        )
+        match, identity = SQLiteReconciler._find_artist_match(
+            source, SQLiteReconciler._match_maps("artists", rows)
+        )
+        self.assertIsNone(match)
+        self.assertEqual(identity["status"], "unmatched")
+        self.assertEqual(identity["candidate_count"], 0)
 
     def test_artist_name_only_conflicting_mbids_remain_a_conflict(self):
         target = self._artist(

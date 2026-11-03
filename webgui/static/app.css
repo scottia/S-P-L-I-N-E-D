@@ -318,6 +318,13 @@ body.authenticated .auth-screen{display:none}body.auth-pending>.app-header,body.
 .startup-snap-options legend{padding:0 6px;color:var(--cyan);font-weight:800}
 .setting-radio{display:inline-flex;align-items:center;gap:6px;margin:3px 12px 8px 0;color:var(--text)}
 .setting-radio input{accent-color:var(--cyan)}
+.conflict-browser{margin-top:12px;border:1px solid color-mix(in srgb,var(--cyan) 55%,var(--line));border-radius:5px;background:color-mix(in srgb,var(--panel) 86%,transparent)}
+.conflict-browser>summary{padding:9px 11px;color:var(--cyan);font-weight:850;cursor:pointer}.conflict-browser[open]>summary{border-bottom:1px solid var(--line)}
+.conflict-browser-body{display:grid;gap:8px;padding:10px}.conflict-controls{display:grid;grid-template-columns:repeat(4,minmax(115px,1fr)) minmax(180px,1.5fr) auto;gap:5px}.conflict-controls input,.conflict-controls select{min-width:0;border:1px solid var(--line);border-radius:3px;background:var(--panel);color:var(--text);padding:6px}
+.conflict-downloads,.conflict-pages{display:flex;align-items:center;justify-content:flex-end;gap:6px}.conflict-downloads a{text-decoration:none}.conflict-roots{display:flex;gap:5px;overflow-x:auto}.conflict-roots span{flex:none;padding:3px 6px;border:1px solid var(--violet);border-radius:999px;color:var(--violet);font-size:var(--ui-font-xs)}
+.conflict-entries{display:grid;gap:5px;max-height:430px;overflow:auto}.conflict-entry{border:1px solid var(--line);border-radius:4px;background:var(--card)}.conflict-entry>summary{display:grid;grid-template-columns:minmax(130px,.7fr) minmax(220px,1.3fr);gap:8px;padding:7px;cursor:pointer}.conflict-entry>summary strong{color:var(--yellow);overflow-wrap:anywhere}.conflict-entry>summary span{color:var(--cyan);overflow-wrap:anywhere}.conflict-meta{margin:0;padding:0 7px 7px;color:var(--muted);overflow-wrap:anywhere}
+.conflict-comparison{display:grid;grid-template-columns:minmax(110px,.55fr) minmax(180px,1fr) minmax(180px,1fr);margin:0 7px 8px;border-top:1px solid var(--line);border-left:1px solid var(--line)}.conflict-comparison>*{min-width:0;padding:5px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);overflow-wrap:anywhere;white-space:pre-wrap}.conflict-comparison>b{color:var(--cyan);background:var(--selected)}.conflict-pages span{color:var(--muted)}
+@media(max-width:1100px){.conflict-controls{grid-template-columns:repeat(2,minmax(150px,1fr))}.conflict-entry>summary{grid-template-columns:1fr}.conflict-comparison{grid-template-columns:minmax(90px,.5fr) repeat(2,minmax(130px,1fr))}}
 
 /* Responsive desktop typography. The original dense 9–11 px labels became
    unreadable as the three workspace panes were resized. These shared sizes
