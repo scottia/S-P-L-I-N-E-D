@@ -51,7 +51,16 @@ original media root recorded in the snapshot (for example `/music`), not the
 directory containing that database file. Use **Save Snapshot & Paths** to
 retain that selection and mapping without enabling a schedule. Keep scheduling
 disabled and use **Compare / Dry Run** until the recorded differences have
-been reviewed.
+been reviewed. Windows SQLite is authoritative for synchronized catalog,
+identity, metadata, and processing fields; PostgreSQL timestamps do not
+override it. **Apply Safe Differences** updates deterministically associated
+entities and inserts source-only Artists, Albums, and tracks only when their
+source rows are complete and their parent identities and mapped media paths
+are valid. PostgreSQL-only
+jobs, Audit records, embedded-readback validation, and browser state remain
+untouched. Ambiguous identity, invalid mapped paths, and unsupported expansion
+remain reviewable conflicts in `salite_diff`; reconciliation never implicitly
+deletes PostgreSQL rows.
 
 After an unambiguous entity is reconciled, its synchronized Windows fields are
 protected from later Full Refresh replacement. See the

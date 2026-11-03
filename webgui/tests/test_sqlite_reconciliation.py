@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from webgui.reconciliation import (
     SQLiteReconciler,
+    _normalize_sqlite_row,
     classify_difference,
     map_library_path,
 )
@@ -44,6 +45,61 @@ class SQLiteReconciliationTests(unittest.TestCase):
         self.assertTrue(normalized.endswith("WebGUI Music/Artist/Album/01.flac"))
         with self.assertRaisesRegex(ValueError, "outside the mapped source"):
             map_library_path(r"D:\Other\01.flac", r"D:\Music", r"E:\Music")
+
+    def test_production_bom_musicbrainz_identities_normalize_without_changing_metadata(self):
+        mbid = "b9a06530-1241-4162-836f-7b8e79deaa58"
+        row = _normalize_sqlite_row(
+            {
+                "artist_key": "mbid:\ufeff" + mbid,
+                "artist_name": "\ufeffD-Rop Dow 2",
+                "musicbrainz_artistid": "\ufeff" + mbid,
+            }
+        )
+        self.assertEqual(row["artist_key"], "mbid:" + mbid)
+        self.assertEqual(row["musicbrainz_artistid"], mbid)
+        self.assertEqual(row["artist_name"], "\ufeffD-Rop Dow 2")
+        self.assertEqual(
+            row["_reconciliation_original_identity_values"],
+            {
+                "artist_key": "mbid:\ufeff" + mbid,
+                "musicbrainz_artistid": "\ufeff" + mbid,
+            },
+        )
+
+    def test_production_bom_alias_pair_is_a_visible_collision(self):
+        mbid = "6958e806-1e14-4844-a0a7-07a27756aa0f"
+        clean = _normalize_sqlite_row(
+            {
+                "artist_key": "mbid:" + mbid,
+                "artist_name": "A Great Big World",
+                "musicbrainz_artistid": mbid,
+            }
+        )
+        bom = _normalize_sqlite_row(
+            {
+                "artist_key": "mbid:\ufeff" + mbid,
+                "artist_name": "A Great Big World",
+                "musicbrainz_artistid": "\ufeff" + mbid,
+            }
+        )
+        for row in (clean, bom):
+            row["_reconciliation_source_key"] = row["artist_key"]
+        rows = [(clean, None), (bom, None)]
+        rejected = SQLiteReconciler._reject_normalized_source_collisions(
+            "artists", rows
+        )
+        self.assertEqual(rejected, {"mbid:" + mbid})
+        for row in (clean, bom):
+            identity = row["_reconciliation_identity"]
+            self.assertEqual(identity["status"], "conflict")
+            self.assertEqual(
+                identity["reason"],
+                "multiple-windows-entities-share-one-canonical-key",
+            )
+            self.assertEqual(identity["candidate_count"], 2)
+            self.assertTrue(
+                any("\ufeff" in source_key for source_key in identity["source_keys"])
+            )
 
     def test_album_validation_migrations_do_not_trust_historical_counters(self):
         migrations = Path(__file__).parents[1] / "migrations"
@@ -386,15 +442,23 @@ class SQLiteReconciliationTests(unittest.TestCase):
             )
         )
 
-    def test_only_matched_newer_catalog_authority_is_safe(self):
+    def test_windows_catalog_authority_does_not_depend_on_postgresql_timestamp(self):
         newer = {"updated_at": "2026-01-02T00:00:00+00:00"}
         older = {"updated_at": "2026-01-01T00:00:00+00:00"}
         self.assertEqual(classify_difference("albums", newer, older), "safe")
-        self.assertEqual(classify_difference("albums", older, newer), "conflict")
-        self.assertEqual(classify_difference("artists", newer, None), "conflict")
-        self.assertEqual(classify_difference("albums", newer, None), "conflict")
-        self.assertEqual(classify_difference("tracks", newer, None), "conflict")
-        self.assertEqual(classify_difference("cache_entries", newer, None), "conflict")
+        self.assertEqual(classify_difference("albums", older, newer), "safe")
+        self.assertEqual(classify_difference("artists", newer, None), "safe")
+        self.assertEqual(classify_difference("albums", newer, None), "safe")
+        self.assertEqual(classify_difference("tracks", newer, None), "safe")
+        self.assertEqual(classify_difference("cache_entries", newer, None), "safe")
+        rejected = dict(
+            newer,
+            _reconciliation_identity={
+                "status": "rejected",
+                "reason": "mapped-file-not-found",
+            },
+        )
+        self.assertEqual(classify_difference("tracks", rejected, None), "conflict")
         self.assertEqual(
             classify_difference("compilation_album_progress", newer, older),
             "derived",
@@ -453,7 +517,7 @@ class SQLiteReconciliationTests(unittest.TestCase):
         )
         self.assertNotIn("embedded_tracks", mapped)
 
-    def test_equal_windows_embed_completion_is_safe_only_when_other_authority_matches(self):
+    def test_windows_album_authority_is_safe_after_identity_is_proven(self):
         source = {
             "album_key": "album",
             "processed_at": "2026-01-02T00:00:00Z",
@@ -471,12 +535,189 @@ class SQLiteReconciliationTests(unittest.TestCase):
                 source,
                 dict(target, updated_at="2026-01-03T00:00:00Z"),
             ),
-            "conflict",
+            "safe",
         )
         self.assertEqual(
             classify_difference("albums", source, dict(target, cover_found=0)),
-            "conflict",
+            "safe",
         )
+
+    def test_duplicate_album_and_track_candidates_never_use_first_row(self):
+        albums = [
+            {
+                "album_key": "first",
+                "artist_key": "artist",
+                "album_name": "Same",
+                "musicbrainz_albumid": "duplicate",
+                "path": r"E:\Music\First",
+            },
+            {
+                "album_key": "second",
+                "artist_key": "artist",
+                "album_name": "Same",
+                "musicbrainz_albumid": "duplicate",
+                "path": r"E:\Music\Second",
+            },
+        ]
+        source_album = {
+            "album_key": "source",
+            "artist_key": "artist",
+            "album_name": "Same",
+            "musicbrainz_albumid": "duplicate",
+            "path": r"E:\Music\Source",
+        }
+        for rows in (albums, list(reversed(albums))):
+            match, identity = SQLiteReconciler._find_entity_match(
+                "albums", source_album, SQLiteReconciler._match_maps("albums", rows)
+            )
+            self.assertIsNone(match)
+            self.assertEqual(identity["status"], "ambiguous")
+            self.assertEqual(identity["evidence"], "musicbrainz-album-id")
+
+        tracks = [
+            {
+                "track_key": "first",
+                "album_key": "album",
+                "musicbrainz_recordingid": "recording",
+                "path": r"E:\Music\First.flac",
+            },
+            {
+                "track_key": "second",
+                "album_key": "album",
+                "musicbrainz_recordingid": "recording",
+                "path": r"E:\Music\Second.flac",
+            },
+        ]
+        source_track = {
+            "track_key": "source",
+            "album_key": "album",
+            "musicbrainz_recordingid": "recording",
+            "path": r"E:\Music\Source.flac",
+        }
+        match, identity = SQLiteReconciler._find_entity_match(
+            "tracks", source_track, SQLiteReconciler._match_maps("tracks", tracks)
+        )
+        self.assertIsNone(match)
+        self.assertEqual(identity["status"], "ambiguous")
+        self.assertEqual(identity["evidence"], "recording-and-album")
+
+    def test_compound_primary_key_never_matches_on_first_component_only(self):
+        targets = [
+            {"recording_mbid": "recording", "release_mbid": "release-one"},
+            {"recording_mbid": "recording", "release_mbid": "release-two"},
+        ]
+        source = {"recording_mbid": "recording", "release_mbid": "release-three"}
+        match, identity = SQLiteReconciler._find_entity_match(
+            "recording_release_candidates",
+            source,
+            SQLiteReconciler._match_maps(
+                "recording_release_candidates", targets
+            ),
+        )
+        self.assertIsNone(match)
+        self.assertEqual(identity["status"], "unmatched")
+
+    def test_multiple_windows_rows_cannot_converge_on_one_target(self):
+        target = {
+            "artist_key": "target",
+            "artist_name": "Target",
+            "musicbrainz_artistid": "target-mbid",
+            "primary_path": r"E:\Music\Target",
+        }
+        first = {
+            "artist_key": "target",
+            "_reconciliation_source_key": "source-one",
+        }
+        second = {
+            "artist_key": "target",
+            "_reconciliation_source_key": "source-two",
+        }
+        rejected = SQLiteReconciler._reject_source_fan_in(
+            "artists", [(first, target), (second, target)]
+        )
+        self.assertEqual(rejected, {"source-one", "source-two"})
+        for source in (first, second):
+            identity = source["_reconciliation_identity"]
+            self.assertEqual(identity["status"], "conflict")
+            self.assertEqual(
+                identity["reason"],
+                "multiple-windows-entities-map-to-one-postgresql-entity",
+            )
+            self.assertEqual(identity["source_keys"], ["source-one", "source-two"])
+
+    def test_controlled_insert_requires_complete_rows_parent_and_mapped_paths(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            artist = root / "Artist"
+            album = artist / "Album"
+            album.mkdir(parents=True)
+            track = album / "01.flac"
+            track.write_bytes(b"fixture")
+            timestamp = "2026-01-01T00:00:00Z"
+            artist_row = {
+                "artist_key": "artist",
+                "artist_name": "Artist",
+                "primary_path": str(artist),
+                "created_at": timestamp,
+                "updated_at": timestamp,
+                "last_seen_at": timestamp,
+                "splined_version": "test",
+            }
+            album_row = {
+                "album_key": "album",
+                "artist_key": "artist",
+                "album_name": "Album",
+                "path": str(album),
+                "tag_signature": "signature",
+                "created_at": timestamp,
+                "updated_at": timestamp,
+                "last_seen_at": timestamp,
+                "splined_version": "test",
+            }
+            track_row = {
+                "track_key": "track",
+                "album_key": "album",
+                "path": str(track),
+                "title": "Track",
+                "artist_name": "Artist",
+                "file_size": 7,
+                "file_mtime_ns": 1,
+                "updated_at": timestamp,
+                "splined_version": "test",
+            }
+            reconciler = SQLiteReconciler(
+                object(), root, root, start_scheduler=False
+            )
+            try:
+                self.assertEqual(
+                    reconciler._insert_identity("artists", artist_row)["status"],
+                    "insertable",
+                )
+                self.assertEqual(
+                    reconciler._insert_identity("albums", album_row)["status"],
+                    "insertable",
+                )
+                self.assertEqual(
+                    reconciler._insert_identity("tracks", track_row)["status"],
+                    "insertable",
+                )
+                rejected = reconciler._insert_identity(
+                    "tracks", {"path": str(album / "missing.flac")}
+                )
+                self.assertEqual(rejected["status"], "rejected")
+                self.assertEqual(rejected["reason"], "required-insert-fields-missing")
+                outside = dict(track_row, path=str(root.parent / "outside.flac"))
+                rejected = reconciler._insert_identity("tracks", outside)
+                self.assertEqual(rejected["status"], "rejected")
+                self.assertEqual(
+                    rejected["reason"], "mapped-path-outside-target-library"
+                )
+                blocked = reconciler._insert_identity(
+                    "tracks", track_row, parent_ready=False
+                )
+                self.assertEqual(blocked["status"], "blocked")
+            finally:
+                reconciler.close()
 
     def test_authorized_source_inventory_is_bounded_to_cache_database_files(self):
         with TemporaryDirectory() as directory:
@@ -562,6 +803,12 @@ class SQLiteReconciliationTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("startup_mode TEXT NOT NULL DEFAULT 'off'", startup)
         self.assertIn("'compare', 'apply-safe'", startup)
+        diagnostics = (
+            Path(__file__).parents[1]
+            / "migrations"
+            / "015_reconciliation_table_counts.sql"
+        ).read_text(encoding="utf-8")
+        self.assertIn("ADD COLUMN table_counts JSONB", diagnostics)
 
     def test_ui_and_apply_contract_never_offer_conflict_application(self):
         root = Path(__file__).parents[1]
