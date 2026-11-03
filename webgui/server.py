@@ -1092,6 +1092,52 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
             limit=limit,
         )
 
+    @app.get("/api/reconciliation/conflicts")
+    def reconciliation_conflicts(
+        run_id: str = "",
+        query: str = "",
+        entity_table: str = "",
+        reason: str = "",
+        album_class: str = "",
+        offset: int = 0,
+        limit: int = 200,
+    ):
+        context.require()
+        if not context.reconciliation:
+            raise ValueError("SQLite reconciliation is unavailable")
+        return context.reconciliation.conflict_report(
+            run_id=run_id,
+            query=query,
+            entity_table=entity_table,
+            reason=reason,
+            album_class=album_class,
+            offset=offset,
+            limit=limit,
+        )
+
+    @app.get("/api/reconciliation/conflicts/export")
+    def reconciliation_conflicts_export(run_id: str = "", format: str = "html"):
+        context.require()
+        if not context.reconciliation:
+            raise ValueError("SQLite reconciliation is unavailable")
+        kind = str(format or "html").strip().casefold()
+        if kind == "json":
+            payload = context.reconciliation.conflict_report(
+                run_id=run_id, limit=100_000, _maximum=100_000
+            )
+            return Response(
+                json.dumps(payload, ensure_ascii=False, indent=2, default=str) + "\n",
+                media_type="application/json",
+                headers={"Content-Disposition": 'attachment; filename="splined-conflicts.json"'},
+            )
+        if kind != "html":
+            raise ValueError("Conflict export format must be html or json")
+        return Response(
+            context.reconciliation.conflict_report_html(run_id=run_id),
+            media_type="text/html",
+            headers={"Content-Disposition": 'attachment; filename="splined-conflicts.html"'},
+        )
+
     @app.post("/api/reconciliation/compare")
     def reconciliation_compare(payload: dict):
         context.require()

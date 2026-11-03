@@ -354,7 +354,16 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             database = root / "index.sqlite"
             credentials = root / "credentials"
             credentials.mkdir()
-            folders = {name: root / name for name in ("own", "featured", "comp")}
+            folders = {
+                name: root / name
+                for name in (
+                    "own",
+                    "featured",
+                    "filename-featured",
+                    "ordinary-title",
+                    "comp",
+                )
+            }
             for folder in folders.values():
                 folder.mkdir()
                 (folder / "song.mp3").touch()
@@ -382,12 +391,42 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                     [
                         ("own", "target", "Own Release", str(folders["own"]), 0, "release-own"),
                         ("featured", "owner", "Featured Release", str(folders["featured"]), 0, "release-featured"),
+                        (
+                            "filename-featured",
+                            "owner",
+                            "Filename Featured Release",
+                            str(folders["filename-featured"]),
+                            0,
+                            "release-filename-featured",
+                        ),
+                        (
+                            "ordinary-title",
+                            "owner",
+                            "Ordinary Title",
+                            str(folders["ordinary-title"]),
+                            0,
+                            "release-ordinary-title",
+                        ),
                         ("comp", "various", "COMP Folder", str(folders["comp"]), 1, ""),
                     ],
                 )
                 db.executemany("INSERT INTO tracks VALUES (?,?,?,?,?)", [
                     ("own-track", "own", str(folders["own"] / "song.mp3"), "Own", "Target Artist"),
                     ("featured-track", "featured", str(folders["featured"] / "song.mp3"), "Guest", "Album Owner feat. Target Artist"),
+                    (
+                        "filename-featured-track",
+                        "filename-featured",
+                        str(folders["filename-featured"] / "song.mp3"),
+                        "1-07 - Album Owner & Target Artist - Guest Song",
+                        "Album Owner",
+                    ),
+                    (
+                        "ordinary-title-track",
+                        "ordinary-title",
+                        str(folders["ordinary-title"] / "song.mp3"),
+                        "A Song About Target Artist",
+                        "Album Owner",
+                    ),
                     ("comp-track", "comp", str(folders["comp"] / "song.mp3"), "COMP", "Album Owner feat. Target Artist"),
                 ])
                 db.commit()
@@ -395,9 +434,10 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             app = PreviewApp(root, database, root, credentials, cache=root / "cache")
             artist = app.artist("target")
             albums = {item["id"]: item for item in artist["albums"]}
-            self.assertEqual(set(albums), {"own", "featured"})
+            self.assertEqual(set(albums), {"own", "featured", "filename-featured"})
             self.assertFalse(albums["own"]["featured"])
             self.assertTrue(albums["featured"]["featured"])
+            self.assertTrue(albums["filename-featured"]["featured"])
             self.assertEqual([group["id"] for group in app.artist_comp_albums("target")], ["comp"])
 
 

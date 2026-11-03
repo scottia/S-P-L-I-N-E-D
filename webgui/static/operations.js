@@ -1152,7 +1152,62 @@ function downloadJsonFile(name, value) {
   const blob = new Blob([JSON.stringify(value, null, 2) + "\n"], {type: "application/json"});
   const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = name; link.click(); URL.revokeObjectURL(link.href);
 }
-async function renderSqliteReconciliation(host) {
+  function renderReconciliationConflicts(host) {
+    const disclosure = node("details", "conflict-browser");
+    disclosure.append(node("summary", "", "Reconciliation Conflicts"));
+    const body = node("section", "conflict-browser-body");
+    body.append(node("p", "settings-subcopy", "Review unresolved Windows SNAP associations by root Artist, Album class, entity, path, MBID, and field. This report is read-only."));
+    const controls = node("div", "conflict-controls"), run = node("select"), table = node("select"), reason = node("select"), albumClass = node("select"), search = node("input"), refresh = node("button", "operation-button", "Refresh");
+    search.placeholder = "Search Artist, Album, path, MBID, reason"; refresh.type = "button";
+    controls.append(run, table, reason, albumClass, search, refresh);
+    const downloads = node("div", "conflict-downloads"), html = node("a", "operation-button", "Download conflicts.html"), json = node("a", "operation-button", "Download conflicts.json");
+    html.download = "splined-conflicts.html"; json.download = "splined-conflicts.json"; downloads.append(html, json);
+    const summary = node("p", "runtime-summary", "Open to load reconciliation conflicts."), roots = node("div", "conflict-roots"), entries = node("div", "conflict-entries"), pages = node("div", "conflict-pages"), previous = node("button", "operation-button", "Previous"), next = node("button", "operation-button", "Next"), page = node("span", "", "");
+    previous.type = next.type = "button"; pages.append(previous, page, next); body.append(controls, downloads, summary, roots, entries, pages); disclosure.append(body); host.append(disclosure);
+    let loaded = false, offset = 0; const pageSize = 100;
+    const populate = (select, first, values, chosen) => {
+      clear(select); const blank = node("option", "", first); blank.value = ""; select.append(blank);
+      for (const value of values || []) { const option = node("option", "", value); option.value = value; select.append(option); }
+      select.value = chosen || "";
+    };
+    const exportLinks = () => {
+      const params = new URLSearchParams(); if (run.value) params.set("run_id", run.value);
+      html.href = "/api/reconciliation/conflicts/export?format=html&" + params;
+      json.href = "/api/reconciliation/conflicts/export?format=json&" + params;
+    };
+    const valueText = value => value == null ? "—" : typeof value === "object" ? JSON.stringify(value) : String(value);
+    const renderItem = item => {
+      const entry = node("details", "conflict-entry"), title = node("summary");
+      title.append(node("strong", "", item.root_label || item.root_key), node("span", "", `${item.entity_table} · ${item.album_class} · ${item.reason}`)); entry.append(title);
+      const meta = node("p", "conflict-meta", `${item.entity_key} · root ${item.root_key}${item.evidence ? " · evidence " + item.evidence : ""}`), comparison = node("div", "conflict-comparison");
+      comparison.append(node("b", "", "Field"), node("b", "", "Windows SNAP"), node("b", "", "PostgreSQL"));
+      for (const change of item.changes || []) comparison.append(node("span", "", change.field), node("span", "", valueText(change.windows)), node("span", "", valueText(change.postgresql)));
+      entry.append(meta, comparison); return entry;
+    };
+    async function load(reset = false) {
+      if (reset) offset = 0;
+      summary.textContent = "Loading reconciliation conflicts…"; clear(entries); clear(roots);
+      const params = new URLSearchParams({offset: String(offset), limit: String(pageSize)});
+      if (run.value) params.set("run_id", run.value); if (table.value) params.set("entity_table", table.value); if (reason.value) params.set("reason", reason.value); if (albumClass.value) params.set("album_class", albumClass.value); if (search.value.trim()) params.set("query", search.value.trim());
+      try {
+        const result = await api("/api/reconciliation/conflicts?" + params), selectedRun = run.value;
+        if (!run.options.length) {
+          const noRun = node("option", "", result.runs?.length ? "Latest conflict run" : "No conflict runs"); noRun.value = ""; run.append(noRun);
+          for (const item of result.runs || []) { const option = node("option", "", `${item.run_id.slice(0, 12)} · ${item.conflicts} conflicts · ${new Date(item.started_at).toLocaleString()}`); option.value = item.run_id; run.append(option); }
+        }
+        populate(table, "All entities", result.facets?.tables, table.value); populate(reason, "All root causes", result.facets?.reasons, reason.value); populate(albumClass, "All Album classes", result.facets?.album_classes, albumClass.value); if (selectedRun) run.value = selectedRun;
+        summary.textContent = result.run ? `${result.total} matching · ${result.summary.total} total conflicts · run ${result.run.run_id}` : "No reconciliation conflicts have been recorded.";
+        for (const root of (result.roots || []).slice(0, 12)) roots.append(node("span", "", `${root.label} · ${root.count}`));
+        for (const item of result.items || []) entries.append(renderItem(item));
+        if (!result.items?.length) entries.append(node("p", "settings-subcopy", "No conflicts match these filters."));
+        previous.disabled = offset <= 0; next.disabled = offset + pageSize >= result.total; page.textContent = result.total ? `${offset + 1}–${Math.min(offset + pageSize, result.total)} of ${result.total}` : "0 entries"; exportLinks();
+      } catch (error) { summary.textContent = error.message; summary.classList.add("operation-error"); }
+    }
+    disclosure.addEventListener("toggle", () => { if (disclosure.open && !loaded) { loaded = true; void load(); } });
+    refresh.addEventListener("click", () => void load(true)); run.addEventListener("change", () => void load(true)); table.addEventListener("change", () => void load(true)); reason.addEventListener("change", () => void load(true)); albumClass.addEventListener("change", () => void load(true)); search.addEventListener("keydown", event => { if (event.key === "Enter") void load(true); });
+    previous.addEventListener("click", () => { offset = Math.max(0, offset - pageSize); void load(); }); next.addEventListener("click", () => { offset += pageSize; void load(); }); exportLinks();
+  }
+  async function renderSqliteReconciliation(host) {
   const section = node("section", "sqlite-reconciliation");
   section.append(node("h5", "", "SQLite Reconciliation"), node("p", "settings-subcopy", "Compare an authorized read-only SQLite snapshot with this PostgreSQL catalog. Differences remain reviewable in salite_diff; conflicts are never auto-applied."));
   const source = node("select"), sourceLabel = node("label", "setting-field"); sourceLabel.append(node("span", "", "Authorized SQLite snapshot"), source);
@@ -1302,7 +1357,7 @@ function renderRuntimeSettings(host, section, draft, bindings, saved, advanced) 
   }
   const updateDownload = () => download.href = "/api/audit/export?" + query();
   for (const input of [severity, action, correlation, since, until]) input.addEventListener("change", updateDownload);
-  refresh.addEventListener("click", load); updateDownload(); void load(); layout.append(processing, logging); host.append(layout);
+    refresh.addEventListener("click", load); updateDownload(); void load(); renderReconciliationConflicts(logging); layout.append(processing, logging); host.append(layout);
 }
 async function openSettings() {
   state.reviewJobId = null;
