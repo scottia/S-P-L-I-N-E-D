@@ -41,6 +41,9 @@ opening every normal track. The header reports separate added, changed, and
 removed counts before applying that delta. Changed COMP/Fallback Albums rebuild
 their complete track identity inventory during the explicit update. Use
 **Settings → Full Refresh Library Index** only for a deliberate full rebuild.
+When Windows SNAP reconciliation is in use, Full Refresh preserves reconciled
+fields and updates only the WebGUI/derived portions described in the
+[catalog authority contract](catalog-authority.md).
 
 ### Settings map
 
@@ -109,10 +112,15 @@ Navidrome supplies biography, similar artists, and top songs when available. If 
 
 ## Data, recovery, and deployment
 
-PostgreSQL is authoritative for WebGUI catalog and jobs. There is no silent
-SQLite fallback, and the native `scan.sqlite_shared` switch is not a WebGUI
-setting. Windows and WebGUI do not open the same live database; avoid
-simultaneous writers to the same music library.
+PostgreSQL is the live WebGUI catalog, job, Audit, and runtime store. Windows
+and WebGUI never open the same live database. An explicitly selected,
+read-only Windows SQLite snapshot is authoritative for the catalog, identity,
+metadata, and processing fields shared by both schemas only after deterministic
+identity/path comparison and explicit **Apply Safe Differences**. PostgreSQL-
+only job, Audit, validation, and browser fields are preserved. Ambiguous or
+unmapped entities remain visible conflicts, target-only rows are not deleted,
+and reconciliation is deferred while Album work is active. Avoid simultaneous
+media writers even though the databases are separate.
 
 **Catalog Maintenance → Import an existing SQLite catalog** is an explicit
 one-time initialization operation. The path names a snapshot readable by the
