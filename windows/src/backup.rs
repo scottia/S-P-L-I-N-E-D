@@ -1363,6 +1363,233 @@ mod tests {
     }
 
     #[test]
+    fn reconciliation_snapshot_captures_complete_state_without_a_scan() {
+        use rusqlite::types::Value as SqlValue;
+
+        fn table_rows(connection: &Connection, table: &str) -> Vec<Vec<SqlValue>> {
+            let mut statement = connection
+                .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
+                .unwrap();
+            let columns = statement.column_count();
+            statement
+                .query_map([], |row| {
+                    (0..columns)
+                        .map(|index| row.get::<_, SqlValue>(index))
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        }
+
+        let root = TempDir::new().unwrap();
+        let cache = root.path().join("cache");
+        let snapshots = root.path().join("snapshots");
+        std::fs::create_dir(&cache).unwrap();
+        let database = cache.join("splined.db");
+        let source = Connection::open(&database).unwrap();
+        source
+            .execute_batch(include_str!("../../schema/media.sql"))
+            .unwrap();
+        source
+            .pragma_update(None, "user_version", crate::media_database::SCHEMA_VERSION)
+            .unwrap();
+        source
+            .execute_batch(
+                r#"
+                INSERT INTO picker_inventory VALUES(
+                    'splined-media-library',
+                    '{"schema_version":2,"library_root":"/music"}',
+                    '{"artists":1,"albums":2}',
+                    '2026-01-01T00:00:00Z', 'test'
+                );
+                INSERT INTO artists(
+                    artist_key,artist_name,musicbrainz_artistid,primary_path,status,
+                    album_count,unprocessed_count,processed_count,bypassed_count,
+                    timeout_count,created_at,updated_at,last_seen_at,splined_version
+                ) VALUES(
+                    'artist','Artist','artist-mbid','/music/Artist','contains-incomplete',
+                    2,1,1,1,1,'2025-01-01T00:00:00Z','2026-01-01T00:00:00Z',
+                    '2026-01-01T00:00:00Z','test'
+                );
+                INSERT INTO albums(
+                    album_key,artist_key,album_name,musicbrainz_albumid,path,
+                    representative_file,tag_signature,track_count,status,cover_found,
+                    cover_path,processed_at,bypassed,timeout_until,selected_source,
+                    created_at,updated_at,last_seen_at,splined_version
+                ) VALUES
+                (
+                    'album-prior','artist','Previously Processed','album-prior-mbid',
+                    '/music/Artist/Previously Processed','/music/Artist/Previously Processed/01.flac',
+                    'prior-tags',1,'processed',1,'/music/Artist/Previously Processed/cover.jpg',
+                    '2025-06-01T00:00:00Z',0,NULL,'embed-queue','2025-01-01T00:00:00Z',
+                    '2025-06-01T00:00:00Z','2026-01-01T00:00:00Z','test'
+                ),
+                (
+                    'album-next','artist','Next Album','album-next-mbid',
+                    '/music/Artist/Next Album','/music/Artist/Next Album/01.flac',
+                    'next-tags',1,'timeout',0,NULL,NULL,1,'2099-01-01T00:00:00Z',NULL,
+                    '2025-01-01T00:00:00Z','2026-01-01T00:00:00Z',
+                    '2026-01-01T00:00:00Z','test'
+                );
+                INSERT INTO tracks VALUES
+                ('track-prior','album-prior','/music/Artist/Previously Processed/01.flac',
+                 'Prior Track','Artist','recording-prior','artist-mbid',100,1000,
+                 '2025-06-01T00:00:00Z','test'),
+                ('track-next','album-next','/music/Artist/Next Album/01.flac',
+                 'Next Track','Artist','recording-next','artist-mbid',200,2000,
+                 '2026-01-01T00:00:00Z','test');
+                INSERT INTO recording_release_lookups VALUES(
+                    'recording-prior','artist-mbid','2025-06-01T00:00:00Z','test'
+                );
+                INSERT INTO recording_release_candidates VALUES(
+                    'recording-prior','release-prior','group-prior','album',1,1,
+                    'Previously Processed','Artist','artist-mbid','2025-06-01'
+                );
+                INSERT INTO compilation_track_artwork VALUES(
+                    '/music/Artist/Previously Processed/01.flac','recording-prior',
+                    'artist-mbid','release','provider:prior','release-prior','art-prior',
+                    'embedded-replaced','2025-06-01T00:00:00Z','test'
+                );
+                INSERT INTO compilation_album_progress VALUES(
+                    '/music/Artist/Previously Processed',1,1,'complete',
+                    '2025-06-01T00:00:00Z','test'
+                );
+                INSERT INTO cache_entries VALUES(
+                    'prior-cache','processing','album-prior','{"complete":true}',
+                    'test','2025-06-01T00:00:00Z','2025-06-01T00:00:00Z'
+                );
+                INSERT INTO cache_history(
+                    cache_key,cache_type,album_key,action,payload_json,splined_version,event_at
+                ) VALUES(
+                    'prior-cache','processing','album-prior','completed',
+                    '{"complete":true}','test','2025-06-01T00:00:00Z'
+                );
+                "#,
+            )
+            .unwrap();
+
+        let mut config = Config::default();
+        config.scan.cache_dir = cache.to_string_lossy().into_owned();
+
+        // Export directly, without invoking media discovery or processing.
+        let first = export_reconciliation_snapshot(&snapshots.join("before"), &config).unwrap();
+        let first_db = Connection::open(&first.path).unwrap();
+        for table in [
+            "artists",
+            "albums",
+            "tracks",
+            "recording_release_lookups",
+            "recording_release_candidates",
+            "compilation_track_artwork",
+            "compilation_album_progress",
+            "cache_entries",
+            "cache_history",
+        ] {
+            assert_eq!(table_rows(&source, table), table_rows(&first_db, table));
+        }
+        let prior_album_before: Vec<SqlValue> = first_db
+            .prepare("SELECT * FROM albums WHERE album_key='album-prior'")
+            .unwrap()
+            .query_map([], |row| {
+                (0..row.as_ref().column_count())
+                    .map(|index| row.get::<_, SqlValue>(index))
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        drop(first_db);
+
+        // Simulate processing exactly one already-indexed Album. No scan is
+        // required and no unrelated authoritative row is rewritten.
+        source
+            .execute_batch(
+                r#"
+                UPDATE albums SET
+                    status='processed',cover_found=1,
+                    cover_path='/music/Artist/Next Album/cover.jpg',
+                    processed_at='2026-02-01T00:00:00Z',bypassed=0,
+                    timeout_until=NULL,selected_source='embed-queue',
+                    updated_at='2026-02-01T00:00:00Z'
+                WHERE album_key='album-next';
+                UPDATE artists SET
+                    status='complete',unprocessed_count=0,processed_count=2,
+                    bypassed_count=0,timeout_count=0,
+                    updated_at='2026-02-01T00:00:00Z'
+                WHERE artist_key='artist';
+                INSERT INTO compilation_track_artwork VALUES(
+                    '/music/Artist/Next Album/01.flac','recording-next','artist-mbid',
+                    'release','provider:next','release-next','art-next',
+                    'embedded-replaced','2026-02-01T00:00:00Z','test'
+                );
+                INSERT INTO compilation_album_progress VALUES(
+                    '/music/Artist/Next Album',1,1,'complete',
+                    '2026-02-01T00:00:00Z','test'
+                );
+                INSERT INTO cache_history(
+                    cache_key,cache_type,album_key,action,payload_json,splined_version,event_at
+                ) VALUES(
+                    'next-cache','processing','album-next','completed',
+                    '{"complete":true}','test','2026-02-01T00:00:00Z'
+                );
+                "#,
+            )
+            .unwrap();
+
+        let second = export_reconciliation_snapshot(&snapshots.join("after"), &config).unwrap();
+        let second_db = Connection::open(&second.path).unwrap();
+        for table in [
+            "artists",
+            "albums",
+            "tracks",
+            "recording_release_lookups",
+            "recording_release_candidates",
+            "compilation_track_artwork",
+            "compilation_album_progress",
+            "cache_entries",
+            "cache_history",
+        ] {
+            assert_eq!(table_rows(&source, table), table_rows(&second_db, table));
+        }
+        let prior_album_after: Vec<SqlValue> = second_db
+            .prepare("SELECT * FROM albums WHERE album_key='album-prior'")
+            .unwrap()
+            .query_map([], |row| {
+                (0..row.as_ref().column_count())
+                    .map(|index| row.get::<_, SqlValue>(index))
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        assert_eq!(prior_album_before, prior_album_after);
+        assert_eq!(
+            second_db
+                .query_row(
+                    "SELECT status FROM albums WHERE album_key='album-next'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "processed"
+        );
+        assert_eq!(
+            Connection::open(&first.path)
+                .unwrap()
+                .query_row(
+                    "SELECT status FROM albums WHERE album_key='album-next'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "timeout"
+        );
+    }
+
+    #[test]
     fn invalid_authoritative_snapshot_is_not_published() {
         let root = TempDir::new().unwrap();
         let cache = root.path().join("cache");
