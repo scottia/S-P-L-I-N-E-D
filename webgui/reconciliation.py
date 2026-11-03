@@ -1576,7 +1576,10 @@ class SQLiteReconciler:
 
     @staticmethod
     def _recalculate(db) -> None:
-        from splined_media_database import aggregate_artist
+        from splined_media_database import (
+            aggregate_artist,
+            album_counts_toward_artist_status,
+        )
 
         rows = list(
             db.execute(
@@ -1589,6 +1592,8 @@ class SQLiteReconciler:
         by_artist: dict[str, list[str]] = {}
         now = datetime.now(timezone.utc)
         for row in rows:
+            artist_key = str(row["artist_key"])
+            by_artist.setdefault(artist_key, [])
             timeout = _timestamp(row["timeout_until"])
             if bool(row["bypassed"]):
                 status = "bypassed"
@@ -1612,7 +1617,10 @@ class SQLiteReconciler:
                 "UPDATE albums SET status=? WHERE album_key=?",
                 (status, row["album_key"]),
             )
-            by_artist.setdefault(str(row["artist_key"]), []).append(status)
+            if album_counts_toward_artist_status(
+                row["compilation"], row["musicbrainz_albumid"]
+            ):
+                by_artist[artist_key].append(status)
         for artist_key, statuses in by_artist.items():
             counts = {name: statuses.count(name) for name in (
                 "unprocessed",
