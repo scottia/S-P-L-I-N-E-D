@@ -324,6 +324,34 @@ class SQLiteReconciliationTests(unittest.TestCase):
             Path(str(snapshot) + "-wal").write_bytes(b"")
             self.assertEqual(SQLiteReconciler._fingerprint(snapshot), before)
 
+    def test_sqlite_source_normalizes_nul_separated_metadata_at_read_boundary(self):
+        with closing(sqlite3.connect(":memory:")) as source:
+            source.row_factory = sqlite3.Row
+            source.execute(
+                "CREATE TABLE artists (artist_key TEXT,artist_name TEXT,"
+                "musicbrainz_artistid TEXT,primary_path TEXT)"
+            )
+            raw_name = "Mariah Carey\0Stefflon Don"
+            raw_ids = "494e8d09-f85b-4543-892f-a5096aed1cd4\0c5a73e97-82ff-4b97-a9f7-49b1f799cb87"
+            source.execute(
+                "INSERT INTO artists VALUES (?,?,?,?)",
+                ("mbid:" + raw_ids, raw_name, raw_ids, r"D:\Music\Mariah Carey"),
+            )
+
+            rows = SQLiteReconciler._read_source(source, "artists", {"artists"})
+
+            self.assertEqual(rows[0]["artist_name"], "Mariah Carey; Stefflon Don")
+            self.assertEqual(
+                rows[0]["musicbrainz_artistid"],
+                "494e8d09-f85b-4543-892f-a5096aed1cd4; "
+                "c5a73e97-82ff-4b97-a9f7-49b1f799cb87",
+            )
+            self.assertNotIn("\0", rows[0]["artist_key"])
+            self.assertIn(
+                "\0",
+                source.execute("SELECT artist_name FROM artists").fetchone()[0],
+            )
+
     def test_album_without_mbid_can_match_only_within_its_artist_identity(self):
         target = {
             "album_key": "target-key",

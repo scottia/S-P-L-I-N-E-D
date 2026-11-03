@@ -66,6 +66,21 @@ SAFE_UPDATE_TABLES = {
     "recording_release_lookups",
     "compilation_track_artwork",
 }
+
+
+def _normalize_sqlite_value(value: Any) -> Any:
+    """Translate SQLite multi-value text into PostgreSQL-safe text.
+
+    Windows tag readers preserve multiple values with NUL separators. SQLite
+    accepts those strings, but PostgreSQL text and JSONB reject U+0000. Keep
+    every non-empty value and use the application's existing ``; `` display
+    separator before matching, hashing, recording, or applying differences.
+    """
+    if not isinstance(value, str) or "\0" not in value:
+        return value
+    return "; ".join(part.strip() for part in value.split("\0") if part.strip())
+
+
 def _canonical(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
 
@@ -312,7 +327,10 @@ class SQLiteReconciler:
     def _read_source(db: sqlite3.Connection, table: str, available: set[str]) -> list[dict[str, Any]]:
         if table not in available:
             return []
-        return [dict(row) for row in db.execute(f'SELECT * FROM "{table}"')]
+        return [
+            {name: _normalize_sqlite_value(value) for name, value in dict(row).items()}
+            for row in db.execute(f'SELECT * FROM "{table}"')
+        ]
 
     @staticmethod
     def _target_columns(raw, table: str) -> list[str]:

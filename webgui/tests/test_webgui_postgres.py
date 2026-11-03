@@ -2371,6 +2371,79 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         finally:
             reconciler.close()
 
+    def test_reconciliation_normalizes_windows_nul_multivalue_text_before_jsonb(self):
+        newer = "2099-01-01T00:00:00+00:00"
+        with closing(self.db.connect()) as db:
+            artist = db.execute(
+                "SELECT artist_key,artist_name,musicbrainz_artistid,primary_path "
+                "FROM artists WHERE artist_key=?",
+                (self.row["artist_key"],),
+            ).fetchone()
+
+        snapshot = self.root / "cache" / "nul-multivalue.sqlite"
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        guest_mbid = "77777777-7777-4777-8777-777777777777"
+        with closing(sqlite3.connect(snapshot)) as source, source:
+            source.execute("PRAGMA user_version=2")
+            source.execute(
+                "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,"
+                "musicbrainz_artistid TEXT,primary_path TEXT,updated_at TEXT)"
+            )
+            source.execute("CREATE TABLE albums (album_key TEXT PRIMARY KEY)")
+            source.execute(
+                "INSERT INTO artists VALUES (?,?,?,?,?)",
+                (
+                    artist["artist_key"],
+                    artist["artist_name"] + "\0Guest Artist",
+                    artist["musicbrainz_artistid"] + "\0" + guest_mbid,
+                    artist["primary_path"],
+                    newer,
+                ),
+            )
+
+        reconciler = SQLiteReconciler(
+            self.db, snapshot.parent, self.root / "music", start_scheduler=False
+        )
+        try:
+            compared = reconciler.compare(
+                snapshot, str(self.root / "music"), str(self.root / "music")
+            )
+            self.assertEqual(compared["safe"], 1)
+            self.assertEqual(compared["conflicts"], 0)
+            with closing(self.db.connect()) as db:
+                difference = db.execute(
+                    "SELECT source_value FROM salite_diff WHERE last_run_id=?",
+                    (compared["run_id"],),
+                ).fetchone()["source_value"]
+            self.assertEqual(
+                difference["artist_name"], artist["artist_name"] + "; Guest Artist"
+            )
+            self.assertNotIn("\0", json.dumps(difference))
+
+            applied = reconciler.apply(compared["run_id"])
+            self.assertEqual(applied["failures"], 0)
+            self.assertEqual(applied["applied"], 1)
+            with closing(self.db.connect()) as db:
+                saved = db.execute(
+                    "SELECT artist_name,musicbrainz_artistid FROM artists "
+                    "WHERE artist_key=?",
+                    (artist["artist_key"],),
+                ).fetchone()
+            self.assertEqual(
+                saved["artist_name"], artist["artist_name"] + "; Guest Artist"
+            )
+            self.assertEqual(
+                saved["musicbrainz_artistid"],
+                artist["musicbrainz_artistid"] + "; " + guest_mbid,
+            )
+
+            repeated = reconciler.compare(
+                snapshot, str(self.root / "music"), str(self.root / "music")
+            )
+            self.assertEqual(repeated["differences"], 0)
+        finally:
+            reconciler.close()
+
     def test_reconciliation_ambiguous_artist_remains_diagnostic_and_cannot_reparent_album(self):
         old = "2026-01-01T00:00:00+00:00"
         newer = "2099-01-01T00:00:00+00:00"
