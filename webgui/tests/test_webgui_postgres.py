@@ -184,7 +184,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             )
         adapter = JobAdapter(SimpleNamespace(db=self.db), job_id)
 
-        adapter.progress({"current": {"fallback_authority": {"artist": track.artist}}})
+        adapter.progress(
+            {"current": {"fallback_authority": {"artist": track.artist}}}
+        )
 
         with closing(self.db.connect()) as db:
             saved = db.execute(
@@ -247,7 +249,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             return {"decision": decision}
 
         with patch.object(self.services, "run_scan", side_effect=interactive_scan):
-            queued = self.queue.enqueue("scan", {"album_ids": [self.row["album_key"]]})
+            queued = self.queue.enqueue(
+                "scan", {"album_ids": [self.row["album_key"]]}
+            )
             waiting = self.wait_for_job(
                 queued["id"], lambda item: item["state"] == "waiting"
             )
@@ -281,7 +285,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.services.remove_staged_artwork(staged)
 
             prompt = waiting["progress"]["prompt"]
-            self.queue.action("decision", queued["id"], "k", prompt["nonce"])
+            self.queue.action(
+                "decision", queued["id"], "k", prompt["nonce"]
+            )
             completed = self.wait_for_job(
                 queued["id"], lambda item: item["state"] == "done"
             )
@@ -294,27 +300,18 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         )
         item = self.wait_for_job(
             result["id"],
-            lambda value: (
-                value["state"] == "waiting"
-                and value["progress"]["prompt"]["context"].get("kind")
-                == "musicbrainz-results"
-            ),
+            lambda value: value["state"] == "waiting"
+            and value["progress"]["prompt"]["context"].get("kind")
+            == "musicbrainz-results",
         )
         prompt = item["progress"]["prompt"]
         self.queue.action("decision", result["id"], "1", prompt["nonce"])
         item = self.wait_for_job(
             result["id"],
-            lambda value: (
-                value["state"] == "waiting"
-                and value["progress"]["prompt"]["context"].get("kind")
-                != "musicbrainz-results"
-                and bool(
-                    value["progress"]
-                    .get("current", {})
-                    .get("candidates", {})
-                    .get("items")
-                )
-            ),
+            lambda value: value["state"] == "waiting"
+            and value["progress"]["prompt"]["context"].get("kind")
+            != "musicbrainz-results"
+            and bool(value["progress"].get("current", {}).get("candidates", {}).get("items")),
         )
         prompt = item["progress"]["prompt"]
         self.queue.action("decision", result["id"], "1", prompt["nonce"])
@@ -363,9 +360,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         )
         self.assertTrue(list(self.root.rglob("artist.png")))
         banner = list(self.root.rglob("banner.png"))[0]
-        with Image.open(
-            BytesIO(self.services.catalog.image_bytes(expected_banner["image"]))
-        ) as preview:
+        with Image.open(BytesIO(self.services.catalog.image_bytes(expected_banner["image"]))) as preview:
             with Image.open(banner) as saved:
                 self.assertEqual(preview.size, saved.size)
                 self.assertEqual(preview.tobytes(), saved.tobytes())
@@ -454,9 +449,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             ("verified", 2, 2),
         )
 
-    def test_cover_format_replacement_stages_and_embeds_without_reusing_stale_handle(
-        self,
-    ):
+    def test_cover_format_replacement_stages_and_embeds_without_reusing_stale_handle(self):
         stale_cover = self.services.catalog.image(self.cover)
         self.runtime.cfg["output"].update(
             preserve_file=True,
@@ -474,9 +467,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         destination = self.cover.with_suffix(".png")
         self.assertTrue(destination.is_file())
         self.assertTrue(self.cover.with_name("cover-(2).jpg").is_file())
-        with self.assertRaisesRegex(
-            KeyError, "preview expired after the artwork changed"
-        ):
+        with self.assertRaisesRegex(KeyError, "preview expired after the artwork changed"):
             self.services.catalog.image_source(stale_cover)
 
         result = self.services.embed_album(staged)
@@ -506,9 +497,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.services.refresh_index()
 
         artist = self.services.catalog.artist(self.row["artist_key"])
-        featured = [
-            album for album in artist["albums"] if album["name"] == "Guest Release"
-        ]
+        featured = [album for album in artist["albums"] if album["name"] == "Guest Release"]
         self.assertEqual(len(featured), 1)
         self.assertTrue(featured[0]["featured"])
 
@@ -544,9 +533,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             if recording_mbid:
                 values["musicbrainz_trackid"] = recording_mbid
             if albumartist == "Various Artists":
-                values["musicbrainz_albumartistid"] = (
-                    "89ad4ac3-39f7-470e-963a-56509c546377"
-                )
+                values["musicbrainz_albumartistid"] = "89ad4ac3-39f7-470e-963a-56509c546377"
             for key, value in values.items():
                 audio[key] = value
             audio.save()
@@ -618,59 +605,43 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.assertEqual(
             {track["file"] for track in other[0]["tracks"]}, {other_path.name}
         )
-        self.assertEqual(
-            {track["file"] for track in full},
-            {
-                target_path.name,
-                other_path.name,
-                featured_path.name,
-            },
-        )
+        self.assertEqual({track["file"] for track in full}, {
+            target_path.name, other_path.name, featured_path.name,
+        })
         target_key = next(
-            track["key"]
-            for track in first[0]["tracks"]
+            track["key"] for track in first[0]["tracks"]
             if track["file"] == target_path.name
         )
-        other_key = next(
-            track["key"] for track in full if track["file"] == other_path.name
-        )
-        scoped_payload = self.services.validate_comp_payload(
-            {
-                "artist_id": self.row["artist_key"],
-                "album_id": comp_row["album_key"],
-                "track_keys": [target_key],
-            }
-        )
+        other_key = next(track["key"] for track in full if track["file"] == other_path.name)
+        scoped_payload = self.services.validate_comp_payload({
+            "artist_id": self.row["artist_key"],
+            "album_id": comp_row["album_key"],
+            "track_keys": [target_key],
+        })
         self.assertEqual(scoped_payload["track_keys"], [target_key])
         with self.assertRaisesRegex(ValueError, "not in this Artist's COMP report"):
-            self.services.validate_comp_payload(
-                {
-                    "artist_id": self.row["artist_key"],
-                    "album_id": comp_row["album_key"],
-                    "track_keys": [other_key],
-                }
-            )
-        full_payload = self.services.validate_comp_payload(
-            {
+            self.services.validate_comp_payload({
+                "artist_id": self.row["artist_key"],
                 "album_id": comp_row["album_key"],
-                "track_keys": [target_key, other_key],
-            }
-        )
+                "track_keys": [other_key],
+            })
+        full_payload = self.services.validate_comp_payload({
+            "album_id": comp_row["album_key"],
+            "track_keys": [target_key, other_key],
+        })
         self.assertEqual(full_payload["track_keys"], [target_key, other_key])
 
         candidate = self.runtime.temporary_cache / "selected-comp-candidate.png"
         candidate.parent.mkdir(parents=True, exist_ok=True)
         Image.new("RGB", (900, 600), "orange").save(candidate)
-        prepared = self.services.prepare_comp_thumbnail(
-            {
-                "artist_id": self.row["artist_key"],
-                "album_id": comp_row["album_key"],
-                "track_key": target_key,
-                "image": self.services.catalog.image(candidate),
-                "adjustments": {"Brightness": 8},
-                "upscale": True,
-            }
-        )
+        prepared = self.services.prepare_comp_thumbnail({
+            "artist_id": self.row["artist_key"],
+            "album_id": comp_row["album_key"],
+            "track_key": target_key,
+            "image": self.services.catalog.image(candidate),
+            "adjustments": {"Brightness": 8},
+            "upscale": True,
+        })
         self.assertFalse(prepared["audio_written"])
         self.assertEqual((prepared["width"], prepared["height"]), (300, 300))
         self.assertIsNone(embedded_track_artwork_bytes(target_path))
@@ -678,18 +649,16 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         with patch.object(
             restarted_services, "_comp_track_authority_validated", return_value=True
         ):
-            embedded = restarted_services.embed_comp_track(
-                {
-                    "artist_id": self.row["artist_key"],
-                    "album_id": comp_row["album_key"],
-                    "track_key": target_key,
-                    "image": self.services.catalog.image(candidate),
-                    "adjustments": {"Brightness": 8},
-                    "upscale": True,
-                    "prepared_id": prepared["prepared_id"],
-                    "prepared_sha256": prepared["sha256"],
-                }
-            )
+            embedded = restarted_services.embed_comp_track({
+                "artist_id": self.row["artist_key"],
+                "album_id": comp_row["album_key"],
+                "track_key": target_key,
+                "image": self.services.catalog.image(candidate),
+                "adjustments": {"Brightness": 8},
+                "upscale": True,
+                "prepared_id": prepared["prepared_id"],
+                "prepared_sha256": prepared["sha256"],
+            })
         self.assertEqual((embedded["width"], embedded["height"]), (300, 300))
         self.assertEqual(embedded["artwork_sha256"], prepared["sha256"])
         with Image.open(BytesIO(embedded_track_artwork_bytes(target_path))) as image:
@@ -697,24 +666,22 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.assertIsNone(embedded_track_artwork_bytes(other_path))
         self.assertIsNone(embedded_track_artwork_bytes(featured_path))
         with closing(self.db.connect()) as db:
-            written = list(
-                db.execute("SELECT track_path FROM compilation_track_artwork")
-            )
+            written = list(db.execute(
+                "SELECT track_path FROM compilation_track_artwork"
+            ))
         self.assertEqual([row["track_path"] for row in written], [str(target_path)])
 
         target_art = embedded_track_artwork_bytes(target_path)
         with patch.object(
             self.services, "_comp_track_authority_validated", return_value=True
         ):
-            full_embedded = self.services.embed_comp_track(
-                {
-                    "album_id": comp_row["album_key"],
-                    "track_key": other_key,
-                    "image": self.services.catalog.image(candidate),
-                    "adjustments": {"Exposure": -4},
-                    "upscale": False,
-                }
-            )
+            full_embedded = self.services.embed_comp_track({
+                "album_id": comp_row["album_key"],
+                "track_key": other_key,
+                "image": self.services.catalog.image(candidate),
+                "adjustments": {"Exposure": -4},
+                "upscale": False,
+            })
         self.assertEqual((full_embedded["width"], full_embedded["height"]), (300, 300))
         self.assertEqual(embedded_track_artwork_bytes(target_path), target_art)
         with Image.open(BytesIO(embedded_track_artwork_bytes(other_path))) as image:
@@ -907,10 +874,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.services.stage_album(self.payload())
         with self.assertRaisesRegex(ValueError, "valid MusicBrainz Release ID"):
             self.services.embed_album(
-                {
-                    "album_id": self.row["album_key"],
-                    "image": self.services.catalog.image(self.cover),
-                }
+                {"album_id": self.row["album_key"], "image": self.services.catalog.image(self.cover)}
             )
         projection = self.services.staged_album_projection(staged)
         self.assertFalse(projection["staged_valid"])
@@ -967,7 +931,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             "(now COMP Fallback|no longer indexed)",
         )
         self.queue.action("start", kind="embed-album")
-        failed = next(item for item in self.queue.list() if item["id"] == result["id"])
+        failed = next(
+            item for item in self.queue.list() if item["id"] == result["id"]
+        )
         self.assertEqual(failed["state"], "failed")
         self.assertRegex(failed["error"], "(now COMP Fallback|no longer indexed)")
         self.assertEqual(
@@ -1035,7 +1001,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             for field in ("prepared_file", "cover_file")
         ]
         result = self.queue.enqueue("embed-album", staged, staged=True)
-        second_result = self.queue.enqueue("embed-album", second_staged, staged=True)
+        second_result = self.queue.enqueue(
+            "embed-album", second_staged, staged=True
+        )
         self.queue.action("start", kind="embed-album")
 
         paused_after = self.queue.action("pause-after", kind="embed-album")
@@ -1095,9 +1063,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             )
             self.assertEqual(staged.status_code, 200, staged.text)
             first_jobs = client.get("/api/jobs").json()
-            first = next(
-                item for item in first_jobs if item["id"] == staged.json()["id"]
-            )
+            first = next(item for item in first_jobs if item["id"] == staged.json()["id"])
             first_cover = first["payload"]["cover"]
             self.assertTrue(first["payload"]["staged_valid"])
             self.assertEqual(client.get(first_cover).status_code, 200)
@@ -1139,29 +1105,15 @@ class PostgreSQLBrowserTests(unittest.TestCase):
     def test_comp_queue_deduplicates_only_the_same_track_and_artist_scope(self):
         queue = JobQueue(self.services)
         queue.close()
-        full = queue.enqueue(
-            "comp",
-            {
-                "album_id": "comp-1",
-                "track_keys": ["artist-track", "other-track"],
-            },
-        )
-        scoped = queue.enqueue(
-            "comp",
-            {
-                "artist_id": "artist-1",
-                "album_id": "comp-1",
-                "track_keys": ["artist-track"],
-            },
-        )
-        repeated = queue.enqueue(
-            "comp",
-            {
-                "artist_id": "artist-1",
-                "album_id": "comp-1",
-                "track_keys": ["artist-track"],
-            },
-        )
+        full = queue.enqueue("comp", {
+            "album_id": "comp-1", "track_keys": ["artist-track", "other-track"],
+        })
+        scoped = queue.enqueue("comp", {
+            "artist_id": "artist-1", "album_id": "comp-1", "track_keys": ["artist-track"],
+        })
+        repeated = queue.enqueue("comp", {
+            "artist_id": "artist-1", "album_id": "comp-1", "track_keys": ["artist-track"],
+        })
 
         self.assertNotEqual(full["id"], scoped["id"])
         self.assertEqual(repeated["id"], scoped["id"])
@@ -1178,18 +1130,14 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 "INSERT INTO web_jobs(id,kind,state,payload,progress,decision,error) VALUES"
                 "('staged-work','embed-album','staged',%s,'{}',NULL,''),"
                 "('paused-work','embed-album','paused',%s,"
-                '\'{"prompt":{"nonce":"stale"}}\','
-                '\'{"nonce":"stale","value":"1"}\',\'old failure\')',
+                "'{\"prompt\":{\"nonce\":\"stale\"}}',"
+                "'{\"nonce\":\"stale\",\"value\":\"1\"}','old failure')",
                 (Jsonb(staged_payload), Jsonb(staged_payload)),
             )
         queue.action("start")
         with closing(self.db.connect()) as db:
-            staged = db.execute(
-                "SELECT state FROM web_jobs WHERE id='staged-work'"
-            ).fetchone()
-            paused = db.execute(
-                "SELECT state FROM web_jobs WHERE id='paused-work'"
-            ).fetchone()
+            staged = db.execute("SELECT state FROM web_jobs WHERE id='staged-work'").fetchone()
+            paused = db.execute("SELECT state FROM web_jobs WHERE id='paused-work'").fetchone()
         self.assertEqual(staged["state"], "queued")
         self.assertEqual(paused["state"], "paused")
 
@@ -1330,9 +1278,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertEqual(storage.status_code, 200)
             self.assertTrue(storage.json()["database"].startswith("PostgreSQL · "))
             self.assertGreater(storage.json()["database_bytes"], 0)
-            self.assertEqual(
-                storage.json()["configuration"], str(self.config.resolve())
-            )
+            self.assertEqual(storage.json()["configuration"], str(self.config.resolve()))
             self.assertEqual(
                 client.post(
                     "/api/bypass", headers={"Origin": "https://example.org"}, json={}
@@ -1542,15 +1488,25 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 [event["sequence"] for event in events],
                 sorted(event["sequence"] for event in events),
             )
-            self.assertTrue(all(event["action_id"] == action_id for event in events))
-            self.assertTrue(all(event["trace_id"] == trace_id for event in events))
+            self.assertTrue(
+                all(event["action_id"] == action_id for event in events)
+            )
+            self.assertTrue(
+                all(event["trace_id"] == trace_id for event in events)
+            )
             self.assertEqual(events[0]["job_id"], job_id)
-            self.assertTrue(all(event["session_id"] for event in events))
+            self.assertTrue(
+                all(event["session_id"] for event in events)
+            )
             self.assertTrue(
                 all(event["application_version"] == core.VERSION for event in events)
             )
-            self.assertTrue(all(event["application_revision"] for event in events))
-            self.assertEqual(events[0]["details"]["password"], "[REDACTED]")
+            self.assertTrue(
+                all(event["application_revision"] for event in events)
+            )
+            self.assertEqual(
+                events[0]["details"]["password"], "[REDACTED]"
+            )
             self.assertNotIn("synthetic-audit-secret", exported.text)
             for secret in (
                 "export-user",
@@ -1682,9 +1638,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 ).fetchone()[0],
                 1,
             )
-        with patch.object(
-            self.services, "hydrate_tracks", wraps=self.services.hydrate_tracks
-        ) as hydrate:
+        with patch.object(self.services, "hydrate_tracks", wraps=self.services.hydrate_tracks) as hydrate:
             report = self.services.comp_report(row["artist_key"])
             self.assertFalse(hydrate.called)
         self.assertEqual([group["id"] for group in report], [row["album_key"]])
@@ -1717,18 +1671,15 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertEqual(prompt["context"]["album_id"], row["album_key"])
             self.assertEqual(prompt["context"]["kind"], "musicbrainz-results")
             self.queue.action(
-                "decision",
-                job["id"],
+                "decision", job["id"],
                 json.dumps({"action": "use-existing", "number": 1}),
                 prompt["nonce"],
             )
             item = self.wait_for_job(
                 job["id"],
-                lambda value: (
-                    value["state"] == "waiting"
-                    and value["progress"]["prompt"]["context"].get("kind")
-                    != "musicbrainz-results"
-                ),
+                lambda value: value["state"] == "waiting"
+                and value["progress"]["prompt"]["context"].get("kind")
+                != "musicbrainz-results",
             )
             self.assertTrue(item["progress"]["current"]["candidates"]["items"])
             prompt = item["progress"]["prompt"]
@@ -1834,9 +1785,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             ["22222222-2222-4222-8222-222222222222"],
         )
 
-    def test_artist_mismatched_recording_suggestion_stays_blue_in_queued_and_direct_paths(
-        self,
-    ):
+    def test_artist_mismatched_recording_suggestion_stays_blue_in_queued_and_direct_paths(self):
         row, track, target = self.make_comp_track(
             "Mismatched Recording Compilation", recording_id=True
         )
@@ -1898,15 +1847,13 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 return_value=resolution,
             ) as direct_resolver,
         ):
-            direct = self.services.embed_comp_track(
-                {
-                    "album_id": row["album_key"],
-                    "track_key": track["track_key"],
-                    "image": self.services.catalog.image(candidate),
-                    "adjustments": {},
-                    "upscale": False,
-                }
-            )
+            direct = self.services.embed_comp_track({
+                "album_id": row["album_key"],
+                "track_key": track["track_key"],
+                "image": self.services.catalog.image(candidate),
+                "adjustments": {},
+                "upscale": False,
+            })
         direct_resolver.assert_called_once()
         self.assertFalse(direct["completed"])
         self.assertEqual(direct["status"], "blue")
@@ -1936,15 +1883,11 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         tags.add(TALB(encoding=3, text=["MP3 COMP Fixture"]))
         tags.add(TRCK(encoding=3, text=["1"]))
         tags.add(TCON(encoding=3, text=["Alternative"]))
-        tags.add(
-            COMM(encoding=3, lang="eng", desc="fixture-note", text=["preserve me"])
-        )
+        tags.add(COMM(encoding=3, lang="eng", desc="fixture-note", text=["preserve me"]))
         tags.add(TXXX(encoding=3, desc="fixture-custom", text=["unchanged"]))
         tags.add(TXXX(encoding=3, desc="MusicBrainz Track Id", text=[recording_id]))
         tags.add(TXXX(encoding=3, desc="MusicBrainz Artist Id", text=[artist_id]))
-        tags.add(
-            UFID(owner="http://musicbrainz.org", data=recording_id.encode("ascii"))
-        )
+        tags.add(UFID(owner="http://musicbrainz.org", data=recording_id.encode("ascii")))
         tags.save(target)
         sibling_tags = ID3()
         sibling_tags.add(TIT2(encoding=3, text=["Untouched"]))
@@ -1959,18 +1902,14 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 "SELECT * FROM albums WHERE path=?", (str(folder),)
             ).fetchone()
         track = next(
-            item
-            for item in self.services.hydrate_tracks(row["album_key"])
+            item for item in self.services.hydrate_tracks(row["album_key"])
             if Path(item["path"]) == target
         )
         self.runtime.close()
         app = create_app(self.config, self.url, token="test-access", start_worker=False)
-        with (
-            patch.object(
-                Services, "_comp_track_authority_validated", return_value=True
-            ),
-            TestClient(app) as client,
-        ):
+        with patch.object(
+            Services, "_comp_track_authority_validated", return_value=True
+        ), TestClient(app) as client:
             status = client.get("/api/status").json()
             client.headers["X-SPLINED-CSRF"] = status["csrf"]
             setup = client.post(
@@ -1983,7 +1922,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 },
             )
             self.assertEqual(setup.status_code, 200, setup.text)
-            album = client.get("/api/album", params={"id": row["album_key"]}).json()
+            album = client.get(
+                "/api/album", params={"id": row["album_key"]}
+            ).json()
             response = client.post(
                 "/api/comp/embed",
                 json={
@@ -2015,8 +1956,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             ["preserve me"],
         )
         custom = next(
-            frame
-            for frame in written.tags.getall("TXXX")
+            frame for frame in written.tags.getall("TXXX")
             if frame.desc == "fixture-custom"
         )
         self.assertEqual(custom.text, ["unchanged"])
@@ -2238,7 +2178,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         result = self.services.refresh_index(mode="incremental")
         self.assertEqual(result["changed_albums"], 1)
         with closing(self.db.connect()) as db:
-            self.assertEqual(db.execute("SELECT count(*) FROM albums").fetchone()[0], 2)
+            self.assertEqual(
+                db.execute("SELECT count(*) FROM albums").fetchone()[0], 2
+            )
             self.assertEqual(
                 db.execute(
                     "SELECT updated_at FROM albums WHERE album_key=?",
@@ -2253,7 +2195,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         result = self.services.refresh_index(mode="incremental")
         self.assertEqual(result["removed_albums"], 1)
         with closing(self.db.connect()) as db:
-            self.assertEqual(db.execute("SELECT count(*) FROM albums").fetchone()[0], 1)
+            self.assertEqual(
+                db.execute("SELECT count(*) FROM albums").fetchone()[0], 1
+            )
 
     def test_reconciliation_applies_windows_album_authority_and_is_idempotent(self):
         authoritative_time = "2000-01-01T00:00:00+00:00"
@@ -2300,9 +2244,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     "source-only-hidden-comp",
                     self.row["artist_key"],
                     "Hidden Windows COMP",
-                    str(
-                        self.root / "music" / "Various Artists" / "Hidden Windows COMP"
-                    ),
+                    str(self.root / "music" / "Various Artists" / "Hidden Windows COMP"),
                     authoritative_time,
                     "embed-queue",
                     authoritative_time,
@@ -2374,17 +2316,15 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertEqual(repeated_apply["attempted"], 0)
             self.assertEqual(repeated_apply["failures"], 0)
 
-            settings = reconciler.save_settings(
-                {
-                    "enabled": False,
-                    "auto_apply_safe": False,
-                    "startup_mode": "compare",
-                    "interval_minutes": 1440,
-                    "source_path": str(snapshot),
-                    "source_root": str(self.root / "music"),
-                    "target_root": str(self.root / "music"),
-                }
-            )
+            settings = reconciler.save_settings({
+                "enabled": False,
+                "auto_apply_safe": False,
+                "startup_mode": "compare",
+                "interval_minutes": 1440,
+                "source_path": str(snapshot),
+                "source_root": str(self.root / "music"),
+                "target_root": str(self.root / "music"),
+            })
             self.assertEqual(settings["startup_mode"], "compare")
 
             with closing(self.db.connect()) as db, db:
@@ -2393,17 +2333,13 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     ("busy-album", "embed-album", "running", Jsonb({})),
                 )
             try:
-                with self.assertRaisesRegex(
-                    RuntimeError, "deferred while Album processing"
-                ):
+                with self.assertRaisesRegex(RuntimeError, "deferred while Album processing"):
                     reconciler.compare(
                         snapshot,
                         str(self.root / "music"),
                         str(self.root / "music"),
                     )
-                with self.assertRaisesRegex(
-                    RuntimeError, "deferred while Album processing"
-                ):
+                with self.assertRaisesRegex(RuntimeError, "deferred while Album processing"):
                     reconciler.apply(repeated["run_id"])
             finally:
                 with closing(self.db.connect()) as db, db:
@@ -2437,9 +2373,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         finally:
             reconciler.close()
 
-    def test_reconciliation_populates_empty_catalog_with_accounted_controlled_inserts(
-        self,
-    ):
+    def test_reconciliation_populates_empty_catalog_with_accounted_controlled_inserts(self):
         snapshot = self.root / "cache" / "empty-target-source.sqlite"
         snapshot.parent.mkdir(parents=True, exist_ok=True)
         with closing(self.db.connect()) as db:
@@ -2469,9 +2403,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 ],
             }
 
-        schema_sql = (Path(__file__).parents[2] / "schema" / "media.sql").read_text(
-            encoding="utf-8"
-        )
+        schema_sql = (
+            Path(__file__).parents[2] / "schema" / "media.sql"
+        ).read_text(encoding="utf-8")
         with closing(sqlite3.connect(snapshot)) as source, source:
             source.executescript(schema_sql)
             source.execute("PRAGMA user_version=2")
@@ -2520,7 +2454,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 if event.get("stage") == "compare"
                 and event.get("request_status") == "completed"
             )
-            self.assertEqual(completed_event["details"]["tables"]["tracks"]["safe"], 2)
+            self.assertEqual(
+                completed_event["details"]["tables"]["tracks"]["safe"], 2
+            )
 
             applied = reconciler.apply(compared["run_id"])
             self.assertEqual(applied["attempted"], 4)
@@ -2547,9 +2483,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         finally:
             reconciler.close()
 
-    def test_reconciliation_complete_snapshots_preserve_prior_rows_across_one_album_change(
-        self,
-    ):
+    def test_reconciliation_complete_snapshots_preserve_prior_rows_across_one_album_change(self):
         with closing(self.db.connect()) as db:
             persisted = {
                 "artists": [
@@ -2577,9 +2511,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 ],
             }
 
-        schema_sql = (Path(__file__).parents[2] / "schema" / "media.sql").read_text(
-            encoding="utf-8"
-        )
+        schema_sql = (
+            Path(__file__).parents[2] / "schema" / "media.sql"
+        ).read_text(encoding="utf-8")
 
         def write_snapshot(path, *, processed=False):
             rows = {
@@ -2594,7 +2528,11 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     selected_source="embed-queue",
                     cover_found=1,
                     cover_path=str(
-                        self.root / "music" / "Test Artist" / "Test Album" / "cover.jpg"
+                        self.root
+                        / "music"
+                        / "Test Artist"
+                        / "Test Album"
+                        / "cover.jpg"
                     ),
                     bypassed=0,
                     timeout_until=None,
@@ -2672,9 +2610,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         finally:
             reconciler.close()
 
-    def test_reconciliation_older_windows_fields_override_without_erasing_postgresql_only_fields(
-        self,
-    ):
+    def test_reconciliation_older_windows_fields_override_without_erasing_postgresql_only_fields(self):
         snapshot = self.root / "cache" / "windows-authority.sqlite"
         snapshot.parent.mkdir(parents=True, exist_ok=True)
         with closing(self.db.connect()) as db:
@@ -2829,7 +2765,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 "state changed", applied["failure_details"][0]["error"].lower()
             )
             failed_event = next(
-                event for event in audit_events if event.get("stage") == "apply-safe"
+                event
+                for event in audit_events
+                if event.get("stage") == "apply-safe"
             )
             self.assertEqual(
                 failed_event["details"]["failure_details"][0]["table"], "albums"
@@ -3055,14 +2993,14 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 identity["reason"],
                 "multiple-windows-entities-share-one-canonical-key",
             )
-            self.assertTrue(any("\ufeff" in value for value in identity["source_keys"]))
+            self.assertTrue(
+                any("\ufeff" in value for value in identity["source_keys"])
+            )
             self.assertEqual(reconciler.apply(collision["run_id"])["attempted"], 0)
         finally:
             reconciler.close()
 
-    def test_reconciliation_reclassifies_persisted_conflict_as_safe_and_idempotent(
-        self,
-    ):
+    def test_reconciliation_reclassifies_persisted_conflict_as_safe_and_idempotent(self):
         snapshot = self.root / "cache" / "reclassified-safe.sqlite"
         snapshot.parent.mkdir(parents=True, exist_ok=True)
         with closing(self.db.connect()) as db, db:
@@ -3149,9 +3087,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         finally:
             reconciler.close()
 
-    def test_reconciliation_ambiguous_artist_remains_diagnostic_and_cannot_reparent_album(
-        self,
-    ):
+    def test_reconciliation_ambiguous_artist_remains_diagnostic_and_cannot_reparent_album(self):
         old = "2026-01-01T00:00:00+00:00"
         newer = "2099-01-01T00:00:00+00:00"
         first_key = "tag:ambiguous-first"
@@ -3387,9 +3323,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         """Drive local FastAPI in a rendered browser; external providers are simulated."""
         try:
             from playwright.sync_api import expect, sync_playwright
-        except (
-            ImportError
-        ) as error:  # pragma: no cover - CI installs test requirements.
+        except ImportError as error:  # pragma: no cover - CI installs test requirements.
             self.skipTest(f"Playwright is unavailable: {error}")
 
         comp = (
@@ -3486,18 +3420,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         Image.new("RGB", (700, 700), "purple").save(comp / "cover.jpg")
         credential = self.root / "credentials" / "musicbrainz.json"
         credential.parent.mkdir(parents=True, exist_ok=True)
-        credential.write_text(
-            json.dumps(
-                {
-                    "options": {
-                        "retry_max": 1,
-                        "min_delay": 0.001,
-                        "recording_timeout": 2,
-                    }
-                }
-            ),
-            encoding="utf-8",
-        )
+        credential.write_text(json.dumps({"options": {
+            "retry_max": 1, "min_delay": 0.001, "recording_timeout": 2,
+        }}), encoding="utf-8")
 
         def wait_for_embedded_art(
             path: Path, previous: bytes | None = None, timeout: float = 15.0
@@ -3568,47 +3493,46 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 "title": identity["title"],
                 "artist-credit": credit,
                 "relations": [],
-                "releases": [
-                    {
-                        "id": identity["release"],
+                "releases": [{
+                    "id": identity["release"],
+                    "title": identity["album"],
+                    "status": "Official",
+                    "date": "1994",
+                    "country": "US",
+                    "artist-credit": credit,
+                    "release-group": {
+                        "id": identity["group"],
                         "title": identity["album"],
-                        "status": "Official",
-                        "date": "1994",
-                        "country": "US",
-                        "artist-credit": credit,
-                        "release-group": {
-                            "id": identity["group"],
-                            "title": identity["album"],
-                            "primary-type": "Album",
-                            "secondary-types": [],
-                        },
-                    }
-                ],
+                        "primary-type": "Album",
+                        "secondary-types": [],
+                    },
+                }],
             }
 
         def fixture_http_get(_http, url, **kwargs):
             http_calls.append(url)
             for artist_id, identity in identities.items():
                 if url.endswith("/artist/" + artist_id):
-                    return MusicBrainzResponse(
-                        {"id": artist_id, "name": identity["artist"]}
-                    )
+                    return MusicBrainzResponse({
+                        "id": artist_id, "name": identity["artist"]
+                    })
                 if url.endswith("/recording/" + identity["recording"]):
-                    return MusicBrainzResponse(recording_payload(artist_id, identity))
+                    return MusicBrainzResponse(
+                        recording_payload(artist_id, identity)
+                    )
             if url.rstrip("/").endswith("/recording"):
                 query = str(kwargs.get("params", {}).get("query", ""))
                 identity = next(
                     (value for key, value in identities.items() if key in query),
                     None,
                 )
-                artist_id = next((key for key in identities if key in query), "")
-                return MusicBrainzResponse(
-                    {
-                        "recordings": [recording_payload(artist_id, identity)]
-                        if identity
-                        else []
-                    }
+                artist_id = next(
+                    (key for key in identities if key in query), ""
                 )
+                return MusicBrainzResponse({
+                    "recordings": [recording_payload(artist_id, identity)]
+                    if identity else []
+                })
             return MusicBrainzResponse({}, 503)
 
         provider_fixture_dir = self.runtime.temporary_cache / "provider-candidates"
@@ -3648,10 +3572,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 ("amazon", "Fixture policy diagnostic retained for review"),
                 ("amazon", "Fixture policy diagnostic retained for review"),
                 ("itunes", "Fixture range diagnostic retained for review"),
-                (
-                    "musicbrainz",
-                    "policy-filtered: Reference is not primary/front under active source policy",
-                ),
+                ("musicbrainz", "policy-filtered: Reference is not primary/front under active source policy"),
                 ("deezer", "request failed (ConnectionError)"),
             ]
 
@@ -3675,7 +3596,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 )
             )
             running_server.install_signal_handlers = lambda: None
-            running_thread = threading.Thread(target=running_server.run, daemon=True)
+            running_thread = threading.Thread(
+                target=running_server.run, daemon=True
+            )
             running_thread.start()
             for _ in range(100):
                 if running_server.started:
@@ -3708,8 +3631,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         "SPLINED_TEST_BROWSER_EXECUTABLE"
                     )
                     launch_options = {
-                        "headless": os.environ.get("SPLINED_TEST_BROWSER_HEADLESS", "1")
-                        != "0",
+                        "headless": os.environ.get(
+                            "SPLINED_TEST_BROWSER_HEADLESS", "1"
+                        ) != "0",
                         "args": ["--no-sandbox"],
                     }
                     if browser_executable:
@@ -3759,9 +3683,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     expect(page.locator("#embedBatchButton")).to_be_enabled()
                     page.locator("#embedBatchButton").click()
                     page.locator("#embedTab").click()
-                    expect(
-                        page.locator(".queue-card", has_text="Test Album")
-                    ).to_be_visible()
+                    expect(page.locator(".queue-card", has_text="Test Album")).to_be_visible()
 
                     # Recreate the authenticated service against the same
                     # PostgreSQL schema and persistent cache, then sign in as
@@ -3789,9 +3711,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     expect(page.locator("#statusText")).to_contain_text("Loaded")
                     page.locator("#embedTab").click()
                     expect(page.locator("#embedView")).to_be_visible()
-                    expect(
-                        page.locator(".queue-card", has_text="Test Album")
-                    ).to_be_visible()
+                    expect(page.locator(".queue-card", has_text="Test Album")).to_be_visible()
                     expect(page.locator("#embedQueue")).not_to_contain_text(
                         "Billboard Hot 100 Singles of 1994"
                     )
@@ -3807,7 +3727,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     page.locator(
                         "#artistList button", has_text="10,000 Maniacs"
                     ).click()
-                    expect(page.locator("#artistName")).to_have_text("10,000 Maniacs")
+                    expect(page.locator("#artistName")).to_have_text(
+                        "10,000 Maniacs"
+                    )
                     # Artist information is a tiny, theme-driven pop-out over
                     # the five-line biography. It must preserve the circular
                     # portrait and never move the Album area or page layout.
@@ -3942,7 +3864,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     expect(page.locator("#selectedDimensions")).to_have_text(
                         "640 × 640"
                     )
-                    expect(page.locator("#writeButton")).to_have_text("EMBED Comp")
+                    expect(page.locator("#writeButton")).to_have_text(
+                        "EMBED Comp"
+                    )
                     expect(page.locator("#writeButton")).to_be_enabled()
                     expect(page.locator("#embedBatchButton")).to_have_text(
                         "EMBED Batch"
@@ -3968,7 +3892,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     expect(artwork_info).to_contain_text("Upscale Preview")
                     expect(artwork_info).to_contain_text("Enhancement")
                     expect(page.locator("#writeNotice")).to_be_hidden()
-                    expect(page.locator("#selectedQuality")).to_have_text("Thumb Ready")
+                    expect(page.locator("#selectedQuality")).to_have_text(
+                        "Thumb Ready"
+                    )
                     self.assertEqual(
                         embedded_track_artwork_bytes(target), initial_target_art
                     )
@@ -4005,10 +3931,8 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         "Because the Night"
                     )
                     with page.expect_request(
-                        lambda request: (
-                            request.method == "POST"
-                            and request.url.endswith("/api/jobs")
-                        )
+                        lambda request: request.method == "POST"
+                        and request.url.endswith("/api/jobs")
                     ) as launch_request:
                         page.locator("#fallbackReport .fallback-launch").click()
                     launch_payload = launch_request.value.post_data_json
@@ -4034,9 +3958,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         "CURRENT ALBUM · SPLINED LIBRARY AUTHORITY"
                     )
                     expect(page.locator("#candidateDock")).to_be_hidden()
-                    expect(
-                        page.locator("#sourceStrip button", has_text="MusicBrainz")
-                    ).to_contain_text("0 found")
+                    expect(page.locator("#sourceStrip button", has_text="MusicBrainz")).to_contain_text(
+                        "0 found"
+                    )
                     self.assertTrue(http_calls)
                     self.assertTrue(
                         all(url.startswith(core.MB_BASE) for url in http_calls),
@@ -4058,12 +3982,10 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         "() => state.queuedDecision?.nonce || ''"
                     )
                     with page.expect_response(
-                        lambda response: (
-                            response.url.endswith("/api/jobs/action")
-                            and response.request.method == "POST"
-                            and "manual-authority-query"
-                            in (response.request.post_data or "")
-                        ),
+                        lambda response: response.url.endswith("/api/jobs/action")
+                        and response.request.method == "POST"
+                        and "manual-authority-query"
+                        in (response.request.post_data or ""),
                         timeout=15000,
                     ) as authority_response:
                         page.locator(
@@ -4094,9 +4016,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                             has_text="Back to Candidates",
                         )
                     ).to_be_disabled()
-                    expect(
-                        page.locator(".musicbrainz-release-row").first
-                    ).to_be_visible()
+                    expect(page.locator(".musicbrainz-release-row").first).to_be_visible()
                     page.locator(".musicbrainz-release-row").first.click()
                     use_selected = page.locator(
                         ".musicbrainz-review-actions button.primary"
@@ -4106,12 +4026,10 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     # equivalent node between Playwright's stability checks.
                     # Query and dispatch atomically on the currently enabled node.
                     with page.expect_response(
-                        lambda response: (
-                            response.url.endswith("/api/jobs/action")
-                            and response.request.method == "POST"
-                            and '"value":"1"'
-                            in (response.request.post_data or "").replace(" ", "")
-                        ),
+                        lambda response: response.url.endswith("/api/jobs/action")
+                        and response.request.method == "POST"
+                        and '"value":"1"'
+                        in (response.request.post_data or "").replace(" ", ""),
                         timeout=15000,
                     ) as action_response:
                         page.evaluate("""() => {
@@ -4127,9 +4045,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         "loading artwork candidates", timeout=15000
                     )
                     try:
-                        expect(
-                            page.locator(".candidate-image-button").first
-                        ).to_be_visible(timeout=15000)
+                        expect(page.locator(".candidate-image-button").first).to_be_visible(
+                            timeout=15000
+                        )
                     except AssertionError as error:
                         job_diagnostics = page.evaluate("""async () => ({
                             reviewJobId: state.reviewJobId,
@@ -4153,9 +4071,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     cards = page.locator("#candidateGrid .candidate-card.queued")
                     self.assertGreaterEqual(cards.count(), 5)
                     first_card = cards.first
-                    expect(
-                        first_card.locator(".candidate-source-label")
-                    ).not_to_be_empty()
+                    expect(first_card.locator(".candidate-source-label")).not_to_be_empty()
                     expect(first_card.locator(".candidate-resolution")).to_be_visible()
                     expect(first_card.locator(".candidate-quality")).to_be_visible()
                     first_image = first_card.locator("img")
@@ -4169,16 +4085,14 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         displayed = first_card.locator(
                             ".candidate-resolution"
                         ).inner_text()
-                        self.assertEqual(displayed, f"{actual.width} × {actual.height}")
+                        self.assertEqual(
+                            displayed, f"{actual.width} × {actual.height}"
+                        )
                     grid_box = page.locator("#candidateGrid").bounding_box()
                     visible_cards = 0
                     for index in range(cards.count()):
                         box = cards.nth(index).bounding_box()
-                        if (
-                            box
-                            and box["x"] + box["width"]
-                            <= grid_box["x"] + grid_box["width"]
-                        ):
+                        if box and box["x"] + box["width"] <= grid_box["x"] + grid_box["width"]:
                             visible_cards += 1
                             self.assertLessEqual(
                                 box["y"] + box["height"],
@@ -4188,21 +4102,13 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     diagnostics = page.locator("#compDecisionTools .comp-diagnostics")
                     expect(diagnostics).to_contain_text("Diagnostics (4)")
                     diagnostics.locator("summary").click()
-                    expect(
-                        diagnostics.locator(".comp-diagnostics-list")
-                    ).to_be_visible()
+                    expect(diagnostics.locator(".comp-diagnostics-list")).to_be_visible()
                     expect(first_card).to_be_visible()
                     diagnostics.locator("summary").click()
-                    unavailable = page.locator(
-                        "#sourceStrip .source-card", has_text="Deezer"
-                    )
+                    unavailable = page.locator("#sourceStrip .source-card", has_text="Deezer")
                     expect(unavailable).to_have_class(re.compile(r"\bunavailable\b"))
-                    expect(unavailable.locator(".source-state")).to_have_text(
-                        "⚠ Unavailable"
-                    )
-                    filtered = page.locator(
-                        "#sourceStrip .source-card", has_text="MusicBrainz"
-                    )
+                    expect(unavailable.locator(".source-state")).to_have_text("⚠ Unavailable")
+                    filtered = page.locator("#sourceStrip .source-card", has_text="MusicBrainz")
                     expect(filtered).to_have_class(re.compile(r"\bfiltered\b"))
                     expect(filtered.locator(".source-state")).to_have_text("○ Filtered")
 
@@ -4249,20 +4155,14 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     )
                     page.locator(".candidate-image-button").first.click()
                     expect(page.locator("#writeButton")).to_have_text("EMBED Comp")
-                    expect(page.locator("#embedBatchButton")).to_have_text(
-                        "EMBED Batch"
-                    )
+                    expect(page.locator("#embedBatchButton")).to_have_text("EMBED Batch")
                     expect(page.locator("#embedBatchButton")).to_be_disabled()
-                    self.assertEqual(
-                        embedded_track_artwork_bytes(target), initial_target_art
-                    )
+                    self.assertEqual(embedded_track_artwork_bytes(target), initial_target_art)
                     page.locator("#upscaleButton").click()
                     expect(page.locator("#statusText")).to_contain_text(
                         "Embedded Thumb Ready · 300 × 300", timeout=15000
                     )
-                    expect(page.locator("#selectedDimensions")).to_have_text(
-                        "300 × 300"
-                    )
+                    expect(page.locator("#selectedDimensions")).to_have_text("300 × 300")
                     page.locator("#writeButton").click()
                     target_art = wait_for_embedded_art(target, initial_target_art)
                     with Image.open(BytesIO(target_art)) as embedded:
@@ -4277,8 +4177,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     # performer independently and remains in the full report.
                     page.locator("#fallbackTab").click()
                     page.locator(
-                        "#artistList button",
-                        has_text="Billboard Hot 100 Singles of 1994",
+                        "#artistList button", has_text="Billboard Hot 100 Singles of 1994"
                     ).click()
                     expect(page.locator("#fallbackReport")).to_contain_text(
                         "Because the Night"
@@ -4312,9 +4211,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     )
                     page.locator(".candidate-image-button").first.click()
                     expect(page.locator("#writeButton")).to_have_text("EMBED Comp")
-                    expect(page.locator("#embedBatchButton")).to_have_text(
-                        "EMBED Batch"
-                    )
+                    expect(page.locator("#embedBatchButton")).to_have_text("EMBED Batch")
                     expect(page.locator("#embedBatchButton")).to_be_disabled()
                     self.assertIsNone(embedded_track_artwork_bytes(other))
                     page.locator("#writeButton").click()
@@ -4334,7 +4231,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     page.locator(
                         "#artistList button", has_text="10,000 Maniacs"
                     ).click()
-                    expect(page.locator("#artistName")).to_have_text("10,000 Maniacs")
+                    expect(page.locator("#artistName")).to_have_text(
+                        "10,000 Maniacs"
+                    )
                     page.locator("#compReportButton").click()
                     expect(page.locator("#fallbackReport")).to_contain_text(
                         "Because the Night"
