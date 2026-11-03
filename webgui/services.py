@@ -553,12 +553,7 @@ class Services:
         if not managed:
             media.update_artist_aggregate(db, artist_key)
             return
-        statuses = [
-            str(row[0])
-            for row in db.execute(
-                "SELECT status FROM albums WHERE artist_key=?", (artist_key,)
-            )
-        ]
+        statuses = media.artist_album_statuses(db, artist_key)
         counts = {
             name: statuses.count(name)
             for name in ("unprocessed", "incomplete", "processed", "bypassed", "timeout")

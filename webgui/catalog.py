@@ -32,6 +32,7 @@ import requests
 
 from splined_artist_art import ArtistAlbum, ArtistArtTarget, artist_targets, local_candidates, saved_package
 from splined_compilation_authority_policy import replace_embedded_artwork
+from splined_media_database import aggregate_artist
 from interaction.artist_search import discover_artist_images, discover_artist_profile
 from webgui.database import Database
 from webgui import imaging
@@ -392,7 +393,14 @@ class Catalog:
         return source.read_bytes() if isinstance(source,Path) else source
 
     @staticmethod
-    def _aggregate_artist_status(rows) -> str:
+    def _aggregate_album_status(rows) -> str:
+        return aggregate_artist(
+            [str(row["status"] or "unprocessed").casefold() for row in rows]
+        )
+
+    @staticmethod
+    def _aggregate_stored_artist_status(rows) -> str:
+        """Compatibility fallback for reduced, pre-status Album fixtures."""
         statuses = {str(row["status"] or "unprocessed").casefold() for row in rows}
         if statuses == {"processed"}:
             return "processed"
@@ -1004,9 +1012,28 @@ class Catalog:
                 "GROUP BY artists.artist_key ORDER BY artists.artist_name COLLATE NOCASE ",
                 ("%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%",),
             ).fetchall()
+            try:
+                status_rows = db.execute(
+                    "SELECT artist_key,status FROM albums "
+                    "WHERE COALESCE(compilation,0)=0 "
+                    "OR TRIM(COALESCE(musicbrainz_albumid,''))<>''"
+                ).fetchall()
+                projected_statuses = True
+            except sqlite3.OperationalError:
+                # Reduced read-only fixtures can predate Album status fields.
+                status_rows = []
+                projected_statuses = False
+        statuses_by_artist: dict[str, list] = {}
+        for row in status_rows:
+            statuses_by_artist.setdefault(str(row["artist_key"]), []).append(row)
         result = []
         for group in self._artist_groups(rows):
             canonical = self._canonical_artist_row(group)
+            status_group = [
+                status
+                for row in group
+                for status in statuses_by_artist.get(str(row["artist_key"]), [])
+            ]
             # Initial catalog loading is PostgreSQL-only. Local/Navidrome
             # artwork is hydrated by the dedicated lazy endpoint so hundreds
             # of artist folders never block the first useful render.
@@ -1016,7 +1043,11 @@ class Catalog:
                 "id": canonical["artist_key"],
                 "name": canonical["artist_name"],
                 "albums": sum(int(row["album_count"] or 0) for row in group),
-                "status": self._aggregate_artist_status(group),
+                "status": (
+                    self._aggregate_album_status(status_group)
+                    if projected_statuses
+                    else self._aggregate_stored_artist_status(group)
+                ),
                 "portrait": portrait_url,
             })
         return sorted(result, key=lambda item: normalized_artist_identity(item["name"]))
@@ -1248,7 +1279,7 @@ class Catalog:
         return {
             "id": artist["artist_key"], "name": artist["artist_name"],
             "mbid": artist["musicbrainz_artistid"] or "",
-            "status": self._aggregate_artist_status(aliases), "albums": albums,
+            "status": self._aggregate_album_status(primary_rows), "albums": albums,
             "top_tracks": top_tracks,
             "genres": list(appearance.get("genres", [])),
             "roles": list(appearance.get("roles", [])),

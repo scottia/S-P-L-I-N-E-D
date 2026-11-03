@@ -15,6 +15,10 @@ and incremental indexing.
 
 The executable field lists live in `webgui/catalog_authority.py`. A managed
 indexing UPSERT may update only the PostgreSQL-exclusive and derived sets.
+Artist status and counters use owned Albums plus identified compilations. An
+unidentified COMP fallback is per-track presentation for credited Artists, so
+its folder-wide progress remains on the COMP card/report and is excluded from
+their Artist aggregate.
 
 ## Association lifecycle
 
