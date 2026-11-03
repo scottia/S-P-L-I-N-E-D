@@ -105,8 +105,46 @@ def _normalize_sqlite_value(value: Any) -> Any:
     return "; ".join(part.strip() for part in value.split("\0") if part.strip())
 
 
+def _identity_column(name: str) -> bool:
+    """Return whether a shared field participates in catalog identity."""
+    return (
+        name.endswith("_key")
+        or name.endswith("_mbid")
+        or (name.startswith("musicbrainz_") and name.endswith("id"))
+    )
+
+
+def _normalize_sqlite_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Normalize transport-only characters without hiding source collisions.
+
+    Some Windows tag values contain U+FEFF at the start of MusicBrainz IDs.
+    Windows can consequently persist both ``mbid:<uuid>`` and
+    ``mbid:\ufeff<uuid>`` as distinct SQLite keys. PostgreSQL must receive the
+    canonical identity, while reconciliation must retain the original values
+    long enough to reject two Windows rows that converge on one canonical key.
+    """
+    normalized: dict[str, Any] = {}
+    originals: dict[str, str] = {}
+    for name, raw_value in row.items():
+        value = _normalize_sqlite_value(raw_value)
+        if _identity_column(name) and isinstance(value, str) and "\ufeff" in value:
+            originals[name] = value
+            value = value.replace("\ufeff", "")
+        normalized[name] = value
+    if originals:
+        normalized["_reconciliation_original_identity_values"] = originals
+    return normalized
+
+
+def _identity_text(value: Any) -> str:
+    """Canonicalize only the transport BOM; preserve all real key syntax."""
+    return str(value or "").replace("\ufeff", "")
+
+
 def _canonical(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
+    )
 
 
 def _digest(value: Any) -> str:
@@ -123,12 +161,16 @@ def _timestamp(value: Any) -> datetime | None:
         return None
     try:
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        return parsed.replace(tzinfo=parsed.tzinfo or timezone.utc).astimezone(timezone.utc)
+        return parsed.replace(tzinfo=parsed.tzinfo or timezone.utc).astimezone(
+            timezone.utc
+        )
     except ValueError:
         return None
 
 
-def classify_difference(table: str, source: dict[str, Any], target: dict[str, Any] | None) -> str:
+def classify_difference(
+    table: str, source: dict[str, Any], target: dict[str, Any] | None
+) -> str:
     """Classify a deterministically associated Windows-authority difference."""
     identity = source.get("_reconciliation_identity") or {}
     if str(identity.get("status") or "") in {
@@ -154,7 +196,9 @@ def map_library_path(value: Any, source_root: str, target_root: str) -> str:
     target = str(target_root or "").strip()
     normalized = text.replace("\\", "/").rstrip("/")
     if not source or not target:
-        raise ValueError("Source and target library roots are required for path reconciliation")
+        raise ValueError(
+            "Source and target library roots are required for path reconciliation"
+        )
     source_folded = source.casefold()
     normalized_folded = normalized.casefold()
     if normalized_folded == source_folded:
@@ -165,7 +209,9 @@ def map_library_path(value: Any, source_root: str, target_root: str) -> str:
         raise ValueError(f"SQLite path is outside the mapped source library: {text}")
     parts = [part for part in relative.split("/") if part not in {"", "."}]
     if any(part == ".." for part in parts):
-        raise ValueError("SQLite path mapping cannot traverse outside the target library")
+        raise ValueError(
+            "SQLite path mapping cannot traverse outside the target library"
+        )
     return str(Path(target).joinpath(*parts))
 
 
@@ -198,7 +244,9 @@ class SQLiteReconciler:
         self._stop = Event()
         self._thread = None
         if start_scheduler:
-            self._thread = Thread(target=self._scheduler, name="sqlite-reconciliation", daemon=True)
+            self._thread = Thread(
+                target=self._scheduler, name="sqlite-reconciliation", daemon=True
+            )
             self._thread.start()
 
     def close(self) -> None:
@@ -238,9 +286,15 @@ class SQLiteReconciler:
     def _source_label(self, path: Path) -> str:
         root = self._authorized_root(path)
         if root is None:
-            raise PermissionError("SQLite reconciliation source is outside the authorized snapshot directories")
+            raise PermissionError(
+                "SQLite reconciliation source is outside the authorized snapshot directories"
+            )
         relative = path.relative_to(root)
-        return str(relative) if root == self.allowed_root else str(Path(root.name) / relative)
+        return (
+            str(relative)
+            if root == self.allowed_root
+            else str(Path(root.name) / relative)
+        )
 
     def _source(self, value: Any) -> Path:
         selected = Path(str(value or "")).expanduser()
@@ -248,9 +302,13 @@ class SQLiteReconciler:
             raise ValueError("SQLite reconciliation does not follow snapshot symlinks")
         path = selected.resolve(strict=True)
         if not path.is_file() or path.suffix.casefold() not in SOURCE_SUFFIXES:
-            raise ValueError("Choose a .db, .sqlite, or .sqlite3 file from an authorized snapshot directory")
+            raise ValueError(
+                "Choose a .db, .sqlite, or .sqlite3 file from an authorized snapshot directory"
+            )
         if self._authorized_root(path) is None:
-            raise PermissionError("SQLite reconciliation sources must be inside an authorized snapshot directory")
+            raise PermissionError(
+                "SQLite reconciliation sources must be inside an authorized snapshot directory"
+            )
         return path
 
     def sources(self) -> list[dict[str, Any]]:
@@ -282,7 +340,9 @@ class SQLiteReconciler:
                         "path": str(resolved),
                         "label": self._source_label(resolved),
                         "bytes": int(stat.st_size),
-                        "modified_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+                        "modified_at": datetime.fromtimestamp(
+                            stat.st_mtime, timezone.utc
+                        ).isoformat(),
                     }
                 )
             if len(result) >= 200:
@@ -311,11 +371,13 @@ class SQLiteReconciler:
         }
 
     @staticmethod
-    def _read_source(db: sqlite3.Connection, table: str, available: set[str]) -> list[dict[str, Any]]:
+    def _read_source(
+        db: sqlite3.Connection, table: str, available: set[str]
+    ) -> list[dict[str, Any]]:
         if table not in available:
             return []
         return [
-            {name: _normalize_sqlite_value(value) for name, value in dict(row).items()}
+            _normalize_sqlite_row(dict(row))
             for row in db.execute(f'SELECT * FROM "{table}"')
         ]
 
@@ -338,16 +400,26 @@ class SQLiteReconciler:
     @staticmethod
     def _key(table: str, row: dict[str, Any]) -> str:
         if table == "cache_history":
-            return _digest({key: value for key, value in row.items() if key != "history_id"})
+            return _digest(
+                {key: value for key, value in row.items() if key != "history_id"}
+            )
         return _canonical([row.get(name) for name in TABLE_KEYS[table]])
 
     @staticmethod
-    def _projection(table: str, row: dict[str, Any], columns: list[str]) -> dict[str, Any]:
+    def _projection(
+        table: str, row: dict[str, Any], columns: list[str]
+    ) -> dict[str, Any]:
         ignored = DERIVED_COLUMNS.get(table, set())
-        return {name: row.get(name) for name in columns if name in row and name not in ignored}
+        return {
+            name: row.get(name)
+            for name in columns
+            if name in row and name not in ignored
+        }
 
     @staticmethod
-    def _map_row(table: str, row: dict[str, Any], source_root: str, target_root: str) -> dict[str, Any]:
+    def _map_row(
+        table: str, row: dict[str, Any], source_root: str, target_root: str
+    ) -> dict[str, Any]:
         mapped = dict(row)
         path_fields = {
             "artists": ("primary_path",),
@@ -384,7 +456,8 @@ class SQLiteReconciler:
                 or bool(str(row.get("musicbrainz_albumid") or "").strip())
             )
             and str(row.get("status") or "").strip().casefold() == "processed"
-            and str(row.get("selected_source") or "").strip().casefold() == "embed-queue"
+            and str(row.get("selected_source") or "").strip().casefold()
+            == "embed-queue"
             and str(row.get("processed_at") or "").strip()
             and int(row.get("track_count") or 0) > 0
         ):
@@ -499,10 +572,10 @@ class SQLiteReconciler:
                     artist_maps.setdefault(prefix + ":" + value, []).append(row)
 
             for row in target_rows:
-                add("key", str(row.get("artist_key") or ""), row)
+                add("key", _identity_text(row.get("artist_key")), row)
                 add(
                     "mbid",
-                    str(row.get("musicbrainz_artistid") or "").strip().casefold(),
+                    _identity_text(row.get("musicbrainz_artistid")).strip().casefold(),
                     row,
                 )
                 add(
@@ -523,37 +596,50 @@ class SQLiteReconciler:
         for row in target_rows:
             keys = TABLE_KEYS.get(table, ())
             if keys:
-                add("entity", _canonical([row.get(name) for name in keys]), row)
+                add(
+                    "entity",
+                    _canonical([_identity_text(row.get(name)) for name in keys]),
+                    row,
+                )
                 # Only a complete primary key proves entity identity.  Album
                 # and track keys are single-column identities, while tables
                 # such as recording_release_candidates have compound keys;
                 # their first component alone must never select a row.
                 if len(keys) == 1:
-                    add("key", row.get(keys[0]), row)
+                    add("key", _identity_text(row.get(keys[0])), row)
             if table == "albums":
                 add(
                     "mbid",
-                    str(row.get("musicbrainz_albumid") or "").strip().casefold(),
+                    _identity_text(row.get("musicbrainz_albumid")).strip().casefold(),
                     row,
                 )
-                add("path", SQLiteReconciler._artist_path_identity(row.get("path")), row)
+                add(
+                    "path", SQLiteReconciler._artist_path_identity(row.get("path")), row
+                )
                 if row.get("artist_key") and row.get("album_name"):
                     add(
                         "artist-album",
                         _canonical(
-                            [str(row["artist_key"]), _identity(row["album_name"])]
+                            [
+                                _identity_text(row["artist_key"]),
+                                _identity(row["album_name"]),
+                            ]
                         ),
                         row,
                     )
             elif table == "tracks":
-                add("path", SQLiteReconciler._artist_path_identity(row.get("path")), row)
+                add(
+                    "path", SQLiteReconciler._artist_path_identity(row.get("path")), row
+                )
                 if row.get("musicbrainz_recordingid") and row.get("album_key"):
                     add(
                         "recording-album",
                         _canonical(
                             [
-                                str(row["musicbrainz_recordingid"]).strip().casefold(),
-                                str(row["album_key"]),
+                                _identity_text(row["musicbrainz_recordingid"])
+                                .strip()
+                                .casefold(),
+                                _identity_text(row["album_key"]),
                             ]
                         ),
                         row,
@@ -572,9 +658,9 @@ class SQLiteReconciler:
     def _find_artist_match(
         source: dict[str, Any], maps: dict[str, Any]
     ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
-        source_mbid = str(source.get("musicbrainz_artistid") or "").strip()
+        source_mbid = _identity_text(source.get("musicbrainz_artistid")).strip()
         values = (
-            ("artist-key", "key", str(source.get("artist_key") or "")),
+            ("artist-key", "key", _identity_text(source.get("artist_key"))),
             ("musicbrainz-artist-id", "mbid", source_mbid.casefold()),
             (
                 "primary-path",
@@ -597,7 +683,9 @@ class SQLiteReconciler:
                     "status": "ambiguous",
                     "evidence": evidence,
                     "candidate_count": len(candidates),
-                    "candidates": SQLiteReconciler._artist_candidate_summary(candidates),
+                    "candidates": SQLiteReconciler._artist_candidate_summary(
+                        candidates
+                    ),
                 }
                 # A duplicated MBID is not itself authoritative enough to
                 # choose a row, but a subsequent unique mapped path may still
@@ -607,7 +695,7 @@ class SQLiteReconciler:
                     continue
                 return None, ambiguity
             target = candidates[0]
-            target_mbid = str(target.get("musicbrainz_artistid") or "").strip()
+            target_mbid = _identity_text(target.get("musicbrainz_artistid")).strip()
             mbids_conflict = bool(
                 source_mbid
                 and target_mbid
@@ -636,16 +724,15 @@ class SQLiteReconciler:
                         diagnostic_candidates
                     ),
                 }
-            if (
-                evidence == "artist-name"
-                and mbids_conflict
-            ):
+            if evidence == "artist-name" and mbids_conflict:
                 return None, {
                     "status": "conflict",
                     "evidence": evidence,
                     "reason": "conflicting-non-empty-musicbrainz-artist-ids",
                     "candidate_count": 1,
-                    "candidates": SQLiteReconciler._artist_candidate_summary(candidates),
+                    "candidates": SQLiteReconciler._artist_candidate_summary(
+                        candidates
+                    ),
                 }
             return target, {
                 "status": "matched",
@@ -665,7 +752,13 @@ class SQLiteReconciler:
         table: str, rows: list[dict[str, Any]]
     ) -> list[dict[str, str]]:
         names = {
-            "albums": ("album_key", "artist_key", "album_name", "musicbrainz_albumid", "path"),
+            "albums": (
+                "album_key",
+                "artist_key",
+                "album_name",
+                "musicbrainz_albumid",
+                "path",
+            ),
             "tracks": ("track_key", "album_key", "musicbrainz_recordingid", "path"),
         }.get(table, TABLE_KEYS.get(table, ()))
         return sorted(
@@ -689,8 +782,7 @@ class SQLiteReconciler:
             if len(sources) < 2:
                 continue
             source_keys = sorted(
-                str(item.get("_reconciliation_source_key") or "")
-                for item in sources
+                str(item.get("_reconciliation_source_key") or "") for item in sources
             )
             diagnostic = {
                 "status": "conflict",
@@ -706,6 +798,52 @@ class SQLiteReconciler:
         return rejected
 
     @staticmethod
+    def _reject_normalized_source_collisions(
+        table: str,
+        rows: list[tuple[dict[str, Any], dict[str, Any] | None]],
+    ) -> set[str]:
+        """Reject Windows rows whose U+FEFF cleanup collapses a primary key."""
+        keys = TABLE_KEYS.get(table, ())
+        if not keys:
+            return set()
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for source, _target in rows:
+            groups.setdefault(
+                _canonical([_identity_text(source.get(name)) for name in keys]),
+                [],
+            ).append(source)
+        rejected: set[str] = set()
+        for normalized_key, sources in groups.items():
+            if len(sources) < 2:
+                continue
+            original_keys = sorted(
+                _canonical(
+                    [
+                        dict(
+                            source.get("_reconciliation_original_identity_values") or {}
+                        ).get(name, source.get(name))
+                        for name in keys
+                    ]
+                )
+                for source in sources
+            )
+            # An exact duplicate is already invalid input, while distinct raw
+            # keys here are the production U+FEFF alias case. Both must remain
+            # visible conflicts rather than becoming first-row inserts.
+            diagnostic = {
+                "status": "conflict",
+                "evidence": "normalized-authoritative-source-identity",
+                "reason": "multiple-windows-entities-share-one-canonical-key",
+                "normalized_key": normalized_key,
+                "source_keys": original_keys,
+                "candidate_count": len(sources),
+            }
+            for source in sources:
+                source["_reconciliation_identity"] = diagnostic
+                rejected.add(str(source.get("_reconciliation_source_key") or ""))
+        return rejected
+
+    @staticmethod
     def _find_entity_match(
         table: str, source: dict[str, Any], maps: dict[str, Any]
     ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
@@ -713,11 +851,19 @@ class SQLiteReconciler:
         values: list[tuple[str, str, str]] = []
         if keys:
             values.append(
-                ("exact-entity-key", "entity", _canonical([source.get(name) for name in keys]))
+                (
+                    "exact-entity-key",
+                    "entity",
+                    _canonical([_identity_text(source.get(name)) for name in keys]),
+                )
             )
             if len(keys) == 1:
                 values.append(
-                    ("exact-primary-key", "key", str(source.get(keys[0]) or ""))
+                    (
+                        "exact-primary-key",
+                        "key",
+                        _identity_text(source.get(keys[0])),
+                    )
                 )
         if table == "albums":
             values.extend(
@@ -725,7 +871,9 @@ class SQLiteReconciler:
                     (
                         "musicbrainz-album-id",
                         "mbid",
-                        str(source.get("musicbrainz_albumid") or "").strip().casefold(),
+                        _identity_text(source.get("musicbrainz_albumid"))
+                        .strip()
+                        .casefold(),
                     ),
                     (
                         "mapped-path",
@@ -737,7 +885,7 @@ class SQLiteReconciler:
                         "artist-album",
                         _canonical(
                             [
-                                str(source.get("artist_key") or ""),
+                                _identity_text(source.get("artist_key")),
                                 _identity(source.get("album_name")),
                             ]
                         )
@@ -759,13 +907,14 @@ class SQLiteReconciler:
                         "recording-album",
                         _canonical(
                             [
-                                str(source.get("musicbrainz_recordingid") or "")
+                                _identity_text(source.get("musicbrainz_recordingid"))
                                 .strip()
                                 .casefold(),
-                                str(source.get("album_key") or ""),
+                                _identity_text(source.get("album_key")),
                             ]
                         )
-                        if source.get("musicbrainz_recordingid") and source.get("album_key")
+                        if source.get("musicbrainz_recordingid")
+                        and source.get("album_key")
                         else "",
                     ),
                 )
@@ -800,8 +949,8 @@ class SQLiteReconciler:
                 }
             target = candidates[0]
             if table == "albums" and evidence == "artist-and-album-name":
-                source_mbid = str(source.get("musicbrainz_albumid") or "").strip()
-                target_mbid = str(target.get("musicbrainz_albumid") or "").strip()
+                source_mbid = _identity_text(source.get("musicbrainz_albumid")).strip()
+                target_mbid = _identity_text(target.get("musicbrainz_albumid")).strip()
                 if target_mbid and source_mbid.casefold() != target_mbid.casefold():
                     return None, {
                         "status": "conflict",
@@ -826,7 +975,9 @@ class SQLiteReconciler:
         }
 
     @staticmethod
-    def _find_match(table: str, source: dict[str, Any], maps: dict[str, Any]) -> dict[str, Any] | None:
+    def _find_match(
+        table: str, source: dict[str, Any], maps: dict[str, Any]
+    ) -> dict[str, Any] | None:
         if table == "artists":
             return SQLiteReconciler._find_artist_match(source, maps)[0]
         return SQLiteReconciler._find_entity_match(table, source, maps)[0]
@@ -843,7 +994,13 @@ class SQLiteReconciler:
         target: dict[str, Any] | None,
         resolution: str,
     ) -> None:
-        difference_type = "derived" if resolution == "derived" else "insert" if target is None else "update"
+        difference_type = (
+            "derived"
+            if resolution == "derived"
+            else "insert"
+            if target is None
+            else "update"
+        )
         old_digest = _digest(target) if target is not None else ""
         new_digest = _digest(source)
         outcome = "recalculate" if resolution == "derived" else "pending"
@@ -853,7 +1010,10 @@ class SQLiteReconciler:
             "target_value,resolution,application_outcome) "
             "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
             "ON CONFLICT(source_fingerprint,entity_table,entity_key,difference_type,old_digest,new_digest) "
-            "DO UPDATE SET last_run_id=excluded.last_run_id,last_seen_at=now()",
+            "DO UPDATE SET last_run_id=excluded.last_run_id,source_label=excluded.source_label,"
+            "source_value=excluded.source_value,target_value=excluded.target_value,"
+            "resolution=excluded.resolution,application_outcome=excluded.application_outcome,"
+            "error='',applied_at=NULL,last_seen_at=now()",
             (
                 run_id,
                 run_id,
@@ -884,7 +1044,9 @@ class SQLiteReconciler:
             source = self._source(source_path)
             target = Path(str(target_root or self.target_root)).resolve()
             if target != self.target_root:
-                raise PermissionError("The target mapping must be the configured WebGUI music library")
+                raise PermissionError(
+                    "The target mapping must be the configured WebGUI music library"
+                )
             before = self._fingerprint(source)
             run_id = uuid4().hex
             label = self._source_label(source)
@@ -899,24 +1061,38 @@ class SQLiteReconciler:
             )
             try:
                 uri = source.as_uri() + "?mode=ro&immutable=1"
-                with closing(sqlite3.connect(uri, uri=True)) as legacy, legacy, closing(self.database.connect()) as db, db:
+                with (
+                    closing(sqlite3.connect(uri, uri=True)) as legacy,
+                    legacy,
+                    closing(self.database.connect()) as db,
+                    db,
+                ):
                     legacy.row_factory = sqlite3.Row
                     legacy.execute("BEGIN")
                     version = int(legacy.execute("PRAGMA user_version").fetchone()[0])
                     available = self._source_tables(legacy)
-                    if version != SQLITE_SCHEMA_VERSION or not {"artists", "albums"}.issubset(available):
+                    if version != SQLITE_SCHEMA_VERSION or not {
+                        "artists",
+                        "albums",
+                    }.issubset(available):
                         raise ValueError(
                             f"SQLite schema v{version} is incompatible; reconciliation requires v{SQLITE_SCHEMA_VERSION} with artists and albums"
                         )
                     if not source_root:
-                        inventory = self._read_source(legacy, "picker_inventory", available)
+                        inventory = self._read_source(
+                            legacy, "picker_inventory", available
+                        )
                         if inventory:
                             try:
-                                source_root = json.loads(str(inventory[0].get("signature_json") or "{}"))["library_root"]
+                                source_root = json.loads(
+                                    str(inventory[0].get("signature_json") or "{}")
+                                )["library_root"]
                             except (KeyError, TypeError, ValueError):
                                 source_root = ""
                     if not str(source_root or "").strip():
-                        raise ValueError("Enter the SQLite snapshot's original library root")
+                        raise ValueError(
+                            "Enter the SQLite snapshot's original library root"
+                        )
 
                     raw = db.raw
                     # A queued job must not start after the preliminary idle
@@ -948,9 +1124,16 @@ class SQLiteReconciler:
                         "cache_entries",
                         "cache_history",
                     ]
-                    target_rows = {name: self._target_rows(raw, name) for name in table_names}
-                    target_columns = {name: self._target_columns(raw, name) for name in table_names}
-                    source_rows = {name: self._read_source(legacy, name, available) for name in table_names}
+                    target_rows = {
+                        name: self._target_rows(raw, name) for name in table_names
+                    }
+                    target_columns = {
+                        name: self._target_columns(raw, name) for name in table_names
+                    }
+                    source_rows = {
+                        name: self._read_source(legacy, name, available)
+                        for name in table_names
+                    }
                     table_counts = {
                         name: {
                             "source_rows": len(source_rows[name]),
@@ -982,7 +1165,9 @@ class SQLiteReconciler:
                     projected_artists = []
                     active_table = "artists"
                     for row in source_rows["artists"]:
-                        mapped = self._map_row("artists", row, str(source_root), str(target))
+                        mapped = self._map_row(
+                            "artists", row, str(source_root), str(target)
+                        )
                         match, identity = self._find_artist_match(mapped, artist_maps)
                         source_key = str(row.get("artist_key") or "")
                         mapped["_reconciliation_source_key"] = source_key
@@ -997,10 +1182,17 @@ class SQLiteReconciler:
                                 ready_artist_keys.add(source_key)
                             else:
                                 unresolved_artist_keys.add(source_key)
-                        artist_keys[source_key] = str(mapped.get("artist_key") or source_key)
+                        artist_keys[source_key] = str(
+                            mapped.get("artist_key") or source_key
+                        )
                         projected_artists.append((mapped, match))
                     duplicate_artist_keys = self._reject_source_fan_in(
                         "artists", projected_artists
+                    )
+                    duplicate_artist_keys.update(
+                        self._reject_normalized_source_collisions(
+                            "artists", projected_artists
+                        )
                     )
                     unresolved_artist_keys.update(duplicate_artist_keys)
                     ready_artist_keys.difference_update(duplicate_artist_keys)
@@ -1012,11 +1204,15 @@ class SQLiteReconciler:
                     projected_albums = []
                     active_table = "albums"
                     for row in source_rows["albums"]:
-                        mapped = self._map_row("albums", row, str(source_root), str(target))
+                        mapped = self._map_row(
+                            "albums", row, str(source_root), str(target)
+                        )
                         source_artist_key = str(row.get("artist_key") or "")
                         source_key = str(row.get("album_key") or "")
                         mapped["_reconciliation_source_key"] = source_key
-                        mapped["artist_key"] = artist_keys.get(source_artist_key, row.get("artist_key"))
+                        mapped["artist_key"] = artist_keys.get(
+                            source_artist_key, row.get("artist_key")
+                        )
                         if source_artist_key in unresolved_artist_keys:
                             match = None
                             identity = {
@@ -1043,10 +1239,17 @@ class SQLiteReconciler:
                                 ready_album_keys.add(source_key)
                             else:
                                 unresolved_album_keys.add(source_key)
-                        album_keys[source_key] = str(mapped.get("album_key") or source_key)
+                        album_keys[source_key] = str(
+                            mapped.get("album_key") or source_key
+                        )
                         projected_albums.append((mapped, match))
                     duplicate_album_keys = self._reject_source_fan_in(
                         "albums", projected_albums
+                    )
+                    duplicate_album_keys.update(
+                        self._reject_normalized_source_collisions(
+                            "albums", projected_albums
+                        )
                     )
                     unresolved_album_keys.update(duplicate_album_keys)
                     ready_album_keys.difference_update(duplicate_album_keys)
@@ -1056,12 +1259,16 @@ class SQLiteReconciler:
                     ready_track_paths: set[str] = set(target_track_paths)
                     active_table = "tracks"
                     for row in source_rows["tracks"]:
-                        mapped = self._map_row("tracks", row, str(source_root), str(target))
+                        mapped = self._map_row(
+                            "tracks", row, str(source_root), str(target)
+                        )
                         source_album_key = str(row.get("album_key") or "")
                         mapped["_reconciliation_source_key"] = str(
                             row.get("track_key") or ""
                         )
-                        mapped["album_key"] = album_keys.get(source_album_key, row.get("album_key"))
+                        mapped["album_key"] = album_keys.get(
+                            source_album_key, row.get("album_key")
+                        )
                         if source_album_key in unresolved_album_keys:
                             match = None
                             identity = {
@@ -1095,25 +1302,64 @@ class SQLiteReconciler:
                                     .casefold()
                                 )
                         projected_tracks.append((mapped, match))
-                    self._reject_source_fan_in("tracks", projected_tracks)
+                    duplicate_track_keys = self._reject_source_fan_in(
+                        "tracks", projected_tracks
+                    )
+                    duplicate_track_keys.update(
+                        self._reject_normalized_source_collisions(
+                            "tracks", projected_tracks
+                        )
+                    )
+                    if duplicate_track_keys:
+                        for source_row, _target_row in projected_tracks:
+                            if (
+                                str(source_row.get("_reconciliation_source_key") or "")
+                                in duplicate_track_keys
+                            ):
+                                ready_track_paths.discard(
+                                    str(source_row.get("path") or "")
+                                    .replace("\\", "/")
+                                    .casefold()
+                                )
 
-                    prepared: dict[str, list[tuple[dict[str, Any], dict[str, Any] | None]]] = {
+                    prepared: dict[
+                        str, list[tuple[dict[str, Any], dict[str, Any] | None]]
+                    ] = {
                         "artists": projected_artists,
                         "albums": projected_albums,
                         "tracks": projected_tracks,
                     }
                     for table in table_names[3:]:
                         active_table = table
-                        maps = self._match_maps(table, target_rows[table]) if table != "cache_history" else {}
-                        existing_history = {
-                            _digest({key: value for key, value in row.items() if key != "history_id"})
-                            for row in target_rows[table]
-                        } if table == "cache_history" else set()
+                        maps = (
+                            self._match_maps(table, target_rows[table])
+                            if table != "cache_history"
+                            else {}
+                        )
+                        existing_history = (
+                            {
+                                _digest(
+                                    {
+                                        key: value
+                                        for key, value in row.items()
+                                        if key != "history_id"
+                                    }
+                                )
+                                for row in target_rows[table]
+                            }
+                            if table == "cache_history"
+                            else set()
+                        )
                         rows = []
                         for row in source_rows[table]:
-                            mapped = self._map_row(table, row, str(source_root), str(target))
+                            mapped = self._map_row(
+                                table, row, str(source_root), str(target)
+                            )
                             source_album_key = str(row.get("album_key") or "")
-                            if table in {"cache_entries", "cache_history"} and source_album_key:
+                            if (
+                                table in {"cache_entries", "cache_history"}
+                                and source_album_key
+                            ):
                                 mapped["album_key"] = album_keys.get(
                                     source_album_key, row.get("album_key")
                                 )
@@ -1125,7 +1371,11 @@ class SQLiteReconciler:
                                     }
                             if table == "cache_history":
                                 mapped.pop("history_id", None)
-                                match = mapped if _digest(mapped) in existing_history else None
+                                match = (
+                                    mapped
+                                    if _digest(mapped) in existing_history
+                                    else None
+                                )
                             else:
                                 match, identity = self._find_entity_match(
                                     table, mapped, maps
@@ -1137,41 +1387,80 @@ class SQLiteReconciler:
                                 ):
                                     mapped["_reconciliation_identity"] = identity
                             rows.append((mapped, match))
+                        self._reject_normalized_source_collisions(table, rows)
                         prepared[table] = rows
 
                     for table in table_names:
                         active_table = table
                         columns = target_columns[table]
                         stats = table_counts[table]
+                        recorded_differences: set[tuple[str, str, str, str]] = set()
                         for source_row, target_row in prepared[table]:
-                            stats["matched" if target_row is not None else "unmapped"] += 1
+                            stats[
+                                "matched" if target_row is not None else "unmapped"
+                            ] += 1
                             source_value = self._projection(table, source_row, columns)
                             if source_row.get("_reconciliation_identity"):
                                 source_value["_reconciliation_identity"] = source_row[
                                     "_reconciliation_identity"
                                 ]
-                            target_value = self._projection(
-                                table, target_row, list(source_value)
-                            ) if target_row else None
-                            if target_value is not None and _digest(source_value) == _digest(target_value):
+                            target_value = (
+                                self._projection(table, target_row, list(source_value))
+                                if target_row
+                                else None
+                            )
+                            if target_value is not None and _digest(
+                                source_value
+                            ) == _digest(target_value):
                                 stats["unchanged"] += 1
                                 continue
-                            resolution = classify_difference(table, source_value, target_value)
+                            resolution = classify_difference(
+                                table, source_value, target_value
+                            )
                             # A completion record may be inserted only for a
                             # track that the WebGUI catalog already indexes.
                             # Source-only/hidden Windows folders remain visible
                             # conflicts and cannot expand the target catalog.
-                            if table == "compilation_track_artwork" and target_row is None:
-                                track_path = str(source_value.get("track_path") or "").replace("\\", "/").casefold()
-                                resolution = "safe" if track_path in ready_track_paths else "conflict"
+                            if (
+                                table == "compilation_track_artwork"
+                                and target_row is None
+                            ):
+                                track_path = (
+                                    str(source_value.get("track_path") or "")
+                                    .replace("\\", "/")
+                                    .casefold()
+                                )
+                                resolution = (
+                                    "safe"
+                                    if track_path in ready_track_paths
+                                    else "conflict"
+                                )
                                 if resolution == "conflict":
                                     source_value["_reconciliation_identity"] = {
                                         "status": "rejected",
                                         "evidence": "mapped-track-path",
                                         "reason": "track-not-present-in-authoritative-catalog",
-                                        "mapped_path": source_value.get("track_path") or "",
+                                        "mapped_path": source_value.get("track_path")
+                                        or "",
                                     }
-                            identity = source_value.get("_reconciliation_identity") or {}
+                            identity = (
+                                source_value.get("_reconciliation_identity") or {}
+                            )
+                            difference_identity = (
+                                self._key(table, source_value),
+                                "derived"
+                                if resolution == "derived"
+                                else "insert"
+                                if target_value is None
+                                else "update",
+                                _digest(target_value)
+                                if target_value is not None
+                                else "",
+                                _digest(source_value),
+                            )
+                            if difference_identity in recorded_differences:
+                                continue
+                            recorded_differences.add(difference_identity)
                             if str(identity.get("status") or "") in {
                                 "ambiguous",
                                 "blocked",
@@ -1199,10 +1488,18 @@ class SQLiteReconciler:
                                 else "conflicts"
                             ] += 1
                             counts["differences"] += 1
-                            counts["safe" if resolution == "safe" else "derived" if resolution == "derived" else "conflicts"] += 1
+                            counts[
+                                "safe"
+                                if resolution == "safe"
+                                else "derived"
+                                if resolution == "derived"
+                                else "conflicts"
+                            ] += 1
                     after = self._fingerprint(source)
                     if after != before:
-                        raise ValueError("SQLite snapshot changed during comparison; retry with a stable snapshot")
+                        raise ValueError(
+                            "SQLite snapshot changed during comparison; retry with a stable snapshot"
+                        )
                     raw.execute(
                         "UPDATE sqlite_reconciliation_runs SET status='compared',differences=%s,safe_differences=%s,"
                         "conflicts=%s,table_counts=%s,finished_at=now() WHERE run_id=%s",
@@ -1265,7 +1562,8 @@ class SQLiteReconciler:
         statement = sql.SQL("SELECT * FROM {} WHERE {}").format(
             sql.Identifier(table),
             sql.SQL(" AND ").join(
-                sql.SQL("{}={}").format(sql.Identifier(name), sql.Placeholder()) for name in keys
+                sql.SQL("{}={}").format(sql.Identifier(name), sql.Placeholder())
+                for name in keys
             ),
         )
         row = raw.execute(statement, [source.get(name) for name in keys]).fetchone()
@@ -1284,17 +1582,26 @@ class SQLiteReconciler:
     @staticmethod
     def _update(raw, table: str, source: dict[str, Any]) -> None:
         keys = TABLE_KEYS[table]
-        names = [name for name in source if name not in keys and name not in DERIVED_COLUMNS.get(table, set())]
+        names = [
+            name
+            for name in source
+            if name not in keys and name not in DERIVED_COLUMNS.get(table, set())
+        ]
         statement = sql.SQL("UPDATE {} SET {} WHERE {}").format(
             sql.Identifier(table),
             sql.SQL(",").join(
-                sql.SQL("{}={}").format(sql.Identifier(name), sql.Placeholder()) for name in names
+                sql.SQL("{}={}").format(sql.Identifier(name), sql.Placeholder())
+                for name in names
             ),
             sql.SQL(" AND ").join(
-                sql.SQL("{}={}").format(sql.Identifier(name), sql.Placeholder()) for name in keys
+                sql.SQL("{}={}").format(sql.Identifier(name), sql.Placeholder())
+                for name in keys
             ),
         )
-        raw.execute(statement, [source[name] for name in names] + [source[name] for name in keys])
+        raw.execute(
+            statement,
+            [source[name] for name in names] + [source[name] for name in keys],
+        )
 
     @staticmethod
     def _recalculate(db) -> None:
@@ -1325,8 +1632,13 @@ class SQLiteReconciler:
             ):
                 total = int(row["total_tracks"] or 0)
                 completed = int(row["completed_tracks"] or 0)
-                status = "processed" if total > 0 and completed >= total else "incomplete"
-            elif str(row["processed_at"] or "").strip() or str(row["selected_source"] or "").strip():
+                status = (
+                    "processed" if total > 0 and completed >= total else "incomplete"
+                )
+            elif (
+                str(row["processed_at"] or "").strip()
+                or str(row["selected_source"] or "").strip()
+            ):
                 status = "processed"
             else:
                 status = "unprocessed"
@@ -1336,13 +1648,16 @@ class SQLiteReconciler:
             )
             by_artist.setdefault(str(row["artist_key"]), []).append(status)
         for artist_key, statuses in by_artist.items():
-            counts = {name: statuses.count(name) for name in (
-                "unprocessed",
-                "incomplete",
-                "processed",
-                "bypassed",
-                "timeout",
-            )}
+            counts = {
+                name: statuses.count(name)
+                for name in (
+                    "unprocessed",
+                    "incomplete",
+                    "processed",
+                    "bypassed",
+                    "timeout",
+                )
+            }
             # These counters are derived from authoritative Album state. Do
             # not stamp ``updated_at``: that shared timestamp belongs to the
             # Windows Artist row and must remain stable across repeated apply.
@@ -1370,7 +1685,12 @@ class SQLiteReconciler:
         )
         for album in albums:
             album_path = str(album["path"])
-            tracks = list(db.execute("SELECT path FROM tracks WHERE album_key=(SELECT album_key FROM albums WHERE path=?)", (album_path,)))
+            tracks = list(
+                db.execute(
+                    "SELECT path FROM tracks WHERE album_key=(SELECT album_key FROM albums WHERE path=?)",
+                    (album_path,),
+                )
+            )
             total = len(tracks)
             completed = sum(
                 1
@@ -1387,7 +1707,14 @@ class SQLiteReconciler:
                 "VALUES(?,?,?,?,?,?) ON CONFLICT(album_path) DO UPDATE SET total_tracks=excluded.total_tracks,"
                 "completed_tracks=excluded.completed_tracks,status=excluded.status,updated_at=excluded.updated_at,"
                 "splined_version=excluded.splined_version",
-                (album_path, total, completed, status, datetime.now(timezone.utc).isoformat(), "web-reconcile"),
+                (
+                    album_path,
+                    total,
+                    completed,
+                    status,
+                    datetime.now(timezone.utc).isoformat(),
+                    "web-reconcile",
+                ),
             )
 
     def apply(self, run_id: Any) -> dict[str, Any]:
@@ -1465,14 +1792,29 @@ class SQLiteReconciler:
                         else:
                             current = self._row_by_key(raw, table, application_value)
                             columns = list(application_value)
-                            projected = self._projection(table, current, columns) if current else None
-                            current_digest = _digest(projected) if projected is not None else ""
+                            projected = (
+                                self._projection(table, current, columns)
+                                if current
+                                else None
+                            )
+                            current_digest = (
+                                _digest(projected) if projected is not None else ""
+                            )
                             if current_digest != str(difference["old_digest"]):
-                                raise ValueError("PostgreSQL state changed after comparison")
+                                raise ValueError(
+                                    "PostgreSQL state changed after comparison"
+                                )
                             if current is None:
                                 insert_value = dict(application_value)
                                 if table == "artists":
-                                    insert_value.update(status="unprocessed", album_count=0, unprocessed_count=0, processed_count=0, bypassed_count=0, timeout_count=0)
+                                    insert_value.update(
+                                        status="unprocessed",
+                                        album_count=0,
+                                        unprocessed_count=0,
+                                        processed_count=0,
+                                        bypassed_count=0,
+                                        timeout_count=0,
+                                    )
                                 elif table == "albums":
                                     insert_value["status"] = "unprocessed"
                                 self._insert(raw, table, insert_value)
@@ -1482,9 +1824,13 @@ class SQLiteReconciler:
                             "UPDATE salite_diff SET resolution='applied',application_outcome='applied',applied_at=now(),error='' WHERE id=%s",
                             (difference["id"],),
                         )
-                    if table in {"albums", "tracks"} and application_value.get("album_key"):
+                    if table in {"albums", "tracks"} and application_value.get(
+                        "album_key"
+                    ):
                         affected_album_keys.add(str(application_value["album_key"]))
-                    elif table == "compilation_track_artwork" and application_value.get("track_path"):
+                    elif table == "compilation_track_artwork" and application_value.get(
+                        "track_path"
+                    ):
                         album = raw.execute(
                             "SELECT album_key FROM tracks WHERE path=%s",
                             (application_value["track_path"],),
@@ -1558,11 +1904,17 @@ class SQLiteReconciler:
             result,
             severity="warning" if failures or validation_retries else "info",
             stage="apply-safe",
-            request_status="failed" if failures else "retry" if validation_retries else "completed",
+            request_status="failed"
+            if failures
+            else "retry"
+            if validation_retries
+            else "completed",
         )
         return result
 
-    def history(self, *, run_id: str = "", resolution: str = "", limit: int = 500) -> dict[str, Any]:
+    def history(
+        self, *, run_id: str = "", resolution: str = "", limit: int = 500
+    ) -> dict[str, Any]:
         clauses = []
         params: list[Any] = []
         if run_id:
@@ -1597,7 +1949,9 @@ class SQLiteReconciler:
                     (str(last["run_id"]) if last else "",),
                 ).fetchone()["n"]
             )
-            settings = db.raw.execute("SELECT * FROM sqlite_reconciliation_settings WHERE singleton=TRUE").fetchone()
+            settings = db.raw.execute(
+                "SELECT * FROM sqlite_reconciliation_settings WHERE singleton=TRUE"
+            ).fetchone()
         return {
             "differences": differences,
             "last_run": dict(last) if last else None,
@@ -1608,27 +1962,50 @@ class SQLiteReconciler:
     def save_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
         enabled = bool(payload.get("enabled", False))
         auto_apply = bool(payload.get("auto_apply_safe", False))
-        startup_mode = str(payload.get("startup_mode", "off") or "off").strip().casefold()
+        startup_mode = (
+            str(payload.get("startup_mode", "off") or "off").strip().casefold()
+        )
         if startup_mode not in {"off", "compare", "apply-safe"}:
-            raise ValueError("Startup SNAP mode must be Off, Compare only, or Apply safe")
+            raise ValueError(
+                "Startup SNAP mode must be Off, Compare only, or Apply safe"
+            )
         interval = int(payload.get("interval_minutes", 1440))
         if not 15 <= interval <= 10080:
-            raise ValueError("Scheduled reconciliation interval must be 15 to 10080 minutes")
+            raise ValueError(
+                "Scheduled reconciliation interval must be 15 to 10080 minutes"
+            )
         source_path = str(payload.get("source_path", "")).strip()
         source_root = str(payload.get("source_root", "")).strip()
         if enabled or startup_mode != "off":
             self._source(source_path)
             if not source_root:
-                raise ValueError("Automatic reconciliation requires the SQLite source library root")
+                raise ValueError(
+                    "Automatic reconciliation requires the SQLite source library root"
+                )
         target = Path(str(payload.get("target_root") or self.target_root)).resolve()
         if target != self.target_root:
-            raise PermissionError("Scheduled reconciliation target must be the configured music library")
-        next_run = datetime.now(timezone.utc) + timedelta(minutes=interval) if enabled else None
+            raise PermissionError(
+                "Scheduled reconciliation target must be the configured music library"
+            )
+        next_run = (
+            datetime.now(timezone.utc) + timedelta(minutes=interval)
+            if enabled
+            else None
+        )
         with closing(self.database.connect()) as db, db:
             db.raw.execute(
                 "UPDATE sqlite_reconciliation_settings SET enabled=%s,auto_apply_safe=%s,startup_mode=%s,interval_minutes=%s,"
                 "source_path=%s,source_root=%s,target_root=%s,updated_at=now(),next_run_at=%s WHERE singleton=TRUE",
-                (enabled, auto_apply, startup_mode, interval, source_path, source_root, str(target), next_run),
+                (
+                    enabled,
+                    auto_apply,
+                    startup_mode,
+                    interval,
+                    source_path,
+                    source_root,
+                    str(target),
+                    next_run,
+                ),
             )
         return self.history(limit=1)["settings"]
 
@@ -1685,7 +2062,11 @@ class SQLiteReconciler:
                 if not state or not state.get("enabled"):
                     continue
                 due = state.get("next_run_at")
-                if due and _timestamp(due) and _timestamp(due) > datetime.now(timezone.utc):
+                if (
+                    due
+                    and _timestamp(due)
+                    and _timestamp(due) > datetime.now(timezone.utc)
+                ):
                     continue
                 if self._processing_active():
                     if not deferred_reported:
@@ -1731,4 +2112,3 @@ class SQLiteReconciler:
                     request_status="failed",
                     error=sanitize_text(error, limit=1000),
                 )
-

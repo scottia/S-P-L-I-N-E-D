@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from webgui.reconciliation import (
     SQLiteReconciler,
+    _normalize_sqlite_row,
     classify_difference,
     map_library_path,
 )
@@ -45,6 +46,63 @@ class SQLiteReconciliationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "outside the mapped source"):
             map_library_path(r"D:\Other\01.flac", r"D:\Music", r"E:\Music")
 
+    def test_production_bom_musicbrainz_identities_normalize_without_changing_metadata(
+        self,
+    ):
+        mbid = "b9a06530-1241-4162-836f-7b8e79deaa58"
+        row = _normalize_sqlite_row(
+            {
+                "artist_key": "mbid:\ufeff" + mbid,
+                "artist_name": "\ufeffD-Rop Dow 2",
+                "musicbrainz_artistid": "\ufeff" + mbid,
+            }
+        )
+        self.assertEqual(row["artist_key"], "mbid:" + mbid)
+        self.assertEqual(row["musicbrainz_artistid"], mbid)
+        self.assertEqual(row["artist_name"], "\ufeffD-Rop Dow 2")
+        self.assertEqual(
+            row["_reconciliation_original_identity_values"],
+            {
+                "artist_key": "mbid:\ufeff" + mbid,
+                "musicbrainz_artistid": "\ufeff" + mbid,
+            },
+        )
+
+    def test_production_bom_alias_pair_is_a_visible_collision(self):
+        mbid = "6958e806-1e14-4844-a0a7-07a27756aa0f"
+        clean = _normalize_sqlite_row(
+            {
+                "artist_key": "mbid:" + mbid,
+                "artist_name": "A Great Big World",
+                "musicbrainz_artistid": mbid,
+            }
+        )
+        bom = _normalize_sqlite_row(
+            {
+                "artist_key": "mbid:\ufeff" + mbid,
+                "artist_name": "A Great Big World",
+                "musicbrainz_artistid": "\ufeff" + mbid,
+            }
+        )
+        for row in (clean, bom):
+            row["_reconciliation_source_key"] = row["artist_key"]
+        rows = [(clean, None), (bom, None)]
+        rejected = SQLiteReconciler._reject_normalized_source_collisions(
+            "artists", rows
+        )
+        self.assertEqual(rejected, {"mbid:" + mbid})
+        for row in (clean, bom):
+            identity = row["_reconciliation_identity"]
+            self.assertEqual(identity["status"], "conflict")
+            self.assertEqual(
+                identity["reason"],
+                "multiple-windows-entities-share-one-canonical-key",
+            )
+            self.assertEqual(identity["candidate_count"], 2)
+            self.assertTrue(
+                any("\ufeff" in source_key for source_key in identity["source_keys"])
+            )
+
     def test_album_validation_migrations_do_not_trust_historical_counters(self):
         migrations = Path(__file__).parents[1] / "migrations"
         original = (migrations / "013_album_embedded_validation.sql").read_text(
@@ -70,9 +128,9 @@ class SQLiteReconciliationTests(unittest.TestCase):
         )
         self.assertEqual(mapped["track_key"], mapped["path"])
         self.assertTrue(
-            mapped["track_key"].replace("\\", "/").endswith(
-                "WebGUI Music/Adele/30/01.flac"
-            )
+            mapped["track_key"]
+            .replace("\\", "/")
+            .endswith("WebGUI Music/Adele/30/01.flac")
         )
 
     def test_track_identity_never_falls_back_to_another_track_by_artist_name(self):
@@ -160,9 +218,7 @@ class SQLiteReconciliationTests(unittest.TestCase):
             self._artist("tag:duplicate", "Second", "second-mbid", r"E:\Music\Second"),
         ]
         match, identity = SQLiteReconciler._find_artist_match(
-            self._artist(
-                "tag:duplicate", "Source", "source-mbid", r"E:\Music\Source"
-            ),
+            self._artist("tag:duplicate", "Source", "source-mbid", r"E:\Music\Source"),
             SQLiteReconciler._match_maps("artists", rows),
         )
         self.assertIsNone(match)
@@ -170,12 +226,8 @@ class SQLiteReconciliationTests(unittest.TestCase):
         self.assertEqual(identity["evidence"], "artist-key")
 
     def test_artist_duplicate_mbid_can_be_disambiguated_by_unique_path(self):
-        first = self._artist(
-            "tag:first", "First", "shared-mbid", r"E:\Music\First"
-        )
-        second = self._artist(
-            "tag:second", "Second", "shared-mbid", r"E:\Music\Second"
-        )
+        first = self._artist("tag:first", "First", "shared-mbid", r"E:\Music\First")
+        second = self._artist("tag:second", "Second", "shared-mbid", r"E:\Music\Second")
         source = self._artist(
             "mbid:shared-mbid", "Second", "shared-mbid", r"e:/music/second/"
         )
@@ -554,9 +606,7 @@ class SQLiteReconciliationTests(unittest.TestCase):
         match, identity = SQLiteReconciler._find_entity_match(
             "recording_release_candidates",
             source,
-            SQLiteReconciler._match_maps(
-                "recording_release_candidates", targets
-            ),
+            SQLiteReconciler._match_maps("recording_release_candidates", targets),
         )
         self.assertIsNone(match)
         self.assertEqual(identity["status"], "unmatched")
@@ -629,9 +679,7 @@ class SQLiteReconciliationTests(unittest.TestCase):
                 "updated_at": timestamp,
                 "splined_version": "test",
             }
-            reconciler = SQLiteReconciler(
-                object(), root, root, start_scheduler=False
-            )
+            reconciler = SQLiteReconciler(object(), root, root, start_scheduler=False)
             try:
                 self.assertEqual(
                     reconciler._insert_identity("artists", artist_row)["status"],
@@ -687,8 +735,14 @@ class SQLiteReconciliationTests(unittest.TestCase):
             finally:
                 reconciler.close()
 
-    def test_dedicated_snapshot_root_is_authorized_without_widening_filesystem_access(self):
-        with TemporaryDirectory() as cache_directory, TemporaryDirectory() as snapshot_directory, TemporaryDirectory() as outside_directory:
+    def test_dedicated_snapshot_root_is_authorized_without_widening_filesystem_access(
+        self,
+    ):
+        with (
+            TemporaryDirectory() as cache_directory,
+            TemporaryDirectory() as snapshot_directory,
+            TemporaryDirectory() as outside_directory,
+        ):
             cache_root = Path(cache_directory)
             snapshot_root = Path(snapshot_directory)
             cache_snapshot = cache_root / "older-cache-copy.db"
@@ -714,7 +768,9 @@ class SQLiteReconciliationTests(unittest.TestCase):
                     str(Path(snapshot_root.name) / "splined.db"),
                 )
                 self.assertEqual(sources[0]["bytes"], snapshot.stat().st_size)
-                self.assertNotIn(str(cache_snapshot.resolve()), {item["path"] for item in sources})
+                self.assertNotIn(
+                    str(cache_snapshot.resolve()), {item["path"] for item in sources}
+                )
                 self.assertEqual(reconciler._source(snapshot), snapshot.resolve())
                 self.assertEqual(
                     reconciler._source(cache_snapshot),
@@ -725,16 +781,23 @@ class SQLiteReconciliationTests(unittest.TestCase):
             finally:
                 reconciler.close()
 
-    def test_snapshot_root_environment_is_explicit_and_container_default_is_bounded(self):
+    def test_snapshot_root_environment_is_explicit_and_container_default_is_bounded(
+        self,
+    ):
         from webgui.server import _sqlite_snapshot_roots
 
-        with TemporaryDirectory() as directory, patch.dict(
-            os.environ,
-            {"SPLINED_SQLITE_SNAPSHOT_ROOT": directory},
+        with (
+            TemporaryDirectory() as directory,
+            patch.dict(
+                os.environ,
+                {"SPLINED_SQLITE_SNAPSHOT_ROOT": directory},
+            ),
         ):
             self.assertEqual(_sqlite_snapshot_roots(), (Path(directory),))
 
-    def test_migration_has_exact_history_name_idempotence_key_and_disabled_schedule(self):
+    def test_migration_has_exact_history_name_idempotence_key_and_disabled_schedule(
+        self,
+    ):
         migration = (
             Path(__file__).parents[1] / "migrations" / "010_sqlite_reconciliation.sql"
         ).read_text(encoding="utf-8")
@@ -743,7 +806,9 @@ class SQLiteReconciliationTests(unittest.TestCase):
         self.assertIn("enabled BOOLEAN NOT NULL DEFAULT FALSE", migration)
         self.assertIn("auto_apply_safe BOOLEAN NOT NULL DEFAULT FALSE", migration)
         startup = (
-            Path(__file__).parents[1] / "migrations" / "012_reconciliation_startup_mode.sql"
+            Path(__file__).parents[1]
+            / "migrations"
+            / "012_reconciliation_startup_mode.sql"
         ).read_text(encoding="utf-8")
         self.assertIn("startup_mode TEXT NOT NULL DEFAULT 'off'", startup)
         self.assertIn("'compare', 'apply-safe'", startup)
@@ -770,7 +835,9 @@ class SQLiteReconciliationTests(unittest.TestCase):
         self.assertIn("resolution='safe'", reconciliation)
         self.assertIn('source.as_uri() + "?mode=ro&immutable=1"', reconciliation)
         self.assertIn('"conflicts_applied": 0', reconciliation)
-        reconciled_tables = reconciliation.split("table_names = [", 1)[1].split("]", 1)[0]
+        reconciled_tables = reconciliation.split("table_names = [", 1)[1].split("]", 1)[
+            0
+        ]
         self.assertNotIn("web_jobs", reconciled_tables)
 
 
