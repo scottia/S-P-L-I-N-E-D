@@ -55,6 +55,34 @@ library. No production library or database was modified.
 Machine-readable results are in
 [`pc-artifact-validation.json`](pc-artifact-validation.json).
 
+## PR #130 reference — status validation for every Album type
+
+Owner acceptance of the Windows-created snapshot exposed the same
+unknown-versus-confirmed classification defect that PR #130 corrected for COMP
+thumbnail validation. PR #130 keeps a temporary or failed validation separate
+from a confirmed purple repair condition; the regular Album-card path still
+treated `embedded_tracks = 0` as confirmed missing even when reconciliation had
+not inspected the mapped media.
+
+- PR #133 remains the current draft and acceptance checkpoint.
+- The Windows snapshot is valid and contains the committed authoritative SQLite
+  state.
+- PostgreSQL successfully received the applicable safe differences.
+- After safe apply, WebGUI now verifies the mapped target Album through the
+  existing embedded-artwork reader before assigning complete or repair state.
+- A read/access failure records `retry` and preserves the prior counter instead
+  of presenting a false purple repair condition.
+- The rule applies to regular Artist Albums, Various Artists, Soundtracks, and
+  Featured appearances because they share the Album-card state authority.
+- COMP fallback retains PR #130's lazy per-track `checking` / `check-error`
+  behavior and never converts a failed validation into purple.
+
+The PostgreSQL field `embedded_validation_status` records `unknown`, `verified`,
+or `retry`. Only `verified` evidence can make an identified Album green or
+purple. This is deliberately derived from the mapped WebGUI media after
+reconciliation; the Windows snapshot remains unchanged and authoritative for
+its committed SQLite fields.
+
 ## Remaining owner-visible checks
 
 The current Remotix/virtual-monitor surface rejected Windows Graphics Capture

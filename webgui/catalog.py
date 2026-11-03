@@ -104,7 +104,7 @@ def image_metadata(path: Path) -> dict[str, object]:
     }
 
 
-def embedded_track_artwork_bytes(path: Path) -> bytes | None:
+def embedded_track_artwork_bytes(path: Path, *, strict: bool = False) -> bytes | None:
     """Read one track's embedded cover; never substitute the album folder cover."""
     artwork: bytes | None = None
     try:
@@ -125,7 +125,11 @@ def embedded_track_artwork_bytes(path: Path) -> bytes | None:
                     elif audio.tags.get("metadata_block_picture"):
                         raw = audio.tags["metadata_block_picture"][0]
                         artwork = Picture(base64.b64decode(raw)).data
-    except (OSError, ValueError, ID3NoHeaderError):
+    except ID3NoHeaderError:
+        return None
+    except (OSError, ValueError):
+        if strict:
+            raise
         return None
     return artwork
 
@@ -1182,6 +1186,8 @@ class Catalog:
                 "various_artists": normalized_artist_identity(row["album_artist"] or "")
                     == "variousartists",
                 "embedded": int(row["embedded_tracks"] or 0) if "embedded_tracks" in row.keys() else 0,
+                "embedded_validation": str(row["embedded_validation_status"] or "unknown")
+                    if "embedded_validation_status" in row else "unknown",
                 "album_mbid": row["musicbrainz_albumid"] or "",
                 "year": row["release_year"] or "",
                 "soundtrack": bool(row["musicbrainz_albumid"]) and (
@@ -1239,6 +1245,8 @@ class Catalog:
             "tracks": row["track_count"], "compilation": bool(row["compilation"]),
             "album_mbid": row["musicbrainz_albumid"] or "", "year": row["release_year"] or "",
             "embedded": int(row["embedded_tracks"] or 0) if "embedded_tracks" in row.keys() else 0,
+            "embedded_validation": str(row["embedded_validation_status"] or "unknown")
+                if "embedded_validation_status" in row else "unknown",
             "cover": self.image(cover), "cover_meta": image_metadata(cover) if cover and cover.is_file() else None,
             "candidates": candidates, "track_titles": track_titles,
         }

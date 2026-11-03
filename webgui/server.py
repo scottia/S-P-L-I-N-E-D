@@ -90,6 +90,7 @@ class Context:
             self.services.audit,
             snapshot_roots=_sqlite_snapshot_roots(),
             start_scheduler=self.start_worker,
+            album_validator=self.services.validate_album_embedding,
         )
         if self.start_worker:
             self.jobs = JobQueue(self.services)
@@ -143,6 +144,7 @@ class Context:
                 self.services.audit,
                 snapshot_roots=_sqlite_snapshot_roots(),
                 start_scheduler=self.start_worker,
+                album_validator=self.services.validate_album_embedding,
             )
         else:
             if self.jobs and any(
@@ -179,6 +181,7 @@ class Context:
                 self.services.audit,
                 snapshot_roots=_sqlite_snapshot_roots(),
                 start_scheduler=self.start_worker,
+                album_validator=self.services.validate_album_embedding,
             )
             self.url = url
             self.error = ""

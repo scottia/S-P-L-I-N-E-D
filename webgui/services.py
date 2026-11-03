@@ -809,15 +809,58 @@ class Services:
         return [refreshed[key] for key in track_keys if key in refreshed]
 
     def refresh_embedding_stats(self, row):
-        count = sum(
-            bool(embedded_track_artwork_bytes(path)) for path in self.album_files(row)
-        )
+        current = int(row["embedded_tracks"] or 0) if "embedded_tracks" in row else 0
+        validation = "verified"
+        error = ""
+        try:
+            files = self.album_files(row)
+            expected = int(row["track_count"] or 0)
+            if expected > 0 and len(files) != expected:
+                raise OSError(
+                    f"Indexed track count {expected} does not match readable files {len(files)}"
+                )
+            count = sum(
+                bool(embedded_track_artwork_bytes(path, strict=True)) for path in files
+            )
+        except (OSError, ValueError) as exception:
+            count = current
+            validation = "retry"
+            error = sanitize_text(exception, limit=500)
         with closing(self.runtime.database.connect()) as db, db:
             db.execute(
-                "UPDATE albums SET embedded_tracks=? WHERE album_key=?",
-                (count, row["album_key"]),
+                "UPDATE albums SET embedded_tracks=?,embedded_validation_status=?,"
+                "embedded_validated_at=now() WHERE album_key=?",
+                (count, validation, row["album_key"]),
+            )
+        if validation == "retry":
+            self.audit(
+                "embedded-artwork-validation",
+                str(row["album_key"]),
+                {"status": validation, "error": error},
+                severity="warning",
+                stage="readback",
+                request_status="retry",
             )
         return count
+
+    @serialized
+    def validate_album_embedding(self, album_id: str) -> dict[str, object]:
+        """Verify one mapped Album without converting a read failure into missing art."""
+        row = self.album_row(album_id)
+        self.refresh_embedding_stats(row)
+        with closing(self.runtime.database.connect()) as db:
+            verified = db.execute(
+                "SELECT embedded_tracks,track_count,embedded_validation_status,"
+                "embedded_validated_at FROM albums WHERE album_key=?",
+                (album_id,),
+            ).fetchone()
+        return {
+            "album_id": album_id,
+            "embedded_tracks": int(verified["embedded_tracks"] or 0),
+            "track_count": int(verified["track_count"] or 0),
+            "status": str(verified["embedded_validation_status"] or "unknown"),
+            "validated_at": str(verified["embedded_validated_at"] or ""),
+        }
 
     def comp_report(self, artist_id):
         album_ids = self.catalog.artist_comp_album_ids(artist_id)

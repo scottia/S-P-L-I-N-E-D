@@ -358,7 +358,30 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.assertEqual(
             self.services.catalog.album(self.row["album_key"])["embedded"], 2
         )
+        self.assertEqual(
+            self.services.catalog.album(self.row["album_key"])["embedded_validation"],
+            "verified",
+        )
         self.assertEqual(self.services.index_changes()["count"], 0)
+
+    def test_album_embedding_validation_preserves_unknown_on_read_failure(self):
+        with closing(self.db.connect()) as db, db:
+            db.execute(
+                "UPDATE albums SET embedded_tracks=1,embedded_validation_status='verified' "
+                "WHERE album_key=?",
+                (self.row["album_key"],),
+            )
+        with patch(
+            "webgui.services.embedded_track_artwork_bytes",
+            side_effect=OSError("synthetic read failure"),
+        ):
+            result = self.services.validate_album_embedding(self.row["album_key"])
+
+        self.assertEqual(result["status"], "retry")
+        self.assertEqual(result["embedded_tracks"], 1)
+        projected = self.services.catalog.album(self.row["album_key"])
+        self.assertEqual(projected["embedded_validation"], "retry")
+        self.assertEqual(projected["embedded"], 1)
 
         # WebGUI-owned writes advance the saved inventory baseline, while a
         # later external change to the same Album still requires review.
@@ -2151,7 +2174,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     self.row["album_name"],
                     self.row["path"],
                     "2099-01-01T00:00:00+00:00",
-                    "embed-queue",
+                    "existing",
                     "2099-01-01T00:00:00+00:00",
                     1,
                     "processed",
@@ -2176,11 +2199,25 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 ),
             )
 
+        # Physical media is authoritative for the WebGUI-only embedded count.
+        # Leave PostgreSQL deliberately stale so apply must validate the mapped
+        # files instead of treating the source's absent counter as zero.
+        staged = self.services.stage_album(self.payload())
+        self.services.embed_album(staged)
+        with closing(self.db.connect()) as db, db:
+            db.execute(
+                "UPDATE albums SET embedded_tracks=0,embedded_validation_status='unknown',"
+                "processed_at=NULL,selected_source=NULL,status='unprocessed',updated_at=? "
+                "WHERE album_key=?",
+                ("2026-01-01T00:00:00+00:00", self.row["album_key"]),
+            )
+
         reconciler = SQLiteReconciler(
             self.db,
             snapshot.parent,
             self.root / "music",
             start_scheduler=False,
+            album_validator=self.services.validate_album_embedding,
         )
         try:
             compared = reconciler.compare(
@@ -2195,15 +2232,21 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertEqual(applied["attempted"], applied["applied"])
             with closing(self.db.connect()) as db:
                 album = db.execute(
-                    "SELECT status,selected_source,processed_at,embedded_tracks,track_count "
+                    "SELECT status,selected_source,processed_at,embedded_tracks,track_count,"
+                    "embedded_validation_status "
                     "FROM albums WHERE album_key=?",
                     (self.row["album_key"],),
                 ).fetchone()
                 album_count = db.execute("SELECT count(*) FROM albums").fetchone()[0]
             self.assertEqual(album["status"], "processed")
-            self.assertEqual(album["selected_source"], "embed-queue")
+            self.assertEqual(album["selected_source"], "existing")
             self.assertTrue(album["processed_at"])
             self.assertEqual(album["embedded_tracks"], album["track_count"])
+            self.assertEqual(album["embedded_validation_status"], "verified")
+            self.assertEqual(applied["album_validation_retries"], 0)
+            self.assertEqual(
+                applied["album_validations"][0]["album_id"], self.row["album_key"]
+            )
             self.assertEqual(album_count, 1)
 
             repeated = reconciler.compare(
