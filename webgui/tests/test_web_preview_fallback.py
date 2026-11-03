@@ -171,14 +171,19 @@ class BrowserFallbackTests(unittest.TestCase):
             for folder in folders:
                 folder.mkdir()
             paths = [folder / "01 Track.mp3" for folder in folders]
-            covers = [folder / "cover.jpg" for folder in folders]
+            covers = [
+                folders[0] / "cover.jpg",
+                folders[1] / "cover.png",
+                folders[2] / "cover.webp",
+                folders[3] / "cover.jpg",
+            ]
             third = folders[1] / "02 Blue.mp3"
             uncredited = folders[1] / "03 Untagged.mp3"
             other_artist = folders[1] / "04 Other.mp3"
             for path in paths:
                 path.touch()
             for index, cover_path in enumerate(covers):
-                Image.new("RGB", (640 + index, 640 + index), "navy").save(cover_path, "JPEG")
+                Image.new("RGB", (640 + index, 640 + index), "navy").save(cover_path)
             third.touch()
             uncredited.touch()
             other_artist.touch()
@@ -202,9 +207,9 @@ class BrowserFallbackTests(unittest.TestCase):
                            "featured INTEGER, navidrome_album_id TEXT, song_paths_json TEXT)")
                 db.execute("INSERT INTO artists VALUES ('target', '3 Doors Down')")
                 db.executemany("INSERT INTO albums VALUES (?, ?, ?, ?, '2003', ?, ?)", [
-                    ("one", "COMP One", str(folders[0]), str(covers[0]), "", "various"),
-                    ("two", "COMP Two", str(folders[1]), str(covers[1]), None, "target"),
-                    ("three", "COMP Three", str(folders[2]), str(covers[2]), "", "various"),
+                    ("one", "COMP One", str(folders[0]), None, "", "various"),
+                    ("two", "COMP Two", str(folders[1]), None, None, "target"),
+                    ("three", "COMP Three", str(folders[2]), None, "", "various"),
                     ("identified", "Has Release ID", str(folders[3]), str(covers[3]), "release-id", "target"),
                 ])
                 db.executemany("INSERT INTO tracks VALUES (?, ?, ?, 'Track', ?)", [
@@ -239,9 +244,13 @@ class BrowserFallbackTests(unittest.TestCase):
                 {group["id"]: len(group["tracks"]) for group in summary},
                 {"one": 1, "two": 3, "three": 1},
             )
-            self.assertTrue(summary[0]["cover"].startswith("/api/image/p."))
-            self.assertEqual(app.image_bytes(summary[0]["cover"]), covers[0].read_bytes())
-            self.assertNotIn("/api/fallback/thumbnail", summary[0]["cover"])
+            summary_by_id = {group["id"]: group for group in summary}
+            for album_id, expected in zip(("one", "two", "three"), covers[:3]):
+                self.assertEqual(
+                    summary_by_id[album_id]["cover"],
+                    "/api/album/thumbnail?id=" + album_id,
+                )
+                self.assertEqual(app.album_thumbnail(album_id), expected)
             with Image.open(BytesIO(app.fallback_thumbnail("one", "first"))) as thumbnail:
                 self.assertEqual(thumbnail.size, (1200, 1200))
             report_by_id = {group["id"]: group for group in report}
@@ -309,7 +318,7 @@ class BrowserFallbackTests(unittest.TestCase):
             self.assertNotIn("/api/fallback/thumbnail", projected["cover"])
             self.assertEqual(len(app.albums("", False)), 3)
 
-    def test_comp_card_uses_embedded_thumbnail_when_cover_file_is_absent(self) -> None:
+    def test_fallback_card_does_not_substitute_embedded_track_art_for_cover(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
             folder = root / "Billboard"
@@ -337,7 +346,7 @@ class BrowserFallbackTests(unittest.TestCase):
                 db.commit()
             app = PreviewApp(root, database, root, root)
             projected = app.albums("", True)[0]
-            self.assertEqual(projected["cover"], "/api/fallback/thumbnail?id=comp&key=track")
+            self.assertIsNone(projected["cover"])
             body = app.fallback_thumbnail("comp", "track")
             with Image.open(BytesIO(body)) as opened:
                 self.assertEqual((opened.format, opened.size), ("PNG", (1200, 1200)))
