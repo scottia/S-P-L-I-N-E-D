@@ -99,10 +99,13 @@ and `<scan.cache_dir>\splined.db` keep their established responsibilities.
 Credentials are not written into Config v5, SQLite, logs, or backups unless the
 operator explicitly selects credentials for a protected `.spl` export.
 
-Cross-client Album artwork coordination is optional. Set
-`SPLINED_COORDINATION_DATABASE_URL` to the same PostgreSQL service used by the
-WebGUI before starting Windows. The URL is process configuration only: it is
-not written to Config v5, SQLite, logs, SNAPs, or diagnostics. With no value,
+Cross-client Album artwork coordination is optional. In **Settings →
+Connections**, save and test **Album Coordination** against the same PostgreSQL
+service used by WebGUI, then restart Windows once to start the worker. The
+server, username, and password stay in the protected credential directory;
+they are not written to Config v5, SQLite, logs, SNAPs, or diagnostics.
+`SPLINED_COORDINATION_DATABASE_URL` remains an environment override for
+managed launches and automated testing. With neither source configured,
 Windows retains normal standalone behavior. Verified Windows writes are still
 queued durably in SQLite if a configured service is temporarily unavailable.
 Use TLS and a narrowly permitted PostgreSQL account for non-loopback service

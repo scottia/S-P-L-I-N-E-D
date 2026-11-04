@@ -3419,23 +3419,24 @@ export component AppWindow inherits Window {
                                 }
                                 if root.settings-section == "Connections": VerticalLayout { spacing: 6px;
                                 SettingsHelpTip { summary: "Does Test enable artwork search?"; detail: "No. Test checks the provider connection (Navidrome uses a live OpenSubsonic ping). Credentials are stored in separate provider JSON files. To include a connected service in candidate search, also enable it and save Artwork Sources."; }
-                                Heading { text: "Source Provider Credentials"; height: 27px; }
+                                Heading { text: "Provider & Album Coordination Credentials"; height: 27px; }
                                 HorizontalLayout { height: 36px; spacing: 8px;
                                     Label { text: "Provider"; width: 220px; }
-                                    ComboBox { horizontal-stretch: 1; model: ["Navidrome", "Fanart.tv", "Last.fm", "Discogs", "MusicBrainz OAuth"]; current-value <=> root.credential-provider; selected(value) => root.load-credential(value); }
+                                    ComboBox { horizontal-stretch: 1; model: ["Navidrome", "Fanart.tv", "Last.fm", "Discogs", "MusicBrainz OAuth", "Album Coordination"]; current-value <=> root.credential-provider; selected(value) => root.load-credential(value); }
                                 }
                                 if root.credential-provider == "Navidrome": SettingField { label: "Server Name"; value <=> root.credential-server-name; hint: "SPLINED · shown in Navidrome logs"; }
-                                if root.credential-provider == "Navidrome": SettingField { label: "Server URL"; value <=> root.credential-server; hint: "https://music.example"; }
-                                HorizontalLayout { height: 36px; spacing: 8px;
+                                if root.credential-provider == "Navidrome" || root.credential-provider == "Album Coordination": SettingField { label: root.credential-provider == "Album Coordination" ? "PostgreSQL Server URL" : "Server URL"; value <=> root.credential-server; hint: root.credential-provider == "Album Coordination" ? "postgresql://host:5432/database" : "https://music.example"; }
+                                if root.credential-provider != "Album Coordination": HorizontalLayout { height: 36px; spacing: 8px;
                                     Label { text: "Authentication"; width: 220px; }
                                     ComboBox { horizontal-stretch: 1; model: ["password", "api_key"]; current-value <=> root.credential-auth; }
                                 }
-                                SettingField { label: "Username"; value <=> root.credential-username; hint: "Optional"; }
-                                SettingField { label: "API key / Client ID"; value <=> root.credential-identifier; hint: "Optional"; }
+                                SettingField { label: "Username"; value <=> root.credential-username; hint: root.credential-provider == "Album Coordination" ? "PostgreSQL user" : "Optional"; }
+                                if root.credential-provider != "Album Coordination": SettingField { label: "API key / Client ID"; value <=> root.credential-identifier; hint: "Optional"; }
                                 HorizontalLayout { height: 34px; spacing: 8px;
-                                    Label { text: "Password / token"; width: 220px; }
+                                    Label { text: root.credential-provider == "Album Coordination" ? "PostgreSQL Password" : "Password / token"; width: 220px; }
                                     LineEdit { text <=> root.credential-secret; input-type: InputType.password; horizontal-stretch: 1; }
                                 }
+                                if root.credential-provider == "Album Coordination": SettingsHelpTip { summary: "What does Album Coordination connect?"; detail: "Optional. Use the same PostgreSQL database as WebGUI. A successful write or embed then persists the opposing-app grayscale thumbnail and red frame across normal Windows restarts. The password stays in the protected credential directory, not Config v5 or SQLite."; }
                                 Text { text: root.credential-status; color: root.credential-status.starts-with("Connected") ? #55d790 : #f1c458; wrap: word-wrap; height: 42px; }
                                 HorizontalLayout { height: 36px; spacing: 6px;
                                     Button { text: "Reload"; clicked => root.load-credential(root.credential-provider); }

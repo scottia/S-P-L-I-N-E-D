@@ -21,7 +21,9 @@ use splined_core::candidate::{Candidate, StaticFormat};
 use splined_core::config::{
     Config, Mode, ScanTimeout, Verbosity, configured_samples_dir, configured_shared_artist_art_dir,
 };
-use splined_core::credential_store::{CredentialEditor, load_editor, save_editor, test_editor};
+use splined_core::credential_store::{
+    ALBUM_COORDINATION_PROVIDER, CredentialEditor, load_editor, save_editor, test_editor,
+};
 use splined_core::download::DownloadCache;
 use splined_core::embed_queue;
 use splined_core::embedded_artwork::{
@@ -3209,7 +3211,14 @@ fn start_album_coordination_worker(
         {
             app.album_override_writers = writers;
         }
-        coordination_database_url().map(|url| (database, url))
+        match coordination_database_url(&app.config) {
+            Ok(Some(url)) => Some((database, url)),
+            Ok(None) => None,
+            Err(error) => {
+                app.push_log(error);
+                None
+            }
+        }
     }) else {
         return stop;
     };
@@ -14003,6 +14012,7 @@ fn bind_service_callbacks(
                     identifier,
                     secret,
                 );
+                let album_coordination = editor.provider == ALBUM_COORDINATION_PROVIDER;
                 let result = state
                     .lock()
                     .map_err(|_| "The SPLINED application state is unavailable.".to_string())
@@ -14012,6 +14022,8 @@ fn bind_service_callbacks(
                 if let Some(ui) = weak.upgrade() {
                     ui.set_credential_status(SharedString::from(if protection_warning {
                         "Saved, but user-specific filesystem protection is unavailable on this storage location.".to_string()
+                    } else if result.is_ok() && album_coordination {
+                        "Saved securely. Restart SPLINED once to enable Album Coordination.".to_string()
                     } else if result.is_ok() {
                         "Saved securely. Use Test to verify live access.".to_string()
                     } else {

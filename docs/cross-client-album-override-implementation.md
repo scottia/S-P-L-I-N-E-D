@@ -1,7 +1,7 @@
 # Cross-client Album override implementation
 
-This implementation follows the visual contract reviewed separately in Draft
-PR #147. It adds a presentation-only last-successful-writer exchange between
+This implementation follows the visual contract merged through PR #147. It
+adds a presentation-only last-successful-writer exchange between
 the Windows SQLite application and the WebGUI PostgreSQL application.
 
 ## Contract
@@ -35,8 +35,11 @@ Both clients retry idempotently. A delayed older event is acknowledged but does
 not replace the newer writer. Coordination never changes synchronized catalog
 fields and is not included in reconciliation classification or Apply.
 
-Windows enables the optional connection with
-`SPLINED_COORDINATION_DATABASE_URL`. WebGUI uses its existing PostgreSQL
+Windows enables the optional connection with the protected **Album
+Coordination** credential under Settings → Connections. The credential survives
+a normal application restart while keeping its password outside Config v5 and
+SQLite. `SPLINED_COORDINATION_DATABASE_URL` remains a process-environment
+override for managed launches and tests. WebGUI uses its existing PostgreSQL
 connection. LISTEN/NOTIFY is not required: both clients poll the durable row at
 a short interval, so service and client restarts recover from stored state.
 

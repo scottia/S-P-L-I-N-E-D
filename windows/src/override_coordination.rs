@@ -4,6 +4,8 @@
 //! last successful artwork writer so each client can render the opposing-
 //! writer indicator. No operation here locks, approves, or changes an Album.
 
+use crate::config::Config;
+use crate::credential_store::load_album_coordination_database_url;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use sqlx::{PgPool, Row, postgres::PgPoolOptions};
 use std::collections::HashMap;
@@ -210,11 +212,21 @@ pub fn effective_writers(database_path: &Path) -> Result<HashMap<String, String>
         .collect())
 }
 
-pub fn coordination_database_url() -> Option<String> {
-    std::env::var("SPLINED_COORDINATION_DATABASE_URL")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| value.starts_with("postgres://") || value.starts_with("postgresql://"))
+pub fn coordination_database_url(config: &Config) -> Result<Option<String>, String> {
+    if let Ok(value) = std::env::var("SPLINED_COORDINATION_DATABASE_URL") {
+        let value = value.trim().to_string();
+        if value.is_empty() {
+            return load_album_coordination_database_url(config);
+        }
+        if !value.starts_with("postgres://") && !value.starts_with("postgresql://") {
+            return Err(
+                "SPLINED_COORDINATION_DATABASE_URL must use postgres:// or postgresql://."
+                    .to_string(),
+            );
+        }
+        return Ok(Some(value));
+    }
+    load_album_coordination_database_url(config)
 }
 
 pub async fn connect_pool(url: &str) -> Result<PgPool, String> {
@@ -389,7 +401,7 @@ mod tests {
 
     #[tokio::test]
     async fn postgres_round_trip_transfers_last_writer_when_test_database_is_configured() {
-        let Some(url) = coordination_database_url() else {
+        let Some(url) = coordination_database_url(&Config::default()).unwrap() else {
             return;
         };
         let directory = tempfile::tempdir().unwrap();
