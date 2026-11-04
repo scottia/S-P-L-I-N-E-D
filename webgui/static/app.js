@@ -601,7 +601,7 @@ function albumCardState(album, artist) {
   const missingArtist = !artist?.portrait;
   const bypassed = status === "bypassed" || status === "artistBypass";
   const incomplete = fallback ? album.fallback_complete === false
-    : status === "incomplete" || status === "partial" || status === "unprocessed";
+    : status === "incomplete" || status === "partial";
   const processed = status === "processed" || status === "artistComplete";
   const embeddedValidation = String(album.embedded_validation || "unknown").toLowerCase();
   const embeddedKnown = embeddedValidation === "verified";

@@ -155,6 +155,8 @@ class ReportedDefectTests(unittest.TestCase):
         self.assertIn('["COMP track rows", [', application)
         self.assertIn("grid-template-columns:repeat(4,minmax(0,1fr))", styles)
         self.assertIn(": processed ? frames.in_process.color : mediaStatusColor(status)", application)
+        self.assertIn(': status === "incomplete" || status === "partial";', application)
+        self.assertNotIn('status === "partial" || status === "unprocessed"', application)
 
     def test_comp_report_backfills_only_albums_in_selected_artist_scope(self):
         with TemporaryDirectory() as directory:
