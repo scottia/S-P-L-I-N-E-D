@@ -3,14 +3,15 @@
 
 use aes::Aes256;
 use base64::Engine;
-use cbc::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
-use hmac::{Hmac, Mac};
+use cbc::cipher::{BlockModeDecrypt, BlockModeEncrypt, KeyIvInit, block_padding::Pkcs7};
+use hmac::{Hmac, KeyInit, Mac};
 use pbkdf2::pbkdf2_hmac;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use sha1_legacy::Sha1;
-use sha2_legacy::{Digest, Sha256};
+use sha1::Sha1;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::config::{Config, configured_shared_artist_art_dir};
@@ -359,7 +360,12 @@ fn sha256_file(path: &Path) -> Result<String, String> {
         }
         digest.update(&buffer[..read]);
     }
-    Ok(format!("{:x}", digest.finalize()))
+    let digest = digest.finalize();
+    let mut encoded = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    Ok(encoded)
 }
 
 /// Include managed V/A and soundtrack Artist Art inside the standalone SQLite
@@ -483,7 +489,11 @@ fn create_sqlite_snapshot(source_path: &Path) -> Result<(tempfile::TempDir, Path
             )
         })?;
     source
-        .backup(MAIN_DB, &snapshot_path, None)
+        .backup(
+            MAIN_DB,
+            &snapshot_path,
+            None::<fn(rusqlite::backup::Progress)>,
+        )
         .map_err(|error| format!("Unable to create the SQLite snapshot: {error}"))?;
     validate_sqlite_backup(&snapshot_path)?;
     Ok((temporary, snapshot_path))
@@ -630,7 +640,7 @@ fn restore_sqlite_snapshot(source_path: &Path, destination: &Path) -> Result<(),
     let source = Connection::open_with_flags(source_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|error| format!("Unable to open SQLite backup for restore: {error}"))?;
     source
-        .backup(MAIN_DB, destination, None)
+        .backup(MAIN_DB, destination, None::<fn(rusqlite::backup::Progress)>)
         .map_err(|error| format!("Unable to restore the SQLite snapshot: {error}"))?;
     validate_sqlite_backup(destination)
 }
@@ -878,7 +888,7 @@ fn protect(plain: &[u8], password: &str) -> Result<BackupEnvelope, String> {
     );
     let cipher = Aes256CbcEnc::new_from_slices(&key_material[..32], &iv)
         .map_err(|_| "Unable to initialize SPLINED backup encryption.".to_string())?
-        .encrypt_padded_vec_mut::<Pkcs7>(plain);
+        .encrypt_padded_vec::<Pkcs7>(plain);
     let mut authenticated = Vec::with_capacity(iv.len() + cipher.len());
     authenticated.extend_from_slice(&iv);
     authenticated.extend_from_slice(&cipher);
@@ -931,7 +941,7 @@ fn unprotect(envelope: &BackupEnvelope, password: &str) -> Result<Vec<u8>, Strin
     }
     let result = Aes256CbcDec::new_from_slices(&key_material[..32], &iv)
         .map_err(|_| "Unable to initialize SPLINED backup decryption.".to_string())?
-        .decrypt_padded_vec_mut::<Pkcs7>(&payload)
+        .decrypt_padded_vec::<Pkcs7>(&payload)
         .map_err(|_| "The backup password is incorrect or the backup is damaged.".to_string());
     key_material.fill(0);
     result
