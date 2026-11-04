@@ -155,7 +155,9 @@ class ReportedDefectTests(unittest.TestCase):
         self.assertIn('["COMP track rows", [', application)
         self.assertIn("grid-template-columns:repeat(4,minmax(0,1fr))", styles)
         self.assertIn(": processed ? frames.in_process.color : mediaStatusColor(status)", application)
-        self.assertIn('status === "partial" || status === "unprocessed"', application)
+        self.assertIn('const staleUnprocessed = overridden && status === "unprocessed"', application)
+        self.assertIn('status === "partial" || (!overridden && status === "unprocessed")', application)
+        self.assertIn('if (!staleUnprocessed && (missingCover || incomplete))', application)
 
     def test_comp_report_backfills_only_albums_in_selected_artist_scope(self):
         with TemporaryDirectory() as directory:

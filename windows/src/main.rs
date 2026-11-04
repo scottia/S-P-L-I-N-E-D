@@ -19437,6 +19437,15 @@ fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRo
         .filter_map(|index| state.library.albums.get(index))
         .map(|album| {
             let snapshot = &album.snapshot;
+            let overridden = state
+                .album_override_writers
+                .get(&snapshot.album_key.to_ascii_lowercase())
+                .is_some_and(|writer| writer.eq_ignore_ascii_case("webgui"));
+            // An opposing successful write proves that a local New/no-cover
+            // presentation is stale. It replaces only that red Missing dot;
+            // every other independent status indicator remains authoritative.
+            let stale_unprocessed =
+                overridden && album.state == splined_core::application::AlbumState::New;
             let group = artist_overview_sort_group(state, album);
             let separator_before = previous_group.is_some_and(|previous| previous != group);
             previous_group = Some(group);
@@ -19598,13 +19607,15 @@ fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRo
                 "Bypassed Album".to_string(),
             );
             add_bullet(
-                missing_album_art,
+                missing_album_art && !stale_unprocessed,
                 Color::from_rgb_u8(255, 82, 104),
                 "Missing Album Art".to_string(),
             );
             add_bullet(
-                incomplete
-                    || (fallback && fallback_progress.is_some_and(|(done, total)| done < total)),
+                !stale_unprocessed
+                    && (incomplete
+                        || (fallback
+                            && fallback_progress.is_some_and(|(done, total)| done < total))),
                 Color::from_rgb_u8(255, 82, 104),
                 if fallback {
                     "Selected Artist's COMP tracks incomplete"
@@ -19658,10 +19669,6 @@ fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRo
                 }
                 .to_string(),
             );
-            let overridden = state
-                .album_override_writers
-                .get(&snapshot.album_key.to_ascii_lowercase())
-                .is_some_and(|writer| writer.eq_ignore_ascii_case("webgui"));
             let artwork_path = artist_album_card_artwork_path(state, snapshot);
             UiArtistAlbumRow {
                 key: SharedString::from(snapshot.album_key.clone()),
@@ -22875,6 +22882,70 @@ mod tests {
         assert_eq!(artist_overview_release_banners(&album), (false, true));
         album.album_mbid.clear();
         assert_eq!(artist_overview_release_banners(&album), (false, false));
+    }
+
+    #[test]
+    fn opposing_write_replaces_stale_unprocessed_red_dot() {
+        let snapshot = MediaSnapshot {
+            schema_version: splined_core::media_database::SCHEMA_VERSION,
+            database_path: "splined.db".to_string(),
+            canonical_root: "/music".to_string(),
+            local_root: r"C:\Music".to_string(),
+            albums: vec![MediaAlbumSnapshot {
+                album_key: "arrival".to_string(),
+                artist: "ABBA".to_string(),
+                tagged_artist: "ABBA".to_string(),
+                title: "Arrival".to_string(),
+                path: r"C:\Music\ABBA\Arrival".to_string(),
+                representative_file: String::new(),
+                status: "unprocessed".to_string(),
+                compilation: false,
+                compilation_track_art_eligible: false,
+                compilation_tracks: Vec::new(),
+                track_count: 10,
+                compilation_completed_tracks: 0,
+                release_year: "1976".to_string(),
+                artist_mbid: "artist-id".to_string(),
+                album_mbid: "release-id".to_string(),
+                release_group_mbid: String::new(),
+                has_local_artwork: false,
+                local_artwork_files: Vec::new(),
+                cover_path: String::new(),
+                cover_name: String::new(),
+                cover_format: String::new(),
+                cover_width: 0,
+                cover_height: 0,
+                root_files: 0,
+                cover_files: 0,
+                processed_at: None,
+                timeout_until: None,
+                selected_source: None,
+            }],
+        };
+        let mut app = ApplicationState::new(Config::default(), snapshot).unwrap();
+        app.library.focused_artist = Some("ABBA".to_string());
+        app.library
+            .artist_artwork_paths
+            .insert("abba".to_string(), r"C:\Music\ABBA\artist.jpg".to_string());
+
+        let normal = artist_overview_ui_model(&app).row_data(0).unwrap();
+        assert!(!normal.overridden);
+        assert!((0..normal.bullets.row_count()).any(|index| {
+            normal
+                .bullets
+                .row_data(index)
+                .is_some_and(|bullet| bullet.tip == "Missing Album Art")
+        }));
+
+        app.album_override_writers
+            .insert("arrival".to_string(), "webgui".to_string());
+        let overridden = artist_overview_ui_model(&app).row_data(0).unwrap();
+        assert!(overridden.overridden);
+        assert!(!(0..overridden.bullets.row_count()).any(|index| {
+            overridden.bullets.row_data(index).is_some_and(|bullet| {
+                bullet.tip == "Missing Album Art" || bullet.tip == "Incomplete / timed-out Album"
+            })
+        }));
     }
 
     #[test]
