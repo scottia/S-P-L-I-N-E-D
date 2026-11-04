@@ -71,6 +71,13 @@ Portable artifact instructions are distributed with the artifacts:
 format; it does not by itself guarantee that every release publishes that
 platform.
 
+## Planned cross-client UI behavior
+
+- [Cross-client Album override indicator](cross-client-album-override-visual-contract.md)
+  — proposed grayscale thumbnail, red frame in Album Status Key column 2,
+  separate Overridden count, and short Selected Artwork notice; **not yet
+  implemented**.
+
 ## Historical audits and unverified follow-ups
 
 These records preserve review evidence or work that still required validation.
