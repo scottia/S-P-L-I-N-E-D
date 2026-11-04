@@ -148,6 +148,10 @@ summary is:
   embedded-thumbnail conditions.
 - Card frames distinguish validation, completion, and confirmed embedded-art
   problems.
+- A red frame with a grayscale Album thumbnail means WebGUI performed the last
+  verified artwork write. Status dots, banner colors, text and all controls keep
+  their normal meanings. The independent **Overridden** count reports these
+  cards, and Selected Artwork shows **WebGUI override**.
 - **ARTIST**, **FEATURING**, **SOUNDTRACK**, **VARIOUS**, and **COMPILED**
   banners describe the Album's relationship to the selected Artist; they are
   not completion states.
@@ -157,6 +161,13 @@ summary is:
 More than one condition can be visible at once. For example, a completed COMP
 Album can retain a missing-Album-ID indicator because that missing ID is what
 makes it fallback work.
+
+Cross-client override presentation is a last-successful-writer notice, not a
+lock or error. Browsing, search, preview, enhancement and upscaling do not clear
+it. A successful Windows WRITE or EMBED returns the Windows card to normal and
+makes WebGUI show the opposing notice. Failed and cancelled work never changes
+the writer. Windows retains unsent notices in SQLite while PostgreSQL is
+unavailable and recovers them after reconnect.
 
 ### Arrange the workspace
 

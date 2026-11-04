@@ -99,6 +99,15 @@ and `<scan.cache_dir>\splined.db` keep their established responsibilities.
 Credentials are not written into Config v5, SQLite, logs, or backups unless the
 operator explicitly selects credentials for a protected `.spl` export.
 
+Cross-client Album artwork coordination is optional. Set
+`SPLINED_COORDINATION_DATABASE_URL` to the same PostgreSQL service used by the
+WebGUI before starting Windows. The URL is process configuration only: it is
+not written to Config v5, SQLite, logs, SNAPs, or diagnostics. With no value,
+Windows retains normal standalone behavior. Verified Windows writes are still
+queued durably in SQLite if a configured service is temporarily unavailable.
+Use TLS and a narrowly permitted PostgreSQL account for non-loopback service
+access.
+
 ## Application modules
 
 - `src/application.rs`: library views, filters, selection, candidate,
@@ -106,6 +115,8 @@ operator explicitly selects credentials for a protected `.spl` export.
 - `src/scan_controller.rs`: sequential in-process run orchestration, STOP, and
   decision flow.
 - `src/media_database.rs`: authoritative `splined.db` projection and updates.
+- `src/override_coordination.rs`: optional PostgreSQL last-writer exchange plus
+  the durable SQLite acknowledgement/outbox boundary.
 - `src/scan_runtime.rs`: real provider/artwork processing.
 - `src/settings.rs` and `src/credential_store.rs`: Config v5 and provider
   credential services.

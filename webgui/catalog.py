@@ -242,6 +242,25 @@ class Catalog:
                 return exact
         return None
 
+    @staticmethod
+    def _album_write_coordination(db, album_keys) -> dict[str, dict[str, object]]:
+        keys = [str(key) for key in album_keys if str(key).strip()]
+        if not keys:
+            return {}
+        placeholders = ",".join("?" for _ in keys)
+        try:
+            rows = db.execute(
+                "SELECT album_key,writer,operation,event_id,revision,completed_at "
+                "FROM album_artwork_write_coordination "
+                f"WHERE album_key IN ({placeholders})",
+                tuple(keys),
+            ).fetchall()
+        except Exception:
+            # Small SQLite fixtures and pre-migration disposable schemas do
+            # not carry the PostgreSQL coordination table.
+            return {}
+        return {str(row["album_key"]): dict(row) for row in rows}
+
     def allowed_image_path(self, source: Path) -> bool:
         return (
             inside(source, self.music)
@@ -1162,6 +1181,9 @@ class Catalog:
                 ("%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%",) * 2
                 + (1 if fallback_only else 0,),
             ).fetchall()
+            coordination = self._album_write_coordination(
+                db, (row["album_key"] for row in rows)
+            )
         items = []
         for row in rows:
             album_key = str(row["album_key"])
@@ -1179,6 +1201,9 @@ class Catalog:
                 "tracks": row["track_count"],
                 "status": row["status"], "compilation": bool(row["compilation"]),
                 "album_mbid": row["musicbrainz_albumid"] or "",
+                "override_writer": coordination.get(album_key, {}).get("writer", ""),
+                "override_operation": coordination.get(album_key, {}).get("operation", ""),
+                "override_revision": int(coordination.get(album_key, {}).get("revision", 0) or 0),
             })
         return items
 
@@ -1230,6 +1255,11 @@ class Catalog:
                 "ORDER BY tracks.title COLLATE NOCASE LIMIT 10",
                 tuple(alias_ids),
             ).fetchall()]
+            coordination = self._album_write_coordination(
+                db,
+                [row["album_key"] for row in primary_rows]
+                + [row["album_key"] for row in appearance_rows],
+            )
         featured_keys = set(appearance.get("featured_album_keys", set()))
         primary_keys = {str(row["album_key"]) for row in primary_rows}
         rows = [*primary_rows, *(row for row in appearance_rows if str(row["album_key"]) not in primary_keys)]
@@ -1252,6 +1282,7 @@ class Catalog:
             if not inside(folder, self.music):
                 continue
             cover = self.album_cover_path(row)
+            override = coordination.get(str(row["album_key"]), {})
             albums.append({
                 "id": row["album_key"], "name": row["album_name"],
                 "tracks": row["track_count"], "status": row["status"],
@@ -1275,6 +1306,9 @@ class Catalog:
                 "webp_found": bool(row["webp_found"]),
                 "cover_found": cover is not None,
                 "cover": self.image(cover),
+                "override_writer": override.get("writer", ""),
+                "override_operation": override.get("operation", ""),
+                "override_revision": int(override.get("revision", 0) or 0),
             })
         return {
             "id": artist["artist_key"], "name": artist["artist_name"],
@@ -1300,6 +1334,7 @@ class Catalog:
             track_titles = [item["title"] for item in db.execute(
                 "SELECT title FROM tracks WHERE album_key=? ORDER BY path LIMIT 12", (album_id,),
             ).fetchall()]
+            override = self._album_write_coordination(db, [album_id]).get(album_id, {})
         if row is None:
             raise KeyError("Album not found")
         folder = Path(row["path"])
@@ -1324,6 +1359,9 @@ class Catalog:
                 if "embedded_validation_status" in row else "unknown",
             "cover": self.image(cover), "cover_meta": image_metadata(cover) if cover and cover.is_file() else None,
             "candidates": candidates, "track_titles": track_titles,
+            "override_writer": override.get("writer", ""),
+            "override_operation": override.get("operation", ""),
+            "override_revision": int(override.get("revision", 0) or 0),
         }
 
     def fallback_tracks(self, album_id: str) -> list[dict[str, object]]:

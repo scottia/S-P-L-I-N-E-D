@@ -127,6 +127,28 @@ class ReportedDefectTests(unittest.TestCase):
         self.assertIn("metric: metadata", application)
         self.assertNotIn('"Artist " + state.artist.portrait_meta.width', application)
 
+    def test_cross_client_override_visual_contract_is_presentation_only(self):
+        repository = Path(__file__).parents[2]
+        static = repository / "webgui" / "static"
+        document = (static / "index.html").read_text(encoding="utf-8")
+        application = (static / "app.js").read_text(encoding="utf-8")
+        operations = (static / "operations.js").read_text(encoding="utf-8")
+        styles = (static / "app.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="overrideNotice" class="override-notice" hidden', document)
+        self.assertIn('"Overridden by opposing application"', application)
+        self.assertIn('"Windows override"', application)
+        self.assertIn('"Overridden"', application)
+        self.assertIn('albumOverrides: new Map()', application)
+        self.assertIn('/api/coordination/album-overrides', operations)
+        self.assertIn(
+            ".album-card.windows-card.opposing-override .album-card-picture img"
+            "{filter:grayscale(1)}",
+            styles,
+        )
+        self.assertNotIn(".opposing-override{filter:grayscale", styles)
+        self.assertIn('const frame = overridden ? "#ff344f"', application)
+
     def test_comp_report_backfills_only_albums_in_selected_artist_scope(self):
         with TemporaryDirectory() as directory:
             database_path = Path(directory) / "catalog.sqlite"
@@ -292,6 +314,10 @@ class ReportedDefectTests(unittest.TestCase):
             services.refresh_album = lambda *_args, **_kwargs: None
             recorded = []
             services.audit = lambda *args, **kwargs: recorded.append((args, kwargs))
+            services.record_album_write = lambda *_args: {
+                "durable": True,
+                "writer": "webgui",
+            }
 
             result = Services.write_cover.__wrapped__(services, {"album_id": "album-1"})
 
@@ -299,6 +325,7 @@ class ReportedDefectTests(unittest.TestCase):
             self.assertFalse((folder / "cover.jpg").exists())
             self.assertTrue((folder / "cover-(2).jpg").is_file())
             self.assertEqual(result["preserved"], ["cover-(2).jpg"])
+            self.assertEqual(result["coordination"]["writer"], "webgui")
             self.assertEqual(recorded[0][1]["request_status"], "verified")
 
 

@@ -83,6 +83,15 @@ Artist identities are canonicalized before the overview is rendered. Name varian
 
 Album status dots and frames follow the same meanings as Windows. PostgreSQL cover and embedded-track counts drive the current state, and a completed embedding job refreshes the visible cards without requiring the artist to be reselected. A grey **EMBED Batch** button means the album is already staged; it remains clickable and the queue prevents a duplicate job.
 
+When the Windows application completed the most recent verified artwork write
+for an Album, WebGUI renders only that Album thumbnail in grayscale with a red
+frame and shows **Windows override** in Selected Artwork. The status dots,
+banner, text, status calculations, candidates and previews remain unchanged.
+The independent red **Overridden** count reports these cards. A later successful
+WebGUI WRITE or EMBED returns the WebGUI card to its normal presentation and
+transfers the same indicator to Windows. Preview, selection, refresh, restart,
+failed work and cancelled work never claim ownership or clear the indicator.
+
 The Media Library Artist status uses the same owned/identified Album boundary as its Album count. A missing-ID COMP fallback remains track-scoped and cannot make a credited Artist partial/error; its progress stays on the COMP card and report. Compilation-tagged Albums with a valid MusicBrainz Release ID remain identified Albums and continue to count normally.
 3. **WRITE Cover** saves the prepared cover. **WRITE Artist Art** saves the chosen components. Read mode disables these music writes. **Upscale Preview** uses conventional Lanczos enlargement toward Ideal, capped by **Max Upscale Percent**; it is not an AI reconstruction. **Upscale Below Ideal** is on by default; turn it off to preserve actual source resolution. Writing remains explicit.
 4. **EMBED Batch** saves the prepared album cover and stages a verified snapshot for track embedding. It keeps the current workspace open. The **Album Track Embedding** button gains muted purple text, outline, and background while unfinished work exists.
@@ -123,8 +132,9 @@ metadata, and processing fields shared by both schemas only after deterministic
 identity/path comparison and explicit **Apply Safe Differences**. PostgreSQL-
 only job, Audit, validation, and browser fields are preserved. Ambiguous or
 unmapped entities remain visible conflicts, target-only rows are not deleted,
-and reconciliation is deferred while Album work is active. Avoid simultaneous
-media writers even though the databases are separate.
+and reconciliation is deferred while Album work is active. The optional
+cross-client artwork coordination row records only the last verified writer;
+it is not a lock, approval gate, catalog status or media synchronization.
 
 **Settings → Processing & Logs → Reconciliation Conflicts** provides a read-only, filterable view of the latest or selected reconciliation run. Entries are grouped by root Artist and can be filtered by entity, root cause, Album class, path, MBID, or text. Each entry compares the Windows SNAP value with PostgreSQL. The same report can be downloaded as standalone HTML or JSON; viewing or exporting it never applies a difference.
 

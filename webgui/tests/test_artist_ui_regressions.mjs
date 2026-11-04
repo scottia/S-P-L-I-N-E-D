@@ -122,7 +122,7 @@ const statusFunctions = between(
 );
 const albumSummaryFunctions = between(
   appSource,
-  "function albumCardState",
+  "function albumOverride",
   "function renderAlbumStatusKey",
 );
 const stageAllAlbumsFunction = between(
@@ -670,6 +670,7 @@ test("completed COMP work chains only within an explicit Artist scope", async ()
         : {pause_after_album: false, pause_all_albums: false},
       renderQueue() {}, refreshCompletedAlbum: async () => {}, refreshQueuedAlbumAfterSave: async () => {},
       renderHero() {}, renderReview() {}, renderJob: async () => {}, setStatus() {},
+      applyAlbumCoordination() { return false; },
       $: () => ({open: false}),
     });
     await context.pollJobs();
@@ -1272,10 +1273,12 @@ test("Artist Albums row reports shown, Completed, and in Process with status col
     {album_mbid: "release-2", status: "incomplete", cover_found: true, cover: "cover.jpg", tracks: 2, embedded: 0},
   ], artist);
 
-  assert.deepEqual(children.map(item => item.text), ["2 shown", "/", "1 Completed", "/", "1 in Process"]);
+  assert.deepEqual(children.map(item => item.text), [
+    "2 shown", "/", "1 Completed", "/", "1 in Process", "/", "Overridden", "0",
+  ]);
   assert.equal(styles["--album-complete-color"], "theme-complete");
   assert.equal(styles["--album-process-color"], "theme-process");
-  assert.equal(host["aria-label"], "2 Albums shown, 1 Completed, 1 in Process");
+  assert.equal(host["aria-label"], "2 Albums shown, 1 Completed, 1 in Process, 0 overridden by Windows");
 });
 
 test("Album cards keep unknown validation separate from confirmed missing thumbnails", () => {

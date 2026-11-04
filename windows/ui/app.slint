@@ -2,11 +2,11 @@ import { Button, ComboBox, LineEdit, ListView, Palette, ScrollView, TextEdit } f
 
 export struct UiLibraryRow { key: string, primary: string, secondary: string, status: string, icon: string, artwork: image, status-color: color, kind: string, depth: int, expanded: bool, selected: bool, eligible: bool, queue-locked: bool }
 export struct UiAlbumStatusBullet { color: color, tip: string }
-export struct UiArtistAlbumRow { key: string, title: string, display-title: string, year: string, artwork: image, status-color: color, selected: bool, bullets: [UiAlbumStatusBullet], check-embedded: bool, validating: bool, comp-loading: bool, processed: bool, fully-complete: bool, fallback: bool, fallback-complete: bool, featured: bool, soundtrack: bool, various-artists: bool, separator-before: bool, banner-display: string, banner-background: color, banner-frame: color, banner-letters: color, complete-frame: color, pending-frame: color, attention-frame: color, queue-locked: bool }
+export struct UiArtistAlbumRow { key: string, title: string, display-title: string, year: string, artwork: image, status-color: color, selected: bool, bullets: [UiAlbumStatusBullet], check-embedded: bool, validating: bool, comp-loading: bool, processed: bool, fully-complete: bool, fallback: bool, fallback-complete: bool, featured: bool, soundtrack: bool, various-artists: bool, separator-before: bool, banner-display: string, banner-background: color, banner-frame: color, banner-letters: color, complete-frame: color, pending-frame: color, attention-frame: color, queue-locked: bool, overridden: bool }
 export struct UiAdjustmentPresetRow { index: int, name: string, summary: string, saved: bool }
 export struct UiBannerThemeRow { key: string, name: string, background: color, frame: color, letters: color, at-baseline: bool }
 export struct UiAlbumFrameThemeRow { key: string, name: string, color: color, at-baseline: bool }
-export struct UiArtistOverviewLegendCounts { shown: int, completed: int, in-process: int, validating: int, red-dots: int, yellow-dots: int, orange-dots: int, green-dots: int, purple-dots: int, blue-dots: int, green-frames: int, orange-purple-frames: int, green-purple-frames: int, comp-pending: int, comp-complete: int, feat: int, ost: int, various: int, artist: int, track-blue: int, track-green: int, track-purple: int }
+export struct UiArtistOverviewLegendCounts { shown: int, completed: int, in-process: int, validating: int, overridden: int, red-dots: int, yellow-dots: int, orange-dots: int, green-dots: int, purple-dots: int, blue-dots: int, green-frames: int, orange-purple-frames: int, green-purple-frames: int, comp-pending: int, comp-complete: int, feat: int, ost: int, various: int, artist: int, track-blue: int, track-green: int, track-purple: int }
 export struct UiSimilarArtistRow { name: string, artwork: image, available: bool }
 export struct UiCompilationTrackRow { album-key: string, path: string, file-name: string, status-color: color, completed: bool, selected: bool }
 export struct UiCompilationReportRow { album-key: string, album-title: string, path: string, file-name: string, status: string, album-header: bool, expanded: bool }
@@ -377,12 +377,12 @@ component ArtistAlbumCard inherits Rectangle {
     }
     VerticalLayout {
         Rectangle {
-            property <bool> mixed-embedded-outline: !root.item.fully-complete && root.item.check-embedded && (root.item.processed || (root.item.fallback && root.item.fallback-complete));
+            property <bool> mixed-embedded-outline: !root.item.overridden && !root.item.fully-complete && root.item.check-embedded && (root.item.processed || (root.item.fallback && root.item.fallback-complete));
             property <bool> green-purple-outline: root.item.fallback && root.item.fallback-complete && self.mixed-embedded-outline;
             clip: true;
             border-radius: 7px;
             border-width: self.mixed-embedded-outline ? 0px : 2px;
-            border-color: root.item.comp-loading || root.item.validating ? AppTheme.cyan : (root.item.fully-complete ? root.item.complete-frame : (root.item.check-embedded ? root.item.attention-frame : (root.item.processed ? root.item.pending-frame : root.item.status-color)));
+            border-color: root.item.overridden ? #ff344f : (root.item.comp-loading || root.item.validating ? AppTheme.cyan : (root.item.fully-complete ? root.item.complete-frame : (root.item.check-embedded ? root.item.attention-frame : (root.item.processed ? root.item.pending-frame : root.item.status-color))));
             background: self.mixed-embedded-outline ? (self.green-purple-outline ? @linear-gradient(135deg, root.item.complete-frame, root.item.attention-frame, root.item.complete-frame) : @linear-gradient(135deg, root.item.attention-frame, root.item.pending-frame, root.item.attention-frame)) : (album-touch.has-hover ? AppTheme.card-hover : AppTheme.card);
             if self.mixed-embedded-outline: Rectangle {
                 x: 2px; y: 2px; width: parent.width - 4px; height: parent.height - 4px;
@@ -1485,6 +1485,7 @@ export component AppWindow inherits Window {
     in property <string> selected-artwork-embedded-info;
     in property <bool> selected-artwork-webp-needs-still: false;
     in property <bool> selected-artwork-webp-static-footer: false;
+    in property <string> selected-artwork-override-notice;
     in property <bool> selected-artwork-embed-available: false;
     in property <bool> artist-artwork-mode: false;
     in property <bool> selected-artwork-artist-overview: false;
@@ -2338,12 +2339,15 @@ export component AppWindow inherits Window {
                                                             Text { text: root.artist-overview-legend-counts.completed + " Completed"; color: AppTheme.green; font-size: artist-scroll.visible-width < 520px ? 12px : 14px; font-weight: 800; vertical-alignment: center; }
                                                             Text { text: "/"; color: AppTheme.foreground; font-size: artist-scroll.visible-width < 520px ? 12px : 14px; vertical-alignment: center; }
                                                             Text { text: root.artist-overview-legend-counts.in-process + " in Process"; color: #efa54e; font-size: artist-scroll.visible-width < 520px ? 12px : 14px; font-weight: 800; vertical-alignment: center; }
+                                                            Text { text: "/"; color: AppTheme.foreground; font-size: artist-scroll.visible-width < 520px ? 12px : 14px; vertical-alignment: center; }
+                                                            Text { text: "Overridden"; color: #ff344f; font-size: artist-scroll.visible-width < 520px ? 12px : 14px; font-weight: 800; vertical-alignment: center; }
+                                                            Text { text: root.artist-overview-legend-counts.overridden; color: AppTheme.secondary-foreground; font-size: artist-scroll.visible-width < 520px ? 12px : 14px; font-weight: 800; vertical-alignment: center; }
                                                             if root.artist-overview-legend-counts.validating > 0: Text { text: "/"; color: AppTheme.foreground; font-size: artist-scroll.visible-width < 520px ? 12px : 14px; vertical-alignment: center; }
                                                             if root.artist-overview-legend-counts.validating > 0: Text { text: root.artist-overview-legend-counts.validating + " Validating"; color: AppTheme.cyan; font-size: artist-scroll.visible-width < 520px ? 12px : 14px; font-weight: 800; vertical-alignment: center; }
                                                         }
                                                         Rectangle { horizontal-stretch: 1; background: transparent; }
                                                     }
-                                                    if root.artist-status-help-visible: Rectangle { width: min(parent.width, 1240px); horizontal-stretch: 0; height: 315px; background: #000000; border-radius: 6px; border-color: AppTheme.cyan; border-width: 1px;
+                                                    if root.artist-status-help-visible: Rectangle { width: min(parent.width, 1240px); horizontal-stretch: 0; height: 349px; background: #000000; border-radius: 6px; border-color: AppTheme.cyan; border-width: 1px;
                                                         VerticalLayout { padding: 9px; spacing: 0px;
                                                             Text { text: "Album Status Key"; color: AppTheme.cyan; font-size: 14px; font-weight: 800; height: 21px; }
                                                             Rectangle { height: 7px; background: transparent; }
@@ -2385,6 +2389,8 @@ export component AppWindow inherits Window {
                                                                         Text { text: root.artist-overview-legend-counts.green-purple-frames; color: AppTheme.foreground; font-size: 13px; width: 32px; horizontal-alignment: right; }
                                                                     }
                                                                     Text { text: "COMP tracks done; thumbnail check"; color: AppTheme.foreground; font-size: 13px; height: 17px; }
+                                                                    ArtistLegendCountRow { label: "Red"; label-color: #ff344f; count: root.artist-overview-legend-counts.overridden; }
+                                                                    Text { text: "Overridden by opposing application"; color: AppTheme.foreground; font-size: 13px; height: 17px; }
                                                                 }
                                                                 VerticalLayout { spacing: 0px; horizontal-stretch: 1;
                                                                     Text { text: "BANNERS"; color: AppTheme.secondary-foreground; font-size: 13px; font-weight: 800; height: 20px; }
@@ -2899,6 +2905,7 @@ export component AppWindow inherits Window {
                                 }
                                 if root.selected-artwork-webp-needs-still && !root.animated-webp-active: Text { text: "cover.webp → WRITE Cover creates cover.jpg; WebP stays."; color: AppTheme.blue; font-size: 12px; height: 17px; overflow: elide; }
                                 if root.selected-artwork-comp: Text { text: root.selected-artwork-embedded-target; color: AppTheme.cyan; font-size: 12px; height: 17px; overflow: elide; }
+                                if root.selected-artwork-override-notice != "": Text { text: root.selected-artwork-override-notice; color: #ff344f; font-size: 12px; font-weight: 800; height: 17px; overflow: elide; }
                             }
                         }
                     }

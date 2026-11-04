@@ -41,6 +41,9 @@ use splined_core::media_database::{
     record_album_outcome_from_runtime, save_artist_art_identity,
 };
 use splined_core::musicbrainz::{ArtistLookup, ArtistSearchHit, MusicBrainzClient};
+use splined_core::override_coordination::{
+    connect_pool, coordination_database_url, effective_writers, synchronize,
+};
 use splined_core::range::Range;
 use splined_core::safe_write::{
     cleanup_stale_audio_stages, replace_binary_file, take_credential_protection_warning,
@@ -3155,6 +3158,111 @@ fn storage_usage_text(config: &Config) -> (String, String) {
     (cache, database)
 }
 
+fn start_album_coordination_worker(
+    ui: &AppWindow,
+    state: Arc<Mutex<ApplicationState>>,
+) -> Arc<AtomicBool> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let Some((database, database_url)) = state.lock().ok().and_then(|mut app| {
+        let database = splined_core::media_database::database_path(&app.config.scan.cache_dir);
+        if database.is_file()
+            && let Ok(writers) = effective_writers(&database)
+        {
+            app.album_override_writers = writers;
+        }
+        coordination_database_url().map(|url| (database, url))
+    }) else {
+        return stop;
+    };
+    let weak = ui.as_weak();
+    let worker_state = Arc::clone(&state);
+    let worker_stop = Arc::clone(&stop);
+    std::thread::spawn(move || {
+        let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        else {
+            return;
+        };
+        runtime.block_on(async move {
+            let mut pool = None;
+            let mut connection_warning = false;
+            while !worker_stop.load(Ordering::Relaxed) {
+                if let Ok(writers) = effective_writers(&database) {
+                    let changed = worker_state.lock().is_ok_and(|mut app| {
+                        if app.album_override_writers == writers {
+                            false
+                        } else {
+                            app.album_override_writers = writers;
+                            true
+                        }
+                    });
+                    if changed {
+                        let target_weak = weak.clone();
+                        let refresh_state = Arc::clone(&worker_state);
+                        let _ = slint::invoke_from_event_loop(move || {
+                            refresh_weak(&target_weak, &refresh_state)
+                        });
+                    }
+                }
+                if pool.is_none() {
+                    match connect_pool(&database_url).await {
+                        Ok(connected) => {
+                            pool = Some(connected);
+                            connection_warning = false;
+                        }
+                        Err(_) if !connection_warning => {
+                            connection_warning = true;
+                            if let Ok(mut app) = worker_state.lock() {
+                                app.push_log("Album coordination is offline; successful Windows notifications remain queued locally.".to_string());
+                            }
+                        }
+                        Err(_) => {}
+                    }
+                }
+                if let Some(connected) = pool.as_ref() {
+                    match synchronize(connected, &database).await {
+                        Ok(writers) => {
+                            connection_warning = false;
+                            let changed = worker_state.lock().is_ok_and(|mut app| {
+                                if app.album_override_writers == writers {
+                                    false
+                                } else {
+                                    app.album_override_writers = writers;
+                                    true
+                                }
+                            });
+                            if changed {
+                                let target_weak = weak.clone();
+                                let refresh_state = Arc::clone(&worker_state);
+                                let _ = slint::invoke_from_event_loop(move || {
+                                    refresh_weak(&target_weak, &refresh_state)
+                                });
+                            }
+                        }
+                        Err(_) => {
+                            pool = None;
+                            if !connection_warning {
+                                connection_warning = true;
+                                if let Ok(mut app) = worker_state.lock() {
+                                    app.push_log("Album coordination disconnected; successful Windows notifications remain queued locally.".to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+                for _ in 0..10 {
+                    if worker_stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+        });
+    });
+    stop
+}
+
 fn main() -> Result<(), slint::PlatformError> {
     // The software renderer is deliberately selected on Windows. It avoids
     // multi-window OpenGL context loss that previously produced white frames
@@ -3490,6 +3598,8 @@ fn main() -> Result<(), slint::PlatformError> {
     if embed_queue_stop.is_some() {
         sync_ui(&ui, &state);
     }
+    let album_coordination_stop = start_album_coordination_worker(&ui, Arc::clone(&state));
+    sync_ui(&ui, &state);
     if !setup_required {
         let check_config = state.lock().ok().map(|app| app.config.clone());
         if let Some(check_config) = check_config {
@@ -4230,6 +4340,7 @@ fn main() -> Result<(), slint::PlatformError> {
     }
 
     let result = ui.run();
+    album_coordination_stop.store(true, Ordering::Relaxed);
     if let Some(stop) = embed_queue_stop {
         stop.store(true, Ordering::Relaxed);
     }
@@ -4297,6 +4408,7 @@ fn normalize_status_bar_size(value: &str) -> &'static str {
 }
 
 fn preserve_filter_state(replacement: &mut ApplicationState, previous: &ApplicationState) {
+    replacement.album_override_writers = previous.album_override_writers.clone();
     replacement.media_filter_locked = previous.media_filter_locked;
     replacement.candidate_filter_locked = previous.candidate_filter_locked;
     replacement.library.set_view(previous.library.view);
@@ -18589,6 +18701,17 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
             state.library.database_path.clone()
         },
     ));
+    let opposing_writer = state
+        .library
+        .focused_album_key
+        .as_ref()
+        .and_then(|key| state.album_override_writers.get(&key.to_ascii_lowercase()))
+        .is_some_and(|writer| writer.eq_ignore_ascii_case("webgui"));
+    ui.set_selected_artwork_override_notice(if opposing_writer {
+        "WebGUI override".into()
+    } else {
+        SharedString::default()
+    });
     ui.set_current_artist(SharedString::from(state.current_artist.clone()));
     ui.set_current_album(SharedString::from(state.current_album.clone()));
     ui.set_current_path(SharedString::from(preview_path));
@@ -18891,6 +19014,7 @@ fn theme_preview_album_row(state: &ApplicationState, target: &str) -> UiArtistAl
         pending_frame: frame_color("in_process", "#EFA54E"),
         attention_frame: frame_color("thumbnail", "#7C4DFF"),
         queue_locked: false,
+        overridden: false,
     }
 }
 
@@ -19495,12 +19619,17 @@ fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRo
                 }
                 .to_string(),
             );
+            let overridden = state
+                .album_override_writers
+                .get(&snapshot.album_key.to_ascii_lowercase())
+                .is_some_and(|writer| writer.eq_ignore_ascii_case("webgui"));
+            let artwork_path = artist_album_card_artwork_path(state, snapshot);
             UiArtistAlbumRow {
                 key: SharedString::from(snapshot.album_key.clone()),
                 title: SharedString::from(snapshot.title.clone()),
                 display_title: SharedString::from(artist_album_card_display_title(&snapshot.title)),
                 year: SharedString::from(snapshot.release_year.clone()),
-                artwork: load_scaled_image(&artist_album_card_artwork_path(state, snapshot), 192),
+                artwork: load_album_card_image(&artwork_path, 192, overridden),
                 status_color: if fully_complete {
                     Color::from_rgb_u8(50, 221, 160)
                 } else if featured && fallback_complete {
@@ -19534,6 +19663,7 @@ fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRo
                 queue_locked: state
                     .embed_locked_album_paths
                     .contains(&snapshot.path.to_lowercase()),
+                overridden,
             }
         })
         .collect::<Vec<_>>();
@@ -19550,12 +19680,18 @@ fn artist_overview_legend_counts(
             continue;
         };
         counts.shown += 1;
+        if album.overridden {
+            counts.overridden += 1;
+        }
         if album.validating {
             counts.validating += 1;
         } else if album.fully_complete {
             counts.completed += 1;
-            counts.green_frames += 1;
+            if !album.overridden {
+                counts.green_frames += 1;
+            }
         } else if album.check_embedded
+            && !album.overridden
             && (album.processed || (album.fallback && album.fallback_complete))
         {
             if album.fallback && album.fallback_complete {
@@ -21208,6 +21344,63 @@ fn load_image(path: &str) -> slint::Image {
 
 fn load_scaled_image(path: &str, maximum_dimension: u32) -> slint::Image {
     load_image_with_maximum(path, Some(maximum_dimension.max(1)))
+}
+
+fn grayscale_rgba(pixels: &mut [u8]) {
+    for pixel in pixels.as_chunks_mut::<4>().0 {
+        let luminance = ((u32::from(pixel[0]) * 77
+            + u32::from(pixel[1]) * 150
+            + u32::from(pixel[2]) * 29)
+            >> 8) as u8;
+        pixel[0] = luminance;
+        pixel[1] = luminance;
+        pixel[2] = luminance;
+    }
+}
+
+fn load_album_card_image(path: &str, maximum_dimension: u32, grayscale: bool) -> slint::Image {
+    if !grayscale {
+        return load_scaled_image(path, maximum_dimension);
+    }
+    if path.trim().is_empty() {
+        return slint::Image::default();
+    }
+    let maximum_dimension = maximum_dimension.max(1);
+    let cache_key = format!("{path}\u{1f}{maximum_dimension}\u{1f}grayscale");
+    let Ok(metadata) = std::fs::metadata(path) else {
+        IMAGE_CACHE.with(|cache| cache.borrow_mut().remove(&cache_key));
+        return slint::Image::default();
+    };
+    let identity = (metadata.len(), metadata.modified().ok());
+    if let Some(image) = IMAGE_CACHE.with(|cache| {
+        cache
+            .borrow()
+            .get(&cache_key)
+            .filter(|cached| cached.identity == identity)
+            .map(|cached| cached.image.clone())
+    }) {
+        return image;
+    }
+    let Some(decoded) = decode_scaled_pixels(path, Some(maximum_dimension)) else {
+        return slint::Image::default();
+    };
+    let mut pixels = decoded.pixels.as_ref().to_vec();
+    grayscale_rgba(&mut pixels);
+    let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+        &pixels,
+        decoded.width,
+        decoded.height,
+    );
+    let image = slint::Image::from_rgba8(buffer);
+    cache_slint_image(
+        cache_key,
+        maximum_dimension,
+        CachedImage {
+            identity,
+            image: image.clone(),
+        },
+    );
+    image
 }
 
 fn load_cached_preview_image(path: &str, fallback_path: &str) -> slint::Image {

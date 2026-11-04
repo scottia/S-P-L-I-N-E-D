@@ -10,7 +10,7 @@ and incremental indexing.
 | Owner | Fields |
 |---|---|
 | Windows | Artist/Album/Track identity keys; paths; names and sort names; MusicBrainz IDs; release metadata; file inventory; cover inventory; processing, bypass and timeout state; created/updated/last-seen timestamps; source SPLINED version |
-| PostgreSQL/WebGUI | Album embedded-art validation count, validation status and validation timestamp; jobs; Audit; authentication; UI/session state |
+| PostgreSQL/WebGUI | Album embedded-art validation count, validation status and validation timestamp; jobs; Audit; authentication; UI/session state; cross-client last-successful artwork-writer coordination |
 | Derived presentation | Artist status and Album counters; Album status derived from authoritative processing/COMP evidence |
 
 The executable field lists live in `webgui/catalog_authority.py`. A managed
@@ -44,3 +44,18 @@ catalog projection. Reconciliation never copies physical media bytes.
 
 Standalone WebGUI installations with no `catalog_sync_authority` rows retain
 the existing insert, update, and stale-row cleanup behavior.
+
+## Cross-client artwork provenance
+
+`album_artwork_write_coordination` is a small PostgreSQL coordination surface,
+not a second catalog authority. A verified Windows or WebGUI Album artwork
+write publishes the canonical Album key, writer, operation, event identity and
+completion order. The other client renders that Album's thumbnail in grayscale
+with a red frame until it completes its own verified write. This provenance
+does not alter Album status, block either client, copy media bytes, or permit a
+WebGUI refresh to replace Windows-managed catalog fields.
+
+Windows mirrors acknowledged coordination rows in `splined.db` and keeps
+unsent Windows events in a durable SQLite outbox. WebGUI uses a durable cache
+outbox for the same transient-disconnection boundary. Replays are idempotent,
+and older delayed events cannot replace a newer successful writer.

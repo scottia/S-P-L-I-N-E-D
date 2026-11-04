@@ -74,6 +74,7 @@ const state = {
   embedQueue: [], queueControls: {pause_after_album: false, pause_all_albums: false}, queuedDecision: null, reviewJobState: "", listRequest: 0, selectionRequest: 0, searchRequest: 0,
   libraryLoading: false, artistMetadataRequest: 0,
   activeActionId: "", artistInfoExpanded: false,
+  albumOverrides: new Map(), albumOverrideRevision: 0,
   statusRevision: 0, statusType: "ready",
 };
 function applyGraphicalEnhancement(value) {
@@ -571,6 +572,28 @@ function albumPresentationGroup(album, artist) {
   const kind = albumBannerKind(album, artist);
   return {artist: 0, featuring: 1, soundtrack: 2, various: 3, compiled: 4}[kind] ?? 0;
 }
+function albumOverride(album) {
+  if (!album?.id) return null;
+  return state.albumOverrides.get(String(album.id)) || (album.override_writer ? {
+    album_key: album.id,
+    writer: album.override_writer,
+    operation: album.override_operation || "",
+    revision: Number(album.override_revision || 0),
+  } : null);
+}
+function applyAlbumCoordination(rows) {
+  if (!Array.isArray(rows)) return false;
+  const next = new Map(rows.map(row => [String(row.album_key), row]));
+  const changed = next.size !== state.albumOverrides.size
+    || [...next].some(([key, row]) => {
+      const prior = state.albumOverrides.get(key);
+      return !prior || prior.event_id !== row.event_id || prior.writer !== row.writer;
+    });
+  if (!changed) return false;
+  state.albumOverrides = next;
+  state.albumOverrideRevision = Math.max(0, ...rows.map(row => Number(row.revision || 0)));
+  return true;
+}
 function albumCardState(album, artist) {
   const status = mediaStatusKey(album);
   const fallback = !String(album.album_mbid || "").trim();
@@ -597,14 +620,16 @@ function albumCardState(album, artist) {
   if (checkEmbedded) dots.push(["#7c4dff", "Embedded thumbnail needs attention"]);
   if (album.webp_found) dots.push(["#3478ff", "cover.webp present"]);
   const frames = state.graphicalEnhancement.frame_styles;
-  const frame = fullyComplete ? frames.complete.color : checkEmbedded || status === "partial" ? frames.thumbnail.color
+  const overridden = albumOverride(album)?.writer === "windows";
+  const frame = overridden ? "#ff344f" : fullyComplete ? frames.complete.color : checkEmbedded || status === "partial" ? frames.thumbnail.color
     : processed ? frames.in_process.color : bypassed ? "#f4cc4d" : "#ff5268";
-  return {dots, frame, fullyComplete, checkEmbedded, embeddedPending, embeddedRetry};
+  return {dots, frame, fullyComplete, checkEmbedded, embeddedPending, embeddedRetry, overridden};
 }
 function renderAlbumCountSummary(albums, artist = state.artist) {
   const host = $("albumCount"); clear(host);
   const completed = albums.filter(album => albumCardState(album, artist).fullyComplete).length;
   const inProcess = albums.length - completed;
+  const overridden = albums.filter(album => albumCardState(album, artist).overridden).length;
   const frames = state.graphicalEnhancement.frame_styles;
   host.className = "album-count-summary";
   host.style.setProperty("--album-complete-color", frames.complete.color);
@@ -615,8 +640,11 @@ function renderAlbumCountSummary(albums, artist = state.artist) {
     node("span", "album-count-completed", `${completed} Completed`),
     node("span", "album-count-separator", "/"),
     node("span", "album-count-process", `${inProcess} in Process`),
+    node("span", "album-count-separator", "/"),
+    node("span", "album-count-overridden-label", "Overridden"),
+    node("span", "album-count-overridden", String(overridden)),
   );
-  host.setAttribute("aria-label", `${albums.length} Albums shown, ${completed} Completed, ${inProcess} in Process`);
+  host.setAttribute("aria-label", `${albums.length} Albums shown, ${completed} Completed, ${inProcess} in Process, ${overridden} overridden by Windows`);
 }
 function renderAlbumStatusKey(albums, artist) {
   const host = $("albumStatusKey"); clear(host);
@@ -625,7 +653,7 @@ function renderAlbumStatusKey(albums, artist) {
   const frames = state.graphicalEnhancement.frame_styles;
   const sections = [
     ["Status dots", [["Red", "Missing art or unfinished album", "#ff5268"], ["Yellow", "Artist art missing or bypassed", "#f4cc4d"], ["Orange", "Processed; review still pending", "#efa54e"], ["Green", "Artist and album art complete", "#32dda0"], ["Purple", "Embedded thumbnail needs attention (Windows validation)", "#7c4dff"], ["Blue", "cover.webp present", "#3478ff"]]],
-    ["Album card frames", [[frames.complete.name, "Complete", frames.complete.color], [frames.in_process.name, "Processed", frames.in_process.color], [frames.thumbnail.name, "Partial or error", frames.thumbnail.color], ["Missing", "Missing or incomplete", "#ff5268"]]],
+    ["Album card frames", [[frames.complete.name, "Complete", frames.complete.color], [frames.in_process.name, "Processed", frames.in_process.color], [frames.thumbnail.name, "Partial or error", frames.thumbnail.color], ["Missing", "Missing or incomplete", "#ff5268"], ["Red", "Overridden by opposing application", "#ff344f"]]],
     ["Banners", Object.entries(state.graphicalEnhancement.banner_styles).map(([key, style]) => [style.name, key === "compiled" ? "No release ID" : key === "artist" ? "Artist release" : key === "various" ? "Various Artists release" : key === "soundtrack" ? "Soundtrack release" : "Featured artist", style.letters, key])],
   ];
   for (const [title, rows] of sections) {
@@ -789,6 +817,7 @@ function renderHeroContents() {
     button.dataset.compAlbum = compIds.has(album.id) ? "true" : "false";
     button.disabled = compIds.has(album.id) && state.compReportLoading;
     const cardState = albumCardState(album, artist); button.style.setProperty("--frame-color", cardState.frame);
+    button.classList.toggle("opposing-override", cardState.overridden);
     button.setAttribute("aria-label", album.name + ", " + (album.year || "year unknown") + ", " + (album.status || "unprocessed"));
     const kind = albumBannerKind(album, artist), bannerStyle = albumBannerStyle(kind);
     const bannerNode = node("span", "album-type-banner", bannerStyle.name); bannerNode.style.setProperty("--banner-bg", bannerStyle.background); bannerNode.style.setProperty("--banner-ink", bannerStyle.letters); bannerNode.style.borderColor = bannerStyle.frame;
@@ -1604,6 +1633,10 @@ function renderReview() {
   $("writeNotice").textContent = compContext
     ? `COMP embed target · ${embeddedSide} × ${embeddedSide} · Upscale Preview prepares this thumbnail in memory; only EMBED Comp writes audio.`
     : "Artwork changes are saved only by WRITE or EMBED actions.";
+  const override = albumOverride(state.album);
+  const overrideNotice = $("overrideNotice");
+  overrideNotice.hidden = override?.writer !== "windows";
+  overrideNotice.textContent = override?.writer === "windows" ? "Windows override" : "";
   $("reviewChoice").hidden = state.editorMode !== "artist" || !(state.selectedPortrait || state.selectedBanner);
   $("useArtist").classList.toggle("active", !state.radioBanner || state.radioArtist);
   $("useBanner").classList.toggle("active", state.radioBanner);

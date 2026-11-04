@@ -51,6 +51,7 @@ from webgui.audit import (
     sanitize_text,
     utc_now,
 )
+from webgui.coordination import current_rows, new_event, record_event
 
 
 LOGGER = logging.getLogger("uvicorn.error")
@@ -149,6 +150,86 @@ class Services:
         self._audit_fallback_counter = 0
         log_path = Path(runtime.log_path) if runtime.log_path else runtime.cache / "runtime.log"
         self._audit_fallback_path = log_path.with_name("web-audit-fallback.jsonl")
+        self._coordination_lock = threading.RLock()
+        self._coordination_outbox_path = runtime.cache / "album-write-coordination-outbox.json"
+
+    def _coordination_guard(self):
+        """Lazily restore coordination helpers for legacy lightweight fixtures."""
+        lock = getattr(self, "_coordination_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._coordination_lock = lock
+        if not hasattr(self, "_coordination_outbox_path"):
+            self._coordination_outbox_path = (
+                self.runtime.cache / "album-write-coordination-outbox.json"
+            )
+        return lock
+
+    def _coordination_outbox(self) -> list[dict[str, object]]:
+        try:
+            value = json.loads(self._coordination_outbox_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return []
+        except (OSError, ValueError, TypeError):
+            LOGGER.warning("Album coordination outbox could not be read; preserving it for review")
+            return []
+        return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+    def _save_coordination_outbox(self, events: list[dict[str, object]]):
+        path = self._coordination_outbox_path
+        if not events:
+            path.unlink(missing_ok=True)
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=".album-write-coordination-", suffix=".json", dir=path.parent
+        )
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                json.dump(events, handle, ensure_ascii=False, separators=(",", ":"))
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+
+    def flush_album_write_coordination(self) -> dict[str, int]:
+        """Replay durable notifications after a transient PostgreSQL failure."""
+        with self._coordination_guard():
+            pending = self._coordination_outbox()
+            remaining = []
+            applied = 0
+            for event in pending:
+                try:
+                    record_event(self.runtime.database, event)
+                    applied += 1
+                except Exception:
+                    remaining.append(event)
+            self._save_coordination_outbox(remaining)
+            return {"applied": applied, "pending": len(remaining)}
+
+    def record_album_write(self, album, operation: str) -> dict[str, object]:
+        """Record only a verified successful Album write; never block later work."""
+        event = new_event(album, self.runtime.music, "webgui", operation)
+        with self._coordination_guard():
+            try:
+                self.flush_album_write_coordination()
+                durable = record_event(self.runtime.database, event)
+                return {"durable": True, **durable}
+            except Exception as error:
+                pending = self._coordination_outbox()
+                if not any(item.get("event_id") == event["event_id"] for item in pending):
+                    pending.append(event)
+                self._save_coordination_outbox(pending)
+                LOGGER.warning(
+                    "Album artwork write notification queued for retry: album=%s operation=%s error=%s",
+                    event["album_key"], operation, sanitize_text(str(error)),
+                )
+                return {"durable": False, **event}
+
+    def album_write_coordination(self) -> list[dict[str, object]]:
+        self.flush_album_write_coordination()
+        return current_rows(self.runtime.database)
 
     def start_audit_session(self):
         return self.audit(
@@ -1271,7 +1352,13 @@ class Services:
             stage="write-readback",
             request_status="verified",
         )
-        return {"written": [destination.name], "preserved": preserved, **rendered}
+        coordination = self.record_album_write(row, "write-cover")
+        return {
+            "written": [destination.name],
+            "preserved": preserved,
+            "coordination": coordination,
+            **rendered,
+        }
 
     @serialized
     def write_artist(self, payload):
@@ -1743,6 +1830,7 @@ class Services:
                 "completion_recorded": completed,
             },
         )
+        coordination = self.record_album_write(row, "embed-comp-track")
         self._remove_prepared_comp(payload.get("prepared_id"))
         return {
             "album_id": row["album_key"],
@@ -1758,6 +1846,7 @@ class Services:
             "artwork_sha256": hashlib.sha256(verified_body).hexdigest(),
             "upscaled": bool(rendered.get("upscaled")),
             "outcome": outcome,
+            "coordination": coordination,
         }
 
     @serialized
@@ -1851,7 +1940,13 @@ class Services:
         self.audit(
             "embed-album", row["album_key"], {"tracks": len(files), "side": side}
         )
-        return {"tracks": len(files), "side": side, "verified": True}
+        coordination = self.record_album_write(row, "embed-album")
+        return {
+            "tracks": len(files),
+            "side": side,
+            "verified": True,
+            "coordination": coordination,
+        }
 
     def search_album(self, album_id, release_id=None):
         row = self.album_row(album_id)
