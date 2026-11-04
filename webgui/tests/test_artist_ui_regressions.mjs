@@ -112,6 +112,10 @@ const pollJobsFunction = between(
 );
 const stageAlbumFunction = between(
   operationsSource,
+  "function clearAlbumSearchSession",
+  "function skipAlbumSearch",
+) + "\n" + between(
+  operationsSource,
   "async function stageAlbum",
   "async function queueAction",
 );
