@@ -935,6 +935,63 @@ impl Model for LibraryUiModel {
     }
 }
 
+fn apply_thumbnail_path_updates(
+    app: &mut ApplicationState,
+    artist_paths: ThumbnailPaths,
+    album_paths: ThumbnailPaths,
+    artist_ids: ArtistNavidromeIds,
+) -> bool {
+    let mut changed = false;
+    for (artist, path) in artist_paths {
+        let key = artist.trim().to_ascii_lowercase();
+        let value = path.to_string_lossy().into_owned();
+        if app.library.artist_artwork_paths.get(&key) != Some(&value) {
+            app.library.set_artist_artwork_path(&artist, &path);
+            changed = true;
+        }
+    }
+    for (album_key, path) in album_paths {
+        let value = path.to_string_lossy().into_owned();
+        let focused_idle_album = app.phase == RunPhase::Idle
+            && app
+                .library
+                .focused_album_key
+                .as_ref()
+                .is_some_and(|focused| focused.eq_ignore_ascii_case(&album_key));
+        if let Some(album) = app.library.albums.iter_mut().find(|album| {
+            album.snapshot.album_key.eq_ignore_ascii_case(&album_key)
+                && !album.snapshot.album_mbid.trim().is_empty()
+                && path.parent() == Some(Path::new(&album.snapshot.path))
+        }) && album.snapshot.cover_path != value
+        {
+            let previous = std::mem::replace(&mut album.snapshot.cover_path, value.clone());
+            if focused_idle_album && app.current_cover_path == previous {
+                app.current_cover_path = value.clone();
+            }
+            changed = true;
+        }
+        let key = album_key.trim().to_ascii_lowercase();
+        if app.library.album_artwork_paths.get(&key) != Some(&value) {
+            app.library.set_album_artwork_path(&album_key, &path);
+            changed = true;
+        }
+    }
+    for (artist, id) in artist_ids {
+        let key = artist.trim().to_ascii_lowercase();
+        let value = id.trim();
+        if app
+            .library
+            .artist_navidrome_ids
+            .get(&key)
+            .is_none_or(|current| current != value)
+        {
+            app.library.set_artist_navidrome_id(&artist, value);
+            changed = true;
+        }
+    }
+    changed
+}
+
 fn publish_thumbnail_paths(
     state: &Arc<Mutex<ApplicationState>>,
     weak: &slint::Weak<AppWindow>,
@@ -954,36 +1011,11 @@ fn publish_thumbnail_paths(
         refresh_weak(weak, state);
         return;
     }
+    let mut changed = false;
     if let Ok(mut app) = state.lock() {
-        for (artist, path) in artist_paths {
-            app.library.set_artist_artwork_path(&artist, &path);
-        }
-        for (album_key, path) in album_paths {
-            let focused_idle_album = app.phase == RunPhase::Idle
-                && app
-                    .library
-                    .focused_album_key
-                    .as_ref()
-                    .is_some_and(|focused| focused.eq_ignore_ascii_case(&album_key));
-            if let Some(album) = app.library.albums.iter_mut().find(|album| {
-                album.snapshot.album_key.eq_ignore_ascii_case(&album_key)
-                    && !album.snapshot.album_mbid.trim().is_empty()
-                    && path.parent() == Some(Path::new(&album.snapshot.path))
-            }) {
-                let previous = std::mem::replace(
-                    &mut album.snapshot.cover_path,
-                    path.to_string_lossy().into_owned(),
-                );
-                if focused_idle_album && app.current_cover_path == previous {
-                    app.current_cover_path = path.to_string_lossy().into_owned();
-                }
-            }
-            app.library.set_album_artwork_path(&album_key, &path);
-        }
-        for (artist, id) in artist_ids {
-            app.library.set_artist_navidrome_id(&artist, &id);
-        }
+        changed = apply_thumbnail_path_updates(&mut app, artist_paths, album_paths, artist_ids);
         if let Some(metadata) = artist_metadata {
+            changed = true;
             if let Some(log) = UI_DEBUG_LOG_HANDLE.get() {
                 let hydrated_tracks = metadata
                     .fallback_tracks
@@ -1062,7 +1094,14 @@ fn publish_thumbnail_paths(
                 .insert(metadata.artist_key, cached);
         }
     }
-    refresh_weak(weak, state);
+    // Replacing the virtualized library model destroys an active row
+    // TouchArea. Lazy hydration can publish the same local paths again after a
+    // remote lookup failure; rebuilding on those no-op publications made
+    // Artist rows lose ordinary press/release clicks. Refresh only when the
+    // visible thumbnail or overview state actually changed.
+    if changed {
+        refresh_weak(weak, state);
+    }
 }
 
 fn logical_dimension(value: f32, minimum: u32) -> u32 {
@@ -23835,6 +23874,34 @@ mod tests {
         assert_eq!(local_album_art_file(&album, "cover"), Some(new_cover));
         album.album_mbid.clear();
         assert_eq!(local_album_art_file(&album, "cover"), None);
+    }
+
+    #[test]
+    fn repeated_artist_thumbnail_publication_is_a_no_op() {
+        let snapshot = MediaSnapshot {
+            schema_version: splined_core::media_database::SCHEMA_VERSION,
+            database_path: String::new(),
+            canonical_root: String::new(),
+            local_root: String::new(),
+            albums: Vec::new(),
+        };
+        let mut app = ApplicationState::new(Config::default(), snapshot).unwrap();
+        let artwork = PathBuf::from(r"C:\Music\Artist\artist.png");
+        let artist_paths = vec![("Artist".to_string(), artwork)];
+        let artist_ids = vec![("Artist".to_string(), "navidrome-artist".to_string())];
+
+        assert!(super::apply_thumbnail_path_updates(
+            &mut app,
+            artist_paths.clone(),
+            Vec::new(),
+            artist_ids.clone(),
+        ));
+        assert!(!super::apply_thumbnail_path_updates(
+            &mut app,
+            artist_paths,
+            Vec::new(),
+            artist_ids,
+        ));
     }
 
     #[test]
