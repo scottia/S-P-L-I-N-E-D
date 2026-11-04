@@ -25,6 +25,7 @@ from psycopg.types.json import Jsonb
 
 import splined as core
 import splined_scan as scan
+import splined_strict_source_policy as strict_policy
 import splined_media_database as media
 import splined_media_tags as tags
 import splined_compilation_authority_policy as compilation
@@ -1966,9 +1967,14 @@ class Services:
             http, refs, sources, cache, r.cfg, clean_first=False
         )
         warnings.extend(download_warnings)
+        strict_policy.apply(found, r.cfg, core.source_policy)
+        format_order = core.formats(r.cfg)
+        suggested = core.select_best(found, r.cfg, format_order)
         candidates = []
         for candidate in found:
-            projected = core.project_candidate(candidate, r.cfg, core.formats(r.cfg)[0])
+            target_format = core.target_format_for_candidate(candidate, format_order)
+            projected = core.project_candidate(candidate, r.cfg, target_format)
+            policy = core.source_policy(r.cfg, candidate.source)
             candidates.append(
                 {
                     "name": candidate.path.name,
@@ -1980,6 +1986,18 @@ class Services:
                     "bytes": candidate.path.stat().st_size,
                     "acceptable": projected["acceptable"],
                     "range_class": projected["range_type"],
+                    "source_range_class": core.classify_range(
+                        candidate.short_side, r.cfg
+                    ),
+                    "projected_width": projected["width"],
+                    "projected_height": projected["height"],
+                    "recommended": candidate is suggested,
+                    "upscaled": projected["upscaled"],
+                    "policy_status": projected["policy_status"],
+                    "policy_reason": projected["policy_reason"],
+                    "strict_override_active": policy["strict_override"],
+                    "strict_status": candidate.strict_status,
+                    "strict_reason": candidate.strict_reason,
                 }
             )
         return {

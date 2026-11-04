@@ -654,7 +654,10 @@ component MediaLibraryPane inherits NeonPanel {
                 }
             }
             if root.candidate-filter-expanded: CandidateFilterBody {
-                height: 430px;
+                // Keep all six Resolution Range controls visible on the
+                // ultrawide workspace instead of hiding four below the
+                // filter's initial scroll fold.
+                height: 520px;
                 locked: root.candidate-filter-locked;
                 type-rows: root.candidate-type-filter-rows;
                 policy-rows: root.candidate-policy-filter-rows;
@@ -1389,6 +1392,9 @@ export component AppWindow inherits Window {
     in property <string> database-label;
     in property <string> current-artist;
     in property <string> current-album;
+    in property <string> selected-album-processing-state;
+    in property <int> selected-album-track-count;
+    in property <int> selected-album-embedded-count;
     in property <string> current-path;
     in property <string> current-status;
     in property <bool> artist-overview-active: false;
@@ -2237,7 +2243,7 @@ export component AppWindow inherits Window {
                                                         Text { text: root.fallback-overview-help-expanded ? "(less…)" : "(…more)"; color: AppTheme.cyan; font-size: 14px; font-weight: 800; horizontal-alignment: right; height: 20px; TouchArea { mouse-cursor: pointer; clicked => { root.fallback-overview-help-expanded = !root.fallback-overview-help-expanded; } } }
                                                     }
                                                     if root.overview-mode != "Fallback": HorizontalLayout {
-                                                        height: max(145px, biography-area.height + 35px);
+                                                        height: max(169px, biography-area.height + 59px);
                                                         vertical-stretch: 0; spacing: 12px; max-width: 10000px;
                                                         Rectangle { width: root.overview-mode == "Album" ? 116px : 104px; height: 108px; background: transparent;
                                                             Rectangle { x: root.overview-mode == "Album" ? 8px : 0px; width: 104px; height: 104px; border-radius: 52px; clip: true; background: AppTheme.image-surface; border-color: AppTheme.cyan; border-width: 2px;
@@ -2259,6 +2265,12 @@ export component AppWindow inherits Window {
                                                                         root.artist-edit-visible = true;
                                                                     } }
                                                                 }
+                                                            }
+                                                            if root.current-album != "": HorizontalLayout { height: 22px; spacing: 6px;
+                                                                Text { text: root.current-album; color: AppTheme.yellow; font-size: 14px; font-weight: 800; overflow: elide; max-width: 430px; }
+                                                                Text { text: "●"; color: #efa54e; font-size: 14px; font-weight: 800; }
+                                                                Text { text: root.selected-album-processing-state; color: #efa54e; font-size: 14px; font-weight: 800; }
+                                                                Text { text: root.selected-album-track-count + " tracks · " + root.selected-album-embedded-count + " embedded"; color: AppTheme.foreground; font-size: 14px; }
                                                             }
                                                             biography-area := Rectangle {
                                                                 height: root.artist-biography-expanded && overview-panel.biography-overflows ? biography-render-measure.preferred-height : overview-panel.biography-collapsed-height;

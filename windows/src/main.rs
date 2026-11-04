@@ -18647,6 +18647,31 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
     ui.set_selected_artwork_webp_needs_still(webp_needs_still);
     ui.set_selected_artwork_webp_static_footer(has_webp && state.phase == RunPhase::Idle);
     let embedded_infos = current_embedded_thumbnail_infos(&state);
+    let focused_album = state.library.focused_album_key.as_ref().and_then(|key| {
+        state
+            .library
+            .albums
+            .iter()
+            .find(|album| album.snapshot.album_key.eq_ignore_ascii_case(key))
+    });
+    ui.set_selected_album_processing_state(
+        focused_album
+            .map(|album| album.snapshot.status.as_str())
+            .unwrap_or_default()
+            .into(),
+    );
+    ui.set_selected_album_track_count(
+        focused_album
+            .map(|album| album.snapshot.track_count.min(i64::from(i32::MAX)) as i32)
+            .unwrap_or_default(),
+    );
+    ui.set_selected_album_embedded_count(
+        embedded_infos
+            .iter()
+            .filter(|info| info.is_some())
+            .count()
+            .min(i32::MAX as usize) as i32,
+    );
     ui.set_selected_artwork_embedded_info(if embed_available {
         format_existing_embedded_info(&embedded_infos).into()
     } else {

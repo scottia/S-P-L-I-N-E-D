@@ -72,6 +72,8 @@ const state = {
   theme: "dark", compare: new Set(), graphicalEnhancement: normalizeGraphicalEnhancement(),
   artworkRange: {min: 1200, ideal: 1800, max: 2400, ladder: 3600},
   embedQueue: [], queueControls: {pause_after_album: false, pause_all_albums: false}, queuedDecision: null, reviewJobState: "", listRequest: 0, selectionRequest: 0, searchRequest: 0,
+  albumSearchActive: false, albumSearchAlbumId: "", albumSearchCandidates: [],
+  sourceOrder: [],
   libraryLoading: false, artistMetadataRequest: 0,
   activeActionId: "", artistInfoExpanded: false,
   albumOverrides: new Map(), albumOverrideRevision: 0,
@@ -218,6 +220,7 @@ function image(src, className = "", alt = "") {
 function clear(element) { element.replaceChildren(); }
 function clearFocusCandidates() {
   state.queuedDecision = null; state.reviewJobId = null;
+  state.albumSearchActive = false; state.albumSearchAlbumId = ""; state.albumSearchCandidates = [];
   state.candidates = [];
   state.selectedPortrait = null; state.selectedBanner = null; state.selectedCover = null;
   state.upscalePreview = null; state.renderedPreview = {}; state.compThumbnailPreview = null; state.pendingCompWrite = null; state.fallbackTracks = []; state.fallbackTrack = null;
@@ -1173,7 +1176,17 @@ function renderSources() {
   const candidates = staleDecision ? [] : state.candidates;
   const diagnostics = staleDecision ? [] : state.sourceDiagnostics;
   const artistImageSources = new Set(["local", "fanart", "deezer", "lastfm", "discogs", "navidrome"]);
-  for (const [label, key, icon] of SOURCES) {
+  const sourceByKey = new Map(SOURCES.map(source => [source[1] === "fanart" ? "fanarttv" : source[1], source]));
+  const orderedSources = [sourceByKey.get(""), sourceByKey.get("local")];
+  const seen = new Set(["", "local"]);
+  for (const configuredKey of state.sourceOrder || []) {
+    const key = configuredKey === "fanart" ? "fanarttv" : configuredKey;
+    if (!seen.has(key) && sourceByKey.has(key)) { orderedSources.push(sourceByKey.get(key)); seen.add(key); }
+  }
+  for (const [key, source] of sourceByKey) {
+    if (!seen.has(key)) { orderedSources.push(source); seen.add(key); }
+  }
+  for (const [label, key, icon] of orderedSources.filter(Boolean)) {
     const count = candidates.filter(candidate => sourceKey(candidate.source) === key).length;
     const navidromeMetadata = key === "navidrome" && state.artistMetadata?.source === "Navidrome";
     const configured = key === "local" || (state.enabledSources || []).includes(key === "fanart" ? "fanarttv" : key);
@@ -1244,6 +1257,7 @@ function appendMusicBrainzFilters(host, decision) {
   select("Artist", artists, "artistFilter"); select("Release Type", types, "releaseTypeFilter"); host.append(controls);
 }
 function appendMusicBrainzAuthorityEditor(host, decision) {
+  if (decision.jobKind === "direct-musicbrainz") return;
   const authority = decision.authority || {}, details = node("details", "musicbrainz-authority-editor");
   details.append(node("summary", "", "Advanced IDs"));
   const fields = node("div", "musicbrainz-authority-fields");
@@ -1263,7 +1277,8 @@ function renderMusicBrainzWorkspace() {
   const trackArtist = identity.friendly_artist || decision.context?.track_artist || authority.artist || "Unknown artist";
   const trackTitle = identity.friendly_title || decision.context?.track_title || authority.track || "Unknown recording";
   const heading = node("div", "musicbrainz-review-heading"), copy = node("div");
-  copy.append(node("span", "musicbrainz-kicker", "MusicBrainz"), node("h2", "", `TRACK  ${trackArtist} — ${trackTitle}`));
+  const directAlbum = decision.jobKind === "direct-musicbrainz";
+  copy.append(node("span", "musicbrainz-kicker", "MusicBrainz"), node("h2", "", `${directAlbum ? "ALBUM" : "TRACK"}  ${trackArtist} — ${trackTitle}`));
   const artistId = String(identity.focused_artist_mbid || authority.artist_mbids || "").split(/[;,]/)[0].trim();
   const info = node("a", "musicbrainz-info-link", "MB INFO"); info.target = "_blank"; info.rel = "noopener";
   info.href = artistId ? "https://musicbrainz.org/artist/" + encodeURIComponent(artistId)
@@ -1272,7 +1287,9 @@ function renderMusicBrainzWorkspace() {
   const statusClass = identity.status === "valid" ? " valid" : identity.status === "failed" ? " failed" : " warning";
   const identityBand = node("div", "musicbrainz-identity" + statusClass);
   identityBand.append(node("strong", "", `${trackArtist} — ${trackTitle}`),
-    node("span", "musicbrainz-identity-states", `Artist ID · ${identity.artist_status || "unresolved"} · Recording ID · ${identity.recording_status || "unresolved"}`),
+    node("span", "musicbrainz-identity-states", directAlbum
+      ? `Album Artist · ${identity.artist_status || "ready"} · Release search · ${identity.recording_status || "ready"}`
+      : `Artist ID · ${identity.artist_status || "unresolved"} · Recording ID · ${identity.recording_status || "unresolved"}`),
     node("span", "", identity.message || "MusicBrainz identity lookup completed.")); host.append(identityBand);
   const current = decision.context?.current_album || {}, authorityCard = node("section", "musicbrainz-current-album");
   authorityCard.append(node("strong", "", "CURRENT ALBUM · SPLINED LIBRARY AUTHORITY"));
@@ -1409,7 +1426,8 @@ function renderQueuedCompTools() {
 function renderCandidates() {
   const decision = activeArtworkDecision();
   const staleDecision = !!state.queuedDecision && !decision;
-  const skipping = decision?.jobKind === "scan";
+  const skipping = decision?.jobKind === "scan"
+    || !decision && state.albumSearchActive && state.albumSearchAlbumId === state.album?.id;
   const musicBrainzResults = decision?.kind === "musicbrainz-results";
   const artistCompLaunch = !decision && state.editorMode === "artist" && state.compReportVisible;
   $("searchButton").textContent = skipping ? "SKIP ALBUM" : artistCompLaunch ? "LAUNCH COMP" : "LAUNCH";
@@ -1677,12 +1695,10 @@ function renderReview() {
     : state.editorMode === "fallback" ? !state.fallbackTrack?.image
     : state.editorMode === "artist" && state.compReportVisible ? !state.compTrack?.image : false;
   $("embedBatchButton").disabled = !(state.editorMode === "album" && state.album && (state.selectedCover?.image || state.album.cover));
-  const compContext = state.editorMode === "fallback" || state.editorMode === "artist" && state.compReportVisible;
-  const embeddedSide = Number(state.compThumbnailPreview?.width || state.server?.embedded_thumbnail_size || 1200);
-  $("writeNotice").hidden = compContext;
-  $("writeNotice").textContent = compContext
-    ? `COMP embed target · ${embeddedSide} × ${embeddedSide} · Upscale Preview prepares this thumbnail in memory; only EMBED Comp writes audio.`
-    : "Artwork changes are saved only by WRITE or EMBED actions.";
+  // Selected Artwork already makes write state clear through its buttons,
+  // metadata, embedded ribbon, and the separate red override notice.
+  $("writeNotice").hidden = true;
+  $("writeNotice").textContent = "";
   const override = albumOverride(state.album);
   const overrideNotice = $("overrideNotice");
   overrideNotice.hidden = override?.writer !== "windows";
