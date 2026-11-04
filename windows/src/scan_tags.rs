@@ -466,7 +466,11 @@ fn read_optional(tagged_file: &TaggedFile, key: &ItemKey) -> Option<String> {
 
 fn clean_value(value: Option<&str>) -> Option<String> {
     value
-        .map(str::trim)
+        .map(|value| {
+            value.trim_matches(|character: char| {
+                character.is_whitespace() || character == '\u{feff}'
+            })
+        })
         .filter(|value| !value.is_empty())
         .map(str::to_string)
 }
@@ -620,6 +624,28 @@ mod tests {
         assert_eq!(
             release_group.musicbrainz_release_group_id.as_deref(),
             Some(RELEASE_ID)
+        );
+    }
+
+    #[test]
+    fn strips_bom_from_musicbrainz_identity_values() {
+        let parsed = parse_id3v2_frames(
+            4,
+            0,
+            &[
+                id3_user_text_frame("MUSICBRAINZ_ALBUMID", &format!("\u{feff}{RELEASE_ID}")),
+                id3_user_text_frame(
+                    "MUSICBRAINZ_ALBUMARTISTID",
+                    &format!("\u{feff}{RECORDING_ID}"),
+                ),
+            ]
+            .concat(),
+        );
+
+        assert_eq!(parsed.musicbrainz_album_id.as_deref(), Some(RELEASE_ID));
+        assert_eq!(
+            parsed.musicbrainz_album_artist_id.as_deref(),
+            Some(RECORDING_ID)
         );
     }
 
