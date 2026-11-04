@@ -19475,6 +19475,8 @@ fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRo
             // use its folder cover. Neither is an actionable red status for
             // the selected artist's track-scoped COMP workflow.
             let missing_album_art = !fallback && !snapshot.has_local_artwork;
+            let unprocessed =
+                !fallback && album.state == splined_core::application::AlbumState::New;
             let incomplete = !fallback
                 && matches!(
                     album.state,
@@ -19607,9 +19609,14 @@ fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRo
                 "Bypassed Album".to_string(),
             );
             add_bullet(
-                missing_album_art && !stale_unprocessed,
+                (missing_album_art || unprocessed) && !stale_unprocessed,
                 Color::from_rgb_u8(255, 82, 104),
-                "Missing Album Art".to_string(),
+                if missing_album_art {
+                    "Missing Album Art"
+                } else {
+                    "Unprocessed Album"
+                }
+                .to_string(),
             );
             add_bullet(
                 !stale_unprocessed
@@ -22906,7 +22913,7 @@ mod tests {
                 artist_mbid: "artist-id".to_string(),
                 album_mbid: "release-id".to_string(),
                 release_group_mbid: String::new(),
-                has_local_artwork: false,
+                has_local_artwork: true,
                 local_artwork_files: Vec::new(),
                 cover_path: String::new(),
                 cover_name: String::new(),
@@ -22932,7 +22939,7 @@ mod tests {
             normal
                 .bullets
                 .row_data(index)
-                .is_some_and(|bullet| bullet.tip == "Missing Album Art")
+                .is_some_and(|bullet| bullet.tip == "Unprocessed Album")
         }));
 
         app.album_override_writers
@@ -22941,7 +22948,9 @@ mod tests {
         assert!(overridden.overridden);
         assert!(!(0..overridden.bullets.row_count()).any(|index| {
             overridden.bullets.row_data(index).is_some_and(|bullet| {
-                bullet.tip == "Missing Album Art" || bullet.tip == "Incomplete / timed-out Album"
+                bullet.tip == "Missing Album Art"
+                    || bullet.tip == "Unprocessed Album"
+                    || bullet.tip == "Incomplete / timed-out Album"
             })
         }));
     }
