@@ -1266,6 +1266,7 @@ test("Artist Albums row reports shown, Completed, and in Process with status col
   const context = load(albumSummaryFunctions, {
     state, $: () => host, clear: item => item.replaceChildren(), node,
     mediaStatusKey: album => album.status,
+    mediaStatusColor: status => status,
   });
   const artist = {portrait: "artist.jpg"};
   context.renderAlbumCountSummary([
@@ -1288,6 +1289,7 @@ test("Album cards keep unknown validation separate from confirmed missing thumbn
   }}};
   const context = load(albumSummaryFunctions, {
     state, mediaStatusKey: album => album.status,
+    mediaStatusColor: status => status,
   });
   const artist = {portrait: "artist.jpg"};
   const albumTypes = [
