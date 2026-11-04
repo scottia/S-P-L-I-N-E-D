@@ -19795,20 +19795,18 @@ fn artist_overview_legend_counts(
 // LAUNCH order when grouping the Artist Overview by album type.
 fn artist_overview_sort_group(state: &ApplicationState, album: &AlbumEntry) -> u8 {
     if artist_overview_is_featured(state, album) {
-        return 4; // FEAT is its own group after V/A, even on another album type.
+        return 1; // Featured appearances follow owned Artist Albums.
     }
     if album.snapshot.album_mbid.trim().is_empty() {
-        return 5; // COMP fallback, even if its album status is unprocessed.
+        return 4; // COMP fallback is always the final Album-card group.
     }
     let (soundtrack, various_artists) = artist_overview_release_banners(&album.snapshot);
     if soundtrack {
         2
     } else if various_artists {
         3
-    } else if album.state == AlbumState::New {
-        0
     } else {
-        1
+        0 // Processing state never changes an owned Artist Album's position.
     }
 }
 
@@ -23133,16 +23131,16 @@ mod tests {
         assert_eq!(
             actual,
             [
+                ("artist-new", false),
                 ("new-new", false),
                 ("new-old", false),
-                ("artist-new", true),
                 ("artist-old", false),
+                ("feat-new", true),
+                ("feat-old", false),
                 ("ost-new", true),
                 ("ost-old", false),
                 ("va-new", true),
                 ("va-old", false),
-                ("feat-new", true),
-                ("feat-old", false),
                 ("comp-new", true),
                 ("comp-old", false),
             ]

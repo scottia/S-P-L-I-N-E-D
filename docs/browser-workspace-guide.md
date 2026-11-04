@@ -123,6 +123,11 @@ Navidrome supplies biography, similar artists, and top songs when available. If 
 
 Artist overview cards include owned Albums plus exact indexed Featured credits. Historical numbered filenames such as `1-02 - Artist A & Artist B - Title` can supply an exact multi-Artist credit when the track Artist tag contains only the Album Artist. Selected Artist COMP Album cards lazily load the fallback folder's `cover.*`; embedded track artwork remains exclusive to the track-scoped COMP Report and is never substituted as an Album-card thumbnail.
 
+Album cards use the shared Windows/WebGUI presentation order: owned Artist
+Albums, Featured appearances, Soundtracks, Various Artists, then COMP
+fallbacks. Cards are newest-to-oldest inside each category. Processing and
+cross-client override state never change a card's sort group.
+
 ## Data, recovery, and deployment
 
 PostgreSQL is the live WebGUI catalog, job, Audit, and runtime store. Windows

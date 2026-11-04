@@ -149,12 +149,17 @@ summary is:
 - Card frames distinguish validation, completion, and confirmed embedded-art
   problems.
 - A red frame with a grayscale Album thumbnail means WebGUI performed the last
-  verified artwork write. Status dots, banner colors, text and all controls keep
-  their normal meanings. The independent **Overridden** count reports these
-  cards, and Selected Artwork shows **WebGUI override**.
+  verified artwork write. For an otherwise unprocessed Album, this verified
+  write replaces the stale red Missing dot; all other independent status dots,
+  banner colors, text and controls keep their normal meanings. The independent
+  **Overridden** count reports these cards, and Selected Artwork shows
+  **WebGUI override**.
 - **ARTIST**, **FEATURING**, **SOUNDTRACK**, **VARIOUS**, and **COMPILED**
   banners describe the Album's relationship to the selected Artist; they are
   not completion states.
+- Album cards are grouped **ARTIST**, **FEATURING**, **SOUNDTRACK**,
+  **VARIOUS**, then **COMPILED**. Each group is newest-to-oldest; processing and
+  override state do not change this order.
 - COMP track rows use blue for artwork still needed, purple for thumbnail
   repair/validation trouble, and green for complete.
 

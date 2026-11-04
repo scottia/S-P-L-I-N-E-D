@@ -9,12 +9,18 @@ the Windows SQLite application and the WebGUI PostgreSQL application.
 - Only a verified Album artwork WRITE or EMBED creates an event.
 - The writer's own card retains its normal full-color presentation.
 - The opposing client desaturates only the Album thumbnail and uses a red card
-  frame. Existing dots, banner colors, labels, status calculations and controls
-  remain unchanged.
+  frame. A verified opposing write suppresses an otherwise stale unprocessed
+  red Missing dot; every other independent dot, banner color, label, status
+  calculation and control remains unchanged.
 - The notice remains across selection, refresh and restart until the local
   client completes its own verified WRITE or EMBED.
 - Preview, search, failed work, cancellation, Compare/Dry Run, Full Refresh and
   reconciliation do not create or clear events.
+
+Both clients present Album cards in the same stable order: owned Artist Albums,
+Featured appearances, Soundtracks, Various Artists, then COMP fallbacks. Each
+category is newest-to-oldest. Processing state and override state never move a
+card into another sort group.
 
 ## Storage and recovery
 
