@@ -63,7 +63,8 @@ diagnostic reports.
   map of browser regions and source locations; not a parity guarantee.
 - [Cross-client Album override implementation](cross-client-album-override-implementation.md)
   — last-successful-writer coordination, recovery boundary, and isolated PC
-  acceptance environment; the visual design remains in Draft PR #147.
+  acceptance environment; the governing visual contract was merged through
+  PR #147.
 - [Windows Rust/Slint architecture checklist](windows-rust-slint-migration-checklist.md)
   — current single-executable architecture and retired implementation boundary.
 
