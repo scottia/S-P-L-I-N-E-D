@@ -148,6 +148,13 @@ class ReportedDefectTests(unittest.TestCase):
         )
         self.assertNotIn(".opposing-override{filter:grayscale", styles)
         self.assertIn('const frame = overridden ? "#ff344f"', application)
+        self.assertNotIn('["Missing", "Missing or incomplete", "#ff5268"]', application)
+        self.assertIn('detail: "Validating embedded thumbnails"', application)
+        self.assertIn('detail: "Processed album; thumbnail check"', application)
+        self.assertIn('detail: "COMP tracks done; thumbnail check"', application)
+        self.assertIn('["COMP track rows", [', application)
+        self.assertIn("grid-template-columns:repeat(4,minmax(0,1fr))", styles)
+        self.assertIn(": processed ? frames.in_process.color : mediaStatusColor(status)", application)
 
     def test_comp_report_backfills_only_albums_in_selected_artist_scope(self):
         with TemporaryDirectory() as directory:

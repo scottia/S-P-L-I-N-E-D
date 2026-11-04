@@ -606,11 +606,13 @@ function albumCardState(album, artist) {
   const embeddedValidation = String(album.embedded_validation || "unknown").toLowerCase();
   const embeddedKnown = embeddedValidation === "verified";
   const embeddedComplete = embeddedKnown && Number(album.tracks) > 0 && Number(album.embedded) >= Number(album.tracks);
-  const fullyComplete = fallback ? album.fallback_complete === true
+  const compAttention = fallback && album.comp_attention === true;
+  const fullyComplete = fallback ? album.fallback_complete === true && !compAttention
     : processed && !missingCover && embeddedComplete;
-  const checkEmbedded = !fallback && processed && embeddedKnown && !embeddedComplete;
+  const checkEmbedded = fallback ? compAttention : processed && embeddedKnown && !embeddedComplete;
   const embeddedRetry = !fallback && processed && embeddedValidation === "retry";
   const embeddedPending = !fallback && processed && !embeddedKnown;
+  const validating = embeddedPending && !embeddedRetry && !missingCover;
   const dots = [];
   if (missingArtist) dots.push(["#f4cc4d", "Artist artwork missing"]);
   if (bypassed) dots.push(["#f4cc4d", "Bypassed"]);
@@ -621,14 +623,17 @@ function albumCardState(album, artist) {
   if (album.webp_found) dots.push(["#3478ff", "cover.webp present"]);
   const frames = state.graphicalEnhancement.frame_styles;
   const overridden = albumOverride(album)?.writer === "windows";
-  const frame = overridden ? "#ff344f" : fullyComplete ? frames.complete.color : checkEmbedded || status === "partial" ? frames.thumbnail.color
-    : processed ? frames.in_process.color : bypassed ? "#f4cc4d" : "#ff5268";
-  return {dots, frame, fullyComplete, checkEmbedded, embeddedPending, embeddedRetry, overridden};
+  const mixedFrame = !overridden && !fullyComplete && checkEmbedded && (processed || (fallback && album.fallback_complete === true))
+    ? fallback ? "green-purple" : "orange-purple" : "";
+  const frame = overridden ? "#ff344f" : validating ? "#55c7d8" : fullyComplete ? frames.complete.color
+    : checkEmbedded ? frames.thumbnail.color : processed ? frames.in_process.color : mediaStatusColor(status);
+  return {dots, frame, fullyComplete, checkEmbedded, embeddedPending, embeddedRetry, validating, mixedFrame, overridden};
 }
 function renderAlbumCountSummary(albums, artist = state.artist) {
   const host = $("albumCount"); clear(host);
   const completed = albums.filter(album => albumCardState(album, artist).fullyComplete).length;
-  const inProcess = albums.length - completed;
+  const validating = albums.filter(album => albumCardState(album, artist).validating).length;
+  const inProcess = albums.length - completed - validating;
   const overridden = albums.filter(album => albumCardState(album, artist).overridden).length;
   const frames = state.graphicalEnhancement.frame_styles;
   host.className = "album-count-summary";
@@ -644,28 +649,57 @@ function renderAlbumCountSummary(albums, artist = state.artist) {
     node("span", "album-count-overridden-label", "Overridden"),
     node("span", "album-count-overridden", String(overridden)),
   );
-  host.setAttribute("aria-label", `${albums.length} Albums shown, ${completed} Completed, ${inProcess} in Process, ${overridden} overridden by Windows`);
+  if (validating) host.append(node("span", "album-count-separator", "/"), node("span", "album-count-validating", `${validating} Validating`));
+  host.setAttribute("aria-label", `${albums.length} Albums shown, ${completed} Completed, ${inProcess} in Process, ${overridden} overridden by Windows${validating ? `, ${validating} validating` : ""}`);
 }
 function renderAlbumStatusKey(albums, artist) {
   const host = $("albumStatusKey"); clear(host);
   host.append(node("h3", "", "Album Status Key"));
   const columns = node("div", "album-key-columns");
-  const frames = state.graphicalEnhancement.frame_styles;
+  const cards = albums.map(album => ({album, state: albumCardState(album, artist)}));
+  const countDot = color => cards.filter(card => card.state.dots.some(([dot]) => dot.toLowerCase() === color)).length;
+  const countBanner = kind => albums.filter(album => albumBannerKind(album, artist) === kind).length;
+  const compTracks = state.compGroups.flatMap(group => group.tracks || []);
   const sections = [
-    ["Status dots", [["Red", "Missing art or unfinished album", "#ff5268"], ["Yellow", "Artist art missing or bypassed", "#f4cc4d"], ["Orange", "Processed; review still pending", "#efa54e"], ["Green", "Artist and album art complete", "#32dda0"], ["Purple", "Embedded thumbnail needs attention (Windows validation)", "#7c4dff"], ["Blue", "cover.webp present", "#3478ff"]]],
-    ["Album card frames", [[frames.complete.name, "Complete", frames.complete.color], [frames.in_process.name, "Processed", frames.in_process.color], [frames.thumbnail.name, "Partial or error", frames.thumbnail.color], ["Missing", "Missing or incomplete", "#ff5268"], ["Red", "Overridden by opposing application", "#ff344f"]]],
-    ["Banners", Object.entries(state.graphicalEnhancement.banner_styles).map(([key, style]) => [style.name, key === "compiled" ? "No release ID" : key === "artist" ? "Artist release" : key === "various" ? "Various Artists release" : key === "soundtrack" ? "Soundtrack release" : "Featured artist", style.letters, key])],
+    ["Status dots", [
+      {parts: [["●", "#ff5268"], ["Red", "#ff5268"]], detail: "Missing art or unfinished tracks", count: countDot("#ff5268")},
+      {parts: [["●", "#f4cc4d"], ["Yellow", "#f4cc4d"]], detail: "Artist art missing or bypassed", count: countDot("#f4cc4d")},
+      {parts: [["●", "#efa54e"], ["Orange", "#efa54e"]], detail: "Processed, not yet complete", count: countDot("#efa54e")},
+      {parts: [["●", "#32dda0"], ["Green", "#32dda0"]], detail: "Artist's tracks complete", count: countDot("#32dda0")},
+      {parts: [["●", "#7c4dff"], ["Purple", "#7c4dff"]], detail: "Embedded art needs attention", count: countDot("#7c4dff")},
+      {parts: [["●", "#3478ff"], ["Blue", "#3478ff"]], detail: "cover.webp present; review the still cover", count: countDot("#3478ff")},
+    ]],
+    ["Album card frames", [
+      {parts: [["Cyan", "#55c7d8"]], detail: "Validating embedded thumbnails", count: cards.filter(card => card.state.validating && !card.state.overridden).length},
+      {parts: [["Green", "#32dda0"]], detail: "Complete at preferred thumb size", count: cards.filter(card => card.state.fullyComplete && !card.state.overridden).length},
+      {parts: [["Orange", "#efa54e"], ["/", "#f1f3f4"], ["Purple", "#7c4dff"]], detail: "Processed album; thumbnail check", count: cards.filter(card => card.state.mixedFrame === "orange-purple").length},
+      {parts: [["Green", "#32dda0"], ["/", "#f1f3f4"], ["Purple", "#7c4dff"]], detail: "COMP tracks done; thumbnail check", count: cards.filter(card => card.state.mixedFrame === "green-purple").length},
+      {parts: [["Red", "#ff344f"]], detail: "Overridden by opposing application", count: cards.filter(card => card.state.overridden).length},
+    ]],
+    ["Banners", Object.entries(state.graphicalEnhancement.banner_styles).map(([key, style]) => ({
+      parts: [[style.name, style.letters]], banner: style, detail: key === "compiled" ? "Compilation album"
+        : key === "featuring" ? "Selected artist is a secondary track credit"
+        : key === "soundtrack" ? "Soundtrack release"
+        : key === "various" ? "Various Artists release" : "Artist Album with a Release ID",
+      count: countBanner(key),
+    }))],
+    ["COMP track rows", [
+      {parts: [["Blue", "#3478ff"]], detail: "Pending artwork", count: compTracks.filter(track => !track.completed && track.status !== "purple").length},
+      {parts: [["Green", "#32dda0"]], detail: "Artwork complete", count: compTracks.filter(track => track.completed && track.status !== "purple").length},
+      {parts: [["Purple", "#7c4dff"]], detail: "Complete; thumb needs attention", count: compTracks.filter(track => track.status === "purple").length},
+    ]],
   ];
   for (const [title, rows] of sections) {
     const column = node("div", "album-key-column"); column.append(node("h4", "", title));
-    for (const [label, detail, color, bannerKey] of rows) {
-      const row = node("div", "album-key-row");
-      const swatch = node("span", "album-key-swatch", "●"); swatch.style.color = color;
-      const normalizedColor = String(color).toLowerCase();
-      const count = title === "Banners" ? albums.filter(album => albumBannerKind(album, artist) === bannerKey).length
-        : title === "Album card frames" ? albums.filter(album => albumCardState(album, artist).frame.toLowerCase() === normalizedColor).length
-        : albums.filter(album => albumCardState(album, artist).dots.some(([dot]) => dot.toLowerCase() === normalizedColor)).length;
-      row.append(swatch, node("strong", "", label), node("small", "", detail), node("b", "", String(count))); column.append(row);
+    for (const item of rows) {
+      const entry = node("div", "album-key-entry"), row = node("div", "album-key-row"), label = node("span", "album-key-label");
+      if (item.banner) {
+        const swatch = node("span", "album-key-banner-swatch");
+        swatch.style.background = item.banner.background; swatch.style.borderColor = item.banner.frame;
+        label.append(swatch);
+      }
+      item.parts.forEach(([text, color]) => { const part = node("strong", "", text); part.style.color = color; label.append(part); });
+      row.append(label, node("b", "", String(item.count))); entry.append(row, node("small", "", item.detail)); column.append(entry);
     }
     columns.append(column);
   }
@@ -788,22 +822,29 @@ function renderHeroContents() {
   $("artistArtEntry").classList.toggle("active", !!artist && state.editorMode === "artist");
   const grid = $("albumGrid"); clear(grid);
   const compById = new Map(state.compAlbums.map(group => [group.id, group]));
+  const validatedCompById = new Map(state.compGroups.map(group => [group.id, group]));
   const compIds = new Set(compById.keys());
-  const projected = state.compAlbums.filter(group => !(artist?.albums || []).some(album => album.id === group.id)).map(group => ({
-    id: group.id, name: group.name, year: group.year, cover: group.cover, cover_found: !!group.cover,
-    album_mbid: "", compilation: true, tracks: group.tracks.length,
-    embedded: group.tracks.filter(track => track.completed).length,
-    fallback_complete: group.tracks.length > 0 && group.tracks.every(track => track.completed),
-    status: group.tracks.every(track => track.completed) ? "processed" : "incomplete",
-  }));
+  const projected = state.compAlbums.filter(group => !(artist?.albums || []).some(album => album.id === group.id)).map(group => {
+    const validated = validatedCompById.get(group.id);
+    return {
+      id: group.id, name: group.name, year: group.year, cover: group.cover, cover_found: !!group.cover,
+      album_mbid: "", compilation: true, tracks: group.tracks.length,
+      embedded: group.tracks.filter(track => track.completed).length,
+      fallback_complete: group.tracks.length > 0 && group.tracks.every(track => track.completed),
+      comp_attention: !!validated?.tracks?.some(track => ["purple", "checking", "check-error"].includes(track.status)),
+      status: group.tracks.every(track => track.completed) ? "processed" : "incomplete",
+    };
+  });
   const indexed = (artist?.albums || []).filter(album => album.album_mbid || compIds.has(album.id)).map(album => {
     const group = compById.get(album.id);
     // COMP album cards use their indexed folder cover. Track thumbnails are
     // separate COMP-report evidence and never replace the album-card cover.
+    const validated = validatedCompById.get(album.id);
     return group ? {...album, cover: group.cover || album.cover || null,
       cover_found: !!(group.cover || album.cover), compilation: true,
       embedded: group.tracks.filter(track => track.completed).length,
-      fallback_complete: group.tracks.length > 0 && group.tracks.every(track => track.completed)} : album;
+      fallback_complete: group.tracks.length > 0 && group.tracks.every(track => track.completed),
+      comp_attention: !!validated?.tracks?.some(track => ["purple", "checking", "check-error"].includes(track.status))} : album;
   });
   const albums = [...indexed, ...projected].sort((a, b) =>
     albumPresentationGroup(a, artist) - albumPresentationGroup(b, artist)
@@ -818,6 +859,11 @@ function renderHeroContents() {
     button.disabled = compIds.has(album.id) && state.compReportLoading;
     const cardState = albumCardState(album, artist); button.style.setProperty("--frame-color", cardState.frame);
     button.classList.toggle("opposing-override", cardState.overridden);
+    button.classList.toggle("mixed-frame", !!cardState.mixedFrame);
+    if (cardState.mixedFrame) {
+      button.style.setProperty("--mixed-frame-a", cardState.mixedFrame === "green-purple" ? "#32dda0" : "#efa54e");
+      button.style.setProperty("--mixed-frame-b", "#7c4dff");
+    }
     button.setAttribute("aria-label", album.name + ", " + (album.year || "year unknown") + ", " + (album.status || "unprocessed"));
     const kind = albumBannerKind(album, artist), bannerStyle = albumBannerStyle(kind);
     const bannerNode = node("span", "album-type-banner", bannerStyle.name); bannerNode.style.setProperty("--banner-bg", bannerStyle.background); bannerNode.style.setProperty("--banner-ink", bannerStyle.letters); bannerNode.style.borderColor = bannerStyle.frame;
