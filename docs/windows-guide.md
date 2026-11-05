@@ -151,12 +151,16 @@ summary is:
 - A red frame with a grayscale Album thumbnail means WebGUI performed the last
   verified artwork write. For an otherwise unprocessed Album, this verified
   write replaces the stale red Missing dot; all other independent status dots,
-  banner colors, text and controls keep their normal meanings. The independent
-  **Overridden** count reports these cards, and Selected Artwork shows
-  **WebGUI override**.
+  text and controls keep their normal meanings. The card uses the configurable
+  **OVERRIDE** banner while this state is active. The independent **Overridden**
+  count reports these cards, and Selected Artwork shows **WebGUI override**.
 - **ARTIST**, **FEATURING**, **SOUNDTRACK**, **VARIOUS**, and **COMPILED**
   banners describe the Album's relationship to the selected Artist; they are
   not completion states.
+- **OVERRIDE** is edited directly below ARTIST under Settings → Enhancement.
+  Reset restores its white frame, light-grey background, and red lettering.
+  It does not replace the Album's stored category and disappears when Windows
+  becomes the latest successful writer.
 - Album cards are grouped **ARTIST**, **FEATURING**, **SOUNDTRACK**,
   **VARIOUS**, then **COMPILED**. Each group is newest-to-oldest; processing and
   override state do not change this order.

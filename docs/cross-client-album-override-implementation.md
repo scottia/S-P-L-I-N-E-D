@@ -10,8 +10,13 @@ the Windows SQLite application and the WebGUI PostgreSQL application.
 - The writer's own card retains its normal full-color presentation.
 - The opposing client desaturates only the Album thumbnail and uses a red card
   frame. A verified opposing write suppresses an otherwise stale unprocessed
-  red Missing dot; every other independent dot, banner color, label, status
-  calculation and control remains unchanged.
+  red Missing dot; every other independent dot, label, status calculation and
+  control remains unchanged.
+- The opposing card replaces its normal category banner with the configurable
+  **OVERRIDE** banner. Its reset baseline is a white frame (`#FFFFFF`),
+  light-grey background (`#D3D3D3`) and red lettering (`#FF344F`). Both clients
+  expose it below ARTIST in Enhancement settings and restore the Album's normal
+  category banner when local ownership returns.
 - The notice remains across selection, refresh and restart until the local
   client completes its own verified WRITE or EMBED.
 - Preview, search, failed work, cancellation, Compare/Dry Run, Full Refresh and
@@ -101,7 +106,7 @@ write check.
    `album_artwork_write_state` with no pending outbox entry.
 3. A newer Windows protocol event transferred the durable row to
    `windows / write-cover`. The rendered WebGUI showed `Overridden 1`, a
-   grayscale Album thumbnail, red frame, unchanged colored ARTIST banner and
+   grayscale Album thumbnail, red frame, colored OVERRIDE banner, unchanged
    status dot, full-color Selected Artwork, and the `Windows override` notice.
 4. PostgreSQL and Windows SQLite retained the same Album key, event ID and
    revision after restarting both applications. Windows outbox count remained

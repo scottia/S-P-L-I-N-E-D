@@ -85,8 +85,9 @@ Album status dots and frames follow the same meanings as Windows. PostgreSQL cov
 
 When the Windows application completed the most recent verified artwork write
 for an Album, WebGUI renders only that Album thumbnail in grayscale with a red
-frame and shows **Windows override** in Selected Artwork. The status dots,
-banner, text, status calculations, candidates and previews remain unchanged.
+frame, uses the configurable **OVERRIDE** banner, and shows **Windows override**
+in Selected Artwork. The status dots, text, status calculations, candidates and
+previews remain unchanged.
 The independent red **Overridden** count reports these cards. A later successful
 WebGUI WRITE or EMBED returns the WebGUI card to its normal presentation and
 transfers the same indicator to Windows. Preview, selection, refresh, restart,

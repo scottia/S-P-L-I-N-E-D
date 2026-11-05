@@ -148,6 +148,14 @@ class ReportedDefectTests(unittest.TestCase):
         )
         self.assertNotIn(".opposing-override{filter:grayscale", styles)
         self.assertIn('const frame = overridden ? "#ff344f"', application)
+        self.assertIn(
+            'override: {name: "OVERRIDE", background: "#D3D3D3", frame: "#FFFFFF", letters: "#FF344F"}',
+            application,
+        )
+        self.assertIn(
+            'albumOverride(album)?.writer === "windows" ? "override" : albumBannerKind(album, artist)',
+            application,
+        )
         self.assertNotIn('["Missing", "Missing or incomplete", "#ff5268"]', application)
         self.assertIn('detail: "Validating embedded thumbnails"', application)
         self.assertIn('detail: "Processed album; thumbnail check"', application)

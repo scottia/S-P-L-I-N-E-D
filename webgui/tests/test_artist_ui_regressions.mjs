@@ -25,6 +25,16 @@ const contextFunctions = between(
   "function albumInCurrentArtistContext",
   "function albumBannerKind",
 );
+const graphicalEnhancementFunctions = between(
+  appSource,
+  "const GRAPHICAL_ENHANCEMENT_DEFAULTS",
+  "const state =",
+);
+const albumBannerFunctions = between(
+  appSource,
+  "function albumBannerKind",
+  "function applyAlbumCoordination",
+);
 const hydrateFunction = between(
   appSource,
   "async function hydrateArtistThumbnails",
@@ -1250,6 +1260,27 @@ test("a late API failure cannot overwrite a newer success and Audit retains its 
   assert.equal(events[0][0], "late-api-error-suppressed");
   assert.equal(events[0][1], "/api/preview");
   assert.equal(events[0][2].trace_id, "trace-late");
+});
+
+test("OVERRIDE banner defaults migrate into saved palettes and follow opposing ownership", () => {
+  const enhancement = load(graphicalEnhancementFunctions, {});
+  const normalized = enhancement.normalizeGraphicalEnhancement({banner_styles: {
+    artist: {background: "#123ABC"},
+  }});
+  assert.equal(normalized.banner_styles.artist.background, "#123ABC");
+  assert.deepEqual(JSON.parse(JSON.stringify(normalized.banner_styles.override)), {
+    name: "OVERRIDE", background: "#D3D3D3", frame: "#FFFFFF", letters: "#FF344F",
+  });
+  assert.deepEqual(Object.keys(normalized.banner_styles).slice(-2), ["artist", "override"]);
+
+  const state = {albumOverrides: new Map()};
+  const context = load(albumBannerFunctions, {state});
+  const album = {id: "album-1", album_mbid: "release-1"};
+  assert.equal(context.albumDisplayBannerKind(album, {}), "artist");
+  state.albumOverrides.set("album-1", {writer: "windows"});
+  assert.equal(context.albumDisplayBannerKind(album, {}), "override");
+  state.albumOverrides.set("album-1", {writer: "webgui"});
+  assert.equal(context.albumDisplayBannerKind(album, {}), "artist");
 });
 
 test("Artist Albums row reports shown, Completed, and in Process with status colors", () => {

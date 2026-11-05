@@ -25,6 +25,7 @@ const GRAPHICAL_ENHANCEMENT_DEFAULTS = {
     soundtrack: {name: "SOUNDTRACK", background: "#4B0082", frame: "#B49B00", letters: "#B49B00"},
     various: {name: "VARIOUS", background: "#654321", frame: "#32DDA0", letters: "#32DDA0"},
     artist: {name: "ARTIST", background: "#006B3C", frame: "#D9AD43", letters: "#D9AD43"},
+    override: {name: "OVERRIDE", background: "#D3D3D3", frame: "#FFFFFF", letters: "#FF344F"},
   },
   frame_styles: {
     complete: {name: "Complete", color: "#32DDA0"},
@@ -584,6 +585,9 @@ function albumOverride(album) {
     revision: Number(album.override_revision || 0),
   } : null);
 }
+function albumDisplayBannerKind(album, artist) {
+  return albumOverride(album)?.writer === "windows" ? "override" : albumBannerKind(album, artist);
+}
 function applyAlbumCoordination(rows) {
   if (!Array.isArray(rows)) return false;
   const next = new Map(rows.map(row => [String(row.album_key), row]));
@@ -665,7 +669,7 @@ function renderAlbumStatusKey(albums, artist) {
   const columns = node("div", "album-key-columns");
   const cards = albums.map(album => ({album, state: albumCardState(album, artist)}));
   const countDot = color => cards.filter(card => card.state.dots.some(([dot]) => dot.toLowerCase() === color)).length;
-  const countBanner = kind => albums.filter(album => albumBannerKind(album, artist) === kind).length;
+  const countBanner = kind => albums.filter(album => albumDisplayBannerKind(album, artist) === kind).length;
   const compTracks = state.compGroups.flatMap(group => group.tracks || []);
   const sections = [
     ["Status dots", [
@@ -687,7 +691,8 @@ function renderAlbumStatusKey(albums, artist) {
       parts: [[style.name, style.letters]], banner: style, detail: key === "compiled" ? "Compilation album"
         : key === "featuring" ? "Selected artist is a secondary track credit"
         : key === "soundtrack" ? "Soundtrack release"
-        : key === "various" ? "Various Artists release" : "Artist Album with a Release ID",
+        : key === "various" ? "Various Artists release"
+        : key === "override" ? "Opposing application wrote this Album" : "Artist Album with a Release ID",
       count: countBanner(key),
     }))],
     ["COMP track rows", [
@@ -872,7 +877,7 @@ function renderHeroContents() {
       button.style.setProperty("--mixed-frame-b", "#7c4dff");
     }
     button.setAttribute("aria-label", album.name + ", " + (album.year || "year unknown") + ", " + (album.status || "unprocessed"));
-    const kind = albumBannerKind(album, artist), bannerStyle = albumBannerStyle(kind);
+    const kind = albumDisplayBannerKind(album, artist), bannerStyle = albumBannerStyle(kind);
     const bannerNode = node("span", "album-type-banner", bannerStyle.name); bannerNode.style.setProperty("--banner-bg", bannerStyle.background); bannerNode.style.setProperty("--banner-ink", bannerStyle.letters); bannerNode.style.borderColor = bannerStyle.frame;
     const body = node("span", "album-card-body");
     const picture = node("span", "album-card-picture"); picture.append(album.cover ? image(album.cover, "", album.name + " cover") : node("span", "album-placeholder", "♫"));

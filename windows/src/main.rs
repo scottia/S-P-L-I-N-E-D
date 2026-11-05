@@ -4588,11 +4588,8 @@ fn apply_ui_preferences(state: &mut ApplicationState, preferences: &UiPreference
     } else {
         splined_core::settings::default_adjustment_presets()
     };
-    state.banner_theme_styles = if preferences.banner_theme_styles.len() == 5 {
-        preferences.banner_theme_styles.clone()
-    } else {
-        splined_core::settings::default_banner_theme_styles()
-    };
+    state.banner_theme_styles =
+        splined_core::settings::normalize_banner_theme_styles(&preferences.banner_theme_styles);
     state.album_frame_theme_styles = if preferences.album_frame_theme_styles.len() == 3 {
         preferences.album_frame_theme_styles.clone()
     } else {
@@ -4602,10 +4599,12 @@ fn apply_ui_preferences(state: &mut ApplicationState, preferences: &UiPreference
     state.banner_random_harmony = preferences.banner_random_harmony;
     state.wheel_hue_shift_degrees = preferences.wheel_hue_shift_degrees.min(359);
     state.wheel_brightness_percent = preferences.wheel_brightness_percent.clamp(30, 170);
-    state.banner_theme_baseline_styles = if preferences.banner_theme_baseline_styles.len() == 5 {
-        preferences.banner_theme_baseline_styles.clone()
-    } else {
+    state.banner_theme_baseline_styles = if preferences.banner_theme_baseline_styles.is_empty() {
         state.banner_theme_styles.clone()
+    } else {
+        splined_core::settings::normalize_banner_theme_styles(
+            &preferences.banner_theme_baseline_styles,
+        )
     };
     state.album_frame_theme_baseline_styles =
         if preferences.album_frame_theme_baseline_styles.len() == 3 {
@@ -19523,7 +19522,9 @@ fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRo
             let processed = album.state == splined_core::application::AlbumState::Processed;
             let complete_art = !fallback && processed && has_artist_art && !missing_album_art;
             let (soundtrack, various_artists) = artist_overview_release_banners(snapshot);
-            let banner_key = if featured {
+            let banner_key = if overridden {
+                "override"
+            } else if featured {
                 "featuring"
             } else if fallback {
                 "compiled"
@@ -19806,7 +19807,10 @@ fn artist_overview_legend_counts(
         }
         // Mirror the visible banner's priority, not merely the underlying
         // metadata: a secondary credit replaces the album-type banner.
-        if album.featured {
+        if album.overridden {
+            // The OVERRIDE banner replaces the category banner while the
+            // opposing application owns the latest successful write.
+        } else if album.featured {
             counts.feat += 1;
         } else if album.fallback {
             if album.fallback_complete {
@@ -22981,8 +22985,13 @@ mod tests {
 
         app.album_override_writers
             .insert("arrival".to_string(), "webgui".to_string());
-        let overridden = artist_overview_ui_model(&app).row_data(0).unwrap();
+        let overridden_model = artist_overview_ui_model(&app);
+        let overridden = overridden_model.row_data(0).unwrap();
         assert!(overridden.overridden);
+        assert_eq!(overridden.banner_display, "O\nV\nE\nR\nR\nI\nD\nE");
+        let counts = artist_overview_legend_counts(&overridden_model, &[]);
+        assert_eq!(counts.overridden, 1);
+        assert_eq!(counts.artist, 0);
         assert!(!(0..overridden.bullets.row_count()).any(|index| {
             overridden.bullets.row_data(index).is_some_and(|bullet| {
                 bullet.tip == "Missing Album Art"
