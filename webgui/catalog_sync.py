@@ -68,6 +68,17 @@ def _digest(value: Any) -> str:
     return sha256(_canonical(value).encode("utf-8", "surrogateescape")).hexdigest()
 
 
+def _is_windows_synchronized_difference(difference: dict[str, Any]) -> bool:
+    """Ignore WebGUI-owned presentation/validation values during integrity checks."""
+    table = str(difference.get("entity_table") or "")
+    allowed = WINDOWS_SYNCHRONIZED_FIELDS.get(table)
+    if not allowed:
+        return False
+    source = difference.get("source_value") or {}
+    target = difference.get("target_value") or {}
+    return any(source.get(name) != target.get(name) for name in allowed)
+
+
 class CatalogSynchronizer:
     """Consume the durable PostgreSQL inbox after a proven baseline."""
 
@@ -211,19 +222,38 @@ class CatalogSynchronizer:
             baseline_change_revision = int(row["change_revision"])
         with closing(self.database.connect()) as db, db:
             compared = db.raw.execute(
-                "SELECT run_id,differences,conflicts,failures,status FROM sqlite_reconciliation_runs "
+                "SELECT run_id,status,table_counts FROM sqlite_reconciliation_runs "
                 "WHERE source_fingerprint=%s ORDER BY started_at DESC LIMIT 1",
                 (fingerprint,),
             ).fetchone()
+            catalog_tables = ("artists", "albums", "tracks")
+            table_counts = dict((compared or {}).get("table_counts") or {})
+            catalog_failures = sum(
+                int((table_counts.get(table) or {}).get("failed", 0))
+                for table in catalog_tables
+            )
+            compared_differences = []
+            if compared and compared["status"] == "compared":
+                compared_differences = [
+                    difference
+                    for difference in (
+                        dict(item)
+                        for item in db.raw.execute(
+                            "SELECT entity_table,source_value,target_value FROM salite_diff "
+                            "WHERE last_run_id=%s AND entity_table=ANY(%s)",
+                            (compared["run_id"], list(catalog_tables)),
+                        )
+                    )
+                    if _is_windows_synchronized_difference(difference)
+                ]
             if (
                 not compared
                 or compared["status"] != "compared"
-                or int(compared["differences"] or 0) != 0
-                or int(compared["conflicts"] or 0) != 0
-                or int(compared["failures"] or 0) != 0
+                or catalog_failures
+                or compared_differences
             ):
                 raise ValueError(
-                    "Compare this exact SNAP again after applying/reviewing differences; a Live baseline requires zero differences"
+                    "Compare this exact SNAP again after applying/reviewing Windows-synchronized catalog differences; a Live baseline requires zero synchronized differences"
                 )
             existing = db.raw.execute(
                 "SELECT baseline_revision,last_received_revision,last_applied_revision "
@@ -375,13 +405,18 @@ class CatalogSynchronizer:
         failed = sum(int(result["tables"][name].get("failed", 0)) for name in catalog_tables)
         with closing(self.database.connect()) as db, db:
             differences = [
-                dict(row)
-                for row in db.raw.execute(
+                difference
+                for difference in (
+                    dict(row)
+                    for row in db.raw.execute(
                     "SELECT entity_table,entity_key,difference_type,old_digest,new_digest "
+                    ",source_value,target_value "
                     "FROM salite_diff WHERE last_run_id=%s AND entity_table=ANY(%s) "
                     "ORDER BY entity_table,entity_key",
                     (result["run_id"], list(catalog_tables)),
                 )
+                )
+                if _is_windows_synchronized_difference(difference)
             ]
             status = "match" if not differences and not failed else "drifted"
             source_digest = _digest(

@@ -136,9 +136,11 @@ Live activation has two explicit phases:
    rules. Source-only rows and safe authoritative updates may be staged;
    ambiguous identity conflicts remain owner-review items.
 
-Only a conflict-free or explicitly reviewed baseline records `ready`. Existing
-SNAP reconciliation is the recovery/migration tool during this phase and is not
-removed.
+Only a baseline with zero Windows-synchronized Artist, Album, and Track
+differences records `ready`. PostgreSQL-exclusive presentation/validation
+differences and auxiliary tables outside the initial Live stream do not block a
+catalog baseline. Existing SNAP reconciliation is the recovery/migration tool
+during this phase and is not removed.
 
 Manual SNAP Apply is available only in `manual-snap` mode. Immediately before
 each Album change it rechecks canonical identity and the durable PR #148 artwork
@@ -150,11 +152,13 @@ projection.
 After activation, an operator can create a fresh immutable recovery SNAP after
 the received and applied revisions reach the same Windows revision, then run
 **Verify Live Integrity**. The existing reconciliation projection independently
-compares the synchronized Artist, Album, and Track rows and records source and
-target counts plus diagnostic digests in `catalog_sync_integrity_checks`. A
-mismatch marks the source `drifted`, stops automatic live Apply, preserves the
-outbox, and directs the operator to the recorded SNAP differences. Integrity
-checks never repair data silently.
+compares only the Windows-synchronized fields of Artist, Album, and Track rows
+and records source and target counts plus diagnostic digests in
+`catalog_sync_integrity_checks`. PostgreSQL-exclusive embedded-art validation
+and other WebGUI presentation fields are preserved and cannot manufacture
+catalog drift. A synchronized-field mismatch marks the source `drifted`, stops
+automatic live Apply, preserves the outbox, and directs the operator to the
+recorded SNAP differences. Integrity checks never repair data silently.
 
 This first Draft deliberately does not schedule periodic full-catalog SNAP
 creation. An accepted automatic cadence and retention policy remains a promotion

@@ -655,6 +655,64 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertEqual(matched["status"], "match")
             self.assertEqual(matched["differences"], 0)
 
+            album_key = source_rows["albums"][0]["album_key"]
+            with closing(self.db.connect()) as db, db:
+                db.execute(
+                    "UPDATE albums SET embedded_tracks=7,embedded_validation_status='verified',"
+                    "embedded_validated_at=now() WHERE album_key=?",
+                    (album_key,),
+                )
+            presentation_only = synchronizer.verify_integrity(
+                snapshot, str(self.runtime.music)
+            )
+            self.assertEqual(presentation_only["status"], "match")
+            self.assertEqual(presentation_only["differences"], 0)
+            with closing(self.db.connect()) as db:
+                preserved = db.execute(
+                    "SELECT embedded_tracks,embedded_validation_status "
+                    "FROM albums WHERE album_key=?",
+                    (album_key,),
+                ).fetchone()
+                self.assertEqual(preserved["embedded_tracks"], 7)
+                self.assertEqual(preserved["embedded_validation_status"], "verified")
+
+            with closing(self.db.connect()) as db, db:
+                db.execute(
+                    "UPDATE catalog_sync_sources SET baseline_state='drifted' "
+                    "WHERE source_instance_id=?",
+                    (source_id,),
+                )
+            with closing(sqlite3.connect(snapshot)) as source, source:
+                source.execute(
+                    "INSERT INTO cache_entries(cache_key,cache_type,album_key,payload_json,"
+                    "splined_version,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                    (
+                        "pr150-baseline-auxiliary",
+                        "acceptance",
+                        None,
+                        "{}",
+                        "test",
+                        "2026-11-05T00:00:00Z",
+                        "2026-11-05T00:00:00Z",
+                    ),
+                )
+            raw_compare = reconciler.compare(
+                str(snapshot),
+                str(self.runtime.music),
+                str(self.runtime.music),
+                trigger="catalog-integrity-recovery",
+            )
+            self.assertGreater(raw_compare["differences"], 0)
+            recovered = synchronizer.authorize_baseline(
+                str(snapshot), str(self.runtime.music)
+            )
+            recovered_source = next(
+                item
+                for item in recovered["sources"]
+                if item["source_instance_id"] == source_id
+            )
+            self.assertEqual(recovered_source["baseline_state"], "ready")
+
             removed_track = source_rows["tracks"][0]["track_key"]
             with closing(self.db.connect()) as db, db:
                 db.execute("DELETE FROM tracks WHERE track_key=?", (removed_track,))
