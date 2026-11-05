@@ -4,6 +4,7 @@
 //! Album tags. Explicit database refreshes also reconcile the complete track
 //! inventory so normal startup and Artist overview never need to open every file.
 
+use crate::catalog_sync::ensure_sqlite_schema as ensure_catalog_sync_schema;
 use crate::config::{Config, resolve_sources};
 use crate::embedded_artwork::embedded_front_sha256s;
 use crate::history::{AlbumHistoryState, album_history_status, load_completion_history, unix_now};
@@ -2676,6 +2677,7 @@ fn open_database(path: &Path, shared: bool) -> Result<Connection, String> {
             .map_err(db_error("set SQLite schema version"))?;
     }
     ensure_sqlite_schema(&connection)?;
+    ensure_catalog_sync_schema(&connection)?;
     ensure_artist_art_schema(&connection)?;
     repair_cover_only_processed_statuses(&connection)?;
     Ok(connection)

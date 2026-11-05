@@ -52,10 +52,15 @@ SQLite triggers on the authoritative `artists`, `albums`, and `tracks` tables
 append a local monotonic revision to a durable outbox in the same transaction as
 the catalog mutation. The trigger records entity table, exact entity key,
 operation, event identity, and creation time. It does not rely on `updated_at`.
+The trigger guard is enabled only while Windows is in `live` mode. Manual SNAP
+and Off therefore do not accumulate a hidden routine outbox; any revisions
+already queued during Live mode remain durable until acknowledged.
 
-The Windows publisher opens one consistent SQLite read transaction, coalesces
-superseded events for the same entity, and serializes the current complete row
-projection. A missing row becomes a tombstone. Each transmitted event includes:
+The Windows publisher opens one consistent SQLite read transaction and
+serializes a current complete row projection for every queued revision. Earlier
+revisions for an entity may therefore carry the same converged projection as a
+later revision, but revisions are never skipped. A missing row becomes a
+tombstone. Each transmitted event includes:
 
 - stable Windows source-instance ID;
 - local revision and event ID;
@@ -65,9 +70,10 @@ projection. A missing row becomes a tombstone. Each transmitted event includes:
 - latest Album artwork-coordination revision observed by Windows;
 - schema/protocol version.
 
-The outbox row remains until PostgreSQL records an applied or deterministic
-no-op acknowledgement for that exact event. Retry after disconnect or restart
-reuses the same event identity.
+The outbox row remains until PostgreSQL durably accepts that exact immutable
+event envelope. Retry after disconnect or restart reuses the same event identity;
+the PostgreSQL ledger then retains the event independently until guarded Apply
+records an applied or deterministic no-op outcome.
 
 ## PostgreSQL ingestion and guarded apply
 
@@ -107,11 +113,19 @@ Only a conflict-free or explicitly reviewed baseline records `ready`. Existing
 SNAP reconciliation is the recovery/migration tool during this phase and is not
 removed.
 
-After activation, Windows periodically publishes per-table row counts and
-complete-row digests over the synchronized projection. PostgreSQL independently
-recomputes its Windows-owned projection. A mismatch marks the source `drifted`,
-stops automatic live Apply, preserves the outbox, and directs the operator to a
-manual SNAP comparison. Integrity checks never repair data silently.
+After activation, an operator can create a fresh immutable recovery SNAP after
+the received and applied revisions reach the same Windows revision, then run
+**Verify Live Integrity**. The existing reconciliation projection independently
+compares the synchronized Artist, Album, and Track rows and records source and
+target counts plus diagnostic digests in `catalog_sync_integrity_checks`. A
+mismatch marks the source `drifted`, stops automatic live Apply, preserves the
+outbox, and directs the operator to the recorded SNAP differences. Integrity
+checks never repair data silently.
+
+This first Draft deliberately does not schedule periodic full-catalog SNAP
+creation. An accepted automatic cadence and retention policy remains a promotion
+gate before Live can become the recommended default; Manual SNAP stays the
+recovery authority in the meantime.
 
 ## Recovery and idempotency
 
@@ -142,6 +156,12 @@ manual SNAP comparison. Integrity checks never repair data silently.
    field ownership are required rather than a long global processing lock.
 7. Clock skew is irrelevant to ordering but remains diagnostic metadata; local
    revisions and event identity are authoritative.
+8. The first Draft live surface is Artists, Albums, and Tracks because those are
+   the catalog tables protected from WebGUI Full Refresh. Recording-release
+   caches, COMP progress, cache history, and other auxiliary SNAP tables remain
+   on Manual SNAP recovery until their individual ownership and replay behavior
+   are accepted; Live must not be represented as a complete SNAP replacement
+   before that work is proven.
 
 ## Validation plan
 

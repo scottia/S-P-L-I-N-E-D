@@ -209,6 +209,8 @@ CREATE TABLE IF NOT EXISTS album_artwork_write_state (
     event_id TEXT NOT NULL UNIQUE,
     source_completed_ms INTEGER NOT NULL,
     revision INTEGER NOT NULL DEFAULT 0,
+    physically_verified INTEGER NOT NULL DEFAULT 0,
+    verified_revision INTEGER NOT NULL DEFAULT 0,
     completed_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );

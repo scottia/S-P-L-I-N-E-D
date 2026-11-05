@@ -9,6 +9,11 @@ mode = "read"
 # Runtime log threshold: debug | info | warning | error
 verbosity = "info"
 
+[catalog_sync]
+# manual-snap is the compatibility default; Live requires an authorized
+# zero-difference immutable SQLite SNAP baseline.
+mode = "manual-snap"
+
 [library]
 music_library = ""
 ignored_subs = []

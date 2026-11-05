@@ -66,6 +66,30 @@ mounts.
 | `mode` | `"read"` | `read` evaluates; `write` may install artwork |
 | `verbosity` | `"info"` | Runtime-log threshold: `none`, `debug`, `info`, `warning`, or `error`; `none` takes effect after restart, without removing PostgreSQL WebGUI events or native operational status |
 
+## `[catalog_sync]`
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `mode` | `"manual-snap"` | `live` publishes revisioned Windows-authoritative Artist, Album, and Track changes after an authorized zero-difference baseline; `manual-snap` retains the existing SNAP recovery/migration path; `off` keeps the catalogs independent |
+
+Windows persists this selection in Config v5. WebGUI persists the corresponding
+runtime selection in PostgreSQL so that a container restart cannot silently
+change catalog authority. Album last-writer coordination is a separate feature
+and can remain enabled in any catalog mode. Live mode disables routine startup
+or scheduled SNAP Apply and Windows scheduled reconciliation SNAP creation; it
+does not disable ordinary SQLite database backups or an explicit recovery SNAP.
+
+In Live mode, **Verify Live Integrity** accepts a fresh immutable Windows SNAP
+only after its revision equals PostgreSQL's received and applied revision. A
+catalog mismatch records diagnostics, marks the source drifted, and stops
+automatic live Apply without repairing data.
+
+The current Draft live protocol synchronizes the three Full-Refresh-protected
+catalog tables: Artists, Albums, and Tracks. Auxiliary SQLite caches and COMP
+progress tables remain covered by Manual SQLite SNAP recovery until their
+field ownership and replay rules receive separate acceptance evidence. See
+[Live catalog synchronization architecture](live-catalog-synchronization-architecture.md).
+
 ## `[library]`
 
 | Key | Default | Meaning |

@@ -1245,7 +1245,13 @@ function downloadJsonFile(name, value) {
   }
   async function renderSqliteReconciliation(host) {
   const section = node("section", "sqlite-reconciliation");
-  section.append(node("h5", "", "SQLite Reconciliation"), node("p", "settings-subcopy", "Compare an authorized read-only SQLite snapshot with this PostgreSQL catalog. Differences remain reviewable in salite_diff; conflicts are never auto-applied."));
+  section.append(node("h5", "", "Catalog Synchronization"), node("p", "settings-subcopy", "Windows SQLite remains authoritative. Live Synchronization streams durable incremental changes; Manual SQLite SNAP remains the recovery and migration path."));
+  const syncMode = node("select");
+  for (const [value, label] of [["live", "Live Synchronization"], ["manual-snap", "Manual SQLite SNAP"], ["off", "Off · Independent catalogs"]]) { const option = node("option", "", label); option.value = value; syncMode.append(option); }
+  const syncModeLabel = node("label", "setting-field"); syncModeLabel.append(node("span", "", "Catalog Synchronization Mode"), syncMode);
+  const saveSyncMode = node("button", "operation-button", "Save Catalog Mode"); saveSyncMode.type = "button";
+  const syncState = node("p", "runtime-summary", "Loading live synchronization state…");
+  section.append(syncModeLabel, saveSyncMode, syncState, node("h5", "", "Manual SQLite SNAP · Recovery & baseline"), node("p", "settings-subcopy", "Compare an authorized read-only SQLite snapshot with this PostgreSQL catalog. Differences remain reviewable in salite_diff; conflicts are never auto-applied."));
   const source = node("select"), sourceLabel = node("label", "setting-field"); sourceLabel.append(node("span", "", "Authorized SQLite snapshot"), source);
   const sourceState = node("p", "snapshot-state", "Choose a snapshot created after the Windows processing you want to reconcile.");
   const sourceRoot = field(section, "Original library root recorded in snapshot (source)"), targetRoot = field(section, "WebGUI library root (target)"); targetRoot.value = state.server?.music || ""; targetRoot.readOnly = true;
@@ -1256,9 +1262,9 @@ function downloadJsonFile(name, value) {
   const summary = node("p", "runtime-summary", "Loading reconciliation status…"), differences = node("pre", "diagnostic-events reconciliation-events", "Loading recorded differences…");
   const resolution = node("select");
   for (const [value, label] of [["", "All differences"], ["safe", "Safe pending"], ["conflict", "Conflicts"], ["derived", "Derived"], ["applied", "Applied"], ["skipped", "Failed / skipped"]]) { const option = node("option", "", label); option.value = value; resolution.append(option); }
-  const compare = node("button", "operation-button", "Compare / Dry Run"), savePaths = node("button", "operation-button", "Save Snapshot & Paths"), apply = node("button", "operation-button", "Apply Safe Differences"), refresh = node("button", "operation-button", "Refresh Differences");
-  compare.type = savePaths.type = apply.type = refresh.type = "button"; apply.disabled = true;
-  const actions = node("div", "connection-actions"); actions.append(compare, savePaths, apply, refresh, resolution); section.append(actions, summary, differences);
+  const compare = node("button", "operation-button", "Compare / Dry Run"), savePaths = node("button", "operation-button", "Save Snapshot & Paths"), apply = node("button", "operation-button", "Apply Safe Differences"), authorizeBaseline = node("button", "operation-button", "Authorize Zero-Difference Baseline"), verifyIntegrity = node("button", "operation-button", "Verify Live Integrity"), refresh = node("button", "operation-button", "Refresh Differences");
+  compare.type = savePaths.type = apply.type = authorizeBaseline.type = verifyIntegrity.type = refresh.type = "button"; apply.disabled = authorizeBaseline.disabled = verifyIntegrity.disabled = true;
+  const actions = node("div", "connection-actions"); actions.append(compare, savePaths, apply, authorizeBaseline, verifyIntegrity, refresh, resolution); section.append(actions, summary, differences);
   const startup = node("fieldset", "startup-snap-options");
   startup.append(node("legend", "", "Auto SNAP on start · Advanced"));
   const startupRadios = new Map();
@@ -1278,7 +1284,7 @@ function downloadJsonFile(name, value) {
   const intervalLabel = node("label", "setting-field"); intervalLabel.append(node("span", "", "Interval (minutes)"), interval);
   const saveSchedule = node("button", "operation-button", "Save Safe Schedule"); saveSchedule.type = "button";
   schedule.append(node("h6", "", "Optional schedule · disabled by default"), enabledLabel, autoLabel, intervalLabel, saveSchedule, node("p", "settings-subcopy", "Scheduled runs use these saved paths and can never apply conflicts or delete PostgreSQL records.")); section.append(schedule); host.append(section);
-  let latestRun = "", savedSettings = {}, sourceItems = new Map();
+  let latestRun = "", savedSettings = {}, syncSettings = {mode: "manual-snap"}, sourceItems = new Map();
   const describeSource = () => {
     const item = sourceItems.get(source.value);
     if (!source.value) {
@@ -1300,21 +1306,23 @@ function downloadJsonFile(name, value) {
     savedSettings = {...settings};
     summary.textContent = last ? `Last run ${last.run_id} · ${last.status} · ${last.differences} difference(s) · ${last.applied || 0} applied · ${last.conflicts} conflict(s) · ${last.failures} failure(s)` : "No reconciliation run has been recorded.";
     summary.classList.toggle("operation-error", Boolean(last?.failures));
-    latestRun = last?.run_id || ""; apply.disabled = !latestRun || !result.pending_safe;
+    latestRun = last?.run_id || ""; apply.disabled = !latestRun || !result.pending_safe || syncSettings.mode === "live";
+    authorizeBaseline.disabled = !latestRun || Number(last?.differences || 0) !== 0 || !source.value;
     differences.textContent = result.differences?.length ? [...result.differences].reverse().map(item => `${String(item.id).padStart(7, "0")}  ${item.entity_table}  ${item.difference_type}  ${item.resolution}  ${item.application_outcome}  ${item.entity_key}${item.error ? "  ERROR=" + item.error : ""}`).join("\n") : "No recorded differences match this filter.";
     enabled.checked = Boolean(settings.enabled); autoApply.checked = Boolean(settings.auto_apply_safe); interval.value = String(settings.interval_minutes || 1440);
     (startupRadios.get(settings.startup_mode || "off") || startupRadios.get("off")).checked = true;
     if (settings.source_root && !sourceRoot.value) sourceRoot.value = settings.source_root;
     if (settings.source_path && !source.value) source.value = settings.source_path;
   };
-  const load = async () => describe(await api("/api/reconciliation?resolution=" + encodeURIComponent(resolution.value)));
+  const describeSync = result => { syncSettings = {...(result.settings || {mode: "manual-snap"})}; syncMode.value = syncSettings.mode || "manual-snap"; const ready = (result.sources || []).filter(item => item.baseline_state === "ready"); syncState.textContent = `${syncMode.options[syncMode.selectedIndex]?.text || syncMode.value} · ${ready.length} ready source(s) · ${result.pending || 0} pending · ${result.failed || 0} blocked/failed`; verifyIntegrity.disabled = syncSettings.mode !== "live" || !source.value || ready.length === 0; };
+  const load = async () => { const [history, sync] = await Promise.all([api("/api/reconciliation?resolution=" + encodeURIComponent(resolution.value)), api("/api/catalog-sync")]); describeSync(sync); describe(history); };
   try {
-    const [sources, result] = await Promise.all([api("/api/reconciliation/sources"), api("/api/reconciliation")]);
+    const [sources, result, sync] = await Promise.all([api("/api/reconciliation/sources"), api("/api/reconciliation"), api("/api/catalog-sync")]);
     const blank = node("option", "", sources.length ? "Choose an authorized snapshot" : "No authorized snapshots found"); blank.value = ""; source.append(blank);
     sourceItems = new Map(sources.map(item => [item.path, item]));
     for (const item of sources) { const option = node("option", "", `${item.label} · ${new Date(item.modified_at).toLocaleString()} · ${Math.ceil(item.bytes / 1024)} KiB`); option.value = item.path; source.append(option); }
     if (result.settings?.source_path && ![...source.options].some(option => option.value === result.settings.source_path)) { const option = node("option", "", result.settings.source_path); option.value = result.settings.source_path; source.append(option); }
-    source.value = result.settings?.source_path || ""; sourceRoot.value = result.settings?.source_root || ""; describeSource(); describe(result);
+    source.value = result.settings?.source_path || ""; sourceRoot.value = result.settings?.source_root || ""; describeSource(); describeSync(sync); describe(result);
   } catch (error) { summary.textContent = error.message; summary.classList.add("operation-error"); }
   savePaths.addEventListener("click", () => runAction(async () => {
     if (!source.value) throw new Error("Choose an authorized SQLite snapshot before saving paths");
@@ -1323,7 +1331,10 @@ function downloadJsonFile(name, value) {
   }));
   compare.addEventListener("click", () => runAction(async () => { if (!source.value) throw new Error("Choose the new Windows snapshot before comparing"); const result = await post("/api/reconciliation/compare", {source_path: source.value, source_root: sourceRoot.value, target_root: targetRoot.value}); latestRun = result.run_id; setStatus(`SQLite comparison recorded ${result.differences} difference(s) · ${result.safe} safe · ${result.conflicts} conflict(s)`); await load(); }));
   apply.addEventListener("click", () => runAction(async () => { if (!window.confirm("Apply only the safe, unchanged differences from this snapshot? Conflicts will remain unresolved.")) return; const result = await post("/api/reconciliation/apply", {run_id: latestRun}); setStatus(result.failures ? `SQLite apply incomplete · ${result.applied}/${result.attempted} applied · ${result.failures} failed; review Failed / skipped` : `Applied all ${result.applied} safe SQLite difference(s) and recalculated statuses`, result.failures ? "error" : "ready"); await load(); }));
-  source.addEventListener("change", describeSource); refresh.addEventListener("click", () => void load()); resolution.addEventListener("change", () => void load());
+  authorizeBaseline.addEventListener("click", () => runAction(async () => { if (!source.value) throw new Error("Choose the exact zero-difference Windows SNAP"); await post("/api/catalog-sync/baseline", {source_path: source.value, source_root: sourceRoot.value}); setStatus("Authorized the immutable zero-difference Live baseline"); await load(); }));
+  verifyIntegrity.addEventListener("click", () => runAction(async () => { if (!source.value) throw new Error("Choose a fresh Windows SNAP captured after the live queue reached zero"); const result = await post("/api/catalog-sync/integrity", {source_path: source.value, source_root: sourceRoot.value}); setStatus(result.status === "match" ? `Live catalog integrity verified at revision ${result.source_revision}` : `Live catalog drift detected · ${result.differences} difference(s); automatic Apply stopped`, result.status === "match" ? "ready" : "error"); await load(); }));
+  saveSyncMode.addEventListener("click", () => runAction(async () => { const result = await post("/api/catalog-sync/settings", {mode: syncMode.value, source_root: sourceRoot.value, target_root: targetRoot.value}); describeSync(result); setStatus(`Catalog Synchronization Mode saved · ${syncMode.options[syncMode.selectedIndex]?.text || syncMode.value}`); await load(); }));
+  source.addEventListener("change", () => { describeSource(); verifyIntegrity.disabled = syncSettings.mode !== "live" || !source.value; }); refresh.addEventListener("click", () => void load()); resolution.addEventListener("change", () => void load());
   const startupMode = () => [...startupRadios.entries()].find(([, input]) => input.checked)?.[0] || "off";
   saveStartup.addEventListener("click", () => runAction(async () => { const mode = startupMode(); await post("/api/reconciliation/settings", {enabled: enabled.checked, auto_apply_safe: autoApply.checked, startup_mode: mode, interval_minutes: Number(interval.value), source_path: source.value, source_root: sourceRoot.value, target_root: targetRoot.value}); setStatus(mode === "off" ? "Auto SNAP on start disabled" : `Auto SNAP on start saved · ${mode === "compare" ? "Compare only" : "Compare + Apply safe"}`); await load(); }));
   saveSchedule.addEventListener("click", () => runAction(async () => { await post("/api/reconciliation/settings", {enabled: enabled.checked, auto_apply_safe: autoApply.checked, startup_mode: startupMode(), interval_minutes: Number(interval.value), source_path: source.value, source_root: sourceRoot.value, target_root: targetRoot.value}); setStatus(enabled.checked ? "Safe SQLite reconciliation schedule saved" : "SQLite reconciliation schedule disabled"); await load(); }));

@@ -60,6 +60,25 @@ pub enum Verbosity {
     Trace,
 }
 
+/// Catalog transport is independent from Album artwork-write coordination.
+/// Manual SNAP remains the compatibility default until an explicit baseline
+/// has proven that Live Synchronization can resume from a known SQLite
+/// revision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum CatalogSynchronizationMode {
+    Live,
+    #[default]
+    ManualSnap,
+    Off,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct CatalogSyncConfig {
+    pub mode: CatalogSynchronizationMode,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RangeConfig {
     pub min: u32,
@@ -326,6 +345,8 @@ pub struct Config {
     pub logging: LoggingConfig,
     #[serde(default)]
     pub history: HistoryConfig,
+    #[serde(default)]
+    pub catalog_sync: CatalogSyncConfig,
 }
 
 fn default_config_version() -> u32 {
@@ -493,6 +514,7 @@ impl Default for Config {
             source_policies,
             logging: LoggingConfig::default(),
             history: HistoryConfig::default(),
+            catalog_sync: CatalogSyncConfig::default(),
         }
     }
 }

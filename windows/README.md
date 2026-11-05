@@ -111,6 +111,17 @@ queued durably in SQLite if a configured service is temporarily unavailable.
 Use TLS and a narrowly permitted PostgreSQL account for non-loopback service
 access.
 
+Catalog synchronization is configured separately under **Settings → Processing
+& Logs**. **Manual SQLite SNAP** is the compatibility default. **Live
+Synchronization** enables the durable SQLite revision outbox only after the
+matching WebGUI has authorized a zero-difference immutable SNAP baseline;
+**Off** leaves the catalogs independent. The initial Draft reuses the protected
+Album Coordination PostgreSQL connection as its transport, but it does not
+reuse Album override state as catalog authority. Changing this mode takes
+effect for the background publisher after Windows restarts. Live mode suppresses
+scheduled reconciliation SNAP creation only; normal SQLite backups and manual
+recovery snapshots remain available.
+
 ## Application modules
 
 - `src/application.rs`: library views, filters, selection, candidate,
@@ -120,6 +131,8 @@ access.
 - `src/media_database.rs`: authoritative `splined.db` projection and updates.
 - `src/override_coordination.rs`: optional PostgreSQL last-writer exchange plus
   the durable SQLite acknowledgement/outbox boundary.
+- `src/catalog_sync.rs`: optional revisioned Windows-authoritative catalog
+  outbox and PostgreSQL delivery boundary.
 - `src/scan_runtime.rs`: real provider/artwork processing.
 - `src/settings.rs` and `src/credential_store.rs`: Config v5 and provider
   credential services.

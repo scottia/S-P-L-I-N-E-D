@@ -7,6 +7,11 @@ mode = "read"
 # Runtime log threshold: none | debug | info | warning | error
 verbosity = "info"
 
+[catalog_sync]
+# The WebGUI persists the selected runtime mode in PostgreSQL. This matching
+# reference value documents the shared three-mode contract.
+mode = "manual-snap"
+
 [library]
 music_library = "/music"
 ignored_subs = []

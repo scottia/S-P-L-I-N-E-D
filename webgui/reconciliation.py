@@ -1683,6 +1683,13 @@ class SQLiteReconciler:
         affected_album_keys: set[str] = set()
         with self._operation_lock, closing(self.database.connect()) as db, db:
             raw = db.raw
+            catalog_mode = raw.execute(
+                "SELECT mode FROM catalog_sync_settings WHERE singleton=TRUE"
+            ).fetchone()
+            if catalog_mode and catalog_mode["mode"] == "live":
+                raise RuntimeError(
+                    "Manual SNAP apply is disabled while Live Synchronization is active; switch to Manual SQLite SNAP for recovery"
+                )
             # Hold the jobs table stable for the whole apply transaction. A
             # worker cannot transition a queued Album into running between the
             # idle check and status reconciliation.
@@ -2112,6 +2119,14 @@ class SQLiteReconciler:
         startup_mode = str(payload.get("startup_mode", "off") or "off").strip().casefold()
         if startup_mode not in {"off", "compare", "apply-safe"}:
             raise ValueError("Startup SNAP mode must be Off, Compare only, or Apply safe")
+        with closing(self.database.connect()) as mode_db:
+            catalog_mode = mode_db.raw.execute(
+                "SELECT mode FROM catalog_sync_settings WHERE singleton=TRUE"
+            ).fetchone()
+        if catalog_mode and catalog_mode["mode"] == "live" and (enabled or startup_mode != "off"):
+            raise ValueError(
+                "Scheduled and startup SNAP reconciliation are disabled while Live Synchronization is active"
+            )
         interval = int(payload.get("interval_minutes", 1440))
         if not 15 <= interval <= 10080:
             raise ValueError("Scheduled reconciliation interval must be 15 to 10080 minutes")

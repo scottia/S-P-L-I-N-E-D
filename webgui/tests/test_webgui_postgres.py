@@ -46,7 +46,8 @@ from webgui.jobs import JobAdapter, JobQueue
 from webgui.reconciliation import SQLiteReconciler
 from webgui.server import create_app
 from webgui.catalog import embedded_track_artwork_bytes
-from webgui.coordination import record_event
+from webgui.coordination import canonical_album_identity, record_event
+from webgui.catalog_sync import CatalogSynchronizer, _digest
 from webgui.credentials import Credentials
 
 
@@ -131,6 +132,288 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             "image": self.services.catalog.image(self.cover),
             "adjustments": {"Brightness": 40},
         }
+
+    def test_live_catalog_event_is_idempotent_and_preserves_postgresql_only_fields(self):
+        reconciler = SQLiteReconciler(
+            self.db,
+            self.runtime.cache,
+            self.runtime.music,
+            start_scheduler=False,
+        )
+        synchronizer = CatalogSynchronizer(
+            self.db, reconciler, start_worker=False
+        )
+        source_id = "windows-integration-source"
+        try:
+            with closing(self.db.connect()) as db, db:
+                db.execute(
+                    "UPDATE albums SET embedded_tracks=1,embedded_validation_status='verified' "
+                    "WHERE album_key=?",
+                    (self.row["album_key"],),
+                )
+                db.execute(
+                    "INSERT INTO catalog_sync_sources(source_instance_id,source_label,baseline_state,"
+                    "baseline_revision,last_received_revision,last_applied_revision,source_root,target_root) "
+                    "VALUES(?,?,'ready',0,1,0,?,?)",
+                    (source_id, "integration", str(self.runtime.music), str(self.runtime.music)),
+                )
+                db.execute(
+                    "UPDATE catalog_sync_settings SET mode='live',source_root=?,target_root=? WHERE singleton=TRUE",
+                    (str(self.runtime.music), str(self.runtime.music)),
+                )
+                payload = {
+                    name: self.row[name]
+                    for name in WINDOWS_SYNCHRONIZED_FIELDS["albums"]
+                    if name in self.row
+                }
+                payload["album_name"] = "Live Synchronized Album"
+                db.execute(
+                    "INSERT INTO catalog_sync_events(source_instance_id,local_revision,event_id,"
+                    "entity_table,entity_key,operation,payload,payload_digest) "
+                    "VALUES(?,1,'event-1','albums',?,'upsert',?,?)",
+                    (source_id, self.row["album_key"], Jsonb(payload), _digest(payload)),
+                )
+            self.assertEqual(synchronizer.apply_pending()["applied"], 1)
+            self.assertEqual(synchronizer.apply_pending(), {"applied": 0, "noop": 0, "blocked": 0, "failed": 0})
+            with closing(self.db.connect()) as db:
+                album = db.execute(
+                    "SELECT album_name,embedded_tracks,embedded_validation_status FROM albums WHERE album_key=?",
+                    (self.row["album_key"],),
+                ).fetchone()
+                self.assertEqual(album["album_name"], "Live Synchronized Album")
+                self.assertEqual(album["embedded_tracks"], 1)
+                self.assertEqual(album["embedded_validation_status"], "verified")
+                self.assertEqual(
+                    db.execute(
+                        "SELECT count(*) AS n FROM catalog_sync_events WHERE status='applied'"
+                    ).fetchone()["n"],
+                    1,
+                )
+        finally:
+            synchronizer.close()
+            reconciler.close()
+
+    def test_live_catalog_revision_gap_stops_automatic_apply(self):
+        reconciler = SQLiteReconciler(
+            self.db,
+            self.runtime.cache,
+            self.runtime.music,
+            start_scheduler=False,
+        )
+        synchronizer = CatalogSynchronizer(
+            self.db, reconciler, start_worker=False
+        )
+        source_id = "windows-gap-source"
+        try:
+            with closing(self.db.connect()) as db, db:
+                db.execute(
+                    "INSERT INTO catalog_sync_sources(source_instance_id,source_label,baseline_state,"
+                    "baseline_revision,last_received_revision,last_applied_revision,source_root,target_root) "
+                    "VALUES(?,?,'ready',0,2,0,?,?)",
+                    (source_id, "gap", str(self.runtime.music), str(self.runtime.music)),
+                )
+                db.execute(
+                    "UPDATE catalog_sync_settings SET mode='live',source_root=?,target_root=? WHERE singleton=TRUE",
+                    (str(self.runtime.music), str(self.runtime.music)),
+                )
+                db.execute(
+                    "INSERT INTO catalog_sync_events(source_instance_id,local_revision,event_id,"
+                    "entity_table,entity_key,operation,payload,payload_digest) "
+                    "VALUES(?,2,'event-gap','albums',?,'delete','{}',?)",
+                    (source_id, self.row["album_key"], _digest({})),
+                )
+            self.assertEqual(synchronizer.apply_pending()["blocked"], 1)
+            with closing(self.db.connect()) as db:
+                source = db.execute(
+                    "SELECT baseline_state,last_applied_revision FROM catalog_sync_sources WHERE source_instance_id=?",
+                    (source_id,),
+                ).fetchone()
+                self.assertEqual(source["baseline_state"], "drifted")
+                self.assertEqual(source["last_applied_revision"], 0)
+                self.assertIsNotNone(
+                    db.execute("SELECT album_key FROM albums WHERE album_key=?", (self.row["album_key"],)).fetchone()
+                )
+        finally:
+            synchronizer.close()
+            reconciler.close()
+
+    def test_live_catalog_waits_for_windows_physical_acknowledgement(self):
+        reconciler = SQLiteReconciler(
+            self.db,
+            self.runtime.cache,
+            self.runtime.music,
+            start_scheduler=False,
+        )
+        synchronizer = CatalogSynchronizer(
+            self.db, reconciler, start_worker=False
+        )
+        source_id = "windows-causal-source"
+        album_key = self.row["album_key"]
+        original_cover = self.row["cover_path"]
+        coordination = record_event(
+            self.db,
+            {
+                "album_identity": canonical_album_identity(album_key),
+                "album_key": album_key,
+                "musicbrainz_albumid": self.row["musicbrainz_albumid"],
+                "relative_path": "test artist/test album",
+                "writer": "webgui",
+                "operation": "write-cover",
+                "event_id": "webgui-causal-write",
+                "source_completed_ms": 1,
+                "completed_at": "2026-11-04T00:00:00+00:00",
+            },
+        )
+        acknowledged_revision = int(coordination["revision"])
+        windows_cover = str(self.root / "music" / "Test Artist" / "Test Album" / "windows-cover.jpg")
+        payload = {
+            name: self.row[name]
+            for name in WINDOWS_SYNCHRONIZED_FIELDS["albums"]
+            if name in self.row
+        }
+        payload.update(
+            album_name="Windows metadata while verification is pending",
+            cover_path=windows_cover,
+            selected_source="windows-live",
+        )
+        try:
+            with closing(self.db.connect()) as db, db:
+                db.execute(
+                    "INSERT INTO catalog_sync_sources(source_instance_id,source_label,baseline_state,"
+                    "baseline_revision,last_received_revision,last_applied_revision,source_root,target_root) "
+                    "VALUES(?,?,'ready',0,1,0,?,?)",
+                    (source_id, "causal", str(self.runtime.music), str(self.runtime.music)),
+                )
+                db.execute(
+                    "UPDATE catalog_sync_settings SET mode='live',source_root=?,target_root=? WHERE singleton=TRUE",
+                    (str(self.runtime.music), str(self.runtime.music)),
+                )
+                db.execute(
+                    "INSERT INTO catalog_sync_events(source_instance_id,local_revision,event_id,"
+                    "entity_table,entity_key,operation,payload,payload_digest,observed_artwork_revision) "
+                    "VALUES(?,1,'event-before-physical-ack','albums',?,'upsert',?,?,0)",
+                    (source_id, album_key, Jsonb(payload), _digest(payload)),
+                )
+            self.assertEqual(synchronizer.apply_pending()["applied"], 1)
+            with closing(self.db.connect()) as db:
+                album = db.execute(
+                    "SELECT album_name,cover_path,selected_source FROM albums WHERE album_key=?",
+                    (album_key,),
+                ).fetchone()
+                self.assertEqual(
+                    album["album_name"],
+                    "Windows metadata while verification is pending",
+                )
+                self.assertEqual(album["cover_path"], original_cover)
+                self.assertNotEqual(album["selected_source"], "windows-live")
+
+            with closing(self.db.connect()) as db, db:
+                db.execute(
+                    "UPDATE catalog_sync_sources SET last_received_revision=2 WHERE source_instance_id=?",
+                    (source_id,),
+                )
+                db.execute(
+                    "INSERT INTO catalog_sync_events(source_instance_id,local_revision,event_id,"
+                    "entity_table,entity_key,operation,payload,payload_digest,observed_artwork_revision) "
+                    "VALUES(?,2,'event-after-physical-ack','albums',?,'upsert',?,?,?)",
+                    (
+                        source_id,
+                        album_key,
+                        Jsonb(payload),
+                        _digest(payload),
+                        acknowledged_revision,
+                    ),
+                )
+            self.assertEqual(synchronizer.apply_pending()["applied"], 1)
+            with closing(self.db.connect()) as db:
+                album = db.execute(
+                    "SELECT cover_path,selected_source FROM albums WHERE album_key=?",
+                    (album_key,),
+                ).fetchone()
+                self.assertEqual(album["cover_path"], windows_cover)
+                self.assertEqual(album["selected_source"], "windows-live")
+        finally:
+            synchronizer.close()
+            reconciler.close()
+
+    def test_live_integrity_detects_missing_target_without_repairing_it(self):
+        snapshot = self.root / "cache" / "live-integrity.sqlite"
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        with closing(self.db.connect()) as db:
+            source_rows = {
+                table: [dict(row) for row in db.execute(f"SELECT * FROM {table}")]
+                for table in ("artists", "albums", "tracks")
+            }
+        schema_sql = (
+            Path(__file__).parents[2] / "schema" / "media.sql"
+        ).read_text(encoding="utf-8")
+        source_id = "windows-integrity-source"
+        with closing(sqlite3.connect(snapshot)) as source, source:
+            source.executescript(schema_sql)
+            source.execute("PRAGMA user_version=2")
+            source.execute(
+                "CREATE TABLE catalog_sync_source(singleton INTEGER PRIMARY KEY,"
+                "source_instance_id TEXT NOT NULL,protocol_version INTEGER NOT NULL,"
+                "next_revision INTEGER NOT NULL,capture_enabled INTEGER NOT NULL,"
+                "created_at TEXT NOT NULL,updated_at TEXT NOT NULL)"
+            )
+            source.execute(
+                "INSERT INTO catalog_sync_source VALUES(1,?,1,0,1,?,?)",
+                (source_id, "2026-11-04T00:00:00Z", "2026-11-04T00:00:00Z"),
+            )
+            for table, rows in source_rows.items():
+                sqlite_columns = {
+                    str(row[1]) for row in source.execute(f'PRAGMA table_info("{table}")')
+                }
+                names = [name for name in rows[0] if name in sqlite_columns]
+                placeholders = ",".join("?" for _ in names)
+                source.executemany(
+                    f'INSERT INTO "{table}" ({",".join(names)}) VALUES ({placeholders})',
+                    [[row.get(name) for name in names] for row in rows],
+                )
+
+        reconciler = SQLiteReconciler(
+            self.db, snapshot.parent, self.runtime.music, start_scheduler=False
+        )
+        synchronizer = CatalogSynchronizer(
+            self.db, reconciler, start_worker=False
+        )
+        try:
+            with closing(self.db.connect()) as db, db:
+                db.execute(
+                    "INSERT INTO catalog_sync_sources(source_instance_id,source_label,baseline_state,"
+                    "baseline_revision,last_received_revision,last_applied_revision,source_root,target_root) "
+                    "VALUES(?,?,'ready',0,0,0,?,?)",
+                    (source_id, "integrity", str(self.runtime.music), str(self.runtime.music)),
+                )
+                db.execute(
+                    "UPDATE catalog_sync_settings SET mode='live',source_root=?,target_root=? WHERE singleton=TRUE",
+                    (str(self.runtime.music), str(self.runtime.music)),
+                )
+            matched = synchronizer.verify_integrity(snapshot, str(self.runtime.music))
+            self.assertEqual(matched["status"], "match")
+            self.assertEqual(matched["differences"], 0)
+
+            removed_track = source_rows["tracks"][0]["track_key"]
+            with closing(self.db.connect()) as db, db:
+                db.execute("DELETE FROM tracks WHERE track_key=?", (removed_track,))
+            drifted = synchronizer.verify_integrity(snapshot, str(self.runtime.music))
+            self.assertEqual(drifted["status"], "drifted")
+            self.assertGreaterEqual(drifted["differences"], 1)
+            with closing(self.db.connect()) as db:
+                self.assertIsNone(
+                    db.execute(
+                        "SELECT track_key FROM tracks WHERE track_key=?", (removed_track,)
+                    ).fetchone()
+                )
+                source_state = db.execute(
+                    "SELECT baseline_state FROM catalog_sync_sources WHERE source_instance_id=?",
+                    (source_id,),
+                ).fetchone()
+                self.assertEqual(source_state["baseline_state"], "drifted")
+        finally:
+            synchronizer.close()
+            reconciler.close()
 
     @staticmethod
     def set_flac_embedded_cover(path: Path, side: int | None):
