@@ -158,6 +158,18 @@ Back up PostgreSQL using a consistent database dump, plus the config, credential
 
 **Settings → Backup & Recovery** can download or restore a secret-free current-settings JSON and download the shared settings presentation contract. Catalog Maintenance is grouped directly below Restore so full refresh and one-time SQLite import remain deliberate recovery-adjacent actions. Safe JSON includes the WebGUI palette and enhancement presets but excludes provider secrets and PostgreSQL contents. Sample cover writing is disabled by default and requires an explicit persistent directory when enabled. These files help compare deployments and prevent UI/default drift; neither replaces PostgreSQL, credential, cache, Artist Art, or music-library backups. **Processing & Logs** shows a bounded view of PostgreSQL WebGUI audit events; it never returns credential values.
 
+The **SQLite Reconciliation / Catalog Synchronization** controls use three
+persistent modes. **Live** requires one explicitly selected, ready Windows
+source whose baseline generation and library roots match; only that source is
+automatically applied. **Manual SQLite SNAP** enables deliberate legacy
+Compare/Apply and protects newer WebGUI artwork coordination at Apply time.
+**Off** leaves catalogs independent and does not reactivate SNAP Apply when a
+database connection returns. Live and Off disable startup/scheduled
+reconciliation, while ordinary backups remain available. Live replay is ordered
+in batches of 100. A malformed revision is recorded as failed, marks the source
+drifted, and blocks later revisions until the owner establishes a fresh current
+baseline; earlier commits are preserved.
+
 Run one WebGUI application process per catalog. Loopback operation may omit an access token; network binding requires one. Use HTTPS through a reverse proxy for remote access. The service rejects cross-origin writes and requires a session request token for mutations.
 
 The browser tab uses `/favicon.ico`. Help includes **Save SPLINED dashboard icon**, which downloads the separate 1024×1024 PNG at `/assets/splined-dashboard-icon.png` for dashboards and launchers.

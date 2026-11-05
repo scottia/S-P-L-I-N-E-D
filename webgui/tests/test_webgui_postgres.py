@@ -158,8 +158,8 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     (source_id, "integration", str(self.runtime.music), str(self.runtime.music)),
                 )
                 db.execute(
-                    "UPDATE catalog_sync_settings SET mode='live',source_root=?,target_root=? WHERE singleton=TRUE",
-                    (str(self.runtime.music), str(self.runtime.music)),
+                    "UPDATE catalog_sync_settings SET mode='live',source_root=?,target_root=?,active_source_instance_id=? WHERE singleton=TRUE",
+                    (str(self.runtime.music), str(self.runtime.music), source_id),
                 )
                 payload = {
                     name: self.row[name]
@@ -213,8 +213,8 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     (source_id, "gap", str(self.runtime.music), str(self.runtime.music)),
                 )
                 db.execute(
-                    "UPDATE catalog_sync_settings SET mode='live',source_root=?,target_root=? WHERE singleton=TRUE",
-                    (str(self.runtime.music), str(self.runtime.music)),
+                    "UPDATE catalog_sync_settings SET mode='live',source_root=?,target_root=?,active_source_instance_id=? WHERE singleton=TRUE",
+                    (str(self.runtime.music), str(self.runtime.music), source_id),
                 )
                 db.execute(
                     "INSERT INTO catalog_sync_events(source_instance_id,local_revision,event_id,"
@@ -285,8 +285,8 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     (source_id, "causal", str(self.runtime.music), str(self.runtime.music)),
                 )
                 db.execute(
-                    "UPDATE catalog_sync_settings SET mode='live',source_root=?,target_root=? WHERE singleton=TRUE",
-                    (str(self.runtime.music), str(self.runtime.music)),
+                    "UPDATE catalog_sync_settings SET mode='live',source_root=?,target_root=?,active_source_instance_id=? WHERE singleton=TRUE",
+                    (str(self.runtime.music), str(self.runtime.music), source_id),
                 )
                 db.execute(
                     "INSERT INTO catalog_sync_events(source_instance_id,local_revision,event_id,"
@@ -336,6 +336,266 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             synchronizer.close()
             reconciler.close()
 
+    def test_live_catalog_applies_only_the_explicit_active_windows_source(self):
+        reconciler = SQLiteReconciler(
+            self.db, self.runtime.cache, self.runtime.music, start_scheduler=False
+        )
+        synchronizer = CatalogSynchronizer(self.db, reconciler, start_worker=False)
+        active = "windows-active-source"
+        retired = "windows-retired-source"
+        try:
+            payload = {
+                name: self.row[name]
+                for name in WINDOWS_SYNCHRONIZED_FIELDS["albums"]
+                if name in self.row
+            }
+            with closing(self.db.connect()) as db, db:
+                for source_id, label in ((active, "active"), (retired, "retired")):
+                    db.execute(
+                        "INSERT INTO catalog_sync_sources(source_instance_id,source_label,baseline_state,"
+                        "baseline_revision,last_received_revision,last_applied_revision,source_root,target_root) "
+                        "VALUES(?,?,'ready',0,1,0,?,?)",
+                        (source_id, label, str(self.runtime.music), str(self.runtime.music)),
+                    )
+                    source_payload = dict(payload)
+                    source_payload["album_name"] = label.title() + " Source"
+                    db.execute(
+                        "INSERT INTO catalog_sync_events(source_instance_id,local_revision,event_id,"
+                        "entity_table,entity_key,operation,payload,payload_digest) "
+                        "VALUES(?,1,?,'albums',?,'upsert',?,?)",
+                        (
+                            source_id,
+                            label + "-event",
+                            self.row["album_key"],
+                            Jsonb(source_payload),
+                            _digest(source_payload),
+                        ),
+                    )
+                db.execute(
+                    "UPDATE catalog_sync_settings SET mode='live',source_root=?,target_root=?,"
+                    "active_source_instance_id=? WHERE singleton=TRUE",
+                    (str(self.runtime.music), str(self.runtime.music), active),
+                )
+            self.assertEqual(synchronizer.apply_pending()["applied"], 1)
+            with closing(self.db.connect()) as db:
+                album = db.execute(
+                    "SELECT album_name FROM albums WHERE album_key=?",
+                    (self.row["album_key"],),
+                ).fetchone()
+                self.assertEqual(album["album_name"], "Active Source")
+                retired_event = db.execute(
+                    "SELECT status FROM catalog_sync_events WHERE source_instance_id=?",
+                    (retired,),
+                ).fetchone()
+                self.assertEqual(retired_event["status"], "received")
+        finally:
+            synchronizer.close()
+            reconciler.close()
+
+    def test_invalid_event_isolated_after_prior_revision_commits(self):
+        reconciler = SQLiteReconciler(
+            self.db, self.runtime.cache, self.runtime.music, start_scheduler=False
+        )
+        synchronizer = CatalogSynchronizer(self.db, reconciler, start_worker=False)
+        source_id = "windows-invalid-event-source"
+        valid = {
+            name: self.row[name]
+            for name in WINDOWS_SYNCHRONIZED_FIELDS["albums"]
+            if name in self.row
+        }
+        valid["album_name"] = "Committed Before Failure"
+        invalid = dict(valid)
+        invalid["track_count"] = "not-an-integer"
+        try:
+            with closing(self.db.connect()) as db, db:
+                db.execute(
+                    "INSERT INTO catalog_sync_sources(source_instance_id,source_label,baseline_state,"
+                    "baseline_revision,last_received_revision,last_applied_revision,source_root,target_root) "
+                    "VALUES(?,?,'ready',0,2,0,?,?)",
+                    (source_id, "invalid", str(self.runtime.music), str(self.runtime.music)),
+                )
+                db.execute(
+                    "UPDATE catalog_sync_settings SET mode='live',source_root=?,target_root=?,"
+                    "active_source_instance_id=? WHERE singleton=TRUE",
+                    (str(self.runtime.music), str(self.runtime.music), source_id),
+                )
+                for revision, event_id, payload in (
+                    (1, "valid-before-failure", valid),
+                    (2, "invalid-revision", invalid),
+                ):
+                    db.execute(
+                        "INSERT INTO catalog_sync_events(source_instance_id,local_revision,event_id,"
+                        "entity_table,entity_key,operation,payload,payload_digest) "
+                        "VALUES(?,?,?,'albums',?,'upsert',?,?)",
+                        (
+                            source_id,
+                            revision,
+                            event_id,
+                            self.row["album_key"],
+                            Jsonb(payload),
+                            _digest(payload),
+                        ),
+                    )
+            result = synchronizer.apply_pending()
+            self.assertEqual(result["applied"], 1)
+            self.assertEqual(result["failed"], 1)
+            with closing(self.db.connect()) as db:
+                album = db.execute(
+                    "SELECT album_name FROM albums WHERE album_key=?",
+                    (self.row["album_key"],),
+                ).fetchone()
+                self.assertEqual(album["album_name"], "Committed Before Failure")
+                failed = db.execute(
+                    "SELECT status,attempt_count,error FROM catalog_sync_events "
+                    "WHERE source_instance_id=? AND local_revision=2",
+                    (source_id,),
+                ).fetchone()
+                self.assertEqual(failed["status"], "failed")
+                self.assertEqual(failed["attempt_count"], 1)
+                self.assertTrue(failed["error"])
+                source = db.execute(
+                    "SELECT baseline_state,last_applied_revision FROM catalog_sync_sources "
+                    "WHERE source_instance_id=?",
+                    (source_id,),
+                ).fetchone()
+                self.assertEqual(source["baseline_state"], "drifted")
+                self.assertEqual(source["last_applied_revision"], 1)
+        finally:
+            synchronizer.close()
+            reconciler.close()
+
+    def test_live_catalog_replay_is_bounded_and_resumes_in_order(self):
+        reconciler = SQLiteReconciler(
+            self.db, self.runtime.cache, self.runtime.music, start_scheduler=False
+        )
+        synchronizer = CatalogSynchronizer(self.db, reconciler, start_worker=False)
+        source_id = "windows-bounded-replay"
+        total = 105
+        try:
+            with closing(self.db.connect()) as db, db:
+                db.execute(
+                    "INSERT INTO catalog_sync_sources(source_instance_id,source_label,baseline_state,"
+                    "baseline_revision,last_received_revision,last_applied_revision,source_root,target_root) "
+                    "VALUES(?,?,'ready',0,?,0,?,?)",
+                    (source_id, "bounded", total, str(self.runtime.music), str(self.runtime.music)),
+                )
+                db.execute(
+                    "UPDATE catalog_sync_settings SET mode='live',source_root=?,target_root=?,"
+                    "active_source_instance_id=? WHERE singleton=TRUE",
+                    (str(self.runtime.music), str(self.runtime.music), source_id),
+                )
+                for revision in range(1, total + 1):
+                    payload = {
+                        name: self.row[name]
+                        for name in WINDOWS_SYNCHRONIZED_FIELDS["albums"]
+                        if name in self.row
+                    }
+                    payload["album_name"] = f"Replay {revision}"
+                    db.execute(
+                        "INSERT INTO catalog_sync_events(source_instance_id,local_revision,event_id,"
+                        "entity_table,entity_key,operation,payload,payload_digest) "
+                        "VALUES(?,?,?,'albums',?,'upsert',?,?)",
+                        (
+                            source_id,
+                            revision,
+                            f"replay-{revision}",
+                            self.row["album_key"],
+                            Jsonb(payload),
+                            _digest(payload),
+                        ),
+                    )
+            first = synchronizer.apply_pending(limit=1000)
+            self.assertEqual(first["applied"], 100)
+            second = synchronizer.apply_pending(limit=1000)
+            self.assertEqual(second["applied"], 5)
+            with closing(self.db.connect()) as db:
+                source = db.execute(
+                    "SELECT last_applied_revision FROM catalog_sync_sources WHERE source_instance_id=?",
+                    (source_id,),
+                ).fetchone()
+                album = db.execute(
+                    "SELECT album_name FROM albums WHERE album_key=?",
+                    (self.row["album_key"],),
+                ).fetchone()
+                self.assertEqual(source["last_applied_revision"], total)
+                self.assertEqual(album["album_name"], f"Replay {total}")
+        finally:
+            synchronizer.close()
+            reconciler.close()
+
+    def test_manual_snap_blocks_newer_webgui_artwork_overwrite(self):
+        reconciler = SQLiteReconciler(
+            self.db, self.runtime.cache, self.runtime.music, start_scheduler=False
+        )
+        album_key = self.row["album_key"]
+        coordination = record_event(
+            self.db,
+            {
+                "album_identity": canonical_album_identity(album_key),
+                "album_key": album_key,
+                "musicbrainz_albumid": self.row["musicbrainz_albumid"],
+                "relative_path": "test artist/test album",
+                "writer": "webgui",
+                "operation": "write-cover",
+                "event_id": "newer-webgui-snap-barrier",
+                "source_completed_ms": 99,
+                "completed_at": "2026-11-04T00:00:00+00:00",
+            },
+        )
+        run_id = uuid4().hex
+        source = {
+            "album_key": album_key,
+            "cover_path": str(self.root / "stale-snapshot-cover.jpg"),
+            "selected_source": "stale-snapshot",
+            "_reconciliation_observed_artwork_revision": 0,
+        }
+        target = {
+            "album_key": album_key,
+            "cover_path": self.row["cover_path"],
+            "selected_source": self.row["selected_source"],
+        }
+        with closing(self.db.connect()) as db, db:
+            db.execute(
+                "INSERT INTO sqlite_reconciliation_runs(run_id,source_fingerprint,source_label,"
+                "trigger,status,table_counts) VALUES(?,?,?,'manual','compared',?)",
+                (run_id, "stale-snapshot", "stale.sqlite", Jsonb({"albums": {}})),
+            )
+            db.execute(
+                "INSERT INTO salite_diff(run_id,last_run_id,source_fingerprint,source_label,"
+                "entity_table,entity_key,difference_type,old_digest,new_digest,source_value,"
+                "target_value,resolution,application_outcome) "
+                "VALUES(?,?,?,?,? ,?,'update',?,?,?,?, 'safe','pending')",
+                (
+                    run_id,
+                    run_id,
+                    "stale-snapshot",
+                    "stale.sqlite",
+                    "albums",
+                    json.dumps([album_key], separators=(",", ":")),
+                    _digest(target),
+                    _digest(source),
+                    Jsonb(source),
+                    Jsonb(target),
+                ),
+            )
+        result = reconciler.apply(run_id)
+        self.assertEqual(result["applied"], 0)
+        self.assertEqual(result["blocked"], 1)
+        with closing(self.db.connect()) as db:
+            album = db.execute(
+                "SELECT cover_path,selected_source FROM albums WHERE album_key=?",
+                (album_key,),
+            ).fetchone()
+            self.assertEqual(album["cover_path"], self.row["cover_path"])
+            difference = db.execute(
+                "SELECT resolution,application_outcome,error FROM salite_diff WHERE last_run_id=?",
+                (run_id,),
+            ).fetchone()
+            self.assertEqual(difference["resolution"], "conflict")
+            self.assertEqual(difference["application_outcome"], "blocked")
+            self.assertIn(str(coordination["revision"]), difference["error"])
+        reconciler.close()
+
     def test_live_integrity_detects_missing_target_without_repairing_it(self):
         snapshot = self.root / "cache" / "live-integrity.sqlite"
         snapshot.parent.mkdir(parents=True, exist_ok=True)
@@ -355,10 +615,11 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 "CREATE TABLE catalog_sync_source(singleton INTEGER PRIMARY KEY,"
                 "source_instance_id TEXT NOT NULL,protocol_version INTEGER NOT NULL,"
                 "next_revision INTEGER NOT NULL,capture_enabled INTEGER NOT NULL,"
+                "baseline_generation INTEGER NOT NULL,change_revision INTEGER NOT NULL,"
                 "created_at TEXT NOT NULL,updated_at TEXT NOT NULL)"
             )
             source.execute(
-                "INSERT INTO catalog_sync_source VALUES(1,?,1,0,1,?,?)",
+                "INSERT INTO catalog_sync_source VALUES(1,?,1,0,1,1,0,?,?)",
                 (source_id, "2026-11-04T00:00:00Z", "2026-11-04T00:00:00Z"),
             )
             for table, rows in source_rows.items():
@@ -387,8 +648,8 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     (source_id, "integrity", str(self.runtime.music), str(self.runtime.music)),
                 )
                 db.execute(
-                    "UPDATE catalog_sync_settings SET mode='live',source_root=?,target_root=? WHERE singleton=TRUE",
-                    (str(self.runtime.music), str(self.runtime.music)),
+                    "UPDATE catalog_sync_settings SET mode='live',source_root=?,target_root=?,active_source_instance_id=? WHERE singleton=TRUE",
+                    (str(self.runtime.music), str(self.runtime.music), source_id),
                 )
             matched = synchronizer.verify_integrity(snapshot, str(self.runtime.music))
             self.assertEqual(matched["status"], "match")
@@ -2687,11 +2948,30 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         staged = self.services.stage_album(self.payload())
         self.services.embed_album(staged)
         with closing(self.db.connect()) as db, db:
+            coordination = db.execute(
+                "SELECT revision FROM album_artwork_write_coordination "
+                "WHERE album_identity=?",
+                (canonical_album_identity(self.row["album_key"]),),
+            ).fetchone()
             db.execute(
                 "UPDATE albums SET embedded_tracks=0,embedded_validation_status='unknown',"
                 "processed_at=NULL,selected_source=NULL,status='unprocessed',updated_at=? "
                 "WHERE album_key=?",
                 ("2026-01-01T00:00:00+00:00", self.row["album_key"]),
+            )
+        # This authority/idempotence fixture represents a current Windows
+        # SNAP that has already acknowledged and physically verified the
+        # WebGUI write.  The separate stale-SNAP regression exercises the
+        # protected older-revision path.
+        with closing(sqlite3.connect(snapshot)) as source, source:
+            source.execute(
+                "CREATE TABLE album_artwork_write_state("
+                "album_key TEXT PRIMARY KEY,physically_verified INTEGER NOT NULL,"
+                "verified_revision INTEGER NOT NULL)"
+            )
+            source.execute(
+                "INSERT INTO album_artwork_write_state VALUES(?,1,?)",
+                (self.row["album_key"], int(coordination["revision"])),
             )
 
         reconciler = SQLiteReconciler(

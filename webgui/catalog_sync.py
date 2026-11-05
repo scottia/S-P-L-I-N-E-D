@@ -32,6 +32,7 @@ from webgui.reconciliation import SQLiteReconciler, map_library_path
 
 
 MODES = frozenset({"live", "manual-snap", "off"})
+APPLY_BATCH_LIMIT = 100
 PATH_COLUMNS = {
     "artists": frozenset({"primary_path"}),
     "albums": frozenset({"path", "representative_file", "cover_path"}),
@@ -106,7 +107,8 @@ class CatalogSynchronizer:
                 db.raw.execute(
                     "SELECT source_instance_id,source_label,baseline_state,baseline_fingerprint,"
                     "baseline_revision,last_received_revision,last_applied_revision,source_root,"
-                    "target_root,last_integrity_digest,last_integrity_at,last_error,updated_at "
+                    "target_root,baseline_generation,baseline_change_revision,"
+                    "last_integrity_digest,last_integrity_at,last_error,updated_at "
                     "FROM catalog_sync_sources ORDER BY updated_at DESC"
                 )
             )
@@ -129,24 +131,43 @@ class CatalogSynchronizer:
             raise ValueError("Catalog Synchronization Mode must be Live Synchronization, Manual SQLite SNAP, or Off")
         source_root = str(payload.get("source_root") or "").strip()
         target_root = str(payload.get("target_root") or self.reconciler.target_root).strip()
+        requested_source = str(payload.get("active_source_instance_id") or "").strip()
         if Path(target_root).resolve() != self.reconciler.target_root:
             raise PermissionError("Live catalog target must be the configured WebGUI music library")
         with closing(self.database.connect()) as db, db:
+            current = db.raw.execute(
+                "SELECT active_source_instance_id FROM catalog_sync_settings WHERE singleton=TRUE"
+            ).fetchone()
+            active_source = requested_source or str(
+                (current or {}).get("active_source_instance_id") or ""
+            )
             if mode == "live":
-                ready = db.raw.execute(
+                ready = list(db.raw.execute(
                     "SELECT source_instance_id FROM catalog_sync_sources "
                     "WHERE baseline_state='ready' AND source_root=%s AND target_root=%s "
-                    "ORDER BY updated_at DESC LIMIT 1",
+                    "ORDER BY source_instance_id",
                     (source_root, str(self.reconciler.target_root)),
-                ).fetchone()
+                ))
                 if not source_root or not ready:
                     raise ValueError(
                         "Live Synchronization requires a current zero-difference SNAP baseline for these library roots"
                     )
+                ready_ids = {str(row["source_instance_id"]) for row in ready}
+                if not active_source:
+                    if len(ready_ids) != 1:
+                        raise ValueError(
+                            "Choose the one authorized Windows source that may publish this Live catalog"
+                        )
+                    active_source = next(iter(ready_ids))
+                if active_source not in ready_ids:
+                    raise ValueError(
+                        "The selected Windows source is not ready for these authorized library roots"
+                    )
             db.raw.execute(
-                "UPDATE catalog_sync_settings SET mode=%s,source_root=%s,target_root=%s,updated_at=now() "
+                "UPDATE catalog_sync_settings SET mode=%s,source_root=%s,target_root=%s,"
+                "active_source_instance_id=%s,updated_at=now() "
                 "WHERE singleton=TRUE",
-                (mode, source_root, str(self.reconciler.target_root)),
+                (mode, source_root, str(self.reconciler.target_root), active_source),
             )
             if mode != "manual-snap":
                 db.raw.execute(
@@ -168,14 +189,26 @@ class CatalogSynchronizer:
             tables = self.reconciler._source_tables(snapshot)
             if "catalog_sync_source" not in tables:
                 raise ValueError("This SNAP predates live catalog synchronization; create a fresh Windows SNAP")
+            source_columns = {
+                str(column[1])
+                for column in snapshot.execute("PRAGMA table_info(catalog_sync_source)")
+            }
+            required = {"baseline_generation", "change_revision"}
+            if not required.issubset(source_columns):
+                raise ValueError(
+                    "This SNAP predates Live recovery hardening; create a fresh Windows SNAP"
+                )
             row = snapshot.execute(
-                "SELECT source_instance_id,protocol_version,next_revision FROM catalog_sync_source WHERE singleton=1"
+                "SELECT source_instance_id,protocol_version,next_revision,"
+                "baseline_generation,change_revision FROM catalog_sync_source WHERE singleton=1"
             ).fetchone()
             if not row:
                 raise ValueError("The SNAP has no live catalog source identity")
             source_id = str(row["source_instance_id"])
             protocol = int(row["protocol_version"])
             revision = int(row["next_revision"])
+            baseline_generation = int(row["baseline_generation"])
+            baseline_change_revision = int(row["change_revision"])
         with closing(self.database.connect()) as db, db:
             compared = db.raw.execute(
                 "SELECT run_id,differences,conflicts,failures,status FROM sqlite_reconciliation_runs "
@@ -219,15 +252,19 @@ class CatalogSynchronizer:
             db.raw.execute(
                 "INSERT INTO catalog_sync_sources(source_instance_id,source_label,baseline_state,"
                 "baseline_fingerprint,baseline_revision,last_received_revision,last_applied_revision,"
-                "source_root,target_root,protocol_version,last_error) "
-                "VALUES(%s,%s,'ready',%s,%s,%s,%s,%s,%s,%s,'') "
+                "source_root,target_root,protocol_version,baseline_generation,"
+                "baseline_change_revision,last_error) "
+                "VALUES(%s,%s,'ready',%s,%s,%s,%s,%s,%s,%s,%s,%s,'') "
                 "ON CONFLICT(source_instance_id) DO UPDATE SET source_label=excluded.source_label,"
                 "baseline_state='ready',baseline_fingerprint=excluded.baseline_fingerprint,"
                 "baseline_revision=excluded.baseline_revision,"
                 "last_received_revision=excluded.baseline_revision,"
                 "last_applied_revision=excluded.baseline_revision,"
                 "source_root=excluded.source_root,target_root=excluded.target_root,"
-                "protocol_version=excluded.protocol_version,last_error='',updated_at=now()",
+                "protocol_version=excluded.protocol_version,"
+                "baseline_generation=excluded.baseline_generation,"
+                "baseline_change_revision=excluded.baseline_change_revision,"
+                "last_error='',updated_at=now()",
                 (
                     source_id,
                     self.reconciler._source_label(source),
@@ -238,6 +275,8 @@ class CatalogSynchronizer:
                     source_root,
                     target_root,
                     protocol,
+                    baseline_generation,
+                    baseline_change_revision,
                 ),
             )
             db.raw.execute(
@@ -249,7 +288,13 @@ class CatalogSynchronizer:
         result = self.status()
         self._event(
             "catalog-sync-baseline",
-            {"source_instance_id": source_id, "revision": revision, "fingerprint": fingerprint},
+            {
+                "source_instance_id": source_id,
+                "revision": revision,
+                "baseline_generation": baseline_generation,
+                "baseline_change_revision": baseline_change_revision,
+                "fingerprint": fingerprint,
+            },
             stage="baseline",
             request_status="completed",
         )
@@ -268,17 +313,31 @@ class CatalogSynchronizer:
             tables = self.reconciler._source_tables(snapshot)
             if "catalog_sync_source" not in tables:
                 raise ValueError("This SNAP predates live catalog synchronization")
+            source_columns = {
+                str(column[1])
+                for column in snapshot.execute("PRAGMA table_info(catalog_sync_source)")
+            }
+            if not {"baseline_generation", "change_revision"}.issubset(source_columns):
+                raise ValueError(
+                    "This integrity SNAP predates Live recovery hardening"
+                )
             identity = snapshot.execute(
-                "SELECT source_instance_id,next_revision FROM catalog_sync_source WHERE singleton=1"
+                "SELECT source_instance_id,next_revision,baseline_generation,change_revision "
+                "FROM catalog_sync_source WHERE singleton=1"
             ).fetchone()
             if not identity:
                 raise ValueError("The SNAP has no live catalog source identity")
             source_id = str(identity["source_instance_id"])
             revision = int(identity["next_revision"])
+            baseline_generation = int(identity["baseline_generation"])
+            change_revision = int(identity["change_revision"])
         with closing(self.database.connect()) as db:
             registered = db.raw.execute(
-                "SELECT baseline_state,last_received_revision,last_applied_revision,source_root,target_root "
-                "FROM catalog_sync_sources WHERE source_instance_id=%s",
+                "SELECT source.baseline_state,source.last_received_revision,"
+                "source.last_applied_revision,source.source_root,source.target_root,"
+                "source.baseline_generation,settings.active_source_instance_id,settings.mode "
+                "FROM catalog_sync_sources source CROSS JOIN catalog_sync_settings settings "
+                "WHERE source.source_instance_id=%s",
                 (source_id,),
             ).fetchone()
         if not registered or registered["baseline_state"] != "ready":
@@ -287,6 +346,12 @@ class CatalogSynchronizer:
             str(registered["target_root"])
         ).resolve() != self.reconciler.target_root:
             raise ValueError("The integrity SNAP library roots do not match the Live baseline")
+        if str(registered["mode"]) != "live" or str(
+            registered["active_source_instance_id"] or ""
+        ) != source_id:
+            raise ValueError("This Windows source is not the active Live source")
+        if baseline_generation != int(registered["baseline_generation"] or 0):
+            raise ValueError("The integrity SNAP baseline generation does not match")
         if revision != int(registered["last_received_revision"] or 0) or revision != int(
             registered["last_applied_revision"] or 0
         ):
@@ -358,6 +423,7 @@ class CatalogSynchronizer:
         report = {
             "source_instance_id": source_id,
             "source_revision": revision,
+            "change_revision": change_revision,
             "status": status,
             "differences": len(differences),
             "failures": failed,
@@ -479,80 +545,116 @@ class CatalogSynchronizer:
         )
         return outcome
 
-    def apply_pending(self, limit: int = 250) -> dict[str, int]:
+    def apply_pending(self, limit: int = APPLY_BATCH_LIMIT) -> dict[str, int]:
         result = {"applied": 0, "noop": 0, "blocked": 0, "failed": 0}
-        with self._lock, closing(self.database.connect()) as db, db:
-            settings = db.raw.execute(
-                "SELECT * FROM catalog_sync_settings WHERE singleton=TRUE FOR UPDATE"
-            ).fetchone()
-            if not settings or settings["mode"] != "live":
-                return result
-            sources = list(
-                db.raw.execute(
-                    "SELECT * FROM catalog_sync_sources WHERE baseline_state='ready' ORDER BY source_instance_id"
-                )
-            )
-            for source_row in sources:
-                source = dict(source_row)
-                events = list(
-                    db.raw.execute(
-                        "SELECT * FROM catalog_sync_events WHERE source_instance_id=%s AND status='received' "
-                        "ORDER BY local_revision LIMIT %s FOR UPDATE SKIP LOCKED",
-                        (source["source_instance_id"], max(1, min(int(limit), 1000))),
+        maximum = max(1, min(int(limit), APPLY_BATCH_LIMIT))
+        with self._lock, closing(self.database.connect()) as db:
+            for _ in range(maximum):
+                with db:
+                    settings = db.raw.execute(
+                        "SELECT * FROM catalog_sync_settings WHERE singleton=TRUE FOR UPDATE"
+                    ).fetchone()
+                    active_source = str(
+                        (settings or {}).get("active_source_instance_id") or ""
                     )
-                )
-                expected = int(source["last_applied_revision"] or source["baseline_revision"]) + 1
-                for row in events:
+                    if not settings or settings["mode"] != "live" or not active_source:
+                        break
+                    source_row = db.raw.execute(
+                        "SELECT * FROM catalog_sync_sources WHERE source_instance_id=%s FOR UPDATE",
+                        (active_source,),
+                    ).fetchone()
+                    if (
+                        not source_row
+                        or source_row["baseline_state"] != "ready"
+                        or str(source_row["source_root"]) != str(settings["source_root"])
+                        or str(source_row["target_root"]) != str(settings["target_root"])
+                    ):
+                        break
+                    source = dict(source_row)
+                    row = db.raw.execute(
+                        "SELECT * FROM catalog_sync_events WHERE source_instance_id=%s "
+                        "AND status IN ('received','blocked','failed') "
+                        "ORDER BY local_revision LIMIT 1 FOR UPDATE SKIP LOCKED",
+                        (active_source,),
+                    ).fetchone()
+                    if not row:
+                        break
                     event = dict(row)
+                    if event["status"] in {"blocked", "failed"}:
+                        # The original attempt already recorded the durable
+                        # diagnostic.  Leave the failed revision as the
+                        # ordering barrier without emitting a duplicate Audit
+                        # event on every worker poll.
+                        break
                     revision = int(event["local_revision"])
+                    expected = int(
+                        source["last_applied_revision"] or source["baseline_revision"]
+                    ) + 1
                     if revision <= int(source["baseline_revision"]):
                         outcome = "noop"
                     elif revision != expected:
                         message = f"Catalog revision gap: expected {expected}, received {revision}"
                         db.raw.execute(
-                            "UPDATE catalog_sync_events SET status='blocked',error=%s WHERE source_instance_id=%s AND local_revision=%s",
-                            (message, source["source_instance_id"], revision),
+                            "UPDATE catalog_sync_events SET status='blocked',error=%s,"
+                            "attempt_count=attempt_count+1,last_attempt_at=now() "
+                            "WHERE source_instance_id=%s AND local_revision=%s",
+                            (message, active_source, revision),
                         )
                         db.raw.execute(
                             "UPDATE catalog_sync_sources SET baseline_state='drifted',last_error=%s,updated_at=now() "
                             "WHERE source_instance_id=%s",
-                            (message, source["source_instance_id"]),
+                            (message, active_source),
                         )
                         result["blocked"] += 1
                         break
                     else:
                         try:
-                            outcome = self._apply_event(db.raw, source, event)
+                            # A savepoint keeps one invalid event from
+                            # poisoning the transaction used to persist its
+                            # diagnostic and recovery state.
+                            with db.raw.transaction():
+                                outcome = self._apply_event(db.raw, source, event)
                         except Exception as error:
                             message = sanitize_text(error, limit=1000)
                             db.raw.execute(
-                                "UPDATE catalog_sync_events SET status='failed',error=%s WHERE source_instance_id=%s AND local_revision=%s",
-                                (message, source["source_instance_id"], revision),
+                                "UPDATE catalog_sync_events SET status='failed',error=%s,"
+                                "attempt_count=attempt_count+1,last_attempt_at=now() "
+                                "WHERE source_instance_id=%s AND local_revision=%s",
+                                (message, active_source, revision),
                             )
                             db.raw.execute(
-                                "UPDATE catalog_sync_sources SET last_error=%s,updated_at=now() WHERE source_instance_id=%s",
-                                (message, source["source_instance_id"]),
+                                "UPDATE catalog_sync_sources SET baseline_state='drifted',last_error=%s,updated_at=now() "
+                                "WHERE source_instance_id=%s",
+                                (message, active_source),
                             )
                             result["failed"] += 1
                             break
                     db.raw.execute(
-                        "UPDATE catalog_sync_events SET status=%s,error='',applied_at=now() "
+                        "UPDATE catalog_sync_events SET status=%s,error='',applied_at=now(),"
+                        "attempt_count=attempt_count+1,last_attempt_at=now() "
                         "WHERE source_instance_id=%s AND local_revision=%s",
-                        (outcome, source["source_instance_id"], revision),
+                        (outcome, active_source, revision),
                     )
                     db.raw.execute(
                         "UPDATE catalog_sync_sources SET last_applied_revision=GREATEST(last_applied_revision,%s),"
                         "last_error='',updated_at=now() WHERE source_instance_id=%s",
-                        (revision, source["source_instance_id"]),
+                        (revision, active_source),
                     )
-                    source["last_applied_revision"] = revision
-                    expected = revision + 1
                     result[outcome] += 1
             if result["applied"]:
-                SQLiteReconciler._recalculate(db)
-                SQLiteReconciler._recalculate_comp_progress(db)
+                with db:
+                    SQLiteReconciler._recalculate(db)
+                    SQLiteReconciler._recalculate_comp_progress(db)
         if any(result.values()):
-            self._event("catalog-sync-apply", result, stage="apply", request_status="completed")
+            self._event(
+                "catalog-sync-apply",
+                result,
+                severity="warning" if result["failed"] or result["blocked"] else "info",
+                stage="apply",
+                request_status="failed"
+                if result["failed"] or result["blocked"]
+                else "completed",
+            )
         return result
 
     def _worker(self) -> None:

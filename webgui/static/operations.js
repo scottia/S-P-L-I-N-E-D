@@ -1249,9 +1249,10 @@ function downloadJsonFile(name, value) {
   const syncMode = node("select");
   for (const [value, label] of [["live", "Live Synchronization"], ["manual-snap", "Manual SQLite SNAP"], ["off", "Off · Independent catalogs"]]) { const option = node("option", "", label); option.value = value; syncMode.append(option); }
   const syncModeLabel = node("label", "setting-field"); syncModeLabel.append(node("span", "", "Catalog Synchronization Mode"), syncMode);
+  const activeSource = node("select"), activeSourceLabel = node("label", "setting-field"); activeSourceLabel.append(node("span", "", "Authorized Windows source"), activeSource);
   const saveSyncMode = node("button", "operation-button", "Save Catalog Mode"); saveSyncMode.type = "button";
   const syncState = node("p", "runtime-summary", "Loading live synchronization state…");
-  section.append(syncModeLabel, saveSyncMode, syncState, node("h5", "", "Manual SQLite SNAP · Recovery & baseline"), node("p", "settings-subcopy", "Compare an authorized read-only SQLite snapshot with this PostgreSQL catalog. Differences remain reviewable in salite_diff; conflicts are never auto-applied."));
+  section.append(syncModeLabel, activeSourceLabel, saveSyncMode, syncState, node("h5", "", "Manual SQLite SNAP · Recovery & baseline"), node("p", "settings-subcopy", "Compare an authorized read-only SQLite snapshot with this PostgreSQL catalog. Differences remain reviewable in salite_diff; conflicts are never auto-applied."));
   const source = node("select"), sourceLabel = node("label", "setting-field"); sourceLabel.append(node("span", "", "Authorized SQLite snapshot"), source);
   const sourceState = node("p", "snapshot-state", "Choose a snapshot created after the Windows processing you want to reconcile.");
   const sourceRoot = field(section, "Original library root recorded in snapshot (source)"), targetRoot = field(section, "WebGUI library root (target)"); targetRoot.value = state.server?.music || ""; targetRoot.readOnly = true;
@@ -1306,7 +1307,7 @@ function downloadJsonFile(name, value) {
     savedSettings = {...settings};
     summary.textContent = last ? `Last run ${last.run_id} · ${last.status} · ${last.differences} difference(s) · ${last.applied || 0} applied · ${last.conflicts} conflict(s) · ${last.failures} failure(s)` : "No reconciliation run has been recorded.";
     summary.classList.toggle("operation-error", Boolean(last?.failures));
-    latestRun = last?.run_id || ""; apply.disabled = !latestRun || !result.pending_safe || syncSettings.mode === "live";
+    latestRun = last?.run_id || ""; apply.disabled = !latestRun || !result.pending_safe || syncSettings.mode !== "manual-snap";
     authorizeBaseline.disabled = !latestRun || Number(last?.differences || 0) !== 0 || !source.value;
     differences.textContent = result.differences?.length ? [...result.differences].reverse().map(item => `${String(item.id).padStart(7, "0")}  ${item.entity_table}  ${item.difference_type}  ${item.resolution}  ${item.application_outcome}  ${item.entity_key}${item.error ? "  ERROR=" + item.error : ""}`).join("\n") : "No recorded differences match this filter.";
     enabled.checked = Boolean(settings.enabled); autoApply.checked = Boolean(settings.auto_apply_safe); interval.value = String(settings.interval_minutes || 1440);
@@ -1314,7 +1315,17 @@ function downloadJsonFile(name, value) {
     if (settings.source_root && !sourceRoot.value) sourceRoot.value = settings.source_root;
     if (settings.source_path && !source.value) source.value = settings.source_path;
   };
-  const describeSync = result => { syncSettings = {...(result.settings || {mode: "manual-snap"})}; syncMode.value = syncSettings.mode || "manual-snap"; const ready = (result.sources || []).filter(item => item.baseline_state === "ready"); syncState.textContent = `${syncMode.options[syncMode.selectedIndex]?.text || syncMode.value} · ${ready.length} ready source(s) · ${result.pending || 0} pending · ${result.failed || 0} blocked/failed`; verifyIntegrity.disabled = syncSettings.mode !== "live" || !source.value || ready.length === 0; };
+  const describeSync = result => {
+    syncSettings = {...(result.settings || {mode: "manual-snap"})}; syncMode.value = syncSettings.mode || "manual-snap";
+    const sources = result.sources || [], ready = sources.filter(item => item.baseline_state === "ready"); clear(activeSource);
+    const blankSource = node("option", "", ready.length ? "Choose the active Windows source" : "No ready Windows sources"); blankSource.value = ""; activeSource.append(blankSource);
+    for (const item of ready) { const option = node("option", "", `${item.source_label || item.source_instance_id} · ${item.source_instance_id}`); option.value = item.source_instance_id; activeSource.append(option); }
+    activeSource.value = syncSettings.active_source_instance_id || "";
+    syncState.textContent = `${syncMode.options[syncMode.selectedIndex]?.text || syncMode.value} · ${ready.length} ready source(s) · active ${activeSource.value || "none"} · ${result.pending || 0} pending · ${result.failed || 0} blocked/failed`;
+    const manual = syncSettings.mode === "manual-snap"; apply.disabled = !manual || !latestRun; saveStartup.disabled = saveSchedule.disabled = !manual;
+    enabled.disabled = autoApply.disabled = interval.disabled = !manual;
+    verifyIntegrity.disabled = syncSettings.mode !== "live" || !source.value || !activeSource.value;
+  };
   const load = async () => { const [history, sync] = await Promise.all([api("/api/reconciliation?resolution=" + encodeURIComponent(resolution.value)), api("/api/catalog-sync")]); describeSync(sync); describe(history); };
   try {
     const [sources, result, sync] = await Promise.all([api("/api/reconciliation/sources"), api("/api/reconciliation"), api("/api/catalog-sync")]);
@@ -1333,7 +1344,7 @@ function downloadJsonFile(name, value) {
   apply.addEventListener("click", () => runAction(async () => { if (!window.confirm("Apply only the safe, unchanged differences from this snapshot? Conflicts will remain unresolved.")) return; const result = await post("/api/reconciliation/apply", {run_id: latestRun}); setStatus(result.failures ? `SQLite apply incomplete · ${result.applied}/${result.attempted} applied · ${result.failures} failed; review Failed / skipped` : `Applied all ${result.applied} safe SQLite difference(s) and recalculated statuses`, result.failures ? "error" : "ready"); await load(); }));
   authorizeBaseline.addEventListener("click", () => runAction(async () => { if (!source.value) throw new Error("Choose the exact zero-difference Windows SNAP"); await post("/api/catalog-sync/baseline", {source_path: source.value, source_root: sourceRoot.value}); setStatus("Authorized the immutable zero-difference Live baseline"); await load(); }));
   verifyIntegrity.addEventListener("click", () => runAction(async () => { if (!source.value) throw new Error("Choose a fresh Windows SNAP captured after the live queue reached zero"); const result = await post("/api/catalog-sync/integrity", {source_path: source.value, source_root: sourceRoot.value}); setStatus(result.status === "match" ? `Live catalog integrity verified at revision ${result.source_revision}` : `Live catalog drift detected · ${result.differences} difference(s); automatic Apply stopped`, result.status === "match" ? "ready" : "error"); await load(); }));
-  saveSyncMode.addEventListener("click", () => runAction(async () => { const result = await post("/api/catalog-sync/settings", {mode: syncMode.value, source_root: sourceRoot.value, target_root: targetRoot.value}); describeSync(result); setStatus(`Catalog Synchronization Mode saved · ${syncMode.options[syncMode.selectedIndex]?.text || syncMode.value}`); await load(); }));
+  saveSyncMode.addEventListener("click", () => runAction(async () => { const result = await post("/api/catalog-sync/settings", {mode: syncMode.value, source_root: sourceRoot.value, target_root: targetRoot.value, active_source_instance_id: activeSource.value}); describeSync(result); setStatus(`Catalog Synchronization Mode saved · ${syncMode.options[syncMode.selectedIndex]?.text || syncMode.value}`); await load(); }));
   source.addEventListener("change", () => { describeSource(); verifyIntegrity.disabled = syncSettings.mode !== "live" || !source.value; }); refresh.addEventListener("click", () => void load()); resolution.addEventListener("change", () => void load());
   const startupMode = () => [...startupRadios.entries()].find(([, input]) => input.checked)?.[0] || "off";
   saveStartup.addEventListener("click", () => runAction(async () => { const mode = startupMode(); await post("/api/reconciliation/settings", {enabled: enabled.checked, auto_apply_safe: autoApply.checked, startup_mode: mode, interval_minutes: Number(interval.value), source_path: source.value, source_root: sourceRoot.value, target_root: targetRoot.value}); setStatus(mode === "off" ? "Auto SNAP on start disabled" : `Auto SNAP on start saved · ${mode === "compare" ? "Compare only" : "Compare + Apply safe"}`); await load(); }));

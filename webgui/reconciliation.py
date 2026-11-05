@@ -28,6 +28,7 @@ from webgui.catalog_authority import (
     WINDOWS_MANAGED_TABLES,
     mark_windows_authority,
 )
+from webgui.coordination import canonical_album_identity
 
 SQLITE_SCHEMA_VERSION = 2
 SOURCE_SUFFIXES = {".db", ".sqlite", ".sqlite3"}
@@ -95,6 +96,26 @@ REQUIRED_INSERT_FIELDS = {
         "splined_version",
     },
 }
+SNAP_ARTWORK_PROCESSING_COLUMNS = frozenset(
+    {
+        "cover_found",
+        "cover_path",
+        "cover_name",
+        "cover_format",
+        "cover_width",
+        "cover_height",
+        "artwork_jpeg",
+        "artwork_png",
+        "artwork_webp",
+        "artwork_other",
+        "webp_found",
+        "webp_size_mb",
+        "webp_resolution",
+        "webp_conversion",
+        "processed_at",
+        "selected_source",
+    }
+)
 
 
 def _normalize_sqlite_value(value: Any) -> Any:
@@ -1148,6 +1169,19 @@ class SQLiteReconciler:
                     target_rows = {name: self._target_rows(raw, name) for name in table_names}
                     target_columns = {name: self._target_columns(raw, name) for name in table_names}
                     source_rows = {name: self._read_source(legacy, name, available) for name in table_names}
+                    snapshot_artwork_revisions = {}
+                    if "album_artwork_write_state" in available:
+                        snapshot_artwork_revisions = {
+                            str(row["album_key"] or "").casefold(): (
+                                int(row["verified_revision"] or 0)
+                                if bool(row["physically_verified"])
+                                else 0
+                            )
+                            for row in legacy.execute(
+                                "SELECT album_key,physically_verified,verified_revision "
+                                "FROM album_artwork_write_state WHERE TRIM(COALESCE(album_key,''))<>''"
+                            )
+                        }
                     table_counts = {
                         name: {
                             "source_rows": len(source_rows[name]),
@@ -1421,6 +1455,17 @@ class SQLiteReconciler:
                             if target_value is not None and _digest(source_value) == _digest(target_value):
                                 stats["unchanged"] += 1
                                 continue
+                            if table == "albums":
+                                source_value["_reconciliation_observed_artwork_revision"] = int(
+                                    snapshot_artwork_revisions.get(
+                                        str(
+                                            source_row.get("_reconciliation_source_key")
+                                            or source_row.get("album_key")
+                                            or ""
+                                        ).casefold(),
+                                        0,
+                                    )
+                                )
                             resolution = classify_difference(table, source_value, target_value)
                             # A completion record may be inserted only for a
                             # track that the WebGUI catalog already indexes.
@@ -1575,6 +1620,40 @@ class SQLiteReconciler:
         raw.execute(statement, [source[name] for name in names] + [source[name] for name in keys])
 
     @staticmethod
+    def _stale_snapshot_artwork_conflict(
+        raw,
+        table: str,
+        source: dict[str, Any],
+        target: dict[str, Any],
+    ) -> str:
+        """Refuse a SNAP row that would reverse a newer WebGUI artwork write."""
+        if table != "albums":
+            return ""
+        changed = sorted(
+            name
+            for name in SNAP_ARTWORK_PROCESSING_COLUMNS
+            if source.get(name) != target.get(name)
+        )
+        if not changed:
+            return ""
+        album_key = str(source.get("album_key") or target.get("album_key") or "")
+        coordination = raw.execute(
+            "SELECT writer,revision,event_id FROM album_artwork_write_coordination "
+            "WHERE album_identity=%s",
+            (canonical_album_identity(album_key),),
+        ).fetchone()
+        observed = int(source.get("_reconciliation_observed_artwork_revision") or 0)
+        if not coordination or coordination["writer"] != "webgui" or int(
+            coordination["revision"] or 0
+        ) <= observed:
+            return ""
+        return (
+            "Protected newer WebGUI artwork write "
+            f"revision {int(coordination['revision'])} event {coordination['event_id']}; "
+            f"SNAP observed revision {observed}; blocked fields: {', '.join(changed)}"
+        )
+
+    @staticmethod
     def _recalculate(db) -> None:
         from splined_media_database import (
             aggregate_artist,
@@ -1686,9 +1765,9 @@ class SQLiteReconciler:
             catalog_mode = raw.execute(
                 "SELECT mode FROM catalog_sync_settings WHERE singleton=TRUE"
             ).fetchone()
-            if catalog_mode and catalog_mode["mode"] == "live":
+            if catalog_mode and catalog_mode["mode"] != "manual-snap":
                 raise RuntimeError(
-                    "Manual SNAP apply is disabled while Live Synchronization is active; switch to Manual SQLite SNAP for recovery"
+                    "Manual SNAP apply requires Catalog Synchronization Mode = Manual SQLite SNAP"
                 )
             # Hold the jobs table stable for the whole apply transaction. A
             # worker cannot transition a queued Album into running between the
@@ -1739,6 +1818,7 @@ class SQLiteReconciler:
                         (sequence,),
                     )
             applied = 0
+            blocked = 0
             failures = 0
             failure_details: list[dict[str, str]] = []
             for difference in rows:
@@ -1751,6 +1831,30 @@ class SQLiteReconciler:
                 }
                 stats = apply_table_counts.setdefault(table, {})
                 stats["apply_attempted"] = int(stats.get("apply_attempted", 0)) + 1
+                protection = self._stale_snapshot_artwork_conflict(
+                    raw,
+                    table,
+                    source,
+                    dict(difference.get("target_value") or {}),
+                )
+                if protection:
+                    raw.execute(
+                        "UPDATE salite_diff SET resolution='conflict',application_outcome='blocked',error=%s WHERE id=%s",
+                        (protection, difference["id"]),
+                    )
+                    blocked += 1
+                    stats["apply_blocked"] = int(stats.get("apply_blocked", 0)) + 1
+                    if len(failure_details) < 100:
+                        failure_details.append(
+                            {
+                                "table": table,
+                                "entity_key": sanitize_text(
+                                    difference["entity_key"], limit=300
+                                ),
+                                "error": protection,
+                            }
+                        )
+                    continue
                 try:
                     with raw.transaction():
                         if table == "cache_history":
@@ -1816,10 +1920,16 @@ class SQLiteReconciler:
             self._recalculate(db)
             raw.execute(
                 "UPDATE sqlite_reconciliation_runs SET status=%s,applied=%s,"
-                "failures=failures+%s,table_counts=%s,finished_at=now() WHERE run_id=%s",
+                "conflicts=conflicts+%s,failures=failures+%s,table_counts=%s,"
+                "finished_at=now() WHERE run_id=%s",
                 (
-                    "applied" if failures == 0 else "applied-with-failures",
+                    "applied"
+                    if failures == 0 and blocked == 0
+                    else "applied-with-blocked"
+                    if blocked and failures == 0
+                    else "applied-with-failures",
                     applied,
+                    blocked,
                     failures,
                     Jsonb(apply_table_counts),
                     run,
@@ -1846,8 +1956,9 @@ class SQLiteReconciler:
             "run_id": run,
             "attempted": len(rows),
             "applied": applied,
+            "blocked": blocked,
             "failures": failures,
-            "complete": failures == 0 and applied == len(rows),
+            "complete": failures == 0 and blocked == 0 and applied == len(rows),
             "conflicts_applied": 0,
             "album_validations": validations,
             "album_validation_retries": validation_retries,
@@ -1857,9 +1968,13 @@ class SQLiteReconciler:
         self._event(
             "sqlite-reconciliation",
             result,
-            severity="warning" if failures or validation_retries else "info",
+            severity="warning" if failures or blocked or validation_retries else "info",
             stage="apply-safe",
-            request_status="failed" if failures else "retry" if validation_retries else "completed",
+            request_status="failed"
+            if failures or blocked
+            else "retry"
+            if validation_retries
+            else "completed",
         )
         return result
 

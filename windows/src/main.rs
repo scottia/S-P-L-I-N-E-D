@@ -2,6 +2,7 @@
 
 use futures_util::{StreamExt, stream};
 use image::AnimationDecoder;
+use rusqlite::Connection as SqliteConnection;
 use sha2::{Digest, Sha256};
 use slint::{
     Color, ComponentHandle, Model, ModelRc, ModelTracker, SharedString, Timer, TimerMode, VecModel,
@@ -18,7 +19,7 @@ use splined_core::backup::{
     validate_reconciliation_snapshot,
 };
 use splined_core::candidate::{Candidate, StaticFormat};
-use splined_core::catalog_sync::{set_capture_enabled, synchronize as synchronize_catalog};
+use splined_core::catalog_sync::{set_runtime_mode, synchronize as synchronize_catalog};
 use splined_core::config::{
     CatalogSynchronizationMode, Config, Mode, ScanTimeout, Verbosity, configured_samples_dir,
     configured_shared_artist_art_dir,
@@ -3206,15 +3207,17 @@ fn start_album_coordination_worker(
     state: Arc<Mutex<ApplicationState>>,
 ) -> Arc<AtomicBool> {
     let stop = Arc::new(AtomicBool::new(false));
-    let Some((database, database_url, worker_config)) = state.lock().ok().and_then(|mut app| {
+    let Some((database, database_url)) = state.lock().ok().and_then(|mut app| {
         let database = splined_core::media_database::database_path(&app.config.scan.cache_dir);
-        if database.is_file()
-            && let Err(error) = set_capture_enabled(
-                &database,
-                app.config.catalog_sync.mode == CatalogSynchronizationMode::Live,
-            )
-        {
-            app.push_log(error);
+        if database.is_file() {
+            let mode = match app.config.catalog_sync.mode {
+                CatalogSynchronizationMode::Live => "live",
+                CatalogSynchronizationMode::ManualSnap => "manual-snap",
+                CatalogSynchronizationMode::Off => "off",
+            };
+            if let Err(error) = set_runtime_mode(&database, mode) {
+                app.push_log(error);
+            }
         }
         if database.is_file()
             && let Ok(writers) = effective_writers(&database)
@@ -3222,7 +3225,7 @@ fn start_album_coordination_worker(
             app.album_override_writers = writers;
         }
         match coordination_database_url(&app.config) {
-            Ok(Some(url)) => Some((database, url, app.config.clone())),
+            Ok(Some(url)) => Some((database, url)),
             Ok(None) => None,
             Err(error) => {
                 app.push_log(error);
@@ -3244,8 +3247,30 @@ fn start_album_coordination_worker(
         };
         runtime.block_on(async move {
             let mut pool = None;
+            let mut effective_mode = None;
             let mut connection_warning = false;
             while !worker_stop.load(Ordering::Relaxed) {
+                let worker_config = worker_state
+                    .lock()
+                    .map(|app| app.config.clone())
+                    .unwrap_or_default();
+                let requested_mode = match worker_config.catalog_sync.mode {
+                    CatalogSynchronizationMode::Live => "live",
+                    CatalogSynchronizationMode::ManualSnap => "manual-snap",
+                    CatalogSynchronizationMode::Off => "off",
+                };
+                if effective_mode != Some(worker_config.catalog_sync.mode) {
+                    match set_runtime_mode(&database, requested_mode) {
+                        Ok(_) => effective_mode = Some(worker_config.catalog_sync.mode),
+                        Err(error) => {
+                            if let Ok(mut app) = worker_state.lock() {
+                                app.push_log(format!(
+                                    "Catalog Synchronization Mode is waiting: {error}"
+                                ));
+                            }
+                        }
+                    }
+                }
                 if let Ok(writers) = effective_writers(&database) {
                     let changed = worker_state.lock().is_ok_and(|mut app| {
                         if app.album_override_writers == writers {
@@ -4276,10 +4301,10 @@ fn main() -> Result<(), slint::PlatformError> {
             "splined-diagnostics-auto",
             "json",
         );
-        let live_catalog = scheduled_backup_state
-            .lock()
-            .is_ok_and(|app| app.config.catalog_sync.mode == CatalogSynchronizationMode::Live);
-        let snapshot_due = !live_catalog
+        let manual_snapshot = scheduled_backup_state.lock().is_ok_and(|app| {
+            app.config.catalog_sync.mode == CatalogSynchronizationMode::ManualSnap
+        });
+        let snapshot_due = manual_snapshot
             && automatic_backup_is_due(
                 &snapshot_directory,
                 snapshot_schedule,
@@ -14993,6 +15018,7 @@ fn set_settings_ui(ui: &AppWindow, config: &Config) {
         }
         .into(),
     );
+    ui.set_settings_catalog_sync_effective(catalog_sync_effective_label(config).into());
     ui.set_settings_verbosity(diagnostic_level_label(config.verbosity).into());
     ui.set_settings_scan_mode(config.scan.scan_mode);
     ui.set_settings_library_scan(config.scan.library_scan);
@@ -15069,6 +15095,34 @@ fn set_settings_ui(ui: &AppWindow, config: &Config) {
     };
     set_source_policy_ui(ui, config, &source);
     let _ = set_settings_preview_ui(ui, config);
+}
+
+fn catalog_sync_effective_label(config: &Config) -> String {
+    let database = splined_core::media_database::database_path(&config.scan.cache_dir);
+    if !database.is_file() {
+        return "Waiting for the Windows SQLite catalog".to_string();
+    }
+    let Ok(connection) =
+        SqliteConnection::open_with_flags(database, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+    else {
+        return "Effective synchronization state is unavailable".to_string();
+    };
+    let runtime = connection.query_row(
+        "SELECT effective_mode,capture_enabled FROM catalog_sync_source WHERE singleton=1",
+        [],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0)),
+    );
+    match runtime {
+        Ok((mode, true)) if mode == "live" => {
+            "Live active · incremental capture enabled".to_string()
+        }
+        Ok((mode, false)) if mode == "live" => {
+            "Live requested · waiting for the authorized fresh baseline".to_string()
+        }
+        Ok((mode, _)) if mode == "manual-snap" => "Manual SQLite SNAP active".to_string(),
+        Ok((mode, _)) if mode == "off" => "Off · catalogs are independent".to_string(),
+        _ => "Mode saved · effective state initializes while SPLINED is idle".to_string(),
+    }
 }
 
 fn set_source_policy_ui(ui: &AppWindow, config: &Config, source: &str) {
