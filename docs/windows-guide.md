@@ -148,15 +148,35 @@ summary is:
   embedded-thumbnail conditions.
 - Card frames distinguish validation, completion, and confirmed embedded-art
   problems.
+- A red frame with a grayscale Album thumbnail means WebGUI performed the last
+  verified artwork write. For an otherwise unprocessed Album, this verified
+  write replaces the stale red Missing dot; all other independent status dots,
+  text and controls keep their normal meanings. The card uses the configurable
+  **OVERRIDE** banner while this state is active. The independent **Overridden**
+  count reports these cards, and Selected Artwork shows **WebGUI override**.
 - **ARTIST**, **FEATURING**, **SOUNDTRACK**, **VARIOUS**, and **COMPILED**
   banners describe the Album's relationship to the selected Artist; they are
   not completion states.
+- **OVERRIDE** is edited directly below ARTIST under Settings → Enhancement.
+  Reset restores its white frame, light-grey background, and red lettering.
+  It does not replace the Album's stored category and disappears when Windows
+  becomes the latest successful writer.
+- Album cards are grouped **ARTIST**, **FEATURING**, **SOUNDTRACK**,
+  **VARIOUS**, then **COMPILED**. Each group is newest-to-oldest; processing and
+  override state do not change this order.
 - COMP track rows use blue for artwork still needed, purple for thumbnail
   repair/validation trouble, and green for complete.
 
 More than one condition can be visible at once. For example, a completed COMP
 Album can retain a missing-Album-ID indicator because that missing ID is what
 makes it fallback work.
+
+Cross-client override presentation is a last-successful-writer notice, not a
+lock or error. Browsing, search, preview, enhancement and upscaling do not clear
+it. A successful Windows WRITE or EMBED returns the Windows card to normal and
+makes WebGUI show the opposing notice. Failed and cancelled work never changes
+the writer. Windows retains unsent notices in SQLite while PostgreSQL is
+unavailable and recovers them after reconnect.
 
 ### Arrange the workspace
 

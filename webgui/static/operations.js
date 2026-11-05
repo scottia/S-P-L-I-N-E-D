@@ -59,7 +59,8 @@ async function initialize() {
   const settings = await api("/api/settings");
   applyGraphicalEnhancement(settings.config.webgui_ui?.enhancement);
   state.artworkRange = {...state.artworkRange, ...(settings.config.range || {})};
-  state.enabledSources = (settings.config.sources?.cover_sources || []).filter(key=>!settings.config.sources?.exclude_cover_sources?.includes(key) && settings.config.source_policies?.[key]?.enabled!==false);
+  state.sourceOrder = [...(settings.config.sources?.cover_sources || [])];
+  state.enabledSources = state.sourceOrder.filter(key=>!settings.config.sources?.exclude_cover_sources?.includes(key) && settings.config.source_policies?.[key]?.enabled!==false);
   renderAll();
   // The workspace is display:none until authentication succeeds.  Restore
   // saved panel dimensions only after it has measurable width and height.
@@ -234,7 +235,9 @@ async function writeArtwork() {
     setStatus("Writing selected cover…", "busy");
     await post("/api/artwork/cover", coverPayload());
     state.album = await api("/api/album?id=" + encodeURIComponent(state.album.id));
-    renderHero(); renderReview(); setStatus("Cover written · " + state.album.name); return;
+    clearAlbumSearchSession(false);
+    state.candidates = state.album.candidates || []; resetCandidateFilters();
+    renderHero(); renderCandidates(); renderReview(); setStatus("Cover written · " + state.album.name); return;
   }
   const editingCurrentPackage = state.editorMode === "artist" && state.workspace === "enhance" && state.radioCurrent;
   if (!state.selectedPortrait && !state.selectedBanner && !editingCurrentPackage) { enterArtistArt(); return; }
@@ -285,13 +288,12 @@ renderReview = function () {
     : staged ? "Already staged; press again to confirm the existing queue entry" : "Write the cover and stage track embedding";
   $("musicbrainzButton").disabled = !state.album || state.editorMode !== "album";
   $("bypassButton").disabled = !state.album || state.editorMode !== "album";
-  $("writeNotice").textContent = writable ? "Live Write · WRITE saves artwork. EMBED Batch saves the cover and stages track embedding. COMP work asks for track artwork in queued review." : "Read mode · searching and previewing are enabled. Enable Live Write in Settings to save artwork or track tags.";
+  $("writeNotice").textContent = "";
   if (state.editorMode === "fallback" && state.fallbackPreviewMode
     || state.compReportVisible && state.compPreviewMode) {
     $("writeButton").disabled = true;
     $("upscaleButton").disabled = true;
     $("embedBatchButton").disabled = true;
-    $("writeNotice").textContent = "COMP preview mode · turn preview off before changing or embedding track artwork.";
   }
   const decision = activeArtworkDecision();
   if (decision) {
@@ -301,27 +303,40 @@ renderReview = function () {
     $("writeButton").textContent = decision.jobKind === "comp" ? "EMBED Comp" : "WRITE Cover";
     $("writeButton").disabled = !writable || state.compPreviewMode || musicBrainzResults || !decision.selected;
     if (decision.jobKind === "comp") $("embedBatchButton").disabled = true;
-    $("writeNotice").textContent = musicBrainzResults ? "Choose a MusicBrainz release in Candidate Artwork; its artwork candidates load next."
-      : !writable ? "Read-only queued review · choices are evaluated but files are not saved."
-      : compCandidate ? "EMBED Comp prepares the preferred square thumbnail and writes only the active COMP track."
-      : "Live Write · select one candidate, then save it here.";
-  } else if (compContext) {
-    $("writeNotice").textContent = !writable ? "Read mode · enable Live Write to embed the selected COMP track."
-      : "Track-scoped COMP · current artwork, Upscale Preview, and enhancements can be embedded without MusicBrainz.";
   }
-  $("writeNotice").hidden = compContext;
+  $("writeNotice").hidden = true;
 };
 async function searchAlbum(releaseId = null) {
   if (!state.album) return;
   const id = state.album.id, request = ++state.searchRequest;
+  clearAlbumSearchSession(false);
   state.sourceDiagnostics = [];
   setStatus("Searching configured artwork sources…", "busy");
   const result = await post("/api/search/album", {id, release_id: releaseId});
   if (request !== state.searchRequest || state.album?.id !== id) return;
-  state.candidates = [...(state.album.candidates || []), ...result.candidates]; state.sourceDiagnostics = result.warnings || []; resetCandidateFilters();
+  state.albumSearchActive = true; state.albumSearchAlbumId = id;
+  state.albumSearchCandidates = [...(state.album.candidates || []), ...result.candidates];
+  state.candidates = state.albumSearchCandidates; state.sourceDiagnostics = result.warnings || []; resetCandidateFilters();
   renderSources(); renderCandidates(); renderReview();
   setStatus(result.candidates.length + " online candidates" + (result.warnings.length ? " · " + result.warnings.join("; ") : ""));
 };
+function clearAlbumSearchSession(restoreLocal = true) {
+  state.albumSearchActive = false; state.albumSearchAlbumId = ""; state.albumSearchCandidates = [];
+  if (restoreLocal && state.album && state.editorMode === "album") {
+    state.candidates = state.album.candidates || [];
+    state.selectedCover = state.candidates[0] || null;
+    state.sourceDiagnostics = []; state.compare.clear(); resetCandidateFilters();
+  }
+}
+function skipAlbumSearch() {
+  if (!state.albumSearchActive || state.albumSearchAlbumId !== state.album?.id)
+    throw new Error("No Album search is open to skip");
+  ++state.searchRequest;
+  const name = state.album.name;
+  clearAlbumSearchSession(true);
+  renderSources(); renderCandidates(); renderPanes(); renderReview();
+  setStatus("Album search skipped · " + name);
+}
 async function launchArtist() {
   if (!state.artist) return;
   const ids = [...state.mediaSelected].filter(id => state.artist.albums.some(album => album.id === id && artistAlbumEligible(album)));
@@ -378,6 +393,7 @@ async function launchArtistComp() {
 };
 async function launchCandidateWork() {
   if (state.queuedDecision?.jobKind === "scan") return skipQueuedAlbum();
+  if (state.albumSearchActive && state.albumSearchAlbumId === state.album?.id) return skipAlbumSearch();
   if (state.editorMode === "artist" && state.compReportVisible) return launchArtistComp();
   if (state.editorMode === "fallback") return launchFallback();
   if (state.editorMode === "artist") return state.workspace === "enhance" ? searchArtist() : launchArtist();
@@ -392,6 +408,7 @@ async function stageAlbum() {
   if (!result.already_queued) {
     const refreshRequest = ++state.selectionRequest;
     ++state.searchRequest;
+    clearAlbumSearchSession(false);
     state.candidates = []; state.selectedCover = null; state.upscalePreview = null;
     state.renderedPreview = {}; state.compare.clear(); state.reviewCleared = true;
     const withoutOldCover = album => album?.id === albumId
@@ -543,6 +560,19 @@ async function focusQueuedAlbum(decision) {
 async function submitQueuedDecision(value) {
   const decision = state.queuedDecision;
   if (!decision) throw new Error("This queued decision is no longer current");
+  if (decision.jobKind === "direct-musicbrainz") {
+    const selected = Number.isInteger(decision.selectedResult)
+      ? decision.options?.[decision.selectedResult] : null;
+    const keepCurrent = value === "b" || value === "__manual_candidates__"
+      || String(value).includes("use-existing");
+    if (!selected && !keepCurrent) throw new Error("Select a MusicBrainz Album first");
+    clearQueuedDecision();
+    if (selected) {
+      await searchAlbum(selected.id);
+      setStatus("MusicBrainz Album selected · artwork candidates loaded", "ready");
+    } else setStatus("Current Album retained", "ready");
+    return;
+  }
   await post("/api/jobs/action", {
     action: "decision", id: decision.jobId, value: String(value), nonce: decision.nonce,
   });
@@ -747,11 +777,13 @@ async function pollJobs() {
   try {
     const priorJobs = new Map((state.jobs || []).map(job => [job.id, job]));
     const priorStaged = new Set(state.embedQueue.map(item => item.id));
-    const [jobs, queueControls] = await Promise.all([
+    const [jobs, queueControls, albumCoordination] = await Promise.all([
       api("/api/jobs"),
       api("/api/jobs/control-state"),
+      api("/api/coordination/album-overrides").catch(() => null),
     ]);
     state.jobs = jobs; state.queueControls = queueControls; renderQueue();
+    if (applyAlbumCoordination(albumCoordination)) { renderHero(); renderReview(); }
     const stagedChanged = priorStaged.size !== state.embedQueue.length
       || state.embedQueue.some(item => !priorStaged.has(item.id));
     const completedAlbums = state.jobs.filter(job => job.kind === "embed-album" && job.state === "done"
@@ -1102,9 +1134,13 @@ function renderSourceOrderSettings(host, draft, selectedProvider, selectProvider
   settingsHelp(host, "Why can a connected provider say Excluded?", "Connection credentials and artwork-search inclusion are separate. Excluded providers can still be tested under Connections but are not queried for candidate artwork.");
   host.append(node("h4", "settings-group-heading", "Artwork Search Order"), node("p", "settings-subcopy", "Move a provider left or right. Select a card to edit its candidate quality policy below."));
   const configured = Array.from(settingValue(draft, "sources.cover_sources", [])), excluded = new Set(settingValue(draft, "sources.exclude_cover_sources", []));
+  if (!configured.includes("navidrome")) {
+    const deezerIndex = configured.indexOf("deezer");
+    configured.splice(deezerIndex < 0 ? configured.length : deezerIndex, 0, "navidrome");
+    setSettingValue(draft, "sources.cover_sources", configured);
+  }
   const sourceInfo = new Map(SOURCES.filter(([, key]) => key).map(([label, key, icon]) => [key === "fanart" ? "fanarttv" : key, {label, icon}]));
   const ordered = ["local", ...configured.filter(key => key !== "local")];
-  if (!ordered.includes("navidrome")) ordered.push("navidrome");
   const strip = node("div", "settings-source-strip");
   for (const key of ordered) {
     const info = sourceInfo.get(key) || {label: key, icon: key}, configuredIndex = configured.indexOf(key);
@@ -1399,7 +1435,8 @@ async function openSettings() {
     saved = await post("/api/settings", {config: draft}); await sessionStatus();
     applyGraphicalEnhancement(saved.config.webgui_ui?.enhancement);
     state.artworkRange = {...state.artworkRange, ...(saved.config.range || {})};
-    state.enabledSources = (saved.config.sources?.cover_sources || []).filter(key => !saved.config.sources?.exclude_cover_sources?.includes(key) && saved.config.source_policies?.[key]?.enabled !== false);
+    state.sourceOrder = [...(saved.config.sources?.cover_sources || [])];
+    state.enabledSources = state.sourceOrder.filter(key => !saved.config.sources?.exclude_cover_sources?.includes(key) && saved.config.source_policies?.[key]?.enabled !== false);
     renderAll(); setStatus(message); renderSection(active);
   }
   function renderSection(id, preserveDraft = false) {
@@ -1489,17 +1526,53 @@ async function editCredentials(provider) {
 }
 async function chooseMusicBrainz() {
   if (!state.album) return;
-  const id = state.album.id, body = dialog("MusicBrainz release search");
-  const artist = field(body, "Artist", state.album.artist_name), title = field(body, "Album", state.album.name);
-  const results = node("div", "job-options"); body.append(results);
-  actionButton("Search Releases", async () => {
-    clear(results); const matches = await post("/api/musicbrainz", {album_id: id, artist: artist.value, title: title.value});
-    if (!matches.length) results.append(node("p", "", "No matching releases"));
-    for (const match of matches) {
-      const card = node("div", "job-option"); card.append(node("p", "", [match.artist, match.title, match.date, match.country, match.resolution].filter(Boolean).join(" · ")));
-      actionButton("Search Artwork", async () => { $("workspaceDialog").close(); await searchAlbum(match.id); }, card); results.append(card);
-    }
+  if ($("workspaceDialog").open) $("workspaceDialog").close();
+  const album = state.album;
+  const previousCandidates = state.candidates;
+  const previousSourceDiagnostics = state.sourceDiagnostics;
+  const matches = await post("/api/musicbrainz", {
+    album_id: album.id, artist: album.artist_name, title: album.name,
   });
+  state.queuedDecision = {
+    jobId: "", jobKind: "direct-musicbrainz", nonce: "", kind: "musicbrainz-results",
+    context: {
+      album_id: album.id,
+      track_artist: album.artist_name,
+      track_title: album.name,
+      identity: {
+        status: "valid", message: "MusicBrainz Album release search completed.",
+        artist_status: "Album Artist", recording_status: "Album release",
+        friendly_artist: album.artist_name, friendly_title: album.name,
+      },
+      current_album: {
+        title: album.name, artist: album.artist_name, release_id: album.album_mbid || "",
+      },
+      can_back: true,
+    },
+    payload: {album_id: album.id}, previousCandidates, previousSourceDiagnostics,
+    selected: null,
+    options: matches.map(match => ({
+      ...match,
+      family_id: match.release_group_id || match.id,
+      family_title: match.title,
+      recording_artist: match.artist || album.artist_name,
+      release_artist: match.artist || album.artist_name,
+    })),
+    selectedResult: null, selectedExisting: null, artistFilter: "", releaseTypeFilter: "",
+    existingArtwork: album.cover ? [{
+      image: album.cover, title: album.name, artist: album.artist_name, kind: "current-album",
+    }] : [],
+    authority: {artist: album.artist_name, track: album.name}, diagnostics: [], authoritySaved: null,
+  };
+  state.workspace = "find";
+  state.candidates = [];
+  state.sourceDiagnostics = [];
+  state.activeSource = "";
+  state.compare.clear();
+  resetCandidateFilters();
+  renderWorkspace(); renderSources(); renderCandidates(); renderReview();
+  const familyCount = new Set(matches.map(match => match.release_group_id || match.id).filter(Boolean)).size;
+  setStatus(`MusicBrainz Album results ready · ${familyCount} release ${familyCount === 1 ? "family" : "families"} · ${matches.length} editions`, matches.length ? "busy" : "error");
 }
 async function upscaleArtist() {
   const components = state.radioCurrent

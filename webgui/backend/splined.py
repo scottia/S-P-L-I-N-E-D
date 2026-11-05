@@ -3761,7 +3761,14 @@ def reference_policy_decision(
     cfg: dict[str, Any] | None,
     ref: Ref,
 ) -> tuple[str, str]:
-    """Apply only policy supported by reliable discovery metadata."""
+    """Apply only identity/image-type policy before downloading artwork.
+
+    Provider-reported dimensions are useful diagnostics, but they are not the
+    decoded artwork evidence used by the Windows candidate workspace. Keeping
+    small references until after download preserves manual-review candidates
+    (notably Discogs) while ``project_candidate`` still classifies them against
+    the configured range once the image has been decoded.
+    """
     if cfg is None:
         return ("accept", "No source policy supplied") if ref.front else (
             "reject",
@@ -3769,12 +3776,7 @@ def reference_policy_decision(
         )
     if not reference_allowed(cfg, ref.source, ref.front):
         return "reject", "Reference is not primary/front under active source policy"
-    if ref.width is None or ref.height is None:
-        return "unknown", "Downloaded dimensions are required"
-    # Source-policy dimension constraints are defined on the obtained source,
-    # exactly as in project_candidate after download. Reliable provider
-    # metadata can therefore reject here without changing later semantics.
-    return source_policy_decision(cfg, ref.source, ref.width, ref.height)
+    return "unknown", "Downloaded image evidence is required"
 
 
 def filter_download_references(

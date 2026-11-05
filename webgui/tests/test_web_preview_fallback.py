@@ -103,7 +103,8 @@ class BrowserFallbackTests(unittest.TestCase):
         self.assertNotIn('node("button", "candidate-choose"', application)
         self.assertIn("cover: group.cover || album.cover || null", application)
         self.assertIn("fallback_complete", application)
-        self.assertIn("normalizedColor", application)
+        self.assertIn("album-key-entry", application)
+        self.assertIn('"Overridden by opposing application"', application)
         self.assertIn("renderedPreview", application)
         self.assertIn("compReportLoading", application)
         enter_artist_art = application.split("function enterArtistArt", 1)[1].split(

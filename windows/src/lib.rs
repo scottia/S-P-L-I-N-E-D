@@ -18,6 +18,7 @@ pub mod inspect;
 pub mod local_artwork;
 pub mod media_database;
 pub mod musicbrainz;
+pub mod override_coordination;
 pub mod pipeline;
 pub mod portable;
 pub mod range;

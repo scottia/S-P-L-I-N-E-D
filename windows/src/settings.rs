@@ -69,6 +69,7 @@ pub fn default_banner_theme_styles() -> Vec<BannerThemeStyle> {
         ("soundtrack", "SOUNDTRACK", "#4B0082", "#B49B00", "#B49B00"),
         ("various", "VARIOUS", "#654321", "#32DDA0", "#32DDA0"),
         ("artist", "ARTIST", "#006B3C", "#D9AD43", "#D9AD43"),
+        ("override", "OVERRIDE", "#D3D3D3", "#FFFFFF", "#FF344F"),
     ]
     .into_iter()
     .map(|(key, name, background, frame, letters)| BannerThemeStyle {
@@ -79,6 +80,23 @@ pub fn default_banner_theme_styles() -> Vec<BannerThemeStyle> {
         letters: letters.to_string(),
     })
     .collect()
+}
+
+pub fn normalize_banner_theme_styles(saved: &[BannerThemeStyle]) -> Vec<BannerThemeStyle> {
+    default_banner_theme_styles()
+        .into_iter()
+        .map(|default| {
+            saved
+                .iter()
+                .find(|style| style.key.eq_ignore_ascii_case(&default.key))
+                .cloned()
+                .map(|mut style| {
+                    style.key = default.key.clone();
+                    style
+                })
+                .unwrap_or(default)
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1097,6 +1115,26 @@ window_height = 700
         assert!(restored.media_selector_expanded);
         assert_eq!(restored.primary_adjustments.len(), 11);
         assert!(!restored.migrate_workspace_layout());
+    }
+
+    #[test]
+    fn legacy_banner_palette_gains_override_without_losing_saved_colors() {
+        let mut legacy = default_banner_theme_styles();
+        legacy.pop();
+        legacy[0].background = "#123ABC".to_string();
+
+        let normalized = normalize_banner_theme_styles(&legacy);
+
+        assert_eq!(normalized.len(), 6);
+        assert_eq!(normalized[0].background, "#123ABC");
+        let override_style = normalized
+            .iter()
+            .find(|style| style.key == "override")
+            .expect("override banner style");
+        assert_eq!(override_style.name, "OVERRIDE");
+        assert_eq!(override_style.background, "#D3D3D3");
+        assert_eq!(override_style.frame, "#FFFFFF");
+        assert_eq!(override_style.letters, "#FF344F");
     }
 
     #[test]

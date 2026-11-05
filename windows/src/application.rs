@@ -2323,6 +2323,9 @@ pub struct ApplicationState {
     /// Machine-local embed jobs lock their album out of foreground selection
     /// and LAUNCH until the queued write finishes or is removed.
     pub embed_locked_album_paths: HashSet<String>,
+    /// Durable last-writer projection keyed by canonical Album key. This is
+    /// presentation provenance only and never changes processing status.
+    pub album_override_writers: HashMap<String, String>,
     /// Track currently owned by the running fallback review. Unlike the
     /// library selection set, this authority must survive harmless browsing
     /// while the controller is waiting for a decision.
@@ -2590,6 +2593,7 @@ impl ApplicationState {
             current_album: String::new(),
             current_cover_path: String::new(),
             embed_locked_album_paths: HashSet::new(),
+            album_override_writers: HashMap::new(),
             current_compilation_track_path: String::new(),
             pending_compilation_track_path: String::new(),
             edit_preview_path: String::new(),

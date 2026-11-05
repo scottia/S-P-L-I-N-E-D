@@ -7,6 +7,7 @@
 use crate::config::{Config, resolve_sources};
 use crate::embedded_artwork::embedded_front_sha256s;
 use crate::history::{AlbumHistoryState, album_history_status, load_completion_history, unix_now};
+use crate::override_coordination::{ensure_sqlite_schema, queue_windows_album_write};
 use crate::scan::{AlbumDirectory, inventory_album_directories};
 use crate::scan_tags::{AlbumIndexTags, read_album_index_tags, read_local_track_evidence};
 use image::ImageFormat;
@@ -1325,6 +1326,23 @@ fn record_album_outcome_inner(
             params![canonical_album, album_key, outcome, json!({"source": selected_source}).to_string(), env!("CARGO_PKG_VERSION"), now],
         )
         .map_err(db_error("write Album audit"))?;
+    if outcome.eq_ignore_ascii_case("installed") {
+        let operation =
+            if selected_source.is_some_and(|source| source.eq_ignore_ascii_case("embed-queue")) {
+                "embed-album"
+            } else {
+                "write-cover"
+            };
+        queue_windows_album_write(
+            &transaction,
+            &album_key,
+            indexed_album_mbid.as_deref().unwrap_or_default(),
+            canonical_root,
+            &canonical_album,
+            operation,
+            &now,
+        )?;
+    }
     let audit_ms = elapsed_ms(audit_started);
     let commit_started = Instant::now();
     transaction
@@ -2216,11 +2234,15 @@ pub fn record_compilation_artwork_application(
     if config.mode == crate::config::Mode::Read {
         return Ok(());
     }
-    let (connection, mapper) = runtime_connection_and_mapper(config)?;
+    let (mut connection, mapper) = runtime_connection_and_mapper(config)?;
     let track_path = mapper.to_canonical(&application.track_path.to_string_lossy())?;
-    let now = sqlite_now(&connection)?;
+    let canonical_album = mapper.to_canonical(&application.album_path.to_string_lossy())?;
+    let transaction = connection
+        .transaction()
+        .map_err(db_error("begin compilation artwork transaction"))?;
+    let now = sqlite_now(&transaction)?;
     let artwork_sha256 = hex_bytes(&Sha256::digest(application.artwork));
-    connection.execute(
+    transaction.execute(
         "INSERT INTO compilation_track_artwork(track_path, recording_mbid, artist_mbid, source_kind, source_locator, release_mbid, artwork_sha256, outcome, applied_at, splined_version) \
          VALUES(?, ?, ?, ?, ?, NULLIF(?,''), ?, ?, ?, ?) ON CONFLICT(track_path) DO UPDATE SET \
          recording_mbid=excluded.recording_mbid, artist_mbid=excluded.artist_mbid, source_kind=excluded.source_kind, \
@@ -2230,12 +2252,32 @@ pub fn record_compilation_artwork_application(
             application.source_locator, application.release_mbid.unwrap_or(""), artwork_sha256, application.outcome, now, env!("CARGO_PKG_VERSION")],
     ).map_err(db_error("record compilation track artwork"))?;
     record_compilation_progress_with_connection(
-        &connection,
+        &transaction,
         &mapper,
         application.album_path,
         application.total_tracks,
         application.completed_tracks,
-    )
+    )?;
+    let (album_key, _) = resolve_outcome_identity(&transaction, None, &canonical_album)?;
+    let album_mbid = transaction
+        .query_row(
+            "SELECT COALESCE(musicbrainz_albumid,'') FROM albums WHERE album_key=? COLLATE NOCASE",
+            [&album_key],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(db_error("read compilation Album identity"))?;
+    queue_windows_album_write(
+        &transaction,
+        &album_key,
+        &album_mbid,
+        mapper.canonical_root(),
+        &canonical_album,
+        "embed-comp-track",
+        &now,
+    )?;
+    transaction
+        .commit()
+        .map_err(db_error("commit compilation artwork transaction"))
 }
 
 pub fn record_compilation_progress(
@@ -2633,6 +2675,7 @@ fn open_database(path: &Path, shared: bool) -> Result<Connection, String> {
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(db_error("set SQLite schema version"))?;
     }
+    ensure_sqlite_schema(&connection)?;
     ensure_artist_art_schema(&connection)?;
     repair_cover_only_processed_statuses(&connection)?;
     Ok(connection)

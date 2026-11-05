@@ -206,6 +206,47 @@ class ConfigV5ParityTests(unittest.TestCase):
         )
         self.assertTrue(splined.source_policy(config, "amazon")["strict_override"])
 
+    def test_small_front_references_survive_until_decoded_candidate_policy(self) -> None:
+        config = load_example("docker/config.example.toml")
+        reference = splined.Ref(
+            "discogs",
+            "manual-review",
+            "https://example.invalid/front.jpg",
+            front=True,
+            width=500,
+            height=500,
+        )
+
+        retained, diagnostics = splined.filter_download_references(
+            [reference], config
+        )
+
+        self.assertEqual(retained, [reference])
+        self.assertEqual(diagnostics, [])
+        self.assertEqual(
+            splined.source_policy_decision(config, "discogs", 500, 500)[0],
+            "reject",
+        )
+
+    def test_non_front_reference_is_still_rejected_before_download(self) -> None:
+        config = load_example("docker/config.example.toml")
+        reference = splined.Ref(
+            "discogs",
+            "back-cover",
+            "https://example.invalid/back.jpg",
+            front=False,
+            width=1800,
+            height=1800,
+        )
+
+        retained, diagnostics = splined.filter_download_references(
+            [reference], config
+        )
+
+        self.assertEqual(retained, [])
+        self.assertEqual(len(diagnostics), 1)
+        self.assertIn("not primary/front", diagnostics[0][1])
+
     def test_disabled_provider_is_removed_without_erasing_policy(self) -> None:
         config = load_example("config.example.toml")
         config["source_policies"]["fanarttv"]["enabled"] = False

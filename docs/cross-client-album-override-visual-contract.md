@@ -1,6 +1,6 @@
-# Cross-client Album override indicator — proposed UI contract
+# Cross-client Album override indicator — UI contract
 
-**Status:** Design specification for a future Windows Rust/Slint and WebGUI/PostgreSQL coordination feature. Not implemented by this document. No executable behavior is changed.
+**Status:** Approved visual contract from PR #147, extended during PR #148 owner acceptance with the configurable **OVERRIDE** banner described below.
 
 ## Purpose
 
@@ -15,11 +15,17 @@ When the **opposing application** was the last successful writer for the Album:
 - Render the **Album-card thumbnail image in grayscale**. Do not alter or rewrite the underlying image.
 - Render the **Album-card frame in red**, replacing only the normal frame color. Do **not** gray the whole card container.
 - Preserve every existing **Album status dot** and its independently determined color, including any existing red processing/status dot. Do not add an override status dot.
-- Preserve **COMPILED, FEATURING, SOUNDTRACK, VARIOUS, and ARTIST** banner colors exactly as configured in Settings.
+- Replace the normal category banner with the configurable **OVERRIDE** banner. Its baseline is a white frame (`#FFFFFF`), light-grey background (`#D3D3D3`), and red lettering (`#FF344F`). The banner remains colored; only the artwork thumbnail is grayscale.
 - Keep the real `cover.*`, `artist.*`, and `banner.*` artwork **in full color** in Selected Artwork, previews, searches, enhancements, upscaling, editing areas, and written files.
 - Keep Album text, interaction controls, and status semantics unchanged. The red frame does **not** imply an error, disabled state, or physical artwork validation failure.
 
 Render grayscale **only on the Album thumbnail**, not on the banner, status dots, or content surrounding the image. The frame is independently red.
+
+## Configurable OVERRIDE banner
+
+Both clients expose **OVERRIDE** directly below **ARTIST** in Settings → Enhancement → Banners. Background, frame, and lettering are edited and saved through the same controls as the five category banners. **Reset** restores the OVERRIDE baseline without changing another banner.
+
+OVERRIDE is a presentation layer over the Album's existing category; it does not change whether the Album is ARTIST, FEATURING, SOUNDTRACK, VARIOUS, or COMPILED. When the local client is again the last successful writer, the ordinary category banner and its configured colors return. The BANNERS column of the Album Status Key includes OVERRIDE and counts the currently displayed opposing-writer banners independently of the category counts.
 
 ## Album Status Key — existing column 2 only
 
@@ -27,7 +33,7 @@ In the existing multi-column **Album Status Key**, under **column 2: ALBUM CARD 
 
 **Red — Overridden by opposing application**
 
-This is a frame-color definition, **not** a new section, column, information slot, or status dot. Do not change existing definitions, counting logic, or customizable banner palette.
+This is a frame-color definition, **not** a new section, column, information slot, or status dot. The configurable OVERRIDE banner is listed separately in the existing BANNERS column.
 
 ## Albums summary count
 
@@ -61,8 +67,6 @@ Keep the notice short. Do not replace, recolor, or disable the existing yellow/b
 
 The indicator remains across application restarts and refreshes until a **successful local WRITE or EMBED** makes the local application the last writer. The local card then returns to full-color thumbnail and its normal status-derived frame; the opposing card becomes grayscale with a red frame. No manual accept/clear step is needed. Preview and edit operations alone never clear or transfer it.
 
-## Architecture boundary for later implementation
+## Architecture boundary
 
-The display reflects durable, Album-identity-scoped last-successful-writer provenance shared by Windows and WebGUI; neither application needs to disable browsing or preview while an opposing write is recorded. A future implementation must distinguish that provenance from processing/embedding validation, retain Windows SQLite authority for SNAP catalog state, and avoid treating a mere Compare/Dry Run, refresh, or attempted write as a successful artwork write.
-
-**Documentation-only design checkpoint:** This file does not implement any coordination table, connection, write notification, database migration, Rust/Slint UI control, or WebGUI UI change. Those require their own scoped implementation and validation.
+The display reflects durable, Album-identity-scoped last-successful-writer provenance shared by Windows and WebGUI; neither application disables browsing or preview while an opposing write is recorded. The implementation distinguishes that provenance from processing/embedding validation, retains Windows SQLite authority for SNAP catalog state, and never treats a Compare/Dry Run, refresh, or attempted write as a successful artwork write.

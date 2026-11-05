@@ -39,6 +39,8 @@ tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "sync", "
 toml = "1.1.5"
 unicode-normalization = "0.1.25"
 unicode-casefold = "0.2.0"
+sqlx = { version = "0.8.6", default-features = false, features = ["postgres", "runtime-tokio-rustls"] }
+url = "2.5.8"
 
 [build-dependencies]
 slint-build = { version = "=1.18.1", default-features = false, features = ["compat-1-18"] }

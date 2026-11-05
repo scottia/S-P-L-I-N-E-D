@@ -196,6 +196,36 @@ CREATE TABLE IF NOT EXISTS retired_album_paths (
     splined_version TEXT NOT NULL
 );
 
+-- Cross-client artwork provenance is deliberately separate from catalog and
+-- processing state. The outbox survives PostgreSQL outages; the state table
+-- preserves the last acknowledged writer across Windows restarts and SNAPs.
+CREATE TABLE IF NOT EXISTS album_artwork_write_state (
+    album_identity TEXT PRIMARY KEY,
+    album_key TEXT NOT NULL COLLATE NOCASE,
+    musicbrainz_albumid TEXT NOT NULL DEFAULT '',
+    relative_path TEXT NOT NULL DEFAULT '',
+    writer TEXT NOT NULL CHECK(writer IN ('windows', 'webgui')),
+    operation TEXT NOT NULL,
+    event_id TEXT NOT NULL UNIQUE,
+    source_completed_ms INTEGER NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 0,
+    completed_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS album_artwork_write_outbox (
+    event_id TEXT PRIMARY KEY,
+    album_identity TEXT NOT NULL,
+    album_key TEXT NOT NULL COLLATE NOCASE,
+    musicbrainz_albumid TEXT NOT NULL DEFAULT '',
+    relative_path TEXT NOT NULL DEFAULT '',
+    writer TEXT NOT NULL CHECK(writer = 'windows'),
+    operation TEXT NOT NULL,
+    source_completed_ms INTEGER NOT NULL,
+    completed_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_artists_status
     ON artists(status, artist_name COLLATE NOCASE);
 
@@ -255,3 +285,9 @@ CREATE INDEX IF NOT EXISTS idx_cache_history_key
 
 CREATE INDEX IF NOT EXISTS idx_retired_album_paths_key
     ON retired_album_paths(album_key, retired_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_album_artwork_write_state_key
+    ON album_artwork_write_state(album_key);
+
+CREATE INDEX IF NOT EXISTS idx_album_artwork_write_outbox_order
+    ON album_artwork_write_outbox(source_completed_ms, event_id);
