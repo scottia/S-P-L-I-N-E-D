@@ -21,7 +21,9 @@ use splined_core::candidate::{Candidate, StaticFormat};
 use splined_core::config::{
     Config, Mode, ScanTimeout, Verbosity, configured_samples_dir, configured_shared_artist_art_dir,
 };
-use splined_core::credential_store::{CredentialEditor, load_editor, save_editor, test_editor};
+use splined_core::credential_store::{
+    ALBUM_COORDINATION_PROVIDER, CredentialEditor, load_editor, save_editor, test_editor,
+};
 use splined_core::download::DownloadCache;
 use splined_core::embed_queue;
 use splined_core::embedded_artwork::{
@@ -41,6 +43,9 @@ use splined_core::media_database::{
     record_album_outcome_from_runtime, save_artist_art_identity,
 };
 use splined_core::musicbrainz::{ArtistLookup, ArtistSearchHit, MusicBrainzClient};
+use splined_core::override_coordination::{
+    connect_pool, coordination_database_url, effective_writers, synchronize,
+};
 use splined_core::range::Range;
 use splined_core::safe_write::{
     cleanup_stale_audio_stages, replace_binary_file, take_credential_protection_warning,
@@ -932,6 +937,63 @@ impl Model for LibraryUiModel {
     }
 }
 
+fn apply_thumbnail_path_updates(
+    app: &mut ApplicationState,
+    artist_paths: ThumbnailPaths,
+    album_paths: ThumbnailPaths,
+    artist_ids: ArtistNavidromeIds,
+) -> bool {
+    let mut changed = false;
+    for (artist, path) in artist_paths {
+        let key = artist.trim().to_ascii_lowercase();
+        let value = path.to_string_lossy().into_owned();
+        if app.library.artist_artwork_paths.get(&key) != Some(&value) {
+            app.library.set_artist_artwork_path(&artist, &path);
+            changed = true;
+        }
+    }
+    for (album_key, path) in album_paths {
+        let value = path.to_string_lossy().into_owned();
+        let focused_idle_album = app.phase == RunPhase::Idle
+            && app
+                .library
+                .focused_album_key
+                .as_ref()
+                .is_some_and(|focused| focused.eq_ignore_ascii_case(&album_key));
+        if let Some(album) = app.library.albums.iter_mut().find(|album| {
+            album.snapshot.album_key.eq_ignore_ascii_case(&album_key)
+                && !album.snapshot.album_mbid.trim().is_empty()
+                && path.parent() == Some(Path::new(&album.snapshot.path))
+        }) && album.snapshot.cover_path != value
+        {
+            let previous = std::mem::replace(&mut album.snapshot.cover_path, value.clone());
+            if focused_idle_album && app.current_cover_path == previous {
+                app.current_cover_path = value.clone();
+            }
+            changed = true;
+        }
+        let key = album_key.trim().to_ascii_lowercase();
+        if app.library.album_artwork_paths.get(&key) != Some(&value) {
+            app.library.set_album_artwork_path(&album_key, &path);
+            changed = true;
+        }
+    }
+    for (artist, id) in artist_ids {
+        let key = artist.trim().to_ascii_lowercase();
+        let value = id.trim();
+        if app
+            .library
+            .artist_navidrome_ids
+            .get(&key)
+            .is_none_or(|current| current != value)
+        {
+            app.library.set_artist_navidrome_id(&artist, value);
+            changed = true;
+        }
+    }
+    changed
+}
+
 fn publish_thumbnail_paths(
     state: &Arc<Mutex<ApplicationState>>,
     weak: &slint::Weak<AppWindow>,
@@ -951,36 +1013,11 @@ fn publish_thumbnail_paths(
         refresh_weak(weak, state);
         return;
     }
+    let mut changed = false;
     if let Ok(mut app) = state.lock() {
-        for (artist, path) in artist_paths {
-            app.library.set_artist_artwork_path(&artist, &path);
-        }
-        for (album_key, path) in album_paths {
-            let focused_idle_album = app.phase == RunPhase::Idle
-                && app
-                    .library
-                    .focused_album_key
-                    .as_ref()
-                    .is_some_and(|focused| focused.eq_ignore_ascii_case(&album_key));
-            if let Some(album) = app.library.albums.iter_mut().find(|album| {
-                album.snapshot.album_key.eq_ignore_ascii_case(&album_key)
-                    && !album.snapshot.album_mbid.trim().is_empty()
-                    && path.parent() == Some(Path::new(&album.snapshot.path))
-            }) {
-                let previous = std::mem::replace(
-                    &mut album.snapshot.cover_path,
-                    path.to_string_lossy().into_owned(),
-                );
-                if focused_idle_album && app.current_cover_path == previous {
-                    app.current_cover_path = path.to_string_lossy().into_owned();
-                }
-            }
-            app.library.set_album_artwork_path(&album_key, &path);
-        }
-        for (artist, id) in artist_ids {
-            app.library.set_artist_navidrome_id(&artist, &id);
-        }
+        changed = apply_thumbnail_path_updates(&mut app, artist_paths, album_paths, artist_ids);
         if let Some(metadata) = artist_metadata {
+            changed = true;
             if let Some(log) = UI_DEBUG_LOG_HANDLE.get() {
                 let hydrated_tracks = metadata
                     .fallback_tracks
@@ -1059,7 +1096,14 @@ fn publish_thumbnail_paths(
                 .insert(metadata.artist_key, cached);
         }
     }
-    refresh_weak(weak, state);
+    // Replacing the virtualized library model destroys an active row
+    // TouchArea. Lazy hydration can publish the same local paths again after a
+    // remote lookup failure; rebuilding on those no-op publications made
+    // Artist rows lose ordinary press/release clicks. Refresh only when the
+    // visible thumbnail or overview state actually changed.
+    if changed {
+        refresh_weak(weak, state);
+    }
 }
 
 fn logical_dimension(value: f32, minimum: u32) -> u32 {
@@ -3155,6 +3199,118 @@ fn storage_usage_text(config: &Config) -> (String, String) {
     (cache, database)
 }
 
+fn start_album_coordination_worker(
+    ui: &AppWindow,
+    state: Arc<Mutex<ApplicationState>>,
+) -> Arc<AtomicBool> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let Some((database, database_url)) = state.lock().ok().and_then(|mut app| {
+        let database = splined_core::media_database::database_path(&app.config.scan.cache_dir);
+        if database.is_file()
+            && let Ok(writers) = effective_writers(&database)
+        {
+            app.album_override_writers = writers;
+        }
+        match coordination_database_url(&app.config) {
+            Ok(Some(url)) => Some((database, url)),
+            Ok(None) => None,
+            Err(error) => {
+                app.push_log(error);
+                None
+            }
+        }
+    }) else {
+        return stop;
+    };
+    let weak = ui.as_weak();
+    let worker_state = Arc::clone(&state);
+    let worker_stop = Arc::clone(&stop);
+    std::thread::spawn(move || {
+        let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        else {
+            return;
+        };
+        runtime.block_on(async move {
+            let mut pool = None;
+            let mut connection_warning = false;
+            while !worker_stop.load(Ordering::Relaxed) {
+                if let Ok(writers) = effective_writers(&database) {
+                    let changed = worker_state.lock().is_ok_and(|mut app| {
+                        if app.album_override_writers == writers {
+                            false
+                        } else {
+                            app.album_override_writers = writers;
+                            true
+                        }
+                    });
+                    if changed {
+                        let target_weak = weak.clone();
+                        let refresh_state = Arc::clone(&worker_state);
+                        let _ = slint::invoke_from_event_loop(move || {
+                            refresh_weak(&target_weak, &refresh_state)
+                        });
+                    }
+                }
+                if pool.is_none() {
+                    match connect_pool(&database_url).await {
+                        Ok(connected) => {
+                            pool = Some(connected);
+                            connection_warning = false;
+                        }
+                        Err(_) if !connection_warning => {
+                            connection_warning = true;
+                            if let Ok(mut app) = worker_state.lock() {
+                                app.push_log("Album coordination is offline; successful Windows notifications remain queued locally.".to_string());
+                            }
+                        }
+                        Err(_) => {}
+                    }
+                }
+                if let Some(connected) = pool.as_ref() {
+                    match synchronize(connected, &database).await {
+                        Ok(writers) => {
+                            connection_warning = false;
+                            let changed = worker_state.lock().is_ok_and(|mut app| {
+                                if app.album_override_writers == writers {
+                                    false
+                                } else {
+                                    app.album_override_writers = writers;
+                                    true
+                                }
+                            });
+                            if changed {
+                                let target_weak = weak.clone();
+                                let refresh_state = Arc::clone(&worker_state);
+                                let _ = slint::invoke_from_event_loop(move || {
+                                    refresh_weak(&target_weak, &refresh_state)
+                                });
+                            }
+                        }
+                        Err(_) => {
+                            pool = None;
+                            if !connection_warning {
+                                connection_warning = true;
+                                if let Ok(mut app) = worker_state.lock() {
+                                    app.push_log("Album coordination disconnected; successful Windows notifications remain queued locally.".to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+                for _ in 0..10 {
+                    if worker_stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+        });
+    });
+    stop
+}
+
 fn main() -> Result<(), slint::PlatformError> {
     // The software renderer is deliberately selected on Windows. It avoids
     // multi-window OpenGL context loss that previously produced white frames
@@ -3490,6 +3646,8 @@ fn main() -> Result<(), slint::PlatformError> {
     if embed_queue_stop.is_some() {
         sync_ui(&ui, &state);
     }
+    let album_coordination_stop = start_album_coordination_worker(&ui, Arc::clone(&state));
+    sync_ui(&ui, &state);
     if !setup_required {
         let check_config = state.lock().ok().map(|app| app.config.clone());
         if let Some(check_config) = check_config {
@@ -4230,6 +4388,7 @@ fn main() -> Result<(), slint::PlatformError> {
     }
 
     let result = ui.run();
+    album_coordination_stop.store(true, Ordering::Relaxed);
     if let Some(stop) = embed_queue_stop {
         stop.store(true, Ordering::Relaxed);
     }
@@ -4297,6 +4456,7 @@ fn normalize_status_bar_size(value: &str) -> &'static str {
 }
 
 fn preserve_filter_state(replacement: &mut ApplicationState, previous: &ApplicationState) {
+    replacement.album_override_writers = previous.album_override_writers.clone();
     replacement.media_filter_locked = previous.media_filter_locked;
     replacement.candidate_filter_locked = previous.candidate_filter_locked;
     replacement.library.set_view(previous.library.view);
@@ -4428,11 +4588,8 @@ fn apply_ui_preferences(state: &mut ApplicationState, preferences: &UiPreference
     } else {
         splined_core::settings::default_adjustment_presets()
     };
-    state.banner_theme_styles = if preferences.banner_theme_styles.len() == 5 {
-        preferences.banner_theme_styles.clone()
-    } else {
-        splined_core::settings::default_banner_theme_styles()
-    };
+    state.banner_theme_styles =
+        splined_core::settings::normalize_banner_theme_styles(&preferences.banner_theme_styles);
     state.album_frame_theme_styles = if preferences.album_frame_theme_styles.len() == 3 {
         preferences.album_frame_theme_styles.clone()
     } else {
@@ -4442,10 +4599,12 @@ fn apply_ui_preferences(state: &mut ApplicationState, preferences: &UiPreference
     state.banner_random_harmony = preferences.banner_random_harmony;
     state.wheel_hue_shift_degrees = preferences.wheel_hue_shift_degrees.min(359);
     state.wheel_brightness_percent = preferences.wheel_brightness_percent.clamp(30, 170);
-    state.banner_theme_baseline_styles = if preferences.banner_theme_baseline_styles.len() == 5 {
-        preferences.banner_theme_baseline_styles.clone()
-    } else {
+    state.banner_theme_baseline_styles = if preferences.banner_theme_baseline_styles.is_empty() {
         state.banner_theme_styles.clone()
+    } else {
+        splined_core::settings::normalize_banner_theme_styles(
+            &preferences.banner_theme_baseline_styles,
+        )
     };
     state.album_frame_theme_baseline_styles =
         if preferences.album_frame_theme_baseline_styles.len() == 3 {
@@ -13852,6 +14011,7 @@ fn bind_service_callbacks(
                     identifier,
                     secret,
                 );
+                let album_coordination = editor.provider == ALBUM_COORDINATION_PROVIDER;
                 let result = state
                     .lock()
                     .map_err(|_| "The SPLINED application state is unavailable.".to_string())
@@ -13861,6 +14021,8 @@ fn bind_service_callbacks(
                 if let Some(ui) = weak.upgrade() {
                     ui.set_credential_status(SharedString::from(if protection_warning {
                         "Saved, but user-specific filesystem protection is unavailable on this storage location.".to_string()
+                    } else if result.is_ok() && album_coordination {
+                        "Saved securely. Restart SPLINED once to enable Album Coordination.".to_string()
                     } else if result.is_ok() {
                         "Saved securely. Use Test to verify live access.".to_string()
                     } else {
@@ -18484,6 +18646,31 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
     ui.set_selected_artwork_webp_needs_still(webp_needs_still);
     ui.set_selected_artwork_webp_static_footer(has_webp && state.phase == RunPhase::Idle);
     let embedded_infos = current_embedded_thumbnail_infos(&state);
+    let focused_album = state.library.focused_album_key.as_ref().and_then(|key| {
+        state
+            .library
+            .albums
+            .iter()
+            .find(|album| album.snapshot.album_key.eq_ignore_ascii_case(key))
+    });
+    ui.set_selected_album_processing_state(
+        focused_album
+            .map(|album| album.snapshot.status.as_str())
+            .unwrap_or_default()
+            .into(),
+    );
+    ui.set_selected_album_track_count(
+        focused_album
+            .map(|album| album.snapshot.track_count.min(i64::from(i32::MAX)) as i32)
+            .unwrap_or_default(),
+    );
+    ui.set_selected_album_embedded_count(
+        embedded_infos
+            .iter()
+            .filter(|info| info.is_some())
+            .count()
+            .min(i32::MAX as usize) as i32,
+    );
     ui.set_selected_artwork_embedded_info(if embed_available {
         format_existing_embedded_info(&embedded_infos).into()
     } else {
@@ -18589,6 +18776,17 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
             state.library.database_path.clone()
         },
     ));
+    let opposing_writer = state
+        .library
+        .focused_album_key
+        .as_ref()
+        .and_then(|key| state.album_override_writers.get(&key.to_ascii_lowercase()))
+        .is_some_and(|writer| writer.eq_ignore_ascii_case("webgui"));
+    ui.set_selected_artwork_override_notice(if opposing_writer {
+        "WebGUI override".into()
+    } else {
+        SharedString::default()
+    });
     ui.set_current_artist(SharedString::from(state.current_artist.clone()));
     ui.set_current_album(SharedString::from(state.current_album.clone()));
     ui.set_current_path(SharedString::from(preview_path));
@@ -18891,6 +19089,7 @@ fn theme_preview_album_row(state: &ApplicationState, target: &str) -> UiArtistAl
         pending_frame: frame_color("in_process", "#EFA54E"),
         attention_frame: frame_color("thumbnail", "#7C4DFF"),
         queue_locked: false,
+        overridden: false,
     }
 }
 
@@ -19274,6 +19473,15 @@ fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRo
         .filter_map(|index| state.library.albums.get(index))
         .map(|album| {
             let snapshot = &album.snapshot;
+            let overridden = state
+                .album_override_writers
+                .get(&snapshot.album_key.to_ascii_lowercase())
+                .is_some_and(|writer| writer.eq_ignore_ascii_case("webgui"));
+            // An opposing successful write proves that a local New/no-cover
+            // presentation is stale. It replaces only that red Missing dot;
+            // every other independent status indicator remains authoritative.
+            let stale_unprocessed =
+                overridden && album.state == splined_core::application::AlbumState::New;
             let group = artist_overview_sort_group(state, album);
             let separator_before = previous_group.is_some_and(|previous| previous != group);
             previous_group = Some(group);
@@ -19303,6 +19511,8 @@ fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRo
             // use its folder cover. Neither is an actionable red status for
             // the selected artist's track-scoped COMP workflow.
             let missing_album_art = !fallback && !snapshot.has_local_artwork;
+            let unprocessed =
+                !fallback && album.state == splined_core::application::AlbumState::New;
             let incomplete = !fallback
                 && matches!(
                     album.state,
@@ -19312,7 +19522,9 @@ fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRo
             let processed = album.state == splined_core::application::AlbumState::Processed;
             let complete_art = !fallback && processed && has_artist_art && !missing_album_art;
             let (soundtrack, various_artists) = artist_overview_release_banners(snapshot);
-            let banner_key = if featured {
+            let banner_key = if overridden {
+                "override"
+            } else if featured {
                 "featuring"
             } else if fallback {
                 "compiled"
@@ -19435,13 +19647,20 @@ fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRo
                 "Bypassed Album".to_string(),
             );
             add_bullet(
-                missing_album_art,
+                (missing_album_art || unprocessed) && !stale_unprocessed,
                 Color::from_rgb_u8(255, 82, 104),
-                "Missing Album Art".to_string(),
+                if missing_album_art {
+                    "Missing Album Art"
+                } else {
+                    "Unprocessed Album"
+                }
+                .to_string(),
             );
             add_bullet(
-                incomplete
-                    || (fallback && fallback_progress.is_some_and(|(done, total)| done < total)),
+                !stale_unprocessed
+                    && (incomplete
+                        || (fallback
+                            && fallback_progress.is_some_and(|(done, total)| done < total))),
                 Color::from_rgb_u8(255, 82, 104),
                 if fallback {
                     "Selected Artist's COMP tracks incomplete"
@@ -19495,12 +19714,13 @@ fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRo
                 }
                 .to_string(),
             );
+            let artwork_path = artist_album_card_artwork_path(state, snapshot);
             UiArtistAlbumRow {
                 key: SharedString::from(snapshot.album_key.clone()),
                 title: SharedString::from(snapshot.title.clone()),
                 display_title: SharedString::from(artist_album_card_display_title(&snapshot.title)),
                 year: SharedString::from(snapshot.release_year.clone()),
-                artwork: load_scaled_image(&artist_album_card_artwork_path(state, snapshot), 192),
+                artwork: load_album_card_image(&artwork_path, 192, overridden),
                 status_color: if fully_complete {
                     Color::from_rgb_u8(50, 221, 160)
                 } else if featured && fallback_complete {
@@ -19534,6 +19754,7 @@ fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRo
                 queue_locked: state
                     .embed_locked_album_paths
                     .contains(&snapshot.path.to_lowercase()),
+                overridden,
             }
         })
         .collect::<Vec<_>>();
@@ -19550,12 +19771,18 @@ fn artist_overview_legend_counts(
             continue;
         };
         counts.shown += 1;
+        if album.overridden {
+            counts.overridden += 1;
+        }
         if album.validating {
             counts.validating += 1;
         } else if album.fully_complete {
             counts.completed += 1;
-            counts.green_frames += 1;
+            if !album.overridden {
+                counts.green_frames += 1;
+            }
         } else if album.check_embedded
+            && !album.overridden
             && (album.processed || (album.fallback && album.fallback_complete))
         {
             if album.fallback && album.fallback_complete {
@@ -19580,7 +19807,10 @@ fn artist_overview_legend_counts(
         }
         // Mirror the visible banner's priority, not merely the underlying
         // metadata: a secondary credit replaces the album-type banner.
-        if album.featured {
+        if album.overridden {
+            // The OVERRIDE banner replaces the category banner while the
+            // opposing application owns the latest successful write.
+        } else if album.featured {
             counts.feat += 1;
         } else if album.fallback {
             if album.fallback_complete {
@@ -19613,20 +19843,18 @@ fn artist_overview_legend_counts(
 // LAUNCH order when grouping the Artist Overview by album type.
 fn artist_overview_sort_group(state: &ApplicationState, album: &AlbumEntry) -> u8 {
     if artist_overview_is_featured(state, album) {
-        return 4; // FEAT is its own group after V/A, even on another album type.
+        return 1; // Featured appearances follow owned Artist Albums.
     }
     if album.snapshot.album_mbid.trim().is_empty() {
-        return 5; // COMP fallback, even if its album status is unprocessed.
+        return 4; // COMP fallback is always the final Album-card group.
     }
     let (soundtrack, various_artists) = artist_overview_release_banners(&album.snapshot);
     if soundtrack {
         2
     } else if various_artists {
         3
-    } else if album.state == AlbumState::New {
-        0
     } else {
-        1
+        0 // Processing state never changes an owned Artist Album's position.
     }
 }
 
@@ -21210,6 +21438,63 @@ fn load_scaled_image(path: &str, maximum_dimension: u32) -> slint::Image {
     load_image_with_maximum(path, Some(maximum_dimension.max(1)))
 }
 
+fn grayscale_rgba(pixels: &mut [u8]) {
+    for pixel in pixels.as_chunks_mut::<4>().0 {
+        let luminance = ((u32::from(pixel[0]) * 77
+            + u32::from(pixel[1]) * 150
+            + u32::from(pixel[2]) * 29)
+            >> 8) as u8;
+        pixel[0] = luminance;
+        pixel[1] = luminance;
+        pixel[2] = luminance;
+    }
+}
+
+fn load_album_card_image(path: &str, maximum_dimension: u32, grayscale: bool) -> slint::Image {
+    if !grayscale {
+        return load_scaled_image(path, maximum_dimension);
+    }
+    if path.trim().is_empty() {
+        return slint::Image::default();
+    }
+    let maximum_dimension = maximum_dimension.max(1);
+    let cache_key = format!("{path}\u{1f}{maximum_dimension}\u{1f}grayscale");
+    let Ok(metadata) = std::fs::metadata(path) else {
+        IMAGE_CACHE.with(|cache| cache.borrow_mut().remove(&cache_key));
+        return slint::Image::default();
+    };
+    let identity = (metadata.len(), metadata.modified().ok());
+    if let Some(image) = IMAGE_CACHE.with(|cache| {
+        cache
+            .borrow()
+            .get(&cache_key)
+            .filter(|cached| cached.identity == identity)
+            .map(|cached| cached.image.clone())
+    }) {
+        return image;
+    }
+    let Some(decoded) = decode_scaled_pixels(path, Some(maximum_dimension)) else {
+        return slint::Image::default();
+    };
+    let mut pixels = decoded.pixels.as_ref().to_vec();
+    grayscale_rgba(&mut pixels);
+    let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+        &pixels,
+        decoded.width,
+        decoded.height,
+    );
+    let image = slint::Image::from_rgba8(buffer);
+    cache_slint_image(
+        cache_key,
+        maximum_dimension,
+        CachedImage {
+            identity,
+            image: image.clone(),
+        },
+    );
+    image
+}
+
 fn load_cached_preview_image(path: &str, fallback_path: &str) -> slint::Image {
     [PREVIEW_CACHE_DIMENSION, 320, 64]
         .into_iter()
@@ -22646,6 +22931,77 @@ mod tests {
     }
 
     #[test]
+    fn opposing_write_replaces_stale_unprocessed_red_dot() {
+        let snapshot = MediaSnapshot {
+            schema_version: splined_core::media_database::SCHEMA_VERSION,
+            database_path: "splined.db".to_string(),
+            canonical_root: "/music".to_string(),
+            local_root: r"C:\Music".to_string(),
+            albums: vec![MediaAlbumSnapshot {
+                album_key: "arrival".to_string(),
+                artist: "ABBA".to_string(),
+                tagged_artist: "ABBA".to_string(),
+                title: "Arrival".to_string(),
+                path: r"C:\Music\ABBA\Arrival".to_string(),
+                representative_file: String::new(),
+                status: "unprocessed".to_string(),
+                compilation: false,
+                compilation_track_art_eligible: false,
+                compilation_tracks: Vec::new(),
+                track_count: 10,
+                compilation_completed_tracks: 0,
+                release_year: "1976".to_string(),
+                artist_mbid: "artist-id".to_string(),
+                album_mbid: "release-id".to_string(),
+                release_group_mbid: String::new(),
+                has_local_artwork: true,
+                local_artwork_files: Vec::new(),
+                cover_path: String::new(),
+                cover_name: String::new(),
+                cover_format: String::new(),
+                cover_width: 0,
+                cover_height: 0,
+                root_files: 0,
+                cover_files: 0,
+                processed_at: None,
+                timeout_until: None,
+                selected_source: None,
+            }],
+        };
+        let mut app = ApplicationState::new(Config::default(), snapshot).unwrap();
+        app.library.focused_artist = Some("ABBA".to_string());
+        app.library
+            .artist_artwork_paths
+            .insert("abba".to_string(), r"C:\Music\ABBA\artist.jpg".to_string());
+
+        let normal = artist_overview_ui_model(&app).row_data(0).unwrap();
+        assert!(!normal.overridden);
+        assert!((0..normal.bullets.row_count()).any(|index| {
+            normal
+                .bullets
+                .row_data(index)
+                .is_some_and(|bullet| bullet.tip == "Unprocessed Album")
+        }));
+
+        app.album_override_writers
+            .insert("arrival".to_string(), "webgui".to_string());
+        let overridden_model = artist_overview_ui_model(&app);
+        let overridden = overridden_model.row_data(0).unwrap();
+        assert!(overridden.overridden);
+        assert_eq!(overridden.banner_display, "O\nV\nE\nR\nR\nI\nD\nE");
+        let counts = artist_overview_legend_counts(&overridden_model, &[]);
+        assert_eq!(counts.overridden, 1);
+        assert_eq!(counts.artist, 0);
+        assert!(!(0..overridden.bullets.row_count()).any(|index| {
+            overridden.bullets.row_data(index).is_some_and(|bullet| {
+                bullet.tip == "Missing Album Art"
+                    || bullet.tip == "Unprocessed Album"
+                    || bullet.tip == "Incomplete / timed-out Album"
+            })
+        }));
+    }
+
+    #[test]
     fn artist_overview_cards_group_by_album_type_then_newest_year_with_separators() {
         let base = MediaAlbumSnapshot {
             album_key: String::new(),
@@ -22830,16 +23186,16 @@ mod tests {
         assert_eq!(
             actual,
             [
+                ("artist-new", false),
                 ("new-new", false),
                 ("new-old", false),
-                ("artist-new", true),
                 ("artist-old", false),
+                ("feat-new", true),
+                ("feat-old", false),
                 ("ost-new", true),
                 ("ost-old", false),
                 ("va-new", true),
                 ("va-old", false),
-                ("feat-new", true),
-                ("feat-old", false),
                 ("comp-new", true),
                 ("comp-old", false),
             ]
@@ -23642,6 +23998,34 @@ mod tests {
         assert_eq!(local_album_art_file(&album, "cover"), Some(new_cover));
         album.album_mbid.clear();
         assert_eq!(local_album_art_file(&album, "cover"), None);
+    }
+
+    #[test]
+    fn repeated_artist_thumbnail_publication_is_a_no_op() {
+        let snapshot = MediaSnapshot {
+            schema_version: splined_core::media_database::SCHEMA_VERSION,
+            database_path: String::new(),
+            canonical_root: String::new(),
+            local_root: String::new(),
+            albums: Vec::new(),
+        };
+        let mut app = ApplicationState::new(Config::default(), snapshot).unwrap();
+        let artwork = PathBuf::from(r"C:\Music\Artist\artist.png");
+        let artist_paths = vec![("Artist".to_string(), artwork)];
+        let artist_ids = vec![("Artist".to_string(), "navidrome-artist".to_string())];
+
+        assert!(super::apply_thumbnail_path_updates(
+            &mut app,
+            artist_paths.clone(),
+            Vec::new(),
+            artist_ids.clone(),
+        ));
+        assert!(!super::apply_thumbnail_path_updates(
+            &mut app,
+            artist_paths,
+            Vec::new(),
+            artist_ids,
+        ));
     }
 
     #[test]

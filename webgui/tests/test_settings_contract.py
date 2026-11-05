@@ -153,6 +153,75 @@ class SettingsContractTests(unittest.TestCase):
         for key in ("compiled", "featuring", "soundtrack", "various", "artist"):
             self.assertIn(f"{key}: {{name:", app)
 
+    def test_webgui_persists_navidrome_in_artwork_source_order(self) -> None:
+        app = (REPOSITORY / "webgui/static/app.js").read_text(encoding="utf-8")
+        operations = (REPOSITORY / "webgui/static/operations.js").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('if (!configured.includes("navidrome"))', operations)
+        self.assertIn(
+            'setSettingValue(draft, "sources.cover_sources", configured)',
+            operations,
+        )
+        self.assertIn("sourceOrder", app)
+        self.assertIn("for (const configuredKey of state.sourceOrder", app)
+        self.assertIn("state.sourceOrder = [...(settings.config.sources?.cover_sources", operations)
+
+    def test_direct_album_search_can_be_skipped_without_selecting_another_album(self) -> None:
+        app = (REPOSITORY / "webgui/static/app.js").read_text(encoding="utf-8")
+        operations = (REPOSITORY / "webgui/static/operations.js").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("albumSearchActive", app)
+        self.assertIn('$("searchButton").textContent = skipping ? "SKIP ALBUM"', app)
+        self.assertIn("function skipAlbumSearch()", operations)
+        self.assertIn("return skipAlbumSearch()", operations)
+
+    def test_direct_musicbrainz_uses_persistent_main_workspace(self) -> None:
+        app = (REPOSITORY / "webgui/static/app.js").read_text(encoding="utf-8")
+        operations = (REPOSITORY / "webgui/static/operations.js").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('jobKind: "direct-musicbrainz"', operations)
+        self.assertIn('state.workspace = "find"', operations)
+        self.assertIn('decision.jobKind === "direct-musicbrainz"', operations)
+        self.assertNotIn('dialog("MusicBrainz release search")', operations)
+        self.assertIn('directAlbum ? "ALBUM" : "TRACK"', app)
+
+    def test_selected_artwork_omits_redundant_write_warning(self) -> None:
+        app = (REPOSITORY / "webgui/static/app.js").read_text(encoding="utf-8")
+        operations = (REPOSITORY / "webgui/static/operations.js").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("Live Write · WRITE saves artwork", operations)
+        self.assertIn('$("writeNotice").hidden = true', operations)
+        self.assertIn('$("writeNotice").hidden = true', app)
+        self.assertIn('overrideNotice.textContent = override?.writer === "windows"', app)
+
+    def test_windows_candidate_filter_exposes_every_resolution_range(self) -> None:
+        main = (REPOSITORY / "windows/src/main.rs").read_text(encoding="utf-8")
+        slint = (REPOSITORY / "windows/ui/app.slint").read_text(encoding="utf-8")
+        for key in (
+            '"Ideal"',
+            '"UpperRange"',
+            '"Ladder"',
+            '"AboveLadder"',
+            '"LowerRange"',
+            '"BelowMinimum"',
+        ):
+            self.assertIn(key, main)
+        self.assertIn("height: 520px", slint)
+
+    def test_windows_selected_album_shows_processing_and_embedding_facts(self) -> None:
+        main = (REPOSITORY / "windows/src/main.rs").read_text(encoding="utf-8")
+        slint = (REPOSITORY / "windows/ui/app.slint").read_text(encoding="utf-8")
+        self.assertIn("selected-album-processing-state", slint)
+        self.assertIn("selected-album-track-count", slint)
+        self.assertIn("selected-album-embedded-count", slint)
+        self.assertIn("ui.set_selected_album_processing_state", main)
+        self.assertIn("ui.set_selected_album_track_count", main)
+        self.assertIn("ui.set_selected_album_embedded_count", main)
+
     def test_webgui_samples_and_future_ai_defaults_are_explicit(self) -> None:
         fields = {
             field["path"]: field

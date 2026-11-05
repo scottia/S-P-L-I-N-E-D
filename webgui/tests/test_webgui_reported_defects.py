@@ -127,6 +127,46 @@ class ReportedDefectTests(unittest.TestCase):
         self.assertIn("metric: metadata", application)
         self.assertNotIn('"Artist " + state.artist.portrait_meta.width', application)
 
+    def test_cross_client_override_visual_contract_is_presentation_only(self):
+        repository = Path(__file__).parents[2]
+        static = repository / "webgui" / "static"
+        document = (static / "index.html").read_text(encoding="utf-8")
+        application = (static / "app.js").read_text(encoding="utf-8")
+        operations = (static / "operations.js").read_text(encoding="utf-8")
+        styles = (static / "app.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="overrideNotice" class="override-notice" hidden', document)
+        self.assertIn('"Overridden by opposing application"', application)
+        self.assertIn('"Windows override"', application)
+        self.assertIn('"Overridden"', application)
+        self.assertIn('albumOverrides: new Map()', application)
+        self.assertIn('/api/coordination/album-overrides', operations)
+        self.assertIn(
+            ".album-card.windows-card.opposing-override .album-card-picture img"
+            "{filter:grayscale(1)}",
+            styles,
+        )
+        self.assertNotIn(".opposing-override{filter:grayscale", styles)
+        self.assertIn('const frame = overridden ? "#ff344f"', application)
+        self.assertIn(
+            'override: {name: "OVERRIDE", background: "#D3D3D3", frame: "#FFFFFF", letters: "#FF344F"}',
+            application,
+        )
+        self.assertIn(
+            'albumOverride(album)?.writer === "windows" ? "override" : albumBannerKind(album, artist)',
+            application,
+        )
+        self.assertNotIn('["Missing", "Missing or incomplete", "#ff5268"]', application)
+        self.assertIn('detail: "Validating embedded thumbnails"', application)
+        self.assertIn('detail: "Processed album; thumbnail check"', application)
+        self.assertIn('detail: "COMP tracks done; thumbnail check"', application)
+        self.assertIn('["COMP track rows", [', application)
+        self.assertIn("grid-template-columns:repeat(4,minmax(0,1fr))", styles)
+        self.assertIn(": processed ? frames.in_process.color : mediaStatusColor(status)", application)
+        self.assertIn('const staleUnprocessed = overridden && status === "unprocessed"', application)
+        self.assertIn('status === "partial" || (!overridden && status === "unprocessed")', application)
+        self.assertIn('if (!staleUnprocessed && (missingCover || incomplete))', application)
+
     def test_comp_report_backfills_only_albums_in_selected_artist_scope(self):
         with TemporaryDirectory() as directory:
             database_path = Path(directory) / "catalog.sqlite"
@@ -292,6 +332,10 @@ class ReportedDefectTests(unittest.TestCase):
             services.refresh_album = lambda *_args, **_kwargs: None
             recorded = []
             services.audit = lambda *args, **kwargs: recorded.append((args, kwargs))
+            services.record_album_write = lambda *_args: {
+                "durable": True,
+                "writer": "webgui",
+            }
 
             result = Services.write_cover.__wrapped__(services, {"album_id": "album-1"})
 
@@ -299,6 +343,7 @@ class ReportedDefectTests(unittest.TestCase):
             self.assertFalse((folder / "cover.jpg").exists())
             self.assertTrue((folder / "cover-(2).jpg").is_file())
             self.assertEqual(result["preserved"], ["cover-(2).jpg"])
+            self.assertEqual(result["coordination"]["writer"], "webgui")
             self.assertEqual(recorded[0][1]["request_status"], "verified")
 
 

@@ -292,6 +292,7 @@ class CompJobScopeTests(unittest.TestCase):
             )
             service.refresh_embedding_stats = lambda _row: 1
             service.audit = lambda *_args, **_kwargs: None
+            service.record_album_write = lambda *_args, **_kwargs: {"durable": True}
 
             prepared = service.prepare_comp_thumbnail({
                 "artist_id": "10k-maniacs", "album_id": "billboard-1994",

@@ -61,6 +61,10 @@ diagnostic reports.
   mounts, backup, and container validation.
 - [Browser workspace schematic](browser-workspace-schematic.md) — maintainer
   map of browser regions and source locations; not a parity guarantee.
+- [Cross-client Album override implementation](cross-client-album-override-implementation.md)
+  — last-successful-writer coordination, recovery boundary, and isolated PC
+  acceptance environment; the governing visual contract was merged through
+  PR #147.
 - [Windows Rust/Slint architecture checklist](windows-rust-slint-migration-checklist.md)
   — current single-executable architecture and retired implementation boundary.
 
@@ -71,12 +75,11 @@ Portable artifact instructions are distributed with the artifacts:
 format; it does not by itself guarantee that every release publishes that
 platform.
 
-## Planned cross-client UI behavior
+## Cross-client UI behavior
 
 - [Cross-client Album override indicator](cross-client-album-override-visual-contract.md)
-  — proposed grayscale thumbnail, red frame in Album Status Key column 2,
-  separate Overridden count, and short Selected Artwork notice; **not yet
-  implemented**.
+  — grayscale thumbnail, red frame in Album Status Key column 2, configurable
+  OVERRIDE banner, separate Overridden count, and short Selected Artwork notice.
 
 ## Historical audits and unverified follow-ups
 

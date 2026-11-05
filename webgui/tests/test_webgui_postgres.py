@@ -46,6 +46,7 @@ from webgui.jobs import JobAdapter, JobQueue
 from webgui.reconciliation import SQLiteReconciler
 from webgui.server import create_app
 from webgui.catalog import embedded_track_artwork_bytes
+from webgui.coordination import record_event
 from webgui.credentials import Credentials
 
 
@@ -382,6 +383,114 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             "verified",
         )
         self.assertEqual(self.services.index_changes()["count"], 0)
+
+    def test_album_write_coordination_is_durable_ordered_and_projected(self):
+        preview = self.services.preview(self.payload())
+        self.assertTrue(preview["image"])
+        with closing(self.db.connect()) as db:
+            self.assertEqual(
+                db.execute(
+                    "SELECT count(*) FROM album_artwork_write_coordination"
+                ).fetchone()[0],
+                0,
+                "previewing must not claim Album ownership",
+            )
+
+        written = self.services.write_cover(self.payload())
+        self.assertTrue(written["coordination"]["durable"])
+        self.assertEqual(written["coordination"]["writer"], "webgui")
+        self.assertEqual(written["coordination"]["operation"], "write-cover")
+        with closing(self.db.connect()) as db:
+            current = dict(
+                db.execute(
+                    "SELECT * FROM album_artwork_write_coordination"
+                ).fetchone()
+            )
+        self.assertEqual(current["album_key"], self.row["album_key"])
+        self.assertEqual(current["relative_path"], "test artist/test album")
+        self.assertEqual(
+            self.services.catalog.album(self.row["album_key"])["override_writer"],
+            "webgui",
+        )
+        artist_album = next(
+            item
+            for item in self.services.catalog.artist(self.row["artist_key"])["albums"]
+            if item["id"] == self.row["album_key"]
+        )
+        self.assertEqual(artist_album["override_writer"], "webgui")
+
+        older = {
+            **current,
+            "writer": "windows",
+            "operation": "embed-album",
+            "event_id": "windows-older-synthetic",
+            "source_completed_ms": int(current["source_completed_ms"]) - 1,
+            "completed_at": "2026-11-04T00:00:00+00:00",
+        }
+        replayed = record_event(self.db, older)
+        self.assertEqual(replayed["writer"], "webgui")
+        self.assertEqual(replayed["event_id"], current["event_id"])
+
+        newer = {
+            **older,
+            "event_id": "windows-newer-synthetic",
+            "source_completed_ms": int(current["source_completed_ms"]) + 1,
+            "completed_at": "2026-11-04T00:00:01+00:00",
+        }
+        transferred = record_event(self.db, newer)
+        self.assertEqual(transferred["writer"], "windows")
+        self.assertGreater(transferred["revision"], current["revision"])
+        self.assertEqual(
+            self.services.catalog.album(self.row["album_key"])["override_writer"],
+            "windows",
+        )
+
+    def test_album_write_coordination_outbox_recovers_without_duplicate_claim(self):
+        with patch(
+            "webgui.services.record_event",
+            side_effect=OSError("synthetic PostgreSQL disconnect"),
+        ):
+            written = self.services.write_cover(self.payload())
+        self.assertFalse(written["coordination"]["durable"])
+        self.assertTrue(self.services._coordination_outbox_path.is_file())
+        pending = json.loads(
+            self.services._coordination_outbox_path.read_text(encoding="utf-8")
+        )
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["event_id"], written["coordination"]["event_id"])
+
+        recovered = self.services.flush_album_write_coordination()
+        self.assertEqual(recovered, {"applied": 1, "pending": 0})
+        self.assertFalse(self.services._coordination_outbox_path.exists())
+        self.assertEqual(
+            self.services.flush_album_write_coordination(),
+            {"applied": 0, "pending": 0},
+        )
+        with closing(self.db.connect()) as db:
+            rows = db.execute(
+                "SELECT event_id,writer FROM album_artwork_write_coordination"
+            ).fetchall()
+        self.assertEqual(
+            [(row["event_id"], row["writer"]) for row in rows],
+            [(written["coordination"]["event_id"], "webgui")],
+        )
+
+    def test_failed_album_write_does_not_claim_coordination(self):
+        with patch.object(
+            self.services,
+            "_atomic_artwork",
+            side_effect=OSError("synthetic artwork write failure"),
+        ):
+            with self.assertRaisesRegex(OSError, "synthetic artwork write failure"):
+                self.services.write_cover(self.payload())
+        with closing(self.db.connect()) as db:
+            self.assertEqual(
+                db.execute(
+                    "SELECT count(*) FROM album_artwork_write_coordination"
+                ).fetchone()[0],
+                0,
+            )
+        self.assertFalse(self.services._coordination_outbox_path.exists())
 
     def test_album_embedding_validation_preserves_unknown_on_read_failure(self):
         with closing(self.db.connect()) as db, db:

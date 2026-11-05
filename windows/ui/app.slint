@@ -2,11 +2,11 @@ import { Button, ComboBox, LineEdit, ListView, Palette, ScrollView, TextEdit } f
 
 export struct UiLibraryRow { key: string, primary: string, secondary: string, status: string, icon: string, artwork: image, status-color: color, kind: string, depth: int, expanded: bool, selected: bool, eligible: bool, queue-locked: bool }
 export struct UiAlbumStatusBullet { color: color, tip: string }
-export struct UiArtistAlbumRow { key: string, title: string, display-title: string, year: string, artwork: image, status-color: color, selected: bool, bullets: [UiAlbumStatusBullet], check-embedded: bool, validating: bool, comp-loading: bool, processed: bool, fully-complete: bool, fallback: bool, fallback-complete: bool, featured: bool, soundtrack: bool, various-artists: bool, separator-before: bool, banner-display: string, banner-background: color, banner-frame: color, banner-letters: color, complete-frame: color, pending-frame: color, attention-frame: color, queue-locked: bool }
+export struct UiArtistAlbumRow { key: string, title: string, display-title: string, year: string, artwork: image, status-color: color, selected: bool, bullets: [UiAlbumStatusBullet], check-embedded: bool, validating: bool, comp-loading: bool, processed: bool, fully-complete: bool, fallback: bool, fallback-complete: bool, featured: bool, soundtrack: bool, various-artists: bool, separator-before: bool, banner-display: string, banner-background: color, banner-frame: color, banner-letters: color, complete-frame: color, pending-frame: color, attention-frame: color, queue-locked: bool, overridden: bool }
 export struct UiAdjustmentPresetRow { index: int, name: string, summary: string, saved: bool }
 export struct UiBannerThemeRow { key: string, name: string, background: color, frame: color, letters: color, at-baseline: bool }
 export struct UiAlbumFrameThemeRow { key: string, name: string, color: color, at-baseline: bool }
-export struct UiArtistOverviewLegendCounts { shown: int, completed: int, in-process: int, validating: int, red-dots: int, yellow-dots: int, orange-dots: int, green-dots: int, purple-dots: int, blue-dots: int, green-frames: int, orange-purple-frames: int, green-purple-frames: int, comp-pending: int, comp-complete: int, feat: int, ost: int, various: int, artist: int, track-blue: int, track-green: int, track-purple: int }
+export struct UiArtistOverviewLegendCounts { shown: int, completed: int, in-process: int, validating: int, overridden: int, red-dots: int, yellow-dots: int, orange-dots: int, green-dots: int, purple-dots: int, blue-dots: int, green-frames: int, orange-purple-frames: int, green-purple-frames: int, comp-pending: int, comp-complete: int, feat: int, ost: int, various: int, artist: int, track-blue: int, track-green: int, track-purple: int }
 export struct UiSimilarArtistRow { name: string, artwork: image, available: bool }
 export struct UiCompilationTrackRow { album-key: string, path: string, file-name: string, status-color: color, completed: bool, selected: bool }
 export struct UiCompilationReportRow { album-key: string, album-title: string, path: string, file-name: string, status: string, album-header: bool, expanded: bool }
@@ -377,12 +377,12 @@ component ArtistAlbumCard inherits Rectangle {
     }
     VerticalLayout {
         Rectangle {
-            property <bool> mixed-embedded-outline: !root.item.fully-complete && root.item.check-embedded && (root.item.processed || (root.item.fallback && root.item.fallback-complete));
+            property <bool> mixed-embedded-outline: !root.item.overridden && !root.item.fully-complete && root.item.check-embedded && (root.item.processed || (root.item.fallback && root.item.fallback-complete));
             property <bool> green-purple-outline: root.item.fallback && root.item.fallback-complete && self.mixed-embedded-outline;
             clip: true;
             border-radius: 7px;
             border-width: self.mixed-embedded-outline ? 0px : 2px;
-            border-color: root.item.comp-loading || root.item.validating ? AppTheme.cyan : (root.item.fully-complete ? root.item.complete-frame : (root.item.check-embedded ? root.item.attention-frame : (root.item.processed ? root.item.pending-frame : root.item.status-color)));
+            border-color: root.item.overridden ? #ff344f : (root.item.comp-loading || root.item.validating ? AppTheme.cyan : (root.item.fully-complete ? root.item.complete-frame : (root.item.check-embedded ? root.item.attention-frame : (root.item.processed ? root.item.pending-frame : root.item.status-color))));
             background: self.mixed-embedded-outline ? (self.green-purple-outline ? @linear-gradient(135deg, root.item.complete-frame, root.item.attention-frame, root.item.complete-frame) : @linear-gradient(135deg, root.item.attention-frame, root.item.pending-frame, root.item.attention-frame)) : (album-touch.has-hover ? AppTheme.card-hover : AppTheme.card);
             if self.mixed-embedded-outline: Rectangle {
                 x: 2px; y: 2px; width: parent.width - 4px; height: parent.height - 4px;
@@ -654,7 +654,10 @@ component MediaLibraryPane inherits NeonPanel {
                 }
             }
             if root.candidate-filter-expanded: CandidateFilterBody {
-                height: 430px;
+                // Keep all six Resolution Range controls visible on the
+                // ultrawide workspace instead of hiding four below the
+                // filter's initial scroll fold.
+                height: 520px;
                 locked: root.candidate-filter-locked;
                 type-rows: root.candidate-type-filter-rows;
                 policy-rows: root.candidate-policy-filter-rows;
@@ -1389,6 +1392,9 @@ export component AppWindow inherits Window {
     in property <string> database-label;
     in property <string> current-artist;
     in property <string> current-album;
+    in property <string> selected-album-processing-state;
+    in property <int> selected-album-track-count;
+    in property <int> selected-album-embedded-count;
     in property <string> current-path;
     in property <string> current-status;
     in property <bool> artist-overview-active: false;
@@ -1485,6 +1491,7 @@ export component AppWindow inherits Window {
     in property <string> selected-artwork-embedded-info;
     in property <bool> selected-artwork-webp-needs-still: false;
     in property <bool> selected-artwork-webp-static-footer: false;
+    in property <string> selected-artwork-override-notice;
     in property <bool> selected-artwork-embed-available: false;
     in property <bool> artist-artwork-mode: false;
     in property <bool> selected-artwork-artist-overview: false;
@@ -2236,7 +2243,7 @@ export component AppWindow inherits Window {
                                                         Text { text: root.fallback-overview-help-expanded ? "(less…)" : "(…more)"; color: AppTheme.cyan; font-size: 14px; font-weight: 800; horizontal-alignment: right; height: 20px; TouchArea { mouse-cursor: pointer; clicked => { root.fallback-overview-help-expanded = !root.fallback-overview-help-expanded; } } }
                                                     }
                                                     if root.overview-mode != "Fallback": HorizontalLayout {
-                                                        height: max(145px, biography-area.height + 35px);
+                                                        height: max(169px, biography-area.height + 59px);
                                                         vertical-stretch: 0; spacing: 12px; max-width: 10000px;
                                                         Rectangle { width: root.overview-mode == "Album" ? 116px : 104px; height: 108px; background: transparent;
                                                             Rectangle { x: root.overview-mode == "Album" ? 8px : 0px; width: 104px; height: 104px; border-radius: 52px; clip: true; background: AppTheme.image-surface; border-color: AppTheme.cyan; border-width: 2px;
@@ -2258,6 +2265,12 @@ export component AppWindow inherits Window {
                                                                         root.artist-edit-visible = true;
                                                                     } }
                                                                 }
+                                                            }
+                                                            if root.current-album != "": HorizontalLayout { height: 22px; spacing: 6px;
+                                                                Text { text: root.current-album; color: AppTheme.yellow; font-size: 14px; font-weight: 800; overflow: elide; max-width: 430px; }
+                                                                Text { text: "●"; color: #efa54e; font-size: 14px; font-weight: 800; }
+                                                                Text { text: root.selected-album-processing-state; color: #efa54e; font-size: 14px; font-weight: 800; }
+                                                                Text { text: root.selected-album-track-count + " tracks · " + root.selected-album-embedded-count + " embedded"; color: AppTheme.foreground; font-size: 14px; }
                                                             }
                                                             biography-area := Rectangle {
                                                                 height: root.artist-biography-expanded && overview-panel.biography-overflows ? biography-render-measure.preferred-height : overview-panel.biography-collapsed-height;
@@ -2338,12 +2351,15 @@ export component AppWindow inherits Window {
                                                             Text { text: root.artist-overview-legend-counts.completed + " Completed"; color: AppTheme.green; font-size: artist-scroll.visible-width < 520px ? 12px : 14px; font-weight: 800; vertical-alignment: center; }
                                                             Text { text: "/"; color: AppTheme.foreground; font-size: artist-scroll.visible-width < 520px ? 12px : 14px; vertical-alignment: center; }
                                                             Text { text: root.artist-overview-legend-counts.in-process + " in Process"; color: #efa54e; font-size: artist-scroll.visible-width < 520px ? 12px : 14px; font-weight: 800; vertical-alignment: center; }
+                                                            Text { text: "/"; color: AppTheme.foreground; font-size: artist-scroll.visible-width < 520px ? 12px : 14px; vertical-alignment: center; }
+                                                            Text { text: "Overridden"; color: #ff344f; font-size: artist-scroll.visible-width < 520px ? 12px : 14px; font-weight: 800; vertical-alignment: center; }
+                                                            Text { text: root.artist-overview-legend-counts.overridden; color: AppTheme.secondary-foreground; font-size: artist-scroll.visible-width < 520px ? 12px : 14px; font-weight: 800; vertical-alignment: center; }
                                                             if root.artist-overview-legend-counts.validating > 0: Text { text: "/"; color: AppTheme.foreground; font-size: artist-scroll.visible-width < 520px ? 12px : 14px; vertical-alignment: center; }
                                                             if root.artist-overview-legend-counts.validating > 0: Text { text: root.artist-overview-legend-counts.validating + " Validating"; color: AppTheme.cyan; font-size: artist-scroll.visible-width < 520px ? 12px : 14px; font-weight: 800; vertical-alignment: center; }
                                                         }
                                                         Rectangle { horizontal-stretch: 1; background: transparent; }
                                                     }
-                                                    if root.artist-status-help-visible: Rectangle { width: min(parent.width, 1240px); horizontal-stretch: 0; height: 315px; background: #000000; border-radius: 6px; border-color: AppTheme.cyan; border-width: 1px;
+                                                    if root.artist-status-help-visible: Rectangle { width: min(parent.width, 1240px); horizontal-stretch: 0; height: 349px; background: #000000; border-radius: 6px; border-color: AppTheme.cyan; border-width: 1px;
                                                         VerticalLayout { padding: 9px; spacing: 0px;
                                                             Text { text: "Album Status Key"; color: AppTheme.cyan; font-size: 14px; font-weight: 800; height: 21px; }
                                                             Rectangle { height: 7px; background: transparent; }
@@ -2385,12 +2401,14 @@ export component AppWindow inherits Window {
                                                                         Text { text: root.artist-overview-legend-counts.green-purple-frames; color: AppTheme.foreground; font-size: 13px; width: 32px; horizontal-alignment: right; }
                                                                     }
                                                                     Text { text: "COMP tracks done; thumbnail check"; color: AppTheme.foreground; font-size: 13px; height: 17px; }
+                                                                    ArtistLegendCountRow { label: "Red"; label-color: #ff344f; count: root.artist-overview-legend-counts.overridden; }
+                                                                    Text { text: "Overridden by opposing application"; color: AppTheme.foreground; font-size: 13px; height: 17px; }
                                                                 }
                                                                 VerticalLayout { spacing: 0px; horizontal-stretch: 1;
                                                                     Text { text: "BANNERS"; color: AppTheme.secondary-foreground; font-size: 13px; font-weight: 800; height: 20px; }
                                                                     for banner in root.theme-banner-rows: VerticalLayout { height: 35px; spacing: 0px;
-                                                                        ArtistBannerLegendRow { label: banner.name; tint: banner.background; ink: banner.letters; count: banner.key == "compiled" ? root.artist-overview-legend-counts.comp-pending + root.artist-overview-legend-counts.comp-complete : (banner.key == "featuring" ? root.artist-overview-legend-counts.feat : (banner.key == "soundtrack" ? root.artist-overview-legend-counts.ost : (banner.key == "various" ? root.artist-overview-legend-counts.various : root.artist-overview-legend-counts.artist))); }
-                                                                        Text { text: banner.key == "compiled" ? "Compilation album" : (banner.key == "featuring" ? "Selected artist is a secondary track credit" : (banner.key == "soundtrack" ? "Soundtrack release" : (banner.key == "various" ? "Various Artists release" : "Artist Album with a Release ID"))); color: AppTheme.foreground; font-size: 13px; height: 17px; }
+                                                                        ArtistBannerLegendRow { label: banner.name; tint: banner.background; ink: banner.letters; count: banner.key == "override" ? root.artist-overview-legend-counts.overridden : (banner.key == "compiled" ? root.artist-overview-legend-counts.comp-pending + root.artist-overview-legend-counts.comp-complete : (banner.key == "featuring" ? root.artist-overview-legend-counts.feat : (banner.key == "soundtrack" ? root.artist-overview-legend-counts.ost : (banner.key == "various" ? root.artist-overview-legend-counts.various : root.artist-overview-legend-counts.artist)))); }
+                                                                        Text { text: banner.key == "override" ? "Opposing application wrote this Album" : (banner.key == "compiled" ? "Compilation album" : (banner.key == "featuring" ? "Selected artist is a secondary track credit" : (banner.key == "soundtrack" ? "Soundtrack release" : (banner.key == "various" ? "Various Artists release" : "Artist Album with a Release ID")))); color: AppTheme.foreground; font-size: 13px; height: 17px; }
                                                                     }
                                                                 }
                                                                 VerticalLayout { spacing: 0px; horizontal-stretch: 1;
@@ -2899,6 +2917,7 @@ export component AppWindow inherits Window {
                                 }
                                 if root.selected-artwork-webp-needs-still && !root.animated-webp-active: Text { text: "cover.webp → WRITE Cover creates cover.jpg; WebP stays."; color: AppTheme.blue; font-size: 12px; height: 17px; overflow: elide; }
                                 if root.selected-artwork-comp: Text { text: root.selected-artwork-embedded-target; color: AppTheme.cyan; font-size: 12px; height: 17px; overflow: elide; }
+                                if root.selected-artwork-override-notice != "": Text { text: root.selected-artwork-override-notice; color: #ff344f; font-size: 12px; font-weight: 800; height: 17px; overflow: elide; }
                             }
                         }
                     }
@@ -3412,23 +3431,24 @@ export component AppWindow inherits Window {
                                 }
                                 if root.settings-section == "Connections": VerticalLayout { spacing: 6px;
                                 SettingsHelpTip { summary: "Does Test enable artwork search?"; detail: "No. Test checks the provider connection (Navidrome uses a live OpenSubsonic ping). Credentials are stored in separate provider JSON files. To include a connected service in candidate search, also enable it and save Artwork Sources."; }
-                                Heading { text: "Source Provider Credentials"; height: 27px; }
+                                Heading { text: "Provider & Album Coordination Credentials"; height: 27px; }
                                 HorizontalLayout { height: 36px; spacing: 8px;
                                     Label { text: "Provider"; width: 220px; }
-                                    ComboBox { horizontal-stretch: 1; model: ["Navidrome", "Fanart.tv", "Last.fm", "Discogs", "MusicBrainz OAuth"]; current-value <=> root.credential-provider; selected(value) => root.load-credential(value); }
+                                    ComboBox { horizontal-stretch: 1; model: ["Navidrome", "Fanart.tv", "Last.fm", "Discogs", "MusicBrainz OAuth", "Album Coordination"]; current-value <=> root.credential-provider; selected(value) => root.load-credential(value); }
                                 }
                                 if root.credential-provider == "Navidrome": SettingField { label: "Server Name"; value <=> root.credential-server-name; hint: "SPLINED · shown in Navidrome logs"; }
-                                if root.credential-provider == "Navidrome": SettingField { label: "Server URL"; value <=> root.credential-server; hint: "https://music.example"; }
-                                HorizontalLayout { height: 36px; spacing: 8px;
+                                if root.credential-provider == "Navidrome" || root.credential-provider == "Album Coordination": SettingField { label: root.credential-provider == "Album Coordination" ? "PostgreSQL Server URL" : "Server URL"; value <=> root.credential-server; hint: root.credential-provider == "Album Coordination" ? "postgresql://host:5432/database" : "https://music.example"; }
+                                if root.credential-provider != "Album Coordination": HorizontalLayout { height: 36px; spacing: 8px;
                                     Label { text: "Authentication"; width: 220px; }
                                     ComboBox { horizontal-stretch: 1; model: ["password", "api_key"]; current-value <=> root.credential-auth; }
                                 }
-                                SettingField { label: "Username"; value <=> root.credential-username; hint: "Optional"; }
-                                SettingField { label: "API key / Client ID"; value <=> root.credential-identifier; hint: "Optional"; }
+                                SettingField { label: "Username"; value <=> root.credential-username; hint: root.credential-provider == "Album Coordination" ? "PostgreSQL user" : "Optional"; }
+                                if root.credential-provider != "Album Coordination": SettingField { label: "API key / Client ID"; value <=> root.credential-identifier; hint: "Optional"; }
                                 HorizontalLayout { height: 34px; spacing: 8px;
-                                    Label { text: "Password / token"; width: 220px; }
+                                    Label { text: root.credential-provider == "Album Coordination" ? "PostgreSQL Password" : "Password / token"; width: 220px; }
                                     LineEdit { text <=> root.credential-secret; input-type: InputType.password; horizontal-stretch: 1; }
                                 }
+                                if root.credential-provider == "Album Coordination": SettingsHelpTip { summary: "What does Album Coordination connect?"; detail: "Optional. Use the same PostgreSQL database as WebGUI. A successful write or embed then persists the opposing-app grayscale thumbnail and red frame across normal Windows restarts. The password stays in the protected credential directory, not Config v5 or SQLite."; }
                                 Text { text: root.credential-status; color: root.credential-status.starts-with("Connected") ? #55d790 : #f1c458; wrap: word-wrap; height: 42px; }
                                 HorizontalLayout { height: 36px; spacing: 6px;
                                     Button { text: "Reload"; clicked => root.load-credential(root.credential-provider); }

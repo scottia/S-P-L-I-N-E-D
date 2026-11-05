@@ -8,17 +8,22 @@ use crate::config::Config;
 use crate::credentials::{
     DiscogsCredential, FANARTTV_API_VERSION, FanartTvCredential, LastFmCredential,
 };
+use crate::override_coordination::connect_pool;
 use crate::safe_write::replace_text_file;
 use crate::source::navidrome::{self, NavidromeCredential};
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
+use url::Url;
 
-pub const PROVIDERS: [&str; 5] = [
+pub const ALBUM_COORDINATION_PROVIDER: &str = "Album Coordination";
+
+pub const PROVIDERS: [&str; 6] = [
     "Navidrome",
     "Fanart.tv",
     "Last.fm",
     "Discogs",
     "MusicBrainz OAuth",
+    ALBUM_COORDINATION_PROVIDER,
 ];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -43,6 +48,8 @@ impl CredentialEditor {
         if value.provider == "Navidrome" {
             value.auth_method = "password".to_string();
             value.server_name = "SPLINED".to_string();
+        } else if value.provider == ALBUM_COORDINATION_PROVIDER {
+            value.auth_method = "password".to_string();
         }
         value
     }
@@ -106,6 +113,11 @@ pub fn load_editor(config: &Config, provider: &str) -> Result<CredentialEditor, 
             editor.identifier = text(&object, "client_id");
             editor.secret = text(&object, "client_secret");
             editor.username = text(&object, "username");
+        }
+        ALBUM_COORDINATION_PROVIDER => {
+            editor.server_url = text(&object, "server_url");
+            editor.username = text(&object, "username");
+            editor.secret = text(&object, "password");
         }
         _ => unreachable!(),
     }
@@ -181,6 +193,12 @@ pub fn save_editor(config: &Config, editor: &CredentialEditor) -> Result<(), Str
                 return Err("MusicBrainz OAuth requires a client ID.".to_string());
             }
         }
+        ALBUM_COORDINATION_PROVIDER => {
+            album_coordination_database_url(editor)?;
+            object.insert("server_url".into(), json!(editor.server_url.trim()));
+            object.insert("username".into(), json!(editor.username.trim()));
+            object.insert("password".into(), json!(editor.secret));
+        }
         _ => unreachable!(),
     }
     let json = serde_json::to_string_pretty(&Value::Object(object))
@@ -214,6 +232,28 @@ pub async fn test_editor(editor: &CredentialEditor) -> Result<String, String> {
                 bearer_token: String::new(),
             };
             navidrome::test_credential(&credential).await
+        }
+        ALBUM_COORDINATION_PROVIDER => {
+            let database_url = album_coordination_database_url(editor)?;
+            let pool = connect_pool(&database_url).await?;
+            sqlx::query_scalar::<_, i32>("SELECT 1")
+                .fetch_one(&pool)
+                .await
+                .map_err(|error| format!("Album coordination PostgreSQL test failed: {error}"))?;
+            let coordination_table = sqlx::query_scalar::<_, Option<String>>(
+                "SELECT to_regclass('album_artwork_write_coordination')::text",
+            )
+            .fetch_one(&pool)
+            .await
+            .map_err(|error| format!("Album coordination schema test failed: {error}"))?;
+            pool.close().await;
+            if coordination_table.is_none() {
+                return Err(
+                    "Album Coordination migration is not present in this PostgreSQL database."
+                        .to_string(),
+                );
+            }
+            Ok("Connected to Album Coordination PostgreSQL.".to_string())
         }
         provider => {
             validate_editor_locally(editor)?;
@@ -255,8 +295,50 @@ pub fn validate_editor_locally(editor: &CredentialEditor) -> Result<(), String> 
             };
             credential.validate()
         }
+        ALBUM_COORDINATION_PROVIDER => album_coordination_database_url(editor).map(|_| ()),
         _ => Ok(()),
     }
+}
+
+pub fn load_album_coordination_database_url(config: &Config) -> Result<Option<String>, String> {
+    let path = credential_path(config, ALBUM_COORDINATION_PROVIDER)?;
+    if !path.is_file() {
+        return Ok(None);
+    }
+    load_editor(config, ALBUM_COORDINATION_PROVIDER)
+        .and_then(|editor| album_coordination_database_url(&editor))
+        .map(Some)
+}
+
+fn album_coordination_database_url(editor: &CredentialEditor) -> Result<String, String> {
+    let mut url = Url::parse(editor.server_url.trim())
+        .map_err(|_| "Album Coordination requires a valid postgresql:// server URL.".to_string())?;
+    if !matches!(url.scheme(), "postgres" | "postgresql") {
+        return Err(
+            "Album Coordination requires a postgres:// or postgresql:// server URL.".to_string(),
+        );
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(
+            "Put the PostgreSQL username and password in their separate fields, not in the server URL."
+                .to_string(),
+        );
+    }
+    let username = editor.username.trim();
+    if username.is_empty() {
+        return Err("Album Coordination requires a PostgreSQL username.".to_string());
+    }
+    if editor.secret.is_empty() {
+        return Err("Album Coordination requires a PostgreSQL password.".to_string());
+    }
+    if url.path().trim_matches('/').is_empty() {
+        return Err("Album Coordination server URL must include the database name.".to_string());
+    }
+    url.set_username(username)
+        .map_err(|_| "Album Coordination PostgreSQL username is invalid.".to_string())?;
+    url.set_password(Some(&editor.secret))
+        .map_err(|_| "Album Coordination PostgreSQL password is invalid.".to_string())?;
+    Ok(url.as_str().to_string())
 }
 
 fn canonical_provider(value: &str) -> &str {
@@ -266,6 +348,7 @@ fn canonical_provider(value: &str) -> &str {
         "last.fm" | "lastfm" => "Last.fm",
         "discogs" => "Discogs",
         "musicbrainz" | "musicbrainz oauth" => "MusicBrainz OAuth",
+        "album coordination" | "webgui coordination" => ALBUM_COORDINATION_PROVIDER,
         _ => value.trim(),
     }
 }
@@ -277,6 +360,7 @@ fn provider_filename(provider: &str) -> Option<&'static str> {
         "Last.fm" => Some("lastfm.json"),
         "Discogs" => Some("discogs.json"),
         "MusicBrainz OAuth" => Some("musicbrainz.json"),
+        ALBUM_COORDINATION_PROVIDER => Some("album-coordination.json"),
         _ => None,
     }
 }
@@ -342,5 +426,47 @@ mod tests {
     fn invalid_provider_names_cannot_escape_the_credential_directory() {
         let dir = TempDir::new().unwrap();
         assert!(credential_path(&config(dir.path()), "../outside").is_err());
+    }
+
+    #[test]
+    fn album_coordination_round_trip_is_persistent_and_keeps_config_secret_free() {
+        let dir = TempDir::new().unwrap();
+        let config = config(dir.path());
+        let editor = CredentialEditor {
+            provider: ALBUM_COORDINATION_PROVIDER.into(),
+            server_url: "postgresql://127.0.0.1:55432/splined?sslmode=disable".into(),
+            username: "splined test".into(),
+            secret: "synthetic p@ssword".into(),
+            ..CredentialEditor::default()
+        };
+        save_editor(&config, &editor).unwrap();
+        let loaded = load_editor(&config, ALBUM_COORDINATION_PROVIDER).unwrap();
+        assert_eq!(loaded.server_url, editor.server_url);
+        assert_eq!(loaded.username, editor.username);
+        assert_eq!(loaded.secret, editor.secret);
+        let database_url = load_album_coordination_database_url(&config)
+            .unwrap()
+            .unwrap();
+        assert!(database_url.contains("splined%20test"));
+        assert!(database_url.contains("synthetic%20p%40ssword"));
+        assert!(
+            !serde_json::to_string(&config)
+                .unwrap()
+                .contains("synthetic")
+        );
+    }
+
+    #[test]
+    fn album_coordination_rejects_embedded_credentials_and_missing_database() {
+        let mut editor = CredentialEditor {
+            provider: ALBUM_COORDINATION_PROVIDER.into(),
+            server_url: "postgresql://user:secret@example.test/splined".into(),
+            username: "user".into(),
+            secret: "secret".into(),
+            ..CredentialEditor::default()
+        };
+        assert!(album_coordination_database_url(&editor).is_err());
+        editor.server_url = "postgresql://example.test".into();
+        assert!(album_coordination_database_url(&editor).is_err());
     }
 }

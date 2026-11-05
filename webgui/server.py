@@ -796,6 +796,10 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
     def album_embedded_status(id: str):
         return context.require().validate_album_embedding(id)
 
+    @app.get("/api/coordination/album-overrides")
+    def album_overrides():
+        return context.require().album_write_coordination()
+
     @app.get("/api/fallback/tracks")
     def tracks(id: str):
         services = context.require()

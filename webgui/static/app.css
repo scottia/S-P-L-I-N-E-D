@@ -92,11 +92,13 @@ html[data-theme=light] .library-row .status-orbit.selected,html[data-theme=light
 /* Source-backed Windows album card structure. */
 .overview-meta{position:relative;z-index:5}
 .album-count-summary{display:inline-flex;align-items:center;gap:5px;font-weight:750;white-space:nowrap}.album-count-shown{color:var(--pink)}.album-count-completed{color:var(--album-complete-color,var(--green))}.album-count-process{color:var(--album-process-color,#efa54e)}.album-count-separator{color:var(--muted);font-weight:500}
+.album-count-overridden-label{color:#ff344f}.album-count-overridden{color:#a9b0b8}.album-count-validating{color:#55c7d8}.override-notice{margin:4px 2px 0;color:#ff344f;font-size:11px;font-weight:800}.album-card.windows-card.opposing-override .album-card-picture img{filter:grayscale(1)}
 .album-status-help{width:22px;height:22px;flex:none;border:2px solid var(--cyan);border-radius:50%;background:var(--card);color:var(--cyan);font-size:14px;font-weight:900;line-height:16px;cursor:pointer}
 .album-status-help[aria-expanded=true]{background:var(--selected)}
 .album-grid{min-height:0}
 .album-card.windows-card{width:160px;height:194px;min-height:194px;flex:none;display:flex;gap:4px;padding:4px;border:2px solid var(--frame-color);border-radius:7px;background:var(--card);color:var(--text);text-align:left;cursor:pointer}
 .album-card.windows-card:hover,.album-card.windows-card.active{border-color:var(--frame-color);background:var(--card)}
+.album-card.windows-card.mixed-frame,.album-card.windows-card.mixed-frame:hover,.album-card.windows-card.mixed-frame.active{border-color:transparent;background:linear-gradient(var(--card),var(--card)) padding-box,linear-gradient(135deg,var(--mixed-frame-a),var(--mixed-frame-b),var(--mixed-frame-a)) border-box}
 .album-type-banner{width:19px;flex:none;display:flex;align-items:center;justify-content:center;writing-mode:vertical-rl;text-orientation:upright;overflow:hidden;background:var(--banner-bg);border:1px solid var(--banner-ink);border-radius:3px;color:var(--banner-ink);font-size:10px;font-weight:900;line-height:1;letter-spacing:1px}
 .album-card-body{min-width:0;flex:1;display:flex;flex-direction:column;gap:3px}
 .album-card-picture{position:relative;display:block;width:100%;height:128px;flex:none;background:#050709;border-radius:4px;overflow:hidden}
@@ -110,16 +112,20 @@ html[data-theme=light] .library-row .status-orbit.selected,html[data-theme=light
 @media(prefers-reduced-motion:reduce){.album-staged-indicator{animation:none;color:#ff4b36}}
 .album-card.windows-card strong{display:block;min-height:26px;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center;font-size:13px;line-height:25px;color:var(--text)}
 .album-card-foot{display:flex;align-items:center;justify-content:space-between;white-space:pre;color:var(--yellow);font-size:12px;font-weight:800;overflow:hidden}
-.album-status-key{position:absolute;z-index:12;left:0;bottom:calc(100% + 4px);width:min(100%,1000px);max-height:min(350px,55vh);padding:10px;background:#050608;color:#f1f3f4;border:1px solid var(--cyan);border-radius:6px;overflow:auto;box-shadow:0 10px 30px #000b}
+.album-status-key{position:absolute;z-index:12;left:0;bottom:calc(100% + 4px);width:min(1240px,calc(100vw - 48px));max-height:min(350px,55vh);padding:10px;background:#050608;color:#f1f3f4;border:1px solid var(--cyan);border-radius:6px;overflow:auto;box-shadow:0 10px 30px #000b}
 .album-status-key[hidden]{display:none}
 .album-status-key h3{margin:0 0 7px;color:var(--cyan);font-size:14px}
-.album-key-columns{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:13px}
-.album-key-column h4{margin:0 0 5px;color:#b9c5cd;font-size:11px;text-transform:uppercase}
-.album-key-row{display:grid;grid-template-columns:16px 65px minmax(0,1fr) 20px;align-items:start;gap:4px;min-height:29px;font-size:11px}
-.album-key-row .album-key-swatch{font-size:14px;line-height:14px}
-.album-key-row small{font-size:10px;color:#d0d8db}
+.album-key-columns{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:18px}
+.album-key-column h4{margin:0 0 5px;color:#b9c5cd;font-size:13px;text-transform:uppercase}
+.album-key-entry{min-height:35px}
+.album-key-row{display:grid;grid-template-columns:minmax(0,1fr) 32px;align-items:center;gap:4px;font-size:13px;line-height:17px}
+.album-key-label{display:flex;align-items:center;gap:5px;min-width:0}
+.album-key-label strong{font-size:13px;white-space:nowrap}
+.album-key-banner-swatch{display:inline-block;width:8px;height:16px;flex:none;border:1px solid;border-radius:1px}
+.album-key-entry>small{display:block;font-size:12px;line-height:16px;color:#d0d8db}
 .album-key-row b{text-align:right}
 .album-key-note{margin:6px 0 0;color:#c6d0d5;font-size:10px}
+@media(max-width:1100px){.album-key-columns{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-height:850px){.album-card.windows-card{width:144px;height:178px;min-height:178px}.album-card-picture{height:113px}.album-status-key{max-height:min(240px,40vh)}}
 
 /* Keep the album cards in responsive rows inside the scrollable overview. */
