@@ -63,6 +63,13 @@ struct CoordinationEvent {
     completed_at: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AlbumWriteState {
+    pub writer: String,
+    pub event_id: String,
+    pub revision: i64,
+}
+
 pub fn ensure_sqlite_schema(connection: &Connection) -> Result<(), String> {
     connection
         .execute_batch(SQLITE_SCHEMA)
@@ -187,7 +194,9 @@ fn newer(left: &CoordinationEvent, right: &CoordinationEvent) -> bool {
         > (right.source_completed_ms, right.event_id.as_str())
 }
 
-pub fn effective_writers(database_path: &Path) -> Result<HashMap<String, String>, String> {
+pub fn effective_write_states(
+    database_path: &Path,
+) -> Result<HashMap<String, AlbumWriteState>, String> {
     let connection = Connection::open(database_path)
         .map_err(|error| format!("Unable to open Album coordination state: {error}"))?;
     connection
@@ -208,7 +217,23 @@ pub fn effective_writers(database_path: &Path) -> Result<HashMap<String, String>
     }
     Ok(current
         .into_values()
-        .map(|event| (event.album_key.to_ascii_lowercase(), event.writer))
+        .map(|event| {
+            (
+                event.album_key.to_ascii_lowercase(),
+                AlbumWriteState {
+                    writer: event.writer,
+                    event_id: event.event_id,
+                    revision: event.revision,
+                },
+            )
+        })
+        .collect())
+}
+
+pub fn effective_writers(database_path: &Path) -> Result<HashMap<String, String>, String> {
+    Ok(effective_write_states(database_path)?
+        .into_iter()
+        .map(|(album_key, state)| (album_key, state.writer))
         .collect())
 }
 

@@ -1305,6 +1305,10 @@ class Services:
         core.validate_filename(stem)
         extension = {"jpeg": ".jpg", "png": ".png", "webp": ".webp"}[fmt]
         destination = Path(row["path"]) / (stem + extension)
+        outputs = core.canonical_cover_outputs(destination, body, stem)
+        output_bodies = {
+            path.resolve(strict=False): output_body for path, output_body in outputs
+        }
         exact_covers = sorted(
             (
                 path
@@ -1317,26 +1321,70 @@ class Services:
             key=lambda path: path.name.casefold(),
         )
         preserved = []
+        preserve_pairs = []
         preserve = bool(self.runtime.cfg.get("output", {}).get("preserve_file", True))
-        for existing in exact_covers:
-            if existing == destination and existing.read_bytes() == body:
-                continue
-            if preserve:
-                number = 2
-                backup = existing.with_name(f"{stem}-({number}){existing.suffix}")
-                while backup.exists():
-                    number += 1
+        removed = []
+        if preserve:
+            previous = {}
+            try:
+                for existing in exact_covers:
+                    resolved = existing.resolve(strict=False)
+                    if resolved in output_bodies and existing.read_bytes() == output_bodies[resolved]:
+                        continue
+                    # A retained WebP source is independent of a static write.
+                    if existing.suffix.casefold() == ".webp" and resolved not in output_bodies:
+                        continue
+                    number = 2
                     backup = existing.with_name(f"{stem}-({number}){existing.suffix}")
-                os.replace(existing, backup)
-                preserved.append(backup.name)
-            else:
-                existing.unlink()
-        self._atomic_artwork(destination, body)
-        verified = destination.read_bytes()
-        if verified != body:
-            raise scan.QueuedArtworkVerificationError(
-                "Written cover did not pass byte-for-byte readback verification"
-            )
+                    while backup.exists():
+                        number += 1
+                        backup = existing.with_name(f"{stem}-({number}){existing.suffix}")
+                    prior = existing.read_bytes()
+                    self._atomic_artwork(backup, prior)
+                    if backup.read_bytes() != prior:
+                        backup.unlink(missing_ok=True)
+                        raise scan.QueuedArtworkVerificationError(
+                            "Preserved cover did not pass byte-for-byte verification"
+                        )
+                    preserve_pairs.append((existing, backup))
+                    preserved.append(backup.name)
+
+                previous = {
+                    path: path.read_bytes() if path.is_file() else None
+                    for path, _ in outputs
+                }
+                for path, output_body in outputs:
+                    self._atomic_artwork(path, output_body)
+                    if path.read_bytes() != output_body:
+                        raise scan.QueuedArtworkVerificationError(
+                            "Written cover did not pass byte-for-byte readback verification"
+                        )
+                    with Image.open(path) as opened:
+                        opened.verify()
+                for existing, _ in preserve_pairs:
+                    if existing.resolve(strict=False) not in output_bodies:
+                        existing.unlink()
+            except Exception:
+                for existing, backup in preserve_pairs:
+                    if backup.is_file():
+                        self._atomic_artwork(existing, backup.read_bytes())
+                for path, prior in previous.items():
+                    if prior is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        self._atomic_artwork(path, prior)
+                for _, backup in preserve_pairs:
+                    backup.unlink(missing_ok=True)
+                raise
+        else:
+            removed = [path.name for path in core.install_canonical_cover(destination, body, stem)]
+
+        written = [path.name for path, _ in outputs]
+        presentation = next(
+            (path for path, _ in outputs if path.suffix.casefold() != ".webp"),
+            destination,
+        )
+        verified = presentation.read_bytes()
         with Image.open(BytesIO(verified)) as opened:
             verified_size = [int(opened.width), int(opened.height)]
         self.refresh_album(row["album_key"], source="webgui")
@@ -1345,8 +1393,10 @@ class Services:
             row["album_key"],
             {
                 "album_id": row["album_key"],
-                "file": destination.name,
+                "file": presentation.name,
+                "written": written,
                 "preserved": preserved,
+                "removed": removed,
                 "sha256": hashlib.sha256(verified).hexdigest(),
                 "verified_size": verified_size,
             },
@@ -1355,7 +1405,7 @@ class Services:
         )
         coordination = self.record_album_write(row, "write-cover")
         return {
-            "written": [destination.name],
+            "written": written,
             "preserved": preserved,
             "coordination": coordination,
             **rendered,

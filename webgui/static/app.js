@@ -551,13 +551,17 @@ function albumRow(album, child) {
   const button = node("button", "library-row album-row" + (child ? " album-child" : "")); button.type = "button";
   const orbit = node("span", "status-orbit" + (selectedMedia(album) ? " selected" : ""), selectedMedia(album) ? "●" : "○"); button.append(orbit);
   applyStatusPalette(button, mediaStatusKey(album));
-  if (album.cover) {
-    const thumb = image(album.cover, "library-thumb", "");
-    thumb.addEventListener("error", () => thumb.replaceWith(node("span", "library-thumb", "♫")), {once: true});
-    button.append(thumb);
-  } else button.append(node("span", "library-thumb", "♫"));
+  button.append(albumArtworkNode(album, "library-thumb", ""));
   const copy = node("span", "row-copy"); copy.append(node("strong", "", album.name), node("small", "", child ? album.tracks + " tracks" : album.artist_name)); button.append(copy);
   button.addEventListener("click", () => chooseAlbum(album.id)); return button;
+}
+
+function albumArtworkNode(album, className, alt, placeholderClass = className) {
+  const placeholder = () => node("span", `${placeholderClass} album-artwork-placeholder`.trim(), "🎵");
+  if (!album?.cover) return placeholder();
+  const artwork = image(album.cover, className, alt);
+  artwork.addEventListener("error", () => artwork.replaceWith(placeholder()), {once: true});
+  return artwork;
 }
 
 function albumInCurrentArtistContext(albumId) {
@@ -589,17 +593,18 @@ function albumDisplayBannerKind(album, artist) {
   return albumOverride(album)?.writer === "windows" ? "override" : albumBannerKind(album, artist);
 }
 function applyAlbumCoordination(rows) {
-  if (!Array.isArray(rows)) return false;
+  if (!Array.isArray(rows)) return [];
   const next = new Map(rows.map(row => [String(row.album_key), row]));
-  const changed = next.size !== state.albumOverrides.size
-    || [...next].some(([key, row]) => {
-      const prior = state.albumOverrides.get(key);
-      return !prior || prior.event_id !== row.event_id || prior.writer !== row.writer;
-    });
-  if (!changed) return false;
+  const changed = new Set([...next].filter(([key, row]) => {
+    const prior = state.albumOverrides.get(key);
+    return !prior || prior.event_id !== row.event_id || prior.writer !== row.writer
+      || Number(prior.revision || 0) !== Number(row.revision || 0);
+  }).map(([key]) => key));
+  for (const key of state.albumOverrides.keys()) if (!next.has(key)) changed.add(key);
+  if (!changed.size) return [];
   state.albumOverrides = next;
   state.albumOverrideRevision = Math.max(0, ...rows.map(row => Number(row.revision || 0)));
-  return true;
+  return [...changed];
 }
 function albumCardState(album, artist) {
   const status = mediaStatusKey(album);
@@ -880,7 +885,7 @@ function renderHeroContents() {
     const kind = albumDisplayBannerKind(album, artist), bannerStyle = albumBannerStyle(kind);
     const bannerNode = node("span", "album-type-banner", bannerStyle.name); bannerNode.style.setProperty("--banner-bg", bannerStyle.background); bannerNode.style.setProperty("--banner-ink", bannerStyle.letters); bannerNode.style.borderColor = bannerStyle.frame;
     const body = node("span", "album-card-body");
-    const picture = node("span", "album-card-picture"); picture.append(album.cover ? image(album.cover, "", album.name + " cover") : node("span", "album-placeholder", "♫"));
+    const picture = node("span", "album-card-picture"); picture.append(albumArtworkNode(album, "", album.name + " cover", "album-placeholder"));
     const dots = node("span", "album-status-dots"); for (const [color, tip] of cardState.dots) { const dot = node("span", "", "●"); dot.style.color = color; dot.title = tip; dots.append(dot); }
     picture.append(dots);
     if (state.embedQueue.some(item => item.id === album.id)) { const staged = node("span", "album-staged-indicator", "●"); staged.title = "Staged for embedding"; picture.append(staged); }
@@ -933,7 +938,7 @@ function renderFallbackOverview() {
     const card = node("div", "album-card windows-card fallback-album-card");
     card.style.setProperty("--frame-color", state.graphicalEnhancement.frame_styles.thumbnail.color);
     const cover = node("span", "album-card-picture");
-    cover.append(album.cover ? image(album.cover, "", album.name + " album card cover") : node("span", "album-placeholder", "♫"));
+    cover.append(albumArtworkNode(album, "", album.name + " album card cover", "album-placeholder"));
     const body = node("span", "album-card-body");
     body.append(cover, node("strong", "", album.name), node("span", "album-card-foot", (album.year || "—") + "   ☆☆☆☆☆"));
     const compiled = albumBannerStyle("compiled"), banner = node("span", "album-type-banner", compiled.name);

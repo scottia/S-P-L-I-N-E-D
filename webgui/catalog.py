@@ -210,36 +210,89 @@ class Catalog:
     lock: Lock = field(default_factory=Lock)
     image_key: bytes = field(default_factory=lambda: secrets.token_bytes(32),repr=False)
 
+    @staticmethod
+    def readable_image_path(path: Path) -> bool:
+        if (
+            not path.is_file()
+            or path.is_symlink()
+            or path.suffix.casefold() not in IMAGE_EXTENSIONS
+        ):
+            return False
+        try:
+            with Image.open(path) as opened:
+                opened.verify()
+            return True
+        except (OSError, ValueError):
+            return False
+
     def album_cover_path(self, row) -> Path | None:
-        """Return indexed cover art, repairing old fallback rows on read."""
+        """Resolve readable canonical cover art instead of trusting a stale path."""
         raw = str(row["cover_path"] or "").strip()
-        if raw:
-            indexed = Path(raw)
-            if indexed.is_file() and inside(indexed, self.music):
-                return indexed
+        indexed = Path(raw) if raw else None
         keys = set(row.keys())
         folder_value = row["path"] if "path" in keys else row["album_path"]
         folder = Path(str(folder_value))
         if not inside(folder, self.music) or not folder.is_dir():
             return None
+        indexed_valid = bool(
+            indexed is not None
+            and self.readable_image_path(indexed)
+            and inside(indexed, self.music)
+            and indexed.resolve(strict=False).parent == folder.resolve(strict=False)
+        )
+        if indexed_valid and indexed is not None and indexed.suffix.casefold() != ".webp":
+            return indexed
         stem = (self.cover_stem or "cover").strip().casefold()
         try:
-            files = [
-                candidate
-                for candidate in folder.iterdir()
-                if candidate.is_file()
-                and not candidate.is_symlink()
-                and candidate.suffix.casefold() in IMAGE_EXTENSIONS
-            ]
+            files = sorted(
+                [
+                    candidate
+                    for candidate in folder.iterdir()
+                    if self.readable_image_path(candidate)
+                ],
+                key=lambda candidate: candidate.name.casefold(),
+            )
         except OSError:
             return None
+
+        def modified(candidate: Path) -> int:
+            try:
+                return candidate.stat().st_mtime_ns
+            except OSError:
+                return -1
+
         for prefix in dict.fromkeys((stem, "cover")):
-            exact = next(
-                (candidate for candidate in files if candidate.stem.casefold() == prefix),
-                None,
-            )
-            if exact is not None:
-                return exact
+            exact = [
+                candidate
+                for candidate in files
+                if candidate.stem.casefold() == prefix
+            ]
+            # cover.webp is durable primary/source artwork. When a generated
+            # still exists beside it, the still is the card presentation and
+            # the WebP remains available to the animation preview workflow.
+            static = [
+                candidate
+                for candidate in exact
+                if candidate.suffix.casefold() != ".webp"
+            ]
+            if static:
+                return max(
+                    static,
+                    key=lambda candidate: (
+                        modified(candidate),
+                        candidate.name.casefold(),
+                    ),
+                )
+            if exact:
+                return max(
+                    exact,
+                    key=lambda candidate: (
+                        modified(candidate),
+                        candidate.name.casefold(),
+                    ),
+                )
+        if indexed_valid:
+            return indexed
         return None
 
     @staticmethod
@@ -1357,7 +1410,7 @@ class Catalog:
             "embedded": int(row["embedded_tracks"] or 0) if "embedded_tracks" in row.keys() else 0,
             "embedded_validation": str(row["embedded_validation_status"] or "unknown")
                 if "embedded_validation_status" in row else "unknown",
-            "cover": self.image(cover), "cover_meta": image_metadata(cover) if cover and cover.is_file() else None,
+            "cover": self.image(cover), "cover_meta": image_metadata(cover) if cover else None,
             "candidates": candidates, "track_titles": track_titles,
             "override_writer": override.get("writer", ""),
             "override_operation": override.get("operation", ""),

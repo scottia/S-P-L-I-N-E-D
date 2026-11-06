@@ -6,14 +6,23 @@ import sys
 
 
 def select_checks(paths):
-    checks = {"webgui": False, "linux": False, "windows_advisory": False}
+    checks = {"webgui": False, "linux": False}
     for path in paths:
         if path == "__all__":
-            return dict.fromkeys(checks, True)
+            checks["webgui"] = True
+            checks["linux"] = True
+            return checks
         if path.endswith(".md"):
             continue
         if (
-            path in {".gitattributes", "rust-toolchain", "rust-toolchain.toml"}
+            path
+            in {
+                ".gitattributes",
+                ".github/CODEOWNERS",
+                ".github/dependabot.yml",
+                "rust-toolchain",
+                "rust-toolchain.toml",
+            }
             or path.startswith(
                 (
                     ".github/workflows/",
@@ -24,7 +33,9 @@ def select_checks(paths):
                 )
             )
         ):
-            return dict.fromkeys(checks, True)
+            checks["webgui"] = True
+            checks["linux"] = True
+            return checks
         # Branding, instructions, package scripts, and local helper messages do
         # not benefit from compiling the native applications on every PR.
         if path.startswith("assets/") or path.startswith(
@@ -37,19 +48,12 @@ def select_checks(paths):
             continue
         if path.startswith(("webgui/", "docker/")) or path == ".dockerignore":
             checks["webgui"] = True
-        if (
-            path.startswith(("windows/src/", "windows/ui/"))
-            or path
-            in {
-                "windows/build.rs",
-                "windows/Cargo.toml",
-                "windows/Cargo.lock",
-                "windows/gui/app.ico",
-                "windows/gui/app.manifest",
-            }
-        ):
-            checks["windows_advisory"] = True
-        if path.startswith(("src/", "tests/")) or path in {"Cargo.toml", "Cargo.lock", "build.rs", "deny.toml"}:
+        if path.startswith(("src/", "tests/")) or path in {
+            "Cargo.toml",
+            "Cargo.lock",
+            "build.rs",
+            "deny.toml",
+        }:
             checks["linux"] = True
     return checks
 
@@ -70,7 +74,6 @@ def main():
         checks = select_checks(["__all__"])
     print(f"webgui={str(checks['webgui']).lower()}")
     print(f"linux={str(checks['linux']).lower()}")
-    print(f"windows_advisory={str(checks['windows_advisory']).lower()}")
 
 
 if __name__ == "__main__":
