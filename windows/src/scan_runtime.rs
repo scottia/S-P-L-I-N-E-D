@@ -18,8 +18,8 @@ use crate::gui_events;
 use crate::history::{AlbumHistoryState, album_history_status, load_completion_history, unix_now};
 use crate::inspect::inspect_image;
 use crate::local_artwork::{
-    LocalPreflightAction, cleanup_competing_static, cleanup_replaced_static_covers,
-    embedded_candidate, embedded_preview_cache_dir, inspect_local_preflight,
+    LocalPreflightAction, embedded_candidate, embedded_preview_cache_dir, inspect_local_preflight,
+    install_prepared_canonical_artwork,
 };
 use crate::media_database::{
     CompilationArtworkApplication, CompilationLocalArtwork, RuntimeArtworkMaterial,
@@ -465,15 +465,6 @@ pub async fn run_scan_library_read_report(
             ) {
                 Ok((final_result, destination)) => {
                     let post_cover_started = Instant::now();
-                    if let Err(error) = cleanup_competing_static(
-                        &local_preflight.cleanup,
-                        config.mode,
-                        config.output.preserve_file,
-                    ) {
-                        summary.failed += 1;
-                        println!("  {}", format!("ERROR: {error}").red().bold());
-                        continue;
-                    }
                     summary.selected += 1;
                     match final_result.action {
                         FinalArtworkAction::Installed => summary.installed += 1,
@@ -1496,28 +1487,6 @@ pub async fn run_scan_library_read_report(
                             }));
                         }
                         let post_cover_started = Instant::now();
-                        if final_result.action == FinalArtworkAction::Installed {
-                            match cleanup_replaced_static_covers(
-                                &album.path,
-                                &selected_output.file_name,
-                                &destination,
-                                effective_mode,
-                                selected_output.preserve_file,
-                            ) {
-                                Ok(removed) => {
-                                    for removed_path in removed {
-                                        println!(
-                                            "  Local Cleanup: removed {}",
-                                            removed_path.display()
-                                        );
-                                    }
-                                }
-                                Err(error) => {
-                                    summary.failed += 1;
-                                    println!("  {}", format!("ERROR: {error}").red().bold());
-                                }
-                            }
-                        }
                         if effective_mode == Mode::Write
                             && matches!(
                                 final_result.action,
@@ -3862,7 +3831,18 @@ fn finalize_selected_with_preserve(
             ));
         }
 
-        install_prepared_artwork(&destination, &prepared)?;
+        let album_path = destination.parent().ok_or_else(|| {
+            format!(
+                "Unable to determine selected Album for {}.",
+                destination.display()
+            )
+        })?;
+        install_prepared_canonical_artwork(
+            album_path,
+            &options.output.file_name,
+            &destination,
+            &prepared,
+        )?;
         return Ok((
             FinalArtworkResult {
                 action: FinalArtworkAction::Installed,

@@ -25,14 +25,20 @@ def image_bytes(fmt: str, color: str) -> bytes:
 class CanonicalCoverOverwriteTests(unittest.TestCase):
     def test_required_cross_format_and_same_format_replacements(self) -> None:
         cases = (
-            ("cover.jpg", "JPEG", "cover.png", "PNG"),
-            ("cover.png", "PNG", "cover.jpg", "JPEG"),
-            ("cover.jpeg", "JPEG", "cover.webp", "WEBP"),
-            ("cover.png", "PNG", "cover.png", "PNG"),
+            ("cover.jpg", "JPEG", "cover.png", "PNG", ["cover.png"]),
+            ("cover.png", "PNG", "cover.jpg", "JPEG", ["cover.jpg"]),
+            (
+                "cover.jpeg",
+                "JPEG",
+                "cover.webp",
+                "WEBP",
+                ["cover.jpg", "cover.webp"],
+            ),
+            ("cover.png", "PNG", "cover.png", "PNG", ["cover.png"]),
         )
         with TemporaryDirectory(dir=ISOLATED_FIXTURE_ROOT) as directory:
             root = Path(directory)
-            for index, (old_name, old_format, new_name, new_format) in enumerate(cases):
+            for index, (old_name, old_format, new_name, new_format, expected) in enumerate(cases):
                 with self.subTest(old=old_name, new=new_name):
                     album = root / str(index)
                     album.mkdir()
@@ -44,7 +50,7 @@ class CanonicalCoverOverwriteTests(unittest.TestCase):
                     self.assertEqual((album / new_name).read_bytes(), body)
                     self.assertEqual(
                         [path.name for path in core.canonical_cover_files(album, "cover")],
-                        [new_name],
+                        expected,
                     )
 
     def test_installer_replaces_static_canonicals_and_preserves_webp_only(self) -> None:
@@ -84,7 +90,14 @@ class CanonicalCoverOverwriteTests(unittest.TestCase):
             old_webp.write_bytes(image_bytes("WEBP", "green"))
             before = {path.name: path.read_bytes() for path in (old_jpg, old_webp)}
 
-            with mock.patch.object(core, "atomic_write", side_effect=OSError("fixture failure")):
+            replace = core.os.replace
+
+            def fail_publish(source: str | Path, destination: str | Path) -> None:
+                if ".splined-stage-" in Path(source).name:
+                    raise OSError("fixture failure")
+                replace(source, destination)
+
+            with mock.patch.object(core.os, "replace", side_effect=fail_publish):
                 with self.assertRaisesRegex(OSError, "fixture failure"):
                     core.install_canonical_cover(
                         album / "cover.png", image_bytes("PNG", "blue"), "cover"
@@ -100,20 +113,28 @@ class CanonicalCoverOverwriteTests(unittest.TestCase):
         with TemporaryDirectory(dir=ISOLATED_FIXTURE_ROOT) as directory:
             album = Path(directory)
             old = album / "cover.jpg"
-            original = image_bytes("JPEG", "red")
-            old.write_bytes(original)
+            other = album / "cover.jpeg"
+            originals = {
+                old: image_bytes("JPEG", "red"),
+                other: image_bytes("JPEG", "green"),
+            }
+            for path, contents in originals.items():
+                path.write_bytes(contents)
+            replace = core.os.replace
 
-            with mock.patch.object(
-                core,
-                "remove_superseded_canonical_covers",
-                side_effect=OSError("cleanup failure"),
-            ):
+            def fail_partial_cleanup(source: str | Path, destination: str | Path) -> None:
+                if Path(source).name == "cover.jpg":
+                    raise OSError("cleanup failure")
+                replace(source, destination)
+
+            with mock.patch.object(core.os, "replace", side_effect=fail_partial_cleanup):
                 with self.assertRaisesRegex(OSError, "cleanup failure"):
                     core.install_canonical_cover(
                         album / "cover.png", image_bytes("PNG", "blue"), "cover"
                     )
 
-            self.assertEqual(old.read_bytes(), original)
+            for path, contents in originals.items():
+                self.assertEqual(path.read_bytes(), contents)
             self.assertFalse((album / "cover.png").exists())
 
     def test_custom_basename_cleanup_does_not_touch_cover_or_other_artwork(self) -> None:
@@ -127,7 +148,7 @@ class CanonicalCoverOverwriteTests(unittest.TestCase):
                 album / "folder.webp", image_bytes("WEBP", "blue"), "folder"
             )
 
-            self.assertFalse((album / "folder.jpg").exists())
+            self.assertTrue((album / "folder.jpg").is_file())
             self.assertTrue((album / "folder.webp").is_file())
             self.assertTrue((album / "cover.jpg").is_file())
             self.assertTrue((album / "booklet.png").is_file())
@@ -240,13 +261,33 @@ class CanonicalCoverOverwriteTests(unittest.TestCase):
             old = album / "cover.jpg"
             old.write_bytes(image_bytes("JPEG", "red"))
             services = self._services(album, image_bytes("PNG", "blue"))
-            services._atomic_artwork = mock.Mock(side_effect=OSError("fixture failure"))
-
-            with self.assertRaisesRegex(OSError, "fixture failure"):
-                Services.write_cover.__wrapped__(services, {"album_id": "album-1"})
+            with mock.patch.object(
+                core, "install_canonical_cover", side_effect=OSError("fixture failure")
+            ):
+                with self.assertRaisesRegex(OSError, "fixture failure"):
+                    Services.write_cover.__wrapped__(services, {"album_id": "album-1"})
 
             self.assertTrue(old.is_file())
             self.assertFalse((album / "cover.png").exists())
+
+    def test_live_webgui_webp_write_keeps_source_and_creates_static_presentation(self) -> None:
+        with TemporaryDirectory(dir=ISOLATED_FIXTURE_ROOT) as directory:
+            album = Path(directory)
+            (album / "cover.png").write_bytes(image_bytes("PNG", "red"))
+            source = image_bytes("WEBP", "blue")
+            services = self._services(album, source)
+            services.preview = lambda _payload: {"image": "/prepared", "format": "webp"}
+
+            result = Services.write_cover.__wrapped__(services, {"album_id": "album-1"})
+
+            self.assertEqual(result["written"], ["cover.webp", "cover.jpg"])
+            self.assertEqual((album / "cover.webp").read_bytes(), source)
+            with Image.open(album / "cover.jpg") as still:
+                self.assertEqual(still.format, "JPEG")
+            self.assertEqual(
+                [path.name for path in core.canonical_cover_files(album, "cover")],
+                ["cover.jpg", "cover.webp"],
+            )
 
     def test_live_webgui_failed_preserve_write_restores_original_layout(self) -> None:
         with TemporaryDirectory(dir=ISOLATED_FIXTURE_ROOT) as directory:

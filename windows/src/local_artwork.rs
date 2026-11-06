@@ -1,7 +1,11 @@
 use crate::candidate::{Candidate, StaticFormat};
-use crate::config::{Config, Mode};
+use crate::config::Config;
+#[cfg(test)]
+use crate::config::Mode;
 use crate::download::DownloadedCandidate;
-use crate::final_artwork::{prepare_configured_artwork, project_configured_artwork};
+use crate::final_artwork::{
+    PreparedArtwork, prepare_configured_artwork, project_configured_artwork,
+};
 use crate::inspect::inspect_image;
 use crate::pipeline::PipelineCandidate;
 use crate::range::{Range, RangeClass};
@@ -12,8 +16,10 @@ use lofty::file::TaggedFileExt;
 use lofty::picture::PictureType;
 use sha2::{Digest, Sha256};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use tempfile::{Builder, NamedTempFile};
 
 static EMBEDDED_PREVIEW_CACHE_LOCK: Mutex<()> = Mutex::new(());
 
@@ -154,112 +160,304 @@ pub fn inspect_local_preflight(
     result
 }
 
-pub fn cleanup_competing_static(
-    paths: &[PathBuf],
-    mode: Mode,
-    preserve_file: bool,
-) -> Result<(), String> {
-    if mode == Mode::Read || preserve_file {
-        return Ok(());
-    }
-    for path in paths {
-        // These paths came only from validated matching cover files found as
-        // regular files inside the current album. Never broaden this removal
-        // to a recursive search or an unresolved glob.
-        fs::remove_file(path).map_err(|error| {
-            format!(
-                "Unable to remove competing local artwork {}: {error}",
-                path.display()
-            )
-        })?;
-    }
-    Ok(())
-}
-
-/// After a better candidate has been safely installed in overwrite mode,
-/// remove superseded canonical JPG/JPEG/PNG files for the configured basename.
-/// WebP is always retained as source material, including in overwrite mode.
-/// Every target is a regular file directly inside the current Album; no glob
-/// or recursive deletion is used.
-pub fn cleanup_replaced_static_covers(
+/// Install an overwrite-mode canonical presentation as one recoverable Album
+/// transaction. Replacement bytes are staged and decoded before any existing
+/// file moves. Existing matching JPG/JPEG/PNG files are quarantined inside the
+/// selected Album and restored in full if quarantine, publication, or readback
+/// verification fails. WebP is never a static-cleanup target. When the selected
+/// output is WebP, the WebP source and a verified JPEG still are committed
+/// together; an existing exact WebP is then replaced, not discarded.
+pub fn install_prepared_canonical_artwork(
     album_path: &Path,
     configured_file_name: &str,
-    keep_destination: &Path,
-    mode: Mode,
-    preserve_file: bool,
+    destination: &Path,
+    prepared: &PreparedArtwork,
 ) -> Result<Vec<PathBuf>, String> {
-    if mode == Mode::Read || preserve_file {
-        return Ok(Vec::new());
+    install_prepared_canonical_artwork_with(
+        album_path,
+        configured_file_name,
+        destination,
+        prepared,
+        |_, _| Ok(()),
+    )
+}
+
+fn install_prepared_canonical_artwork_with<F>(
+    album_path: &Path,
+    configured_file_name: &str,
+    destination: &Path,
+    prepared: &PreparedArtwork,
+    mut before_quarantine: F,
+) -> Result<Vec<PathBuf>, String>
+where
+    F: FnMut(usize, &Path) -> Result<(), String>,
+{
+    let configured = configured_file_name.trim();
+    if configured.is_empty()
+        || configured == "."
+        || configured == ".."
+        || configured.contains(['/', '\\'])
+    {
+        return Err("Canonical cover basename must be one filename stem.".to_string());
     }
-    let keep =
-        fs::canonicalize(keep_destination).unwrap_or_else(|_| keep_destination.to_path_buf());
-    let configured_prefix = configured_file_name.trim().to_ascii_lowercase();
-    let keep_stem = keep_destination
+    let verified_album = fs::canonicalize(album_path).map_err(|error| {
+        format!(
+            "Unable to verify selected Album directory {}: {error}",
+            album_path.display()
+        )
+    })?;
+    if !verified_album.is_dir() {
+        return Err("The selected Album artwork path is not a directory.".to_string());
+    }
+    let destination_parent = destination
+        .parent()
+        .ok_or_else(|| "Canonical cover destination has no Album directory.".to_string())?;
+    let verified_parent = fs::canonicalize(destination_parent).map_err(|error| {
+        format!(
+            "Unable to verify canonical cover directory {}: {error}",
+            destination_parent.display()
+        )
+    })?;
+    let destination_stem = destination
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("");
+    if verified_parent != verified_album || !destination_stem.eq_ignore_ascii_case(configured) {
+        return Err(format!(
+            "Canonical cover destination must be directly inside the selected Album and use basename {configured}."
+        ));
+    }
+
+    let destination_extension = destination
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let extension_matches = match prepared.info.format {
+        StaticFormat::Jpeg => matches!(destination_extension.as_str(), "jpg" | "jpeg"),
+        StaticFormat::Png => destination_extension == "png",
+        StaticFormat::Webp => destination_extension == "webp",
+    };
+    if !extension_matches {
+        return Err("Canonical cover extension does not match prepared artwork.".to_string());
+    }
+
+    let mut outputs = vec![(destination.to_path_buf(), prepared.clone())];
+    if prepared.info.format == StaticFormat::Webp {
+        let image = image::load_from_memory(&prepared.bytes)
+            .map_err(|error| format!("Unable to decode WebP source for its still: {error}"))?;
+        let mut bytes = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 95)
+            .encode_image(&image)
+            .map_err(|error| format!("Unable to encode WebP presentation still: {error}"))?;
+        let mut info = prepared.info;
+        info.format = StaticFormat::Jpeg;
+        info.converted = true;
+        outputs.push((
+            verified_album.join(format!("{configured}.jpg")),
+            PreparedArtwork { bytes, info },
+        ));
+    }
+
+    let mut staged_outputs = Vec::<(PathBuf, PreparedArtwork, NamedTempFile)>::new();
+    for (output, artwork) in outputs {
+        let mut staged = Builder::new()
+            .prefix(".splined-cover-stage-")
+            .suffix(".tmp")
+            .tempfile_in(&verified_album)
+            .map_err(|error| format!("Unable to create staged Album artwork: {error}"))?;
+        staged
+            .write_all(&artwork.bytes)
+            .map_err(|error| format!("Unable to write staged Album artwork: {error}"))?;
+        staged
+            .flush()
+            .map_err(|error| format!("Unable to flush staged Album artwork: {error}"))?;
+        staged
+            .as_file()
+            .sync_all()
+            .map_err(|error| format!("Unable to sync staged Album artwork: {error}"))?;
+        verify_prepared_artwork(staged.path(), &artwork)?;
+        staged_outputs.push((output, artwork, staged));
+    }
+
+    let configured_lower = configured.to_ascii_lowercase();
+    let mut targets = fs::read_dir(&verified_album)
+        .map_err(|error| {
+            format!(
+                "Unable to inspect replaced local covers in {}: {error}",
+                verified_album.display()
+            )
+        })?
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_type()
+                .is_ok_and(|kind| kind.is_file() && !kind.is_symlink())
+        })
+        .map(|entry| entry.path())
+        .filter(|path| matching_static_canonical(path, &configured_lower))
+        .collect::<Vec<_>>();
+    if prepared.info.format == StaticFormat::Webp
+        && destination.is_file()
+        && !destination.is_symlink()
+    {
+        targets.push(destination.to_path_buf());
+    }
+    targets.sort_by_key(|path| path.to_string_lossy().to_ascii_lowercase());
+    targets.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+
+    let output_paths = staged_outputs
+        .iter()
+        .map(|(path, _, _)| path.clone())
+        .collect::<Vec<_>>();
+    let removed = targets
+        .iter()
+        .filter(|path| {
+            !output_paths
+                .iter()
+                .any(|output| output.eq_ignore_ascii_case(path))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let rollback = Builder::new()
+        .prefix(".splined-cover-rollback-")
+        .tempdir_in(&verified_album)
+        .map_err(|error| format!("Unable to create Album artwork rollback area: {error}"))?;
+    let mut quarantined = Vec::<(PathBuf, PathBuf)>::new();
+    for (index, original) in targets.iter().enumerate() {
+        if let Err(error) = before_quarantine(index, original) {
+            restore_canonical_artwork(&[], &quarantined)?;
+            return Err(error);
+        }
+        let backup =
+            rollback.path().join(original.file_name().ok_or_else(|| {
+                format!("Unable to identify canonical cover {}", original.display())
+            })?);
+        if let Err(error) = fs::rename(original, &backup) {
+            restore_canonical_artwork(&[], &quarantined)?;
+            return Err(format!(
+                "Unable to quarantine canonical cover {}: {error}",
+                original.display()
+            ));
+        }
+        quarantined.push((original.clone(), backup));
+    }
+
+    let mut published = Vec::new();
+    for (output, artwork, staged) in staged_outputs {
+        if let Err(error) = staged.persist(&output) {
+            restore_canonical_artwork(&published, &quarantined)?;
+            return Err(format!(
+                "Unable to publish staged canonical cover {}: {}",
+                output.display(),
+                error.error
+            ));
+        }
+        published.push(output.clone());
+        if let Err(error) = verify_prepared_artwork(&output, &artwork) {
+            restore_canonical_artwork(&published, &quarantined)?;
+            return Err(error);
+        }
+    }
+
+    // The canonical transaction is committed once every output has passed
+    // readback. Failure to remove the hidden rollback directory cannot expose a
+    // competing cover and is safe to retry or clean on a later maintenance run.
+    let _ = rollback.close();
+    Ok(removed)
+}
+
+fn matching_static_canonical(path: &Path, configured_lower: &str) -> bool {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !matches!(extension.as_str(), "jpg" | "jpeg" | "png") {
+        return false;
+    }
+    let stem = path
         .file_stem()
         .and_then(|value| value.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    if configured_prefix.is_empty() || keep_stem != configured_prefix {
-        return Ok(Vec::new());
-    }
-    let entries = fs::read_dir(album_path).map_err(|error| {
-        format!(
-            "Unable to inspect replaced local covers in {}: {error}",
-            album_path.display()
-        )
-    })?;
-    let mut removed = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|error| {
-            format!(
-                "Unable to read a local cover entry in {}: {error}",
-                album_path.display()
-            )
-        })?;
-        let file_type = entry.file_type().map_err(|error| {
-            format!(
-                "Unable to inspect local cover {}: {error}",
-                entry.path().display()
-            )
-        })?;
-        if !file_type.is_file() || file_type.is_symlink() {
-            continue;
-        }
-        let path = entry.path();
-        let extension = path
-            .extension()
-            .and_then(|value| value.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        if !matches!(extension.as_str(), "jpg" | "jpeg" | "png") {
-            continue;
-        }
-        let stem = path
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        let matching_canonical = stem == configured_prefix;
-        let matching_numbered = stem
-            .strip_prefix(&format!("{configured_prefix}-("))
+    stem == configured_lower
+        || stem
+            .strip_prefix(&format!("{configured_lower}-("))
             .and_then(|number| number.strip_suffix(')'))
-            .is_some_and(|number| number.parse::<usize>().is_ok_and(|number| number >= 2));
-        if configured_prefix.is_empty() || (!matching_canonical && !matching_numbered) {
-            continue;
-        }
-        let resolved = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
-        if resolved == keep {
-            continue;
-        }
-        fs::remove_file(&path).map_err(|error| {
-            format!(
-                "Unable to remove superseded local cover {}: {error}",
-                path.display()
-            )
-        })?;
-        removed.push(path);
+            .is_some_and(|number| number.parse::<usize>().is_ok_and(|number| number >= 2))
+}
+
+fn verify_prepared_artwork(path: &Path, prepared: &PreparedArtwork) -> Result<(), String> {
+    let inspected = inspect_image(path)?;
+    if inspected.width != prepared.info.width
+        || inspected.height != prepared.info.height
+        || inspected.format != prepared.info.format
+    {
+        return Err(format!(
+            "Canonical artwork verification failed for {}: expected {}x{} {:?}, found {}x{} {:?}.",
+            path.display(),
+            prepared.info.width,
+            prepared.info.height,
+            prepared.info.format,
+            inspected.width,
+            inspected.height,
+            inspected.format
+        ));
     }
-    Ok(removed)
+    let installed = fs::read(path)
+        .map_err(|error| format!("Unable to read back canonical artwork: {error}"))?;
+    if installed != prepared.bytes {
+        return Err(format!(
+            "Canonical artwork failed byte-for-byte readback: {}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn restore_canonical_artwork(
+    published: &[PathBuf],
+    quarantined: &[(PathBuf, PathBuf)],
+) -> Result<(), String> {
+    let mut errors = Vec::new();
+    for path in published.iter().rev() {
+        if path.exists()
+            && let Err(error) = fs::remove_file(path)
+        {
+            errors.push(format!("remove {}: {error}", path.display()));
+        }
+    }
+    for (original, backup) in quarantined.iter().rev() {
+        if backup.exists()
+            && let Err(error) = fs::rename(backup, original)
+        {
+            errors.push(format!(
+                "restore {} from {}: {error}",
+                original.display(),
+                backup.display()
+            ));
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Album artwork rollback requires attention: {}",
+            errors.join("; ")
+        ))
+    }
+}
+
+trait PathEqIgnoreAsciiCase {
+    fn eq_ignore_ascii_case(&self, other: &Path) -> bool;
+}
+
+impl PathEqIgnoreAsciiCase for Path {
+    fn eq_ignore_ascii_case(&self, other: &Path) -> bool {
+        self.to_string_lossy()
+            .eq_ignore_ascii_case(&other.to_string_lossy())
+    }
 }
 
 fn pipeline_candidate(
@@ -500,6 +698,25 @@ mod tests {
         fs::write(path, bytes.into_inner()).unwrap();
     }
 
+    fn prepared_image(path: &Path, target: StaticFormat) -> PreparedArtwork {
+        let candidate = Candidate::from_file("fixture", path, 0).unwrap();
+        let range = Range {
+            min: 1,
+            ideal: 64,
+            max: 4096,
+            ladder: 8192,
+        };
+        prepare_configured_artwork(
+            &candidate,
+            path,
+            &range,
+            target,
+            &Config::default().output,
+            true,
+        )
+        .unwrap()
+    }
+
     #[test]
     fn concurrent_embedded_preview_requests_share_one_valid_cache_file() {
         let temp = tempdir().unwrap();
@@ -651,57 +868,160 @@ mod tests {
     }
 
     #[test]
-    fn overwrite_cleanup_removes_matching_static_covers_and_preserves_webp() {
+    fn overwrite_transaction_replaces_all_static_covers_and_preserves_webp() {
         let temp = tempdir().unwrap();
-        let album = temp.path();
+        let album = temp.path().join("Album");
+        fs::create_dir(&album).unwrap();
+        write_image(&album.join("cover.jpg"), 64, 64, ImageFormat::Jpeg);
+        write_image(&album.join("cover.jpeg"), 64, 64, ImageFormat::Jpeg);
+        write_image(&album.join("cover-(2).png"), 64, 64, ImageFormat::Png);
+        write_image(&album.join("cover.webp"), 96, 96, ImageFormat::WebP);
+        write_image(&album.join("cover-back.jpg"), 64, 64, ImageFormat::Jpeg);
+        write_image(&album.join("folder.jpg"), 64, 64, ImageFormat::Jpeg);
+        write_image(&album.join("booklet.jpg"), 64, 64, ImageFormat::Jpeg);
+        let webp = fs::read(album.join("cover.webp")).unwrap();
+        let source = temp.path().join("replacement.png");
+        write_image(&source, 64, 64, ImageFormat::Png);
+        let prepared = prepared_image(&source, StaticFormat::Png);
         let keep = album.join("cover.png");
-        write_image(&keep, 1800, 1800, ImageFormat::Png);
-        write_image(&album.join("cover.jpg"), 1200, 1200, ImageFormat::Jpeg);
-        write_image(&album.join("cover-(2).png"), 1200, 1200, ImageFormat::Png);
-        write_image(&album.join("cover.webp"), 1200, 1200, ImageFormat::WebP);
-        write_image(&album.join("cover-back.jpg"), 1200, 1200, ImageFormat::Jpeg);
-        write_image(&album.join("folder.jpg"), 1200, 1200, ImageFormat::Jpeg);
-        write_image(&album.join("booklet.jpg"), 1200, 1200, ImageFormat::Jpeg);
 
         let removed =
-            cleanup_replaced_static_covers(album, "cover", &keep, Mode::Write, false).unwrap();
-        assert_eq!(removed.len(), 2);
-        assert!(keep.exists());
-        assert!(album.join("cover.webp").exists());
+            install_prepared_canonical_artwork(&album, "cover", &keep, &prepared).unwrap();
+
+        assert_eq!(removed.len(), 3);
+        assert_eq!(fs::read(&keep).unwrap(), prepared.bytes);
+        assert_eq!(fs::read(album.join("cover.webp")).unwrap(), webp);
         assert!(album.join("cover-back.jpg").exists());
         assert!(album.join("folder.jpg").exists());
         assert!(album.join("booklet.jpg").exists());
         assert!(!album.join("cover.jpg").exists());
+        assert!(!album.join("cover.jpeg").exists());
         assert!(!album.join("cover-(2).png").exists());
     }
 
     #[test]
-    fn preserve_mode_never_cleans_numbered_static_covers() {
+    fn partial_quarantine_failure_restores_every_previous_cover() {
         let temp = tempdir().unwrap();
-        let keep = temp.path().join("cover.jpg");
-        let numbered = temp.path().join("cover-(2).jpg");
-        write_image(&keep, 1800, 1800, ImageFormat::Jpeg);
-        write_image(&numbered, 1200, 1200, ImageFormat::Jpeg);
-        let removed =
-            cleanup_replaced_static_covers(temp.path(), "cover", &keep, Mode::Write, true).unwrap();
-        assert!(removed.is_empty());
-        assert!(numbered.exists());
+        let album = temp.path().join("Album");
+        fs::create_dir(&album).unwrap();
+        for (name, format) in [
+            ("cover.jpg", ImageFormat::Jpeg),
+            ("cover.jpeg", ImageFormat::Jpeg),
+            ("cover-(2).png", ImageFormat::Png),
+            ("cover.webp", ImageFormat::WebP),
+        ] {
+            write_image(&album.join(name), 64, 64, format);
+        }
+        let before = fs::read_dir(&album)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().is_file())
+            .map(|entry| (entry.file_name(), fs::read(entry.path()).unwrap()))
+            .collect::<std::collections::HashMap<_, _>>();
+        let source = temp.path().join("replacement.png");
+        write_image(&source, 64, 64, ImageFormat::Png);
+        let prepared = prepared_image(&source, StaticFormat::Png);
+
+        let error = install_prepared_canonical_artwork_with(
+            &album,
+            "cover",
+            &album.join("cover.png"),
+            &prepared,
+            |index, _| {
+                if index == 1 {
+                    Err("injected partial cleanup failure".to_string())
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.contains("injected partial cleanup failure"));
+        let after = fs::read_dir(&album)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().is_file())
+            .map(|entry| (entry.file_name(), fs::read(entry.path()).unwrap()))
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(after, before);
+        assert!(!album.join("cover.png").exists());
     }
 
     #[test]
-    fn cleanup_requires_the_installed_destination_to_use_the_configured_basename() {
+    fn custom_basename_transaction_never_touches_cover_or_other_artwork() {
         let temp = tempdir().unwrap();
-        let keep = temp.path().join("cover.png");
-        let configured = temp.path().join("folder.jpg");
-        write_image(&keep, 1800, 1800, ImageFormat::Png);
-        write_image(&configured, 1200, 1200, ImageFormat::Jpeg);
+        let album = temp.path().join("Album");
+        fs::create_dir(&album).unwrap();
+        write_image(&album.join("folder.jpg"), 64, 64, ImageFormat::Jpeg);
+        write_image(&album.join("cover.jpg"), 64, 64, ImageFormat::Jpeg);
+        write_image(&album.join("booklet.png"), 64, 64, ImageFormat::Png);
+        let source = temp.path().join("replacement.png");
+        write_image(&source, 64, 64, ImageFormat::Png);
+        let prepared = prepared_image(&source, StaticFormat::Png);
 
-        let removed =
-            cleanup_replaced_static_covers(temp.path(), "folder", &keep, Mode::Write, false)
-                .unwrap();
+        install_prepared_canonical_artwork(&album, "folder", &album.join("folder.png"), &prepared)
+            .unwrap();
 
-        assert!(removed.is_empty());
-        assert!(keep.exists());
-        assert!(configured.exists());
+        assert!(album.join("folder.png").exists());
+        assert!(!album.join("folder.jpg").exists());
+        assert!(album.join("cover.jpg").exists());
+        assert!(album.join("booklet.png").exists());
+    }
+
+    #[test]
+    fn webp_output_commits_source_and_static_still_together() {
+        let temp = tempdir().unwrap();
+        let album = temp.path().join("Album");
+        fs::create_dir(&album).unwrap();
+        write_image(&album.join("cover.jpg"), 64, 64, ImageFormat::Jpeg);
+        write_image(&album.join("cover.webp"), 64, 64, ImageFormat::WebP);
+        let source = temp.path().join("replacement.webp");
+        write_image(&source, 96, 80, ImageFormat::WebP);
+        let prepared = prepared_image(&source, StaticFormat::Webp);
+
+        install_prepared_canonical_artwork(&album, "cover", &album.join("cover.webp"), &prepared)
+            .unwrap();
+
+        assert_eq!(fs::read(album.join("cover.webp")).unwrap(), prepared.bytes);
+        let still = inspect_image(&album.join("cover.jpg")).unwrap();
+        assert_eq!(still.format, StaticFormat::Jpeg);
+        assert_eq!(
+            (still.width, still.height),
+            (prepared.info.width, prepared.info.height)
+        );
+        assert_eq!(
+            fs::read_dir(&album)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| matching_static_canonical(&entry.path(), "cover"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn transaction_rejects_destination_outside_selected_album() {
+        let temp = tempdir().unwrap();
+        let album = temp.path().join("Album");
+        let outside = temp.path().join("Other");
+        fs::create_dir(&album).unwrap();
+        fs::create_dir(&outside).unwrap();
+        write_image(&album.join("cover.jpg"), 64, 64, ImageFormat::Jpeg);
+        let source = temp.path().join("replacement.png");
+        write_image(&source, 64, 64, ImageFormat::Png);
+        let prepared = prepared_image(&source, StaticFormat::Png);
+
+        assert!(
+            install_prepared_canonical_artwork(
+                &album,
+                "cover",
+                &outside.join("cover.png"),
+                &prepared,
+            )
+            .is_err()
+        );
+        assert!(album.join("cover.jpg").exists());
+        assert!(!outside.join("cover.png").exists());
     }
 }

@@ -1305,6 +1305,10 @@ class Services:
         core.validate_filename(stem)
         extension = {"jpeg": ".jpg", "png": ".png", "webp": ".webp"}[fmt]
         destination = Path(row["path"]) / (stem + extension)
+        outputs = core.canonical_cover_outputs(destination, body, stem)
+        output_bodies = {
+            path.resolve(strict=False): output_body for path, output_body in outputs
+        }
         exact_covers = sorted(
             (
                 path
@@ -1319,14 +1323,16 @@ class Services:
         preserved = []
         preserve_pairs = []
         preserve = bool(self.runtime.cfg.get("output", {}).get("preserve_file", True))
-        try:
-            for existing in exact_covers:
-                if existing == destination and existing.read_bytes() == body:
-                    continue
-                if preserve:
-                    # A WebP beside a static destination is the primary animated/
-                    # high-resolution source, not a competing presentation file.
-                    if existing.suffix.casefold() == ".webp" and existing != destination:
+        removed = []
+        if preserve:
+            previous = {}
+            try:
+                for existing in exact_covers:
+                    resolved = existing.resolve(strict=False)
+                    if resolved in output_bodies and existing.read_bytes() == output_bodies[resolved]:
+                        continue
+                    # A retained WebP source is independent of a static write.
+                    if existing.suffix.casefold() == ".webp" and resolved not in output_bodies:
                         continue
                     number = 2
                     backup = existing.with_name(f"{stem}-({number}){existing.suffix}")
@@ -1342,67 +1348,53 @@ class Services:
                         )
                     preserve_pairs.append((existing, backup))
                     preserved.append(backup.name)
-        except Exception:
-            for _, backup in preserve_pairs:
-                backup.unlink(missing_ok=True)
-            raise
-        # Publish and prove the replacement before overwrite cleanup. A failed
-        # stage/replace therefore leaves every prior cross-format cover intact.
-        destination_previous = destination.read_bytes() if destination.is_file() else None
-        try:
-            self._atomic_artwork(destination, body)
-            verified = destination.read_bytes()
-            if verified != body:
-                raise scan.QueuedArtworkVerificationError(
-                    "Written cover did not pass byte-for-byte readback verification"
-                )
-            with Image.open(BytesIO(verified)) as opened:
-                verified_size = [int(opened.width), int(opened.height)]
-        except Exception:
-            if destination_previous is None:
-                destination.unlink(missing_ok=True)
-            else:
-                self._atomic_artwork(destination, destination_previous)
-            for _, backup in preserve_pairs:
-                backup.unlink(missing_ok=True)
-            raise
-        removed = []
-        if preserve:
-            try:
+
+                previous = {
+                    path: path.read_bytes() if path.is_file() else None
+                    for path, _ in outputs
+                }
+                for path, output_body in outputs:
+                    self._atomic_artwork(path, output_body)
+                    if path.read_bytes() != output_body:
+                        raise scan.QueuedArtworkVerificationError(
+                            "Written cover did not pass byte-for-byte readback verification"
+                        )
+                    with Image.open(path) as opened:
+                        opened.verify()
                 for existing, _ in preserve_pairs:
-                    if existing != destination:
+                    if existing.resolve(strict=False) not in output_bodies:
                         existing.unlink()
             except Exception:
                 for existing, backup in preserve_pairs:
-                    self._atomic_artwork(existing, backup.read_bytes())
-                if destination_previous is None:
-                    destination.unlink(missing_ok=True)
-                else:
-                    self._atomic_artwork(destination, destination_previous)
+                    if backup.is_file():
+                        self._atomic_artwork(existing, backup.read_bytes())
+                for path, prior in previous.items():
+                    if prior is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        self._atomic_artwork(path, prior)
                 for _, backup in preserve_pairs:
                     backup.unlink(missing_ok=True)
                 raise
         else:
-            try:
-                removed = [
-                    path.name
-                    for path in core.remove_superseded_canonical_covers(
-                        destination.parent, stem, destination
-                    )
-                ]
-            except Exception:
-                if destination_previous is None:
-                    destination.unlink(missing_ok=True)
-                else:
-                    self._atomic_artwork(destination, destination_previous)
-                raise
+            removed = [path.name for path in core.install_canonical_cover(destination, body, stem)]
+
+        written = [path.name for path, _ in outputs]
+        presentation = next(
+            (path for path, _ in outputs if path.suffix.casefold() != ".webp"),
+            destination,
+        )
+        verified = presentation.read_bytes()
+        with Image.open(BytesIO(verified)) as opened:
+            verified_size = [int(opened.width), int(opened.height)]
         self.refresh_album(row["album_key"], source="webgui")
         self.audit(
             "write-cover",
             row["album_key"],
             {
                 "album_id": row["album_key"],
-                "file": destination.name,
+                "file": presentation.name,
+                "written": written,
                 "preserved": preserved,
                 "removed": removed,
                 "sha256": hashlib.sha256(verified).hexdigest(),
@@ -1413,7 +1405,7 @@ class Services:
         )
         coordination = self.record_album_write(row, "write-cover")
         return {
-            "written": [destination.name],
+            "written": written,
             "preserved": preserved,
             "coordination": coordination,
             **rendered,

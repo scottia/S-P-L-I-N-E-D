@@ -63,6 +63,34 @@ class LocalArtworkReplacementPolicyTests(unittest.TestCase):
         self.assertEqual(len(preflight["fallback"]), 1)
         self.assertEqual(preflight["fallback"][0].source, "local")
 
+    def test_webp_discovery_keeps_still_in_cache_until_write_or_embed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            album_path = root / "Artist" / "Album"
+            album_path.mkdir(parents=True)
+            cache = root / "cache"
+            cache.mkdir()
+            webp = album_path / "cover.webp"
+            Image.new("RGB", (1800, 1800), (4, 5, 6)).save(webp, format="WEBP")
+            album = SimpleNamespace(
+                path=album_path,
+                audio_files=[],
+                local_art_files=[webp],
+                inventory_fingerprint=None,
+            )
+
+            preflight = inspect_local_preflight(
+                album,
+                _config(preserve=False),
+                cache,
+                ["jpeg", "png", "webp"],
+            )
+
+            self.assertEqual(preflight["candidate"].source, "webpstill")
+            self.assertTrue(preflight["candidate"].path.is_relative_to(cache))
+            self.assertFalse((album_path / "cover.jpg").exists())
+            self.assertTrue(webp.is_file())
+
 
 if __name__ == "__main__":
     unittest.main()

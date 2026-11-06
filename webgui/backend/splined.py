@@ -4605,30 +4605,111 @@ def install_canonical_cover(
     content: bytes,
     file_name: str,
 ) -> list[Path]:
-    """Stage and verify a cover, publish it, then remove superseded covers."""
+    """Commit one static presentation and an optional WebP source atomically."""
     if canonical.suffix.casefold() not in {".jpg", ".jpeg", ".png", ".webp"}:
         raise SplinedError("Unsupported canonical cover output format.")
     if canonical.stem.casefold() != file_name.casefold():
         raise SplinedError("Canonical cover destination does not match output.file_name.")
-    # ``atomic_write`` stages, fsyncs, and atomically publishes the bytes. The
-    # prepared body is decoded before any prior canonical extension is removed.
-    with Image.open(io.BytesIO(content)) as prepared:
-        prepared.verify()
-    previous = canonical.read_bytes() if canonical.is_file() else None
-    atomic_write(canonical, content)
+
+    outputs = canonical_cover_outputs(canonical, content, file_name)
+    staged: list[tuple[Path, Path, bytes]] = []
+    published: list[Path] = []
+    quarantined: list[tuple[Path, Path]] = []
     try:
-        installed = canonical.read_bytes()
-        if installed != content:
-            raise SplinedError("Written cover failed byte-for-byte readback verification.")
-        with Image.open(canonical) as verified:
-            verified.verify()
-        return remove_superseded_canonical_covers(canonical.parent, file_name, canonical)
+        # Stage, fsync, and decode every output before moving any prior cover.
+        for destination, body in outputs:
+            descriptor, temporary = tempfile.mkstemp(
+                prefix=f".{destination.name}.splined-stage-",
+                suffix=".tmp",
+                dir=canonical.parent,
+            )
+            temporary_path = Path(temporary)
+            try:
+                with os.fdopen(descriptor, "wb") as handle:
+                    handle.write(body)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                with Image.open(temporary_path) as prepared:
+                    prepared.verify()
+                if temporary_path.read_bytes() != body:
+                    raise SplinedError("Staged cover failed byte-for-byte verification.")
+            except Exception:
+                temporary_path.unlink(missing_ok=True)
+                raise
+            staged.append((destination, temporary_path, body))
+
+        output_paths = {destination.resolve(strict=False) for destination, _ in outputs}
+        targets = [
+            path
+            for path in canonical_cover_files(canonical.parent, file_name)
+            if path.suffix.casefold() != ".webp"
+            or path.resolve(strict=False) in output_paths
+        ]
+        for path in targets:
+            descriptor, temporary = tempfile.mkstemp(
+                prefix=f".{path.name}.splined-rollback-",
+                dir=canonical.parent,
+            )
+            os.close(descriptor)
+            quarantine = Path(temporary)
+            quarantine.unlink()
+            os.replace(path, quarantine)
+            quarantined.append((path, quarantine))
+
+        for destination, temporary, body in staged:
+            os.replace(temporary, destination)
+            published.append(destination)
+            if destination.read_bytes() != body:
+                raise SplinedError("Written cover failed byte-for-byte readback verification.")
+            with Image.open(destination) as verified:
+                verified.verify()
     except Exception:
-        if previous is None:
-            canonical.unlink(missing_ok=True)
-        else:
-            atomic_write(canonical, previous)
+        for destination in reversed(published):
+            destination.unlink(missing_ok=True)
+        for original, quarantine in reversed(quarantined):
+            if quarantine.exists() and not original.exists():
+                os.replace(quarantine, original)
+        for _, temporary, _ in staged:
+            temporary.unlink(missing_ok=True)
         raise
+    for _, quarantine in quarantined:
+        try:
+            quarantine.unlink(missing_ok=True)
+        except OSError:
+            # The visible canonical transaction is already committed. Retain
+            # the hidden recovery file rather than reintroducing a competitor.
+            pass
+    return [
+        path
+        for path, _ in quarantined
+        if path.resolve(strict=False) not in output_paths
+    ]
+
+
+def canonical_cover_outputs(
+    canonical: Path,
+    content: bytes,
+    file_name: str,
+) -> list[tuple[Path, bytes]]:
+    """Return the source/presentation files required by the WebP policy."""
+    with Image.open(io.BytesIO(content)) as prepared:
+        detected = str(prepared.format or "").casefold().replace("jpg", "jpeg")
+        expected = canonical.suffix.casefold().lstrip(".").replace("jpg", "jpeg")
+        if detected != expected:
+            raise SplinedError("Canonical cover extension does not match prepared artwork.")
+        prepared.verify()
+    if canonical.suffix.casefold() != ".webp":
+        return [(canonical, content)]
+
+    with Image.open(io.BytesIO(content)) as source:
+        source.seek(0)
+        still = source.convert("RGB")
+        encoded = io.BytesIO()
+        still.save(encoded, format="JPEG", quality=95)
+    return [
+        (canonical, content),
+        (canonical.with_name(f"{file_name}.jpg"), encoded.getvalue()),
+    ]
 
 
 def write_sample(sample_dir: Path, rel: Release, c: Candidate, preserve: bool) -> tuple[Path,bool]:

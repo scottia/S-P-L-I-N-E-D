@@ -7,6 +7,7 @@
 use crate::config::{Config, resolve_sources};
 use crate::embedded_artwork::embedded_front_sha256s;
 use crate::history::{AlbumHistoryState, album_history_status, load_completion_history, unix_now};
+use crate::inspect::inspect_image;
 use crate::override_coordination::{ensure_sqlite_schema, queue_windows_album_write};
 use crate::scan::{AlbumDirectory, inventory_album_directories};
 use crate::scan_tags::{AlbumIndexTags, read_album_index_tags, read_local_track_evidence};
@@ -1072,6 +1073,136 @@ pub fn clear_album_bypass_from_runtime(
         .commit()
         .map_err(db_error("commit Album bypass-removal transaction"))?;
     Ok(true)
+}
+
+/// Persist only the selected Album's artwork path and artwork inventory after
+/// a newer opposing-client write. Processing status, bypass authority,
+/// completion history, timeout, selected source, tracks, and ownership are not
+/// changed. COMP/fallback Albums are deliberately ignored because their
+/// artwork authority remains track-scoped.
+pub fn persist_opposing_album_artwork(
+    config: &Config,
+    album_key: &str,
+    local_album_path: &Path,
+    material: Option<&RuntimeArtworkMaterial>,
+) -> Result<bool, String> {
+    if album_key.trim().is_empty() {
+        return Err("Opposing Album artwork refresh requires an Album key.".to_string());
+    }
+    let (mut connection, mapper) = runtime_connection_and_mapper(config)?;
+    let canonical_album = mapper.to_canonical(&local_album_path.to_string_lossy())?;
+    let Some((stored_path, album_mbid)) = connection
+        .query_row(
+            "SELECT path, COALESCE(musicbrainz_albumid,'') FROM albums WHERE album_key=? COLLATE NOCASE",
+            [album_key],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(db_error("read opposing Album artwork identity"))?
+    else {
+        return Ok(false);
+    };
+    if !stored_path.eq_ignore_ascii_case(&canonical_album) {
+        return Err(format!(
+            "Opposing Album artwork path does not match indexed Album identity: {canonical_album}"
+        ));
+    }
+    if album_mbid.trim().is_empty() {
+        return Ok(false);
+    }
+
+    let album = inventory_album_directories(local_album_path, &[])?
+        .albums
+        .into_iter()
+        .find(|album| album.path == local_album_path)
+        .ok_or_else(|| {
+            format!(
+                "Unable to inventory opposing Album artwork in {}",
+                local_album_path.display()
+            )
+        })?;
+    let mut cover = inspect_cover(&album, &config.output.file_name, &mapper, false)?;
+    match material {
+        Some(material) => {
+            if material.path.is_symlink() {
+                return Err("Opposing Album artwork cannot be a symbolic link.".to_string());
+            }
+            let verified_album = fs::canonicalize(local_album_path)
+                .map_err(|error| format!("Unable to verify opposing Album directory: {error}"))?;
+            let verified_material = fs::canonicalize(&material.path)
+                .map_err(|error| format!("Unable to verify opposing Album artwork: {error}"))?;
+            if verified_material.parent() != Some(verified_album.as_path()) {
+                return Err("Opposing Album artwork is outside the selected Album.".to_string());
+            }
+            let inspected = inspect_image(&verified_material)?;
+            if inspected.width != material.width || inspected.height != material.height {
+                return Err(
+                    "Opposing Album artwork dimensions changed before persistence.".to_string(),
+                );
+            }
+            cover.found = true;
+            cover.path = mapper.to_canonical(&material.path.to_string_lossy())?;
+            cover.name = verified_material
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default()
+                .to_string();
+            cover.format = material.format.clone();
+            cover.width = Some(material.width);
+            cover.height = Some(material.height);
+        }
+        None => {
+            cover.found = false;
+            cover.path.clear();
+            cover.name.clear();
+            cover.format.clear();
+            cover.width = None;
+            cover.height = None;
+        }
+    }
+
+    let transaction = connection
+        .transaction()
+        .map_err(db_error("begin opposing Album artwork transaction"))?;
+    let now = sqlite_now(&transaction)?;
+    let changed = transaction
+        .execute(
+            "UPDATE albums SET cover_found=?, cover_path=NULLIF(?,''), cover_name=NULLIF(?,''), \
+             cover_format=NULLIF(?,''), cover_width=?, cover_height=?, artwork_jpeg=?, artwork_png=?, \
+             artwork_webp=?, artwork_other=?, root_files=?, cover_files=?, cover_names_json=?, \
+             local_art_json=?, other_filenames_json=?, webp_found=?, webp_size_mb=?, \
+             webp_resolution=NULLIF(?,''), webp_conversion=?, updated_at=? \
+             WHERE album_key=? COLLATE NOCASE AND lower(path)=lower(?)",
+            params![
+                i64::from(cover.found),
+                cover.path,
+                cover.name,
+                cover.format,
+                cover.width,
+                cover.height,
+                cover.jpeg,
+                cover.png,
+                cover.webp,
+                cover.other,
+                cover.root_files,
+                cover.cover_files,
+                serde_json::to_string(&cover.cover_names).unwrap_or_else(|_| "[]".to_string()),
+                serde_json::to_string(&cover.local_art).unwrap_or_else(|_| "[]".to_string()),
+                serde_json::to_string(&cover.other_filenames).unwrap_or_else(|_| "[]".to_string()),
+                i64::from(cover.webp > 0),
+                cover.webp_size_mb,
+                cover.webp_resolution,
+                i64::from(cover.webp_conversion),
+                now,
+                album_key,
+                canonical_album,
+            ],
+        )
+        .map_err(db_error("persist opposing Album artwork"))?;
+    transaction
+        .commit()
+        .map_err(db_error("commit opposing Album artwork transaction"))?;
+    Ok(changed == 1)
 }
 
 fn record_album_outcome_inner(
@@ -5851,6 +5982,176 @@ mod tests {
         assert_eq!(
             values.2,
             indexed.join("cover.jpg").to_string_lossy().into_owned()
+        );
+    }
+
+    #[test]
+    fn opposing_artwork_persistence_updates_only_target_artwork_fields() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("music");
+        let album = library.join("ABBA").join("Gold");
+        let other = library.join("ACDC").join("Back in Black");
+        fs::create_dir_all(&album).unwrap();
+        fs::create_dir_all(&other).unwrap();
+        File::create(album.join("01.mp3")).unwrap();
+        File::create(other.join("01.mp3")).unwrap();
+        let stale = album.join("cover.jpg");
+        image::RgbImage::from_pixel(24, 24, image::Rgb([20, 40, 60]))
+            .save_with_format(&stale, image::ImageFormat::Jpeg)
+            .unwrap();
+        let current = album.join("cover.png");
+        image::RgbImage::from_pixel(32, 28, image::Rgb([80, 40, 20]))
+            .save_with_format(&current, image::ImageFormat::Png)
+            .unwrap();
+        let other_cover = other.join("cover.jpg");
+        image::RgbImage::from_pixel(16, 16, image::Rgb([10, 20, 30]))
+            .save_with_format(&other_cover, image::ImageFormat::Jpeg)
+            .unwrap();
+
+        let mut config = Config::default();
+        config.library.music_library = library.to_string_lossy().into_owned();
+        config.scan.cache_dir = temp.path().join("cache").to_string_lossy().into_owned();
+        let db = database_path(&config.scan.cache_dir);
+        let connection = open_database(&db, false).unwrap();
+        let now = sqlite_now(&connection).unwrap();
+        connection.execute("INSERT INTO artists(artist_key,artist_name,primary_path,created_at,updated_at,last_seen_at,splined_version) VALUES('abba','ABBA',?,?,?,?,'test')", params![library.join("ABBA").to_string_lossy(), now, now, now]).unwrap();
+        connection.execute("INSERT INTO artists(artist_key,artist_name,primary_path,created_at,updated_at,last_seen_at,splined_version) VALUES('acdc','AC/DC',?,?,?,?,'test')", params![library.join("ACDC").to_string_lossy(), now, now, now]).unwrap();
+        connection.execute("INSERT INTO albums(album_key,artist_key,album_name,musicbrainz_albumid,path,tag_signature,status,cover_found,cover_path,cover_name,cover_format,cover_width,cover_height,bypassed,processed_at,timeout_until,selected_source,created_at,updated_at,last_seen_at,splined_version) VALUES('gold','abba','Gold','gold-release',?,'tags','bypassed',1,?,'cover.jpg','JPEG',24,24,1,'2026-11-01T00:00:00Z','2026-12-01T00:00:00Z','amazon',?,?,?,'test')", params![album.to_string_lossy(), stale.to_string_lossy(), now, now, now]).unwrap();
+        connection.execute("INSERT INTO albums(album_key,artist_key,album_name,musicbrainz_albumid,path,tag_signature,status,cover_found,cover_path,cover_name,cover_format,cover_width,cover_height,created_at,updated_at,last_seen_at,splined_version) VALUES('back','acdc','Back in Black','back-release',?,'tags','processed',1,?,'cover.jpg','JPEG',16,16,?,?,?,'test')", params![other.to_string_lossy(), other_cover.to_string_lossy(), now, now, now]).unwrap();
+        connection
+            .execute(
+                "UPDATE albums SET representative_file=? WHERE album_key='gold'",
+                [album.join("01.mp3").to_string_lossy()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE albums SET representative_file=? WHERE album_key='back'",
+                [other.join("01.mp3").to_string_lossy()],
+            )
+            .unwrap();
+        connection.execute("INSERT INTO picker_inventory(inventory_key,signature_json,folders_json,generated_at,splined_version) VALUES(?,?, '{}',?,'test')", params![INVENTORY_KEY, expected_signature(&config, &config.library.music_library).to_string(), now]).unwrap();
+        drop(connection);
+
+        assert!(
+            persist_opposing_album_artwork(
+                &config,
+                "gold",
+                &album,
+                Some(&RuntimeArtworkMaterial {
+                    path: current.clone(),
+                    format: "PNG".to_string(),
+                    width: 32,
+                    height: 28,
+                }),
+            )
+            .unwrap()
+        );
+
+        let connection = Connection::open(&db).unwrap();
+        let target: (String, i64, String, String, String, String, i64, String, String, i64, i64) =
+            connection
+                .query_row(
+                    "SELECT status,bypassed,processed_at,timeout_until,selected_source,cover_path,cover_found,cover_name,cover_format,cover_width,cover_height FROM albums WHERE album_key='gold'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?, row.get(10)?)),
+                )
+                .unwrap();
+        assert_eq!(target.0, "bypassed");
+        assert_eq!(target.1, 1);
+        assert_eq!(target.2, "2026-11-01T00:00:00Z");
+        assert_eq!(target.3, "2026-12-01T00:00:00Z");
+        assert_eq!(target.4, "amazon");
+        assert_eq!(target.5, current.to_string_lossy());
+        assert_eq!(target.6, 1);
+        assert_eq!(target.7, "cover.png");
+        assert_eq!(target.8, "PNG");
+        assert_eq!((target.9, target.10), (32, 28));
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT cover_path FROM albums WHERE album_key='back'",
+                    [],
+                    |row| row.get::<_, String>(0)
+                )
+                .unwrap(),
+            other_cover.to_string_lossy()
+        );
+        drop(connection);
+
+        let restarted = media_snapshot(&config, false).unwrap();
+        let restarted_gold = restarted
+            .albums
+            .iter()
+            .find(|item| item.album_key == "gold")
+            .unwrap();
+        assert_eq!(restarted_gold.cover_path, current.to_string_lossy());
+        assert_eq!(restarted_gold.status, "bypassed");
+
+        fs::remove_file(&current).unwrap();
+        fs::remove_file(&stale).unwrap();
+        fs::write(album.join("cover.png"), b"corrupt artwork").unwrap();
+        assert!(persist_opposing_album_artwork(&config, "gold", &album, None).unwrap());
+        let connection = Connection::open(&db).unwrap();
+        let missing: (i64, Option<String>, String, i64, String) = connection
+            .query_row(
+                "SELECT cover_found,cover_path,status,bypassed,selected_source FROM albums WHERE album_key='gold'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            missing,
+            (0, None, "bypassed".to_string(), 1, "amazon".to_string())
+        );
+    }
+
+    #[test]
+    fn opposing_artwork_persistence_ignores_comp_album_authority() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("music");
+        let album = library.join("Various Artists").join("COMP");
+        fs::create_dir_all(&album).unwrap();
+        File::create(album.join("01.mp3")).unwrap();
+        let cover = album.join("cover.jpg");
+        image::RgbImage::from_pixel(16, 16, image::Rgb([10, 20, 30]))
+            .save_with_format(&cover, image::ImageFormat::Jpeg)
+            .unwrap();
+        let mut config = Config::default();
+        config.library.music_library = library.to_string_lossy().into_owned();
+        config.scan.cache_dir = temp.path().join("cache").to_string_lossy().into_owned();
+        let db = database_path(&config.scan.cache_dir);
+        let connection = open_database(&db, false).unwrap();
+        let now = sqlite_now(&connection).unwrap();
+        connection.execute("INSERT INTO artists(artist_key,artist_name,primary_path,created_at,updated_at,last_seen_at,splined_version) VALUES('va','Various Artists',?,?,?,?,'test')", params![library.join("Various Artists").to_string_lossy(), now, now, now]).unwrap();
+        connection.execute("INSERT INTO albums(album_key,artist_key,album_name,path,tag_signature,status,cover_found,created_at,updated_at,last_seen_at,splined_version) VALUES('comp','va','COMP',?,'tags','processed',0,?,?,?,'test')", params![album.to_string_lossy(), now, now, now]).unwrap();
+        connection.execute("INSERT INTO picker_inventory(inventory_key,signature_json,folders_json,generated_at,splined_version) VALUES(?,?, '{}',?,'test')", params![INVENTORY_KEY, expected_signature(&config, &config.library.music_library).to_string(), now]).unwrap();
+        drop(connection);
+
+        assert!(
+            !persist_opposing_album_artwork(
+                &config,
+                "comp",
+                &album,
+                Some(&RuntimeArtworkMaterial {
+                    path: cover,
+                    format: "JPEG".to_string(),
+                    width: 16,
+                    height: 16,
+                }),
+            )
+            .unwrap()
+        );
+        let connection = Connection::open(db).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT cover_found FROM albums WHERE album_key='comp'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
         );
     }
 }

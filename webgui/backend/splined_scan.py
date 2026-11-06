@@ -481,12 +481,9 @@ def inspect_local_preflight(
                 allow_out_of_range=True,
             )
             destination = album.path / f"{file_name}.jpg"
-            mode = str(cfg.get("mode", "read")).strip().lower()
             unchanged = destination.exists() and destination.read_bytes() == content
 
-            if mode == "write":
-                if not unchanged:
-                    core.atomic_write(destination, content)
+            if unchanged:
                 still_path = destination
             else:
                 digest = hashlib.sha256(

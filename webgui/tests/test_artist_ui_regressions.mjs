@@ -35,6 +35,16 @@ const albumBannerFunctions = between(
   "function albumBannerKind",
   "function applyAlbumCoordination",
 );
+const coordinationFunctions = between(
+  appSource,
+  "function applyAlbumCoordination",
+  "function albumCardState",
+);
+const opposingThumbnailFunctions = between(
+  operationsSource,
+  "async function refreshOpposingAlbumThumbnails",
+  "async function refreshQueuedAlbumAfterSave",
+);
 const hydrateFunction = between(
   appSource,
   "async function hydrateArtistThumbnails",
@@ -1281,6 +1291,48 @@ test("OVERRIDE banner defaults migrate into saved palettes and follow opposing o
   assert.equal(context.albumDisplayBannerKind(album, {}), "override");
   state.albumOverrides.set("album-1", {writer: "webgui"});
   assert.equal(context.albumDisplayBannerKind(album, {}), "artist");
+});
+
+test("coordination revision changes identify only affected Albums", () => {
+  const state = {albumOverrides: new Map(), albumOverrideRevision: 0};
+  const context = load(coordinationFunctions, {state});
+  const first = [{album_key: "album-1", writer: "windows", event_id: "event-1", revision: 38}];
+  assert.deepEqual(JSON.parse(JSON.stringify(context.applyAlbumCoordination(first))), ["album-1"]);
+  assert.equal(state.albumOverrideRevision, 38);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.applyAlbumCoordination(first))), []);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.applyAlbumCoordination([
+    {...first[0], event_id: "event-2", revision: 39},
+  ]))), ["album-1"]);
+});
+
+test("opposing Windows writes refresh only visible affected WebGUI Album thumbnails", async () => {
+  const calls = [];
+  const old = {id: "album-1", cover: "/old-cover"};
+  const hidden = {id: "album-hidden", cover: "/hidden-cover"};
+  const state = {
+    album: {...old},
+    artist: {albums: [{...old}]},
+    albumsIndex: [{...old}, {...hidden}],
+    albumOverrides: new Map([
+      ["album-1", {writer: "windows"}],
+      ["album-hidden", {writer: "webgui"}],
+    ]),
+  };
+  const context = load(opposingThumbnailFunctions, {
+    state,
+    api: async path => {
+      calls.push(path);
+      return {id: "album-1", cover: "/current-cover", override_writer: "windows"};
+    },
+  });
+
+  await context.refreshOpposingAlbumThumbnails(["album-1", "album-hidden"]);
+
+  assert.deepEqual(calls, ["/api/album?id=album-1"]);
+  assert.equal(state.album.cover, "/current-cover");
+  assert.equal(state.artist.albums[0].cover, "/current-cover");
+  assert.equal(state.albumsIndex[0].cover, "/current-cover");
+  assert.equal(state.albumsIndex[1].cover, "/hidden-cover");
 });
 
 test("Artist Albums row reports shown, Completed, and in Process with status colors", () => {

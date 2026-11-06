@@ -118,8 +118,8 @@ See [media database](splined-media-database.md) and the
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `file_name` | `"cover"` | Compatibility value; WebGUI Settings displays the required `cover`, `artist`, and `banner` filename stems as fixed information |
-| `file_formats` | JPEG, PNG, WebP | Supported static formats shown as fixed information in WebGUI Settings |
-| `preserve_file` | `true` | Preserve existing `cover.*`, `artist.*`, and `banner.*`; for Albums, an Ideal existing cover may finish at local preflight. When `false`, a successful Album write leaves one static canonical configured cover across JPG, JPEG, and PNG. WebP remains an unconditional source-preservation exception. |
+| `file_formats` | JPEG, PNG, WebP | Supported artwork formats shown as fixed information in WebGUI Settings. WebP remains a high-resolution/animated candidate source; a static JPEG presentation is created only when that source is selected for WRITE Cover or EMBED. |
+| `preserve_file` | `true` | Preserve existing `cover.*`, `artist.*`, and `banner.*`; for Albums, an Ideal existing cover may finish at local preflight. When `false`, a successful Album write leaves one static canonical configured cover across JPG, JPEG, and PNG. `cover.webp` remains an unconditional source-preservation exception, so `cover.webp` plus one static cover is valid. |
 | `square` | `true` | Enable square output policy |
 | `square_mode` | `"crop"` | `crop` or `off` |
 | `square_round_to` | `16` | Round the squared side down to this multiple; `0` disables rounding |
