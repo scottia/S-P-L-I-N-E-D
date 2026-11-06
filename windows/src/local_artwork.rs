@@ -194,6 +194,14 @@ pub fn cleanup_replaced_static_covers(
     let keep =
         fs::canonicalize(keep_destination).unwrap_or_else(|_| keep_destination.to_path_buf());
     let configured_prefix = configured_file_name.trim().to_ascii_lowercase();
+    let keep_stem = keep_destination
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if configured_prefix.is_empty() || keep_stem != configured_prefix {
+        return Ok(Vec::new());
+    }
     let entries = fs::read_dir(album_path).map_err(|error| {
         format!(
             "Unable to inspect replaced local covers in {}: {error}",
@@ -678,5 +686,22 @@ mod tests {
             cleanup_replaced_static_covers(temp.path(), "cover", &keep, Mode::Write, true).unwrap();
         assert!(removed.is_empty());
         assert!(numbered.exists());
+    }
+
+    #[test]
+    fn cleanup_requires_the_installed_destination_to_use_the_configured_basename() {
+        let temp = tempdir().unwrap();
+        let keep = temp.path().join("cover.png");
+        let configured = temp.path().join("folder.jpg");
+        write_image(&keep, 1800, 1800, ImageFormat::Png);
+        write_image(&configured, 1200, 1200, ImageFormat::Jpeg);
+
+        let removed =
+            cleanup_replaced_static_covers(temp.path(), "folder", &keep, Mode::Write, false)
+                .unwrap();
+
+        assert!(removed.is_empty());
+        assert!(keep.exists());
+        assert!(configured.exists());
     }
 }
