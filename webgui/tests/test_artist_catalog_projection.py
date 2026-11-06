@@ -10,11 +10,18 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest import mock
 
-from webgui.catalog import PreviewApp
+from webgui.catalog import PreviewApp, artist_display_sort_key
 from splined_media_database import update_artist_aggregate
 
 
 class ArtistCatalogProjectionTests(unittest.TestCase):
+    def test_display_sort_keeps_symbol_prefixed_artist_before_letters(self):
+        artists = ["Aaliyah", "*NSYNC", "10,000 Maniacs", "Nirvana"]
+        self.assertEqual(
+            sorted(artists, key=artist_display_sort_key),
+            ["*NSYNC", "10,000 Maniacs", "Aaliyah", "Nirvana"],
+        )
+
     def test_artist_list_is_database_only_until_lazy_thumbnail_hydration(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

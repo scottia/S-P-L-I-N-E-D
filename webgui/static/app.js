@@ -78,6 +78,7 @@ const state = {
   libraryLoading: false, artistMetadataRequest: 0,
   activeActionId: "", artistInfoExpanded: false,
   albumOverrides: new Map(), albumOverrideRevision: 0,
+  compTrackOverrides: new Map(), compTrackOverrideRevision: 0,
   statusRevision: 0, statusType: "ready",
 };
 function applyGraphicalEnhancement(value) {
@@ -590,7 +591,7 @@ function albumOverride(album) {
   } : null);
 }
 function albumDisplayBannerKind(album, artist) {
-  return albumOverride(album)?.writer === "windows" ? "override" : albumBannerKind(album, artist);
+  return String(album?.album_mbid || "").trim() && albumOverride(album)?.writer === "windows" ? "override" : albumBannerKind(album, artist);
 }
 function applyAlbumCoordination(rows) {
   if (!Array.isArray(rows)) return [];
@@ -606,10 +607,48 @@ function applyAlbumCoordination(rows) {
   state.albumOverrideRevision = Math.max(0, ...rows.map(row => Number(row.revision || 0)));
   return [...changed];
 }
+function normalizedCoordinationPath(value) {
+  return String(value || "").normalize("NFKC").replace(/[\u200b\u200c\u200d\u2060\ufeff]/g, "")
+    .replaceAll("\\", "/").replace(/^\/+|\/+$/g, "").toLocaleLowerCase();
+}
+function applyCompTrackCoordination(rows) {
+  if (!Array.isArray(rows)) return [];
+  const next = new Map(rows.map(row => [normalizedCoordinationPath(row.relative_track_path), row]));
+  const changed = new Set([...next].filter(([key, row]) => {
+    const prior = state.compTrackOverrides.get(key);
+    return !prior || prior.event_id !== row.event_id || prior.writer !== row.writer
+      || Number(prior.revision || 0) !== Number(row.revision || 0);
+  }).map(([key]) => key));
+  for (const key of state.compTrackOverrides.keys()) if (!next.has(key)) changed.add(key);
+  state.compTrackOverrides = next;
+  for (const group of state.compGroups) for (const track of group.tracks || []) {
+    const event = next.get(normalizedCoordinationPath(track.coordination_path));
+    if (event?.writer === "windows" && event.readable === true) {
+      track.completed = true;
+      track.status = "green";
+    }
+  }
+  for (const track of state.fallbackTracks) {
+    const event = next.get(normalizedCoordinationPath(track.coordination_path));
+    if (event?.writer === "windows" && event.readable === true) {
+      track.completed = true;
+      track.status = "green";
+    }
+  }
+  state.compTrackOverrideRevision = Math.max(0, ...rows.map(row => Number(row.revision || 0)));
+  return [...changed];
+}
+function compTrackOverride(track) {
+  const event = state.compTrackOverrides.get(normalizedCoordinationPath(track?.coordination_path));
+  // A coordination row can arrive before a shared/network track is readable.
+  // Do not present opposing ownership until the exact embedded bytes verify.
+  if (event?.writer === "windows" && event.readable !== true) return null;
+  return event;
+}
 function albumCardState(album, artist) {
   const status = mediaStatusKey(album);
   const fallback = !String(album.album_mbid || "").trim();
-  const overridden = albumOverride(album)?.writer === "windows";
+  const overridden = !fallback && albumOverride(album)?.writer === "windows";
   // A successful opposing write proves that an otherwise-unprocessed local
   // presentation is stale. Preserve every other independent status dot, but
   // replace this white-frame/red-dot state with the override presentation.
@@ -888,7 +927,7 @@ function renderHeroContents() {
     const picture = node("span", "album-card-picture"); picture.append(albumArtworkNode(album, "", album.name + " cover", "album-placeholder"));
     const dots = node("span", "album-status-dots"); for (const [color, tip] of cardState.dots) { const dot = node("span", "", "●"); dot.style.color = color; dot.title = tip; dots.append(dot); }
     picture.append(dots);
-    if (state.embedQueue.some(item => item.id === album.id)) { const staged = node("span", "album-staged-indicator", "●"); staged.title = "Staged for embedding"; picture.append(staged); }
+    if (state.embedQueue.some(item => item.id === album.id)) { const staged = node("span", "album-staged-indicator", "●"); staged.title = "Staged for embedding"; bannerNode.append(staged); }
     body.append(picture, node("strong", "", album.name), node("span", "album-card-foot", (album.year || "—") + "   ☆☆☆☆☆"));
     button.append(bannerNode, body);
     button.addEventListener("click", () => compIds.has(album.id) ? openArtistCompReport(album.id) : chooseAlbum(album.id)); grid.append(button);
@@ -973,6 +1012,7 @@ function renderFallbackOverview() {
   report.append(albumRow);
   if (state.fallbackReportExpanded) for (const item of state.fallbackTracks) {
     const row = node("button", "fallback-track" + (track?.key === item.key ? " selected" : ""));
+    row.classList.toggle("opposing-track-override", compTrackOverride(item)?.writer === "windows");
     row.type = "button";
     row.classList.add(item.status === "purple" ? "purple" : ["checking", "check-error"].includes(item.status) ? "checking" : item.completed ? "complete" : "pending");
     if (item.status === "check-error") row.title = item.checkError || "Thumbnail validation could not be completed; reload the album to retry";
@@ -1039,7 +1079,16 @@ function renderArtistCompReport() {
   const close = node("button", "fallback-close", "CLOSE REPORT"); close.type = "button";
   close.addEventListener("click", closeArtistCompReport);
   toolbar.append(preview, heading, repair, launch, close); report.append(toolbar);
-  report.append(node("div", "fallback-report-summary", `${state.compGroups.length} albums · ${tracks.length} tracks: ${green} green, ${purple} purple, ${blue} blue${checking ? `, ${checking} checking` : ""}${checkErrors ? `, ${checkErrors} retry needed` : ""}`));
+  const summary = node("div", "fallback-report-summary comp-report-counts");
+  summary.append(
+    node("span", "comp-count-albums", `${state.compGroups.length} Albums`),
+    node("span", "comp-count-green", `${green} green`),
+    node("span", "comp-count-purple", `${purple} purple`),
+    node("span", "comp-count-blue", `${blue} blue`),
+  );
+  if (checking) summary.append(node("span", "comp-count-checking", `${checking} checking`));
+  if (checkErrors) summary.append(node("span", "comp-count-error", `${checkErrors} retry needed`));
+  report.append(summary);
   const columns = node("div", "fallback-report-columns"); columns.append(node("span", "", "ALBUM"), node("span", "", "TRACK FILE")); report.append(columns);
   for (const group of state.compGroups) {
     const collapsed = state.compCollapsed.has(group.id);
@@ -1054,6 +1103,7 @@ function renderArtistCompReport() {
     for (const track of group.tracks) {
       const selected = state.compTrack?.key === track.key && state.compTrack?.albumId === group.id;
       const row = node("button", "fallback-track" + (selected ? " selected" : "")); row.type = "button";
+      row.classList.toggle("opposing-track-override", compTrackOverride(track)?.writer === "windows");
       row.classList.add(track.status === "purple" ? "purple" : ["checking", "check-error"].includes(track.status) ? "checking" : track.completed ? "complete" : "pending");
       if (track.status === "check-error") row.title = track.checkError || "Thumbnail validation could not be completed; reopen the report to retry";
       row.append(node("span", "fallback-track-spacer"), node("span", "fallback-track-file", track.file),
@@ -1088,7 +1138,10 @@ async function openArtistCompReport(albumId = "") {
   try {
     const compGroups = await api("/api/artist/comp-report?id=" + encodeURIComponent(artistId));
     if (request !== state.compReportRequest || artistId !== state.artist?.id) return;
-    state.compGroups = compGroups;
+    state.compGroups = [...compGroups].sort((a, b) =>
+      (parseInt(b.year, 10) || 0) - (parseInt(a.year, 10) || 0)
+      || String(a.name || "").localeCompare(String(b.name || ""), undefined, {sensitivity: "base"})
+      || String(a.id || "").localeCompare(String(b.id || "")));
     state.compReportLoading = false;
     if (!state.compGroups.length) { state.compReportVisible = false; setStatus("This Artist has no indexed COMP tracks", "error"); renderHero(); return; }
     state.compReportVisible = true; state.compPreviewMode = false; state.compTrack = null;
@@ -1146,7 +1199,8 @@ async function selectArtistCompTrack(albumId, key) {
   try {
     const track = await api("/api/fallback/track?id=" + encodeURIComponent(albumId) + "&key=" + encodeURIComponent(key));
     if (request !== state.compTrackRequest || artistId !== state.artist?.id || !state.compReportVisible) return;
-    state.compTrack = {...track, albumId};
+    const indexed = state.compGroups.find(group => group.id === albumId)?.tracks.find(item => item.key === key);
+    state.compTrack = {...indexed, ...track, albumId};
     renderArtistCompReport(); renderReview();
     setStatus(`${track.completed ? "Recorded" : "Blue"} COMP track · ${track.file}${track.image ? " · existing art available" : " · artwork needed"}`);
   } catch (error) { if (request === state.compTrackRequest) setStatus(error.message, "error"); }
@@ -1709,7 +1763,11 @@ function renderReview() {
   // metadata, embedded ribbon, and the separate red override notice.
   $("writeNotice").hidden = true;
   $("writeNotice").textContent = "";
-  const override = albumOverride(state.album);
+  const override = state.editorMode === "artist" && state.compReportVisible && state.compTrack
+    ? compTrackOverride(state.compTrack)
+    : state.editorMode === "fallback" && state.fallbackTrack
+      ? compTrackOverride(state.fallbackTrack)
+      : albumOverride(state.album);
   const overrideNotice = $("overrideNotice");
   overrideNotice.hidden = override?.writer !== "windows";
   overrideNotice.textContent = override?.writer === "windows" ? "Windows override" : "";

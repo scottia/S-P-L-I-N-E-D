@@ -39,12 +39,14 @@ use splined_core::local_artwork::{embedded_candidate, install_prepared_canonical
 use splined_core::media_database::{
     MediaAlbumSnapshot, MediaSnapshot, MediaTrackSnapshot, RuntimeArtworkMaterial,
     clear_album_bypass_from_runtime, fallback_tracks_from_folder, find_media_index_changes,
-    load_artist_art_profile, media_snapshot, persist_opposing_album_artwork, record_album_outcome,
-    record_album_outcome_from_runtime, save_artist_art_identity,
+    load_artist_art_profile, media_snapshot, persist_opposing_album_artwork,
+    persist_opposing_compilation_artwork, record_album_outcome, record_album_outcome_from_runtime,
+    save_artist_art_identity,
 };
 use splined_core::musicbrainz::{ArtistLookup, ArtistSearchHit, MusicBrainzClient};
 use splined_core::override_coordination::{
-    AlbumWriteState, connect_pool, coordination_database_url, effective_write_states, synchronize,
+    AlbumWriteState, TrackWriteState, connect_pool, coordination_database_url,
+    effective_track_write_states, effective_write_states, synchronize, synchronize_tracks,
 };
 use splined_core::range::Range;
 use splined_core::safe_write::{
@@ -1202,7 +1204,8 @@ fn capture_ui_preferences(
         status_bar_intensity: ui.get_status_bar_intensity().to_string(),
         status_bar_position: ui.get_status_bar_position().to_string(),
         status_bar_size: ui.get_status_bar_size().to_string(),
-        workspace_mode: if ui.get_workspace_mode() == 2 { 2 } else { 0 },
+        display_scale_percent: ui.get_display_scale_percent().clamp(80, 125) as u16,
+        workspace_mode: ui.get_workspace_mode().clamp(0, 3) as u8,
         library_view: state.library.view.label().to_ascii_lowercase(),
         status_filter: state.library.status_filter.label().to_ascii_lowercase(),
         status_filters: state
@@ -3339,6 +3342,130 @@ fn apply_album_coordination_states(
     (changed, invalidated)
 }
 
+fn normalized_track_coordination_path(root: &str, path: &str) -> Option<String> {
+    let normalize = |value: &str| {
+        value
+            .replace('\\', "/")
+            .chars()
+            .filter(|character| {
+                !matches!(
+                    *character,
+                    '\u{feff}' | '\u{200b}' | '\u{200c}' | '\u{200d}' | '\u{2060}'
+                )
+            })
+            .collect::<String>()
+            .trim_matches('/')
+            .to_ascii_lowercase()
+    };
+    let root = normalize(root);
+    let path = normalize(path);
+    path.strip_prefix(&root)
+        .map(|relative| relative.trim_start_matches('/').to_string())
+        .filter(|relative| !relative.is_empty())
+}
+
+fn apply_track_coordination_states(
+    app: &mut ApplicationState,
+    states: &HashMap<String, TrackWriteState>,
+    previous: &mut HashMap<String, TrackWriteState>,
+) -> bool {
+    let root = if app.library.local_root.trim().is_empty() {
+        app.config.library.music_library.clone()
+    } else {
+        app.library.local_root.clone()
+    };
+    let mut resolved = HashMap::<String, Vec<(usize, usize, String)>>::new();
+    for (album_index, album) in app.library.albums.iter().enumerate() {
+        for (track_index, track) in album.snapshot.compilation_tracks.iter().enumerate() {
+            if let Some(relative) = normalized_track_coordination_path(&root, &track.path) {
+                resolved.entry(relative).or_default().push((
+                    album_index,
+                    track_index,
+                    track.path.clone(),
+                ));
+            }
+        }
+    }
+    let mut accepted = previous.clone();
+    accepted.retain(|relative, _| states.contains_key(relative));
+    let mut changed = false;
+    for (relative, state) in states {
+        let Some(matches) = resolved.get(relative) else {
+            continue;
+        };
+        if matches.len() != 1 {
+            app.push_log(format!(
+                "Rejected ambiguous COMP coordination path {relative}: {} indexed matches.",
+                matches.len()
+            ));
+            continue;
+        }
+        let (album_index, track_index, path) = &matches[0];
+        if previous.get(relative) == Some(state) {
+            continue;
+        }
+        if state.writer.eq_ignore_ascii_case("webgui") {
+            match persist_opposing_compilation_artwork(
+                &app.config,
+                Path::new(path),
+                &state.artwork_sha256,
+            ) {
+                Ok(true) => {
+                    app.library.albums[*album_index].snapshot.compilation_tracks[*track_index]
+                        .embedded_artwork_recorded = true;
+                    invalidate_embedded_track_metadata(Path::new(path));
+                    let _ = cached_embedded_front_metadata(Path::new(path));
+                    if let Some(cache) = COMP_REPORT_THUMB_CACHE.get()
+                        && let Ok(mut cache) = cache.lock()
+                    {
+                        let prefix = format!("{}|", path.to_ascii_lowercase());
+                        cache.retain(|key, _| !key.starts_with(&prefix));
+                    }
+                    if app
+                        .compilation_report_preview_track_path
+                        .eq_ignore_ascii_case(path)
+                        || app.current_compilation_track_path.eq_ignore_ascii_case(path)
+                    {
+                        app.clear_compilation_track_preview(path);
+                        if let Ok(Some(preview)) = cached_compilation_report_thumb(
+                            Path::new(path),
+                            Path::new(&app.config.scan.temporary_cache_dir),
+                        ) {
+                            app.set_compilation_track_preview(path, &preview);
+                        }
+                    }
+                    accepted.insert(relative.clone(), state.clone());
+                    changed = true;
+                }
+                Ok(false) => app.push_log(format!(
+                    "Opposing COMP write is not readable yet; keeping the previous track ledger: {path}"
+                )),
+                Err(error) => app.push_log(format!(
+                    "Unable to persist opposing COMP artwork for {path}: {error}"
+                )),
+            }
+        } else {
+            accepted.insert(relative.clone(), state.clone());
+            changed = true;
+        }
+    }
+    let writers = accepted
+        .iter()
+        .filter_map(|(relative, state)| {
+            resolved.get(relative).and_then(|matches| {
+                (matches.len() == 1)
+                    .then(|| (matches[0].2.to_ascii_lowercase(), state.writer.clone()))
+            })
+        })
+        .collect::<HashMap<_, _>>();
+    if app.comp_track_override_writers != writers {
+        changed = true;
+        app.comp_track_override_writers = writers;
+    }
+    *previous = accepted;
+    changed
+}
+
 fn invalidate_cached_image_paths(paths: &[String]) {
     if paths.is_empty() {
         return;
@@ -3364,25 +3491,33 @@ fn start_album_coordination_worker(
     state: Arc<Mutex<ApplicationState>>,
 ) -> Arc<AtomicBool> {
     let stop = Arc::new(AtomicBool::new(false));
-    let Some((database, database_url, mut known_states)) = state.lock().ok().and_then(|mut app| {
-        let database = splined_core::media_database::database_path(&app.config.scan.cache_dir);
-        let mut known_states = HashMap::new();
-        if database.is_file()
-            && let Ok(states) = effective_write_states(&database)
-        {
-            let (_, invalidated) =
-                apply_album_coordination_states(&mut app, &states, &mut known_states);
-            invalidate_cached_image_paths(&invalidated);
-        }
-        match coordination_database_url(&app.config) {
-            Ok(Some(url)) => Some((database, url, known_states)),
-            Ok(None) => None,
-            Err(error) => {
-                app.push_log(error);
-                None
+    let Some((database, database_url, mut known_states, mut known_track_states)) =
+        state.lock().ok().and_then(|mut app| {
+            let database = splined_core::media_database::database_path(&app.config.scan.cache_dir);
+            let mut known_states = HashMap::new();
+            let mut known_track_states = HashMap::new();
+            if database.is_file()
+                && let Ok(states) = effective_write_states(&database)
+            {
+                let (_, invalidated) =
+                    apply_album_coordination_states(&mut app, &states, &mut known_states);
+                invalidate_cached_image_paths(&invalidated);
             }
-        }
-    }) else {
+            if database.is_file()
+                && let Ok(states) = effective_track_write_states(&database)
+            {
+                apply_track_coordination_states(&mut app, &states, &mut known_track_states);
+            }
+            match coordination_database_url(&app.config) {
+                Ok(Some(url)) => Some((database, url, known_states, known_track_states)),
+                Ok(None) => None,
+                Err(error) => {
+                    app.push_log(error);
+                    None
+                }
+            }
+        })
+    else {
         return stop;
     };
     let weak = ui.as_weak();
@@ -3419,6 +3554,25 @@ fn start_album_coordination_worker(
                         });
                     }
                 }
+                if let Ok(states) = effective_track_write_states(&database) {
+                    let changed = worker_state
+                        .lock()
+                        .map(|mut app| {
+                            apply_track_coordination_states(
+                                &mut app,
+                                &states,
+                                &mut known_track_states,
+                            )
+                        })
+                        .unwrap_or_default();
+                    if changed {
+                        let target_weak = weak.clone();
+                        let refresh_state = Arc::clone(&worker_state);
+                        let _ = slint::invoke_from_event_loop(move || {
+                            refresh_weak(&target_weak, &refresh_state)
+                        });
+                    }
+                }
                 if pool.is_none() {
                     match connect_pool(&database_url).await {
                         Ok(connected) => {
@@ -3435,7 +3589,11 @@ fn start_album_coordination_worker(
                     }
                 }
                 if let Some(connected) = pool.as_ref() {
-                    match synchronize(connected, &database).await {
+                    let synchronization = match synchronize(connected, &database).await {
+                        Ok(_) => synchronize_tracks(connected, &database).await.map(|_| ()),
+                        Err(error) => Err(error),
+                    };
+                    match synchronization {
                         Ok(_) => {
                             connection_warning = false;
                             let (changed, invalidated) = effective_write_states(&database)
@@ -3455,6 +3613,25 @@ fn start_album_coordination_worker(
                                 let refresh_state = Arc::clone(&worker_state);
                                 let _ = slint::invoke_from_event_loop(move || {
                                     invalidate_cached_image_paths(&invalidated);
+                                    refresh_weak(&target_weak, &refresh_state)
+                                });
+                            }
+                            let track_changed = effective_track_write_states(&database)
+                                .ok()
+                                .and_then(|states| {
+                                    worker_state.lock().ok().map(|mut app| {
+                                        apply_track_coordination_states(
+                                            &mut app,
+                                            &states,
+                                            &mut known_track_states,
+                                        )
+                                    })
+                                })
+                                .unwrap_or_default();
+                            if track_changed {
+                                let target_weak = weak.clone();
+                                let refresh_state = Arc::clone(&worker_state);
+                                let _ = slint::invoke_from_event_loop(move || {
                                     refresh_weak(&target_weak, &refresh_state)
                                 });
                             }
@@ -3754,11 +3931,11 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_settings_status_bar_intensity(ui.get_status_bar_intensity());
     ui.set_settings_status_bar_position(ui.get_status_bar_position());
     ui.set_settings_status_bar_size(ui.get_status_bar_size());
-    ui.set_workspace_mode(if preferences.workspace_mode == 2 {
-        2
-    } else {
-        0
-    });
+    ui.set_display_scale_percent(i32::from(preferences.display_scale_percent.clamp(80, 125)));
+    ui.set_settings_display_scale(
+        format!("{}%", preferences.display_scale_percent.clamp(80, 125)).into(),
+    );
+    ui.set_workspace_mode(i32::from(preferences.workspace_mode.min(3)));
     ui.set_enhancement_original_width(preferences.enhancement_original_height as f32);
     apply_workspace_layout(&ui, &workspace_layout.borrow());
     initialize_service_ui(&ui, &state);
@@ -4628,6 +4805,7 @@ fn normalize_status_bar_size(value: &str) -> &'static str {
 
 fn preserve_filter_state(replacement: &mut ApplicationState, previous: &ApplicationState) {
     replacement.album_override_writers = previous.album_override_writers.clone();
+    replacement.comp_track_override_writers = previous.comp_track_override_writers.clone();
     replacement.media_filter_locked = previous.media_filter_locked;
     replacement.candidate_filter_locked = previous.candidate_filter_locked;
     replacement.library.set_view(previous.library.view);
@@ -9026,10 +9204,17 @@ fn bind_callbacks(
                 let position =
                     normalize_status_bar_position(ui.get_settings_status_bar_position().as_str());
                 let size = normalize_status_bar_size(ui.get_settings_status_bar_size().as_str());
+                let display_scale = ui
+                    .get_settings_display_scale()
+                    .trim_end_matches('%')
+                    .parse::<u16>()
+                    .unwrap_or(90)
+                    .clamp(80, 125);
                 let mut preferences = splined_core::settings::load_ui_preferences()?;
                 preferences.status_bar_intensity = intensity.to_string();
                 preferences.status_bar_position = position.to_string();
                 preferences.status_bar_size = size.to_string();
+                preferences.display_scale_percent = display_scale;
                 let saving_enhancement = ui.get_settings_section() == "Enhancement";
                 if saving_enhancement && let Ok(app) = state.lock() {
                     preferences.adjustment_presets = app.adjustment_presets.clone();
@@ -9048,6 +9233,7 @@ fn bind_callbacks(
                 ui.set_status_bar_intensity(intensity.into());
                 ui.set_status_bar_position(position.into());
                 ui.set_status_bar_size(size.into());
+                ui.set_display_scale_percent(i32::from(display_scale));
                 if let Ok(mut app) = state.lock() {
                     if saving_enhancement {
                         app.enhancement_settings_dirty = false;
@@ -17767,8 +17953,14 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
 
     sync_workspace_scroll_context(ui, &state);
 
+    let library_rows = if state.library.show_tracks {
+        state.library.fallback_album_rows()
+    } else {
+        state.library.rows()
+    };
+    ui.set_library_shown_count(library_rows.iter().filter(|row| row.depth == 0).count() as i32);
     ui.set_library_rows(if state.media_selector_expanded {
-        library_ui_model(&state)
+        library_ui_model_from_rows(&state, library_rows)
     } else {
         model(Vec::new())
     });
@@ -18054,13 +18246,21 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
     } else {
         Vec::new()
     };
+    let artist_report_tracks = if artist_report_visible {
+        artist_compilation_report_track_ui_rows(&state)
+    } else {
+        Vec::new()
+    };
     let report_rows = if fallback_report_visible {
         group_compilation_report_rows(
             &fallback_report_tracks,
             &state.compilation_report_collapsed_albums,
         )
     } else if artist_report_visible {
-        artist_compilation_report_ui_rows(&state)
+        group_compilation_report_rows(
+            &artist_report_tracks,
+            &state.compilation_report_collapsed_albums,
+        )
     } else {
         Vec::new()
     };
@@ -18087,6 +18287,36 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
     };
     ui.set_compilation_report_rows(model(report_rows));
     ui.set_compilation_report_summary(fallback_report_summary.into());
+    let count_tracks = if artist_report_visible {
+        &artist_report_tracks
+    } else {
+        &fallback_report_tracks
+    };
+    ui.set_compilation_report_album_count(
+        count_tracks
+            .iter()
+            .map(|row| row.album_key.to_ascii_lowercase())
+            .collect::<HashSet<_>>()
+            .len() as i32,
+    );
+    ui.set_compilation_report_green_count(
+        count_tracks
+            .iter()
+            .filter(|row| row.status.as_str() == "Green")
+            .count() as i32,
+    );
+    ui.set_compilation_report_purple_count(
+        count_tracks
+            .iter()
+            .filter(|row| row.status.as_str() == "Purple")
+            .count() as i32,
+    );
+    ui.set_compilation_report_blue_count(
+        count_tracks
+            .iter()
+            .filter(|row| row.status.as_str() == "Blue")
+            .count() as i32,
+    );
 
     let sources = state
         .sources
@@ -18982,13 +19212,32 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
             state.library.database_path.clone()
         },
     ));
-    let opposing_writer = state
-        .library
-        .focused_album_key
-        .as_ref()
-        .and_then(|key| state.album_override_writers.get(&key.to_ascii_lowercase()))
-        .is_some_and(|writer| writer.eq_ignore_ascii_case("webgui"));
-    ui.set_selected_artwork_override_notice(if opposing_writer {
+    let opposing_writer = state.library.focused_album_key.as_ref().is_some_and(|key| {
+        state.library.albums.iter().any(|album| {
+            album.snapshot.album_key.eq_ignore_ascii_case(key)
+                && !album.snapshot.album_mbid.trim().is_empty()
+        }) && state
+            .album_override_writers
+            .get(&key.to_ascii_lowercase())
+            .is_some_and(|writer| writer.eq_ignore_ascii_case("webgui"))
+    });
+    let selected_comp_track = if !state
+        .compilation_report_preview_track_path
+        .trim()
+        .is_empty()
+    {
+        state.compilation_report_preview_track_path.as_str()
+    } else {
+        state.current_compilation_track_path.as_str()
+    };
+    let opposing_track_writer = !selected_comp_track.trim().is_empty()
+        && state
+            .comp_track_override_writers
+            .get(&selected_comp_track.to_ascii_lowercase())
+            .is_some_and(|writer| writer.eq_ignore_ascii_case("webgui"));
+    ui.set_selected_artwork_override_notice(if opposing_track_writer {
+        "WebGUI override · COMP track".into()
+    } else if opposing_writer {
         "WebGUI override".into()
     } else {
         SharedString::default()
@@ -19120,12 +19369,10 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
     ui.set_run_failed(state.run_failed as i32);
 }
 
-fn library_ui_model(state: &ApplicationState) -> ModelRc<UiLibraryRow> {
-    let rows = if state.library.show_tracks {
-        state.library.fallback_album_rows()
-    } else {
-        state.library.rows()
-    };
+fn library_ui_model_from_rows(
+    state: &ApplicationState,
+    rows: Vec<splined_core::application::LibraryRow>,
+) -> ModelRc<UiLibraryRow> {
     Rc::new(LibraryUiModel {
         rows,
         preview_size: 64,
@@ -19661,10 +19908,12 @@ fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRo
         .filter_map(|index| state.library.albums.get(index))
         .map(|album| {
             let snapshot = &album.snapshot;
-            let overridden = state
-                .album_override_writers
-                .get(&snapshot.album_key.to_ascii_lowercase())
-                .is_some_and(|writer| writer.eq_ignore_ascii_case("webgui"));
+            let fallback = snapshot.album_mbid.trim().is_empty();
+            let overridden = !fallback
+                && state
+                    .album_override_writers
+                    .get(&snapshot.album_key.to_ascii_lowercase())
+                    .is_some_and(|writer| writer.eq_ignore_ascii_case("webgui"));
             // An opposing successful write proves that a local New/no-cover
             // presentation is stale. It replaces only that red Missing dot;
             // every other independent status indicator remains authoritative.
@@ -19673,7 +19922,6 @@ fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRo
             let group = artist_overview_sort_group(state, album);
             let separator_before = previous_group.is_some_and(|previous| previous != group);
             previous_group = Some(group);
-            let fallback = snapshot.album_mbid.trim().is_empty();
             let comp_loading = fallback
                 && state.phase == RunPhase::Running
                 && snapshot
@@ -20839,14 +21087,13 @@ fn artist_compilation_report_track_ui_rows(app: &ApplicationState) -> Vec<UiComp
                 status: status.into(),
                 album_header: false,
                 expanded: false,
+                overridden: app
+                    .comp_track_override_writers
+                    .get(&track.path.to_string_lossy().to_ascii_lowercase())
+                    .is_some_and(|writer| writer.eq_ignore_ascii_case("webgui")),
             }
         })
         .collect()
-}
-
-fn artist_compilation_report_ui_rows(app: &ApplicationState) -> Vec<UiCompilationReportRow> {
-    let tracks = artist_compilation_report_track_ui_rows(app);
-    group_compilation_report_rows(&tracks, &app.compilation_report_collapsed_albums)
 }
 
 fn fallback_album_report_track_ui_rows(app: &ApplicationState) -> Vec<UiCompilationReportRow> {
@@ -20893,6 +21140,10 @@ fn fallback_album_report_track_ui_rows(app: &ApplicationState) -> Vec<UiCompilat
                 status: status.into(),
                 album_header: false,
                 expanded: false,
+                overridden: app
+                    .comp_track_override_writers
+                    .get(&track.path.to_ascii_lowercase())
+                    .is_some_and(|writer| writer.eq_ignore_ascii_case("webgui")),
             }
         })
         .collect::<Vec<_>>()
@@ -20929,17 +21180,13 @@ fn group_compilation_report_rows(
             album_title: group[0].album_title.clone(),
             path: SharedString::default(),
             file_name: format!(
-                "{} track{} · {} green{}{}{}",
+                "{} track{} · {} recorded, {} need artwork{}{}",
                 group.len(),
                 if group.len() == 1 { "" } else { "s" },
-                group.len() - purple - blue - checking,
+                group.len() - blue,
+                blue,
                 if purple > 0 {
                     format!(", {purple} thumb check")
-                } else {
-                    String::new()
-                },
-                if blue > 0 {
-                    format!(", {blue} need artwork")
                 } else {
                     String::new()
                 },
@@ -20962,6 +21209,7 @@ fn group_compilation_report_rows(
             .into(),
             album_header: true,
             expanded,
+            overridden: false,
         });
         if expanded {
             rows.extend(group.iter().cloned().map(|mut track| {
@@ -23041,6 +23289,7 @@ mod tests {
             status: status.into(),
             album_header: false,
             expanded: false,
+            overridden: false,
         };
         let tracks = vec![
             row("first", "First Album", "one.mp3", "Green"),
@@ -23052,7 +23301,7 @@ mod tests {
         assert!(open[0].album_header && open[0].expanded);
         assert_eq!(
             open[0].file_name.as_str(),
-            "2 tracks · 1 green, 1 thumb check"
+            "2 tracks · 2 recorded, 0 need artwork, 1 thumb check"
         );
         assert!(!open[1].album_header && !open[2].album_header);
         assert_eq!(open[3].album_title.as_str(), "Second Album");
@@ -23074,9 +23323,13 @@ mod tests {
             status: "Checking".into(),
             album_header: false,
             expanded: false,
+            overridden: false,
         }];
         let rows = group_compilation_report_rows(&tracks, &HashSet::new());
-        assert_eq!(rows[0].file_name.as_str(), "1 track · 0 green, 1 checking");
+        assert_eq!(
+            rows[0].file_name.as_str(),
+            "1 track · 1 recorded, 0 need artwork, 1 checking"
+        );
         assert_eq!(rows[0].status.as_str(), "Checking");
         assert_eq!(rows[1].status.as_str(), "Checking");
     }

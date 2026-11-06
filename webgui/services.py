@@ -52,7 +52,14 @@ from webgui.audit import (
     sanitize_text,
     utc_now,
 )
-from webgui.coordination import current_rows, new_event, record_event
+from webgui.coordination import (
+    current_rows,
+    current_track_rows,
+    new_event,
+    new_track_event,
+    record_event,
+    record_track_event,
+)
 
 
 LOGGER = logging.getLogger("uvicorn.error")
@@ -153,6 +160,9 @@ class Services:
         self._audit_fallback_path = log_path.with_name("web-audit-fallback.jsonl")
         self._coordination_lock = threading.RLock()
         self._coordination_outbox_path = runtime.cache / "album-write-coordination-outbox.json"
+        self._track_coordination_outbox_path = (
+            runtime.cache / "comp-track-write-coordination-outbox.json"
+        )
 
     def _coordination_guard(self):
         """Lazily restore coordination helpers for legacy lightweight fixtures."""
@@ -231,6 +241,176 @@ class Services:
     def album_write_coordination(self) -> list[dict[str, object]]:
         self.flush_album_write_coordination()
         return current_rows(self.runtime.database)
+
+    def _track_coordination_outbox(self) -> list[dict[str, object]]:
+        path = getattr(
+            self,
+            "_track_coordination_outbox_path",
+            self.runtime.cache / "comp-track-write-coordination-outbox.json",
+        )
+        self._track_coordination_outbox_path = path
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return []
+        except (OSError, ValueError, TypeError):
+            LOGGER.warning(
+                "COMP track coordination outbox could not be read; preserving it for review"
+            )
+            return []
+        return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+    def _save_track_coordination_outbox(self, events: list[dict[str, object]]):
+        path = getattr(
+            self,
+            "_track_coordination_outbox_path",
+            self.runtime.cache / "comp-track-write-coordination-outbox.json",
+        )
+        self._track_coordination_outbox_path = path
+        if not events:
+            path.unlink(missing_ok=True)
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=".comp-track-write-coordination-", suffix=".json", dir=path.parent
+        )
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                json.dump(events, handle, ensure_ascii=False, separators=(",", ":"))
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+
+    def flush_comp_track_write_coordination(self) -> dict[str, int]:
+        with self._coordination_guard():
+            pending = self._track_coordination_outbox()
+            remaining = []
+            applied = 0
+            for event in pending:
+                try:
+                    record_track_event(self.runtime.database, event)
+                    applied += 1
+                except Exception:
+                    remaining.append(event)
+            self._save_track_coordination_outbox(remaining)
+            return {"applied": applied, "pending": len(remaining)}
+
+    def record_comp_track_write(
+        self, album, track, operation: str, artwork_sha256: str
+    ) -> dict[str, object]:
+        event = new_track_event(
+            album,
+            track,
+            self.runtime.music,
+            "webgui",
+            operation,
+            artwork_sha256,
+        )
+        with self._coordination_guard():
+            try:
+                self.flush_comp_track_write_coordination()
+                durable = record_track_event(self.runtime.database, event)
+                return {"durable": True, **durable}
+            except Exception as error:
+                pending = self._track_coordination_outbox()
+                if not any(item.get("event_id") == event["event_id"] for item in pending):
+                    pending.append(event)
+                self._save_track_coordination_outbox(pending)
+                LOGGER.warning(
+                    "COMP track write notification queued for retry: track=%s operation=%s error=%s",
+                    event["relative_track_path"],
+                    operation,
+                    sanitize_text(str(error)),
+                )
+                return {"durable": False, **event}
+
+    def comp_track_write_coordination(self) -> list[dict[str, object]]:
+        self.flush_comp_track_write_coordination()
+        rows = current_track_rows(self.runtime.database)
+        for row in rows:
+            if str(row.get("writer") or "").casefold() == "windows":
+                row["readable"] = self._persist_opposing_comp_track(row)
+        return rows
+
+    def _persist_opposing_comp_track(self, event: dict[str, object]) -> bool:
+        """Project one verified Windows track write into the exact PG ledger row."""
+        relative = str(event.get("relative_track_path") or "").replace("\\", "/")
+        track_path = (self.runtime.music / relative).resolve(strict=False)
+        if not inside(track_path, self.runtime.music) or not track_path.is_file():
+            return False
+        try:
+            artwork = embedded_track_artwork_bytes(track_path, strict=True)
+        except (OSError, ValueError):
+            return False
+        expected = str(event.get("artwork_sha256") or "").strip().casefold()
+        if not artwork or hashlib.sha256(artwork).hexdigest() != expected:
+            return False
+        now = tags.utc_now()
+        with closing(self.runtime.database.connect()) as db, db:
+            track = db.execute(
+                "SELECT tracks.album_key,tracks.path,tracks.musicbrainz_recordingid,"
+                "tracks.musicbrainz_artistid,albums.path AS album_path "
+                "FROM tracks JOIN albums ON albums.album_key=tracks.album_key "
+                "WHERE lower(tracks.path)=lower(?) LIMIT 1",
+                (str(track_path),),
+            ).fetchone()
+            if track is None:
+                return False
+            db.execute(
+                "INSERT INTO compilation_track_artwork"
+                "(track_path,recording_mbid,artist_mbid,source_kind,source_locator,"
+                "release_mbid,artwork_sha256,outcome,applied_at,splined_version) "
+                "VALUES(?,?,?,?,?,NULL,?,'embedded-existing',?,?) "
+                "ON CONFLICT(track_path) DO UPDATE SET "
+                "recording_mbid=excluded.recording_mbid,artist_mbid=excluded.artist_mbid,"
+                "source_kind=excluded.source_kind,source_locator=excluded.source_locator,"
+                "artwork_sha256=excluded.artwork_sha256,outcome=excluded.outcome,"
+                "applied_at=excluded.applied_at,splined_version=excluded.splined_version",
+                (
+                    str(track["path"]),
+                    str(track["musicbrainz_recordingid"] or ""),
+                    str(track["musicbrainz_artistid"] or ""),
+                    "coordination-windows",
+                    "comp-track-write-coordination",
+                    expected,
+                    now,
+                    core.VERSION,
+                ),
+            )
+            total = int(
+                db.execute(
+                    "SELECT count(*) FROM tracks WHERE album_key=?",
+                    (track["album_key"],),
+                ).fetchone()[0]
+            )
+            completed = int(
+                db.execute(
+                    "SELECT count(*) FROM tracks JOIN compilation_track_artwork "
+                    "ON lower(compilation_track_artwork.track_path)=lower(tracks.path) "
+                    "WHERE tracks.album_key=? AND compilation_track_artwork.outcome "
+                    "IN ('embedded-replaced','embedded-existing')",
+                    (track["album_key"],),
+                ).fetchone()[0]
+            )
+            db.execute(
+                "INSERT INTO compilation_album_progress"
+                "(album_path,total_tracks,completed_tracks,status,updated_at,splined_version) "
+                "VALUES(?,?,?,?,?,?) ON CONFLICT(album_path) DO UPDATE SET "
+                "total_tracks=excluded.total_tracks,completed_tracks=excluded.completed_tracks,"
+                "status=excluded.status,updated_at=excluded.updated_at,"
+                "splined_version=excluded.splined_version",
+                (
+                    str(track["album_path"]),
+                    total,
+                    completed,
+                    "complete" if total and completed >= total else "incomplete",
+                    now,
+                    core.VERSION,
+                ),
+            )
+        return True
 
     def start_audit_session(self):
         return self.audit(
@@ -1881,7 +2061,10 @@ class Services:
                 "completion_recorded": completed,
             },
         )
-        coordination = self.record_album_write(row, "embed-comp-track")
+        artwork_sha256 = hashlib.sha256(verified_body).hexdigest()
+        coordination = self.record_comp_track_write(
+            row, refreshed, "embed-comp-track", artwork_sha256
+        )
         self._remove_prepared_comp(payload.get("prepared_id"))
         return {
             "album_id": row["album_key"],
@@ -1894,7 +2077,7 @@ class Services:
             "height": info["height"],
             "bytes": len(body),
             "image": self.catalog.image(verified_body),
-            "artwork_sha256": hashlib.sha256(verified_body).hexdigest(),
+            "artwork_sha256": artwork_sha256,
             "upscaled": bool(rendered.get("upscaled")),
             "outcome": outcome,
             "coordination": coordination,

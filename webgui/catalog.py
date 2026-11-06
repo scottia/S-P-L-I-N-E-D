@@ -97,6 +97,20 @@ def normalized_artist_identity(value: str) -> str:
     return "".join(character.casefold() for character in visible if character.isalnum())
 
 
+def artist_display_sort_key(value: object) -> str:
+    """Sort visible Artist names without discarding meaningful punctuation.
+
+    Canonical identity remains deliberately punctuation-insensitive so this
+    presentation change cannot split one Artist into duplicate catalog rows.
+    """
+    normalized = unicodedata.normalize("NFKC", str(value or ""))
+    return "".join(
+        character.casefold()
+        for character in normalized
+        if unicodedata.category(character) != "Cf"
+    ).strip()
+
+
 def normalized_album_identity(value: str) -> str:
     return "".join(
         character.casefold()
@@ -111,6 +125,14 @@ def inside(path: Path, root: Path) -> bool:
         return True
     except (OSError, ValueError):
         return False
+
+
+def relative_coordination_path(path: Path, root: Path) -> str:
+    try:
+        relative = path.resolve(strict=False).relative_to(root.resolve(strict=False))
+    except (OSError, ValueError):
+        return ""
+    return str(relative).replace("\\", "/").strip("/").casefold()
 
 
 def image_metadata(path: Path) -> dict[str, object]:
@@ -1122,7 +1144,14 @@ class Catalog:
                 ),
                 "portrait": portrait_url,
             })
-        return sorted(result, key=lambda item: normalized_artist_identity(item["name"]))
+        return sorted(
+            result,
+            key=lambda item: (
+                artist_display_sort_key(item["name"]),
+                normalized_artist_identity(item["name"]),
+                str(item["id"]).casefold(),
+            ),
+        )
 
     def artist_thumbnails(self) -> list[dict[str, str]]:
         """Return local thumbnails immediately and Navidrome fallbacks lazily."""
@@ -1441,6 +1470,7 @@ class Catalog:
         tracks = [
             {
                 "key": row["track_key"], "path": row["path"],
+                "coordination_path": relative_coordination_path(Path(row["path"]), self.music),
                 "title": row["title"], "artist": row["artist_name"],
                 "file": Path(row["path"]).name,
                 "completed": str(row["path"]).casefold() in completed,
@@ -1458,6 +1488,7 @@ class Catalog:
             tracks = [
                 {
                     "key": str(path), "path": str(path), "title": path.stem,
+                    "coordination_path": relative_coordination_path(path, self.music),
                     "artist": "", "file": path.name,
                     "completed": str(path).casefold() in completed,
                     "status": (
@@ -1660,6 +1691,7 @@ class Catalog:
             completed_track = str(track_path) in completed
             groups[key]["tracks"].append({
                 "key": row["track_key"], "file": track_path.name, "title": row["title"],
+                "coordination_path": relative_coordination_path(track_path, self.music),
                 "completed": completed_track,
                 "status": "checking" if completed_track else "blue",
                 "thumbnail": None,

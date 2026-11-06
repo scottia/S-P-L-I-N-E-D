@@ -534,7 +534,14 @@ test("Artist COMP renders all album groups and previews only the selected curren
   };
   const makeNode = (tag, className = "", text = "") => ({
     tag, className, text, children: [], listeners: {}, dataset: {},
-    classList: {values: [], add(...values) { this.values.push(...values); }},
+    classList: {
+      values: [],
+      add(...values) { this.values.push(...values); },
+      toggle(value, enabled) {
+        this.values = this.values.filter(item => item !== value);
+        if (enabled) this.values.push(value);
+      },
+    },
     append(...children) { this.children.push(...children); },
     setAttribute() {},
     addEventListener(event, handler) { this.listeners[event] = handler; },
@@ -547,10 +554,10 @@ test("Artist COMP renders all album groups and previews only the selected curren
       {id: "comp-3", name: "Compilation Three", tracks: [{key: "three", file: "three.flac", completed: true, status: "green", thumbnail: "/three.jpg"}]},
     ],
     compTrack: {albumId: "comp-2", key: "two", image: "/selected-current.jpg"},
-    compCollapsed: new Set(), compBusy: false, compRepairEnabled: true,
+    compCollapsed: new Set(), compTrackOverrides: new Map(), compBusy: false, compRepairEnabled: true,
     artist: {id: "artist-1", name: "Selected Artist"}, server: {mode: "write"},
   };
-  const context = load(renderArtistCompReportFunction, {
+  const context = load(coordinationFunctions + "\n" + renderArtistCompReportFunction, {
     state, $: () => report, clear: element => element.replaceChildren(), node: makeNode,
     image: (src, className, alt) => ({tag: "img", src, className, alt}),
     setStatus() {}, runAction() {}, repairArtistComp() {}, launchArtistComp() {},
@@ -695,6 +702,7 @@ test("completed COMP work chains only within an explicit Artist scope", async ()
       renderQueue() {}, refreshCompletedAlbum: async () => {}, refreshQueuedAlbumAfterSave: async () => {},
       renderHero() {}, renderReview() {}, renderJob: async () => {}, setStatus() {},
       applyAlbumCoordination() { return false; },
+      applyCompTrackCoordination() { return []; },
       $: () => ({open: false}),
     });
     await context.pollJobs();
@@ -1303,6 +1311,18 @@ test("coordination revision changes identify only affected Albums", () => {
   assert.deepEqual(JSON.parse(JSON.stringify(context.applyAlbumCoordination([
     {...first[0], event_id: "event-2", revision: 39},
   ]))), ["album-1"]);
+});
+
+test("COMP track override waits for verified readable embedded bytes", () => {
+  const path = "Various Artists/COMP/01.flac";
+  const state = {compTrackOverrides: new Map()};
+  const context = load(coordinationFunctions, {state});
+  const track = {coordination_path: path};
+  state.compTrackOverrides.set(path.toLowerCase(), {writer: "windows", readable: false});
+  assert.equal(context.compTrackOverride(track), null);
+  const verified = {writer: "windows", readable: true};
+  state.compTrackOverrides.set(path.toLowerCase(), verified);
+  assert.equal(context.compTrackOverride(track), verified);
 });
 
 test("opposing Windows writes refresh only visible affected WebGUI Album thumbnails", async () => {

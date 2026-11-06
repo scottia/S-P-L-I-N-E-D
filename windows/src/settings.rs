@@ -138,6 +138,8 @@ pub struct UiPreferences {
     pub status_bar_intensity: String,
     pub status_bar_position: String,
     pub status_bar_size: String,
+    /// Additional application typography scaling layered on top of Windows DPI.
+    pub display_scale_percent: u16,
     pub workspace_mode: u8,
     pub library_view: String,
     pub status_filter: String,
@@ -252,6 +254,7 @@ impl Default for UiPreferences {
             status_bar_intensity: "Full".to_string(),
             status_bar_position: "Top".to_string(),
             status_bar_size: "Small".to_string(),
+            display_scale_percent: 90,
             workspace_mode: 0,
             library_view: "artists".to_string(),
             status_filter: "all".to_string(),

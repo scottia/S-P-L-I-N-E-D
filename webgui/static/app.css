@@ -99,17 +99,17 @@ html[data-theme=light] .library-row .status-orbit.selected,html[data-theme=light
 .album-card.windows-card{width:160px;height:194px;min-height:194px;flex:none;display:flex;gap:4px;padding:4px;border:2px solid var(--frame-color);border-radius:7px;background:var(--card);color:var(--text);text-align:left;cursor:pointer}
 .album-card.windows-card:hover,.album-card.windows-card.active{border-color:var(--frame-color);background:var(--card)}
 .album-card.windows-card.mixed-frame,.album-card.windows-card.mixed-frame:hover,.album-card.windows-card.mixed-frame.active{border-color:transparent;background:linear-gradient(var(--card),var(--card)) padding-box,linear-gradient(135deg,var(--mixed-frame-a),var(--mixed-frame-b),var(--mixed-frame-a)) border-box}
-.album-type-banner{width:19px;flex:none;display:flex;align-items:center;justify-content:center;writing-mode:vertical-rl;text-orientation:upright;overflow:hidden;background:var(--banner-bg);border:1px solid var(--banner-ink);border-radius:3px;color:var(--banner-ink);font-size:10px;font-weight:900;line-height:1;letter-spacing:1px}
+.album-type-banner{position:relative;width:19px;flex:none;display:flex;align-items:center;justify-content:center;writing-mode:vertical-rl;text-orientation:upright;overflow:visible;background:var(--banner-bg);border:1px solid var(--banner-ink);border-radius:3px;color:var(--banner-ink);font-size:10px;font-weight:900;line-height:1;letter-spacing:1px}
 .album-card-body{min-width:0;flex:1;display:flex;flex-direction:column;gap:3px}
 .album-card-picture{position:relative;display:block;width:100%;height:128px;flex:none;background:#050709;border-radius:4px;overflow:hidden}
 .album-card.windows-card .album-card-picture img{width:100%;height:100%;object-fit:contain;aspect-ratio:auto;margin:0}
 .album-card-picture .album-placeholder{height:100%;width:100%;aspect-ratio:auto}
 .album-status-dots{position:absolute;right:1px;top:0;display:flex;flex-direction:column;align-items:center;gap:0;font-size:13px;line-height:15px;text-shadow:0 0 2px #000}
-.album-staged-indicator{position:absolute;left:2px;top:1px;color:#ffad32;font-size:19px;line-height:19px;text-shadow:0 0 2px #000;animation:staged-blink 1s steps(2,start) infinite}
+.album-type-banner .album-staged-indicator{position:absolute;left:50%;top:2px;transform:translateX(-50%);writing-mode:horizontal-tb;color:#ffad32;font-size:15px;line-height:15px;text-shadow:0 0 2px #000;animation:staged-blink 1s steps(2,start) infinite}
 .candidate-toolbar #bypassButton,.candidate-toolbar #uploadArtwork{min-width:58px;text-align:center}
 .review-actions #embedBatchButton.staged{background:#59616a;border-color:#77818c;color:#e3e7eb;filter:saturate(.25)}
 @keyframes staged-blink{50%{color:#ff4b36;opacity:.45}}
-@media(prefers-reduced-motion:reduce){.album-staged-indicator{animation:none;color:#ff4b36}}
+@media(prefers-reduced-motion:reduce){.album-type-banner .album-staged-indicator{animation:none;color:#ff4b36}}
 .album-card.windows-card strong{display:block;min-height:26px;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center;font-size:13px;line-height:25px;color:var(--text)}
 .album-card-foot{display:flex;align-items:center;justify-content:space-between;white-space:pre;color:var(--yellow);font-size:12px;font-weight:800;overflow:hidden}
 .album-status-key{position:absolute;z-index:12;left:0;bottom:calc(100% + 4px);width:min(1240px,calc(100vw - 48px));max-height:min(350px,55vh);padding:10px;background:#050608;color:#f1f3f4;border:1px solid var(--cyan);border-radius:6px;overflow:auto;box-shadow:0 10px 30px #000b}
@@ -157,10 +157,11 @@ html[data-theme=light] .library-row .status-orbit.selected,html[data-theme=light
 .fallback-toolbar .fallback-preview-radio{width:19px;height:19px;flex:none;border:2px solid var(--pink);border-radius:50%;background:#000;cursor:pointer}
 .fallback-toolbar .fallback-preview-radio.active{background:var(--green)}
 .fallback-report-summary{text-align:right;color:var(--cyan);font-size:10px}
-.fallback-report-columns{display:grid;grid-template-columns:min(220px,23%) 1fr;gap:8px;color:var(--muted);font-size:11px;font-weight:800}
-.fallback-report-album,.fallback-track{position:relative;display:grid;grid-template-columns:min(220px,23%) minmax(0,1fr);align-items:center;width:100%;min-height:25px;gap:8px;padding:3px 32px 3px 7px;border:1px solid #398efa;border-radius:4px;background:#182a38;color:var(--text);text-align:left;cursor:pointer}
+.comp-report-counts{display:flex;justify-content:flex-end;gap:12px;min-width:0}.comp-count-albums{color:var(--text);font-weight:800}.comp-count-green{color:var(--green)}.comp-count-purple{color:var(--violet)}.comp-count-blue{color:var(--blue)}.comp-count-checking{color:var(--cyan)}.comp-count-error{color:var(--pink)}
+.fallback-report-columns{display:grid;grid-template-columns:minmax(0,1fr) max-content;gap:8px;color:var(--muted);font-size:11px;font-weight:800}.fallback-report-columns span:last-child{text-align:right}
+.fallback-report-album,.fallback-track{position:relative;display:grid;grid-template-columns:minmax(0,1fr) max-content;align-items:center;width:100%;min-height:25px;gap:8px;padding:3px 32px 3px 7px;border:1px solid #398efa;border-radius:4px;background:#182a38;color:var(--text);text-align:left;cursor:pointer}
 .fallback-report-album strong,.fallback-report-album span,.fallback-track-file{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.fallback-report-album span{color:var(--cyan);font-size:10px}
+.fallback-report-album span{color:var(--cyan);font-size:10px;text-align:right}
 .fallback-track{min-height:24px;background:#171d24;font-size:11px}
 .fallback-track.complete{border-color:var(--green)}
 .fallback-track.complete .fallback-track-file{color:var(--green)}
@@ -247,6 +248,7 @@ body.authenticated .auth-screen{display:none}body.auth-pending>.app-header,body.
 
 .hero-copy{position:relative;min-width:0;min-height:126px;flex:1;padding-top:6px}.hero-copy .artist-biography-block{position:relative;z-index:1}.artist-info-rows{position:absolute;z-index:4;inset:34px 0 auto 0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:12px;row-gap:3px;max-width:none;margin:0}.artist-info-rows>span{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:7px;align-items:start;min-height:31px;padding:6px 8px;border-left:2px solid var(--cyan);border-top:1px solid color-mix(in srgb,var(--cyan) 32%,transparent);background:color-mix(in srgb,var(--panel) 80%,transparent)}.artist-info-rows b{color:var(--cyan);font-size:9px;line-height:1.5;text-transform:uppercase;letter-spacing:.05em}.artist-info-rows strong,.artist-info-rows a{min-width:0;color:var(--text);font-size:11px;line-height:1.5;overflow-wrap:anywhere;white-space:normal}.artist-info-rows a{color:var(--cyan);text-decoration:underline;text-underline-offset:2px}.similar-card{appearance:none;border:0;background:transparent;padding:0;color:inherit}.similar-card:not(:disabled){cursor:pointer}.similar-card:not(:disabled):hover .similar-avatar{border-color:var(--pink);background:#35405b}.similar-card:disabled{opacity:.72}
 .fallback-track{grid-template-columns:14px minmax(0,1fr) max-content 28px;padding-right:5px}.fallback-track-status{color:var(--muted);font-size:9px;white-space:nowrap}.fallback-inline-thumb{position:static;width:22px;height:22px}.operation-success{color:var(--green);font-size:10px}.queue-card.state-staged{border-color:var(--violet);background:#251d3c}.queue-card.state-paused{border-color:var(--cyan)}
+.fallback-track.opposing-track-override{border-color:var(--pink);filter:grayscale(1);opacity:.72}.fallback-track.opposing-track-override.selected{opacity:1;box-shadow:inset 0 0 0 1px var(--pink)}
 @media(max-width:900px){.artist-info-rows{column-gap:8px}.fallback-track-status{display:none}}
 
 /* Native COMP parity: MusicBrainz authority and release-family review lives in
