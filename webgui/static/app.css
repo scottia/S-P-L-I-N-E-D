@@ -354,3 +354,31 @@ html,body{font-size:var(--ui-font-md)}
 .portrait-launch h1{width:max(180px,calc(var(--artist-thumb-size) + 28px))}
 .portrait-launch .artist-art-entry{top:calc(var(--artist-thumb-size) - 10px)}
 .artist-info-toggle{left:calc(var(--artist-thumb-size) + 5px);top:8px;font-size:9px}
+
+/* Match the native Artist/Album overview hierarchy without changing the
+   established WebGUI theme or navigation model. */
+.top-genres{display:grid;gap:2px;margin-top:7px;color:var(--text);text-shadow:0 1px 2px #000}
+.top-genres-heading{color:var(--cyan);font-size:var(--ui-font-sm)}
+.top-genres-copy{font-size:var(--ui-font-sm);line-height:1.3;white-space:normal}
+.top-songs{display:grid;gap:2px;white-space:normal;overflow:visible;text-overflow:clip}
+.top-songs-heading{color:var(--yellow);font-size:var(--ui-font-sm)}
+.top-songs-copy{color:var(--text);font-size:var(--ui-font-sm);line-height:1.3}
+html[data-theme=light] .top-genres,html[data-theme=light] .top-songs-copy{text-shadow:none;color:#17242b}
+
+/* Native footer control tones: active green, write amber, and embed violet. */
+.review-actions button{height:34px;min-height:34px;border-radius:5px;color:var(--text);font-weight:700}
+.review-actions .action-cyan{border-color:#78957e;background:#27352d;color:#eef4ef}
+.review-actions .action-orange{border-color:#d18419;background:#76531d;color:#f5eee4}
+.review-actions .action-purple{border-color:#806893;background:#4d4058;color:#f0e8f5}
+.overview-actions button{height:34px;padding:4px 6px;border-radius:5px;background:var(--card);color:var(--text)}
+.overview-actions #showAllAlbums{border-color:#568e96;background:#263c3f}
+.overview-actions #compReportButton{border-color:#806893;background:#4d4058}
+.overview-actions #embedAllAlbums{border-color:#d18419;background:#76531d}
+
+/* The second Selected Artwork row uses the same four aligned columns as the
+   native Source / Type / Dimensions / File Size grid. */
+.review-extra.embedded-metadata-row{display:grid;grid-template-columns:minmax(0,.85fr) minmax(0,1fr) minmax(0,1.15fr) minmax(0,.9fr);gap:0;margin:0;color:var(--text)}
+.review-extra.embedded-metadata-row>span{min-width:0;padding:0 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;font-size:var(--ui-font-sm)}
+.review-extra .metric-below-minimum{color:var(--danger)}
+.review-extra .metric-in-process{color:#efa54e}
+.review-extra .metric-ideal{color:var(--green)}

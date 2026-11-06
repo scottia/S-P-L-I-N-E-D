@@ -36,6 +36,7 @@ from webgui.catalog import (
     AUDIO_EXTENSIONS,
     inside,
     embedded_track_artwork_bytes,
+    relative_coordination_path,
 )
 from webgui.catalog_authority import (
     index_update_columns,
@@ -57,6 +58,8 @@ from webgui.coordination import (
     current_track_rows,
     new_event,
     new_track_event,
+    normalized_album_key,
+    normalized_coordination_relative,
     record_event,
     record_track_event,
 )
@@ -336,28 +339,42 @@ class Services:
 
     def _persist_opposing_comp_track(self, event: dict[str, object]) -> bool:
         """Project one verified Windows track write into the exact PG ledger row."""
-        relative = str(event.get("relative_track_path") or "").replace("\\", "/")
-        track_path = (self.runtime.music / relative).resolve(strict=False)
-        if not inside(track_path, self.runtime.music) or not track_path.is_file():
+        relative = normalized_coordination_relative(event.get("relative_track_path"))
+        album_key = normalized_album_key(event.get("album_key"))
+        if not relative or not album_key:
             return False
-        try:
-            artwork = embedded_track_artwork_bytes(track_path, strict=True)
-        except (OSError, ValueError):
-            return False
-        expected = str(event.get("artwork_sha256") or "").strip().casefold()
-        if not artwork or hashlib.sha256(artwork).hexdigest() != expected:
-            return False
-        now = tags.utc_now()
         with closing(self.runtime.database.connect()) as db, db:
-            track = db.execute(
+            candidates = db.execute(
                 "SELECT tracks.album_key,tracks.path,tracks.musicbrainz_recordingid,"
                 "tracks.musicbrainz_artistid,albums.path AS album_path "
                 "FROM tracks JOIN albums ON albums.album_key=tracks.album_key "
-                "WHERE lower(tracks.path)=lower(?) LIMIT 1",
-                (str(track_path),),
-            ).fetchone()
-            if track is None:
+                "WHERE lower(albums.album_key)=lower(?)",
+                (album_key,),
+            ).fetchall()
+            matches = [
+                track
+                for track in candidates
+                if normalized_coordination_relative(
+                    relative_coordination_path(Path(track["path"]), self.runtime.music)
+                )
+                == relative
+            ]
+            # Never guess through a legacy collision. The event must identify
+            # exactly one indexed physical path inside its selected Album.
+            if len(matches) != 1:
                 return False
+            track = matches[0]
+            track_path = Path(track["path"])
+            if not inside(track_path, self.runtime.music) or not track_path.is_file():
+                return False
+            try:
+                artwork = embedded_track_artwork_bytes(track_path, strict=True)
+            except (OSError, ValueError):
+                return False
+            expected = str(event.get("artwork_sha256") or "").strip().casefold()
+            if not artwork or hashlib.sha256(artwork).hexdigest() != expected:
+                return False
+            now = tags.utc_now()
             db.execute(
                 "INSERT INTO compilation_track_artwork"
                 "(track_path,recording_mbid,artist_mbid,source_kind,source_locator,"

@@ -527,6 +527,34 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         )
         self.assertEqual(track["album_identity"], "key:mbid:legacy-album")
 
+    def test_opposing_comp_event_resolves_the_indexed_case_preserving_path(self):
+        self.set_flac_embedded_cover(self.files[0], 300)
+        artwork = embedded_track_artwork_bytes(self.files[0])
+        self.assertIsNotNone(artwork)
+        event = {
+            "album_key": self.row["album_key"],
+            # Coordination identities are intentionally normalized while the
+            # physical Linux fixture retains its mixed-case directory names.
+            "relative_track_path": "test artist/test album/1.flac",
+            "artwork_sha256": hashlib.sha256(artwork).hexdigest(),
+        }
+
+        self.assertTrue(self.services._persist_opposing_comp_track(event))
+        with closing(self.db.connect()) as db:
+            written = db.execute(
+                "SELECT track_path,outcome FROM compilation_track_artwork"
+            ).fetchone()
+            progress = db.execute(
+                "SELECT total_tracks,completed_tracks,status "
+                "FROM compilation_album_progress"
+            ).fetchone()
+        self.assertEqual(written["track_path"], str(self.files[0]))
+        self.assertEqual(written["outcome"], "embedded-existing")
+        self.assertEqual(
+            (progress["total_tracks"], progress["completed_tracks"], progress["status"]),
+            (2, 1, "incomplete"),
+        )
+
     def test_failed_album_write_does_not_claim_coordination(self):
         with patch(
             "webgui.services.core.install_canonical_cover",

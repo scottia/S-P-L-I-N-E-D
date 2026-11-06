@@ -160,6 +160,22 @@ fn slint_windows_restore_natively_and_share_live_media_models() {
 }
 
 #[test]
+fn artist_overview_keeps_native_parity_controls_and_album_row_navigation() {
+    let ui = source("windows/ui/app.slint");
+    assert!(ui.contains("artist-summary-visible"));
+    assert!(ui.contains("MusicBrainz ID"));
+    assert!(ui.contains("root.browse-artist-artwork(); root.workspace-mode = 2;"));
+    assert!(ui.contains("root.artist-overview-name; color: AppTheme.yellow"));
+    assert!(ui.contains("if similar.available: Rectangle"));
+    assert!(ui.contains("root.selected-album-track-count + \" tracks · \""));
+    assert!(ui.contains("status-only-album-selection: row.kind == \"album-child\""));
+    assert!(ui.contains("row-touch := TouchArea"));
+    assert!(ui.contains("clicked => root.activated(root.item.key)"));
+    assert!(!ui.contains("#7a1b1d1f"));
+    assert!(!ui.contains("#7a061426"));
+}
+
+#[test]
 fn slint_surface_exposes_real_migrated_workflows() {
     let ui = source("windows/ui/app.slint");
     let main = source("windows/src/main.rs");

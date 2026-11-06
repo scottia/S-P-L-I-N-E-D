@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import closing
+from io import BytesIO
 import json
 from pathlib import Path
 from sqlite3 import connect
@@ -10,11 +11,41 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest import mock
 
-from webgui.catalog import PreviewApp, artist_display_sort_key
+from PIL import Image
+
+from webgui.catalog import (
+    PreviewApp,
+    artist_display_sort_key,
+    embedded_album_artwork_summary,
+)
 from splined_media_database import update_artist_aggregate
 
 
 class ArtistCatalogProjectionTests(unittest.TestCase):
+    def test_album_embedded_summary_matches_native_footer_semantics(self):
+        first = BytesIO()
+        second = BytesIO()
+        Image.new("RGB", (1200, 1200), "red").save(first, format="JPEG")
+        Image.new("RGB", (900, 900), "blue").save(second, format="PNG")
+        bodies = [first.getvalue(), second.getvalue(), None]
+        with mock.patch(
+            "webgui.catalog.embedded_track_artwork_bytes", side_effect=bodies
+        ):
+            summary = embedded_album_artwork_summary(
+                [Path("one.mp3"), Path("two.mp3"), Path("three.mp3")], 1200
+            )
+
+        self.assertEqual(summary["track_count"], 3)
+        self.assertEqual(summary["embedded_count"], 2)
+        self.assertEqual(summary["resolution"], "Varying Size")
+        self.assertEqual(summary["bytes"], len(bodies[0]) + len(bodies[1]))
+        self.assertEqual(
+            (summary["current_width"], summary["current_height"]), (1200, 1200)
+        )
+        self.assertEqual(summary["current_bytes"], len(bodies[0]))
+        self.assertTrue(summary["below_preference"])
+        self.assertTrue(summary["varying"])
+
     def test_display_sort_keeps_symbol_prefixed_artist_before_letters(self):
         artists = ["Aaliyah", "*NSYNC", "10,000 Maniacs", "Nirvana"]
         self.assertEqual(
@@ -128,6 +159,12 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                 albums = app.albums("")
             self.assertEqual({item["id"] for item in albums}, {"30", "billboard"})
             self.assertTrue(all(item["cover"].startswith("/api/album/thumbnail?id=") for item in albums))
+            self.assertEqual(
+                {item["id"] for item in app.albums("Adele")}, {"30", "billboard"}
+            )
+            self.assertEqual(
+                [item["id"] for item in app.albums("Billboard")], ["billboard"]
+            )
 
     def test_persisted_artist_aggregate_excludes_unidentified_comp_fallback(self):
         with closing(connect(":memory:")) as db:

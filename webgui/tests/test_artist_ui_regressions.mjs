@@ -5,6 +5,8 @@ import vm from "node:vm";
 
 const appSource = readFileSync(new URL("../static/app.js", import.meta.url), "utf8");
 const operationsSource = readFileSync(new URL("../static/operations.js", import.meta.url), "utf8");
+const indexSource = readFileSync(new URL("../static/index.html", import.meta.url), "utf8");
+const cssSource = readFileSync(new URL("../static/app.css", import.meta.url), "utf8");
 
 function between(source, start, end) {
   const first = source.indexOf(start);
@@ -1736,4 +1738,27 @@ test("artist artwork write refreshes the corresponding list row", async () => {
   assert.equal(listed.portrait, "fresh");
   assert.equal(listed.status, "processed");
   assert.equal(libraryRenders, 1);
+});
+
+test("Album search and Album overview use the global single-Album contract", () => {
+  assert.match(appSource, /async function loadAlbumLibraryMatches/);
+  assert.match(appSource, /\/api\/albums\?view=albums&q=/);
+  assert.match(appSource, /const matchesByArtist = new Map\(\)/);
+  assert.match(appSource, /matchesByArtist\.has\(artist\.id\)/);
+  assert.match(appSource, /matchingIds\.has\(item\.id\)/);
+  assert.match(appSource, /const presentedAlbums = state\.editorMode === "album" && state\.album/);
+  assert.match(appSource, /allAlbums\.find\(album => album\.id === state\.album\.id\)/);
+});
+
+test("WebGUI renders native-parity overview sections and artwork footer", () => {
+  assert.match(indexSource, /id="topGenres"/);
+  assert.match(indexSource, /id="topSongs"/);
+  assert.match(appSource, /Artist & Featured Artist Top Genres/);
+  assert.match(appSource, /node\("strong", "top-songs-heading", "Top Songs"\)/);
+  assert.match(appSource, /Embedded Art \(now\):/);
+  assert.match(appSource, /Track\(s\) \(" \+ trackCount \+ "\)"/);
+  assert.match(appSource, /Embedded Track\(s\)/);
+  assert.match(cssSource, /review-extra\.embedded-metadata-row/);
+  assert.match(cssSource, /overview-actions #compReportButton/);
+  assert.match(cssSource, /review-actions \.action-orange/);
 });
