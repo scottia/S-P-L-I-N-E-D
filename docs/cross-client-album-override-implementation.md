@@ -37,8 +37,13 @@ PostgreSQL revision. An Album display name alone is never identity evidence.
 Windows keeps the current acknowledgement and an unsent-event outbox in
 `splined.db`. WebGUI keeps its transient-failure outbox in the persistent cache.
 Both clients retry idempotently. A delayed older event is acknowledged but does
-not replace the newer writer. Coordination never changes synchronized catalog
-fields and is not included in reconciliation classification or Apply.
+not replace the newer writer. Coordination does not transfer processing/catalog
+authority or participate in reconciliation classification or Apply. When a
+newer opposing-client write is observed, the receiving client resolves the
+affected Album's physical artwork. Windows persistently updates only that
+Album's artwork path/inventory in SQLite; completion, bypass, selected source,
+representative tracks, and unrelated Albums remain unchanged. Both UIs
+invalidate stale thumbnails and recover readable artwork after restart.
 
 Windows enables the optional connection with the protected **Album
 Coordination** credential under Settings → Connections. The credential survives
@@ -114,9 +119,34 @@ write check.
 5. A real WebGUI Full Refresh reindexed all 210 isolated Albums and left the
    coordination row unchanged.
 
-Native Windows screen capture/input is unavailable in the current automation
-desktop (`IGraphicsCaptureItemInterop` cannot capture the monitor and the Slint
-window exposes title-bar accessibility only). Consequently, an operator-driven
-Windows WRITE/EMBED and Windows screenshot remain an owner acceptance item.
-The live Rust/PostgreSQL round-trip, restart persistence and installed-binary
-state were verified, but they are not represented as a completed GUI click.
+## PR #152: Cross-format artwork correction and owner acceptance
+
+The owner tested the final PR #152 source head
+`c02b56a6b661fc0471028bc721bcd132cdb9c85c` with the isolated E: library.
+The installed Windows test executable SHA-256 was
+`4E8FD593E87F7DE241DE73EE07A0BA2EA4C7D0F5983E3EB7AADD65F7BD456D5B`.
+
+- WebGUI JPG-to-PNG and Windows PNG-to-JPG writes (and the reverse directions)
+  correctly replaced the prior canonical static cover and removed competing
+  static duplicates, with no blank Album thumbnails.
+- Static cover replacement preserved existing `cover.webp` source artwork;
+  an explicitly selected WebP write created its static JPEG still. The owner
+  checked the physical source and still files.
+- After the selected artwork was staged, embedding produced an actual
+  **1200 × 1200** thumbnail in audio-track metadata; this was checked against
+  the files, not only the displayed preview.
+- Album OVERRIDE writer/revision updates were observed immediately across
+  PostgreSQL and Windows SQLite; the visual state and artwork recovered after
+  restarts.
+- COMP thumbnails and existing track-scoped authority behaved correctly.
+- EMBED Batch preserved the established staging lifecycle: purple indicator,
+  cleared candidates/Selected Artwork, the Artist/Album workspace remaining
+  open, and deferred track embedding until **Start All Staged**.
+
+These are operator-reported installed-client acceptance observations, distinct
+from unit tests. Native automated Windows pixel capture remains unavailable in
+the current automation desktop (`IGraphicsCaptureItemInterop` cannot capture
+the monitor and Slint exposes title-bar accessibility only); no automated
+screenshot assertion is claimed. The owner personally verified the GUI and
+physical files in the isolated test environment. PR #150's proposed catalog
+synchronization and PostgreSQL migrations 018/019 are not part of PR #152.
