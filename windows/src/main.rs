@@ -35,16 +35,16 @@ use splined_core::final_artwork::{
     prepare_embedded_thumbnail, prepare_existing_cover_edit, prepare_selected_artwork_edit,
 };
 use splined_core::inspect::inspect_image;
-use splined_core::local_artwork::embedded_candidate;
+use splined_core::local_artwork::{embedded_candidate, install_prepared_canonical_artwork};
 use splined_core::media_database::{
     MediaAlbumSnapshot, MediaSnapshot, MediaTrackSnapshot, RuntimeArtworkMaterial,
     clear_album_bypass_from_runtime, fallback_tracks_from_folder, find_media_index_changes,
-    load_artist_art_profile, media_snapshot, record_album_outcome,
+    load_artist_art_profile, media_snapshot, persist_opposing_album_artwork, record_album_outcome,
     record_album_outcome_from_runtime, save_artist_art_identity,
 };
 use splined_core::musicbrainz::{ArtistLookup, ArtistSearchHit, MusicBrainzClient};
 use splined_core::override_coordination::{
-    connect_pool, coordination_database_url, effective_writers, synchronize,
+    AlbumWriteState, connect_pool, coordination_database_url, effective_write_states, synchronize,
 };
 use splined_core::range::Range;
 use splined_core::safe_write::{
@@ -910,6 +910,7 @@ impl Model for LibraryUiModel {
 
     fn row_data(&self, row: usize) -> Option<Self::Data> {
         let row = self.rows.get(row)?;
+        let artwork = load_scaled_image(&row.artwork_path, self.preview_size);
         let icon = match row.kind.as_str() {
             "artist" => "◉",
             "folder" => "▰",
@@ -920,7 +921,8 @@ impl Model for LibraryUiModel {
             primary: SharedString::from(row.primary.clone()),
             secondary: SharedString::from(row.secondary.clone()),
             status_color: library_status_color(&row.status),
-            artwork: load_scaled_image(&row.artwork_path, self.preview_size),
+            has_artwork: artwork.size().width > 0,
+            artwork,
             status: SharedString::from(row.status.clone()),
             icon: SharedString::from(icon),
             kind: SharedString::from(row.kind.clone()),
@@ -2419,6 +2421,13 @@ fn newest_local_artwork_file(directory: &Path, stems: &[&str], webp: bool) -> Op
         })
 }
 
+fn current_local_album_artwork_file(directory: &Path, stems: &[&str]) -> Option<PathBuf> {
+    // A retained cover.webp remains the high-resolution/animated source. A
+    // generated static still is the current card presentation when available.
+    newest_local_artwork_file(directory, stems, false)
+        .or_else(|| newest_local_artwork_file(directory, stems, true))
+}
+
 #[cfg(test)]
 fn local_artist_art_file(directory: &Path) -> Option<PathBuf> {
     newest_local_artwork_file(directory, &["artist"], true)
@@ -3199,20 +3208,174 @@ fn storage_usage_text(config: &Config) -> (String, String) {
     (cache, database)
 }
 
+fn coordination_writers(states: &HashMap<String, AlbumWriteState>) -> HashMap<String, String> {
+    states
+        .iter()
+        .map(|(album_key, state)| (album_key.clone(), state.writer.clone()))
+        .collect()
+}
+
+fn refresh_coordinated_album_artwork(
+    app: &mut ApplicationState,
+    album_keys: &[String],
+) -> Vec<String> {
+    let mut invalidated = Vec::new();
+    let configured = app.config.output.file_name.trim().to_string();
+    for album_key in album_keys {
+        let Some(index) = app
+            .library
+            .albums
+            .iter()
+            .position(|album| album.snapshot.album_key.eq_ignore_ascii_case(album_key))
+        else {
+            continue;
+        };
+        let snapshot = &app.library.albums[index].snapshot;
+        let album_path = PathBuf::from(&snapshot.path);
+        let replacement = current_local_album_artwork_file(&album_path, &[configured.as_str()]);
+        let key = snapshot.album_key.to_ascii_lowercase();
+        let previous = app
+            .library
+            .album_artwork_paths
+            .get(&key)
+            .cloned()
+            .unwrap_or_else(|| snapshot.cover_path.clone());
+        if !previous.trim().is_empty() {
+            invalidated.push(previous.clone());
+        }
+        match replacement {
+            Some(path) => {
+                let Ok(info) = inspect_image(&path) else {
+                    continue;
+                };
+                let value = path.to_string_lossy().into_owned();
+                if let Err(error) = persist_opposing_album_artwork(
+                    &app.config,
+                    album_key,
+                    &album_path,
+                    Some(&RuntimeArtworkMaterial {
+                        path: path.clone(),
+                        format: format!("{:?}", info.format).to_ascii_uppercase(),
+                        width: info.width,
+                        height: info.height,
+                    }),
+                ) {
+                    app.push_log(format!(
+                        "Unable to persist refreshed opposing Album artwork for {album_key}: {error}"
+                    ));
+                }
+                let snapshot = &mut app.library.albums[index].snapshot;
+                snapshot.cover_path = value.clone();
+                snapshot.cover_name = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default()
+                    .to_string();
+                snapshot.cover_format = format!("{:?}", info.format).to_ascii_uppercase();
+                snapshot.cover_width = i64::from(info.width);
+                snapshot.cover_height = i64::from(info.height);
+                snapshot.has_local_artwork = true;
+                app.library
+                    .album_artwork_paths
+                    .insert(key.clone(), value.clone());
+                if app
+                    .library
+                    .focused_album_key
+                    .as_ref()
+                    .is_some_and(|focused| focused.eq_ignore_ascii_case(album_key))
+                {
+                    app.current_cover_path = value.clone();
+                }
+                invalidated.push(value);
+            }
+            None => {
+                if let Err(error) =
+                    persist_opposing_album_artwork(&app.config, album_key, &album_path, None)
+                {
+                    app.push_log(format!(
+                        "Unable to persist missing opposing Album artwork for {album_key}: {error}"
+                    ));
+                }
+                let snapshot = &mut app.library.albums[index].snapshot;
+                snapshot.cover_path.clear();
+                snapshot.cover_name.clear();
+                snapshot.cover_format.clear();
+                snapshot.cover_width = 0;
+                snapshot.cover_height = 0;
+                snapshot.has_local_artwork = false;
+                app.library.album_artwork_paths.remove(&key);
+                if app
+                    .library
+                    .focused_album_key
+                    .as_ref()
+                    .is_some_and(|focused| focused.eq_ignore_ascii_case(album_key))
+                {
+                    app.current_cover_path.clear();
+                }
+            }
+        }
+    }
+    invalidated.sort();
+    invalidated.dedup();
+    invalidated
+}
+
+fn apply_album_coordination_states(
+    app: &mut ApplicationState,
+    states: &HashMap<String, AlbumWriteState>,
+    previous: &mut HashMap<String, AlbumWriteState>,
+) -> (bool, Vec<String>) {
+    let changed_albums = states
+        .iter()
+        .filter(|(album_key, state)| previous.get(*album_key) != Some(*state))
+        .filter(|(_, state)| state.writer.eq_ignore_ascii_case("webgui"))
+        .map(|(album_key, _)| album_key.clone())
+        .collect::<Vec<_>>();
+    let writers = coordination_writers(states);
+    let changed = app.album_override_writers != writers || !changed_albums.is_empty();
+    app.album_override_writers = writers;
+    let invalidated = refresh_coordinated_album_artwork(app, &changed_albums);
+    *previous = states.clone();
+    (changed, invalidated)
+}
+
+fn invalidate_cached_image_paths(paths: &[String]) {
+    if paths.is_empty() {
+        return;
+    }
+    if let Ok(mut cache) = raw_image_cache().lock() {
+        cache.retain(|key, _| {
+            !paths
+                .iter()
+                .any(|path| key == path || key.starts_with(&format!("{path}\u{1f}")))
+        });
+    }
+    IMAGE_CACHE.with(|cache| {
+        cache.borrow_mut().retain(|key, _| {
+            !paths
+                .iter()
+                .any(|path| key == path || key.starts_with(&format!("{path}\u{1f}")))
+        });
+    });
+}
+
 fn start_album_coordination_worker(
     ui: &AppWindow,
     state: Arc<Mutex<ApplicationState>>,
 ) -> Arc<AtomicBool> {
     let stop = Arc::new(AtomicBool::new(false));
-    let Some((database, database_url)) = state.lock().ok().and_then(|mut app| {
+    let Some((database, database_url, mut known_states)) = state.lock().ok().and_then(|mut app| {
         let database = splined_core::media_database::database_path(&app.config.scan.cache_dir);
+        let mut known_states = HashMap::new();
         if database.is_file()
-            && let Ok(writers) = effective_writers(&database)
+            && let Ok(states) = effective_write_states(&database)
         {
-            app.album_override_writers = writers;
+            let (_, invalidated) =
+                apply_album_coordination_states(&mut app, &states, &mut known_states);
+            invalidate_cached_image_paths(&invalidated);
         }
         match coordination_database_url(&app.config) {
-            Ok(Some(url)) => Some((database, url)),
+            Ok(Some(url)) => Some((database, url, known_states)),
             Ok(None) => None,
             Err(error) => {
                 app.push_log(error);
@@ -3236,19 +3399,22 @@ fn start_album_coordination_worker(
             let mut pool = None;
             let mut connection_warning = false;
             while !worker_stop.load(Ordering::Relaxed) {
-                if let Ok(writers) = effective_writers(&database) {
-                    let changed = worker_state.lock().is_ok_and(|mut app| {
-                        if app.album_override_writers == writers {
-                            false
-                        } else {
-                            app.album_override_writers = writers;
-                            true
-                        }
-                    });
+                if let Ok(states) = effective_write_states(&database) {
+                    let (changed, invalidated) = worker_state
+                        .lock()
+                        .map(|mut app| {
+                            apply_album_coordination_states(
+                                &mut app,
+                                &states,
+                                &mut known_states,
+                            )
+                        })
+                        .unwrap_or_default();
                     if changed {
                         let target_weak = weak.clone();
                         let refresh_state = Arc::clone(&worker_state);
                         let _ = slint::invoke_from_event_loop(move || {
+                            invalidate_cached_image_paths(&invalidated);
                             refresh_weak(&target_weak, &refresh_state)
                         });
                     }
@@ -3270,20 +3436,25 @@ fn start_album_coordination_worker(
                 }
                 if let Some(connected) = pool.as_ref() {
                     match synchronize(connected, &database).await {
-                        Ok(writers) => {
+                        Ok(_) => {
                             connection_warning = false;
-                            let changed = worker_state.lock().is_ok_and(|mut app| {
-                                if app.album_override_writers == writers {
-                                    false
-                                } else {
-                                    app.album_override_writers = writers;
-                                    true
-                                }
-                            });
+                            let (changed, invalidated) = effective_write_states(&database)
+                                .ok()
+                                .and_then(|states| {
+                                    worker_state.lock().ok().map(|mut app| {
+                                        apply_album_coordination_states(
+                                            &mut app,
+                                            &states,
+                                            &mut known_states,
+                                        )
+                                    })
+                                })
+                                .unwrap_or_default();
                             if changed {
                                 let target_weak = weak.clone();
                                 let refresh_state = Arc::clone(&worker_state);
                                 let _ = slint::invoke_from_event_loop(move || {
+                                    invalidate_cached_image_paths(&invalidated);
                                     refresh_weak(&target_weak, &refresh_state)
                                 });
                             }
@@ -15928,14 +16099,21 @@ fn edit_existing_cover(
     }
     let path = Path::new(&path);
     let candidate = Candidate::from_file("local", path, 0)?;
-    // cover.webp is source material, not the target of a direct WRITE Cover.
-    // Preserve animation and install a static JPEG beside it even before LAUNCH.
+    // cover.webp is durable source material in both Preserve and Overwrite
+    // modes. Direct editing installs a validated static JPEG beside it.
     let target_format = if candidate.format == StaticFormat::Webp {
         StaticFormat::Jpeg
     } else {
         candidate.format
     };
-    let destination = if candidate.format == StaticFormat::Webp {
+    let destination = if !config.output.preserve_file {
+        let extension = match target_format {
+            StaticFormat::Jpeg => "jpg",
+            StaticFormat::Png => "png",
+            StaticFormat::Webp => "webp",
+        };
+        Path::new(&album_path).join(format!("{}.{}", config.output.file_name, extension))
+    } else if candidate.format == StaticFormat::Webp {
         path.with_extension("jpg")
     } else {
         path.to_path_buf()
@@ -15955,8 +16133,19 @@ fn edit_existing_cover(
         true,
     )?;
     let preview_key = if apply {
-        if fs::read(&destination).ok().as_deref() != Some(prepared.bytes.as_slice()) {
-            install_prepared_artwork(&destination, &prepared)?;
+        if config.output.preserve_file {
+            if fs::read(&destination).ok().as_deref() != Some(prepared.bytes.as_slice()) {
+                install_prepared_artwork(&destination, &prepared)?;
+            }
+        } else {
+            // Run the transaction even when the destination bytes are already
+            // current so any competing static canonical is removed atomically.
+            install_prepared_canonical_artwork(
+                Path::new(&album_path),
+                &config.output.file_name,
+                &destination,
+                &prepared,
+            )?;
         }
         remove_saved_sample_album(&config, &artist, &album)?;
         let album_path = Path::new(&album_path);
@@ -16707,13 +16896,19 @@ fn apply_selected_sample(state: &Arc<Mutex<ApplicationState>>) -> Result<(), Str
     }
 
     let candidate = Candidate::from_file("samples", &source_path, 0)?;
-    let target_format = if current_cover.is_file() {
-        inspect_image(&current_cover)
-            .map(|info| info.format)
-            .unwrap_or(candidate.format)
-    } else {
-        candidate.format
-    };
+    let current_cover_info = current_cover
+        .is_file()
+        .then(|| inspect_image(&current_cover).ok())
+        .flatten();
+    let target_format = current_cover_info
+        .map(|info| {
+            if info.format == StaticFormat::Webp {
+                StaticFormat::Jpeg
+            } else {
+                info.format
+            }
+        })
+        .unwrap_or(candidate.format);
     let range = Range {
         min: config.range.min,
         ideal: config.range.ideal,
@@ -16728,7 +16923,9 @@ fn apply_selected_sample(state: &Arc<Mutex<ApplicationState>>) -> Result<(), Str
         &config.output,
         true,
     )?;
-    let destination = if current_cover.is_file() {
+    let destination = if current_cover_info.is_some_and(|info| info.format == StaticFormat::Webp) {
+        current_cover.with_extension("jpg")
+    } else if current_cover.is_file() {
         current_cover
     } else {
         let extension = match prepared.info.format {
@@ -16738,7 +16935,16 @@ fn apply_selected_sample(state: &Arc<Mutex<ApplicationState>>) -> Result<(), Str
         };
         album_path.join(format!("{}.{}", config.output.file_name, extension))
     };
-    install_prepared_artwork(&destination, &prepared)?;
+    if config.output.preserve_file {
+        install_prepared_artwork(&destination, &prepared)?;
+    } else {
+        install_prepared_canonical_artwork(
+            &album_path,
+            &config.output.file_name,
+            &destination,
+            &prepared,
+        )?;
+    }
     remove_saved_sample_album(&config, &artist, &album)?;
     let material = RuntimeArtworkMaterial {
         path: destination.clone(),
@@ -19067,6 +19273,7 @@ fn theme_preview_album_row(state: &ApplicationState, target: &str) -> UiArtistAl
         display_title: "Album Card".into(),
         year: "2026".into(),
         artwork: slint::Image::default(),
+        has_artwork: false,
         status_color: frame_color(selected_frame, "#32DDA0"),
         selected: false,
         bullets: model(Vec::<UiAlbumStatusBullet>::new()),
@@ -19364,32 +19571,13 @@ fn artist_album_card_artwork_path(
         .album_artwork_paths
         .get(&snapshot.album_key.to_ascii_lowercase())
         .filter(|path| !path.trim().is_empty())
+        .filter(|path| inspect_image(Path::new(path)).is_ok())
     {
         return path.clone();
     }
-    if !snapshot.album_mbid.trim().is_empty() {
-        return String::new();
-    }
     let album_path = Path::new(&snapshot.path);
     let configured = state.config.output.file_name.trim();
-    let mut names = vec![
-        "cover.jpg".to_string(),
-        "cover.png".to_string(),
-        "cover.jpeg".to_string(),
-        "cover.webp".to_string(),
-    ];
-    if !configured.is_empty() && !configured.eq_ignore_ascii_case("cover") {
-        names.extend([
-            format!("{configured}.jpg"),
-            format!("{configured}.png"),
-            format!("{configured}.jpeg"),
-            format!("{configured}.webp"),
-        ]);
-    }
-    names
-        .into_iter()
-        .map(|name| album_path.join(name))
-        .find(|path| path.is_file())
+    current_local_album_artwork_file(album_path, &[configured, "cover"])
         .map(|path| path.to_string_lossy().into_owned())
         .unwrap_or_default()
 }
@@ -19715,12 +19903,14 @@ fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRo
                 .to_string(),
             );
             let artwork_path = artist_album_card_artwork_path(state, snapshot);
+            let artwork = load_album_card_image(&artwork_path, 192, overridden);
             UiArtistAlbumRow {
                 key: SharedString::from(snapshot.album_key.clone()),
                 title: SharedString::from(snapshot.title.clone()),
                 display_title: SharedString::from(artist_album_card_display_title(&snapshot.title)),
                 year: SharedString::from(snapshot.release_year.clone()),
-                artwork: load_album_card_image(&artwork_path, 192, overridden),
+                has_artwork: artwork.size().width > 0,
+                artwork,
                 status_color: if fully_complete {
                     Color::from_rgb_u8(50, 221, 160)
                 } else if featured && fallback_complete {
@@ -21791,25 +21981,26 @@ fn trim_large_raw_image_cache(
 #[cfg(test)]
 mod tests {
     use super::{
-        AlbumEmbeddedCheck, ArtistAlbumEmbedTarget, CachedPixels, EmbedQueueSource,
-        EmbedQueueTarget, MaximizeGuard, PREVIEW_CACHE_DIMENSION, ThumbnailAlbumTarget,
-        UiCompilationReportRow, UiMusicBrainzRow, WorkspaceLayout, add_embedded_thumbnail_decision,
-        album_embedded_check, album_embedded_check_cache, album_embedded_check_key,
-        album_overview_queue_target, apply_ui_preferences, artist_album_card_artwork_path,
-        artist_album_card_display_title, artist_album_queue_targets, artist_art_candidate_source,
-        artist_art_query_sources, artist_art_targets_for_albums,
-        artist_compilation_thumb_repair_plan, artist_fallback_embedded_track_paths,
-        artist_is_secondary_credit, artist_overview_is_fully_complete,
-        artist_overview_legend_counts, artist_overview_release_banners, artist_overview_ui_model,
-        automatic_backup_is_due, backup_file_in_directory, backup_schedule_interval,
-        begin_musicbrainz_preview_request, cached_artist_banner_with_bottom_blur,
-        cached_circular_artist_thumbnail, canonical_webp_status, choose_musicbrainz_artist_match,
-        circular_artist_art_png, clear_rendered_preview_for_adjustment,
-        compilation_artwork_context, compilation_thumb_repair_plan,
-        completed_compilation_track_needs_attention, current_embedded_thumbnail_infos,
-        decode_webp_animation, disable_embedded_thumbnail_preview, edit_existing_cover,
-        embedded_artwork_footer, embedded_artwork_size_comparison, embedded_thumbnail_owner_key,
-        embedded_thumbnail_ready, ensure_webp_album_still, fallback_compilation_cover_suppressed,
+        AlbumEmbeddedCheck, AlbumWriteState, ArtistAlbumEmbedTarget, CachedPixels,
+        EmbedQueueSource, EmbedQueueTarget, MaximizeGuard, PREVIEW_CACHE_DIMENSION,
+        ThumbnailAlbumTarget, UiCompilationReportRow, UiMusicBrainzRow, WorkspaceLayout,
+        add_embedded_thumbnail_decision, album_embedded_check, album_embedded_check_cache,
+        album_embedded_check_key, album_overview_queue_target, apply_album_coordination_states,
+        apply_ui_preferences, artist_album_card_artwork_path, artist_album_card_display_title,
+        artist_album_queue_targets, artist_art_candidate_source, artist_art_query_sources,
+        artist_art_targets_for_albums, artist_compilation_thumb_repair_plan,
+        artist_fallback_embedded_track_paths, artist_is_secondary_credit,
+        artist_overview_is_fully_complete, artist_overview_legend_counts,
+        artist_overview_release_banners, artist_overview_ui_model, automatic_backup_is_due,
+        backup_file_in_directory, backup_schedule_interval, begin_musicbrainz_preview_request,
+        cached_artist_banner_with_bottom_blur, cached_circular_artist_thumbnail,
+        canonical_webp_status, choose_musicbrainz_artist_match, circular_artist_art_png,
+        clear_rendered_preview_for_adjustment, compilation_artwork_context,
+        compilation_thumb_repair_plan, completed_compilation_track_needs_attention,
+        current_embedded_thumbnail_infos, current_local_album_artwork_file, decode_webp_animation,
+        disable_embedded_thumbnail_preview, edit_existing_cover, embedded_artwork_footer,
+        embedded_artwork_size_comparison, embedded_thumbnail_owner_key, embedded_thumbnail_ready,
+        ensure_webp_album_still, fallback_compilation_cover_suppressed,
         format_existing_embedded_info, group_compilation_report_rows, include_artwork_source,
         is_sqlite_backup_path, is_valid_mbid, load_artist_art_candidates, load_scaled_image,
         local_album_art_file, local_artist_art_candidates, local_artist_art_file,
@@ -23984,7 +24175,15 @@ mod tests {
         image::RgbaImage::from_pixel(24, 24, image::Rgba([80, 50, 20, 255]))
             .save_with_format(&new_cover, image::ImageFormat::Png)
             .unwrap();
+        let webp_source = album_dir.join("cover.webp");
+        image::RgbaImage::from_pixel(48, 48, image::Rgba([10, 90, 30, 255]))
+            .save_with_format(&webp_source, image::ImageFormat::WebP)
+            .unwrap();
         assert_eq!(local_artist_art_file(&artist), Some(new_artist));
+        assert_eq!(
+            current_local_album_artwork_file(&album_dir, &["cover"]),
+            Some(new_cover.clone())
+        );
         let mut album = ThumbnailAlbumTarget {
             album_key: "album".to_string(),
             artist: "Artist".to_string(),
@@ -23998,6 +24197,113 @@ mod tests {
         assert_eq!(local_album_art_file(&album, "cover"), Some(new_cover));
         album.album_mbid.clear();
         assert_eq!(local_album_art_file(&album, "cover"), None);
+    }
+
+    #[test]
+    fn opposing_write_revision_refreshes_stale_album_artwork_after_restart() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let album_dir = directory.path().join("Artist").join("Album");
+        fs::create_dir_all(&album_dir).unwrap();
+        let stale = album_dir.join("cover.jpg");
+        image::RgbImage::from_pixel(24, 24, image::Rgb([20, 50, 80]))
+            .save_with_format(&stale, image::ImageFormat::Jpeg)
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let current = album_dir.join("cover.png");
+        image::RgbaImage::from_pixel(24, 24, image::Rgba([80, 50, 20, 255]))
+            .save_with_format(&current, image::ImageFormat::Png)
+            .unwrap();
+        let snapshot = MediaSnapshot {
+            schema_version: splined_core::media_database::SCHEMA_VERSION,
+            database_path: "splined.db".to_string(),
+            canonical_root: directory.path().to_string_lossy().into_owned(),
+            local_root: directory.path().to_string_lossy().into_owned(),
+            albums: vec![MediaAlbumSnapshot {
+                album_key: "release-id".to_string(),
+                artist: "Artist".to_string(),
+                tagged_artist: "Artist".to_string(),
+                title: "Album".to_string(),
+                path: album_dir.to_string_lossy().into_owned(),
+                representative_file: String::new(),
+                status: "processed".to_string(),
+                compilation: false,
+                compilation_track_art_eligible: false,
+                compilation_tracks: Vec::new(),
+                track_count: 1,
+                compilation_completed_tracks: 0,
+                release_year: "2026".to_string(),
+                artist_mbid: "artist-id".to_string(),
+                album_mbid: "release-id".to_string(),
+                release_group_mbid: String::new(),
+                has_local_artwork: true,
+                local_artwork_files: vec![stale.to_string_lossy().into_owned()],
+                cover_path: stale.to_string_lossy().into_owned(),
+                cover_name: "cover.jpg".to_string(),
+                cover_format: "JPEG".to_string(),
+                cover_width: 24,
+                cover_height: 24,
+                root_files: 0,
+                cover_files: 2,
+                processed_at: None,
+                timeout_until: None,
+                selected_source: None,
+            }],
+        };
+        let mut app = ApplicationState::new(Config::default(), snapshot).unwrap();
+        app.library.focused_album_key = Some("release-id".to_string());
+        app.current_cover_path = stale.to_string_lossy().into_owned();
+        let mut previous = HashMap::new();
+        let mut states = HashMap::from([(
+            "release-id".to_string(),
+            AlbumWriteState {
+                writer: "webgui".to_string(),
+                event_id: "webgui-1".to_string(),
+                revision: 1,
+            },
+        )]);
+
+        let (changed, invalidated) =
+            apply_album_coordination_states(&mut app, &states, &mut previous);
+        assert!(changed);
+        assert!(
+            invalidated
+                .iter()
+                .any(|path| path == stale.to_str().unwrap())
+        );
+        assert_eq!(
+            app.library.albums[0].snapshot.cover_path,
+            current.to_string_lossy()
+        );
+        assert_eq!(app.current_cover_path, current.to_string_lossy());
+
+        let state = states.get_mut("release-id").unwrap();
+        state.event_id = "webgui-2".to_string();
+        state.revision = 2;
+        let (changed, invalidated) =
+            apply_album_coordination_states(&mut app, &states, &mut previous);
+        assert!(changed);
+        assert!(
+            invalidated
+                .iter()
+                .any(|path| path == current.to_str().unwrap())
+        );
+
+        fs::remove_file(&stale).unwrap();
+        fs::write(&current, b"corrupt artwork").unwrap();
+        let state = states.get_mut("release-id").unwrap();
+        state.event_id = "webgui-3".to_string();
+        state.revision = 3;
+        let (changed, invalidated) =
+            apply_album_coordination_states(&mut app, &states, &mut previous);
+        assert!(changed);
+        assert!(
+            invalidated
+                .iter()
+                .any(|path| path == current.to_str().unwrap())
+        );
+        assert!(app.library.albums[0].snapshot.cover_path.is_empty());
+        assert!(app.current_cover_path.is_empty());
+        assert!(!app.library.album_artwork_paths.contains_key("release-id"));
     }
 
     #[test]

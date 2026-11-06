@@ -476,9 +476,8 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         )
 
     def test_failed_album_write_does_not_claim_coordination(self):
-        with patch.object(
-            self.services,
-            "_atomic_artwork",
+        with patch(
+            "webgui.services.core.install_canonical_cover",
             side_effect=OSError("synthetic artwork write failure"),
         ):
             with self.assertRaisesRegex(OSError, "synthetic artwork write failure"):

@@ -4526,6 +4526,192 @@ def remove_numbered_cover_variants(album_dir: Path, file_name: str) -> list[Path
     return removed
 
 
+def canonical_cover_files(
+    album_dir: Path,
+    file_name: str,
+    *,
+    include_numbered: bool = True,
+) -> list[Path]:
+    """Return only supported artwork owned by one configured Album basename."""
+    escaped = re.escape(file_name)
+    suffix = r"(?:-\([2-9][0-9]*\))?" if include_numbered else ""
+    pattern = re.compile(
+        rf"^{escaped}{suffix}\.(?:jpg|jpeg|png|webp)$",
+        re.IGNORECASE,
+    )
+    if not album_dir.exists() or not album_dir.is_dir():
+        return []
+    return sorted(
+        (
+            path
+            for path in album_dir.iterdir()
+            if path.is_file()
+            and not path.is_symlink()
+            and pattern.fullmatch(path.name)
+        ),
+        key=lambda path: path.name.casefold(),
+    )
+
+
+def remove_superseded_canonical_covers(
+    album_dir: Path,
+    file_name: str,
+    keep: Path,
+) -> list[Path]:
+    """Remove competing canonical/numbered covers after the new cover is valid.
+
+    Targets are exact, regular files directly inside the selected Album. Each
+    target is first moved to a same-directory quarantine name so a move failure
+    can restore every earlier target without destroying valid artwork.
+    """
+    keep_resolved = keep.resolve(strict=False)
+    targets = [
+        path
+        for path in canonical_cover_files(album_dir, file_name)
+        if path.resolve(strict=False) != keep_resolved
+        # WebP is durable source material even when static canonical artwork is
+        # overwritten. This is the explicit exception to one-cover cleanup.
+        and path.suffix.casefold() != ".webp"
+    ]
+    quarantined: list[tuple[Path, Path]] = []
+    try:
+        for path in targets:
+            descriptor, temporary = tempfile.mkstemp(
+                prefix=f".{path.name}.splined-superseded-",
+                dir=album_dir,
+            )
+            os.close(descriptor)
+            quarantine = Path(temporary)
+            quarantine.unlink()
+            os.replace(path, quarantine)
+            quarantined.append((path, quarantine))
+    except Exception:
+        for original, quarantine in reversed(quarantined):
+            if quarantine.exists() and not original.exists():
+                os.replace(quarantine, original)
+        raise
+    for _, quarantine in quarantined:
+        try:
+            quarantine.unlink(missing_ok=True)
+        except OSError:
+            # The canonical contract is already satisfied. A hidden, uniquely
+            # named quarantine file is safer than restoring a competing cover.
+            pass
+    return targets
+
+
+def install_canonical_cover(
+    canonical: Path,
+    content: bytes,
+    file_name: str,
+) -> list[Path]:
+    """Commit one static presentation and an optional WebP source atomically."""
+    if canonical.suffix.casefold() not in {".jpg", ".jpeg", ".png", ".webp"}:
+        raise SplinedError("Unsupported canonical cover output format.")
+    if canonical.stem.casefold() != file_name.casefold():
+        raise SplinedError("Canonical cover destination does not match output.file_name.")
+
+    outputs = canonical_cover_outputs(canonical, content, file_name)
+    staged: list[tuple[Path, Path, bytes]] = []
+    published: list[Path] = []
+    quarantined: list[tuple[Path, Path]] = []
+    try:
+        # Stage, fsync, and decode every output before moving any prior cover.
+        for destination, body in outputs:
+            descriptor, temporary = tempfile.mkstemp(
+                prefix=f".{destination.name}.splined-stage-",
+                suffix=".tmp",
+                dir=canonical.parent,
+            )
+            temporary_path = Path(temporary)
+            try:
+                with os.fdopen(descriptor, "wb") as handle:
+                    handle.write(body)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                with Image.open(temporary_path) as prepared:
+                    prepared.verify()
+                if temporary_path.read_bytes() != body:
+                    raise SplinedError("Staged cover failed byte-for-byte verification.")
+            except Exception:
+                temporary_path.unlink(missing_ok=True)
+                raise
+            staged.append((destination, temporary_path, body))
+
+        output_paths = {destination.resolve(strict=False) for destination, _ in outputs}
+        targets = [
+            path
+            for path in canonical_cover_files(canonical.parent, file_name)
+            if path.suffix.casefold() != ".webp"
+            or path.resolve(strict=False) in output_paths
+        ]
+        for path in targets:
+            descriptor, temporary = tempfile.mkstemp(
+                prefix=f".{path.name}.splined-rollback-",
+                dir=canonical.parent,
+            )
+            os.close(descriptor)
+            quarantine = Path(temporary)
+            quarantine.unlink()
+            os.replace(path, quarantine)
+            quarantined.append((path, quarantine))
+
+        for destination, temporary, body in staged:
+            os.replace(temporary, destination)
+            published.append(destination)
+            if destination.read_bytes() != body:
+                raise SplinedError("Written cover failed byte-for-byte readback verification.")
+            with Image.open(destination) as verified:
+                verified.verify()
+    except Exception:
+        for destination in reversed(published):
+            destination.unlink(missing_ok=True)
+        for original, quarantine in reversed(quarantined):
+            if quarantine.exists() and not original.exists():
+                os.replace(quarantine, original)
+        for _, temporary, _ in staged:
+            temporary.unlink(missing_ok=True)
+        raise
+    for _, quarantine in quarantined:
+        try:
+            quarantine.unlink(missing_ok=True)
+        except OSError:
+            # The visible canonical transaction is already committed. Retain
+            # the hidden recovery file rather than reintroducing a competitor.
+            pass
+    return [
+        path
+        for path, _ in quarantined
+        if path.resolve(strict=False) not in output_paths
+    ]
+
+
+def canonical_cover_outputs(
+    canonical: Path,
+    content: bytes,
+    file_name: str,
+) -> list[tuple[Path, bytes]]:
+    """Return the source/presentation files required by the WebP policy."""
+    with Image.open(io.BytesIO(content)) as prepared:
+        detected = str(prepared.format or "").casefold().replace("jpg", "jpeg")
+        expected = canonical.suffix.casefold().lstrip(".").replace("jpg", "jpeg")
+        if detected != expected:
+            raise SplinedError("Canonical cover extension does not match prepared artwork.")
+        prepared.verify()
+    if canonical.suffix.casefold() != ".webp":
+        return [(canonical, content)]
+
+    with Image.open(io.BytesIO(content)) as source:
+        source.seek(0)
+        still = source.convert("RGB")
+        encoded = io.BytesIO()
+        still.save(encoded, format="JPEG", quality=95)
+    return [
+        (canonical, content),
+        (canonical.with_name(f"{file_name}.jpg"), encoded.getvalue()),
+    ]
+
+
 def write_sample(sample_dir: Path, rel: Release, c: Candidate, preserve: bool) -> tuple[Path,bool]:
     album_dir = sample_dir / sanitize(rel.artist_credit) / sanitize(rel.title)
     album_dir.mkdir(parents=True, exist_ok=True)
@@ -4628,12 +4814,10 @@ def finalize(
             unchanged = canonical.exists() and canonical.read_bytes() == content
             return ("UNCHANGED" if unchanged else "READ-ONLY (would install)"), canonical, info
 
-        # Non-preserve mode:
-        # - overwrite only the canonical file for the selected output format
-        # - remove stale numbered cover-(N) variants across JPG/JPEG/PNG/WEBP
-        # - leave other canonical cover formats untouched
-        atomic_write(canonical, content)
-        remove_numbered_cover_variants(album.path, name)
+        # Overwrite mode owns one static canonical basename across JPG/JPEG/PNG.
+        # The new image is staged and verified before competitors are removed;
+        # WebP remains the explicit, unconditional source-preservation exception.
+        install_canonical_cover(canonical, content, name)
         return "INSTALLED", canonical, info
 
     dest, unchanged = choose_destination(canonical, content, True)
