@@ -1622,6 +1622,8 @@ export component AppWindow inherits Window {
     in-out property <string> settings-credential-dir;
     in-out property <string> settings-ignored-subs;
     in-out property <string> settings-mode: "Read";
+    in-out property <string> settings-catalog-sync-mode: "Manual SQLite SNAP";
+    in-out property <string> settings-catalog-sync-effective: "Manual SQLite SNAP active";
     in-out property <string> settings-verbosity: "Current";
     in-out property <bool> settings-scan-mode: true;
     in-out property <bool> settings-library-scan: false;
@@ -3104,6 +3106,12 @@ export component AppWindow inherits Window {
                                         Label { text: "Processing Mode"; width: 208px; }
                                         ComboBox { horizontal-stretch: 1; model: ["Read", "Write"]; current-value <=> root.settings-mode; }
                                     }
+                                    HorizontalLayout { height: 36px; spacing: 8px;
+                                        Label { text: "Catalog Synchronization Mode"; width: 208px; }
+                                        ComboBox { horizontal-stretch: 1; model: ["Live Synchronization", "Manual SQLite SNAP", "Off"]; current-value <=> root.settings-catalog-sync-mode; }
+                                    }
+                                    Text { text: root.settings-catalog-sync-effective; color: root.settings-catalog-sync-effective.starts-with("Live active") ? AppTheme.green : AppTheme.yellow; font-size: 13px; height: 22px; }
+                                    SettingsHelpTip { summary: "How does catalog synchronization work?"; detail: "Windows SQLite remains authoritative. Saving a mode takes effect while SPLINED is idle. Live publishes durable incremental catalog revisions only after WebGUI confirms the exact active Windows source and a fresh approved baseline; until then it is shown as waiting. Manual SQLite SNAP keeps the controlled recovery path. Off keeps catalogs independent. Normal SQLite database backups remain available in every mode."; }
                                     HorizontalLayout { height: 36px; spacing: 8px;
                                         Label { text: "Processing Override Delay"; width: 208px; }
                                         ComboBox { horizontal-stretch: 1; model: root.settings-override-options; current-value <=> root.settings-scan-timeout; }

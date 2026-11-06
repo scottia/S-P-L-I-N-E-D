@@ -2,6 +2,7 @@
 
 use futures_util::{StreamExt, stream};
 use image::AnimationDecoder;
+use rusqlite::Connection as SqliteConnection;
 use sha2::{Digest, Sha256};
 use slint::{
     Color, ComponentHandle, Model, ModelRc, ModelTracker, SharedString, Timer, TimerMode, VecModel,
@@ -18,8 +19,10 @@ use splined_core::backup::{
     validate_reconciliation_snapshot,
 };
 use splined_core::candidate::{Candidate, StaticFormat};
+use splined_core::catalog_sync::{set_runtime_mode, synchronize as synchronize_catalog};
 use splined_core::config::{
-    Config, Mode, ScanTimeout, Verbosity, configured_samples_dir, configured_shared_artist_art_dir,
+    CatalogSynchronizationMode, Config, Mode, ScanTimeout, Verbosity, configured_samples_dir,
+    configured_shared_artist_art_dir,
 };
 use splined_core::credential_store::{
     ALBUM_COORDINATION_PROVIDER, CredentialEditor, load_editor, save_editor, test_editor,
@@ -44,7 +47,7 @@ use splined_core::media_database::{
 };
 use splined_core::musicbrainz::{ArtistLookup, ArtistSearchHit, MusicBrainzClient};
 use splined_core::override_coordination::{
-    connect_pool, coordination_database_url, effective_writers, synchronize,
+    connect_pool, coordination_database_url, effective_writers, synchronize, verify_webgui_writes,
 };
 use splined_core::range::Range;
 use splined_core::safe_write::{
@@ -3206,6 +3209,16 @@ fn start_album_coordination_worker(
     let stop = Arc::new(AtomicBool::new(false));
     let Some((database, database_url)) = state.lock().ok().and_then(|mut app| {
         let database = splined_core::media_database::database_path(&app.config.scan.cache_dir);
+        if database.is_file() {
+            let mode = match app.config.catalog_sync.mode {
+                CatalogSynchronizationMode::Live => "live",
+                CatalogSynchronizationMode::ManualSnap => "manual-snap",
+                CatalogSynchronizationMode::Off => "off",
+            };
+            if let Err(error) = set_runtime_mode(&database, mode) {
+                app.push_log(error);
+            }
+        }
         if database.is_file()
             && let Ok(writers) = effective_writers(&database)
         {
@@ -3234,8 +3247,30 @@ fn start_album_coordination_worker(
         };
         runtime.block_on(async move {
             let mut pool = None;
+            let mut effective_mode = None;
             let mut connection_warning = false;
             while !worker_stop.load(Ordering::Relaxed) {
+                let worker_config = worker_state
+                    .lock()
+                    .map(|app| app.config.clone())
+                    .unwrap_or_default();
+                let requested_mode = match worker_config.catalog_sync.mode {
+                    CatalogSynchronizationMode::Live => "live",
+                    CatalogSynchronizationMode::ManualSnap => "manual-snap",
+                    CatalogSynchronizationMode::Off => "off",
+                };
+                if effective_mode != Some(worker_config.catalog_sync.mode) {
+                    match set_runtime_mode(&database, requested_mode) {
+                        Ok(_) => effective_mode = Some(worker_config.catalog_sync.mode),
+                        Err(error) => {
+                            if let Ok(mut app) = worker_state.lock() {
+                                app.push_log(format!(
+                                    "Catalog Synchronization Mode is waiting: {error}"
+                                ));
+                            }
+                        }
+                    }
+                }
                 if let Ok(writers) = effective_writers(&database) {
                     let changed = worker_state.lock().is_ok_and(|mut app| {
                         if app.album_override_writers == writers {
@@ -3296,6 +3331,48 @@ fn start_album_coordination_worker(
                                     app.push_log("Album coordination disconnected; successful Windows notifications remain queued locally.".to_string());
                                 }
                             }
+                        }
+                    }
+                    if worker_config.catalog_sync.mode == CatalogSynchronizationMode::Live
+                        && let Some(connected) = pool.as_ref()
+                    {
+                        match verify_webgui_writes(&worker_config, &database) {
+                            Ok(verified) if verified > 0 => {
+                                if let Ok(mut app) = worker_state.lock() {
+                                    app.push_log(format!(
+                                        "Windows physically verified {verified} WebGUI Album write(s)."
+                                    ));
+                                }
+                            }
+                            Ok(_) => {}
+                            Err(error) if !connection_warning => {
+                                connection_warning = true;
+                                if let Ok(mut app) = worker_state.lock() {
+                                    app.push_log(format!(
+                                        "WebGUI Album verification is waiting: {error}"
+                                    ));
+                                }
+                            }
+                            Err(_) => {}
+                        }
+                        match synchronize_catalog(connected, &database).await {
+                            Ok(published) if published > 0 => {
+                                if let Ok(mut app) = worker_state.lock() {
+                                    app.push_log(format!(
+                                        "Live catalog published {published} durable revision(s)."
+                                    ));
+                                }
+                            }
+                            Ok(_) => {}
+                            Err(error) if !connection_warning => {
+                                connection_warning = true;
+                                if let Ok(mut app) = worker_state.lock() {
+                                    app.push_log(format!(
+                                        "Live catalog is waiting; SQLite changes remain queued: {error}"
+                                    ));
+                                }
+                            }
+                            Err(_) => {}
                         }
                     }
                 }
@@ -4224,12 +4301,16 @@ fn main() -> Result<(), slint::PlatformError> {
             "splined-diagnostics-auto",
             "json",
         );
-        let snapshot_due = automatic_backup_is_due(
-            &snapshot_directory,
-            snapshot_schedule,
-            "splined-snapshot-auto",
-            "sqlite",
-        );
+        let manual_snapshot = scheduled_backup_state.lock().is_ok_and(|app| {
+            app.config.catalog_sync.mode == CatalogSynchronizationMode::ManualSnap
+        });
+        let snapshot_due = manual_snapshot
+            && automatic_backup_is_due(
+                &snapshot_directory,
+                snapshot_schedule,
+                "splined-snapshot-auto",
+                "sqlite",
+            );
         if settings_due {
             let snapshot = capture_ui_preferences(
                 &ui,
@@ -14929,6 +15010,15 @@ fn set_settings_ui(ui: &AppWindow, config: &Config) {
         }
         .into(),
     );
+    ui.set_settings_catalog_sync_mode(
+        match config.catalog_sync.mode {
+            CatalogSynchronizationMode::Live => "Live Synchronization",
+            CatalogSynchronizationMode::ManualSnap => "Manual SQLite SNAP",
+            CatalogSynchronizationMode::Off => "Off",
+        }
+        .into(),
+    );
+    ui.set_settings_catalog_sync_effective(catalog_sync_effective_label(config).into());
     ui.set_settings_verbosity(diagnostic_level_label(config.verbosity).into());
     ui.set_settings_scan_mode(config.scan.scan_mode);
     ui.set_settings_library_scan(config.scan.library_scan);
@@ -15005,6 +15095,34 @@ fn set_settings_ui(ui: &AppWindow, config: &Config) {
     };
     set_source_policy_ui(ui, config, &source);
     let _ = set_settings_preview_ui(ui, config);
+}
+
+fn catalog_sync_effective_label(config: &Config) -> String {
+    let database = splined_core::media_database::database_path(&config.scan.cache_dir);
+    if !database.is_file() {
+        return "Waiting for the Windows SQLite catalog".to_string();
+    }
+    let Ok(connection) =
+        SqliteConnection::open_with_flags(database, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+    else {
+        return "Effective synchronization state is unavailable".to_string();
+    };
+    let runtime = connection.query_row(
+        "SELECT effective_mode,capture_enabled FROM catalog_sync_source WHERE singleton=1",
+        [],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0)),
+    );
+    match runtime {
+        Ok((mode, true)) if mode == "live" => {
+            "Live active · incremental capture enabled".to_string()
+        }
+        Ok((mode, false)) if mode == "live" => {
+            "Live requested · waiting for the authorized fresh baseline".to_string()
+        }
+        Ok((mode, _)) if mode == "manual-snap" => "Manual SQLite SNAP active".to_string(),
+        Ok((mode, _)) if mode == "off" => "Off · catalogs are independent".to_string(),
+        _ => "Mode saved · effective state initializes while SPLINED is idle".to_string(),
+    }
 }
 
 fn set_source_policy_ui(ui: &AppWindow, config: &Config, source: &str) {
@@ -15242,6 +15360,12 @@ fn apply_settings_section_ui(
                 "Read" => Mode::Read,
                 value => return Err(format!("Unsupported mode: {value}")),
             };
+            config.catalog_sync.mode = match ui.get_settings_catalog_sync_mode().as_str() {
+                "Live Synchronization" => CatalogSynchronizationMode::Live,
+                "Manual SQLite SNAP" => CatalogSynchronizationMode::ManualSnap,
+                "Off" => CatalogSynchronizationMode::Off,
+                value => return Err(format!("Unsupported Catalog Synchronization Mode: {value}")),
+            };
             config.verbosity = diagnostic_level_verbosity_for_config(
                 ui.get_settings_verbosity().as_str(),
                 config.verbosity,
@@ -15287,6 +15411,7 @@ fn safe_reset_config(current: &Config) -> Config {
     reset.scan.sqlite_shared = current.scan.sqlite_shared;
     reset.scan.windows_client_lock = current.scan.windows_client_lock;
     reset.credentials = current.credentials.clone();
+    reset.catalog_sync = current.catalog_sync.clone();
     reset
 }
 

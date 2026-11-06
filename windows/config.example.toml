@@ -7,6 +7,10 @@ config_version = 5
 mode = "read"
 verbosity = "info"
 
+[catalog_sync]
+# live | manual-snap | off. Album artwork coordination remains independent.
+mode = "manual-snap"
+
 [library]
 music_library = ""
 ignored_subs = []

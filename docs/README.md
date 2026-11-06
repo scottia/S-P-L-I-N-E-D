@@ -62,6 +62,9 @@ diagnostic reports.
 - [Browser workspace schematic](browser-workspace-schematic.md) — maintainer
   map of browser regions and source locations; not a parity guarantee.
 - [Cross-client Album override implementation](cross-client-album-override-implementation.md)
+- [Live catalog synchronization architecture](live-catalog-synchronization-architecture.md)
+  — Draft one-way Windows-authoritative catalog stream, baseline, integrity,
+  recovery, and compatibility boundaries.
   — last-successful-writer coordination, recovery boundary, and isolated PC
   acceptance environment; the governing visual contract was merged through
   PR #147.

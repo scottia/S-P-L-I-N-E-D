@@ -30,6 +30,7 @@ from webgui.credentials import Credentials
 from webgui.auth import AdminAuth
 from webgui.audit import sanitize, sanitize_text, utc_now
 from webgui.reconciliation import SQLiteReconciler
+from webgui.catalog_sync import CatalogSynchronizer
 
 
 SETTINGS_UI = Path(__file__).resolve().parents[1] / "schema/settings-ui.json"
@@ -56,6 +57,7 @@ class Context:
         self.services = None
         self.jobs = None
         self.reconciliation = None
+        self.catalog_sync = None
         self.url = ""
         self.error = ""
         try:
@@ -72,6 +74,8 @@ class Context:
                 self.runtime.close()
             if self.reconciliation:
                 self.reconciliation.close()
+            if self.catalog_sync:
+                self.catalog_sync.close()
             self.runtime = None
             self.services = None
             self.jobs = None
@@ -91,6 +95,12 @@ class Context:
             snapshot_roots=_sqlite_snapshot_roots(),
             start_scheduler=self.start_worker,
             album_validator=self.services.validate_album_embedding,
+        )
+        self.catalog_sync = CatalogSynchronizer(
+            database,
+            self.reconciliation,
+            self.services.audit,
+            start_worker=self.start_worker,
         )
         if self.start_worker:
             self.jobs = JobQueue(self.services)
@@ -137,6 +147,8 @@ class Context:
             self.services.reload_settings()
             if self.reconciliation:
                 self.reconciliation.close()
+            if self.catalog_sync:
+                self.catalog_sync.close()
             self.reconciliation = SQLiteReconciler(
                 self.runtime.database,
                 self.runtime.cache,
@@ -145,6 +157,12 @@ class Context:
                 snapshot_roots=_sqlite_snapshot_roots(),
                 start_scheduler=self.start_worker,
                 album_validator=self.services.validate_album_embedding,
+            )
+            self.catalog_sync = CatalogSynchronizer(
+                self.runtime.database,
+                self.reconciliation,
+                self.services.audit,
+                start_worker=self.start_worker,
             )
         else:
             if self.jobs and any(
@@ -166,6 +184,8 @@ class Context:
                 self.jobs.close()
             if self.reconciliation:
                 self.reconciliation.close()
+            if self.catalog_sync:
+                self.catalog_sync.close()
             if self.runtime:
                 self.runtime.close()
             runtime = Runtime(self.config_file, database, cfg)
@@ -182,6 +202,12 @@ class Context:
                 snapshot_roots=_sqlite_snapshot_roots(),
                 start_scheduler=self.start_worker,
                 album_validator=self.services.validate_album_embedding,
+            )
+            self.catalog_sync = CatalogSynchronizer(
+                database,
+                self.reconciliation,
+                self.services.audit,
+                start_worker=self.start_worker,
             )
             self.url = url
             self.error = ""
@@ -243,6 +269,8 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
             context.jobs.close()
         if context.reconciliation:
             context.reconciliation.close()
+        if context.catalog_sync:
+            context.catalog_sync.close()
         if context.runtime:
             context.runtime.close()
 
@@ -1166,6 +1194,47 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
         if not context.reconciliation:
             raise ValueError("SQLite reconciliation is unavailable")
         return context.reconciliation.save_settings(payload)
+
+    @app.get("/api/catalog-sync")
+    def catalog_sync_status():
+        context.require()
+        if not context.catalog_sync:
+            raise ValueError("Live catalog synchronization is unavailable")
+        return context.catalog_sync.status()
+
+    @app.post("/api/catalog-sync/settings")
+    def catalog_sync_settings(payload: dict):
+        context.require()
+        if not context.catalog_sync:
+            raise ValueError("Live catalog synchronization is unavailable")
+        return context.catalog_sync.save_settings(payload)
+
+    @app.post("/api/catalog-sync/baseline")
+    def catalog_sync_baseline(payload: dict):
+        context.require()
+        if not context.catalog_sync:
+            raise ValueError("Live catalog synchronization is unavailable")
+        return context.catalog_sync.authorize_baseline(
+            str(payload.get("source_path") or ""),
+            str(payload.get("source_root") or ""),
+        )
+
+    @app.post("/api/catalog-sync/apply")
+    def catalog_sync_apply():
+        context.require()
+        if not context.catalog_sync:
+            raise ValueError("Live catalog synchronization is unavailable")
+        return context.catalog_sync.apply_pending()
+
+    @app.post("/api/catalog-sync/integrity")
+    def catalog_sync_integrity(payload: dict):
+        context.require()
+        if not context.catalog_sync:
+            raise ValueError("Live catalog synchronization is unavailable")
+        return context.catalog_sync.verify_integrity(
+            str(payload.get("source_path") or ""),
+            str(payload.get("source_root") or ""),
+        )
 
     @app.get("/guide")
     def guide():

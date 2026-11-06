@@ -1,6 +1,7 @@
 pub mod application;
 pub mod backup;
 pub mod candidate;
+pub mod catalog_sync;
 pub mod compilation;
 pub mod config;
 pub mod config_migration;

@@ -66,6 +66,49 @@ mounts.
 | `mode` | `"read"` | `read` evaluates; `write` may install artwork |
 | `verbosity` | `"info"` | Runtime-log threshold: `none`, `debug`, `info`, `warning`, or `error`; `none` takes effect after restart, without removing PostgreSQL WebGUI events or native operational status |
 
+## `[catalog_sync]`
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `mode` | `"manual-snap"` | `live` publishes revisioned Windows-authoritative Artist, Album, and Track changes after an authorized zero-difference baseline; `manual-snap` retains the existing SNAP recovery/migration path; `off` keeps the catalogs independent |
+
+Windows persists this selection in Config v5. WebGUI persists the corresponding
+runtime selection in PostgreSQL so that a container restart cannot silently
+change catalog authority. Album last-writer coordination is a separate feature
+and can remain enabled in any catalog mode. Live mode disables routine startup
+or scheduled SNAP Apply and Windows scheduled reconciliation SNAP creation; Off
+also leaves those automatic paths disabled. Manual SNAP is the only mode that
+permits controlled legacy Apply. None of the modes disables ordinary SQLite
+database backups or an explicit recovery SNAP.
+
+WebGUI stores one `active_source_instance_id`. Live activation requires that
+source's exact zero-difference baseline, source/target roots, and baseline
+generation. Windows shows Live as waiting until those values agree; it does not
+claim effective capture merely because `mode = "live"` was saved. Leaving Live
+invalidates the prior generation, so returning after uncaptured changes requires
+a fresh baseline.
+
+Live delivery and Apply use ordered batches of 100. Payloads become immutable
+before first delivery, and a failed revision remains a durable recovery barrier.
+Re-authorizing a fresh current baseline is the deliberate recovery path for a
+drifted or invalid stream; it is not an automatic repair.
+
+In Live mode, **Verify Live Integrity** accepts a fresh immutable Windows SNAP
+only after its revision equals PostgreSQL's received and applied revision. A
+catalog mismatch records diagnostics, marks the source drifted, and stops
+automatic live Apply without repairing data.
+
+Manual SNAP Apply rechecks PR #148 Album artwork coordination immediately before
+writing. A historical SNAP cannot overwrite artwork-dependent processing fields
+from a newer verified WebGUI write; that difference remains a visible blocked
+conflict.
+
+The current Draft live protocol synchronizes the three Full-Refresh-protected
+catalog tables: Artists, Albums, and Tracks. Auxiliary SQLite caches and COMP
+progress tables remain covered by Manual SQLite SNAP recovery until their
+field ownership and replay rules receive separate acceptance evidence. See
+[Live catalog synchronization architecture](live-catalog-synchronization-architecture.md).
+
 ## `[library]`
 
 | Key | Default | Meaning |

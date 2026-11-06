@@ -115,6 +115,28 @@ queued durably in SQLite if a configured service is temporarily unavailable.
 Use TLS and a narrowly permitted PostgreSQL account for non-loopback service
 access.
 
+Catalog synchronization is configured separately under **Settings → Processing
+& Logs**. **Manual SQLite SNAP** is the compatibility default. **Live
+Synchronization** enables the durable SQLite revision outbox only after the
+matching WebGUI has authorized a zero-difference immutable SNAP baseline;
+**Off** leaves the catalogs independent. The initial Draft reuses the protected
+Album Coordination PostgreSQL connection as its transport, but it does not
+reuse Album override state as catalog authority. Changing this mode takes
+effect while SPLINED is idle. Settings reports whether Live capture is active
+or merely requested while waiting for the exact owner-authorized source and a
+fresh baseline. Leaving Live invalidates the prior baseline generation; changes
+made in Manual SNAP or Off require a new baseline before Live capture resumes.
+Live and Off suppress scheduled reconciliation SNAP creation; Manual SNAP is
+the only mode that permits controlled legacy Apply. Normal SQLite backups and
+explicit recovery snapshots remain available in every mode.
+
+Live publication is bounded to 100 immutable outbox revisions per pass. A lost
+acknowledgement retries the same stored payload and digest. WebGUI accepts and
+applies only its explicitly selected Windows source; a second or retired
+SQLite source cannot publish over the active catalog. A failed PostgreSQL event
+remains an ordered recovery barrier with a durable diagnostic instead of being
+skipped.
+
 ## Application modules
 
 - `src/application.rs`: library views, filters, selection, candidate,
@@ -124,6 +146,8 @@ access.
 - `src/media_database.rs`: authoritative `splined.db` projection and updates.
 - `src/override_coordination.rs`: optional PostgreSQL last-writer exchange plus
   the durable SQLite acknowledgement/outbox boundary.
+- `src/catalog_sync.rs`: optional revisioned Windows-authoritative catalog
+  outbox and PostgreSQL delivery boundary.
 - `src/scan_runtime.rs`: real provider/artwork processing.
 - `src/settings.rs` and `src/credential_store.rs`: Config v5 and provider
   credential services.
