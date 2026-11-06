@@ -177,9 +177,10 @@ pub fn cleanup_competing_static(
 }
 
 /// After a better candidate has been safely installed in overwrite mode,
-/// remove superseded matching JPG/PNG cover files. WebP source material is
-/// never removed. Every target is resolved from a regular file directly
-/// inside the current album; no glob or recursive deletion is used.
+/// remove superseded canonical JPG/JPEG/PNG files for the configured basename.
+/// WebP is always retained as source material, including in overwrite mode.
+/// Every target is a regular file directly inside the current Album; no glob
+/// or recursive deletion is used.
 pub fn cleanup_replaced_static_covers(
     album_path: &Path,
     configured_file_name: &str,
@@ -230,9 +231,12 @@ pub fn cleanup_replaced_static_covers(
             .and_then(|value| value.to_str())
             .unwrap_or("")
             .to_ascii_lowercase();
-        if !stem.starts_with("cover")
-            && (configured_prefix.is_empty() || !stem.starts_with(&configured_prefix))
-        {
+        let matching_canonical = stem == configured_prefix;
+        let matching_numbered = stem
+            .strip_prefix(&format!("{configured_prefix}-("))
+            .and_then(|number| number.strip_suffix(')'))
+            .is_some_and(|number| number.parse::<usize>().is_ok_and(|number| number >= 2));
+        if configured_prefix.is_empty() || (!matching_canonical && !matching_numbered) {
             continue;
         }
         let resolved = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
@@ -639,7 +643,7 @@ mod tests {
     }
 
     #[test]
-    fn overwrite_cleanup_removes_only_matching_static_covers_and_never_webp() {
+    fn overwrite_cleanup_removes_matching_static_covers_and_preserves_webp() {
         let temp = tempdir().unwrap();
         let album = temp.path();
         let keep = album.join("cover.png");
@@ -647,6 +651,8 @@ mod tests {
         write_image(&album.join("cover.jpg"), 1200, 1200, ImageFormat::Jpeg);
         write_image(&album.join("cover-(2).png"), 1200, 1200, ImageFormat::Png);
         write_image(&album.join("cover.webp"), 1200, 1200, ImageFormat::WebP);
+        write_image(&album.join("cover-back.jpg"), 1200, 1200, ImageFormat::Jpeg);
+        write_image(&album.join("folder.jpg"), 1200, 1200, ImageFormat::Jpeg);
         write_image(&album.join("booklet.jpg"), 1200, 1200, ImageFormat::Jpeg);
 
         let removed =
@@ -654,6 +660,8 @@ mod tests {
         assert_eq!(removed.len(), 2);
         assert!(keep.exists());
         assert!(album.join("cover.webp").exists());
+        assert!(album.join("cover-back.jpg").exists());
+        assert!(album.join("folder.jpg").exists());
         assert!(album.join("booklet.jpg").exists());
         assert!(!album.join("cover.jpg").exists());
         assert!(!album.join("cover-(2).png").exists());

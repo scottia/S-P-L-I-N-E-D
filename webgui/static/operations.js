@@ -715,6 +715,26 @@ async function refreshCompletedAlbum(albumId) {
   }
   renderLibrary(); renderHero(); renderPanes(); renderReview();
 }
+async function refreshOpposingAlbumThumbnails(albumIds) {
+  const visible = new Set([
+    state.album?.id,
+    ...(state.artist?.albums || []).map(album => album.id),
+    ...(state.albumsIndex || []).map(album => album.id),
+  ].filter(Boolean));
+  const targets = albumIds.filter(albumId => visible.has(albumId)
+    && state.albumOverrides.get(albumId)?.writer === "windows");
+  if (!targets.length) return;
+  const results = await Promise.allSettled(targets.map(albumId =>
+    api("/api/album?id=" + encodeURIComponent(albumId))));
+  for (const result of results) {
+    if (result.status !== "fulfilled") continue;
+    const refreshed = result.value;
+    const update = album => album?.id === refreshed.id ? {...album, ...refreshed} : album;
+    if (state.album?.id === refreshed.id) state.album = update(state.album);
+    if (Array.isArray(state.artist?.albums)) state.artist.albums = state.artist.albums.map(update);
+    if (Array.isArray(state.albumsIndex)) state.albumsIndex = state.albumsIndex.map(update);
+  }
+}
 async function refreshQueuedAlbumAfterSave(job = null) {
   const scopeArtistId = job?.kind === "comp" ? String(job.payload?.artist_id || "") : "";
   if (scopeArtistId) {
@@ -783,7 +803,11 @@ async function pollJobs() {
       api("/api/coordination/album-overrides").catch(() => null),
     ]);
     state.jobs = jobs; state.queueControls = queueControls; renderQueue();
-    if (applyAlbumCoordination(albumCoordination)) { renderHero(); renderReview(); }
+    const changedOverrides = applyAlbumCoordination(albumCoordination);
+    if (changedOverrides.length) {
+      await refreshOpposingAlbumThumbnails(changedOverrides);
+      renderLibrary(); renderHero(); renderReview();
+    }
     const stagedChanged = priorStaged.size !== state.embedQueue.length
       || state.embedQueue.some(item => !priorStaged.has(item.id));
     const completedAlbums = state.jobs.filter(job => job.kind === "embed-album" && job.state === "done"

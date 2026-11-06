@@ -443,8 +443,13 @@ def install(core: Any, scan: Any) -> None:
                     info,
                     existed,
                 )
-            core.atomic_write(canonical, content)
-            core.remove_numbered_cover_variants(album.path, name)
+            installer = getattr(core, "install_canonical_cover", None)
+            if installer is None:
+                # Lightweight policy fixtures provide the pre-2.0.30 surface.
+                core.atomic_write(canonical, content)
+                core.remove_numbered_cover_variants(album.path, name)
+            else:
+                installer(canonical, content, name)
             return "INSTALLED", canonical, info, existed
 
         destination, unchanged = core.choose_destination(canonical, content, True)

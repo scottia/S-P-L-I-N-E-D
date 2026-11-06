@@ -4526,6 +4526,111 @@ def remove_numbered_cover_variants(album_dir: Path, file_name: str) -> list[Path
     return removed
 
 
+def canonical_cover_files(
+    album_dir: Path,
+    file_name: str,
+    *,
+    include_numbered: bool = True,
+) -> list[Path]:
+    """Return only supported artwork owned by one configured Album basename."""
+    escaped = re.escape(file_name)
+    suffix = r"(?:-\([2-9][0-9]*\))?" if include_numbered else ""
+    pattern = re.compile(
+        rf"^{escaped}{suffix}\.(?:jpg|jpeg|png|webp)$",
+        re.IGNORECASE,
+    )
+    if not album_dir.exists() or not album_dir.is_dir():
+        return []
+    return sorted(
+        (
+            path
+            for path in album_dir.iterdir()
+            if path.is_file()
+            and not path.is_symlink()
+            and pattern.fullmatch(path.name)
+        ),
+        key=lambda path: path.name.casefold(),
+    )
+
+
+def remove_superseded_canonical_covers(
+    album_dir: Path,
+    file_name: str,
+    keep: Path,
+) -> list[Path]:
+    """Remove competing canonical/numbered covers after the new cover is valid.
+
+    Targets are exact, regular files directly inside the selected Album. Each
+    target is first moved to a same-directory quarantine name so a move failure
+    can restore every earlier target without destroying valid artwork.
+    """
+    keep_resolved = keep.resolve(strict=False)
+    targets = [
+        path
+        for path in canonical_cover_files(album_dir, file_name)
+        if path.resolve(strict=False) != keep_resolved
+        # WebP is durable source material even when static canonical artwork is
+        # overwritten. This is the explicit exception to one-cover cleanup.
+        and path.suffix.casefold() != ".webp"
+    ]
+    quarantined: list[tuple[Path, Path]] = []
+    try:
+        for path in targets:
+            descriptor, temporary = tempfile.mkstemp(
+                prefix=f".{path.name}.splined-superseded-",
+                dir=album_dir,
+            )
+            os.close(descriptor)
+            quarantine = Path(temporary)
+            quarantine.unlink()
+            os.replace(path, quarantine)
+            quarantined.append((path, quarantine))
+    except Exception:
+        for original, quarantine in reversed(quarantined):
+            if quarantine.exists() and not original.exists():
+                os.replace(quarantine, original)
+        raise
+    for _, quarantine in quarantined:
+        try:
+            quarantine.unlink(missing_ok=True)
+        except OSError:
+            # The canonical contract is already satisfied. A hidden, uniquely
+            # named quarantine file is safer than restoring a competing cover.
+            pass
+    return targets
+
+
+def install_canonical_cover(
+    canonical: Path,
+    content: bytes,
+    file_name: str,
+) -> list[Path]:
+    """Stage and verify a cover, publish it, then remove superseded covers."""
+    if canonical.suffix.casefold() not in {".jpg", ".jpeg", ".png", ".webp"}:
+        raise SplinedError("Unsupported canonical cover output format.")
+    if canonical.stem.casefold() != file_name.casefold():
+        raise SplinedError("Canonical cover destination does not match output.file_name.")
+    # ``atomic_write`` stages, fsyncs, and atomically publishes the bytes. The
+    # prepared body is decoded before any prior canonical extension is removed.
+    with Image.open(io.BytesIO(content)) as prepared:
+        prepared.verify()
+    previous = canonical.read_bytes() if canonical.is_file() else None
+    atomic_write(canonical, content)
+    try:
+        installed = canonical.read_bytes()
+        if installed != content:
+            raise SplinedError("Written cover failed byte-for-byte readback verification.")
+        with Image.open(canonical) as verified:
+            verified.verify()
+        return remove_superseded_canonical_covers(canonical.parent, file_name, canonical)
+    except Exception:
+        if previous is None:
+            canonical.unlink(missing_ok=True)
+        else:
+            atomic_write(canonical, previous)
+        raise
+
+
 def write_sample(sample_dir: Path, rel: Release, c: Candidate, preserve: bool) -> tuple[Path,bool]:
     album_dir = sample_dir / sanitize(rel.artist_credit) / sanitize(rel.title)
     album_dir.mkdir(parents=True, exist_ok=True)
@@ -4628,12 +4733,10 @@ def finalize(
             unchanged = canonical.exists() and canonical.read_bytes() == content
             return ("UNCHANGED" if unchanged else "READ-ONLY (would install)"), canonical, info
 
-        # Non-preserve mode:
-        # - overwrite only the canonical file for the selected output format
-        # - remove stale numbered cover-(N) variants across JPG/JPEG/PNG/WEBP
-        # - leave other canonical cover formats untouched
-        atomic_write(canonical, content)
-        remove_numbered_cover_variants(album.path, name)
+        # Overwrite mode owns one static canonical basename across JPG/JPEG/PNG.
+        # The new image is staged and verified before competitors are removed;
+        # WebP remains the explicit, unconditional source-preservation exception.
+        install_canonical_cover(canonical, content, name)
         return "INSTALLED", canonical, info
 
     dest, unchanged = choose_destination(canonical, content, True)

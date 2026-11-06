@@ -790,8 +790,7 @@ def finalize(
         if mode == "read":
             unchanged = existed and canonical.read_bytes() == content
             return ("UNCHANGED" if unchanged else "READ-ONLY (would install)"), canonical, info, existed
-        core.atomic_write(canonical, content)
-        core.remove_numbered_cover_variants(album.path, name)
+        core.install_canonical_cover(canonical, content, name)
         return "INSTALLED", canonical, info, existed
 
     destination, unchanged = core.choose_destination(canonical, content, True)
