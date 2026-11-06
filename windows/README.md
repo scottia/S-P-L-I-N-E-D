@@ -61,13 +61,17 @@ required because the real 3,884-album library makes an unoptimized Windows UI
 too slow for valid testing. This local executable is not a release candidate.
 
 After the local build is approved, promote the tested source through `dev` and
-`main`. Relevant Rust, Slint, Cargo, and native build-input changes receive a
-**Windows Rust/Slint — advisory** PR report with formatting, `cargo check`, and
-Clippy outcomes. The report does not use `-D warnings`, run Windows tests, or
-gate approval; documentation and display-message-only changes report Not run.
-Workflow 01 retains strict optional Extended Windows validation and performs a
-fresh optimized build from versioned `main` source, using that same release
-executable for portable and Store packaging.
+`main`. Pull requests do not automatically execute strict Windows Rust/Slint
+validation. The retained **Windows Rust/Slint — advisory** compatibility check
+runs on Ubuntu and reports **Not run — permanent PR policy exception** without
+provisioning Rust or a Windows runner. This applies to Windows, Slint,
+shared-schema, dependency, workflow, and promotion changes. Targeted local
+Windows compilation and regression testing remains appropriate in the isolated
+E: acceptance environment. Workflow 01 retains strict optional Extended
+Windows validation and always performs a fresh optimized production build from
+versioned `main` source, using that same executable for portable and Store
+packaging. Owner policy requires Extended Windows validation before a Microsoft
+Store submission.
 
 `windows/build.rs` compiles `windows/ui/app.slint` and embeds build identity.
 The executable links directly to the Rust library modules in `windows/src`.
@@ -155,8 +159,8 @@ Store package inputs, state-root separation, and update-channel selection.
 Controller and library unit tests cover real state transitions without placing
 business authority in Slint callbacks.
 
-PR advisory diagnostics are informational and never modify source. Their
-summary reports the tested revision, commands, exit results, and logs as
-Passed, Warnings, Failed, or Not run. Release and recovery workflows keep their
+The PR compatibility report is informational and never modifies source. It
+records the tested revision and permanent policy exception without claiming
+that unexecuted diagnostics passed. Release and recovery workflows keep their
 existing build, package, smoke, and strict-validation responsibilities.
 

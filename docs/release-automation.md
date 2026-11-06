@@ -24,7 +24,11 @@ workflow requires **Create release now** confirmation. `Extended Windows
 validation` is off by default; turn it on for `Windows` or `All` to run the
 Windows Rust formatting, Clippy, and library test checks. The standard Windows
 build always compiles the Rust/Slint executable; the checkbox adds strict
-validation rather than enabling Slint compilation.
+validation rather than enabling Slint compilation. Under the owner's release
+policy, Microsoft Store submissions require **Extended Windows validation** to
+be enabled in addition to the existing release confirmation and explicit Store
+submission choice. Do not stage or submit a Store package without those owner
+confirmations.
 
 The **WebGUI / Python** target is the browser application, not a native Ubuntu
 Rust build. It runs the Python/PostgreSQL suite, validates browser JavaScript,
@@ -41,23 +45,28 @@ Validate changes locally on PC, push the tested source to `dev`, then merge
 the `dev` pull request into `main`. Validation runs on pull requests, so pushing
 and merging the same source does not launch duplicate push-triggered builds.
 
-Checks follow the changed files: WebGUI changes run the Python/PostgreSQL and
-container checks, and root Rust changes run the Linux Rust tests. Relevant
-Windows Rust, Slint, Cargo, and native build-input changes run the
-**Windows Rust/Slint — advisory** report. It records formatting, `cargo check`,
-and Clippy outcomes as Passed, Warnings, Failed, or Not run, without `-D
-warnings`, Windows tests, or merge-gating status. Documentation, naming,
-packaging-message, and display-only changes do not compile the native app.
-Shared schema, fixtures, and validation workflow changes still select every
-applicable runtime check.
+Checks follow the changed files: WebGUI changes run the Python/PostgreSQL,
+JavaScript, and container checks, and root Rust changes run the Linux Rust
+tests. Repository policy and boundary checks remain independent of runtime
+selection. Strict Windows Rust/Slint validation is never executed automatically
+for pull requests targeting `dev` or `main`, including Windows source, Slint,
+shared-schema, dependency, workflow, and `dev` to `main` promotion changes.
+Those scopes still run every other applicable validation lane.
 
-The advisory report includes the tested revision, exact commands, exit results,
-and workflow-log link. Findings remain visible and are never described as
-passed, but PR validation does not auto-format or repair source. Keep the
-Windows toolchain in sync with workflows 01 and 02 when updating Rust. For a
-Windows release, enable **Extended Windows validation**: release validation
-retains strict formatting, Clippy, and library tests against the exact
-versioned source before packaging.
+GitHub retains the **Windows Rust/Slint — advisory** check name for branch-rule
+compatibility. It runs only a lightweight Ubuntu report with the outcome
+**Not run — permanent PR policy exception**. It does not provision a Windows
+runner or Rust toolchain and does not execute Cargo formatting, `cargo check`,
+Clippy, or Windows regression tests. An unexecuted diagnostic is never reported
+as passed. This standing policy remains in effect until the repository owner
+explicitly changes it.
+
+Useful targeted Windows compilation and regression testing remains part of the
+isolated E: acceptance workflow. For a Windows release, Workflow 01 retains the
+optional **Extended Windows validation** suite against the exact versioned
+source before packaging. That suite owns strict formatting, Clippy, and Windows
+library tests; the ordinary Windows release path still performs its clean
+optimized production Rust/Slint build when the option is off.
 
 For routine PC iterations, close SPLINED and double-click
 `E:\apps\SPLINED\Apply Quick Local Update.cmd`. It reuses unchanged optimized
@@ -72,10 +81,10 @@ Git or starting Actions. An
 unoptimized Windows build is not used against the real library because its UI
 refresh cost can make Windows report the application as unresponsive. This
 local test binary is never a release input. After explicit approval, promote
-the tested source through `dev` and `main`; relevant pull requests publish
-advisory Windows diagnostics, and workflow 01 always performs a clean optimized
-build from the versioned `main` source before producing the portable archive or
-Store MSIX.
+the tested source through `dev` and `main`; pull requests publish the
+permanent-exception compatibility report rather than Windows diagnostics.
+Workflow 01 always performs a clean optimized build from the versioned `main`
+source before producing the portable archive or Store MSIX.
 
 The two Store options are both off by default and mutually exclusive:
 
