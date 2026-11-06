@@ -165,7 +165,12 @@ fn artist_overview_keeps_native_parity_controls_and_album_row_navigation() {
     assert!(ui.contains("artist-summary-visible"));
     assert!(ui.contains("MusicBrainz ID"));
     assert!(ui.contains("root.browse-artist-artwork(); root.workspace-mode = 2;"));
+    assert!(ui.contains("width: 170px; height: 150px"));
     assert!(ui.contains("root.artist-overview-name; color: AppTheme.yellow"));
+    assert!(!ui.contains("if root.overview-mode == \"Album\": Heading"));
+    assert!(ui.contains("if root.artist-summary-visible: GridLayout"));
+    assert!(ui.contains("root.overview-mode != \"Fallback\" && root.current-album != \"\""));
+    assert!(ui.contains("🎵 Artist & Featured Artist Top Genres"));
     assert!(ui.contains("if similar.available: Rectangle"));
     assert!(ui.contains("root.selected-album-track-count + \" tracks · \""));
     assert!(ui.contains("status-only-album-selection: row.kind == \"album-child\""));
