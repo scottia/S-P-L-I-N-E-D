@@ -11,7 +11,6 @@ jobs:
     outputs:
       webgui: ${{ steps.scope.outputs.webgui }}
       linux: ${{ steps.scope.outputs.linux }}
-      windows_advisory: ${{ steps.scope.outputs.windows_advisory }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -79,25 +78,14 @@ jobs:
   windows-advisory:
     name: Windows Rust/Slint — advisory
     needs: scope
-    runs-on: ${{ needs.scope.outputs.windows_advisory == 'true' && 'windows-latest' || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     continue-on-error: true
-    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: '3.12'
-      - name: Report diagnostics not run for this change scope
-        if: needs.scope.outputs.windows_advisory != 'true'
+      - name: Report permanent PR policy exception
         env:
           TESTED_REVISION: ${{ github.event.pull_request.head.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: python .github/scripts/windows_advisory.py --not-run
-      - name: Run scoped advisory diagnostics
-        if: needs.scope.outputs.windows_advisory == 'true'
-        env:
-          TESTED_REVISION: ${{ github.event.pull_request.head.sha }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: python .github/scripts/windows_advisory.py
+        run: python3 .github/scripts/windows_advisory.py

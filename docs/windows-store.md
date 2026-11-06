@@ -64,7 +64,9 @@ channel and does not require package identity.
 creates a release version and numeric tag. Its Store modes are both off by
 default; for Windows or All choose either **Submit Update/No Draft** or
 **Submit Draft/No Update**. The run stops before release work unless **Create
-release now** is selected. The Windows job performs one clean x64
+release now** is selected. Owner release policy also requires **Extended
+Windows validation** before either Microsoft Store mode is used. The Windows
+job performs one clean x64
 build, uses that exact executable for the Portable ZIP and Store MSIX,
 and validates both before the workflow may create the numeric tag. WebGUI /
 Python-only and macOS-only runs cannot select a Store mode.
@@ -144,7 +146,9 @@ For a normal future Store update, maintainers choose **Submit Update/No Draft**
 and confirm the release in the corresponding
 `01. Full Release - Build Selected Target and Publish` run. Choose **Submit
 Draft/No Update** instead when manual Partner Center review is wanted.
-After selected build QA,
+Enable **Extended Windows validation** for either Store path; this is a required
+owner release-policy step in addition to the existing release and Store-mode
+confirmations. After selected build QA,
 the workflow creates the numeric tag, renders GitHub notes and concise Store
 Highlights with the same git-cliff 2.14.2 policy, publishes the GitHub Release
 and GHCR, then stages and submits the exact validated MSIX to the existing product
