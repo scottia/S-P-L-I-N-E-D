@@ -229,6 +229,25 @@ Candidate cards show source provenance, native and projected dimensions, image
 type, range/policy result, recommendation, and selection state. Provider order
 comes from Config v5; Local Files retains its fixed review role.
 
+#### Canonical cover overwrite and WebP sources
+
+With **Preserve File** disabled, a successful Album WRITE replaces competing
+canonical JPG/JPEG/PNG covers (and matching numbered static variants) for the
+selected Album and configured filename stem. A retained `cover.webp` is a
+high-resolution/animated source, not a static-cleanup target: it may coexist
+with the one canonical static cover. If a WebP is explicitly written as artwork,
+SPLINED commits its validated WebP output and a JPEG presentation still; an
+explicit WebP replacement may replace the previous WebP. Merely discovering,
+selecting, or previewing a WebP does not install a still in the Album.
+
+Replacement output is verified before competing static covers are removed. If
+publication or cleanup fails, SPLINED attempts to restore the previous covers.
+**Preserve File** enabled retains the established non-destructive/numbered
+behavior. A newer opposing-client write refreshes only the affected Album's
+artwork path and inventory; after restart, the chosen readable cover should
+remain visible. Missing or unreadable artwork displays the music-note fallback
+rather than a blank thumbnail. COMP fallback artwork remains track-scoped.
+
 ### MusicBrainz identity
 
 **CURRENT ALBUM** is the authority row. It shows the current Recording, Artist,
@@ -291,7 +310,10 @@ full-resolution `cover.*`.
 
 1. Select the desired cover or Upscale Preview.
 2. Choose **EMBED Batch**. This saves/stages the full-resolution cover and a
-   verified thumbnail snapshot while leaving the current workspace open.
+   verified thumbnail snapshot while leaving the Artist/Album workspace open.
+   The staging indicator turns purple and the previous Album's candidates,
+   selected artwork, comparison and Upscale Preview state clear so the next
+   Album can be selected. Earlier staged snapshots remain intact.
 3. Open **Album Track Embedding**.
 4. Choose **Start All Staged**.
 5. Review failures and retry or remove only the affected job.
