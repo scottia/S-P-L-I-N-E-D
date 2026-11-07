@@ -4132,12 +4132,12 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     self.assertEqual(
                         page.locator("#artistInfoRows > span > b").all_inner_texts(),
                         [
-                            "ARTIST",
-                            "STATUS",
-                            "ALBUMS",
-                            "ROLES",
-                            "MUSICBRAINZ ID",
-                            "GENRES",
+                            "Artist",
+                            "Status",
+                            "Albums",
+                            "Roles",
+                            "MusicBrainz ID",
+                            "Genres",
                         ],
                     )
                     expect(page.locator("#artistInfoArtist")).to_have_text(

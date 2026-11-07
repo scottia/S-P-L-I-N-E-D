@@ -2218,12 +2218,16 @@ export component AppWindow inherits Window {
                                                 property <length> biography-line-height: 26px * AppTheme.font-scale;
                                                 property <length> biography-collapsed-height: self.biography-line-height * 5;
                                                 property <string> biography-source: root.artist-overview-biography == "" ? (root.artist-overview-navidrome-linked ? "Navidrome has not returned an artist biography for this artist." : "No matching Navidrome artist was found; check the Artist lookup name or ID.") : root.artist-overview-biography;
-                                                // The biography lane is the viewport minus overview padding,
-                                                // portrait column, and header spacing. This is independent of
-                                                // text layout and therefore cannot create a width binding loop.
-                                                property <float> biography-width-px: max(80px, artist-scroll.visible-width - (artist-scroll.visible-width < 520px ? 120px : 170px) - 52px) / 1px;
+                                                // Keep the biography as a left-anchored floating block beside the
+                                                // portrait. It must not stretch all the way to the overview's right
+                                                // edge, where space-between turns normal word gaps into wide bands.
+                                                // The unused tail remains flexible as the overview is resized.
+                                                property <length> biography-lane-width: max(80px, artist-scroll.visible-width - (artist-scroll.visible-width < 520px ? 120px : 170px) - 52px);
+                                                property <length> biography-block-width: min(self.biography-lane-width, max(280px, self.biography-lane-width * 0.90));
+                                                property <float> biography-width-px: self.biography-block-width / 1px;
                                                 property <[UiBiographyLine]> biography-lines: root.layout-artist-biography(self.biography-source, self.biography-width-px, AppTheme.font-scale);
                                                 property <bool> biography-overflows: root.artist-overview-biography != "" && self.biography-lines.length > 5;
+                                                property <int> biography-toggle-line: root.artist-biography-expanded ? min(9, self.biography-lines.length - 1) : min(4, self.biography-lines.length - 1);
                                                 vertical-stretch: 1; horizontal-stretch: 1; max-width: 10000px; clip: true; border-radius: 8px; background: AppTheme.quiet-surface; border-color: AppTheme.border; border-width: 1px;
                                                 Image { source: root.artist-overview-banner; visible: root.overview-mode != "Fallback"; width: parent.width; height: parent.height; image-fit: cover; opacity: root.artist-banner-preview-active ? 0.18 : 1.0; }
                                                 if root.artist-banner-preview-active: Image {
@@ -2312,26 +2316,30 @@ export component AppWindow inherits Window {
                                                                 horizontal-stretch: 1; background: transparent;
                                                                 biography-copy := VerticalLayout {
                                                                     visible: !root.artist-summary-visible;
-                                                                    width: parent.width; height: parent.height;
+                                                                    width: min(parent.width, overview-panel.biography-block-width); height: parent.height;
                                                                     spacing: 0px;
                                                                     for line[index] in overview-panel.biography-lines: HorizontalLayout {
+                                                                        property <bool> carries-toggle: overview-panel.biography-overflows && index == overview-panel.biography-toggle-line;
                                                                         visible: index < (root.artist-biography-expanded ? 10 : 5);
                                                                         height: overview-panel.biography-line-height;
-                                                                        alignment: line.justified ? space-between : start;
-                                                                        spacing: line.justified ? 0px : 5px * AppTheme.font-scale;
+                                                                        // The row carrying more/less is the visible block's final
+                                                                        // line. Keep it naturally left aligned and place the control
+                                                                        // immediately after the copy instead of pinning it to the
+                                                                        // far-right edge.
+                                                                        alignment: line.justified && !self.carries-toggle ? space-between : start;
+                                                                        spacing: line.justified && !self.carries-toggle ? 0px : 5px * AppTheme.font-scale;
                                                                         for word in line.words: Text {
                                                                             text: word;
                                                                             color: root.artist-overview-biography == "" ? AppTheme.secondary-foreground : AppTheme.foreground;
                                                                             font-size: 18px * AppTheme.font-scale;
                                                                             vertical-alignment: center;
                                                                         }
+                                                                        if self.carries-toggle: Rectangle {
+                                                                            width: biography-link-measure.preferred-width + 4px; height: overview-panel.biography-line-height; background: transparent;
+                                                                            Text { width: parent.width; height: parent.height; text: biography-link-measure.text; color: AppTheme.cyan; font-size: 18px * AppTheme.font-scale; vertical-alignment: center; }
+                                                                            TouchArea { mouse-cursor: pointer; clicked => { root.artist-biography-expanded = !root.artist-biography-expanded; } }
+                                                                        }
                                                                     }
-                                                                }
-                                                                if overview-panel.biography-overflows && !root.artist-summary-visible: Rectangle {
-                                                                    x: max(0px, parent.width - self.width); y: max(0px, parent.height - self.height); width: biography-link-measure.preferred-width + 14px; height: overview-panel.biography-line-height;
-                                                                    background: AppTheme.chalk ? @linear-gradient(90deg, #25282a00, #25282af5 24%) : (AppTheme.light ? @linear-gradient(90deg, #c0d0d900, #c0d0d9f5 24%) : @linear-gradient(90deg, #06172d00, #06172df5 24%));
-                                                                    Text { x: 10px; width: parent.width - 10px; text: biography-link-measure.text; color: AppTheme.cyan; font-size: 18px * AppTheme.font-scale; horizontal-alignment: right; }
-                                                                    biography-toggle := TouchArea { mouse-cursor: pointer; clicked => { root.artist-biography-expanded = !root.artist-biography-expanded; } }
                                                                 }
                                                                 if root.artist-summary-visible: Rectangle {
                                                                     // The dropdown overlays a bounded section of the full header

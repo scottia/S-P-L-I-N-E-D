@@ -183,7 +183,10 @@ fn artist_overview_keeps_native_parity_controls_and_album_row_navigation() {
     assert!(!ui.contains("if root.overview-mode == \"Album\": Heading"));
     assert!(ui.contains("if root.artist-summary-visible: Rectangle"));
     assert!(ui.contains("min(10, max(5, overview-panel.biography-lines.length))"));
-    assert!(ui.contains("alignment: line.justified ? space-between : start"));
+    assert!(ui.contains("biography-block-width: min(self.biography-lane-width"));
+    assert!(ui.contains("alignment: line.justified && !self.carries-toggle ? space-between : start"));
+    assert!(ui.contains("index == overview-panel.biography-toggle-line"));
+    assert!(ui.contains("immediately after the copy instead of pinning it"));
     assert!(ui.contains("index < (root.artist-biography-expanded ? 10 : 5)"));
     assert!(ui.contains("🎵 Artist & Featured Artist Top Genres"));
     assert!(ui.contains("TouchArea { enabled: similar.available"));
