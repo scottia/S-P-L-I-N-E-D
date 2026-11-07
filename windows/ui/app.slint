@@ -2266,9 +2266,9 @@ export component AppWindow inherits Window {
                                                         // centered inside a widened identity column.
                                                         property <length> thumbnail-x: 8px;
                                                         property <length> thumbnail-y: 0px;
-                                                        property <length> thumbnail-column-width: self.thumbnail-size + 36px;
+                                                        property <length> thumbnail-column-width: self.thumbnail-size + 16px;
                                                         property <length> thumbnail-column-height: self.thumbnail-size + 52px;
-                                                        height: max(self.thumbnail-column-height, biography-area.height + (root.artist-edit-available ? 28px : 0px));
+                                                        height: max(self.thumbnail-column-height, biography-area.height + (root.artist-edit-available ? 28px : 16px));
                                                         vertical-stretch: 0; spacing: 12px; max-width: 10000px;
                                                         Rectangle { width: artist-header.thumbnail-column-width; height: artist-header.thumbnail-column-height; background: transparent;
                                                             Rectangle { x: artist-header.thumbnail-x; y: artist-header.thumbnail-y; width: artist-header.thumbnail-size; height: artist-header.thumbnail-size; border-radius: artist-header.thumbnail-size / 2; clip: true; background: AppTheme.image-surface; border-color: AppTheme.cyan; border-width: 2px;
@@ -2278,13 +2278,13 @@ export component AppWindow inherits Window {
                                                             Rectangle { x: artist-header.thumbnail-x - 8px; y: artist-header.thumbnail-y + artist-header.thumbnail-size - 13px; width: 14px; height: 14px; border-radius: 7px; border-width: 2px; border-color: AppTheme.green; background: root.artist-artwork-mode ? AppTheme.green : AppTheme.image-surface;
                                                                 TouchArea { enabled: !root.operation-busy; mouse-cursor: pointer; clicked => { root.browse-artist-artwork(); root.workspace-mode = 2; } }
                                                             }
-                                                            Rectangle { x: artist-header.thumbnail-x + artist-header.thumbnail-size + 7px; y: artist-header.thumbnail-y + 5px; width: 17px; height: 17px; border-radius: 3px; border-width: 1px; border-color: AppTheme.cyan; background: root.artist-summary-visible ? AppTheme.cyan : AppTheme.image-surface;
+                                                            Rectangle { x: artist-header.thumbnail-x + artist-header.thumbnail-size + 3px; y: artist-header.thumbnail-y + 5px; width: 17px; height: 17px; border-radius: 3px; border-width: 1px; border-color: AppTheme.cyan; background: root.artist-summary-visible ? AppTheme.cyan : AppTheme.image-surface;
                                                                 Text { text: root.artist-summary-visible ? "▴" : "▾"; color: root.artist-summary-visible ? AppTheme.image-surface : AppTheme.cyan; font-size: 10px * AppTheme.font-scale; horizontal-alignment: center; vertical-alignment: center; }
                                                                 TouchArea { mouse-cursor: pointer; clicked => { root.artist-summary-visible = !root.artist-summary-visible; } }
                                                             }
-                                                            Text { x: artist-header.thumbnail-x; y: artist-header.thumbnail-y + artist-header.thumbnail-size + 8px; width: artist-header.thumbnail-size + 24px; height: 36px; text: root.artist-overview-name; color: AppTheme.yellow; font-size: 18px * AppTheme.font-scale; font-weight: 800; horizontal-alignment: left; vertical-alignment: center; overflow: elide; }
+                                                            Text { x: artist-header.thumbnail-x; y: artist-header.thumbnail-y + artist-header.thumbnail-size + 8px; width: artist-header.thumbnail-size; height: 36px; text: root.artist-overview-name; color: AppTheme.yellow; font-size: 18px * AppTheme.font-scale; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; overflow: elide; }
                                                         }
-                                                        VerticalLayout { spacing: 4px; horizontal-stretch: 1; max-width: 10000px; alignment: start;
+                                                        VerticalLayout { padding-top: root.artist-edit-available ? 0px : 16px; spacing: 4px; horizontal-stretch: 1; max-width: 10000px; alignment: start;
                                                             if root.artist-edit-available: HorizontalLayout { height: 24px; spacing: 8px; alignment: end;
                                                                 Rectangle { width: 64px; background: transparent;
                                                                     Text { text: "(..edit)"; color: AppTheme.magenta; font-size: 16px * AppTheme.font-scale; font-weight: 800; vertical-alignment: center; }
@@ -2368,13 +2368,13 @@ export component AppWindow inherits Window {
                                                             for similar[index] in root.artist-overview-similar-artists: Rectangle {
                                                                 x: mod(index, similar-gallery.column-count) * 78px;
                                                                 y: floor(index / similar-gallery.column-count) * 78px;
-                                                                width: 72px; height: 76px; background: transparent; opacity: similar.available ? 1 : 0.42;
+                                                                width: 72px; height: 76px; background: transparent; opacity: 1;
                                                                 VerticalLayout { spacing: 3px; alignment: center;
                                                                     Rectangle { width: 58px; height: 58px; border-radius: 29px; clip: true; background: transparent;
                                                                         Text { text: "♪"; color: AppTheme.secondary-foreground; font-size: 24px * AppTheme.font-scale; horizontal-alignment: center; vertical-alignment: center; }
                                                                         Image { source: similar.artwork; width: parent.width; height: parent.height; image-fit: cover; }
                                                                     }
-                                                                    Text { text: similar.name; color: similar.available ? AppTheme.foreground : AppTheme.secondary-foreground; font-size: 14px * AppTheme.font-scale; horizontal-alignment: center; overflow: elide; }
+                                                                    Text { text: similar.name; color: AppTheme.foreground; font-size: 14px * AppTheme.font-scale; horizontal-alignment: center; overflow: elide; }
                                                                 }
                                                                 if similar.available: Rectangle { x: 51px; y: 43px; width: 12px; height: 12px; border-radius: 6px; border-width: 2px; border-color: AppTheme.image-surface; background: AppTheme.green; }
                                                                 TouchArea { enabled: similar.available; mouse-cursor: similar.available ? pointer : default; clicked => root.artist-overview-similar-selected(similar.name); }
