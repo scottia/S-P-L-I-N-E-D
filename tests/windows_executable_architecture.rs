@@ -166,7 +166,8 @@ fn artist_overview_keeps_native_parity_controls_and_album_row_navigation() {
     assert!(ui.contains("MusicBrainz ID"));
     assert!(ui.contains("root.browse-artist-artwork(); root.workspace-mode = 2;"));
     assert!(ui.contains("thumbnail-size: artist-scroll.visible-width < 520px ? 120px : 170px"));
-    assert!(ui.contains("thumbnail-size + 29px"));
+    assert!(ui.contains("thumbnail-x: artist-scroll.visible-width < 520px ? 42px : 88px"));
+    assert!(ui.contains("thumbnail-x + artist-header.thumbnail-size + 7px"));
     assert!(ui.contains("root.artist-overview-name; color: AppTheme.yellow"));
     assert!(!ui.contains("if root.overview-mode == \"Album\": Heading"));
     assert!(ui.contains("if root.artist-summary-visible: GridLayout"));

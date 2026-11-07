@@ -2262,23 +2262,27 @@ export component AppWindow inherits Window {
                                                     }
                                                     if root.overview-mode != "Fallback": artist-header := HorizontalLayout {
                                                         property <length> thumbnail-size: artist-scroll.visible-width < 520px ? 120px : 170px;
-                                                        property <length> thumbnail-column-width: self.thumbnail-size + 44px;
+                                                        // Keep the portrait in the same visual lane as the WebGUI.
+                                                        // The narrow fallback avoids crowding the biography on small panes.
+                                                        property <length> thumbnail-x: artist-scroll.visible-width < 520px ? 42px : 88px;
+                                                        property <length> thumbnail-y: -6px;
+                                                        property <length> thumbnail-column-width: self.thumbnail-size + self.thumbnail-x + 22px;
                                                         property <length> thumbnail-column-height: self.thumbnail-size + 52px;
                                                         height: max(self.thumbnail-column-height, biography-area.height + (root.artist-edit-available ? 28px : 0px));
                                                         vertical-stretch: 0; spacing: 12px; max-width: 10000px;
                                                         Rectangle { width: artist-header.thumbnail-column-width; height: artist-header.thumbnail-column-height; background: transparent;
-                                                            Rectangle { x: 22px; width: artist-header.thumbnail-size; height: artist-header.thumbnail-size; border-radius: artist-header.thumbnail-size / 2; clip: true; background: AppTheme.image-surface; border-color: AppTheme.cyan; border-width: 2px;
+                                                            Rectangle { x: artist-header.thumbnail-x; y: artist-header.thumbnail-y; width: artist-header.thumbnail-size; height: artist-header.thumbnail-size; border-radius: artist-header.thumbnail-size / 2; clip: true; background: AppTheme.image-surface; border-color: AppTheme.cyan; border-width: 2px;
                                                                 MissingArtistArt { visible: !root.artist-overview-draft-selected && !root.artist-overview-has-artwork; x: 3px; y: 3px; width: parent.width - 6px; height: parent.height - 6px; }
                                                                 Image { visible: root.artist-overview-draft-selected || root.artist-overview-has-artwork; source: root.artist-overview-draft-selected ? root.artist-overview-draft-artwork : root.artist-overview-artwork; x: 3px; y: 3px; width: parent.width - 6px; height: parent.height - 6px; image-fit: cover; }
                                                             }
-                                                            Rectangle { x: 14px; y: artist-header.thumbnail-size - 13px; width: 14px; height: 14px; border-radius: 7px; border-width: 2px; border-color: AppTheme.green; background: root.artist-artwork-mode ? AppTheme.green : AppTheme.image-surface;
+                                                            Rectangle { x: artist-header.thumbnail-x - 8px; y: artist-header.thumbnail-y + artist-header.thumbnail-size - 13px; width: 14px; height: 14px; border-radius: 7px; border-width: 2px; border-color: AppTheme.green; background: root.artist-artwork-mode ? AppTheme.green : AppTheme.image-surface;
                                                                 TouchArea { enabled: !root.operation-busy; mouse-cursor: pointer; clicked => { root.browse-artist-artwork(); root.workspace-mode = 2; } }
                                                             }
-                                                            Rectangle { x: artist-header.thumbnail-size + 29px; y: 5px; width: 17px; height: 17px; border-radius: 3px; border-width: 1px; border-color: AppTheme.cyan; background: root.artist-summary-visible ? AppTheme.cyan : AppTheme.image-surface;
+                                                            Rectangle { x: artist-header.thumbnail-x + artist-header.thumbnail-size + 7px; y: artist-header.thumbnail-y + 5px; width: 17px; height: 17px; border-radius: 3px; border-width: 1px; border-color: AppTheme.cyan; background: root.artist-summary-visible ? AppTheme.cyan : AppTheme.image-surface;
                                                                 Text { text: root.artist-summary-visible ? "▴" : "▾"; color: root.artist-summary-visible ? AppTheme.image-surface : AppTheme.cyan; font-size: 10px * AppTheme.font-scale; horizontal-alignment: center; vertical-alignment: center; }
                                                                 TouchArea { mouse-cursor: pointer; clicked => { root.artist-summary-visible = !root.artist-summary-visible; } }
                                                             }
-                                                            Text { x: 0px; y: artist-header.thumbnail-size + 8px; width: parent.width; height: 36px; text: root.artist-overview-name; color: AppTheme.yellow; font-size: 18px * AppTheme.font-scale; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; overflow: elide; }
+                                                            Text { x: artist-header.thumbnail-x - 12px; y: artist-header.thumbnail-y + artist-header.thumbnail-size + 8px; width: artist-header.thumbnail-size + 24px; height: 36px; text: root.artist-overview-name; color: AppTheme.yellow; font-size: 18px * AppTheme.font-scale; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; overflow: elide; }
                                                         }
                                                         VerticalLayout { spacing: 4px; horizontal-stretch: 1; max-width: 10000px; alignment: start;
                                                             if root.artist-edit-available: HorizontalLayout { height: 24px; spacing: 8px; alignment: end;
