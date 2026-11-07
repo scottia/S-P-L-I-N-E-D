@@ -192,7 +192,7 @@ fn artist_overview_keeps_native_parity_controls_and_album_row_navigation() {
     assert!(ui.contains("TouchArea { enabled: similar.available"));
     assert!(ui.contains("root.selected-album-track-count + \" tracks · \""));
     assert!(ui.contains(
-        "status-only-album-selection: row.kind == \"album-child\" || row.kind == \"folder\""
+        "status-only-album-selection: row.kind != \"artist\""
     ));
     assert!(ui.contains("root.status-only-album-selection ? \"○\""));
     assert!(ui.contains("row-touch := TouchArea"));

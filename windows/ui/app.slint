@@ -678,7 +678,10 @@ component MediaLibraryPane inherits NeonPanel {
                 vertical-stretch: 1;
                 for row in root.library-rows: LibraryItem {
                     item: row;
-                    status-only-album-selection: row.kind == "album-child" || row.kind == "folder";
+                    // Album navigation retains its model selection for processing,
+                    // but every non-Artist file row uses the same unhighlighted
+                    // presentation in Albums, nested Artist Albums, and Fallback.
+                    status-only-album-selection: row.kind != "artist";
                     thumbnail-needed(key, kind) => root.thumbnail-needed(key, kind);
                     activated(key) => root.library-row-activated(key, root.include-bypassed);
                     selection-activated(key) => root.library-row-selection-activated(key, root.include-bypassed);
