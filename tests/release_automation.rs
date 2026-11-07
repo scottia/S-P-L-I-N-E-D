@@ -118,6 +118,44 @@ fn both_store_workflows_require_one_explicit_mode_and_preserve_draft_choice() {
 }
 
 #[test]
+fn full_release_always_builds_the_manual_msix_but_publishes_only_when_selected() {
+    let workflow = source(FULL);
+    let build_windows = workflow
+        .split("  build-windows:")
+        .nth(1)
+        .expect("Windows build job")
+        .split("  build-webgui:")
+        .next()
+        .unwrap();
+    for step in [
+        "Install pinned upstream WinAppCli for Store packaging",
+        "Build and strictly validate unsigned production Store MSIX from release binaries",
+        "Development-sign, install, activate, native-smoke, and uninstall isolated Store QA package",
+        "Upload manual Store submission MSIX artifact",
+    ] {
+        let body = build_windows
+            .split(&format!("- name: {step}"))
+            .nth(1)
+            .unwrap_or_else(|| panic!("missing Windows MSIX step: {step}"))
+            .split("\n      - name:")
+            .next()
+            .unwrap();
+        assert!(
+            !body.contains("store_submit_update") && !body.contains("store_submit_draft"),
+            "manual MSIX step is incorrectly gated by Store publication mode: {step}"
+        );
+    }
+    assert!(build_windows.contains("name: splined-windows-store-package"));
+
+    let publish_store = workflow
+        .split("  publish-store:")
+        .nth(1)
+        .expect("Partner Center publication job");
+    assert!(publish_store.contains("(inputs.store_submit_update || inputs.store_submit_draft)"));
+    assert!(publish_store.contains("Download exact Store package"));
+}
+
+#[test]
 fn store_helper_stages_once_and_submits_only_when_not_draft() {
     let helper = source("windows/package/Publish-StoreUpdate.ps1");
     let stage = helper

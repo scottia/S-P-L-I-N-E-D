@@ -148,9 +148,13 @@ class JobQueue:
             db.execute("DELETE FROM web_jobs WHERE kind='comp'")
             # Durable non-COMP writes resume only after an explicit operator
             # action. Album staging and its prepared snapshots remain intact.
+            # A queued scan is also interactive: leaving it queued across a
+            # restart can replay an old Artist batch before the operator's
+            # next explicit LAUNCH and hide the current review prompt.
             db.execute(
                 "UPDATE web_jobs SET state='paused',decision=NULL,error='Interrupted by server restart',updated_at=now() "
-                "WHERE kind<>'comp' AND state IN ('running','waiting')"
+                "WHERE kind<>'comp' AND (state IN ('running','waiting') "
+                "OR (kind='scan' AND state='queued'))"
             )
         for row in comp_rows:
             prepared = row["progress"].get("prepared_comp", {})
@@ -263,6 +267,45 @@ class JobQueue:
         payload.setdefault("library_root", str(self.services.runtime.music))
         job_id = uuid4().hex
         with closing(self.db.connect()) as db, db:
+            if kind == "scan":
+                # Browser scans are interactive and the single worker cannot
+                # advance a second scan while the current one is waiting for a
+                # decision.  Return the active review instead of accumulating
+                # an invisible queue and moving the browser away from the only
+                # prompt that can unblock it.
+                db.raw.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
+                    ("scan:interactive",),
+                )
+                active = db.raw.execute(
+                    "SELECT id,state,payload FROM web_jobs "
+                    "WHERE kind='scan' AND state IN ('waiting','running','queued') "
+                    "ORDER BY CASE state WHEN 'waiting' THEN 0 WHEN 'running' THEN 1 ELSE 2 END,created_at "
+                    "LIMIT 1"
+                ).fetchone()
+                if active:
+                    correlation = payload.get("_audit", {})
+                    scope = {"artist_id": payload.get("artist_id", "")}
+                    self.services.audit(
+                        "job-deduplicated",
+                        kind,
+                        {
+                            "already_queued": True,
+                            "blocking_state": active["state"],
+                            "requested_albums": len(payload.get("album_ids") or []),
+                        },
+                        action_id=str(correlation.get("action_id") or ""),
+                        trace_id=str(correlation.get("trace_id") or ""),
+                        job_id=active["id"],
+                        scope={key: value for key, value in scope.items() if value},
+                        stage="queue",
+                        request_status="existing",
+                    )
+                    return {
+                        "id": active["id"],
+                        "already_queued": True,
+                        "state": active["state"],
+                    }
             if payload.get("album_id"):
                 db.raw.execute(
                     "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",

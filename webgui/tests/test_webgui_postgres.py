@@ -1331,6 +1331,32 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.assertEqual(repeated["id"], scoped["id"])
         self.assertTrue(repeated["already_queued"])
 
+    def test_scan_queue_resumes_the_active_interactive_review(self):
+        queue = JobQueue(self.services)
+        queue.close()
+        first = queue.enqueue(
+            "scan",
+            {"artist_id": "artist-1", "album_ids": ["album-1", "album-2"]},
+        )
+        repeated = queue.enqueue(
+            "scan",
+            {"artist_id": "artist-1", "album_ids": ["album-1"]},
+        )
+        other_artist = queue.enqueue(
+            "scan",
+            {"artist_id": "artist-2", "album_ids": ["album-3"]},
+        )
+
+        self.assertEqual(repeated["id"], first["id"])
+        self.assertEqual(other_artist["id"], first["id"])
+        self.assertTrue(repeated["already_queued"])
+        with closing(self.db.connect()) as db:
+            active = db.execute(
+                "SELECT count(*) FROM web_jobs WHERE kind='scan' "
+                "AND state IN ('waiting','running','queued')"
+            ).fetchone()[0]
+        self.assertEqual(active, 1)
+
     def test_queue_start_leaves_paused_work_paused_and_retry_clears_stale_review(self):
         self.queue = JobQueue(self.services)
         self.queue.close()
@@ -1760,7 +1786,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             credentials.save("navidrome", {"../bad": "secret"})
 
-    def test_restart_discards_comp_jobs_but_pauses_durable_work(self):
+    def test_restart_discards_comp_jobs_but_pauses_durable_and_queued_scan_work(self):
         prepared_id = "a" * 32
         prepared_dir = self.services._prepared_comp_directory()
         prepared_image = prepared_dir / (prepared_id + ".jpg")
@@ -1779,12 +1805,18 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             db.execute(
                 "INSERT INTO web_jobs(id,kind,state,payload) VALUES('durable','embed-album','waiting','{}')"
             )
+            db.execute(
+                "INSERT INTO web_jobs(id,kind,state,payload) "
+                "VALUES('queued-scan','scan','queued','{\"artist_id\":\"artist-1\",\"album_ids\":[\"album-1\"]}')"
+            )
         self.queue = JobQueue(self.services)
         rows = {item["id"]: item for item in self.queue.list()}
         self.assertNotIn("interrupted", rows)
         self.assertNotIn("completed-comp", rows)
         self.assertEqual(rows["durable"]["state"], "paused")
         self.assertEqual(rows["durable"]["error"], "Interrupted by server restart")
+        self.assertEqual(rows["queued-scan"]["state"], "paused")
+        self.assertEqual(rows["queued-scan"]["error"], "Interrupted by server restart")
         self.assertFalse(prepared_image.exists())
         self.assertFalse(prepared_manifest.exists())
         with self.assertRaises(ValueError):

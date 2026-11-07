@@ -98,7 +98,11 @@ The two Store options are both off by default and mutually exclusive:
 
 Either Store option requires `Windows` or `All`. Selecting both, or requesting
 Windows-only validation for a non-Windows build, fails before release work.
-Leaving both Store options off produces GitHub Release and GHCR outputs only.
+Every `Windows` or `All` run also builds, strictly validates, development-smoke
+tests, and uploads the unsigned `splined-windows-store-package` Actions artifact
+for manual Microsoft Store submission. Leaving both Store options off skips
+Partner Center authentication, staging, and submission; it does not suppress
+the manual MSIX artifact.
 Store and GHCR publication are independent after GitHub Release creation, so
 one can succeed if the other fails.
 
@@ -111,10 +115,11 @@ Git release tags are three-part numeric versions, such as `2.0.0`. The Windows
 MSIX manifest uses the corresponding four-part version, `2.0.0.0`. Workflow
 02 checks that correspondence before staging anything.
 
-The unsigned Store MSIX is never attached to the public GitHub Release. The
-full-release workflow retains an Actions audit artifact named
-`splined-windows-store-submission` with the validated MSIX, Highlights, and
-submission metadata.
+The unsigned Store MSIX is never attached to the public GitHub Release. Every
+Windows/All run retains the validated MSIX in the Actions artifact
+`splined-windows-store-package`. When Partner Center staging is explicitly
+selected, the workflow additionally retains `splined-windows-store-submission`
+with the exact MSIX, Highlights, and submission metadata.
 
 ## Workflow 02: Store recovery
 
