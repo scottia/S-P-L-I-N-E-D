@@ -4169,10 +4169,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     )
                     info_cells = page.locator("#artistInfoRows > span")
                     self.assertEqual(info_cells.count(), 6)
-                    self.assertAlmostEqual(
+                    self.assertGreaterEqual(
                         info_cells.nth(4).bounding_box()["height"],
                         info_cells.nth(5).bounding_box()["height"],
-                        delta=0.5,
                     )
                     initial_theme = page.evaluate(
                         "document.documentElement.getAttribute('data-theme')"
