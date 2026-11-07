@@ -496,6 +496,32 @@ Artist after the final artwork write. The rollback journal, `FULL`
 synchronization, audit row, and commit-before-`album_completed` ordering remain
 unchanged.
 
+## Cross-client artwork coordination state
+
+Cross-client writer presentation is durable but remains separate from catalog
+and processing authority. Windows stores current Album events in
+`album_artwork_write_state` and pending retries in
+`album_artwork_write_outbox`. Verified COMP-track writes use the independent
+`comp_track_write_state` and `comp_track_write_outbox` tables. PostgreSQL owns
+the corresponding `album_artwork_write_coordination` (migration 017) and
+`comp_track_write_coordination` (migration 020) rows. Reserved migrations
+018/019 are not used by this coordination feature.
+
+Coordination keys normalize MusicBrainz IDs, Album keys, and relative track
+identities consistently. A leading BOM and established invalid zero-width
+formatting characters are removed from coordination copies before persistence
+or lookup; the media file's tags are not rewritten. Legacy rows and pending
+outbox events are repaired only when their normalized identity is unique.
+Ambiguous collisions are reported and left separate. These repairs preserve
+event order, acknowledgements, revisions, processing state, bypasses,
+completion history, and unrelated catalog rows.
+
+An opposing Album event may refresh only that Album's bounded artwork path and
+inventory fields so a stale or unreadable path does not produce a blank card.
+An opposing COMP event updates only the matching indexed track authority and
+thumbnail. Neither path performs a full library scan or converts a track event
+into Album-level OVERRIDE state.
+
 ## Runtime state
 
 The former JSON status and history surfaces are retired. SPLINED neither reads
