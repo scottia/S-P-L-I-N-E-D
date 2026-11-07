@@ -4182,7 +4182,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                             "theme => document.documentElement.dataset.theme = theme",
                             theme,
                         )
-                        theme_rows[theme] = info_cells.first.evaluate(
+                        theme_rows[theme] = page.locator("#artistInfoRows").evaluate(
                             """element => {
                                 const color = getComputedStyle(element).backgroundColor;
                                 const canvas = document.createElement('canvas');
@@ -4202,10 +4202,11 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         len({row["color"] for row in theme_rows.values()}), 3
                     )
                     for theme, row in theme_rows.items():
-                        self.assertEqual(
+                        self.assertAlmostEqual(
                             row["alpha"],
-                            204,
-                            f"{theme} metadata row must be exactly 20% transparent",
+                            224,
+                            delta=1,
+                            msg=f"{theme} metadata table must retain its 88% opaque panel",
                         )
                     page.evaluate(
                         """theme => theme === null
