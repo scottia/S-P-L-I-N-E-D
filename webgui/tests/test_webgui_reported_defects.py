@@ -270,10 +270,12 @@ class ReportedDefectTests(unittest.TestCase):
         self.assertLess(document.index('id="artistBiography"'), document.index('id="artistInfoRows"'))
         self.assertIn(".artist-info-rows{position:absolute", styles)
         self.assertIn(".hero-portrait{width:86px;height:86px;flex:none;border:2px solid var(--cyan);border-radius:50%", styles)
-        self.assertIn("grid-template-columns:repeat(2,minmax(0,1fr))", styles)
-        self.assertIn("inset:34px 0 auto 0", styles)
+        self.assertIn("grid-template-columns:minmax(0,1fr)", styles)
+        self.assertIn("inset:34px auto auto 0", styles)
+        self.assertIn("width:clamp(340px,50%,520px)", styles)
+        self.assertIn("grid-template-columns:116px minmax(0,1fr)", styles)
         self.assertIn("width:16px;height:16px", styles)
-        self.assertIn("background:color-mix(in srgb,var(--panel) 80%,transparent)", styles)
+        self.assertIn("background:color-mix(in srgb,var(--panel) 88%,transparent)", styles)
         self.assertIn(
             ".portrait-launch h1{width:180px;min-height:30px;margin:5px 0 0;"
             "padding:4px 0;background:transparent;color:var(--yellow)",
