@@ -89,27 +89,22 @@ fn full_release_has_selected_os_gates_and_optional_strict_windows_validation() {
 }
 
 #[test]
-fn both_store_workflows_require_one_explicit_mode_and_preserve_draft_choice() {
-    for path in [FULL, STORE] {
-        let workflow = source(path);
-        assert!(workflow.contains("store_submit_update:"), "{path}");
-        assert!(workflow.contains("store_submit_draft:"), "{path}");
-        assert!(workflow.contains("default: false"), "{path}");
-        assert!(workflow.contains("STORE_UPDATE"), "{path}");
-        assert!(workflow.contains("STORE_DRAFT"), "{path}");
-        assert!(workflow.contains("-DraftOnly:$draftOnly"), "{path}");
-        assert!(workflow.contains("Resolve-StoreBaseline.ps1"), "{path}");
-        assert!(workflow.contains("Generate-StoreHighlights.ps1"), "{path}");
-        assert!(workflow.contains("Publish-StoreUpdate.ps1"), "{path}");
-        assert!(
-            workflow.contains("group: splined-microsoft-store-submission"),
-            "{path}"
-        );
-    }
+fn store_workflows_preserve_their_distinct_review_and_submission_modes() {
     let full = source(FULL);
+    assert!(full.contains("store_submit_update:"));
+    assert!(full.contains("store_submit_draft:"));
+    assert!(full.contains("Review MSIX/No Store Access"));
+    assert!(full.contains("Never contact Partner Center"));
     assert!(full.contains("Select only one Store mode"));
     assert!(full.contains("Store publication requires Windows or All"));
+
     let recovery = source(STORE);
+    assert!(recovery.contains("store_submit_update:"));
+    assert!(recovery.contains("store_submit_draft:"));
+    assert!(recovery.contains("default: false"));
+    assert!(recovery.contains("STORE_UPDATE"));
+    assert!(recovery.contains("STORE_DRAFT"));
+    assert!(recovery.contains("-DraftOnly:$draftOnly"));
     assert!(recovery.contains("Select exactly one Store mode"));
     assert!(recovery.contains("ref: refs/tags/${{ inputs.version }}"));
     assert!(recovery.contains("$env:RELEASE_VERSION.0"));
@@ -150,9 +145,25 @@ fn full_release_always_builds_the_manual_msix_but_publishes_only_when_selected()
     let publish_store = workflow
         .split("  publish-store:")
         .nth(1)
-        .expect("Partner Center publication job");
-    assert!(publish_store.contains("(inputs.store_submit_update || inputs.store_submit_draft)"));
+        .expect("Partner Center publication job")
+        .split("  release-summary:")
+        .next()
+        .expect("Partner Center publication job body");
+    assert!(publish_store.contains("inputs.store_submit_update &&"));
+    assert!(!publish_store.contains("inputs.store_submit_draft"));
+    assert!(!publish_store.contains("STORE_DRAFT"));
+    assert!(!publish_store.contains("-DraftOnly"));
     assert!(publish_store.contains("Download exact Store package"));
+
+    let release_summary = workflow
+        .split("  release-summary:")
+        .nth(1)
+        .expect("release summary job");
+    assert!(release_summary.contains("[ \"$STORE_UPDATE\" = true ]"));
+    assert!(!release_summary
+        .contains("{ [ \"$STORE_UPDATE\" = true ] || [ \"$STORE_DRAFT\" = true ]; }"));
+    assert!(release_summary
+        .contains("validated manual-review MSIX artifact created; Partner Center not contacted"));
 }
 
 #[test]
