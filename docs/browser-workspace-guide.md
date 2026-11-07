@@ -81,6 +81,18 @@ Artist Overview album cards are grouped as Artist releases, Featured appearances
 
 Artist identities are canonicalized before the overview is rendered. Name variants such as `*NSYNC` and `NSYNC`, or a legacy blank-identity row beside the same MusicBrainz identity, contribute to one Artist entry and one complete appearance list. The first selection hydrates and persists the Navidrome/OpenSubsonic appearance projection before loading its COMP summary, so the initial render cannot show only the primary albums. The persisted projection remains available if Navidrome is temporarily unavailable and is invalidated by an explicit catalog refresh.
 
+Media Library ordering follows the Windows list and preserves visible symbol
+prefixes, so `*NSYNC` appears before alphabetic Artists. The visible count uses
+the same active-filter boundary. **Albums** search evaluates Album and Artist
+text across the full catalog; selecting a result opens a single-Album overview
+rather than the Artist's complete discography. Artist and Album overviews use
+the same metadata hierarchy, Top Genres and Top Songs sections, action tones,
+and Selected Artwork calculation/footer model. The compact Artist information
+table uses the native label order, permits long values to wrap, and links a
+known MusicBrainz Artist ID to its Artist page. Similar Artists remain
+left-aligned, use readable portrait sizes, and show whether each Artist is
+indexed locally.
+
 Album status dots and frames follow the same meanings as Windows. PostgreSQL cover and embedded-track counts drive the current state, and a completed embedding job refreshes the visible cards without requiring the artist to be reselected. A grey **EMBED Batch** button means the album is already staged; it remains clickable and the queue prevents a duplicate job.
 
 When the Windows application completed the most recent verified artwork write
@@ -107,6 +119,15 @@ An interactive scan that is waiting for an artwork decision keeps configuration 
 An album without a MusicBrainz Album ID uses the COMP workflow. Its Artist Overview and Fallback album cards display the indexed folder `cover.*` when one exists, just like an album identity card. That display cover is never substituted for an individual COMP track's embedded artwork and is not an artwork candidate for that track. Artist selection reads only the indexed COMP card summary; it does not rescan fallback albums or build a full report. The Artist Overview retains that card inventory while you inspect other Albums. **COMP Report** deliberately loads the focused Artist's matching tracks from every COMP album in that Artist's indexed list, then validates recorded thumbnails without allowing stale requests to replace a newer Artist/report selection. Opening an Album from the separate **Fallback** library tab shows every indexed track in that one compilation. Track inventory is the only operational difference: both views use the same MusicBrainz search and percentage results, existing-album matches, candidate review, enhancements, upscale, repair, and one-track embedding workflow. Green means recorded artwork has a valid thumbnail; purple means a successfully read recorded thumbnail needs repair; blue needs an artwork decision. A temporary validation failure stays separate and is retried when the report is reopened rather than being mislabeled purple.
 
 Selecting a report track loads its current embedded image into **Selected Artwork**. The COMP action row is **Upscale Preview**, **EMBED Comp**, and the disabled album-only **EMBED Batch** control. Current artwork can be enhanced, optionally upscaled, and written with **EMBED Comp** without opening MusicBrainz results. For COMP, Upscale Preview first applies the Windows Ideal policy to the full-resolution working image, reports the actual applied percentage rather than the configured ceiling, then prepares and displays the separate `output.embedded_thumbnail_size` square in memory with cyan **Embedded Thumb Ready** confirmation. No audio is changed by that preview. **EMBED Comp** writes that exact prepared JPEG to only the selected track and reopens it to verify the bytes and dimensions. **LAUNCH COMP** is the optional replacement-artwork route: each track first validates the tagged Artist ID, then the Recording ID and its Artist relationship. Exact Recording releases lead, related-Work recordings are restricted to that validated Artist, and lower-confidence title recovery is constrained by Artist ID. After an explicit release selection, candidate artwork is presented as compact cards with source, original dimensions, and quality/range status. Provider diagnostics remain in a separate expandable area. Advanced IDs edits Recording and Artist IDs only; the selected Release ID is session-scoped and is never assigned to the COMP Fallback Album. An unrelated or stale queued decision cannot replace the selected report track's thumb or retarget its actions. If artwork is written while authoritative IDs remain unresolved, the verified write is reported but no completion ledger is created and the track remains blue. Completion refreshes the same COMP Report. **CLOSE REPORT** returns to Artist Overview, and **REPAIR COMP** preserves original embedded images in the cache. Read mode disables COMP launch and write actions.
+
+A verified COMP-track write publishes track-scoped writer authority. On the
+opposing client, only that track row and thumbnail become grayscale; the track
+remains selectable and writable, and Selected Artwork identifies the opposing
+writer in red. A later verified local track write restores local ownership.
+This state survives refresh and restart. It never promotes the fallback Album
+to Album-level OVERRIDE: the Album card continues to display its folder
+`cover.*` for identity and never receives an OVERRIDE banner because one track
+changed.
 
 **Play Animated cover.webp Preview** is off by default. Off shows the first still frame in the browser while retaining the original source bytes. On plays an animated WebP in Selected Artwork. Writing an unedited WebP preserves its animation and `.webp` extension; staged Album artwork also retains the `.webp` extension. Audio embedding remains a static square thumbnail at the configured preference size.
 

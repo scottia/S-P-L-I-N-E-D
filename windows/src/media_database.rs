@@ -8,7 +8,9 @@ use crate::config::{Config, resolve_sources};
 use crate::embedded_artwork::embedded_front_sha256s;
 use crate::history::{AlbumHistoryState, album_history_status, load_completion_history, unix_now};
 use crate::inspect::inspect_image;
-use crate::override_coordination::{ensure_sqlite_schema, queue_windows_album_write};
+use crate::override_coordination::{
+    ensure_sqlite_schema, queue_windows_album_write, queue_windows_comp_track_write,
+};
 use crate::scan::{AlbumDirectory, inventory_album_directories};
 use crate::scan_tags::{AlbumIndexTags, read_album_index_tags, read_local_track_evidence};
 use image::ImageFormat;
@@ -2390,25 +2392,98 @@ pub fn record_compilation_artwork_application(
         application.completed_tracks,
     )?;
     let (album_key, _) = resolve_outcome_identity(&transaction, None, &canonical_album)?;
-    let album_mbid = transaction
-        .query_row(
-            "SELECT COALESCE(musicbrainz_albumid,'') FROM albums WHERE album_key=? COLLATE NOCASE",
-            [&album_key],
-            |row| row.get::<_, String>(0),
-        )
-        .map_err(db_error("read compilation Album identity"))?;
-    queue_windows_album_write(
+    queue_windows_comp_track_write(
         &transaction,
         &album_key,
-        &album_mbid,
         mapper.canonical_root(),
-        &canonical_album,
+        &track_path,
+        &artwork_sha256,
         "embed-comp-track",
         &now,
     )?;
     transaction
         .commit()
         .map_err(db_error("commit compilation artwork transaction"))
+}
+
+/// Persist one verified opposing-client COMP track without publishing a new
+/// local write or changing Album processing/ownership state.
+pub fn persist_opposing_compilation_artwork(
+    config: &Config,
+    track_path: &Path,
+    expected_artwork_sha256: &str,
+) -> Result<bool, String> {
+    let expected = expected_artwork_sha256.trim().to_ascii_lowercase();
+    if expected.is_empty()
+        || !embedded_front_sha256s(track_path)?
+            .iter()
+            .any(|hash| hash.eq_ignore_ascii_case(&expected))
+    {
+        return Ok(false);
+    }
+    let (mut connection, mapper) = runtime_connection_and_mapper(config)?;
+    let canonical_track = mapper.to_canonical(&track_path.to_string_lossy())?;
+    let row = connection
+        .query_row(
+            "SELECT tracks.album_key,albums.path,COALESCE(tracks.musicbrainz_recordingid,''),COALESCE(tracks.musicbrainz_artistid,'') \
+             FROM tracks JOIN albums ON albums.album_key=tracks.album_key \
+             WHERE lower(tracks.path)=lower(?) LIMIT 1",
+            [&canonical_track],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(db_error("locate opposing COMP track"))?;
+    let Some((album_key, canonical_album, recording_mbid, artist_mbid)) = row else {
+        return Ok(false);
+    };
+    let transaction = connection
+        .transaction()
+        .map_err(db_error("begin opposing COMP artwork transaction"))?;
+    let now = sqlite_now(&transaction)?;
+    transaction
+        .execute(
+            "INSERT INTO compilation_track_artwork(track_path,recording_mbid,artist_mbid,source_kind,source_locator,release_mbid,artwork_sha256,outcome,applied_at,splined_version) \
+             VALUES(?,?,?,'coordination-webgui','comp-track-write-coordination',NULL,?,'embedded-existing',?,?) \
+             ON CONFLICT(track_path) DO UPDATE SET recording_mbid=excluded.recording_mbid,artist_mbid=excluded.artist_mbid,source_kind=excluded.source_kind,source_locator=excluded.source_locator,artwork_sha256=excluded.artwork_sha256,outcome=excluded.outcome,applied_at=excluded.applied_at,splined_version=excluded.splined_version",
+            params![canonical_track, recording_mbid, artist_mbid, expected, now, env!("CARGO_PKG_VERSION")],
+        )
+        .map_err(db_error("persist opposing COMP artwork"))?;
+    let total = transaction
+        .query_row(
+            "SELECT COUNT(*) FROM tracks WHERE album_key=? COLLATE NOCASE",
+            [&album_key],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(db_error("count opposing COMP tracks"))?
+        .max(0) as usize;
+    let completed = transaction
+        .query_row(
+            "SELECT COUNT(*) FROM tracks JOIN compilation_track_artwork ON lower(compilation_track_artwork.track_path)=lower(tracks.path) \
+             WHERE tracks.album_key=? COLLATE NOCASE AND compilation_track_artwork.outcome IN ('embedded-replaced','embedded-existing')",
+            [&album_key],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(db_error("count completed opposing COMP tracks"))?
+        .max(0) as usize;
+    let local_album = PathBuf::from(mapper.to_local(&canonical_album)?);
+    record_compilation_progress_with_connection(
+        &transaction,
+        &mapper,
+        &local_album,
+        total,
+        completed,
+    )?;
+    transaction
+        .commit()
+        .map_err(db_error("commit opposing COMP artwork transaction"))?;
+    Ok(true)
 }
 
 pub fn record_compilation_progress(

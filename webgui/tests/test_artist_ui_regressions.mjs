@@ -5,6 +5,8 @@ import vm from "node:vm";
 
 const appSource = readFileSync(new URL("../static/app.js", import.meta.url), "utf8");
 const operationsSource = readFileSync(new URL("../static/operations.js", import.meta.url), "utf8");
+const indexSource = readFileSync(new URL("../static/index.html", import.meta.url), "utf8");
+const cssSource = readFileSync(new URL("../static/app.css", import.meta.url), "utf8");
 
 function between(source, start, end) {
   const first = source.indexOf(start);
@@ -534,7 +536,14 @@ test("Artist COMP renders all album groups and previews only the selected curren
   };
   const makeNode = (tag, className = "", text = "") => ({
     tag, className, text, children: [], listeners: {}, dataset: {},
-    classList: {values: [], add(...values) { this.values.push(...values); }},
+    classList: {
+      values: [],
+      add(...values) { this.values.push(...values); },
+      toggle(value, enabled) {
+        this.values = this.values.filter(item => item !== value);
+        if (enabled) this.values.push(value);
+      },
+    },
     append(...children) { this.children.push(...children); },
     setAttribute() {},
     addEventListener(event, handler) { this.listeners[event] = handler; },
@@ -547,10 +556,10 @@ test("Artist COMP renders all album groups and previews only the selected curren
       {id: "comp-3", name: "Compilation Three", tracks: [{key: "three", file: "three.flac", completed: true, status: "green", thumbnail: "/three.jpg"}]},
     ],
     compTrack: {albumId: "comp-2", key: "two", image: "/selected-current.jpg"},
-    compCollapsed: new Set(), compBusy: false, compRepairEnabled: true,
+    compCollapsed: new Set(), compTrackOverrides: new Map(), compBusy: false, compRepairEnabled: true,
     artist: {id: "artist-1", name: "Selected Artist"}, server: {mode: "write"},
   };
-  const context = load(renderArtistCompReportFunction, {
+  const context = load(coordinationFunctions + "\n" + renderArtistCompReportFunction, {
     state, $: () => report, clear: element => element.replaceChildren(), node: makeNode,
     image: (src, className, alt) => ({tag: "img", src, className, alt}),
     setStatus() {}, runAction() {}, repairArtistComp() {}, launchArtistComp() {},
@@ -695,6 +704,7 @@ test("completed COMP work chains only within an explicit Artist scope", async ()
       renderQueue() {}, refreshCompletedAlbum: async () => {}, refreshQueuedAlbumAfterSave: async () => {},
       renderHero() {}, renderReview() {}, renderJob: async () => {}, setStatus() {},
       applyAlbumCoordination() { return false; },
+      applyCompTrackCoordination() { return []; },
       $: () => ({open: false}),
     });
     await context.pollJobs();
@@ -1305,6 +1315,18 @@ test("coordination revision changes identify only affected Albums", () => {
   ]))), ["album-1"]);
 });
 
+test("COMP track override waits for verified readable embedded bytes", () => {
+  const path = "Various Artists/COMP/01.flac";
+  const state = {compTrackOverrides: new Map()};
+  const context = load(coordinationFunctions, {state});
+  const track = {coordination_path: path};
+  state.compTrackOverrides.set(path.toLowerCase(), {writer: "windows", readable: false});
+  assert.equal(context.compTrackOverride(track), null);
+  const verified = {writer: "windows", readable: true};
+  state.compTrackOverrides.set(path.toLowerCase(), verified);
+  assert.equal(context.compTrackOverride(track), verified);
+});
+
 test("opposing Windows writes refresh only visible affected WebGUI Album thumbnails", async () => {
   const calls = [];
   const old = {id: "album-1", cover: "/old-cover"};
@@ -1716,4 +1738,27 @@ test("artist artwork write refreshes the corresponding list row", async () => {
   assert.equal(listed.portrait, "fresh");
   assert.equal(listed.status, "processed");
   assert.equal(libraryRenders, 1);
+});
+
+test("Album search and Album overview use the global single-Album contract", () => {
+  assert.match(appSource, /async function loadAlbumLibraryMatches/);
+  assert.match(appSource, /\/api\/albums\?view=albums&q=/);
+  assert.match(appSource, /const matchesByArtist = new Map\(\)/);
+  assert.match(appSource, /matchesByArtist\.has\(artist\.id\)/);
+  assert.match(appSource, /matchingIds\.has\(item\.id\)/);
+  assert.match(appSource, /const presentedAlbums = state\.editorMode === "album" && state\.album/);
+  assert.match(appSource, /allAlbums\.find\(album => album\.id === state\.album\.id\)/);
+});
+
+test("WebGUI renders native-parity overview sections and artwork footer", () => {
+  assert.match(indexSource, /id="topGenres"/);
+  assert.match(indexSource, /id="topSongs"/);
+  assert.match(appSource, /Artist & Featured Artist Top Genres/);
+  assert.match(appSource, /node\("strong", "top-songs-heading", "Top Songs"\)/);
+  assert.match(appSource, /Embedded Art \(now\):/);
+  assert.match(appSource, /Track\(s\) \(" \+ trackCount \+ "\)"/);
+  assert.match(appSource, /Embedded Track\(s\)/);
+  assert.match(cssSource, /review-extra\.embedded-metadata-row/);
+  assert.match(cssSource, /overview-actions #compReportButton/);
+  assert.match(cssSource, /review-actions \.action-orange/);
 });

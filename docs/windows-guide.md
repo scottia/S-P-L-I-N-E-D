@@ -122,6 +122,19 @@ never treated as embedded artwork for one of its tracks.
 - Fully green Albums are skipped by an Artist-wide launch unless you select an
   Album explicitly.
 
+Artist names use the same stable literal ordering as the browser: a visible
+symbol prefix is significant, so `*NSYNC` sorts before alphabetic Artists
+instead of under `N`. The count above the list reports the rows visible after
+the current filters. Expanded Artist rows show each Album's indexed track
+count.
+
+The **Albums** tab searches Album and Artist text across the full catalog, not
+only the previously selected Artist. Activating any part of an Album row opens
+that one Album in the overview. The selected key remains available to the
+processing model, but Album rows deliberately have no persistent selection
+background or border; the status orbit and row text retain their independent
+meanings.
+
 Text and status filters change visibility only. They do not alter database
 identity, history, bypass, timeout, provider policy, or queued work. Locked
 Media and Candidate Filter choices persist in interface state; unlocked choices
@@ -190,6 +203,18 @@ other presentation choices live in `data\ui.toml`, separately from Config v5.
 Choose **System**, **Dark**, **Light**, or **Chalk** from the Theme menu.
 Artist Overview can also show Similar Artists, combined Artist/Featured genres,
 biography, and Navidrome Top Songs when that supplemental data is available.
+
+**Settings → Processing → Display Scale / Font Size** adjusts application
+typography to 80%, 90%, 100%, 110%, or 125% without disabling Windows
+per-monitor DPI behavior. Artist and Album overviews share the same header
+model: the portrait is anchored at the left, the yellow Artist name is directly
+below it, the lower-left radio opens Artist Art Enhancements, and the upper
+control opens the bounded Artist information table. A MusicBrainz Artist ID in
+that table opens its MusicBrainz page. Biography text is a five-line justified
+block with inline more/less expansion; it never divides a word to fill a row.
+Similar Artist portraits retain their indexed indicator, and Album name,
+processing state, track count, and embedded count appear before Similar
+Artists when one Album is the active target.
 
 The center workspace keeps its tasks separate:
 

@@ -53,6 +53,36 @@ override for managed launches and tests. WebGUI uses its existing PostgreSQL
 connection. LISTEN/NOTIFY is not required: both clients poll the durable row at
 a short interval, so service and client restarts recover from stored state.
 
+## Track-scoped COMP coordination
+
+PostgreSQL migration 020 adds `comp_track_write_coordination`; migrations
+018/019 remain reserved and are not part of this feature. Windows stores the
+corresponding current rows and retryable events in
+`comp_track_write_state` and `comp_track_write_outbox`. Each verified event is
+keyed by canonical Album plus relative track identity and records its writer,
+operation, event ID, source completion time, artwork SHA-256, and monotonic
+revision. The same newest-event and idempotent-replay rules used for Album
+coordination apply independently to each track.
+
+An opposing COMP event affects only the matching indexed track. The receiving
+client resolves the case-preserving physical path within the selected Album,
+checks the embedded artwork, invalidates its track thumbnail, and persists the
+bounded track authority needed for refresh/restart recovery. The opposing row
+is grayscale and Selected Artwork identifies the writer in red, while the
+track remains editable. A COMP fallback Album card continues to use its folder
+`cover.*` and never receives the Album-level OVERRIDE banner because one of its
+tracks changed.
+
+## Canonical identity normalization
+
+Album and track coordination identities remove a leading BOM (`U+FEFF`) and
+the established invalid zero-width formatting characters during ingestion,
+event creation, persistence, replay, and lookup. Existing SQLite/PostgreSQL
+coordination rows are repaired in place only when the normalized identity is
+unambiguous; collisions are reported instead of silently merging Albums.
+Normalization does not rewrite MusicBrainz tags or source media and does not
+change processing, bypass, completion, selection, or catalog ownership.
+
 ## Isolated PC acceptance environment
 
 The implementation is exercised only with the established local test stack:
@@ -150,3 +180,19 @@ the monitor and Slint exposes title-bar accessibility only); no automated
 screenshot assertion is claimed. The owner personally verified the GUI and
 physical files in the isolated test environment. PR #150's proposed catalog
 synchronization and PostgreSQL migrations 018/019 are not part of PR #152.
+
+## PR #156 owner acceptance
+
+The owner approved source head
+`d95ebf60c56e187fe0bdb2c4bea939b6d3127f75` after installed Windows/WebGUI
+review. GitHub validation run 169 passed the native, WebGUI, validation
+selection, and Windows policy-report lanes. The isolated Windows executable
+reported that exact source revision and SHA-256
+`E768AD46685BD4A965D0B5AB157BA3E1AF7A63204685B5FD4A2E7A8BDA110329`.
+
+Acceptance covered the unified Artist/Album overview and Media Library
+behavior, persistent layout/display scaling, COMP report parity, bidirectional
+track-scoped COMP writer presentation, canonical BOM/zero-width identity
+handling, and preservation of the previously accepted Album cover/WebP and
+EMBED Batch contracts. PR #150 and reserved migrations 018/019 remained
+outside the correction.

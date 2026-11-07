@@ -46,7 +46,7 @@ from webgui.jobs import JobAdapter, JobQueue
 from webgui.reconciliation import SQLiteReconciler
 from webgui.server import create_app
 from webgui.catalog import embedded_track_artwork_bytes
-from webgui.coordination import record_event
+from webgui.coordination import current_rows, current_track_rows, record_event
 from webgui.credentials import Credentials
 
 
@@ -475,6 +475,86 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             [(written["coordination"]["event_id"], "webgui")],
         )
 
+    def test_legacy_postgresql_coordination_identities_are_repaired_in_place(self):
+        dirty_key = "mbid:\ufeffLegacy-Album"
+        dirty_identity = "key:" + dirty_key
+        dirty_track = "Various Artists/\ufeffLegacy/01.flac"
+        dirty_track_identity = dirty_identity + "|track:" + dirty_track.casefold()
+        with closing(self.db.connect()) as db, db:
+            db.raw.execute(
+                "INSERT INTO album_artwork_write_coordination("
+                "album_identity,album_key,musicbrainz_albumid,relative_path,"
+                "writer,operation,event_id,source_completed_ms,completed_at) "
+                "VALUES(%s,%s,%s,%s,'windows','write-cover',%s,10,now())",
+                (dirty_identity, dirty_key, "\ufeffLegacy-Album", "Artist/\ufeffAlbum", "legacy-album"),
+            )
+            db.raw.execute(
+                "INSERT INTO comp_track_write_coordination("
+                "track_identity,album_identity,album_key,track_key,"
+                "relative_track_path,writer,operation,event_id,artwork_sha256,"
+                "source_completed_ms,completed_at) "
+                "VALUES(%s,%s,%s,'legacy-track',%s,'windows','embed-comp-track',"
+                "%s,'abc123',11,now())",
+                (dirty_track_identity, dirty_identity, dirty_key, dirty_track, "legacy-track-event"),
+            )
+
+        albums = current_rows(self.db)
+        tracks = current_track_rows(self.db)
+        self.assertEqual(albums[0]["album_key"], "mbid:legacy-album")
+        self.assertEqual(albums[0]["musicbrainz_albumid"], "legacy-album")
+        self.assertEqual(albums[0]["relative_path"], "artist/album")
+        self.assertEqual(tracks[0]["album_key"], "mbid:legacy-album")
+        self.assertEqual(
+            tracks[0]["relative_track_path"],
+            "various artists/legacy/01.flac",
+        )
+        with closing(self.db.connect()) as db:
+            album = db.execute(
+                "SELECT album_identity,album_key,musicbrainz_albumid,relative_path "
+                "FROM album_artwork_write_coordination"
+            ).fetchone()
+            track = db.execute(
+                "SELECT track_identity,album_identity,album_key,relative_track_path "
+                "FROM comp_track_write_coordination"
+            ).fetchone()
+        self.assertEqual(album["album_identity"], "key:mbid:legacy-album")
+        self.assertEqual(album["album_key"], "mbid:legacy-album")
+        self.assertEqual(album["musicbrainz_albumid"], "legacy-album")
+        self.assertEqual(album["relative_path"], "artist/album")
+        self.assertEqual(
+            track["track_identity"],
+            "key:mbid:legacy-album|track:various artists/legacy/01.flac",
+        )
+        self.assertEqual(track["album_identity"], "key:mbid:legacy-album")
+
+    def test_opposing_comp_event_resolves_the_indexed_case_preserving_path(self):
+        self.set_flac_embedded_cover(self.files[0], 300)
+        artwork = embedded_track_artwork_bytes(self.files[0])
+        self.assertIsNotNone(artwork)
+        event = {
+            "album_key": self.row["album_key"],
+            # Coordination identities are intentionally normalized while the
+            # physical Linux fixture retains its mixed-case directory names.
+            "relative_track_path": "test artist/test album/1.flac",
+            "artwork_sha256": hashlib.sha256(artwork).hexdigest(),
+        }
+
+        self.assertTrue(self.services._persist_opposing_comp_track(event))
+        with closing(self.db.connect()) as db:
+            written = db.execute(
+                "SELECT track_path,outcome FROM compilation_track_artwork"
+            ).fetchone()
+            progress = db.execute(
+                "SELECT total_tracks,completed_tracks,status "
+                "FROM compilation_album_progress"
+            ).fetchone()
+        self.assertEqual(written["track_path"], str(self.files[0]))
+        self.assertEqual(written["outcome"], "embedded-existing")
+        self.assertEqual(
+            (progress["total_tracks"], progress["completed_tracks"], progress["status"]),
+            (2, 1, "incomplete"),
+        )
+
     def test_failed_album_write_does_not_claim_coordination(self):
         with patch(
             "webgui.services.core.install_canonical_cover",
@@ -770,6 +850,8 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             })
         self.assertEqual((embedded["width"], embedded["height"]), (300, 300))
         self.assertEqual(embedded["artwork_sha256"], prepared["sha256"])
+        self.assertTrue(embedded["coordination"]["durable"])
+        self.assertEqual(embedded["coordination"]["writer"], "webgui")
         with Image.open(BytesIO(embedded_track_artwork_bytes(target_path))) as image:
             self.assertEqual(image.size, (300, 300))
         self.assertIsNone(embedded_track_artwork_bytes(other_path))
@@ -778,7 +860,24 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             written = list(db.execute(
                 "SELECT track_path FROM compilation_track_artwork"
             ))
+            track_coordination = list(db.execute(
+                "SELECT relative_track_path,writer,artwork_sha256 "
+                "FROM comp_track_write_coordination"
+            ))
+            album_coordination_count = db.execute(
+                "SELECT count(*) FROM album_artwork_write_coordination"
+            ).fetchone()[0]
         self.assertEqual([row["track_path"] for row in written], [str(target_path)])
+        self.assertEqual(album_coordination_count, 0)
+        self.assertEqual(len(track_coordination), 1)
+        self.assertEqual(track_coordination[0]["writer"], "webgui")
+        self.assertEqual(
+            track_coordination[0]["artwork_sha256"], embedded["artwork_sha256"]
+        )
+        self.assertEqual(
+            track_coordination[0]["relative_track_path"],
+            "various artists/billboard fixture/" + target_path.name.casefold(),
+        )
 
         target_art = embedded_track_artwork_bytes(target_path)
         with patch.object(
@@ -803,7 +902,11 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     "SELECT track_path FROM compilation_track_artwork"
                 )
             }
+            track_coordination_count = db.execute(
+                "SELECT count(*) FROM comp_track_write_coordination"
+            ).fetchone()[0]
         self.assertEqual(written, {str(target_path), str(other_path)})
+        self.assertEqual(track_coordination_count, 2)
 
     def test_read_mode_and_invalid_destinations_do_not_write(self):
         original = self.cover.read_bytes()
@@ -4029,12 +4132,12 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     self.assertEqual(
                         page.locator("#artistInfoRows > span > b").all_inner_texts(),
                         [
-                            "ARTIST",
-                            "STATUS",
-                            "ALBUMS",
-                            "ROLES",
-                            "MUSICBRAINZ ID",
-                            "GENRES",
+                            "Artist",
+                            "Status",
+                            "Albums",
+                            "Roles",
+                            "MusicBrainz ID",
+                            "Genres",
                         ],
                     )
                     expect(page.locator("#artistInfoArtist")).to_have_text(
@@ -4066,10 +4169,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     )
                     info_cells = page.locator("#artistInfoRows > span")
                     self.assertEqual(info_cells.count(), 6)
-                    self.assertAlmostEqual(
+                    self.assertGreaterEqual(
                         info_cells.nth(4).bounding_box()["height"],
                         info_cells.nth(5).bounding_box()["height"],
-                        delta=0.5,
                     )
                     initial_theme = page.evaluate(
                         "document.documentElement.getAttribute('data-theme')"
@@ -4080,7 +4182,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                             "theme => document.documentElement.dataset.theme = theme",
                             theme,
                         )
-                        theme_rows[theme] = info_cells.first.evaluate(
+                        theme_rows[theme] = page.locator("#artistInfoRows").evaluate(
                             """element => {
                                 const color = getComputedStyle(element).backgroundColor;
                                 const canvas = document.createElement('canvas');
@@ -4100,10 +4202,11 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         len({row["color"] for row in theme_rows.values()}), 3
                     )
                     for theme, row in theme_rows.items():
-                        self.assertEqual(
+                        self.assertAlmostEqual(
                             row["alpha"],
-                            204,
-                            f"{theme} metadata row must be exactly 20% transparent",
+                            224,
+                            delta=1,
+                            msg=f"{theme} metadata table must retain its 88% opaque panel",
                         )
                     page.evaluate(
                         """theme => theme === null

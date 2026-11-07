@@ -160,6 +160,50 @@ fn slint_windows_restore_natively_and_share_live_media_models() {
 }
 
 #[test]
+fn artist_overview_keeps_native_parity_controls_and_album_row_navigation() {
+    let ui = source("windows/ui/app.slint");
+    assert!(ui.contains("artist-summary-visible"));
+    assert!(ui.contains("MusicBrainz ID"));
+    assert!(ui.contains("root.browse-artist-artwork(); root.workspace-mode = 2;"));
+    assert!(ui.contains("thumbnail-size: artist-scroll.visible-width < 520px ? 120px : 170px"));
+    assert!(ui.contains("thumbnail-x: 8px"));
+    assert!(ui.contains("thumbnail-column-width: self.thumbnail-size + 16px"));
+    assert!(ui.contains("thumbnail-x + artist-header.thumbnail-size + 3px"));
+    assert!(ui.contains("root.artist-overview-name; color: AppTheme.yellow"));
+    assert!(ui.contains("padding-top: root.artist-edit-available ? 0px : 16px"));
+    assert!(ui.contains("width: 72px; height: 76px; background: transparent; opacity: 1"));
+    assert!(ui.contains("font-scale: 1.0"));
+    assert!(ui.contains("display-scale-percent: 100"));
+    assert!(ui.contains("width: parent.width; height: parent.height"));
+    assert!(ui.contains("min(520px, max(340px, artist-scroll.visible-width * 0.5))"));
+    assert!(ui.contains("It must never resize or remove the overview below it"));
+    assert!(ui.contains("clicked => root.open-artist-musicbrainz()"));
+    assert!(ui.contains("root.selected-album-name != \"\""));
+    assert!(ui.contains("Rectangle { x: 51px; y: 43px; width: 12px; height: 12px"));
+    assert!(!ui.contains("if root.overview-mode == \"Album\": Heading"));
+    assert!(ui.contains("if root.artist-summary-visible: Rectangle"));
+    assert!(ui.contains("min(10, max(5, overview-panel.biography-lines.length))"));
+    assert!(ui.contains("biography-block-width: min(self.biography-lane-width"));
+    assert!(ui.contains("alignment: line.justified && !self.carries-toggle ? space-between : start"));
+    assert!(ui.contains("index == overview-panel.biography-toggle-line"));
+    assert!(ui.contains("immediately after the copy instead of pinning it"));
+    assert!(ui.contains("index < (root.artist-biography-expanded ? 10 : 5)"));
+    assert!(ui.contains("🎵 Artist & Featured Artist Top Genres"));
+    assert!(ui.contains("TouchArea { enabled: similar.available"));
+    assert!(ui.contains("root.selected-album-track-count + \" tracks · \""));
+    assert!(ui.contains(
+        "status-only-album-selection: row.kind != \"artist\""
+    ));
+    assert!(ui.contains("root.status-only-album-selection ? \"○\""));
+    assert!(ui.contains("row-touch := TouchArea"));
+    assert!(ui.contains("clicked => root.activated(root.item.key)"));
+    assert!(!ui.contains("#7a1b1d1f"));
+    assert!(!ui.contains("#7a061426"));
+    assert!(ui.contains("#14141470"));
+    assert!(ui.contains("#0b0b0be0"));
+}
+
+#[test]
 fn slint_surface_exposes_real_migrated_workflows() {
     let ui = source("windows/ui/app.slint");
     let main = source("windows/src/main.rs");
