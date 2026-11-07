@@ -581,6 +581,13 @@ function albumInCurrentArtistContext(albumId) {
     || state.compAlbums.some(group => group.id === albumId);
 }
 
+function singleAlbumOverviewActive() {
+  // Album rows inside the expanded Artist library are review targets, not a
+  // navigation request.  Only the global Albums library owns the single-Album
+  // overview contract.
+  return state.libraryMode === "albums" && state.editorMode === "album" && !!state.album;
+}
+
 function albumBannerKind(album, artist) {
   if (!album.album_mbid) return "compiled";
   if (album.soundtrack) return "soundtrack";
@@ -928,7 +935,7 @@ function renderHeroContents() {
       comp_attention: !!validated?.tracks?.some(track => ["purple", "checking", "check-error"].includes(track.status))} : album;
   });
   const allAlbums = [...indexed, ...projected];
-  const presentedAlbums = state.editorMode === "album" && state.album
+  const presentedAlbums = singleAlbumOverviewActive()
     ? [{...(allAlbums.find(album => album.id === state.album.id) || {}), ...state.album,
         cover_found: !!state.album.cover}]
     : allAlbums;

@@ -282,6 +282,40 @@ test("queued album for another artist still changes artist context", async () =>
   assert.equal(fixture.calls.filter(path => path.startsWith("/api/artist")).length, 1);
 });
 
+test("queued Artist scan keeps the full Artist Album selection visible", async () => {
+  const decision = {
+    context: {album_id: "album-1"},
+    jobKind: "scan",
+    payload: {artist_id: "artist-1", album_ids: ["album-1", "album-2"]},
+  };
+  const selected = new Set(["stale"]);
+  const state = {
+    artist: {id: "artist-1", albums: [{id: "album-1"}, {id: "album-2"}]},
+    artistMetadata: null, album: null, compAlbums: [], compGroups: [],
+    compReportVisible: false, compTrack: null, editorMode: "artist",
+    fallbackTracks: [], fallbackTrack: null, upscalePreview: null,
+    workspace: "find", libraryMode: "albums", mediaSelected: selected,
+    queuedDecision: decision, selectionRequest: 0,
+  };
+  const context = load(contextFunctions + queuedAlbumFunction, {
+    state,
+    api: async path => {
+      assert.match(path, /^\/api\/album\?id=album-1$/);
+      return {id: "album-1", artist_id: "artist-1", album_mbid: "release", candidates: []};
+    },
+    renderLibrary() {}, renderHero() {}, renderSources() {}, renderCandidates() {}, renderWorkspace() {},
+    loadArtistMetadata() {}, markSelectedAlbum() {},
+  });
+
+  await context.focusQueuedAlbum(decision);
+
+  assert.equal(state.libraryMode, "artists");
+  assert.equal(state.editorMode, "album");
+  assert.equal(state.album.id, "album-1");
+  assert.deepEqual([...selected], ["artist-1", "album-1", "album-2"]);
+  assert.equal(context.singleAlbumOverviewActive(), false);
+});
+
 test("Artist-scoped queued COMP review retains the report without a preselected track", async () => {
   const selected = [];
   const decision = {
@@ -1199,6 +1233,7 @@ test("Artist LAUNCH submits every selected eligible release and preserves select
     },
     post: async (path, payload) => { calls.push([path, payload]); return {id: "job-1"}; },
     reviewJob: async () => {},
+    setStatus: () => {},
     artistAlbumEligible: album => !!album.album_mbid && !["bypassed", "timeout"].includes(album.status)
       && !(album.status === "processed" && album.cover_found && album.embedded >= album.tracks),
   });
@@ -1208,8 +1243,21 @@ test("Artist LAUNCH submits every selected eligible release and preserves select
   assert.equal(calls.length, 1);
   assert.equal(calls[0][0], "/api/jobs");
   assert.equal(calls[0][1].kind, "scan");
+  assert.equal(calls[0][1].payload.artist_id, "artist-1");
   assert.deepEqual([...calls[0][1].payload.album_ids], ["own", "featured"]);
   assert.deepEqual([...selected], ["artist-1", "own", "featured", "complete", "bypassed", "timeout", "comp"]);
+});
+
+test("single Album overview is limited to the global Albums library", () => {
+  const artistContext = load(contextFunctions, {
+    state: {libraryMode: "artists", editorMode: "album", album: {id: "album-1"}},
+  });
+  assert.equal(artistContext.singleAlbumOverviewActive(), false);
+
+  const albumContext = load(contextFunctions, {
+    state: {libraryMode: "albums", editorMode: "album", album: {id: "album-1"}},
+  });
+  assert.equal(albumContext.singleAlbumOverviewActive(), true);
 });
 
 test("successful EMBED Batch invalidates stale handles and refreshes the Album before polling", async () => {
@@ -1746,7 +1794,7 @@ test("Album search and Album overview use the global single-Album contract", () 
   assert.match(appSource, /const matchesByArtist = new Map\(\)/);
   assert.match(appSource, /matchesByArtist\.has\(artist\.id\)/);
   assert.match(appSource, /matchingIds\.has\(item\.id\)/);
-  assert.match(appSource, /const presentedAlbums = state\.editorMode === "album" && state\.album/);
+  assert.match(appSource, /const presentedAlbums = singleAlbumOverviewActive\(\)/);
   assert.match(appSource, /allAlbums\.find\(album => album\.id === state\.album\.id\)/);
 });
 
