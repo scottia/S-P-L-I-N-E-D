@@ -67,6 +67,24 @@ const compDecisionFunctions = between(
   "function currentCompSelectionScope",
   "function currentCandidate",
 );
+const editableArtworkFunctions = compDecisionFunctions + "\n" + between(
+  appSource,
+  "function editableArtworkSource",
+  "function renderLibrary",
+);
+const queuedCandidateSelectionFunctions = between(
+  appSource,
+  "function candidateSelectionKey",
+  "const MEDIA_STATUSES",
+) + "\n" + between(
+  operationsSource,
+  "function queuedCandidate",
+  "function clearQueuedDecision",
+) + "\n" + between(
+  operationsSource,
+  "async function presentQueuedCandidates",
+  "async function presentQueuedMusicBrainz",
+);
 const writeArtworkFunction = compDecisionFunctions + "\n" + between(
   operationsSource,
   "async function writeArtwork",
@@ -1346,6 +1364,69 @@ test("successful EMBED Batch invalidates stale handles and refreshes the Album b
   assert.equal(state.searchRequest, 8);
   assert.deepEqual(order, ["post", "/api/album?id=album-1", "poll"]);
   assert.match(statuses.at(-1)[0], /Cover written and album staged/);
+});
+
+test("fully embedded Album artwork remains editable and queued candidates take precedence", () => {
+  const state = {
+    queuedDecision: null,
+    editorMode: "album",
+    album: {id: "album-1", cover: "/api/image/current", tracks: 128, embedded: 128},
+    selectedCover: null,
+    fallbackTrack: null,
+    compTrack: null,
+    compReportVisible: false,
+    radioCurrent: false,
+    radioArtist: false,
+    radioBanner: false,
+    selectedPortrait: null,
+    selectedBanner: null,
+    artist: null,
+  };
+  const context = load(editableArtworkFunctions, {state});
+
+  assert.equal(context.editableArtworkSource(), "/api/image/current");
+  state.queuedDecision = {
+    jobId: "scan-1", jobKind: "scan", nonce: "prompt-1",
+    selected: {image: "/api/image/candidate"},
+  };
+  assert.equal(context.editableArtworkSource(), "/api/image/candidate");
+  assert.match(operationsSource, /state\.editorMode==='album'[\s\S]*?const source=editableArtworkSource\(\)/);
+});
+
+test("repeated queued-candidate polling preserves touch targets and the browser selection", async () => {
+  const raw = {image: "/api/image/candidate", source: "MB / CAA", title: "Recommended", width: 1200, height: 1200, number: 1};
+  const selected = {...raw, name: raw.title, kind: "cover", queueNumber: 1, queueValue: 1};
+  const compare = new Set([selected.image]);
+  const state = {
+    queuedDecision: {
+      jobId: "scan-1", jobKind: "scan", nonce: "prompt-1", selected,
+      previousCandidates: [], previousSourceDiagnostics: [],
+    },
+    candidates: [selected], sourceDiagnostics: [], activeSource: "musicbrainz", compare,
+    pendingCompWrite: null, workspace: "find",
+  };
+  let renders = 0;
+  const context = load(queuedCandidateSelectionFunctions, {
+    state,
+    $: () => ({open: false}),
+    resetCandidateFilters: () => { throw new Error("unchanged prompt reset candidate filters"); },
+    focusQueuedAlbum: async () => { throw new Error("unchanged prompt refocused Album"); },
+    renderWorkspace: () => { renders += 1; }, renderSources: () => { renders += 1; },
+    renderCandidates: () => { renders += 1; }, renderReview: () => { renders += 1; },
+    setStatus: () => { renders += 1; },
+  });
+
+  await context.presentQueuedCandidates(
+    {id: "scan-1", kind: "scan", payload: {}, progress: {current: {fallback_authority: {}, diagnostics: {items: []}}}},
+    {nonce: "prompt-1", context: {}},
+    [raw],
+  );
+
+  assert.equal(state.queuedDecision.selected, selected);
+  assert.equal(state.candidates[0], selected);
+  assert.equal(state.activeSource, "musicbrainz");
+  assert.equal(state.compare, compare);
+  assert.equal(renders, 0);
 });
 
 test("a late API failure cannot overwrite a newer success and Audit retains its endpoint", () => {
