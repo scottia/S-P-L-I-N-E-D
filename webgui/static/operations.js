@@ -273,7 +273,7 @@ renderReview = function () {
   const writable = state.server?.mode === "write";
   const currentPackage = state.editorMode === "artist" && state.workspace === "enhance" && state.radioCurrent
     && !!(state.selectedPortrait?.image || state.selectedBanner?.image || state.artist?.portrait || state.artist?.banner);
-  $("writeButton").disabled = entry ? !state.artist : !writable || (state.editorMode === "album" ? !(state.selectedCover?.image || state.album?.cover)
+  $("writeButton").disabled = entry ? !state.artist : !writable || (state.editorMode === "album" ? !editableArtworkSource()
     : state.editorMode === "fallback" ? !state.fallbackTrack?.image : state.compReportVisible ? !state.compTrack?.image : !(currentPackage || (state.radioArtist && (state.selectedPortrait || state.artist?.portrait)) || (state.radioBanner && (state.selectedBanner || state.artist?.banner))));
   const compContext = compContextActive();
   const staged = state.editorMode === "album" && state.embedQueue.some(item => item.id === state.album?.id);
@@ -282,7 +282,7 @@ renderReview = function () {
   $("embedBatchButton").classList.add("action-purple");
   $("embedBatchButton").classList.remove("action-cyan");
   $("embedBatchButton").disabled = compContext || !writable || state.editorMode !== "album"
-    || !albumEmbeddingEligible(state.album) || !(state.selectedCover?.image || state.album?.cover);
+    || !albumEmbeddingEligible(state.album) || !editableArtworkSource();
   $("embedBatchButton").classList.toggle("staged", staged);
   $("embedBatchButton").title = compContext ? "Album EMBED Batch is unavailable for track-scoped COMP artwork"
     : staged ? "Already staged; press again to confirm the existing queue entry" : "Write the cover and stage track embedding";
@@ -299,7 +299,8 @@ renderReview = function () {
   if (decision) {
     const musicBrainzResults = decision.kind === "musicbrainz-results";
     const compCandidate = decision.jobKind === "comp" && !!decision.selected;
-    $("upscaleButton").disabled = state.compPreviewMode || decision.jobKind === "comp" && !compCandidate;
+    $("upscaleButton").disabled = state.compPreviewMode || !editableArtworkSource()
+      || decision.jobKind === "comp" && !compCandidate;
     $("writeButton").textContent = decision.jobKind === "comp" ? "EMBED Comp" : "WRITE Cover";
     $("writeButton").disabled = !writable || state.compPreviewMode || musicBrainzResults || !decision.selected;
     if (decision.jobKind === "comp") $("embedBatchButton").disabled = true;
@@ -600,27 +601,42 @@ async function presentQueuedCandidates(job, prompt, options) {
   if ($("workspaceDialog").open) $("workspaceDialog").close();
   const currentDecision = state.queuedDecision;
   const samePrompt = currentDecision?.jobId === job.id && currentDecision?.nonce === prompt.nonce;
-  const preserveSelection = samePrompt && currentDecision?.selected;
+  const selectedKey = samePrompt ? candidateSelectionKey(currentDecision?.selected) : "";
   const previousCandidates = state.queuedDecision?.previousCandidates || state.candidates;
   const previousSourceDiagnostics = state.queuedDecision?.previousSourceDiagnostics || state.sourceDiagnostics;
   const authority = job.progress?.current?.fallback_authority || {};
   const context = {...(prompt.context || {})};
   context.track_title ||= authority.track || "";
   context.track_artist ||= authority.artist || "";
+  const candidates = options.map(queuedCandidate);
+  const diagnostics = job.progress?.current?.diagnostics?.items || [];
+  const candidatesUnchanged = samePrompt && state.candidates.length === candidates.length
+    && state.candidates.every((candidate, index) => candidateSelectionKey(candidate) === candidateSelectionKey(candidates[index]));
+  const diagnosticsUnchanged = samePrompt
+    && JSON.stringify(state.sourceDiagnostics || []) === JSON.stringify(diagnostics);
+  const selected = candidatesUnchanged ? currentDecision.selected
+    : selectedKey ? candidates.find(candidate => candidateSelectionKey(candidate) === selectedKey) || null : null;
   state.queuedDecision = {
     jobId: job.id, jobKind: job.kind, nonce: prompt.nonce, kind: context.kind || "", context,
     payload: job.payload || {}, previousCandidates, previousSourceDiagnostics,
-    selected: preserveSelection ? currentDecision.selected : null,
+    selected,
     authority: {...authority, ...(context.authority || {})},
-    diagnostics: job.progress?.current?.diagnostics?.items || [], authoritySaved: job.progress?.current?.authority_saved || null,
+    diagnostics, authoritySaved: job.progress?.current?.authority_saved || null,
   };
   state.workspace = "find";
-  state.candidates = options.map(queuedCandidate);
+  state.candidates = candidatesUnchanged ? state.candidates : candidates;
   state.sourceDiagnostics = state.queuedDecision.diagnostics;
-  state.activeSource = ""; state.compare.clear(); resetCandidateFilters();
+  if (!samePrompt || !candidatesUnchanged) {
+    state.activeSource = ""; state.compare.clear(); resetCandidateFilters();
+  }
   if (!samePrompt) await focusQueuedAlbum(state.queuedDecision);
   if (!state.queuedDecision || state.queuedDecision.jobId !== job.id) return;
   if (state.pendingCompWrite && state.pendingCompWrite.owner !== compThumbnailOwner()) state.pendingCompWrite = null;
+  // Polling repeats the same waiting prompt. Replacing the candidate DOM on
+  // every poll can cancel a touch/click in progress (especially on iPad) and
+  // makes a retained selection appear to clear. The nonce identifies the
+  // prompt, so leave an unchanged prompt's interactive DOM in place.
+  if (samePrompt && candidatesUnchanged && diagnosticsUnchanged) return;
   renderWorkspace(); renderSources(); renderCandidates(); renderReview();
   setStatus("Queued artwork review · select a candidate, then save from Selected Artwork", "busy");
 }
@@ -1801,7 +1817,7 @@ applyPreviewEffects=function () {
       add('#selectedFrame .selected-image','comp',source,{upscale:!!state.upscalePreview});
       add('#albumPane img','comp',source,{upscale:!!state.upscalePreview});
     } else if (state.editorMode==='album') {
-      const source=state.selectedCover?.image||state.album?.cover;
+      const source=editableArtworkSource();
       add('#selectedFrame .selected-image','cover',source,{upscale:!!state.upscalePreview});
       add('#albumPane img','cover',source,{upscale:!!state.upscalePreview});
     } else if (state.editorMode==='artist' && !state.compReportVisible) {
