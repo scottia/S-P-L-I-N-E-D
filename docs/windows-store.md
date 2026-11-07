@@ -62,10 +62,13 @@ channel and does not require package identity.
 
 `01. Full Release - Build Selected Target and Publish` is the only workflow that
 creates a release version and numeric tag. Its Store modes are both off by
-default; for Windows or All choose either **Submit Update/No Draft** or
-**Submit Draft/No Update**. The run stops before release work unless **Create
-release now** is selected. Owner release policy also requires **Extended
-Windows validation** before either Microsoft Store mode is used. The Windows
+default. For Windows or All, choose **Submit Update/No Draft** only when
+Workflow 01 should contact Partner Center and submit for certification. Choose
+**Review MSIX/No Store Access** to build and retain the validated MSIX for
+manual review/upload without any Microsoft authentication, history lookup, or
+draft creation. The run stops before release work unless **Create release
+now** is selected. Owner release policy also requires **Extended Windows
+validation** before automated Store submission. The Windows
 job performs one clean x64
 build, uses that exact executable for the Portable ZIP and Store MSIX,
 and validates both before the workflow may create the numeric tag. WebGUI /
@@ -144,11 +147,11 @@ The public listing is already live at the
 [official Microsoft Store URL](https://apps.microsoft.com/detail/9p8g4gmbbvbs?hl=en-US&gl=US).
 For a normal future Store update, maintainers choose **Submit Update/No Draft**
 and confirm the release in the corresponding
-`01. Full Release - Build Selected Target and Publish` run. Choose **Submit
-Draft/No Update** instead when manual Partner Center review is wanted.
-Enable **Extended Windows validation** for either Store path; this is a required
-owner release-policy step in addition to the existing release and Store-mode
-confirmations. After selected build QA,
+`01. Full Release - Build Selected Target and Publish` run. Choose **Review
+MSIX/No Store Access** instead when the package will be reviewed and uploaded
+manually. Enable **Extended Windows validation** before automated Store
+submission; this remains a required owner release-policy step in addition to
+the existing release and Store-mode confirmations. After selected build QA,
 the workflow creates the numeric tag, renders GitHub notes and concise Store
 Highlights with the same git-cliff 2.14.2 policy, publishes the GitHub Release
 and GHCR, then stages and submits the exact validated MSIX to the existing product
@@ -172,9 +175,10 @@ exact MSIX, `STORE-HIGHLIGHTS.txt`, and `STORE-SUBMISSION.json` audit record for
 recovery. Store publication requires `AZURE_AD_APPLICATION_CLIENT_ID`,
 `AZURE_AD_APPLICATION_SECRET`,
 `AZURE_AD_TENANT_ID`, and `SELLER_ID` as GitHub Actions secrets; missing values
-fail clearly. Leaving both Store modes off performs no Partner Center
-authentication, staging, Store-submission audit artifact, or Store API
-submission work. Workflow 01 still builds, validates, smoke-tests, and uploads
+fail clearly. Selecting **Review MSIX/No Store Access**, or leaving both Store
+modes off, performs no Partner Center authentication, history lookup, staging,
+Store-submission audit artifact, or Store API submission work. Workflow 01
+still builds, validates, smoke-tests, and uploads
 the unsigned `splined-windows-store-package` artifact on every Windows/All run
 for manual submission. Use
 `02. Store Recovery - Tagged Draft or Update` when an existing tag needs

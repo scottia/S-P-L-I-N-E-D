@@ -29,7 +29,7 @@ on:
         default: false
         type: boolean
       store_submit_draft:
-        description: "RISK: Submit Draft/No Update - stage package and Highlights, then stop for manual Partner Center review."
+        description: "Review MSIX/No Store Access - build and retain the validated package for manual review/upload. Never contact Partner Center."
         required: false
         default: false
         type: boolean
@@ -585,7 +585,7 @@ jobs:
           - Rust toolchain: ``${{ env.RUST_TOOLCHAIN }}``
           - Cargo build: ``${{ steps.windows-build.outputs.elapsed_seconds }} seconds``
           - Manual Store submission MSIX: ``splined-windows-store-package``
-          - Partner Center update: ``${{ inputs.store_submit_update }}``; draft: ``${{ inputs.store_submit_draft }}``
+          - Automated Partner Center update: ``${{ inputs.store_submit_update }}``; manual-review MSIX: ``${{ inputs.store_submit_draft }}``
           - Portable and Store outputs use the same release executable and Rust DLL build.
           "@ | Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY
 
@@ -1027,7 +1027,7 @@ jobs:
           docker push "$IMAGE_NAME:latest"
 
   publish-store:
-    name: Stage or submit Microsoft Store package
+    name: Submit Microsoft Store update
     needs:
       - prepare-release
       - generate-release-notes
@@ -1035,7 +1035,7 @@ jobs:
     if: >-
       ${{
         always() &&
-        (inputs.store_submit_update || inputs.store_submit_draft) &&
+        inputs.store_submit_update &&
         (inputs.platform == 'Windows' || inputs.platform == 'All') &&
         needs.prepare-release.result == 'success' &&
         needs.generate-release-notes.result == 'success' &&
@@ -1158,24 +1158,21 @@ jobs:
             store-submission/STORE-SUBMISSION.json
           if-no-files-found: error
 
-      - name: Stage package and Highlights; submit only in Update mode
+      - name: Stage package and Highlights and submit the selected Store update
         shell: pwsh
         env:
-          STORE_DRAFT: ${{ inputs.store_submit_draft }}
           AZURE_AD_APPLICATION_CLIENT_ID: ${{ secrets.AZURE_AD_APPLICATION_CLIENT_ID }}
           AZURE_AD_APPLICATION_SECRET: ${{ secrets.AZURE_AD_APPLICATION_SECRET }}
           AZURE_AD_TENANT_ID: ${{ secrets.AZURE_AD_TENANT_ID }}
           SELLER_ID: ${{ secrets.SELLER_ID }}
         run: |
           $ErrorActionPreference = "Stop"
-          $draftOnly = $env:STORE_DRAFT -eq 'true'
           & windows/package/Publish-StoreUpdate.ps1 `
             -PackagePath store-submission/SPLINED-x64-store-unsigned.msix `
             -HighlightsPath store-submission/STORE-HIGHLIGHTS.txt `
             -BaselineMetadataPath store-submission/STORE-SUBMISSION.json `
             -ExpectedVersion ${{ needs.prepare-release.outputs.version }} `
-            -ProductId 9P8G4GMBBVBS `
-            -DraftOnly:$draftOnly
+            -ProductId 9P8G4GMBBVBS
 
   release-summary:
     name: Release summary
@@ -1256,7 +1253,7 @@ jobs:
           expect_result "GHCR publication" "$GHCR_RESULT" success
 
           if { [ "$RELEASE_PLATFORM" = Windows ] || [ "$RELEASE_PLATFORM" = All ]; } &&
-             { [ "$STORE_UPDATE" = true ] || [ "$STORE_DRAFT" = true ]; }; then
+             [ "$STORE_UPDATE" = true ]; then
             expect_result "Microsoft Store selected mode" "$STORE_RESULT" success
           else
             expect_result "Microsoft Store selected mode" "$STORE_RESULT" skipped
@@ -1284,13 +1281,11 @@ jobs:
             echo "- GitHub Release: published"
             echo "- GHCR: \`ghcr.io/scottia/splined:v$RELEASE_VERSION\`"
             echo "- GHCR latest: \`ghcr.io/scottia/splined:latest\`"
-            echo "- Microsoft Store update: \`${{ inputs.store_submit_update }}\`; draft: \`${{ inputs.store_submit_draft }}\`"
+            echo "- Automated Partner Center update: \`${{ inputs.store_submit_update }}\`; manual-review MSIX: \`${{ inputs.store_submit_draft }}\`"
             if [ "${{ needs.publish-store.result }}" = "success" ]; then
-              if [ "${{ inputs.store_submit_draft }}" = true ]; then
-                echo "- Microsoft Store: package and Highlights staged as a draft; manual review required"
-              else
-                echo "- Microsoft Store: package and Highlights submitted for certification"
-              fi
+              echo "- Microsoft Store: package and Highlights submitted for certification"
+            elif [ "${{ inputs.store_submit_draft }}" = true ]; then
+              echo "- Microsoft Store: validated manual-review MSIX artifact created; Partner Center not contacted"
             else
               echo "- Microsoft Store: not run (disabled or no Windows target selected)"
             fi
