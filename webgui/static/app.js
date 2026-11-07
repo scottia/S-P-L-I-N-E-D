@@ -298,6 +298,11 @@ function candidateKind(candidate) {
   if (kind.includes("cover")) return "cover";
   return state.editorMode === "album" ? "cover" : "artist";
 }
+function candidateSelectionKey(candidate) {
+  if (!candidate) return "";
+  const queueValue = candidate.queueValue ?? candidate.number ?? candidate.index ?? "";
+  return [queueValue, candidate.image || "", candidate.source || "", candidate.name || candidate.title || ""].join("\u001f");
+}
 const MEDIA_STATUSES = [["unprocessed", "Unprocessed"], ["incomplete", "Incomplete"], ["processed", "Processed"], ["bypassed", "Bypassed"], ["partial", "Partial / Error"], ["artistComplete", "Artist Complete"], ["artistBypass", "Artist Bypass"]];
 const MEDIA_STATUS_COLORS = {all: "#eef8ff", unprocessed: "#eef8ff", incomplete: "#50b9ff", processed: "#efa54e", bypassed: "#ff5c66", partial: "#b55ce4", artistComplete: "#4cd989", artistBypass: "#4099ff"};
 const MEDIA_STATUS_COLORS_LIGHT = {all: "#304b5b", unprocessed: "#304b5b", incomplete: "#12659a", processed: "#99600b", bypassed: "#b72e40", partial: "#8036a8", artistComplete: "#176a3e", artistBypass: "#185aab"};
@@ -456,6 +461,17 @@ async function cancelMismatchedCompWork(scope) {
 }
 function currentCandidate() {
   return state.editorMode === "album" ? state.selectedCover : (state.radioBanner && !state.radioArtist ? state.selectedBanner : state.selectedPortrait);
+}
+function editableArtworkSource() {
+  const decision = activeArtworkDecision();
+  if (decision?.selected?.image) return decision.selected.image;
+  if (state.editorMode === "album") return state.selectedCover?.image || state.album?.cover || "";
+  if (state.editorMode === "fallback") return state.fallbackTrack?.image || "";
+  if (state.editorMode === "artist" && state.compReportVisible) return state.compTrack?.image || "";
+  if (state.radioCurrent) return state.selectedPortrait?.image || state.artist?.portrait
+    || state.selectedBanner?.image || state.artist?.banner || "";
+  if (state.radioBanner && !state.radioArtist) return state.selectedBanner?.image || state.artist?.banner || "";
+  return state.selectedPortrait?.image || state.artist?.portrait || "";
 }
 
 function renderLibrary() {
@@ -1573,7 +1589,8 @@ function renderCandidates() {
     : candidateItems.length ? "No candidates match the filter." : "Press LAUNCH to search artist art, or select an album to inspect folder art.")); return; }
   for (const candidate of visible) {
     const kind = candidateKind(candidate);
-    const active = decision?.selected === candidate || state.selectedCover === candidate || state.selectedPortrait === candidate || state.selectedBanner === candidate;
+    const active = !!(decision?.selected && candidateSelectionKey(decision.selected) === candidateSelectionKey(candidate)
+      || state.selectedCover === candidate || state.selectedPortrait === candidate || state.selectedBanner === candidate);
     const card = node("div", "candidate-card" + (kind === "banner" ? " banner" : "") + (decision ? " queued" : "") + (active ? " active" : ""));
     const picture = node("div", "candidate-picture");
     const main = node("button", "candidate-image-button"); main.type = "button"; main.setAttribute("aria-label", "Preview " + candidate.name);
@@ -1615,8 +1632,9 @@ function selectCandidate(candidate, target) {
   state.reviewCleared = false;
   state.upscalePreview = null; state.compThumbnailPreview = null; state.pendingCompWrite = null;
   state.renderedPreview = {};
-  if (state.queuedDecision) {
-    state.queuedDecision.selected = candidate;
+  const decision = activeArtworkDecision();
+  if (decision) {
+    decision.selected = candidate;
     renderCandidates(); renderPanes(); renderReview();
     setStatus("Queued candidate " + candidate.queueNumber + " previewed · save from Selected Artwork");
     return;
@@ -1817,9 +1835,7 @@ function renderReview() {
   $("writeButton").textContent = artistEntry ? "Artist Art" : state.editorMode === "artist" && state.compReportVisible && state.compTrack ? "EMBED Comp"
     : state.editorMode === "artist" ? "WRITE Artist Art" : state.editorMode === "fallback" ? "EMBED Comp" : "WRITE Cover";
   $("writeButton").disabled = !(artistEntry && state.artist);
-  $("upscaleButton").disabled = state.editorMode === "album" ? !(state.selectedCover?.image || state.album?.cover)
-    : state.editorMode === "fallback" ? !state.fallbackTrack?.image
-    : state.editorMode === "artist" && state.compReportVisible ? !state.compTrack?.image : false;
+  $("upscaleButton").disabled = !editableArtworkSource();
   $("embedBatchButton").disabled = !(state.editorMode === "album" && state.album && (state.selectedCover?.image || state.album.cover));
   // Selected Artwork already makes write state clear through its buttons,
   // metadata, embedded ribbon, and the separate red override notice.
@@ -2254,10 +2270,7 @@ $("upscaleButton").addEventListener("click", async () => {
   const decision = activeArtworkDecision();
   const compContext = decision?.jobKind === "comp" || state.editorMode === "fallback" || state.editorMode === "artist" && state.compReportVisible;
   if (compContext) invalidateCompThumbnail();
-  const source = decision?.jobKind === "comp" && decision.selected ? decision.selected.image
-    : state.editorMode === "fallback" ? state.fallbackTrack?.image
-    : state.editorMode === "artist" && state.compReportVisible ? state.compTrack?.image
-    : state.selectedCover?.image || state.album?.cover;
+  const source = editableArtworkSource();
   if (!source) { setStatus("Choose artwork to preview", "error"); return; }
   const request = state.selectionRequest, albumId = state.album?.id, trackKey = state.fallbackTrack?.key;
   const compTrackKey = state.compTrack?.key;
