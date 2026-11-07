@@ -254,7 +254,7 @@ impl Default for UiPreferences {
             status_bar_intensity: "Full".to_string(),
             status_bar_position: "Top".to_string(),
             status_bar_size: "Small".to_string(),
-            display_scale_percent: 90,
+            display_scale_percent: 100,
             workspace_mode: 0,
             library_view: "artists".to_string(),
             status_filter: "all".to_string(),

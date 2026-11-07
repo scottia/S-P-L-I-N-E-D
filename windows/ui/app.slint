@@ -21,7 +21,7 @@ export struct UiStatusFilterRow { key: string, label: string, count: int, enable
 
 export global AppTheme {
     in-out property <string> appearance: "System";
-    in-out property <float> font-scale: 0.9;
+    in-out property <float> font-scale: 1.0;
     out property <bool> chalk: root.appearance == "Chalk";
     out property <bool> light: root.appearance == "Light" || (root.appearance == "System" && Palette.background == #fafafa);
     out property <color> window-background: root.chalk ? #18191b : (root.light ? #aebfca : #030d20);
@@ -1398,6 +1398,7 @@ export component AppWindow inherits Window {
     in property <string> current-artist;
     in property <string> current-album;
     in property <string> selected-album-processing-state;
+    in property <string> selected-album-name;
     in property <int> selected-album-track-count;
     in property <int> selected-album-embedded-count;
     in property <string> current-path;
@@ -1563,8 +1564,8 @@ export component AppWindow inherits Window {
     in-out property <string> settings-status-bar-intensity: "Full";
     in-out property <string> settings-status-bar-position: "Top";
     in-out property <string> settings-status-bar-size: "Small";
-    in-out property <int> display-scale-percent: 90;
-    in-out property <string> settings-display-scale: "90%";
+    in-out property <int> display-scale-percent: 100;
+    in-out property <string> settings-display-scale: "100%";
     in-out property <bool> reset-settings-preview-visible: false;
     in-out property <bool> reset-settings-confirm-visible: false;
     in-out property <string> reset-settings-confirmation-text;
@@ -2282,7 +2283,7 @@ export component AppWindow inherits Window {
                                                                 Text { text: root.artist-summary-visible ? "▴" : "▾"; color: root.artist-summary-visible ? AppTheme.image-surface : AppTheme.cyan; font-size: 10px * AppTheme.font-scale; horizontal-alignment: center; vertical-alignment: center; }
                                                                 TouchArea { mouse-cursor: pointer; clicked => { root.artist-summary-visible = !root.artist-summary-visible; } }
                                                             }
-                                                            Text { x: artist-header.thumbnail-x; y: artist-header.thumbnail-y + artist-header.thumbnail-size + 8px; width: artist-header.thumbnail-size; height: 36px; text: root.artist-overview-name; color: AppTheme.yellow; font-size: 18px * AppTheme.font-scale; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; overflow: elide; }
+                                                            Text { x: artist-header.thumbnail-x; y: artist-header.thumbnail-y + artist-header.thumbnail-size + 8px; width: artist-header.thumbnail-size; height: 36px; text: root.artist-overview-name; color: AppTheme.yellow; font-size: 18px * AppTheme.font-scale; font-weight: 800; horizontal-alignment: left; vertical-alignment: center; overflow: elide; }
                                                         }
                                                         VerticalLayout { padding-top: root.artist-edit-available ? 0px : 16px; spacing: 4px; horizontal-stretch: 1; max-width: 10000px; alignment: start;
                                                             if root.artist-edit-available: HorizontalLayout { height: 24px; spacing: 8px; alignment: end;
@@ -2296,8 +2297,13 @@ export component AppWindow inherits Window {
                                                                 }
                                                             }
                                                             biography-area := Rectangle {
-                                                                height: root.artist-summary-visible ? 126px : (root.artist-biography-expanded && overview-panel.biography-overflows ? biography-render-measure.preferred-height : overview-panel.biography-collapsed-height);
-                                                                horizontal-stretch: 1; background: root.artist-summary-visible ? AppTheme.card : transparent;
+                                                                // Keep the Artist table compact beside the portrait instead of
+                                                                // consuming the complete biography lane. Long role/genre values
+                                                                // wrap inside this bounded half-width panel.
+                                                                width: root.artist-summary-visible ? min(520px, max(340px, artist-scroll.visible-width * 0.5)) : 0px;
+                                                                height: root.artist-summary-visible ? 174px : (root.artist-biography-expanded && overview-panel.biography-overflows ? biography-render-measure.preferred-height : overview-panel.biography-collapsed-height);
+                                                                horizontal-stretch: root.artist-summary-visible ? 0 : 1;
+                                                                background: root.artist-summary-visible ? AppTheme.card : transparent;
                                                                 border-color: root.artist-summary-visible ? AppTheme.cyan : transparent; border-width: root.artist-summary-visible ? 1px : 0px; border-radius: 5px;
                                                                 biography-render-measure := Text {
                                                                     visible: false; width: biography-copy.width;
@@ -2305,16 +2311,17 @@ export component AppWindow inherits Window {
                                                                 }
                                                                 biography-copy := Text {
                                                                     visible: !root.artist-summary-visible;
-                                                                    // Reserve the link's width so the final line never runs underneath it.
-                                                                    width: max(1px, parent.width - (overview-panel.biography-overflows ? biography-link-measure.preferred-width + 6px : 0px)); height: parent.height;
+                                                                    // Fill the five-line block. The toggle masks only the end of
+                                                                    // line five instead of narrowing every line in the paragraph.
+                                                                    width: parent.width; height: parent.height;
                                                                     text: root.artist-overview-biography == "" ? (root.artist-overview-navidrome-linked ? "Navidrome has not returned an artist biography for this artist." : "No matching Navidrome artist was found; check the Artist lookup name or ID.") : root.artist-overview-biography;
                                                                     color: root.artist-overview-biography == "" ? AppTheme.secondary-foreground : AppTheme.foreground;
                                                                     font-size: 18px * AppTheme.font-scale; wrap: word-wrap; overflow: root.artist-biography-expanded ? clip : elide;
                                                                 }
                                                                 if overview-panel.biography-overflows && !root.artist-summary-visible: Rectangle {
-                                                                    x: max(0px, parent.width - self.width); y: max(0px, parent.height - self.height); width: biography-link-measure.preferred-width; height: overview-panel.biography-line-height;
-                                                                    background: transparent;
-                                                                    Text { text: biography-link-measure.text; color: AppTheme.cyan; font-size: 18px * AppTheme.font-scale; }
+                                                                    x: max(0px, parent.width - self.width); y: max(0px, parent.height - self.height); width: biography-link-measure.preferred-width + 14px; height: overview-panel.biography-line-height;
+                                                                    background: AppTheme.chalk ? @linear-gradient(90deg, #25282a00, #25282af5 24%) : (AppTheme.light ? @linear-gradient(90deg, #c0d0d900, #c0d0d9f5 24%) : @linear-gradient(90deg, #06172d00, #06172df5 24%));
+                                                                    Text { x: 10px; width: parent.width - 10px; text: biography-link-measure.text; color: AppTheme.cyan; font-size: 18px * AppTheme.font-scale; horizontal-alignment: right; }
                                                                     biography-toggle := TouchArea { mouse-cursor: pointer; clicked => { root.artist-biography-expanded = !root.artist-biography-expanded; } }
                                                                 }
                                                                 if root.artist-summary-visible: GridLayout { padding: 8px; spacing: 4px;
@@ -2325,17 +2332,20 @@ export component AppWindow inherits Window {
                                                                     Text { row: 2; col: 0; text: "Albums"; color: AppTheme.cyan; font-size: 12px * AppTheme.font-scale; font-weight: 800; }
                                                                     Text { row: 2; col: 1; text: root.artist-overview-legend-counts.shown; color: AppTheme.foreground; font-size: 13px * AppTheme.font-scale; }
                                                                     Text { row: 3; col: 0; text: "Roles"; color: AppTheme.cyan; font-size: 12px * AppTheme.font-scale; font-weight: 800; }
-                                                                    Text { row: 3; col: 1; text: root.artist-overview-roles == "" ? "Primary Artist" : root.artist-overview-roles; color: AppTheme.foreground; font-size: 13px * AppTheme.font-scale; overflow: elide; }
+                                                                    Text { row: 3; col: 1; text: root.artist-overview-roles == "" ? "Primary Artist" : root.artist-overview-roles; color: AppTheme.foreground; font-size: 13px * AppTheme.font-scale; wrap: word-wrap; overflow: clip; }
                                                                     Text { row: 4; col: 0; text: "MusicBrainz ID"; color: AppTheme.cyan; font-size: 12px * AppTheme.font-scale; font-weight: 800; }
-                                                                    Text { row: 4; col: 1; text: root.artist-overview-musicbrainz-id == "" ? "Not indexed" : root.artist-overview-musicbrainz-id; color: AppTheme.foreground; font-size: 13px * AppTheme.font-scale; overflow: elide; }
+                                                                    Rectangle { row: 4; col: 1; height: 18px; background: transparent;
+                                                                        Text { text: root.artist-overview-musicbrainz-id == "" ? "Not indexed" : root.artist-overview-musicbrainz-id; color: root.artist-overview-musicbrainz-id == "" ? AppTheme.secondary-foreground : AppTheme.cyan; font-size: 13px * AppTheme.font-scale; overflow: elide; }
+                                                                        TouchArea { enabled: root.artist-overview-musicbrainz-id != ""; mouse-cursor: root.artist-overview-musicbrainz-id == "" ? default : pointer; clicked => root.open-artist-musicbrainz(); }
+                                                                    }
                                                                     Text { row: 5; col: 0; text: "Genres"; color: AppTheme.cyan; font-size: 12px * AppTheme.font-scale; font-weight: 800; }
-                                                                    Text { row: 5; col: 1; text: root.artist-overview-genres == "" ? "Not available" : root.artist-overview-genres; color: AppTheme.foreground; font-size: 13px * AppTheme.font-scale; overflow: elide; }
+                                                                    Text { row: 5; col: 1; text: root.artist-overview-genres == "" ? "Not available" : root.artist-overview-genres; color: AppTheme.foreground; font-size: 13px * AppTheme.font-scale; wrap: word-wrap; overflow: clip; }
                                                                 }
                                                             }
                                                         }
                                                     }
-                                                    if root.overview-mode != "Fallback" && root.current-album != "": HorizontalLayout { height: 22px; spacing: 6px;
-                                                        Text { text: root.current-album; color: AppTheme.yellow; font-size: 14px * AppTheme.font-scale; font-weight: 800; overflow: elide; max-width: 430px; }
+                                                    if root.overview-mode != "Fallback" && root.selected-album-name != "": HorizontalLayout { height: 22px; spacing: 6px; alignment: start; horizontal-stretch: 0;
+                                                        Text { text: root.selected-album-name; color: AppTheme.yellow; font-size: 14px * AppTheme.font-scale; font-weight: 800; overflow: elide; max-width: 430px; horizontal-stretch: 0; }
                                                         Text { text: "●"; color: #efa54e; font-size: 14px * AppTheme.font-scale; font-weight: 800; }
                                                         Text { text: root.selected-album-processing-state; color: #efa54e; font-size: 14px * AppTheme.font-scale; font-weight: 800; }
                                                         Text { text: root.selected-album-track-count + " tracks · " + root.selected-album-embedded-count + " embedded"; color: AppTheme.foreground; font-size: 14px * AppTheme.font-scale; }
@@ -2376,7 +2386,7 @@ export component AppWindow inherits Window {
                                                                     }
                                                                     Text { text: similar.name; color: AppTheme.foreground; font-size: 14px * AppTheme.font-scale; horizontal-alignment: center; overflow: elide; }
                                                                 }
-                                                                if similar.available: Rectangle { x: 51px; y: 43px; width: 12px; height: 12px; border-radius: 6px; border-width: 2px; border-color: AppTheme.image-surface; background: AppTheme.green; }
+                                                                Rectangle { x: 51px; y: 43px; width: 12px; height: 12px; border-radius: 6px; border-width: 2px; border-color: AppTheme.image-surface; background: AppTheme.green; }
                                                                 TouchArea { enabled: similar.available; mouse-cursor: similar.available ? pointer : default; clicked => root.artist-overview-similar-selected(similar.name); }
                                                             }
                                                         }

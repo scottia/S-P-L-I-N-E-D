@@ -172,11 +172,17 @@ fn artist_overview_keeps_native_parity_controls_and_album_row_navigation() {
     assert!(ui.contains("root.artist-overview-name; color: AppTheme.yellow"));
     assert!(ui.contains("padding-top: root.artist-edit-available ? 0px : 16px"));
     assert!(ui.contains("width: 72px; height: 76px; background: transparent; opacity: 1"));
+    assert!(ui.contains("font-scale: 1.0"));
+    assert!(ui.contains("display-scale-percent: 100"));
+    assert!(ui.contains("width: parent.width; height: parent.height"));
+    assert!(ui.contains("min(520px, max(340px, artist-scroll.visible-width * 0.5))"));
+    assert!(ui.contains("clicked => root.open-artist-musicbrainz()"));
+    assert!(ui.contains("root.selected-album-name != \"\""));
+    assert!(ui.contains("Rectangle { x: 51px; y: 43px; width: 12px; height: 12px"));
     assert!(!ui.contains("if root.overview-mode == \"Album\": Heading"));
     assert!(ui.contains("if root.artist-summary-visible: GridLayout"));
-    assert!(ui.contains("root.overview-mode != \"Fallback\" && root.current-album != \"\""));
     assert!(ui.contains("🎵 Artist & Featured Artist Top Genres"));
-    assert!(ui.contains("if similar.available: Rectangle"));
+    assert!(ui.contains("TouchArea { enabled: similar.available"));
     assert!(ui.contains("root.selected-album-track-count + \" tracks · \""));
     assert!(ui.contains(
         "status-only-album-selection: row.kind == \"album-child\" || row.kind == \"folder\""

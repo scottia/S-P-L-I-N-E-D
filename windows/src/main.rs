@@ -9208,7 +9208,7 @@ fn bind_callbacks(
                     .get_settings_display_scale()
                     .trim_end_matches('%')
                     .parse::<u16>()
-                    .unwrap_or(90)
+                    .unwrap_or(100)
                     .clamp(80, 125);
                 let mut preferences = splined_core::settings::load_ui_preferences()?;
                 preferences.status_bar_intensity = intensity.to_string();
@@ -19092,6 +19092,12 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
     ui.set_selected_album_processing_state(
         focused_album
             .map(|album| album.snapshot.status.as_str())
+            .unwrap_or_default()
+            .into(),
+    );
+    ui.set_selected_album_name(
+        focused_album
+            .map(|album| album.snapshot.title.as_str())
             .unwrap_or_default()
             .into(),
     );
