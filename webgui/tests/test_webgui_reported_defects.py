@@ -295,6 +295,10 @@ class ReportedDefectTests(unittest.TestCase):
             'artistMbidLink.href = "https://musicbrainz.org/artist/" + encodeURIComponent(artistMbid)',
             application,
         )
+        self.assertIn(".similar-artists{display:flex;justify-content:flex-start;align-items:flex-start;gap:6px", styles)
+        self.assertIn(".similar-card{width:72px", styles)
+        self.assertIn(".similar-avatar{display:grid;place-items:center;width:58px;height:58px", styles)
+        self.assertIn(".similar-status{position:absolute;right:6px;top:43px", styles)
         self.assertIn('id="mediaFilter" class="filter-body" hidden', document)
         self.assertIn('id="mediaFilterToggle" type="button" aria-expanded="false"', document)
         self.assertIn('id="aboutButton"', document)
