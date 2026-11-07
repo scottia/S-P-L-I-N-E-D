@@ -599,6 +599,15 @@ function albumPresentationGroup(album, artist) {
   const kind = albumBannerKind(album, artist);
   return {artist: 0, featuring: 1, soundtrack: 2, various: 3, compiled: 4}[kind] ?? 0;
 }
+function compareCompReportGroups(left, right) {
+  // COMP folders are presented in the same newest-first direction as the
+  // native overview. A large share of legacy COMP folders have no year, so
+  // the title tie-breaker must also be descending instead of silently
+  // reverting the browser report to ascending order.
+  return (parseInt(right.year, 10) || 0) - (parseInt(left.year, 10) || 0)
+    || String(right.name || "").localeCompare(String(left.name || ""), undefined, {sensitivity: "base"})
+    || String(right.id || "").localeCompare(String(left.id || ""));
+}
 function albumOverride(album) {
   if (!album?.id) return null;
   return state.albumOverrides.get(String(album.id)) || (album.override_writer ? {
@@ -1130,11 +1139,15 @@ function renderArtistCompReport() {
   const columns = node("div", "fallback-report-columns"); columns.append(node("span", "", "ALBUM"), node("span", "", "TRACK FILE")); report.append(columns);
   for (const group of state.compGroups) {
     const collapsed = state.compCollapsed.has(group.id);
-    const groupComplete = group.tracks.filter(track => track.completed).length;
+    const groupBlue = group.tracks.filter(track => track.status === "blue").length;
+    const groupRecorded = group.tracks.length - groupBlue;
     const albumRow = node("button", "fallback-report-album"); albumRow.type = "button";
     albumRow.dataset.compAlbumId = group.id;
-    albumRow.append(node("strong", "", (collapsed ? "▸  " : "▾  ") + group.name),
-      node("span", "", `${group.tracks.length} tracks · ${groupComplete} recorded, ${group.tracks.length - groupComplete} need artwork`));
+    albumRow.append(
+      node("span", "fallback-report-toggle", collapsed ? "▸" : "▾"),
+      node("strong", "", group.name),
+      node("span", "fallback-report-album-counts", `${group.tracks.length} track${group.tracks.length === 1 ? "" : "s"} · ${groupRecorded} recorded, ${groupBlue} need artwork`),
+    );
     albumRow.addEventListener("click", () => { if (collapsed) state.compCollapsed.delete(group.id); else state.compCollapsed.add(group.id); renderArtistCompReport(); });
     report.append(albumRow);
     if (collapsed) continue;
@@ -1176,10 +1189,7 @@ async function openArtistCompReport(albumId = "") {
   try {
     const compGroups = await api("/api/artist/comp-report?id=" + encodeURIComponent(artistId));
     if (request !== state.compReportRequest || artistId !== state.artist?.id) return;
-    state.compGroups = [...compGroups].sort((a, b) =>
-      (parseInt(b.year, 10) || 0) - (parseInt(a.year, 10) || 0)
-      || String(a.name || "").localeCompare(String(b.name || ""), undefined, {sensitivity: "base"})
-      || String(a.id || "").localeCompare(String(b.id || "")));
+    state.compGroups = [...compGroups].sort(compareCompReportGroups);
     state.compReportLoading = false;
     if (!state.compGroups.length) { state.compReportVisible = false; setStatus("This Artist has no indexed COMP tracks", "error"); renderHero(); return; }
     state.compReportVisible = true; state.compPreviewMode = false; state.compTrack = null;
