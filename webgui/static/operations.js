@@ -341,7 +341,9 @@ async function launchArtist() {
   if (!state.artist) return;
   const ids = [...state.mediaSelected].filter(id => state.artist.albums.some(album => album.id === id && artistAlbumEligible(album)));
   if (!ids.length) throw new Error("Select at least one unfinished, eligible Album for this Artist");
-  const result = await post("/api/jobs", {kind: "scan", payload: {album_ids: ids}});
+  setStatus(`Opening Album review · ${ids.length} selected`, "busy");
+  const result = await post("/api/jobs", {kind: "scan", payload: {artist_id: state.artist.id, album_ids: ids}});
+  if (result.already_queued) setStatus("Resuming the active Album review before starting another batch", "busy");
   await reviewJob(result.id);
 }
 async function skipQueuedAlbum() {
@@ -476,6 +478,7 @@ function clearQueuedDecision() {
 }
 async function focusQueuedAlbum(decision) {
   const albumId = decision?.context?.album_id;
+  const scanArtistId = decision?.jobKind === "scan" ? String(decision?.payload?.artist_id || "") : "";
   const scopeArtistId = decision?.jobKind === "comp" ? String(decision?.payload?.artist_id || "") : "";
   const scopeKeys = Array.isArray(decision?.payload?.track_keys) ? decision.payload.track_keys : [];
   const promptTrackKey = String(decision?.context?.track_key || (scopeKeys.length === 1 ? scopeKeys[0] : ""));
@@ -538,8 +541,10 @@ async function focusQueuedAlbum(decision) {
   const album = await api("/api/album?id=" + encodeURIComponent(albumId));
   if (request !== state.selectionRequest || state.queuedDecision !== decision) return;
   let artist = state.artist, compAlbums = state.compAlbums;
-  if (!albumInCurrentArtistContext(albumId) && artist?.id !== album.artist_id) {
-    const overview = await api("/api/artist/overview?id=" + encodeURIComponent(album.artist_id));
+  const overviewArtistId = scanArtistId || album.artist_id;
+  if ((scanArtistId && artist?.id !== scanArtistId)
+    || (!scanArtistId && !albumInCurrentArtistContext(albumId) && artist?.id !== album.artist_id)) {
+    const overview = await api("/api/artist/overview?id=" + encodeURIComponent(overviewArtistId));
     if (request !== state.selectionRequest || state.queuedDecision !== decision) return;
     artist = overview.artist; compAlbums = overview.comp_albums || [];
   }
@@ -551,6 +556,12 @@ async function focusQueuedAlbum(decision) {
   state.fallbackTracks = tracks; state.fallbackTrack = null; state.upscalePreview = null;
   state.compGroups = []; state.compReportVisible = false; state.compTrack = null;
   decision.previousCandidates = fallback ? [] : album.candidates || [];
+  if (scanArtistId) {
+    state.libraryMode = "artists";
+    state.mediaSelected.clear();
+    state.mediaSelected.add(scanArtistId);
+    for (const selectedId of decision.payload?.album_ids || []) state.mediaSelected.add(selectedId);
+  }
   if (decision.jobKind !== "scan") markSelectedAlbum(album);
   renderLibrary(); renderHero(); renderSources(); renderCandidates(); renderWorkspace();
   loadArtistMetadata(album.artist_id);

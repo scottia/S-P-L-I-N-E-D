@@ -511,7 +511,6 @@ jobs:
           $manifest | ConvertTo-Json | Set-Content -Encoding utf8 release-assets/windows-update.json
 
       - name: Install pinned upstream WinAppCli for Store packaging
-        if: ${{ (inputs.store_submit_update || inputs.store_submit_draft) && (inputs.platform == 'Windows' || inputs.platform == 'All') }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -527,7 +526,6 @@ jobs:
 
       - name: Build and strictly validate unsigned production Store MSIX from release binaries
         id: store-package
-        if: ${{ (inputs.store_submit_update || inputs.store_submit_draft) && (inputs.platform == 'Windows' || inputs.platform == 'All') }}
         shell: pwsh
         env:
           RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
@@ -550,7 +548,6 @@ jobs:
           "path=$storePackage" | Add-Content $env:GITHUB_OUTPUT
 
       - name: Development-sign, install, activate, native-smoke, and uninstall isolated Store QA package
-        if: ${{ (inputs.store_submit_update || inputs.store_submit_draft) && (inputs.platform == 'Windows' || inputs.platform == 'All') }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -571,8 +568,7 @@ jobs:
             release-assets/windows-update.json
           if-no-files-found: error
 
-      - name: Upload internal Store package artifact
-        if: ${{ (inputs.store_submit_update || inputs.store_submit_draft) && (inputs.platform == 'Windows' || inputs.platform == 'All') }}
+      - name: Upload manual Store submission MSIX artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: splined-windows-store-package
@@ -588,7 +584,8 @@ jobs:
           - Cargo dependency cache exact hit: ``${{ steps.rust-cache.outputs.cache-hit }}``
           - Rust toolchain: ``${{ env.RUST_TOOLCHAIN }}``
           - Cargo build: ``${{ steps.windows-build.outputs.elapsed_seconds }} seconds``
-          - Microsoft Store update: ``${{ inputs.store_submit_update }}``; draft: ``${{ inputs.store_submit_draft }}``
+          - Manual Store submission MSIX: ``splined-windows-store-package``
+          - Partner Center update: ``${{ inputs.store_submit_update }}``; draft: ``${{ inputs.store_submit_draft }}``
           - Portable and Store outputs use the same release executable and Rust DLL build.
           "@ | Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY
 

@@ -172,8 +172,11 @@ exact MSIX, `STORE-HIGHLIGHTS.txt`, and `STORE-SUBMISSION.json` audit record for
 recovery. Store publication requires `AZURE_AD_APPLICATION_CLIENT_ID`,
 `AZURE_AD_APPLICATION_SECRET`,
 `AZURE_AD_TENANT_ID`, and `SELLER_ID` as GitHub Actions secrets; missing values
-fail clearly. Leaving both Store modes off performs no Store package,
-QA, authentication, Store-submission artifact, or Store API submission work. Use
+fail clearly. Leaving both Store modes off performs no Partner Center
+authentication, staging, Store-submission audit artifact, or Store API
+submission work. Workflow 01 still builds, validates, smoke-tests, and uploads
+the unsigned `splined-windows-store-package` artifact on every Windows/All run
+for manual submission. Use
 `02. Store Recovery - Tagged Draft or Update` when an existing tag needs
 Store publication or a rebuilt package. See
 [Release automation](release-automation.md).
