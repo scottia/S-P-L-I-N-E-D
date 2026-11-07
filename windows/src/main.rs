@@ -685,6 +685,100 @@ struct SavedArtistPackage {
     banner: Option<PathBuf>,
 }
 
+const BIOGRAPHY_SPACE_EM: f32 = 0.28;
+
+fn biography_character_width_em(character: char) -> f32 {
+    match character {
+        'i' | 'l' | 'j' | 'I' | '!' | '|' => 0.26,
+        'f' | 'r' | 't' | '(' | ')' | '[' | ']' => 0.36,
+        'm' | 'w' => 0.78,
+        'M' | 'W' => 0.88,
+        'A'..='Z' => 0.64,
+        '0'..='9' => 0.55,
+        '.' | ',' | ':' | ';' | '\'' | '’' | '"' => 0.27,
+        '-' | '–' | '—' | '/' | '\\' => 0.40,
+        character if character.is_ascii_lowercase() => 0.51,
+        character if character.is_whitespace() => BIOGRAPHY_SPACE_EM,
+        _ => 0.58,
+    }
+}
+
+fn biography_word_width_em(word: &str) -> f32 {
+    word.chars().map(biography_character_width_em).sum()
+}
+
+/// Produce line/word models for the CSS `text-align: justify` shape that Slint
+/// 1.18's Text element cannot render natively. The UI gives each complete line
+/// a `space-between` layout and leaves the final line naturally left aligned.
+fn layout_artist_biography(
+    biography: &str,
+    width_px: f32,
+    font_scale: f32,
+) -> Vec<UiBiographyLine> {
+    let width_px = width_px.max(80.0);
+    let font_px = 18.0 * font_scale.clamp(0.5, 3.0);
+    // Leave a small safety margin for renderer/font-metric differences so a
+    // justified line never wraps into an accidental sixth collapsed line.
+    let target_width_em = (width_px / font_px * 0.90).max(8.0);
+    let paragraphs = biography.split('\n').map(str::trim).collect::<Vec<_>>();
+    let mut rendered = Vec::new();
+
+    for paragraph in paragraphs {
+        if paragraph.is_empty() {
+            if rendered
+                .last()
+                .is_some_and(|line: &UiBiographyLine| line.words.row_count() > 0)
+            {
+                rendered.push(UiBiographyLine {
+                    words: model(Vec::<SharedString>::new()),
+                    justified: false,
+                });
+            }
+            continue;
+        }
+
+        let mut lines: Vec<Vec<&str>> = Vec::new();
+        let mut current = Vec::new();
+        let mut current_width = 0.0;
+        for word in paragraph.split_whitespace() {
+            let word_width = biography_word_width_em(word);
+            let proposed = if current.is_empty() {
+                word_width
+            } else {
+                current_width + BIOGRAPHY_SPACE_EM + word_width
+            };
+            if !current.is_empty() && proposed > target_width_em {
+                lines.push(std::mem::take(&mut current));
+                current_width = word_width;
+                current.push(word);
+            } else {
+                current.push(word);
+                current_width = proposed;
+            }
+        }
+        if !current.is_empty() {
+            lines.push(current);
+        }
+
+        let last_line = lines.len().saturating_sub(1);
+        for (line_index, words) in lines.into_iter().enumerate() {
+            let justified = line_index != last_line && words.len() > 1;
+            rendered.push(UiBiographyLine {
+                words: model(words.into_iter().map(SharedString::from).collect()),
+                justified,
+            });
+        }
+    }
+
+    rendered
+}
+
+fn bind_biography_text_callbacks(ui: &AppWindow) {
+    ui.on_layout_artist_biography(|biography, width, scale| {
+        model(layout_artist_biography(biography.as_str(), width, scale))
+    });
+}
+
 fn primary_credit_biography_artist<'a>(
     albums: &[ThumbnailAlbumTarget],
     focused_artist: &str,
@@ -3805,6 +3899,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let controller = Arc::new(controller);
     let ui_create_started = Instant::now();
     let ui = AppWindow::new()?;
+    bind_biography_text_callbacks(&ui);
     if let Some(log) = ui_debug_log.as_ref() {
         log.record(format!(
             "startup-ui-create elapsed_ms={}",
@@ -6274,6 +6369,7 @@ fn run_slint_library_diagnostics() -> Result<String, String> {
     let state = Arc::new(Mutex::new(ApplicationState::new(config, snapshot)?));
     let (controller, _notices) = ScanController::new(Arc::clone(&state));
     let ui = AppWindow::new().map_err(|error| format!("Unable to create Slint UI: {error}"))?;
+    bind_biography_text_callbacks(&ui);
     ui.set_setup_required(false);
     sync_ui(&ui, &state);
     let preferences = UiPreferences::default();
@@ -22256,11 +22352,11 @@ mod tests {
         embedded_artwork_size_comparison, embedded_thumbnail_owner_key, embedded_thumbnail_ready,
         ensure_webp_album_still, fallback_compilation_cover_suppressed,
         format_existing_embedded_info, group_compilation_report_rows, include_artwork_source,
-        is_sqlite_backup_path, is_valid_mbid, load_artist_art_candidates, load_scaled_image,
-        local_album_art_file, local_artist_art_candidates, local_artist_art_file,
-        local_artist_art_for_albums, logical_dimension, match_artist_overview_album,
-        merge_artist_art_candidates, model, musicbrainz_existing_preview_path,
-        musicbrainz_failed_url, musicbrainz_ui_rows_equal,
+        is_sqlite_backup_path, is_valid_mbid, layout_artist_biography, load_artist_art_candidates,
+        load_scaled_image, local_album_art_file, local_artist_art_candidates,
+        local_artist_art_file, local_artist_art_for_albums, logical_dimension,
+        match_artist_overview_album, merge_artist_art_candidates, model,
+        musicbrainz_existing_preview_path, musicbrainz_failed_url, musicbrainz_ui_rows_equal,
         musicbrainz_visible_deduplicated_results, navidrome_artist_for_lookup,
         normalize_backup_schedule, normalize_status_bar_intensity, normalize_status_bar_position,
         normalize_status_bar_size, overview_artist_name, plan_artist_album_embeds,
@@ -23984,6 +24080,33 @@ mod tests {
         let matched = choose_musicbrainz_artist_match("38 Special", &hits).unwrap();
         assert_eq!(matched.name, ".38 Special");
         assert_eq!(matched.id, "0330a83d-f61e-4989-adb3-afce3943c3ba");
+    }
+
+    #[test]
+    fn windows_biography_justifies_complete_lines_and_leaves_the_last_line_natural() {
+        let biography = "Formed in 1981 in Jamestown, New York, the band served as the social conscience of college rock. Their songs paired careful melodies with direct writing and reached listeners around the world.";
+        let lines = layout_artist_biography(biography, 520.0, 1.0);
+        assert!(lines.len() >= 2);
+        assert!(lines[..lines.len() - 1].iter().all(|line| line.justified));
+        assert!(!lines.last().unwrap().justified);
+
+        let normalized = lines
+            .iter()
+            .flat_map(|line| {
+                (0..line.words.row_count()).filter_map(|index| line.words.row_data(index))
+            })
+            .map(|word| word.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(normalized, biography);
+    }
+
+    #[test]
+    fn windows_biography_reflows_when_the_overview_width_changes() {
+        let biography = "A long artist biography must keep the same words while adapting its justified line boundaries to the active overview panel width.";
+        let narrow = layout_artist_biography(biography, 360.0, 1.0);
+        let wide = layout_artist_biography(biography, 760.0, 1.0);
+        assert!(narrow.len() > wide.len());
     }
 
     #[test]

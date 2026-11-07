@@ -8,6 +8,7 @@ export struct UiBannerThemeRow { key: string, name: string, background: color, f
 export struct UiAlbumFrameThemeRow { key: string, name: string, color: color, at-baseline: bool }
 export struct UiArtistOverviewLegendCounts { shown: int, completed: int, in-process: int, validating: int, overridden: int, red-dots: int, yellow-dots: int, orange-dots: int, green-dots: int, purple-dots: int, blue-dots: int, green-frames: int, orange-purple-frames: int, green-purple-frames: int, comp-pending: int, comp-complete: int, feat: int, ost: int, various: int, artist: int, track-blue: int, track-green: int, track-purple: int }
 export struct UiSimilarArtistRow { name: string, artwork: image, available: bool }
+export struct UiBiographyLine { words: [string], justified: bool }
 export struct UiCompilationTrackRow { album-key: string, path: string, file-name: string, status-color: color, completed: bool, selected: bool }
 export struct UiCompilationReportRow { album-key: string, album-title: string, path: string, file-name: string, status: string, album-header: bool, expanded: bool, overridden: bool }
 export struct UiSourceRow { name: string, label: string, icon: string, count: int, status: string, enabled: bool }
@@ -1774,6 +1775,10 @@ export component AppWindow inherits Window {
     callback queue-album-card(string);
     callback artist-overview-similar-selected(string);
     callback artist-overview-navigate(int);
+    // Slint 1.18 has no native justified text alignment. Windows supplies a
+    // width-aware, line-broken copy so the biography retains the WebGUI's
+    // full-width paragraph block while the final line remains left aligned.
+    pure callback layout-artist-biography(string, float, float) -> [UiBiographyLine];
     callback open-artist-external(); callback open-artist-musicbrainz();
     callback browse-artist-artwork(); callback write-artist-artwork(); callback approve-banner();
     callback prepare-artist-embed(); callback confirm-artist-embed-action(bool);
@@ -2207,9 +2212,18 @@ export component AppWindow inherits Window {
                                                 }
                                             }
                                             if root.artist-overview-active: overview-panel := Rectangle {
-                                                property <length> biography-line-height: biography-line-measure.preferred-height;
+                                                // Slint's single-line preferred height is taller than the
+                                                // rendered wrapped-line advance on Windows. Use the observed
+                                                // text advance so collapsed mode contains exactly five rows.
+                                                property <length> biography-line-height: 26px * AppTheme.font-scale;
                                                 property <length> biography-collapsed-height: self.biography-line-height * 5;
-                                                property <bool> biography-overflows: root.artist-overview-biography != "" && biography-measure.preferred-height > self.biography-collapsed-height;
+                                                property <string> biography-source: root.artist-overview-biography == "" ? (root.artist-overview-navidrome-linked ? "Navidrome has not returned an artist biography for this artist." : "No matching Navidrome artist was found; check the Artist lookup name or ID.") : root.artist-overview-biography;
+                                                // The biography lane is the viewport minus overview padding,
+                                                // portrait column, and header spacing. This is independent of
+                                                // text layout and therefore cannot create a width binding loop.
+                                                property <float> biography-width-px: max(80px, artist-scroll.visible-width - (artist-scroll.visible-width < 520px ? 120px : 170px) - 52px) / 1px;
+                                                property <[UiBiographyLine]> biography-lines: root.layout-artist-biography(self.biography-source, self.biography-width-px, AppTheme.font-scale);
+                                                property <bool> biography-overflows: root.artist-overview-biography != "" && self.biography-lines.length > 5;
                                                 vertical-stretch: 1; horizontal-stretch: 1; max-width: 10000px; clip: true; border-radius: 8px; background: AppTheme.quiet-surface; border-color: AppTheme.border; border-width: 1px;
                                                 Image { source: root.artist-overview-banner; visible: root.overview-mode != "Fallback"; width: parent.width; height: parent.height; image-fit: cover; opacity: root.artist-banner-preview-active ? 0.18 : 1.0; }
                                                 if root.artist-banner-preview-active: Image {
@@ -2224,13 +2238,7 @@ export component AppWindow inherits Window {
                                                 // Slint uses #RRGGBBAA. Keep the banner neutral: the
                                                 // final byte is opacity and the RGB channels are equal.
                                                 Rectangle { width: parent.width; height: parent.height; background: AppTheme.chalk ? @linear-gradient(180deg, #30303070 0%, #242424b8 64%, #181818e0 100%) : (AppTheme.light ? @linear-gradient(180deg, #f4f4f466 0%, #edededa8 64%, #e6e6e6d8 100%) : @linear-gradient(180deg, #14141470 0%, #101010b8 64%, #0b0b0be0 100%)); }
-                                                biography-line-measure := Text { visible: false; text: "Ag"; font-size: 18px * AppTheme.font-scale; }
                                                 biography-link-measure := Text { visible: false; text: root.artist-biography-expanded ? "(less…)" : "(…more)"; font-size: 18px * AppTheme.font-scale; }
-                                                biography-measure := Text {
-                                                    visible: false; width: max(1px, artist-scroll.visible-width - 152px); height: self.preferred-height;
-                                                    text: root.artist-overview-biography == "" ? (root.artist-overview-navidrome-linked ? "Navidrome has not returned an artist biography for this artist." : "No matching Navidrome artist was found; check the Artist lookup name or ID.") : root.artist-overview-biography;
-                                                    font-size: 18px * AppTheme.font-scale; wrap: word-wrap;
-                                                }
                                                 artist-scroll := ScrollView {
                                                     content-y <=> root.overview-scroll-y;
                                                     content-width: self.visible-width;
@@ -2300,20 +2308,24 @@ export component AppWindow inherits Window {
                                                                 // Expansion may add at most five more lines. A transient zero-width
                                                                 // text measurement must never create a giant header that moves the
                                                                 // rest of Artist/Album Overview outside the viewport.
-                                                                height: root.artist-summary-visible ? 174px : (root.artist-biography-expanded && overview-panel.biography-overflows ? min(max(overview-panel.biography-collapsed-height, biography-render-measure.preferred-height), overview-panel.biography-collapsed-height * 2) : overview-panel.biography-collapsed-height);
+                                                                height: root.artist-summary-visible ? 174px : (root.artist-biography-expanded && overview-panel.biography-overflows ? overview-panel.biography-line-height * min(10, max(5, overview-panel.biography-lines.length)) : overview-panel.biography-collapsed-height);
                                                                 horizontal-stretch: 1; background: transparent;
-                                                                biography-render-measure := Text {
-                                                                    visible: false; width: max(1px, parent.width);
-                                                                    text: biography-copy.text; font-size: 18px * AppTheme.font-scale; wrap: word-wrap;
-                                                                }
-                                                                biography-copy := Text {
+                                                                biography-copy := VerticalLayout {
                                                                     visible: !root.artist-summary-visible;
-                                                                    // Fill the five-line block. The toggle masks only the end of
-                                                                    // line five instead of narrowing every line in the paragraph.
                                                                     width: parent.width; height: parent.height;
-                                                                    text: root.artist-overview-biography == "" ? (root.artist-overview-navidrome-linked ? "Navidrome has not returned an artist biography for this artist." : "No matching Navidrome artist was found; check the Artist lookup name or ID.") : root.artist-overview-biography;
-                                                                    color: root.artist-overview-biography == "" ? AppTheme.secondary-foreground : AppTheme.foreground;
-                                                                    font-size: 18px * AppTheme.font-scale; wrap: word-wrap; overflow: root.artist-biography-expanded ? clip : elide;
+                                                                    spacing: 0px;
+                                                                    for line[index] in overview-panel.biography-lines: HorizontalLayout {
+                                                                        visible: index < (root.artist-biography-expanded ? 10 : 5);
+                                                                        height: overview-panel.biography-line-height;
+                                                                        alignment: line.justified ? space-between : start;
+                                                                        spacing: line.justified ? 0px : 5px * AppTheme.font-scale;
+                                                                        for word in line.words: Text {
+                                                                            text: word;
+                                                                            color: root.artist-overview-biography == "" ? AppTheme.secondary-foreground : AppTheme.foreground;
+                                                                            font-size: 18px * AppTheme.font-scale;
+                                                                            vertical-alignment: center;
+                                                                        }
+                                                                    }
                                                                 }
                                                                 if overview-panel.biography-overflows && !root.artist-summary-visible: Rectangle {
                                                                     x: max(0px, parent.width - self.width); y: max(0px, parent.height - self.height); width: biography-link-measure.preferred-width + 14px; height: overview-panel.biography-line-height;

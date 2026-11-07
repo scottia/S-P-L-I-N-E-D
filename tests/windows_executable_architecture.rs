@@ -182,7 +182,9 @@ fn artist_overview_keeps_native_parity_controls_and_album_row_navigation() {
     assert!(ui.contains("Rectangle { x: 51px; y: 43px; width: 12px; height: 12px"));
     assert!(!ui.contains("if root.overview-mode == \"Album\": Heading"));
     assert!(ui.contains("if root.artist-summary-visible: Rectangle"));
-    assert!(ui.contains("overview-panel.biography-collapsed-height * 2"));
+    assert!(ui.contains("min(10, max(5, overview-panel.biography-lines.length))"));
+    assert!(ui.contains("alignment: line.justified ? space-between : start"));
+    assert!(ui.contains("index < (root.artist-biography-expanded ? 10 : 5)"));
     assert!(ui.contains("🎵 Artist & Featured Artist Top Genres"));
     assert!(ui.contains("TouchArea { enabled: similar.available"));
     assert!(ui.contains("root.selected-album-track-count + \" tracks · \""));
