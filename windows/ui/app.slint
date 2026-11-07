@@ -2262,11 +2262,11 @@ export component AppWindow inherits Window {
                                                     }
                                                     if root.overview-mode != "Fallback": artist-header := HorizontalLayout {
                                                         property <length> thumbnail-size: artist-scroll.visible-width < 520px ? 120px : 170px;
-                                                        // Keep the portrait in the same visual lane as the WebGUI.
-                                                        // The narrow fallback avoids crowding the biography on small panes.
-                                                        property <length> thumbnail-x: artist-scroll.visible-width < 520px ? 42px : 88px;
-                                                        property <length> thumbnail-y: -6px;
-                                                        property <length> thumbnail-column-width: self.thumbnail-size + self.thumbnail-x + 22px;
+                                                        // WebGUI pins the portrait to the left edge; it is not
+                                                        // centered inside a widened identity column.
+                                                        property <length> thumbnail-x: 8px;
+                                                        property <length> thumbnail-y: 0px;
+                                                        property <length> thumbnail-column-width: self.thumbnail-size + 36px;
                                                         property <length> thumbnail-column-height: self.thumbnail-size + 52px;
                                                         height: max(self.thumbnail-column-height, biography-area.height + (root.artist-edit-available ? 28px : 0px));
                                                         vertical-stretch: 0; spacing: 12px; max-width: 10000px;
@@ -2282,7 +2282,7 @@ export component AppWindow inherits Window {
                                                                 Text { text: root.artist-summary-visible ? "▴" : "▾"; color: root.artist-summary-visible ? AppTheme.image-surface : AppTheme.cyan; font-size: 10px * AppTheme.font-scale; horizontal-alignment: center; vertical-alignment: center; }
                                                                 TouchArea { mouse-cursor: pointer; clicked => { root.artist-summary-visible = !root.artist-summary-visible; } }
                                                             }
-                                                            Text { x: artist-header.thumbnail-x - 12px; y: artist-header.thumbnail-y + artist-header.thumbnail-size + 8px; width: artist-header.thumbnail-size + 24px; height: 36px; text: root.artist-overview-name; color: AppTheme.yellow; font-size: 18px * AppTheme.font-scale; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; overflow: elide; }
+                                                            Text { x: artist-header.thumbnail-x; y: artist-header.thumbnail-y + artist-header.thumbnail-size + 8px; width: artist-header.thumbnail-size + 24px; height: 36px; text: root.artist-overview-name; color: AppTheme.yellow; font-size: 18px * AppTheme.font-scale; font-weight: 800; horizontal-alignment: left; vertical-alignment: center; overflow: elide; }
                                                         }
                                                         VerticalLayout { spacing: 4px; horizontal-stretch: 1; max-width: 10000px; alignment: start;
                                                             if root.artist-edit-available: HorizontalLayout { height: 24px; spacing: 8px; alignment: end;
