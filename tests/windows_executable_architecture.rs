@@ -184,16 +184,16 @@ fn artist_overview_keeps_native_parity_controls_and_album_row_navigation() {
     assert!(ui.contains("if root.artist-summary-visible: Rectangle"));
     assert!(ui.contains("min(10, max(5, overview-panel.biography-lines.length))"));
     assert!(ui.contains("biography-block-width: min(self.biography-lane-width"));
-    assert!(ui.contains("alignment: line.justified && !self.carries-toggle ? space-between : start"));
+    assert!(
+        ui.contains("alignment: line.justified && !self.carries-toggle ? space-between : start")
+    );
     assert!(ui.contains("index == overview-panel.biography-toggle-line"));
     assert!(ui.contains("immediately after the copy instead of pinning it"));
     assert!(ui.contains("index < (root.artist-biography-expanded ? 10 : 5)"));
     assert!(ui.contains("🎵 Artist & Featured Artist Top Genres"));
     assert!(ui.contains("TouchArea { enabled: similar.available"));
     assert!(ui.contains("root.selected-album-track-count + \" tracks · \""));
-    assert!(ui.contains(
-        "status-only-album-selection: row.kind != \"artist\""
-    ));
+    assert!(ui.contains("status-only-album-selection: row.kind != \"artist\""));
     assert!(ui.contains("root.status-only-album-selection ? \"○\""));
     assert!(ui.contains("row-touch := TouchArea"));
     assert!(ui.contains("clicked => root.activated(root.item.key)"));
@@ -201,6 +201,36 @@ fn artist_overview_keeps_native_parity_controls_and_album_row_navigation() {
     assert!(!ui.contains("#7a061426"));
     assert!(ui.contains("#14141470"));
     assert!(ui.contains("#0b0b0be0"));
+}
+
+#[test]
+fn comp_report_keeps_visible_group_controls_and_track_scoped_coordination() {
+    let ui = source("windows/ui/app.slint");
+    let main = source("windows/src/main.rs");
+    assert!(ui.contains("track.album-header ? (track.expanded ? \"▾\" : \"▸\")"));
+    assert!(ui.contains("border-width: track.album-header ? 1px : 0px"));
+    assert!(ui.contains("max(170px, min(310px, parent.width * 0.38))"));
+    assert!(!ui.contains("text: \"TRACK FILE\"; width: 310px"));
+    assert!(ui.contains("#381821a6"));
+    let summary = ui
+        .split(
+            "if root.overview-mode == \"Artist\": HorizontalLayout { height: 18px; spacing: 12px;",
+        )
+        .nth(1)
+        .unwrap()
+        .split("if root.overview-mode == \"Fallback\"")
+        .next()
+        .unwrap();
+    assert!(summary.find("Albums").unwrap() < summary.find("horizontal-stretch: 1").unwrap());
+    assert!(main.contains("let album_synchronization = synchronize(connected, &database).await;"));
+    assert!(
+        main.contains(
+            "let track_synchronization = synchronize_tracks(connected, &database).await;"
+        )
+    );
+    assert!(!main.contains("Ok(_) => synchronize_tracks(connected, &database).await.map(|_| ())"));
+    assert!(main.contains("projection_is_current"));
+    assert!(main.contains("\"WebGUI override · COMP track\""));
 }
 
 #[test]

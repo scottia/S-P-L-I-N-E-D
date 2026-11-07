@@ -2572,7 +2572,7 @@ export component AppWindow inherits Window {
                                                             }
                                                         }
                                                     }
-                                                    if root.compilation-report-visible: Rectangle { height: 94px + root.compilation-report-rows.length * 37px; background: AppTheme.chalk ? #ba8490cc : (AppTheme.light ? #ba8490cc : #381821c9); border-radius: 6px; border-color: AppTheme.violet; border-width: 2px;
+                                                    if root.compilation-report-visible: Rectangle { height: 94px + root.compilation-report-rows.length * 37px; background: AppTheme.chalk ? #ba8490b8 : (AppTheme.light ? #ba8490b8 : #381821a6); border-radius: 6px; border-color: AppTheme.violet; border-width: 2px;
                                                         VerticalLayout { padding: 7px; spacing: 4px;
                                                             HorizontalLayout { height: 28px; spacing: 7px;
                                                                 Rectangle { width: 22px; height: 22px; border-radius: 11px; background: root.compilation-report-preview-mode ? AppTheme.green : #000000; border-color: AppTheme.magenta; border-width: 2px;
@@ -2601,23 +2601,25 @@ export component AppWindow inherits Window {
                                                                 if root.overview-mode != "Fallback": NeonAction { label: "Close"; width: 68px; height: 28px; clicked => root.close-compilation-report(); }
                                                             }
                                                             if root.overview-mode == "Artist": HorizontalLayout { height: 18px; spacing: 12px;
-                                                                Rectangle { horizontal-stretch: 1; background: transparent; }
                                                                 Text { text: root.compilation-report-album-count + " Albums"; color: AppTheme.foreground; font-size: 12px * AppTheme.font-scale; font-weight: 800; }
                                                                 Text { text: root.compilation-report-green-count + " green"; color: AppTheme.green; font-size: 12px * AppTheme.font-scale; }
                                                                 Text { text: root.compilation-report-purple-count + " purple"; color: AppTheme.violet; font-size: 12px * AppTheme.font-scale; }
                                                                 Text { text: root.compilation-report-blue-count + " blue"; color: AppTheme.blue; font-size: 12px * AppTheme.font-scale; }
+                                                                Rectangle { horizontal-stretch: 1; background: transparent; }
                                                             }
                                                             if root.overview-mode == "Fallback": Text { text: root.confirm-compilation-repair ? root.compilation-repair-summary : root.compilation-report-summary; color: AppTheme.cyan; font-size: 12px * AppTheme.font-scale; horizontal-alignment: right; overflow: elide; height: 18px; }
                                                             HorizontalLayout { height: 18px; spacing: 8px;
                                                                 Text { text: "ALBUM"; horizontal-stretch: 1; color: AppTheme.secondary-foreground; font-size: 12px * AppTheme.font-scale; font-weight: 800; }
-                                                                Text { text: "TRACK FILE"; width: 310px; horizontal-alignment: right; color: AppTheme.secondary-foreground; font-size: 12px * AppTheme.font-scale; font-weight: 800; }
+                                                                Text { text: "TRACK FILE"; width: max(170px, min(310px, parent.width * 0.38)); horizontal-alignment: right; color: AppTheme.secondary-foreground; font-size: 12px * AppTheme.font-scale; font-weight: 800; }
                                                             }
                                                             VerticalLayout { spacing: 3px;
                                                                 for track in root.compilation-report-rows: Rectangle { height: 33px; border-radius: 5px; background: track.overridden ? #25272b : (track.album-header || (!track.album-header && track.path == root.compilation-report-preview-track-path && track.path != "") ? AppTheme.selected-surface : AppTheme.recessed-surface); border-color: track.overridden ? AppTheme.danger : (track.status == "Purple" ? AppTheme.violet : (track.status == "Green" ? AppTheme.green : (track.status == "Checking" ? AppTheme.cyan : AppTheme.blue))); border-width: 1px;
                                                                     HorizontalLayout { padding-left: 7px; padding-right: 7px; spacing: 8px;
-                                                                        Text { text: track.album-header ? (track.expanded ? "▾" : "▸") : ""; width: 18px; color: AppTheme.cyan; font-size: 15px * AppTheme.font-scale; font-weight: 900; horizontal-alignment: center; vertical-alignment: center; }
+                                                                        Rectangle { width: 24px; height: 24px; border-radius: 4px; border-width: track.album-header ? 1px : 0px; border-color: AppTheme.cyan; background: track.album-header ? #102c3d : transparent;
+                                                                            Text { text: track.album-header ? (track.expanded ? "▾" : "▸") : ""; color: AppTheme.cyan; font-size: 15px * AppTheme.font-scale; font-weight: 900; horizontal-alignment: center; vertical-alignment: center; }
+                                                                        }
                                                                         Text { text: track.album-title; horizontal-stretch: 1; color: AppTheme.foreground; font-size: 13px * AppTheme.font-scale; font-weight: track.album-header ? 800 : 400; overflow: elide; vertical-alignment: center; }
-                                                                        Text { text: track.file-name; width: 310px; horizontal-alignment: right; color: track.overridden ? AppTheme.secondary-foreground : (track.status == "Purple" ? AppTheme.violet : (track.status == "Green" ? AppTheme.green : (track.status == "Checking" ? AppTheme.cyan : AppTheme.blue))); font-size: 13px * AppTheme.font-scale; overflow: elide; vertical-alignment: center; }
+                                                                        Text { text: track.file-name; width: max(170px, min(310px, parent.width * 0.38)); horizontal-alignment: right; color: track.overridden ? AppTheme.secondary-foreground : (track.status == "Purple" ? AppTheme.violet : (track.status == "Green" ? AppTheme.green : (track.status == "Checking" ? AppTheme.cyan : AppTheme.blue))); font-size: 13px * AppTheme.font-scale; overflow: elide; vertical-alignment: center; }
                                                                     }
                                                                     TouchArea { mouse-cursor: pointer;
                                                                         clicked => {

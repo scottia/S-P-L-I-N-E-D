@@ -157,9 +157,10 @@ html[data-theme=light] .library-row .status-orbit.selected,html[data-theme=light
 .fallback-toolbar .fallback-preview-radio{width:19px;height:19px;flex:none;border:2px solid var(--pink);border-radius:50%;background:#000;cursor:pointer}
 .fallback-toolbar .fallback-preview-radio.active{background:var(--green)}
 .fallback-report-summary{text-align:right;color:var(--cyan);font-size:10px}
-.comp-report-counts{display:flex;justify-content:flex-end;gap:12px;min-width:0}.comp-count-albums{color:var(--text);font-weight:800}.comp-count-green{color:var(--green)}.comp-count-purple{color:var(--violet)}.comp-count-blue{color:var(--blue)}.comp-count-checking{color:var(--cyan)}.comp-count-error{color:var(--pink)}
+.comp-report-counts{display:flex;justify-content:flex-start;align-items:center;gap:12px;min-width:0;text-align:left;font-size:11px}.comp-count-albums{color:var(--text);font-weight:800}.comp-count-green{color:var(--green)}.comp-count-purple{color:var(--violet)}.comp-count-blue{color:var(--blue)}.comp-count-checking{color:var(--cyan)}.comp-count-error{color:var(--pink)}
 .fallback-report-columns{display:grid;grid-template-columns:minmax(0,1fr) max-content;gap:8px;color:var(--muted);font-size:11px;font-weight:800}.fallback-report-columns span:last-child{text-align:right}
 .fallback-report-album,.fallback-track{position:relative;display:grid;grid-template-columns:minmax(0,1fr) max-content;align-items:center;width:100%;min-height:25px;gap:8px;padding:3px 32px 3px 7px;border:1px solid #398efa;border-radius:4px;background:#182a38;color:var(--text);text-align:left;cursor:pointer}
+.fallback-report-album{grid-template-columns:22px minmax(0,1fr) clamp(170px,38%,310px);padding-right:7px}.fallback-report-toggle{display:grid;place-items:center;width:20px;height:20px;border:1px solid var(--cyan);border-radius:4px;background:#102c3d;color:var(--cyan);font-size:13px;font-weight:900}.fallback-report-album-counts{text-align:right}
 .fallback-report-album strong,.fallback-report-album span,.fallback-track-file{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .fallback-report-album span{color:var(--cyan);font-size:10px;text-align:right}
 .fallback-track{min-height:24px;background:#171d24;font-size:11px}

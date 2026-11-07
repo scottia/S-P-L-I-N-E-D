@@ -1174,4 +1174,84 @@ mod tests {
             .unwrap();
         pool.close().await;
     }
+
+    #[tokio::test]
+    async fn postgres_round_trip_pulls_webgui_comp_track_without_album_override() {
+        let Some(url) = coordination_database_url(&Config::default()).unwrap() else {
+            return;
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("splined.db");
+        let connection = Connection::open(&path).unwrap();
+        ensure_sqlite_schema(&connection).unwrap();
+        let unique = source_completed_ms();
+        let album_key = format!("tag:coordination-track-test-{unique}");
+        let relative_track_path =
+            format!("various artists/coordination track test/{unique}-waterloo.flac");
+        let album_identity = canonical_album_identity(&album_key).unwrap();
+        let track_identity = canonical_track_identity(&album_key, &relative_track_path).unwrap();
+        let event_id = format!("webgui-track-{unique}");
+        let artwork_sha256 = format!("coordination-track-sha-{unique}");
+
+        let pool = connect_pool(&url).await.unwrap();
+        sqlx::query(
+            "INSERT INTO comp_track_write_coordination(\
+                track_identity,album_identity,album_key,track_key,relative_track_path,\
+                writer,operation,event_id,artwork_sha256,source_completed_ms,completed_at) \
+             VALUES($1,$2,$3,$4,$5,'webgui','embed-comp-track',$6,$7,$8,\
+                    to_timestamp($8::double precision / 1000.0))",
+        )
+        .bind(&track_identity)
+        .bind(&album_identity)
+        .bind(&album_key)
+        .bind(format!("waterloo-{unique}"))
+        .bind(&relative_track_path)
+        .bind(&event_id)
+        .bind(&artwork_sha256)
+        .bind(unique)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let states = synchronize_tracks(&pool, &path).await.unwrap();
+        let state = states.get(&relative_track_path).unwrap();
+        assert_eq!(state.writer, "webgui");
+        assert_eq!(state.album_key, album_key);
+        assert_eq!(state.artwork_sha256, artwork_sha256);
+        assert_eq!(
+            connection
+                .query_row("SELECT count(*) FROM comp_track_write_state", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM album_artwork_write_state",
+                    [],
+                    |row| { row.get::<_, i64>(0) }
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM album_artwork_write_outbox",
+                    [],
+                    |row| { row.get::<_, i64>(0) }
+                )
+                .unwrap(),
+            0
+        );
+
+        sqlx::query("DELETE FROM comp_track_write_coordination WHERE track_identity=$1")
+            .bind(&track_identity)
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+    }
 }
