@@ -176,11 +176,13 @@ fn artist_overview_keeps_native_parity_controls_and_album_row_navigation() {
     assert!(ui.contains("display-scale-percent: 100"));
     assert!(ui.contains("width: parent.width; height: parent.height"));
     assert!(ui.contains("min(520px, max(340px, artist-scroll.visible-width * 0.5))"));
+    assert!(ui.contains("It must never resize or remove the overview below it"));
     assert!(ui.contains("clicked => root.open-artist-musicbrainz()"));
     assert!(ui.contains("root.selected-album-name != \"\""));
     assert!(ui.contains("Rectangle { x: 51px; y: 43px; width: 12px; height: 12px"));
     assert!(!ui.contains("if root.overview-mode == \"Album\": Heading"));
-    assert!(ui.contains("if root.artist-summary-visible: GridLayout"));
+    assert!(ui.contains("if root.artist-summary-visible: Rectangle"));
+    assert!(ui.contains("overview-panel.biography-collapsed-height * 2"));
     assert!(ui.contains("🎵 Artist & Featured Artist Top Genres"));
     assert!(ui.contains("TouchArea { enabled: similar.available"));
     assert!(ui.contains("root.selected-album-track-count + \" tracks · \""));

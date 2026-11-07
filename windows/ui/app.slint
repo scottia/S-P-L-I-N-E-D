@@ -2297,16 +2297,13 @@ export component AppWindow inherits Window {
                                                                 }
                                                             }
                                                             biography-area := Rectangle {
-                                                                // Keep the Artist table compact beside the portrait instead of
-                                                                // consuming the complete biography lane. Long role/genre values
-                                                                // wrap inside this bounded half-width panel.
-                                                                width: root.artist-summary-visible ? min(520px, max(340px, artist-scroll.visible-width * 0.5)) : 0px;
-                                                                height: root.artist-summary-visible ? 174px : (root.artist-biography-expanded && overview-panel.biography-overflows ? biography-render-measure.preferred-height : overview-panel.biography-collapsed-height);
-                                                                horizontal-stretch: root.artist-summary-visible ? 0 : 1;
-                                                                background: root.artist-summary-visible ? AppTheme.card : transparent;
-                                                                border-color: root.artist-summary-visible ? AppTheme.cyan : transparent; border-width: root.artist-summary-visible ? 1px : 0px; border-radius: 5px;
+                                                                // Expansion may add at most five more lines. A transient zero-width
+                                                                // text measurement must never create a giant header that moves the
+                                                                // rest of Artist/Album Overview outside the viewport.
+                                                                height: root.artist-summary-visible ? 174px : (root.artist-biography-expanded && overview-panel.biography-overflows ? min(max(overview-panel.biography-collapsed-height, biography-render-measure.preferred-height), overview-panel.biography-collapsed-height * 2) : overview-panel.biography-collapsed-height);
+                                                                horizontal-stretch: 1; background: transparent;
                                                                 biography-render-measure := Text {
-                                                                    visible: false; width: biography-copy.width;
+                                                                    visible: false; width: max(1px, parent.width);
                                                                     text: biography-copy.text; font-size: 18px * AppTheme.font-scale; wrap: word-wrap;
                                                                 }
                                                                 biography-copy := Text {
@@ -2324,22 +2321,28 @@ export component AppWindow inherits Window {
                                                                     Text { x: 10px; width: parent.width - 10px; text: biography-link-measure.text; color: AppTheme.cyan; font-size: 18px * AppTheme.font-scale; horizontal-alignment: right; }
                                                                     biography-toggle := TouchArea { mouse-cursor: pointer; clicked => { root.artist-biography-expanded = !root.artist-biography-expanded; } }
                                                                 }
-                                                                if root.artist-summary-visible: GridLayout { padding: 8px; spacing: 4px;
-                                                                    Text { row: 0; col: 0; text: "Artist"; color: AppTheme.cyan; font-size: 12px * AppTheme.font-scale; font-weight: 800; }
-                                                                    Text { row: 0; col: 1; text: root.artist-overview-name; color: AppTheme.foreground; font-size: 13px * AppTheme.font-scale; overflow: elide; }
-                                                                    Text { row: 1; col: 0; text: "Status"; color: AppTheme.cyan; font-size: 12px * AppTheme.font-scale; font-weight: 800; }
-                                                                    Text { row: 1; col: 1; text: root.artist-overview-legend-counts.shown > 0 && root.artist-overview-legend-counts.completed == root.artist-overview-legend-counts.shown ? "Artist Complete" : "In Process"; color: AppTheme.foreground; font-size: 13px * AppTheme.font-scale; overflow: elide; }
-                                                                    Text { row: 2; col: 0; text: "Albums"; color: AppTheme.cyan; font-size: 12px * AppTheme.font-scale; font-weight: 800; }
-                                                                    Text { row: 2; col: 1; text: root.artist-overview-legend-counts.shown; color: AppTheme.foreground; font-size: 13px * AppTheme.font-scale; }
-                                                                    Text { row: 3; col: 0; text: "Roles"; color: AppTheme.cyan; font-size: 12px * AppTheme.font-scale; font-weight: 800; }
-                                                                    Text { row: 3; col: 1; text: root.artist-overview-roles == "" ? "Primary Artist" : root.artist-overview-roles; color: AppTheme.foreground; font-size: 13px * AppTheme.font-scale; wrap: word-wrap; overflow: clip; }
-                                                                    Text { row: 4; col: 0; text: "MusicBrainz ID"; color: AppTheme.cyan; font-size: 12px * AppTheme.font-scale; font-weight: 800; }
-                                                                    Rectangle { row: 4; col: 1; height: 18px; background: transparent;
-                                                                        Text { text: root.artist-overview-musicbrainz-id == "" ? "Not indexed" : root.artist-overview-musicbrainz-id; color: root.artist-overview-musicbrainz-id == "" ? AppTheme.secondary-foreground : AppTheme.cyan; font-size: 13px * AppTheme.font-scale; overflow: elide; }
-                                                                        TouchArea { enabled: root.artist-overview-musicbrainz-id != ""; mouse-cursor: root.artist-overview-musicbrainz-id == "" ? default : pointer; clicked => root.open-artist-musicbrainz(); }
+                                                                if root.artist-summary-visible: Rectangle {
+                                                                    // The dropdown overlays a bounded section of the full header
+                                                                    // lane. It must never resize or remove the overview below it.
+                                                                    width: min(520px, max(340px, artist-scroll.visible-width * 0.5)); height: parent.height;
+                                                                    background: AppTheme.card; border-color: AppTheme.cyan; border-width: 1px; border-radius: 5px;
+                                                                    GridLayout { width: parent.width; height: parent.height; padding: 8px; spacing: 4px;
+                                                                        Text { row: 0; col: 0; text: "Artist"; color: AppTheme.cyan; font-size: 12px * AppTheme.font-scale; font-weight: 800; }
+                                                                        Text { row: 0; col: 1; text: root.artist-overview-name; color: AppTheme.foreground; font-size: 13px * AppTheme.font-scale; overflow: elide; }
+                                                                        Text { row: 1; col: 0; text: "Status"; color: AppTheme.cyan; font-size: 12px * AppTheme.font-scale; font-weight: 800; }
+                                                                        Text { row: 1; col: 1; text: root.artist-overview-legend-counts.shown > 0 && root.artist-overview-legend-counts.completed == root.artist-overview-legend-counts.shown ? "Artist Complete" : "In Process"; color: AppTheme.foreground; font-size: 13px * AppTheme.font-scale; overflow: elide; }
+                                                                        Text { row: 2; col: 0; text: "Albums"; color: AppTheme.cyan; font-size: 12px * AppTheme.font-scale; font-weight: 800; }
+                                                                        Text { row: 2; col: 1; text: root.artist-overview-legend-counts.shown; color: AppTheme.foreground; font-size: 13px * AppTheme.font-scale; }
+                                                                        Text { row: 3; col: 0; text: "Roles"; color: AppTheme.cyan; font-size: 12px * AppTheme.font-scale; font-weight: 800; }
+                                                                        Text { row: 3; col: 1; text: root.artist-overview-roles == "" ? "Primary Artist" : root.artist-overview-roles; color: AppTheme.foreground; font-size: 13px * AppTheme.font-scale; wrap: word-wrap; overflow: clip; }
+                                                                        Text { row: 4; col: 0; text: "MusicBrainz ID"; color: AppTheme.cyan; font-size: 12px * AppTheme.font-scale; font-weight: 800; }
+                                                                        Rectangle { row: 4; col: 1; height: 18px; background: transparent;
+                                                                            Text { text: root.artist-overview-musicbrainz-id == "" ? "Not indexed" : root.artist-overview-musicbrainz-id; color: root.artist-overview-musicbrainz-id == "" ? AppTheme.secondary-foreground : AppTheme.cyan; font-size: 13px * AppTheme.font-scale; overflow: elide; }
+                                                                            TouchArea { enabled: root.artist-overview-musicbrainz-id != ""; mouse-cursor: root.artist-overview-musicbrainz-id == "" ? default : pointer; clicked => root.open-artist-musicbrainz(); }
+                                                                        }
+                                                                        Text { row: 5; col: 0; text: "Genres"; color: AppTheme.cyan; font-size: 12px * AppTheme.font-scale; font-weight: 800; }
+                                                                        Text { row: 5; col: 1; text: root.artist-overview-genres == "" ? "Not available" : root.artist-overview-genres; color: AppTheme.foreground; font-size: 13px * AppTheme.font-scale; wrap: word-wrap; overflow: clip; }
                                                                     }
-                                                                    Text { row: 5; col: 0; text: "Genres"; color: AppTheme.cyan; font-size: 12px * AppTheme.font-scale; font-weight: 800; }
-                                                                    Text { row: 5; col: 1; text: root.artist-overview-genres == "" ? "Not available" : root.artist-overview-genres; color: AppTheme.foreground; font-size: 13px * AppTheme.font-scale; wrap: word-wrap; overflow: clip; }
                                                                 }
                                                             }
                                                         }
