@@ -176,7 +176,12 @@ const chooseAlbumFunction = between(
   "async function chooseAlbum",
   "async function selectFallbackTrack",
 );
-const artistCompReportFunction = between(
+const compReportOrderFunction = between(
+  appSource,
+  "function compareCompReportGroups",
+  "function albumOverride",
+);
+const artistCompReportFunction = compReportOrderFunction + "\n" + between(
   appSource,
   "async function openArtistCompReport",
   "async function probeArtistCompStatuses",
@@ -606,6 +611,8 @@ test("Artist COMP renders all album groups and previews only the selected curren
   const trackRows = report.children.filter(item => item.className.startsWith("fallback-track"));
   const previews = trackRows.flatMap(row => row.children.filter(item => item.tag === "img"));
   assert.deepEqual(albumRows.map(row => row.dataset.compAlbumId), ["comp-1", "comp-2", "comp-3"]);
+  assert.ok(albumRows.every(row => row.children[0].className === "fallback-report-toggle"));
+  assert.equal(albumRows[0].children[2].text, "1 track · 1 recorded, 0 need artwork");
   assert.equal(trackRows.length, 3);
   assert.ok(trackRows.every(row => typeof row.listeners.click === "function"));
   assert.deepEqual(previews.map(item => item.src), ["/selected-current.jpg"]);
@@ -616,6 +623,40 @@ test("Artist COMP renders all album groups and previews only the selected curren
     .filter(item => item.className.startsWith("fallback-track"))
     .flatMap(row => row.children.filter(item => item.tag === "img"));
   assert.equal(previewsWhenOff.length, 0);
+});
+
+test("Artist COMP groups use the native descending fallback order", async () => {
+  const state = {
+    artist: {id: "artist-1", name: "Artist"}, compAlbums: [], compGroups: [],
+    compCollapsed: new Set(), compReportVisible: false, compReportLoading: false,
+    compPreviewMode: false, compTrack: null, compTrackRequest: 0,
+    compStatusRequest: 0, compReportRequest: 0, candidates: [], upscalePreview: null,
+  };
+  const elements = {
+    compReportButton: {disabled: false, textContent: "COMP Report"},
+    fallbackReport: {querySelectorAll: () => [], getBoundingClientRect: () => ({top: 0})},
+    overviewContent: {scrollTop: 0, getBoundingClientRect: () => ({top: 0})},
+  };
+  const context = load(artistCompReportFunction, {
+    state,
+    api: async () => [
+      {id: "alpha", name: "Alpha Collection", year: "", tracks: []},
+      {id: "zulu", name: "Zulu Collection", year: "", tracks: []},
+      {id: "new", name: "Newer Collection", year: "2025", tracks: []},
+    ],
+    $: id => elements[id], renderHero() {}, renderCandidates() {}, renderReview() {},
+    setStatus() {}, probeArtistCompStatuses() {}, requestAnimationFrame() {},
+  });
+
+  await context.openArtistCompReport();
+
+  assert.deepEqual(Array.from(state.compGroups, group => group.id), ["new", "zulu", "alpha"]);
+});
+
+test("COMP summary and TRACK FILE columns reserve Album title space", () => {
+  assert.match(cssSource, /\.comp-report-counts\{[^}]*justify-content:flex-start/);
+  assert.match(cssSource, /\.fallback-report-album\{[^}]*grid-template-columns:22px minmax\(0,1fr\) clamp\(170px,38%,310px\)/);
+  assert.match(cssSource, /\.fallback-report-album-counts\{text-align:right\}/);
 });
 
 test("EMBED Comp writes only the selected Artist COMP track at the preferred size", async () => {

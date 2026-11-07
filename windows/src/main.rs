@@ -3495,7 +3495,15 @@ fn apply_track_coordination_states(
             continue;
         }
         let (album_index, track_index, path) = &matches[0];
-        if previous.get(relative) == Some(state) {
+        let path_key = path.to_ascii_lowercase();
+        let projection_is_current = app.library.albums[*album_index].snapshot.compilation_tracks
+            [*track_index]
+            .embedded_artwork_recorded
+            && app
+                .comp_track_override_writers
+                .get(&path_key)
+                .is_some_and(|writer| writer.eq_ignore_ascii_case(&state.writer));
+        if previous.get(relative) == Some(state) && projection_is_current {
             continue;
         }
         if state.writer.eq_ignore_ascii_case("webgui") {
@@ -3683,60 +3691,70 @@ fn start_album_coordination_worker(
                     }
                 }
                 if let Some(connected) = pool.as_ref() {
-                    let synchronization = match synchronize(connected, &database).await {
-                        Ok(_) => synchronize_tracks(connected, &database).await.map(|_| ()),
-                        Err(error) => Err(error),
-                    };
-                    match synchronization {
-                        Ok(_) => {
-                            connection_warning = false;
-                            let (changed, invalidated) = effective_write_states(&database)
-                                .ok()
-                                .and_then(|states| {
-                                    worker_state.lock().ok().map(|mut app| {
-                                        apply_album_coordination_states(
-                                            &mut app,
-                                            &states,
-                                            &mut known_states,
-                                        )
-                                    })
+                    // Album and COMP-track coordination are separate
+                    // contracts. Always run both lanes so an unrelated Album
+                    // row cannot suppress a verified track-scoped override.
+                    let album_synchronization = synchronize(connected, &database).await;
+                    let track_synchronization = synchronize_tracks(connected, &database).await;
+                    if album_synchronization.is_ok() {
+                        let (changed, invalidated) = effective_write_states(&database)
+                            .ok()
+                            .and_then(|states| {
+                                worker_state.lock().ok().map(|mut app| {
+                                    apply_album_coordination_states(
+                                        &mut app,
+                                        &states,
+                                        &mut known_states,
+                                    )
                                 })
-                                .unwrap_or_default();
-                            if changed {
-                                let target_weak = weak.clone();
-                                let refresh_state = Arc::clone(&worker_state);
-                                let _ = slint::invoke_from_event_loop(move || {
-                                    invalidate_cached_image_paths(&invalidated);
-                                    refresh_weak(&target_weak, &refresh_state)
-                                });
-                            }
-                            let track_changed = effective_track_write_states(&database)
-                                .ok()
-                                .and_then(|states| {
-                                    worker_state.lock().ok().map(|mut app| {
-                                        apply_track_coordination_states(
-                                            &mut app,
-                                            &states,
-                                            &mut known_track_states,
-                                        )
-                                    })
-                                })
-                                .unwrap_or_default();
-                            if track_changed {
-                                let target_weak = weak.clone();
-                                let refresh_state = Arc::clone(&worker_state);
-                                let _ = slint::invoke_from_event_loop(move || {
-                                    refresh_weak(&target_weak, &refresh_state)
-                                });
-                            }
+                            })
+                            .unwrap_or_default();
+                        if changed {
+                            let target_weak = weak.clone();
+                            let refresh_state = Arc::clone(&worker_state);
+                            let _ = slint::invoke_from_event_loop(move || {
+                                invalidate_cached_image_paths(&invalidated);
+                                refresh_weak(&target_weak, &refresh_state)
+                            });
                         }
-                        Err(_) => {
-                            pool = None;
-                            if !connection_warning {
-                                connection_warning = true;
-                                if let Ok(mut app) = worker_state.lock() {
-                                    app.push_log("Album coordination disconnected; successful Windows notifications remain queued locally.".to_string());
-                                }
+                    }
+                    if track_synchronization.is_ok() {
+                        let track_changed = effective_track_write_states(&database)
+                            .ok()
+                            .and_then(|states| {
+                                worker_state.lock().ok().map(|mut app| {
+                                    apply_track_coordination_states(
+                                        &mut app,
+                                        &states,
+                                        &mut known_track_states,
+                                    )
+                                })
+                            })
+                            .unwrap_or_default();
+                        if track_changed {
+                            let target_weak = weak.clone();
+                            let refresh_state = Arc::clone(&worker_state);
+                            let _ = slint::invoke_from_event_loop(move || {
+                                refresh_weak(&target_weak, &refresh_state)
+                            });
+                        }
+                    }
+                    if album_synchronization.is_ok() && track_synchronization.is_ok() {
+                        connection_warning = false;
+                    } else {
+                        let album_error = album_synchronization
+                            .err()
+                            .unwrap_or_else(|| "connected".to_string());
+                        let track_error = track_synchronization
+                            .err()
+                            .unwrap_or_else(|| "connected".to_string());
+                        pool = None;
+                        if !connection_warning {
+                            connection_warning = true;
+                            if let Ok(mut app) = worker_state.lock() {
+                                app.push_log(format!(
+                                    "Coordination disconnected; successful Windows notifications remain queued locally. Album: {album_error}; COMP track: {track_error}"
+                                ));
                             }
                         }
                     }
