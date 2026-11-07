@@ -797,16 +797,21 @@ async function pollJobs() {
   try {
     const priorJobs = new Map((state.jobs || []).map(job => [job.id, job]));
     const priorStaged = new Set(state.embedQueue.map(item => item.id));
-    const [jobs, queueControls, albumCoordination] = await Promise.all([
+    const [jobs, queueControls, albumCoordination, compTrackCoordination] = await Promise.all([
       api("/api/jobs"),
       api("/api/jobs/control-state"),
       api("/api/coordination/album-overrides").catch(() => null),
+      api("/api/coordination/comp-track-overrides").catch(() => null),
     ]);
     state.jobs = jobs; state.queueControls = queueControls; renderQueue();
     const changedOverrides = applyAlbumCoordination(albumCoordination);
+    const changedTrackOverrides = applyCompTrackCoordination(compTrackCoordination);
     if (changedOverrides.length) {
       await refreshOpposingAlbumThumbnails(changedOverrides);
       renderLibrary(); renderHero(); renderReview();
+    }
+    if (changedTrackOverrides.length) {
+      renderHero(); renderReview();
     }
     const stagedChanged = priorStaged.size !== state.embedQueue.length
       || state.embedQueue.some(item => !priorStaged.has(item.id));

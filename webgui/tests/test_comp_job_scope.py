@@ -292,7 +292,12 @@ class CompJobScopeTests(unittest.TestCase):
             )
             service.refresh_embedding_stats = lambda _row: 1
             service.audit = lambda *_args, **_kwargs: None
-            service.record_album_write = lambda *_args, **_kwargs: {"durable": True}
+            album_events = []
+            track_events = []
+            service.record_album_write = lambda *args, **_kwargs: album_events.append(args)
+            service.record_comp_track_write = (
+                lambda *args, **_kwargs: track_events.append(args) or {"durable": True}
+            )
 
             prepared = service.prepare_comp_thumbnail({
                 "artist_id": "10k-maniacs", "album_id": "billboard-1994",
@@ -329,6 +334,8 @@ class CompJobScopeTests(unittest.TestCase):
             self.assertEqual(result["image"], "/rendered")
             self.assertFalse((root / "cache" / "prepared-comp" / (prepared["prepared_id"] + ".jpg")).exists())
             self.assertEqual(recorded[0][1]["track_key"], "because-the-night")
+            self.assertFalse(album_events)
+            self.assertEqual(track_events[0][1]["track_key"], "because-the-night")
 
             target_art = embedded_track_artwork_bytes(target)
             full_result = service.embed_comp_track({
@@ -340,6 +347,8 @@ class CompJobScopeTests(unittest.TestCase):
             with Image.open(BytesIO(embedded_track_artwork_bytes(other))) as embedded:
                 self.assertEqual(embedded.size, (1200, 1200))
             self.assertEqual(recorded[1][1]["track_key"], "other")
+            self.assertFalse(album_events)
+            self.assertEqual(track_events[1][1]["track_key"], "other")
 
     def test_embed_track_keeps_write_permission_guard(self):
         service = Services.__new__(Services)

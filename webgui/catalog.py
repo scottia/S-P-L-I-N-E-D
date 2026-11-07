@@ -97,6 +97,20 @@ def normalized_artist_identity(value: str) -> str:
     return "".join(character.casefold() for character in visible if character.isalnum())
 
 
+def artist_display_sort_key(value: object) -> str:
+    """Sort visible Artist names without discarding meaningful punctuation.
+
+    Canonical identity remains deliberately punctuation-insensitive so this
+    presentation change cannot split one Artist into duplicate catalog rows.
+    """
+    normalized = unicodedata.normalize("NFKC", str(value or ""))
+    return "".join(
+        character.casefold()
+        for character in normalized
+        if unicodedata.category(character) != "Cf"
+    ).strip()
+
+
 def normalized_album_identity(value: str) -> str:
     return "".join(
         character.casefold()
@@ -111,6 +125,14 @@ def inside(path: Path, root: Path) -> bool:
         return True
     except (OSError, ValueError):
         return False
+
+
+def relative_coordination_path(path: Path, root: Path) -> str:
+    try:
+        relative = path.resolve(strict=False).relative_to(root.resolve(strict=False))
+    except (OSError, ValueError):
+        return ""
+    return str(relative).replace("\\", "/").strip("/").casefold()
 
 
 def image_metadata(path: Path) -> dict[str, object]:
@@ -183,6 +205,64 @@ def embedded_track_image(path: Path) -> bytes | None:
             return output.getvalue()
     except (OSError, ValueError):
         return None
+
+
+def embedded_album_artwork_summary(
+    paths: list[Path], preferred_side: int
+) -> dict[str, object]:
+    """Return the same bounded Selected Artwork facts shown by Windows.
+
+    Missing or unreadable front-cover frames remain part of the track count.
+    The current-art ribbon describes the largest readable frame, while the
+    footer reports the aggregate embedded bytes for the selected Album only.
+    """
+    infos: list[tuple[int, int, int] | None] = []
+    for path in paths:
+        artwork = embedded_track_artwork_bytes(path)
+        if not artwork:
+            infos.append(None)
+            continue
+        try:
+            with Image.open(BytesIO(artwork)) as opened:
+                opened.verify()
+            with Image.open(BytesIO(artwork)) as opened:
+                infos.append((int(opened.width), int(opened.height), len(artwork)))
+        except (OSError, ValueError):
+            infos.append(None)
+
+    readable = [info for info in infos if info is not None]
+    dimensions = [(width, height) for width, height, _ in readable]
+    resolution_varying = bool(dimensions) and any(
+        dimension != dimensions[0] for dimension in dimensions[1:]
+    )
+    if not dimensions:
+        resolution = "No embedded art"
+    elif resolution_varying:
+        resolution = "Varying Size"
+    else:
+        resolution = f"{dimensions[0][0]} × {dimensions[0][1]}"
+
+    current = max(
+        readable,
+        key=lambda info: (info[0] * info[1], info[2]),
+        default=None,
+    )
+    varying = bool(current) and any(info != current for info in infos)
+    below_preference = any(
+        info is None or info[0] < preferred_side or info[1] < preferred_side
+        for info in infos
+    )
+    return {
+        "track_count": len(infos),
+        "embedded_count": len(readable),
+        "resolution": resolution,
+        "bytes": sum(info[2] for info in readable),
+        "below_preference": below_preference,
+        "varying": varying,
+        "current_width": current[0] if current else 0,
+        "current_height": current[1] if current else 0,
+        "current_bytes": current[2] if current else 0,
+    }
 
 
 @dataclass
@@ -1122,7 +1202,14 @@ class Catalog:
                 ),
                 "portrait": portrait_url,
             })
-        return sorted(result, key=lambda item: normalized_artist_identity(item["name"]))
+        return sorted(
+            result,
+            key=lambda item: (
+                artist_display_sort_key(item["name"]),
+                normalized_artist_identity(item["name"]),
+                str(item["id"]).casefold(),
+            ),
+        )
 
     def artist_thumbnails(self) -> list[dict[str, str]]:
         """Return local thumbnails immediately and Navidrome fallbacks lazily."""
@@ -1384,9 +1471,10 @@ class Catalog:
                 "JOIN artists ON artists.artist_key=albums.artist_key "
                 "WHERE albums.album_key=?", (album_id,),
             ).fetchone()
-            track_titles = [item["title"] for item in db.execute(
-                "SELECT title FROM tracks WHERE album_key=? ORDER BY path LIMIT 12", (album_id,),
-            ).fetchall()]
+            track_rows = db.execute(
+                "SELECT title,path FROM tracks WHERE album_key=? ORDER BY path", (album_id,),
+            ).fetchall()
+            track_titles = [item["title"] for item in track_rows[:12]]
             override = self._album_write_coordination(db, [album_id]).get(album_id, {})
         if row is None:
             raise KeyError("Album not found")
@@ -1402,6 +1490,11 @@ class Catalog:
                 except (OSError, ValueError):
                     pass
         cover = self.album_cover_path(row)
+        embedded_paths = [
+            Path(item["path"])
+            for item in track_rows
+            if inside(Path(item["path"]), folder)
+        ]
         return {
             "id": album_id, "name": row["album_name"], "status": row["status"],
             "artist_id": row["artist_key"], "artist_name": row["artist_name"],
@@ -1411,6 +1504,9 @@ class Catalog:
             "embedded_validation": str(row["embedded_validation_status"] or "unknown")
                 if "embedded_validation_status" in row else "unknown",
             "cover": self.image(cover), "cover_meta": image_metadata(cover) if cover else None,
+            "embedded_meta": embedded_album_artwork_summary(
+                embedded_paths, self.comp_thumbnail_side
+            ),
             "candidates": candidates, "track_titles": track_titles,
             "override_writer": override.get("writer", ""),
             "override_operation": override.get("operation", ""),
@@ -1441,6 +1537,7 @@ class Catalog:
         tracks = [
             {
                 "key": row["track_key"], "path": row["path"],
+                "coordination_path": relative_coordination_path(Path(row["path"]), self.music),
                 "title": row["title"], "artist": row["artist_name"],
                 "file": Path(row["path"]).name,
                 "completed": str(row["path"]).casefold() in completed,
@@ -1458,6 +1555,7 @@ class Catalog:
             tracks = [
                 {
                     "key": str(path), "path": str(path), "title": path.stem,
+                    "coordination_path": relative_coordination_path(path, self.music),
                     "artist": "", "file": path.name,
                     "completed": str(path).casefold() in completed,
                     "status": (
@@ -1660,6 +1758,7 @@ class Catalog:
             completed_track = str(track_path) in completed
             groups[key]["tracks"].append({
                 "key": row["track_key"], "file": track_path.name, "title": row["title"],
+                "coordination_path": relative_coordination_path(track_path, self.music),
                 "completed": completed_track,
                 "status": "checking" if completed_track else "blue",
                 "thumbnail": None,

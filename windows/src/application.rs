@@ -975,7 +975,15 @@ impl LibraryState {
             key: album.snapshot.album_key.clone(),
             primary: album.snapshot.title.clone(),
             secondary: if kind == "album-child" {
-                String::new()
+                format!(
+                    "({} track{})",
+                    album.snapshot.track_count,
+                    if album.snapshot.track_count == 1 {
+                        ""
+                    } else {
+                        "s"
+                    }
+                )
             } else {
                 album.snapshot.artist.clone()
             },
@@ -2326,6 +2334,9 @@ pub struct ApplicationState {
     /// Durable last-writer projection keyed by canonical Album key. This is
     /// presentation provenance only and never changes processing status.
     pub album_override_writers: HashMap<String, String>,
+    /// Track-scoped last writer keyed by the local normalized track path.
+    /// Fallback Album cards never consult this map.
+    pub comp_track_override_writers: HashMap<String, String>,
     /// Track currently owned by the running fallback review. Unlike the
     /// library selection set, this authority must survive harmless browsing
     /// while the controller is waiting for a decision.
@@ -2594,6 +2605,7 @@ impl ApplicationState {
             current_cover_path: String::new(),
             embed_locked_album_paths: HashSet::new(),
             album_override_writers: HashMap::new(),
+            comp_track_override_writers: HashMap::new(),
             current_compilation_track_path: String::new(),
             pending_compilation_track_path: String::new(),
             edit_preview_path: String::new(),
@@ -5285,7 +5297,7 @@ mod tests {
         assert!(rows[alpha].expanded);
         assert_eq!(rows[alpha + 1].kind, "album-child");
         assert_eq!(rows[alpha + 1].depth, 1);
-        assert_eq!(rows[alpha + 1].secondary, "");
+        assert_eq!(rows[alpha + 1].secondary, "(1 track)");
         assert_eq!(
             rows.iter().filter(|row| row.kind == "album-child").count(),
             2
@@ -5293,6 +5305,31 @@ mod tests {
 
         assert!(state.toggle_artist_scope("Alpha"));
         assert_eq!(state.rows().len(), 4);
+    }
+
+    #[test]
+    fn artist_rows_keep_symbol_prefixed_names_first() {
+        let mut nsync = album("n", "*NSYNC", "No Strings Attached", "unprocessed");
+        nsync.album_mbid = "release-n".into();
+        let mut nirvana = album("nirvana", "Nirvana", "Nevermind", "unprocessed");
+        nirvana.album_mbid = "release-nirvana".into();
+        let mut aaliyah = album("aaliyah", "Aaliyah", "Aaliyah", "unprocessed");
+        aaliyah.album_mbid = "release-aaliyah".into();
+        let state = LibraryState::from_snapshot(MediaSnapshot {
+            schema_version: crate::media_database::SCHEMA_VERSION,
+            database_path: "splined.db".into(),
+            canonical_root: "/music".into(),
+            local_root: r"C:\Music".into(),
+            albums: vec![nirvana, aaliyah, nsync],
+        })
+        .unwrap();
+        let artists = state
+            .rows()
+            .into_iter()
+            .filter(|row| row.depth == 0)
+            .map(|row| row.primary)
+            .collect::<Vec<_>>();
+        assert_eq!(artists, vec!["*NSYNC", "Aaliyah", "Nirvana"]);
     }
 
     #[test]

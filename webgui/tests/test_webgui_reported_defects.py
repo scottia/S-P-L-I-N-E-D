@@ -270,10 +270,12 @@ class ReportedDefectTests(unittest.TestCase):
         self.assertLess(document.index('id="artistBiography"'), document.index('id="artistInfoRows"'))
         self.assertIn(".artist-info-rows{position:absolute", styles)
         self.assertIn(".hero-portrait{width:86px;height:86px;flex:none;border:2px solid var(--cyan);border-radius:50%", styles)
-        self.assertIn("grid-template-columns:repeat(2,minmax(0,1fr))", styles)
-        self.assertIn("inset:34px 0 auto 0", styles)
+        self.assertIn("grid-template-columns:minmax(0,1fr)", styles)
+        self.assertIn("inset:34px auto auto 0", styles)
+        self.assertIn("width:clamp(340px,50%,520px)", styles)
+        self.assertIn("grid-template-columns:116px minmax(0,1fr)", styles)
         self.assertIn("width:16px;height:16px", styles)
-        self.assertIn("background:color-mix(in srgb,var(--panel) 80%,transparent)", styles)
+        self.assertIn("background:color-mix(in srgb,var(--panel) 88%,transparent)", styles)
         self.assertIn(
             ".portrait-launch h1{width:180px;min-height:30px;margin:5px 0 0;"
             "padding:4px 0;background:transparent;color:var(--yellow)",
@@ -293,6 +295,10 @@ class ReportedDefectTests(unittest.TestCase):
             'artistMbidLink.href = "https://musicbrainz.org/artist/" + encodeURIComponent(artistMbid)',
             application,
         )
+        self.assertIn(".similar-artists{display:flex;justify-content:flex-start;align-items:flex-start;gap:6px", styles)
+        self.assertIn(".similar-card{width:72px", styles)
+        self.assertIn(".similar-avatar{display:grid;place-items:center;width:58px;height:58px", styles)
+        self.assertIn(".similar-status{position:absolute;right:6px;top:43px", styles)
         self.assertIn('id="mediaFilter" class="filter-body" hidden', document)
         self.assertIn('id="mediaFilterToggle" type="button" aria-expanded="false"', document)
         self.assertIn('id="aboutButton"', document)

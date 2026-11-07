@@ -800,6 +800,10 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
     def album_overrides():
         return context.require().album_write_coordination()
 
+    @app.get("/api/coordination/comp-track-overrides")
+    def comp_track_overrides():
+        return context.require().comp_track_write_coordination()
+
     @app.get("/api/fallback/tracks")
     def tracks(id: str):
         services = context.require()
