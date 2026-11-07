@@ -165,7 +165,8 @@ fn artist_overview_keeps_native_parity_controls_and_album_row_navigation() {
     assert!(ui.contains("artist-summary-visible"));
     assert!(ui.contains("MusicBrainz ID"));
     assert!(ui.contains("root.browse-artist-artwork(); root.workspace-mode = 2;"));
-    assert!(ui.contains("width: 170px; height: 150px"));
+    assert!(ui.contains("thumbnail-size: artist-scroll.visible-width < 520px ? 120px : 170px"));
+    assert!(ui.contains("thumbnail-size + 29px"));
     assert!(ui.contains("root.artist-overview-name; color: AppTheme.yellow"));
     assert!(!ui.contains("if root.overview-mode == \"Album\": Heading"));
     assert!(ui.contains("if root.artist-summary-visible: GridLayout"));
@@ -173,11 +174,16 @@ fn artist_overview_keeps_native_parity_controls_and_album_row_navigation() {
     assert!(ui.contains("🎵 Artist & Featured Artist Top Genres"));
     assert!(ui.contains("if similar.available: Rectangle"));
     assert!(ui.contains("root.selected-album-track-count + \" tracks · \""));
-    assert!(ui.contains("status-only-album-selection: row.kind == \"album-child\""));
+    assert!(ui.contains(
+        "status-only-album-selection: row.kind == \"album-child\" || row.kind == \"folder\""
+    ));
+    assert!(ui.contains("root.status-only-album-selection ? \"○\""));
     assert!(ui.contains("row-touch := TouchArea"));
     assert!(ui.contains("clicked => root.activated(root.item.key)"));
     assert!(!ui.contains("#7a1b1d1f"));
     assert!(!ui.contains("#7a061426"));
+    assert!(ui.contains("#14141470"));
+    assert!(ui.contains("#0b0b0be0"));
 }
 
 #[test]

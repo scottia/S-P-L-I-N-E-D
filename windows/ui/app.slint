@@ -328,8 +328,10 @@ component LibraryItem inherits Rectangle {
             width: 34px;
             background: transparent;
             Text {
-                text: root.item.selected ? "●" : "○";
-                color: root.item.selected ? AppTheme.green : AppTheme.danger;
+                // Album navigation keeps its processing state without leaving a
+                // persistent selection highlight in the file list.
+                text: root.status-only-album-selection ? "○" : (root.item.selected ? "●" : "○");
+                color: root.status-only-album-selection ? root.item.status-color : (root.item.selected ? AppTheme.green : AppTheme.danger);
                 font-size: 30px * AppTheme.font-scale; vertical-alignment: center; horizontal-alignment: center;
             }
             TouchArea {
@@ -675,7 +677,7 @@ component MediaLibraryPane inherits NeonPanel {
                 vertical-stretch: 1;
                 for row in root.library-rows: LibraryItem {
                     item: row;
-                    status-only-album-selection: row.kind == "album-child";
+                    status-only-album-selection: row.kind == "album-child" || row.kind == "folder";
                     thumbnail-needed(key, kind) => root.thumbnail-needed(key, kind);
                     activated(key) => root.library-row-activated(key, root.include-bypassed);
                     selection-activated(key) => root.library-row-selection-activated(key, root.include-bypassed);
@@ -2208,7 +2210,7 @@ export component AppWindow inherits Window {
                                                 property <length> biography-collapsed-height: self.biography-line-height * 5;
                                                 property <bool> biography-overflows: root.artist-overview-biography != "" && biography-measure.preferred-height > self.biography-collapsed-height;
                                                 vertical-stretch: 1; horizontal-stretch: 1; max-width: 10000px; clip: true; border-radius: 8px; background: AppTheme.quiet-surface; border-color: AppTheme.border; border-width: 1px;
-                                                Image { source: root.artist-overview-banner; visible: root.overview-mode != "Fallback"; width: parent.width; height: parent.height; image-fit: cover; opacity: root.artist-banner-preview-active ? 0.18 : 0.38; }
+                                                Image { source: root.artist-overview-banner; visible: root.overview-mode != "Fallback"; width: parent.width; height: parent.height; image-fit: cover; opacity: root.artist-banner-preview-active ? 0.18 : 1.0; }
                                                 if root.artist-banner-preview-active: Image {
                                                     source: root.artist-banner-preview;
                                                     width: parent.width * (root.artist-banner-preview-rendered ? 1.0 : root.artist-banner-zoom);
@@ -2218,7 +2220,9 @@ export component AppWindow inherits Window {
                                                     image-fit: contain; opacity: 0.66;
                                                 }
                                                 Image { source: @image-url("../gui/splined-watermark.png"); visible: root.overview-mode == "Fallback"; width: min(parent.width * 0.7, 640px); height: min(parent.height * 0.7, 480px); x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; image-fit: contain; opacity: 0.16; }
-                                                Rectangle { width: parent.width; height: parent.height; background: AppTheme.chalk ? @linear-gradient(180deg, #70303030 0%, #b8242424 64%, #e0181818 100%) : (AppTheme.light ? @linear-gradient(180deg, #66f4f4f4 0%, #a8ededed 64%, #d8e6e6e6 100%) : @linear-gradient(180deg, #70141414 0%, #b8101010 64%, #e00b0b0b 100%)); }
+                                                // Slint uses #RRGGBBAA. Keep the banner neutral: the
+                                                // final byte is opacity and the RGB channels are equal.
+                                                Rectangle { width: parent.width; height: parent.height; background: AppTheme.chalk ? @linear-gradient(180deg, #30303070 0%, #242424b8 64%, #181818e0 100%) : (AppTheme.light ? @linear-gradient(180deg, #f4f4f466 0%, #edededa8 64%, #e6e6e6d8 100%) : @linear-gradient(180deg, #14141470 0%, #101010b8 64%, #0b0b0be0 100%)); }
                                                 biography-line-measure := Text { visible: false; text: "Ag"; font-size: 18px * AppTheme.font-scale; }
                                                 biography-link-measure := Text { visible: false; text: root.artist-biography-expanded ? "(less…)" : "(…more)"; font-size: 18px * AppTheme.font-scale; }
                                                 biography-measure := Text {
@@ -2256,22 +2260,25 @@ export component AppWindow inherits Window {
                                                         Text { text: "A COMP fallback album has no MusicBrainz Album ID. Its tracks are reviewed and embedded individually; the folder's cover.* is never used as track artwork. Blue tracks need artwork, purple tracks need thumbnail repair, and green tracks are complete. SPLINED validates Recording and Artist IDs, tries exact MusicBrainz releases first, then artist-restricted title matches when identity is missing or invalid. Choose a track below to review candidates, or LAUNCH COMP to process pending tracks in sequence."; color: AppTheme.foreground; font-size: 14px * AppTheme.font-scale; wrap: word-wrap; overflow: elide; height: root.fallback-overview-help-expanded ? 118px : 69px; }
                                                         Text { text: root.fallback-overview-help-expanded ? "(less…)" : "(…more)"; color: AppTheme.cyan; font-size: 14px * AppTheme.font-scale; font-weight: 800; horizontal-alignment: right; height: 20px; TouchArea { mouse-cursor: pointer; clicked => { root.fallback-overview-help-expanded = !root.fallback-overview-help-expanded; } } }
                                                     }
-                                                    if root.overview-mode != "Fallback": HorizontalLayout {
-                                                        height: max(150px, biography-area.height + (root.artist-edit-available ? 28px : 0px));
+                                                    if root.overview-mode != "Fallback": artist-header := HorizontalLayout {
+                                                        property <length> thumbnail-size: artist-scroll.visible-width < 520px ? 120px : 170px;
+                                                        property <length> thumbnail-column-width: self.thumbnail-size + 44px;
+                                                        property <length> thumbnail-column-height: self.thumbnail-size + 52px;
+                                                        height: max(self.thumbnail-column-height, biography-area.height + (root.artist-edit-available ? 28px : 0px));
                                                         vertical-stretch: 0; spacing: 12px; max-width: 10000px;
-                                                        Rectangle { width: 170px; height: 150px; background: transparent;
-                                                            Rectangle { x: 33px; width: 104px; height: 104px; border-radius: 52px; clip: true; background: AppTheme.image-surface; border-color: AppTheme.cyan; border-width: 2px;
+                                                        Rectangle { width: artist-header.thumbnail-column-width; height: artist-header.thumbnail-column-height; background: transparent;
+                                                            Rectangle { x: 22px; width: artist-header.thumbnail-size; height: artist-header.thumbnail-size; border-radius: artist-header.thumbnail-size / 2; clip: true; background: AppTheme.image-surface; border-color: AppTheme.cyan; border-width: 2px;
                                                                 MissingArtistArt { visible: !root.artist-overview-draft-selected && !root.artist-overview-has-artwork; x: 3px; y: 3px; width: parent.width - 6px; height: parent.height - 6px; }
                                                                 Image { visible: root.artist-overview-draft-selected || root.artist-overview-has-artwork; source: root.artist-overview-draft-selected ? root.artist-overview-draft-artwork : root.artist-overview-artwork; x: 3px; y: 3px; width: parent.width - 6px; height: parent.height - 6px; image-fit: cover; }
                                                             }
-                                                            Rectangle { x: 25px; y: 91px; width: 12px; height: 12px; border-radius: 6px; border-width: 2px; border-color: AppTheme.green; background: root.artist-artwork-mode ? AppTheme.green : AppTheme.image-surface;
+                                                            Rectangle { x: 14px; y: artist-header.thumbnail-size - 13px; width: 14px; height: 14px; border-radius: 7px; border-width: 2px; border-color: AppTheme.green; background: root.artist-artwork-mode ? AppTheme.green : AppTheme.image-surface;
                                                                 TouchArea { enabled: !root.operation-busy; mouse-cursor: pointer; clicked => { root.browse-artist-artwork(); root.workspace-mode = 2; } }
                                                             }
-                                                            Rectangle { x: 128px; y: 3px; width: 15px; height: 15px; border-radius: 3px; border-width: 1px; border-color: AppTheme.cyan; background: root.artist-summary-visible ? AppTheme.cyan : AppTheme.image-surface;
+                                                            Rectangle { x: artist-header.thumbnail-size + 29px; y: 5px; width: 17px; height: 17px; border-radius: 3px; border-width: 1px; border-color: AppTheme.cyan; background: root.artist-summary-visible ? AppTheme.cyan : AppTheme.image-surface;
                                                                 Text { text: root.artist-summary-visible ? "▴" : "▾"; color: root.artist-summary-visible ? AppTheme.image-surface : AppTheme.cyan; font-size: 10px * AppTheme.font-scale; horizontal-alignment: center; vertical-alignment: center; }
                                                                 TouchArea { mouse-cursor: pointer; clicked => { root.artist-summary-visible = !root.artist-summary-visible; } }
                                                             }
-                                                            Text { x: 0px; y: 111px; width: parent.width; height: 34px; text: root.artist-overview-name; color: AppTheme.yellow; font-size: 18px * AppTheme.font-scale; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; overflow: elide; }
+                                                            Text { x: 0px; y: artist-header.thumbnail-size + 8px; width: parent.width; height: 36px; text: root.artist-overview-name; color: AppTheme.yellow; font-size: 18px * AppTheme.font-scale; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; overflow: elide; }
                                                         }
                                                         VerticalLayout { spacing: 4px; horizontal-stretch: 1; max-width: 10000px; alignment: start;
                                                             if root.artist-edit-available: HorizontalLayout { height: 24px; spacing: 8px; alignment: end;
