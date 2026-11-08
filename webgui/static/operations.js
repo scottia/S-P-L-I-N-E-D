@@ -150,13 +150,14 @@ function compTargetScope() {
 }
 function compCandidateSource() {
   const decision = activeArtworkDecision();
-  const musicBrainzIndex = decision?.kind === "musicbrainz-results"
-    ? (Number.isInteger(decision.hoveredResult) ? decision.hoveredResult : decision.selectedResult) : null;
-  const musicBrainz = Number.isInteger(musicBrainzIndex) ? decision.options?.[musicBrainzIndex] : null;
-  return decision?.jobKind === "comp" && decision.selected
-    ? decision.selected.image
-    : decision?.jobKind === "comp" && musicBrainz?.artwork_url
-      ? musicBrainz.artwork_url
+  const musicBrainz = musicBrainzPreviewOption(decision);
+  const existing = musicBrainzExistingPreview(decision);
+  return decision?.jobKind === "comp" && musicBrainz?.artwork_url
+    ? musicBrainz.artwork_url
+    : decision?.jobKind === "comp" && existing?.image
+      ? existing.image
+    : decision?.jobKind === "comp" && decision.selected
+      ? decision.selected.image
     : state.editorMode === "fallback" ? state.fallbackTrack?.image : state.compTrack?.image;
 }
 function compThumbnailOwner() {
@@ -200,6 +201,24 @@ function coverPayload() {
 async function writeArtwork() {
   const decision = activeArtworkDecision();
   if (decision) {
+    // Hover changes only the preview.  A write must stay bound to the row the
+    // user explicitly selected, even if the pointer has since crossed another
+    // SELECT EXISTING row.
+    const existing = Number.isInteger(decision.selectedExisting)
+      ? decision.existingArtwork?.[decision.selectedExisting] || null
+      : null;
+    if (decision.jobKind === "comp" && decision.kind === "musicbrainz-results" && existing?.image
+      && Number.isInteger(decision.selectedExisting)) {
+      const prepared = typeof activeCompPrepared === "function" ? activeCompPrepared() : null;
+      const value = JSON.stringify({
+        action: "webgui-embed-existing", number: decision.selectedExisting + 1,
+        artwork: {image: existing.image, adjustments: state.fx.comp || {}, upscale: !!state.upscalePreview,
+          ...(prepared ? {prepared_id: prepared.prepared_id, prepared_sha256: prepared.sha256} : {})},
+      });
+      if (prepared) state.pendingCompWrite = {preview: prepared, owner: prepared.owner, jobId: decision.jobId};
+      await submitQueuedDecision(value);
+      return;
+    }
     const candidate = decision.selected;
     if (!candidate) throw new Error("Preview a queued candidate before choosing it");
     const prepared = decision.jobKind === "comp" && typeof activeCompPrepared === "function" ? activeCompPrepared() : null;
@@ -310,11 +329,12 @@ renderReview = function () {
     const musicBrainzIndex = decision.kind === "musicbrainz-results"
       ? (Number.isInteger(decision.hoveredResult) ? decision.hoveredResult : decision.selectedResult) : null;
     const musicBrainz = Number.isInteger(musicBrainzIndex) ? decision.options?.[musicBrainzIndex] : null;
-    const compCandidate = decision.jobKind === "comp" && !!(decision.selected || musicBrainz?.artwork_url);
+    const existing = musicBrainzExistingPreview(decision);
+    const compCandidate = decision.jobKind === "comp" && !!(decision.selected || musicBrainz?.artwork_url || existing?.image);
     $("upscaleButton").disabled = !editableArtworkSource()
       || decision.jobKind === "comp" && !compCandidate;
     $("writeButton").textContent = decision.jobKind === "comp" ? "EMBED Comp" : "WRITE Cover";
-    $("writeButton").disabled = !writable || musicBrainzResults || !decision.selected;
+    $("writeButton").disabled = !writable || (musicBrainzResults ? !existing?.image || !Number.isInteger(decision.selectedExisting) : !decision.selected);
     if (decision.jobKind === "comp") $("embedBatchButton").disabled = true;
   }
   $("writeNotice").hidden = true;
@@ -371,7 +391,8 @@ async function enqueueComp(albumId, keys, artistId = "", signal = null) {
   await reviewJob(result.id, true);
 }
 function compTrackIsReprocessable(track) {
-  return track?.status === "blue" || (typeof compTrackOverride === "function" && compTrackOverride(track)?.writer === "windows");
+  return ["blue", "purple", "green"].includes(track?.status)
+    || (typeof compTrackOverride === "function" && compTrackOverride(track)?.writer === "windows");
 }
 function fallbackCompLaunchTargets(trackKey = "") {
   if (trackKey) {
@@ -697,20 +718,21 @@ async function selectExistingMusicBrainzArtwork(index) {
   if (!existing) throw new Error("That existing library artwork is no longer available");
   decision.selectedExisting = index;
   decision.selectedResult = null;
-  state.pendingMusicBrainzExisting = {
-    jobId: decision.jobId,
-    albumId: String(decision.context?.album_id || decision.payload?.album_id || ""),
-    trackKey: String(decision.context?.track_key || ""),
-    title: String(existing.title || "Existing Album"),
-  };
+  decision.hoveredExisting = null;
   renderMusicBrainzWorkspace();
-  setStatus(`Selecting existing library artwork · ${state.pendingMusicBrainzExisting.title}`, "busy");
-  try {
-    await submitQueuedDecision(JSON.stringify({action: "use-existing", number: index + 1}));
-  } catch (error) {
-    if (state.pendingMusicBrainzExisting?.jobId === decision.jobId) state.pendingMusicBrainzExisting = null;
-    throw error;
-  }
+  renderReview();
+  setStatus(`Existing library artwork selected · ${existing.title || "Existing Album"} · Upscale Preview, edit, or EMBED Comp`, "ready");
+}
+async function useSelectedExistingMusicBrainzArtwork() {
+  const decision = activeArtworkDecision();
+  const index = decision?.selectedExisting;
+  const existing = Number.isInteger(index) ? decision.existingArtwork?.[index] : null;
+  if (!existing) throw new Error("Select existing library artwork first");
+  state.pendingMusicBrainzExisting = {
+    jobId: decision.jobId, albumId: String(decision.context?.album_id || decision.payload?.album_id || ""),
+    trackKey: String(decision.context?.track_key || ""), title: String(existing.title || "Existing Album"),
+  };
+  await submitQueuedDecision(JSON.stringify({action: "use-existing", number: index + 1}));
 }
 async function presentQueuedCandidates(job, prompt, options) {
   if ($("workspaceDialog").open) $("workspaceDialog").close();
@@ -783,6 +805,7 @@ async function presentQueuedMusicBrainz(job, prompt, options) {
     selectedResult: preserveSelection ? currentDecision.selectedResult : null,
     hoveredResult: null,
     selectedExisting: preserveSelection ? currentDecision.selectedExisting : null,
+    hoveredExisting: null,
     artistFilter: preserveSelection ? currentDecision.artistFilter : "",
     releaseTypeFilter: preserveSelection ? currentDecision.releaseTypeFilter : "",
     existingArtwork: job.progress?.current?.musicbrainz_existing?.items || [],

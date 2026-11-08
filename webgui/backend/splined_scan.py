@@ -966,6 +966,7 @@ def _manual_local_candidates(
 
 def _manual_emit_existing_artwork(
     rows: list[dict[str, Any]],
+    cache: Path,
 ) -> list[dict[str, Any]]:
     """Expose authorized local Album matches beside native-style MB results."""
     items: list[dict[str, Any]] = []
@@ -973,6 +974,18 @@ def _manual_emit_existing_artwork(
     seen: set[str] = set()
     for row in rows:
         cover = Path(str(row.get("cover_path") or ""))
+        if row.get("embedded_track"):
+            candidate = embedded_candidate(Path(str(row.get("track_path") or "")), cache)
+            if candidate is None:
+                continue
+            cover = candidate.path
+            row = dict(
+                row,
+                cover_path=str(cover),
+                cover_format=str(candidate.format),
+                cover_width=int(candidate.width),
+                cover_height=int(candidate.height),
+            )
         identity = str(cover).casefold()
         if not identity or identity in seen or not cover.is_file():
             continue
@@ -988,10 +1001,16 @@ def _manual_emit_existing_artwork(
                     row.get("musicbrainz_releasegroupid") or ""
                 ),
                 "kind": (
-                    "recording-match"
+                    "embedded-track"
+                    if row.get("embedded_track")
+                    else "recording-match"
                     if row.get("recording_match")
                     else "artist-title-match"
                 ),
+                "width": int(row.get("cover_width") or 0),
+                "height": int(row.get("cover_height") or 0),
+                "bytes": cover.stat().st_size,
+                "format": str(row.get("cover_format") or cover.suffix.lstrip(".")),
             }
         )
     core.emit_ui("musicbrainz_existing", items=items)
@@ -1191,7 +1210,7 @@ def _manual_choose_release(
             return "requery", None, fields
         if (
             isinstance(payload, dict)
-            and payload.get("action") == "use-existing"
+            and payload.get("action") in {"use-existing", "webgui-embed-existing"}
         ):
             try:
                 existing_number = int(payload.get("number", 0))
@@ -1199,7 +1218,18 @@ def _manual_choose_release(
                 existing_number = 0
             rows = list(existing_rows or [])
             if 1 <= existing_number <= len(rows):
-                return "existing", rows[existing_number - 1], {}
+                changes = {}
+                artwork = payload.get("artwork")
+                if payload.get("action") == "webgui-embed-existing" and isinstance(artwork, dict):
+                    changes["webgui_artwork"] = {
+                        "image": str(artwork.get("image") or ""),
+                        "adjustments": artwork.get("adjustments") or {},
+                        "upscale": bool(artwork.get("upscale")),
+                        "prepared_id": str(artwork.get("prepared_id") or ""),
+                        "prepared_sha256": str(artwork.get("prepared_sha256") or ""),
+                    }
+                    return "existing-embed", rows[existing_number - 1], changes
+                return "existing", rows[existing_number - 1], changes
         if answer.isdigit() and 1 <= int(answer) <= len(items):
             selected_id = options[int(answer) - 1].get("id", "")
             selected = next(
@@ -1522,6 +1552,7 @@ def run_manual_compilation_album(
         selected_local_row: dict[str, Any] | None = None
         selected: core.Candidate | None = None
         selected_artwork_request: dict[str, Any] | None = None
+        direct_existing_embed = False
         release: core.Release | None = None
         authority_edit_pending = False
         # Completion authority belongs to the Recording/Artist validation,
@@ -1561,7 +1592,8 @@ def run_manual_compilation_album(
                     release_mbid="",
                 )
                 discovery_existing_rows = _manual_emit_existing_artwork(
-                    discovery_existing_rows
+                    discovery_existing_rows,
+                    cache,
                 )
                 if not discovery_results and options is not None:
                     if musicbrainz_results_first:
@@ -1754,9 +1786,11 @@ def run_manual_compilation_album(
                         authority_edit_pending = True
                         authority_completion_validated = False
                         continue
-                    if decision == "existing":
+                    if decision in {"existing", "existing-embed"}:
                         selected_local_row = discovered_item
                         selected_release_item = None
+                        direct_existing_embed = decision == "existing-embed"
+                        selected_artwork_request = changes.get("webgui_artwork")
                         authority["release_id"] = str(
                             selected_local_row.get("musicbrainz_albumid") or ""
                         ).casefold()
@@ -2011,6 +2045,10 @@ def run_manual_compilation_album(
                     f"    {core.red('Authority lookup:')} "
                     f"{core.yellow(lookup_error)}"
                 )
+
+            if direct_existing_embed and local_candidates:
+                selected = local_candidates[0]
+                break
 
             decision, chosen, changes = _manual_choose_candidate(
                 candidates,

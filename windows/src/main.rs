@@ -21017,19 +21017,16 @@ fn select_pending_artist_compilation_report_tracks(
         .filter(|artist| artist.eq_ignore_ascii_case(&app.compilation_report_artist))
         .ok_or_else(|| "Open the current Artist's COMP report before launching it.".to_string())?;
     let artist = artist.to_string();
-    let non_green_paths = artist_compilation_report_track_ui_rows(app)
+    let report_paths = artist_compilation_report_track_ui_rows(app)
         .into_iter()
-        .filter(|row| row.status.as_str() != "Green" || row.overridden)
         .map(|row| row.path.as_str().to_ascii_lowercase())
         .collect::<HashSet<_>>();
     let tracks = artist_compilation_report_tracks(app)
         .into_iter()
-        .filter(|track| {
-            non_green_paths.contains(&track.path.to_string_lossy().to_ascii_lowercase())
-        })
+        .filter(|track| report_paths.contains(&track.path.to_string_lossy().to_ascii_lowercase()))
         .collect::<Vec<_>>();
     if tracks.is_empty() {
-        app.operation_status = "All reported COMP tracks are green.".into();
+        app.operation_status = "No COMP tracks are available in this report.".into();
         app.operation_tone = "green".into();
         return Ok(0);
     }
@@ -21080,7 +21077,7 @@ fn select_pending_artist_compilation_report_tracks(
     app.artist_artwork_mode = false;
     app.scan_scope = ScanScope::Selected;
     app.operation_status = format!(
-        "COMP queued · {} pending or overridden {artist} track{} across the report",
+        "COMP queued · {} {artist} track{} across the report",
         tracks.len(),
         if tracks.len() == 1 { "" } else { "s" }
     );

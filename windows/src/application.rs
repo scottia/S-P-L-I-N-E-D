@@ -1706,8 +1706,9 @@ impl LibraryState {
         SelectionResult::Changed
     }
 
-    /// Queue only unfinished fallback tracks belonging to the Artist Overview
-    /// performer. A COMP launch never silently includes other artists' tracks.
+    /// Queue every fallback track belonging to the current report scope.
+    /// LAUNCH COMP is an explicit reprocess command, so completed green tracks
+    /// remain eligible; the Artist view still never includes another performer.
     pub fn select_pending_compilation_tracks(
         &mut self,
         album_key: &str,
@@ -1738,7 +1739,6 @@ impl LibraryState {
             .snapshot
             .compilation_tracks
             .iter()
-            .filter(|track| !track.embedded_artwork_recorded)
             .filter(|track| {
                 self.show_tracks
                     || self.view != LibraryView::Artists
@@ -6806,7 +6806,7 @@ mod tests {
     }
 
     #[test]
-    fn comp_launch_queues_only_pending_focused_artist_tracks_and_selection_can_abort() {
+    fn comp_launch_requeues_all_focused_artist_tracks_and_selection_can_abort() {
         let mut state = library();
         state.focused_artist = Some("Alpha".to_string());
         let album = state
@@ -6842,24 +6842,24 @@ mod tests {
                 embedded_artwork_recorded: false,
             },
         ];
-        assert_eq!(state.select_pending_compilation_tracks("b", false), Ok(2));
+        assert_eq!(state.select_pending_compilation_tracks("b", false), Ok(3));
         let queue = state.queue(ScanScope::Selected);
         assert_eq!(
             queue
                 .iter()
                 .filter_map(|target| target.compilation_track_path.as_deref())
                 .collect::<Vec<_>>(),
-            vec!["two.mp3", "four.mp3"]
+            vec!["one.mp3", "two.mp3", "four.mp3"]
         );
         let launch_epoch = state.selection_epoch;
         state.mark_target_completed(&queue[0]);
         assert_eq!(state.selection_epoch, launch_epoch);
-        assert_eq!(state.queue(ScanScope::Selected).len(), 1);
+        assert_eq!(state.queue(ScanScope::Selected).len(), 2);
         assert!(state.toggle_album("a", false) == SelectionResult::Changed);
         assert_ne!(state.selection_epoch, launch_epoch);
         assert!(state.selected_compilation_track_paths.is_empty());
         assert_eq!(state.queue(ScanScope::Selected)[0].album_key, "a");
-        assert_eq!(state.select_pending_compilation_tracks("b", false), Ok(2));
+        assert_eq!(state.select_pending_compilation_tracks("b", false), Ok(3));
         let relaunch_epoch = state.selection_epoch;
         assert_eq!(
             state.toggle_compilation_track("b", "four.mp3", false),
@@ -6869,7 +6869,7 @@ mod tests {
     }
 
     #[test]
-    fn fallback_select_all_launches_each_pending_track_without_closing_album() {
+    fn fallback_select_all_reprocesses_each_track_without_closing_album() {
         let mut state = library();
         let album = state
             .albums
@@ -6899,22 +6899,24 @@ mod tests {
         ];
         state.set_show_tracks(true);
         state.focused_album_key = Some("b".into());
-        assert_eq!(state.select_all_for_review(), 2);
+        assert_eq!(state.select_all_for_review(), 3);
         let queue = state.queue(ScanScope::Selected);
-        assert_eq!(queue.len(), 2);
-        assert_eq!(queue[0].compilation_track_path.as_deref(), Some("next.mp3"));
-        assert_eq!(queue[1].compilation_track_path.as_deref(), Some("last.mp3"));
+        assert_eq!(queue.len(), 3);
+        assert_eq!(queue[0].compilation_track_path.as_deref(), Some("done.mp3"));
+        assert_eq!(queue[1].compilation_track_path.as_deref(), Some("next.mp3"));
+        assert_eq!(queue[2].compilation_track_path.as_deref(), Some("last.mp3"));
         let selection_epoch = state.selection_epoch;
         state.mark_target_completed(&queue[0]);
         assert_eq!(state.selection_epoch, selection_epoch);
         assert_eq!(state.focused_album_key.as_deref(), Some("b"));
         let remaining = state.queue(ScanScope::Selected);
-        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining.len(), 2);
         assert_eq!(
             remaining[0].compilation_track_path.as_deref(),
-            Some("last.mp3")
+            Some("next.mp3")
         );
         state.mark_target_completed(&queue[1]);
+        state.mark_target_completed(&queue[2]);
         assert!(state.queue(ScanScope::Selected).is_empty());
         assert_eq!(state.focused_album_key.as_deref(), Some("b"));
     }

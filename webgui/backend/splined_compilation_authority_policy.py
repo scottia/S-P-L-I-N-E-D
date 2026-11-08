@@ -290,6 +290,7 @@ def local_artwork_rows(
             rows: Iterable[sqlite3.Row], *, recording_match: bool
         ) -> list[dict[str, Any]]:
             found: list[dict[str, Any]] = []
+            seen_albums: set[str] = set()
             for row in rows:
                 track_path = Path(str(row["track_path"] or ""))
                 cover_path = Path(str(row["cover_path"] or ""))
@@ -303,25 +304,30 @@ def local_artwork_rows(
                     or not cover_path.is_file()
                 ):
                     continue
+                album_identity = str(row["album_path"] or "").casefold()
+                if not album_identity or album_identity in seen_albums:
+                    continue
+                seen_albums.add(album_identity)
                 found.append(dict(row, recording_match=recording_match))
             return found
 
+        found_rows: list[dict[str, Any]] = []
         if recording_mbid:
             cached = usable(
                 connection.execute(exact_select, exact_params),
                 recording_match=True,
             )
             if cached:
-                return cached[:1]
-        if _local_title_reuse_allowed(target_title):
+                found_rows.extend(cached)
+        if not found_rows and _local_title_reuse_allowed(target_title):
             cached_title = usable(
                 connection.execute(title_select, (target_title, *common_params)),
                 recording_match=False,
             )
             if cached_title:
-                return cached_title[:1]
+                found_rows.extend(cached_title)
 
-        candidate_albums = list(
+        candidate_albums = [] if found_rows else list(
             connection.execute(
                 "SELECT al.album_key, al.album_name, al.musicbrainz_albumid, "
                 "al.musicbrainz_releasegroupid, al.release_year, "
@@ -432,8 +438,72 @@ def local_artwork_rows(
                     file_mtime_ns=matches[0]["file_mtime_ns"],
                     recording_match=bool(exact_matches),
                 )
-                return [result]
-        return []
+                found_rows.append(result)
+
+        # A prior verified COMP write is also a local SELECT EXISTING source.
+        # Keep folder cover.* and embedded-track sources separate: compilation
+        # folder art is never used for a track, while the recorded embedded
+        # bytes are extracted later by the interactive scanner.
+        if recording_mbid:
+            covered_albums = {
+                str(row.get("album_path") or "").casefold()
+                for row in found_rows
+            }
+            try:
+                embedded_rows = list(connection.execute(
+                    "SELECT track_path, artist_mbid FROM compilation_track_artwork "
+                    "WHERE lower(recording_mbid)=lower(?) "
+                    "AND outcome IN ('embedded-replaced','embedded-existing') "
+                    "ORDER BY applied_at DESC, track_path COLLATE NOCASE",
+                    (recording_mbid,),
+                ))
+            except sqlite3.Error:
+                # Older/partial indexes may not yet have the COMP artwork
+                # history table. Folder cover matches remain valid sources.
+                embedded_rows = []
+            for embedded in embedded_rows:
+                track_path = Path(str(embedded["track_path"] or ""))
+                album_path = track_path.parent
+                album_identity = str(album_path).casefold()
+                if (
+                    not track_path.is_file()
+                    or str(track_path).casefold() == str(getattr(track, "path", "")).casefold()
+                    or album_identity in covered_albums
+                    or not (_mbids(str(embedded["artist_mbid"] or "")) & artists)
+                ):
+                    continue
+                covered_albums.add(album_identity)
+                found_rows.append(
+                    {
+                        "track_path": str(track_path),
+                        "track_title": target_title,
+                        "track_artist": str(getattr(track, "artist", "") or ""),
+                        "album_path": str(album_path),
+                        "album_name": album_path.name,
+                        "album_artist": str(getattr(track, "artist", "") or ""),
+                        "cover_path": "",
+                        "cover_format": "",
+                        "cover_width": 0,
+                        "cover_height": 0,
+                        "musicbrainz_albumid": "",
+                        "musicbrainz_releasegroupid": "",
+                        "recording_match": True,
+                        "embedded_track": True,
+                    }
+                )
+
+        unique: list[dict[str, Any]] = []
+        seen_sources: set[tuple[str, str]] = set()
+        for row in found_rows:
+            identity = (
+                str(row.get("album_path") or "").casefold(),
+                "embedded" if row.get("embedded_track") else "cover",
+            )
+            if identity in seen_sources:
+                continue
+            seen_sources.add(identity)
+            unique.append(row)
+        return unique
     except sqlite3.Error:
         return []
     finally:

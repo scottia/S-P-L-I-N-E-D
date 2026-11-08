@@ -2056,7 +2056,6 @@ export component AppWindow inherits Window {
                                     musicbrainz-page-content := VerticalLayout { padding: 9px; spacing: 7px;
                                         HorizontalLayout { height: 36px; spacing: 7px;
                                             Heading { text: "⌘  MusicBrainz"; font-size: 19px * AppTheme.font-scale; horizontal-stretch: 1; }
-                                            if root.running: NeonAction { label: "STOP PROCESS"; width: 132px; height: 34px; tone: "red"; clicked => root.stop(); }
                                             NeonAction { label: "MB INFO"; width: 118px; height: 34px; tone: "purple"; clicked => root.open-musicbrainz-info(); }
                                         }
                                         HorizontalLayout { height: 68px; spacing: 10px;
@@ -2182,6 +2181,10 @@ export component AppWindow inherits Window {
                                         }
                                     }
                                     }
+                                }
+                                if root.running: HorizontalLayout { height: 42px; spacing: 7px;
+                                    NeonAction { label: "STOP PROCESS"; width: 132px; height: 34px; tone: "red"; clicked => root.stop(); }
+                                    Rectangle { horizontal-stretch: 1; background: transparent; }
                                 }
                             }
 
@@ -2586,9 +2589,9 @@ export component AppWindow inherits Window {
                                                                 }
                                                                 Text { text: "COMP Report · " + (root.overview-mode == "Fallback" ? root.current-album : root.artist-overview-name); color: AppTheme.cyan; font-size: 16px * AppTheme.font-scale; font-weight: 800; horizontal-stretch: 1; vertical-alignment: center; overflow: elide; }
                                                                 if root.overview-mode == "Fallback": NeonAction { label: "REPAIR COMP"; width: 112px; height: 28px; label-font-size: 11px * AppTheme.font-scale; tone: "purple"; enabled: !root.operation-busy && !root.compilation-report-preview-mode && root.compilation-report-purple-count > 0; clicked => root.prepare-compilation-repair(root.overview-album-key); }
-                                                                if root.overview-mode == "Fallback": NeonAction { label: root.running ? "STOP PROCESS" : "LAUNCH COMP"; width: 112px; height: 28px; label-font-size: 11px * AppTheme.font-scale; tone: root.running ? "red" : "cyan"; enabled: root.running || (!root.operation-busy && !root.compilation-report-preview-mode && (root.compilation-report-blue-count > 0 || root.compilation-report-override-count > 0)); clicked => { if (root.running) { root.stop(); } else { root.compilation-album-launch(root.overview-album-key, root.include-bypassed); } } }
+                                                                if root.overview-mode == "Fallback": NeonAction { label: root.running ? "STOP PROCESS" : "LAUNCH COMP"; width: 112px; height: 28px; label-font-size: 11px * AppTheme.font-scale; tone: root.running ? "red" : "cyan"; enabled: root.running || (!root.operation-busy && !root.compilation-report-preview-mode && (root.compilation-report-green-count > 0 || root.compilation-report-purple-count > 0 || root.compilation-report-blue-count > 0 || root.compilation-report-override-count > 0)); clicked => { if (root.running) { root.stop(); } else { root.compilation-album-launch(root.overview-album-key, root.include-bypassed); } } }
                                                                 if root.overview-mode == "Artist": NeonAction { label: "REPAIR COMP"; width: 112px; height: 28px; label-font-size: 11px * AppTheme.font-scale; tone: "purple"; enabled: !root.operation-busy && !root.running && !root.compilation-report-preview-mode && root.compilation-report-purple-count > 0; clicked => root.request-artist-compilation-repair(); }
-                                                                if root.overview-mode == "Artist": NeonAction { label: root.running ? "STOP PROCESS" : "LAUNCH COMP"; width: 112px; height: 28px; label-font-size: 11px * AppTheme.font-scale; tone: root.running ? "red" : "cyan"; enabled: root.running || (!root.operation-busy && !root.compilation-report-preview-mode && (root.compilation-report-blue-count > 0 || root.compilation-report-override-count > 0)); clicked => { if (root.running) { root.stop(); } else { root.launch-artist-compilation-report(root.include-bypassed); } } }
+                                                                if root.overview-mode == "Artist": NeonAction { label: root.running ? "STOP PROCESS" : "LAUNCH COMP"; width: 112px; height: 28px; label-font-size: 11px * AppTheme.font-scale; tone: root.running ? "red" : "cyan"; enabled: root.running || (!root.operation-busy && !root.compilation-report-preview-mode && (root.compilation-report-green-count > 0 || root.compilation-report-purple-count > 0 || root.compilation-report-blue-count > 0 || root.compilation-report-override-count > 0)); clicked => { if (root.running) { root.stop(); } else { root.launch-artist-compilation-report(root.include-bypassed); } } }
                                                                 if root.confirm-compilation-repair: NeonAction { label: "NO"; width: 48px; height: 28px; clicked => { root.confirm-compilation-repair-action(false); root.confirm-compilation-repair = false; } }
                                                                 if root.confirm-compilation-repair: NeonAction { label: "YES, Repair"; width: 130px; height: 28px; tone: "purple"; enabled: !root.operation-busy && !root.compilation-report-preview-mode; clicked => { root.confirm-compilation-repair-action(true); root.confirm-compilation-repair = false; } }
                                                                 NeonAction { label: "CLOSE REPORT"; width: 108px; height: 28px; label-font-size: 11px * AppTheme.font-scale; clicked => root.close-compilation-report(); }

@@ -2092,11 +2092,29 @@ pub fn find_existing_compilation_artwork(
     current_track_path: &Path,
     _target_title: &str,
 ) -> Result<Option<ExistingCompilationArtwork>, String> {
+    Ok(find_existing_compilation_artworks(
+        config,
+        recording_mbid,
+        artist_mbids,
+        current_track_path,
+        _target_title,
+    )?
+    .into_iter()
+    .next())
+}
+
+pub fn find_existing_compilation_artworks(
+    config: &Config,
+    recording_mbid: &str,
+    artist_mbids: &[String],
+    current_track_path: &Path,
+    _target_title: &str,
+) -> Result<Vec<ExistingCompilationArtwork>, String> {
     if recording_mbid.trim().is_empty() || artist_mbids.is_empty() {
-        return Ok(None);
+        return Ok(Vec::new());
     }
     let (connection, mapper) = runtime_connection_and_mapper(config)?;
-    let found = find_existing_compilation_artwork_with(
+    find_existing_compilation_artworks_with(
         &connection,
         &mapper,
         recording_mbid,
@@ -2109,18 +2127,38 @@ pub fn find_existing_compilation_artwork(
                     .any(|hash| hash.eq_ignore_ascii_case(expected_hash))
             })
         },
-    )?;
-    Ok(found)
+    )
 }
 
+#[cfg(test)]
 fn find_existing_compilation_artwork_with(
     connection: &Connection,
     mapper: &PathMapper,
     recording_mbid: &str,
     artist_mbids: &[String],
     current_track_path: &Path,
-    mut front_matches: impl FnMut(&Path, &str) -> bool,
+    front_matches: impl FnMut(&Path, &str) -> bool,
 ) -> Result<Option<ExistingCompilationArtwork>, String> {
+    Ok(find_existing_compilation_artworks_with(
+        connection,
+        mapper,
+        recording_mbid,
+        artist_mbids,
+        current_track_path,
+        front_matches,
+    )?
+    .into_iter()
+    .next())
+}
+
+fn find_existing_compilation_artworks_with(
+    connection: &Connection,
+    mapper: &PathMapper,
+    recording_mbid: &str,
+    artist_mbids: &[String],
+    current_track_path: &Path,
+    mut front_matches: impl FnMut(&Path, &str) -> bool,
+) -> Result<Vec<ExistingCompilationArtwork>, String> {
     let artist_set = artist_mbids
         .iter()
         .map(|id| id.trim().to_ascii_lowercase())
@@ -2144,6 +2182,8 @@ fn find_existing_compilation_artwork_with(
         .map_err(db_error("query existing embedded compilation artwork"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(db_error("read existing embedded compilation artwork"))?;
+    let mut found = Vec::new();
+    let mut seen_albums = HashSet::new();
     for (canonical_track, saved_artists, artwork_sha256) in rows {
         if canonical_track.eq_ignore_ascii_case(&canonical_current)
             || !artist_ids_overlap(&artist_set, &saved_artists)
@@ -2158,14 +2198,22 @@ fn find_existing_compilation_artwork_with(
         if !track_path.is_file() {
             continue;
         }
-        if front_matches(&track_path, &artwork_sha256) {
-            return Ok(Some(ExistingCompilationArtwork {
+        let album_identity = track_path
+            .parent()
+            .map(|path| path.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        if !album_identity.is_empty()
+            && !seen_albums.contains(&album_identity)
+            && front_matches(&track_path, &artwork_sha256)
+        {
+            seen_albums.insert(album_identity);
+            found.push(ExistingCompilationArtwork {
                 track_path,
                 artwork_sha256,
-            }));
+            });
         }
     }
-    Ok(None)
+    Ok(found)
 }
 
 /// Return a previously indexed per-track MusicBrainz identity. This is used
@@ -5449,10 +5497,20 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let current = root.join("current.mp3");
         let matching = root.join("matching.mp3");
+        let second_album = root.join("second-album");
+        fs::create_dir_all(&second_album).unwrap();
+        let matching_second = second_album.join("matching-second.mp3");
         let wrong_artist = root.join("wrong-artist.mp3");
         let wrong_recording = root.join("wrong-recording.mp3");
         let stale = root.join("stale.mp3");
-        for track in [&current, &matching, &wrong_artist, &wrong_recording, &stale] {
+        for track in [
+            &current,
+            &matching,
+            &matching_second,
+            &wrong_artist,
+            &wrong_recording,
+            &stale,
+        ] {
             File::create(track).unwrap();
         }
         let db = temp.path().join("existing.db");
@@ -5481,6 +5539,7 @@ mod tests {
             ),
             (&stale, recording, artist, stale_hash.as_str()),
             (&matching, recording, artist, verified_hash.as_str()),
+            (&matching_second, recording, artist, verified_hash.as_str()),
         ] {
             connection.execute(
                 "INSERT INTO compilation_track_artwork(track_path,recording_mbid,artist_mbid,source_kind,source_locator,artwork_sha256,outcome,applied_at,splined_version) VALUES(?, ?, ?, 'local', 'fixture', ?, 'embedded-replaced', '2026-10-18', 'test')",
@@ -5500,6 +5559,18 @@ mod tests {
         .unwrap();
         assert_eq!(selected.track_path, matching);
         assert_eq!(selected.artwork_sha256, verified_hash);
+        let all = find_existing_compilation_artworks_with(
+            &connection,
+            &mapper,
+            recording,
+            &artists,
+            &current,
+            |_, hash| hash == verified_hash,
+        )
+        .unwrap();
+        assert_eq!(all.len(), 2);
+        assert!(all.iter().any(|item| item.track_path == matching));
+        assert!(all.iter().any(|item| item.track_path == matching_second));
         assert!(
             find_existing_compilation_artwork_with(
                 &connection,

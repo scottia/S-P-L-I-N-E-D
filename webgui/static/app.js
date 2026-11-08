@@ -467,11 +467,11 @@ function currentCandidate() {
 }
 function editableArtworkSource() {
   const decision = activeArtworkDecision();
-  if (decision?.selected?.image) return decision.selected.image;
-  const musicBrainzIndex = decision?.kind === "musicbrainz-results"
-    ? (Number.isInteger(decision.hoveredResult) ? decision.hoveredResult : decision.selectedResult) : null;
-  const musicBrainz = Number.isInteger(musicBrainzIndex) ? decision.options?.[musicBrainzIndex] : null;
+  const musicBrainz = musicBrainzPreviewOption(decision);
   if (musicBrainz?.artwork_url) return musicBrainz.artwork_url;
+  const existing = musicBrainzExistingPreview(decision);
+  if (existing?.image) return existing.image;
+  if (decision?.selected?.image) return decision.selected.image;
   if (state.editorMode === "album") return state.selectedCover?.image || state.album?.cover || "";
   if (state.editorMode === "fallback") return state.fallbackTrack?.image || "";
   if (state.editorMode === "artist" && state.compReportVisible) return state.compTrack?.image || "";
@@ -1026,7 +1026,7 @@ function renderFallbackOverview() {
   const checkErrors = state.fallbackTracks.filter(item => item.status === "check-error").length;
   const complete = state.fallbackTracks.filter(item => item.completed).length;
   const pending = blue;
-  const reprocessable = state.fallbackTracks.filter(item => item.status === "blue" || compTrackOverride(item)?.writer === "windows").length;
+  const reprocessable = state.fallbackTracks.filter(compTrackIsReprocessable).length;
   const hero = $("hero"); hero.classList.add("fallback-overview");
   hero.style.backgroundImage = "none";
   $("overviewHeading").textContent = "COMPILATION Fallback Track Embedding";
@@ -1141,7 +1141,7 @@ function renderArtistCompReport() {
   const purple = tracks.filter(track => track.status === "purple").length;
   const blue = tracks.filter(track => track.status === "blue").length;
   const overridden = tracks.filter(track => compTrackOverride(track)?.writer === "windows").length;
-  const reprocessable = tracks.filter(track => track.status === "blue" || compTrackOverride(track)?.writer === "windows").length;
+  const reprocessable = tracks.filter(compTrackIsReprocessable).length;
   const checking = tracks.filter(track => track.status === "checking").length;
   const checkErrors = tracks.filter(track => track.status === "check-error").length;
   const toolbar = node("div", "fallback-toolbar");
@@ -1465,16 +1465,22 @@ function renderMusicBrainzWorkspace() {
     const cards = node("div", "musicbrainz-existing-grid");
     existing.forEach((item, index) => {
       const selected = decision.selectedExisting === index;
-      const card = node(decision.jobKind === "comp" ? "div" : "button", "musicbrainz-existing-card" + (selected ? " selected" : ""));
-      if (decision.jobKind !== "comp") card.type = "button";
+      const card = node("div", "musicbrainz-existing-card" + (selected ? " selected" : ""));
+      card.setAttribute("role", "group");
       if (item.image) card.append(image(item.image, "", item.title || "Existing Album artwork"));
       card.append(node("strong", "", item.title || "Existing Album"), node("span", "", item.artist || trackArtist),
-        node("small", "", item.kind === "recording-match" ? "Recording ID match" : "Artist/title match"));
+        node("small", "", item.kind === "embedded-track" ? "Embedded recording match"
+          : item.kind === "recording-match" ? "Recording ID match" : "Artist/title match"));
       if (decision.jobKind === "comp") {
-        const select = node("button", "musicbrainz-existing-select", selected ? "SELECTED" : "SELECT"); select.type = "button";
+        const select = node("button", "musicbrainz-existing-select", selected ? "SELECTED" : "SELECT EXISTING"); select.type = "button";
         select.addEventListener("click", () => runAction(() => selectExistingMusicBrainzArtwork(index)));
         card.append(select);
-      } else card.addEventListener("click", () => { decision.selectedExisting = index; decision.selectedResult = null; renderMusicBrainzWorkspace(); });
+      } else {
+        card.tabIndex = 0;
+        card.addEventListener("click", () => { decision.selectedExisting = index; decision.selectedResult = null; renderMusicBrainzWorkspace(); renderReview(); });
+      }
+      card.addEventListener("pointerenter", () => { decision.hoveredExisting = index; renderReview(); });
+      card.addEventListener("pointerleave", () => { if (decision.hoveredExisting === index) { decision.hoveredExisting = null; renderReview(); } });
       cards.append(card);
     });
     section.append(cards); host.append(section);
@@ -1549,7 +1555,7 @@ function renderMusicBrainzWorkspace() {
   actions.append(back, keep);
   if (useExisting) {
     const use = node("button", "primary", "Use Existing Artwork"); use.type = "button";
-    use.addEventListener("click", () => runAction(() => submitQueuedDecision(JSON.stringify({action: "use-existing", number: decision.selectedExisting + 1}))));
+    use.addEventListener("click", () => runAction(useSelectedExistingMusicBrainzArtwork));
     actions.append(use);
   }
   host.append(actions);
@@ -1559,6 +1565,20 @@ function musicBrainzPreviewOption(decision = activeArtworkDecision()) {
   if (decision?.kind !== "musicbrainz-results") return null;
   const index = Number.isInteger(decision.hoveredResult) ? decision.hoveredResult : decision.selectedResult;
   return Number.isInteger(index) ? decision.options?.[index] || null : null;
+}
+function musicBrainzExistingPreview(decision = activeArtworkDecision()) {
+  if (decision?.kind !== "musicbrainz-results") return null;
+  const index = Number.isInteger(decision.hoveredExisting) ? decision.hoveredExisting : decision.selectedExisting;
+  return Number.isInteger(index) ? decision.existingArtwork?.[index] || null : null;
+}
+function musicBrainzExistingCandidate(decision = activeArtworkDecision()) {
+  const existing = musicBrainzExistingPreview(decision);
+  if (!existing?.image) return null;
+  return {
+    image: existing.image, source: existing.kind === "embedded-track" ? "Embedded matching track" : "Existing library album",
+    name: existing.title || "Existing Album", width: Number(existing.width || 0), height: Number(existing.height || 0),
+    bytes: Number(existing.bytes || 0), path: existing.path || "", format: existing.format || "",
+  };
 }
 function renderQueuedCompTools() {
   const host = $("compDecisionTools"), decision = activeArtworkDecision();
@@ -1804,20 +1824,26 @@ function selectedImage() {
     source = state.pendingCompWrite ? "Verified COMP write pending refresh" : "Prepared COMP thumbnail";
     quality = state.pendingCompWrite ? "Embedding…" : "Thumb Ready";
     if (url) frame.append(image(url, "selected-image", "Prepared COMP thumbnail"));
+  } else if (musicBrainzPreviewOption(decision)) {
+    const option = musicBrainzPreviewOption(decision);
+    const resolution = String(option.resolution || "").match(/(\d+)\D+(\d+)/);
+    candidate = {image: option.artwork_url, source: "MusicBrainz / Cover Art Archive", name: option.title || "MusicBrainz release",
+      width: Number(resolution?.[1]) || 0, height: Number(resolution?.[2]) || 0, bytes: Number(option.bytes || 0)};
+    url = state.upscalePreview?.image || option.artwork_url || "";
+    type = "MusicBrainz Release Cover"; source = "MusicBrainz / Cover Art Archive";
+    quality = state.upscalePreview ? "Upscale Preview" : "Release Preview";
+    if (url) frame.append(image(url, "selected-image", candidate.name));
+  } else if (musicBrainzExistingCandidate(decision)) {
+    candidate = musicBrainzExistingCandidate(decision);
+    url = state.upscalePreview?.image || candidate.image;
+    type = candidate.source === "Embedded matching track" ? "Existing Embedded Cover" : "Existing Album Cover";
+    source = candidate.source; quality = state.upscalePreview ? "Upscale Preview" : "SELECT EXISTING";
+    if (url) frame.append(image(url, "selected-image", candidate.name));
   } else if (decision?.selected) {
     candidate = decision.selected;
     const compCandidate = decision.jobKind === "comp";
     url = compCandidate ? state.renderedPreview.comp?.image || state.upscalePreview?.image || candidate.image : candidate.image;
     type = compCandidate ? "COMP Track Candidate" : "Queued Cover Candidate"; source = state.upscalePreview ? "Upscale preview" : candidate.source || "Queued review"; quality = state.upscalePreview ? "Upscale Preview" : "Preview";
-    if (url) frame.append(image(url, "selected-image", candidate.name));
-  } else if (musicBrainzPreviewOption(decision)) {
-    const option = musicBrainzPreviewOption(decision);
-    const resolution = String(option.resolution || "").match(/(\d+)\D+(\d+)/);
-    candidate = {image: option.artwork_url, source: "MusicBrainz / Cover Art Archive", name: option.title || "MusicBrainz release",
-      width: Number(resolution?.[1]) || 0, height: Number(resolution?.[2]) || 0, bytes: 0};
-    url = state.upscalePreview?.image || option.artwork_url || "";
-    type = "MusicBrainz Release Cover"; source = "MusicBrainz / Cover Art Archive";
-    quality = state.upscalePreview ? "Upscale Preview" : "Release Preview";
     if (url) frame.append(image(url, "selected-image", candidate.name));
   } else if (state.editorMode === "album" && !state.reviewCleared) {
     candidate = state.selectedCover; url = state.renderedPreview.album?.image || state.upscalePreview?.image || candidate?.image || state.album?.cover;

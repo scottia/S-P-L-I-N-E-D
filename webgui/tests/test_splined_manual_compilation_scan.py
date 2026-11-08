@@ -245,6 +245,30 @@ class ManualCompilationDecisionTests(unittest.TestCase):
             },
         )
 
+    def test_webgui_existing_choice_can_embed_directly_with_adjustments(self) -> None:
+        existing = {"album_name": "Aaliyah", "cover_path": "cover.webp"}
+        payload = {
+            "action": "webgui-embed-existing",
+            "number": 1,
+            "artwork": {
+                "image": "/api/image/existing",
+                "adjustments": {"Contrast": 9},
+                "upscale": True,
+                "prepared_id": "a" * 32,
+                "prepared_sha256": "b" * 64,
+            },
+        }
+        with mock.patch.object(
+            scan.core, "read_input", return_value=json.dumps(payload)
+        ):
+            decision, selected, changes = scan._manual_choose_release(
+                [], existing_rows=[existing]
+            )
+
+        self.assertEqual(decision, "existing-embed")
+        self.assertIs(selected, existing)
+        self.assertEqual(changes["webgui_artwork"], payload["artwork"])
+
     def test_musicbrainz_result_selection_preserves_comp_track_identity(self) -> None:
         target = SimpleNamespace(
             release_mbid="8f33a714-f8f6-4c8f-b6f3-8183f48c03bb",
