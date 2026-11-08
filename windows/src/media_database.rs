@@ -15,7 +15,8 @@ use crate::scan::{AlbumDirectory, inventory_album_directories};
 use crate::scan_tags::{AlbumIndexTags, read_album_index_tags, read_local_track_evidence};
 use image::ImageFormat;
 use rusqlite::{
-    Connection, ErrorCode, OpenFlags, OptionalExtension, Transaction, named_params, params,
+    Connection, ErrorCode, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
+    named_params, params,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -625,6 +626,82 @@ enum OutcomeMaterial<'a> {
 
 pub fn database_path(cache_dir: impl AsRef<Path>) -> PathBuf {
     cache_dir.as_ref().join(DB_NAME)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DatabaseResetResult {
+    pub database_path: PathBuf,
+    pub removed_artists: i64,
+    pub removed_albums: i64,
+    pub removed_tracks: i64,
+}
+
+/// Empty only the accepted Windows application tables while retaining the
+/// SQLite schema, indexes, and user_version. New or reserved tables are never
+/// discovered and cleared implicitly; a future foreign-key dependency fails
+/// this transaction for review instead of broadening the destructive scope.
+pub fn reset_media_database(config: &Config) -> Result<DatabaseResetResult, String> {
+    let db_path = database_path(&config.scan.cache_dir);
+    let database_access = DatabasePathAccess::new(
+        &db_path,
+        config.scan.sqlite_shared,
+        config.scan.windows_client_lock,
+    )?;
+    let mut connection = open_database(database_access.path(), config.scan.sqlite_shared)?;
+    let removed_artists = connection
+        .query_row("SELECT count(*) FROM artists", [], |row| row.get(0))
+        .map_err(db_error("count Artists before database reset"))?;
+    let removed_albums = connection
+        .query_row("SELECT count(*) FROM albums", [], |row| row.get(0))
+        .map_err(db_error("count Albums before database reset"))?;
+    let removed_tracks = connection
+        .query_row("SELECT count(*) FROM tracks", [], |row| row.get(0))
+        .map_err(db_error("count tracks before database reset"))?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(db_error("start database reset transaction"))?;
+    for table in [
+        "comp_track_write_outbox",
+        "comp_track_write_state",
+        "album_artwork_write_outbox",
+        "album_artwork_write_state",
+        "artist_art_profiles",
+        "recording_release_candidates",
+        "recording_release_lookups",
+        "compilation_track_artwork",
+        "compilation_album_progress",
+        "album_refresh_review_queue",
+        "tracks",
+        "albums",
+        "artists",
+        "cache_entries",
+        "cache_history",
+        "db_maintenance_state",
+        "picker_inventory",
+        "retired_album_paths",
+    ] {
+        transaction
+            .execute(&format!("DELETE FROM \"{table}\""), [])
+            .map_err(db_error("clear accepted database table"))?;
+    }
+    transaction
+        .execute(
+            "DELETE FROM sqlite_sequence WHERE name IN ('cache_history')",
+            [],
+        )
+        .map_err(db_error("reset accepted SQLite sequences"))?;
+    transaction
+        .commit()
+        .map_err(db_error("commit database reset transaction"))?;
+    connection
+        .execute_batch("PRAGMA optimize;")
+        .map_err(db_error("optimize reset database"))?;
+    Ok(DatabaseResetResult {
+        database_path: db_path,
+        removed_artists,
+        removed_albums,
+        removed_tracks,
+    })
 }
 
 struct DatabasePathAccess {
@@ -4587,6 +4664,61 @@ mod tests {
             database_path(r"\\server\share\splined\_cache"),
             PathBuf::from(r"\\server\share\splined\_cache").join(DB_NAME)
         );
+    }
+
+    #[test]
+    fn database_reset_empties_accepted_records_and_preserves_schema_indexes() {
+        let root = tempfile::TempDir::new().unwrap();
+        let mut config = Config::default();
+        config.scan.cache_dir = root.path().join("cache").to_string_lossy().into_owned();
+        let path = database_path(&config.scan.cache_dir);
+        let connection = open_database(&path, false).unwrap();
+        connection.execute(
+            "INSERT INTO artists(artist_key,artist_name,primary_path,created_at,updated_at,last_seen_at,splined_version) VALUES('artist','Artist','/music/Artist','now','now','now','test')",
+            [],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO albums(album_key,artist_key,album_name,path,tag_signature,created_at,updated_at,last_seen_at,splined_version) VALUES('album','artist','Album','/music/Artist/Album','signature','now','now','now','test')",
+            [],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO tracks(track_key,album_key,path,title,artist_name,file_size,file_mtime_ns,updated_at,splined_version) VALUES('track','album','/music/Artist/Album/01.flac','Track','Artist',1,1,'now','test')",
+            [],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO cache_history(cache_key,cache_type,action,event_at) VALUES('key','fixture','created','now')",
+            [],
+        ).unwrap();
+        drop(connection);
+
+        let result = reset_media_database(&config).unwrap();
+
+        assert_eq!(result.removed_artists, 1);
+        assert_eq!(result.removed_albums, 1);
+        assert_eq!(result.removed_tracks, 1);
+        let connection = Connection::open(path).unwrap();
+        for table in ["artists", "albums", "tracks", "cache_history"] {
+            let count: i64 = connection
+                .query_row(&format!("SELECT count(*) FROM \"{table}\""), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, 0, "{table} should be empty");
+        }
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            SCHEMA_VERSION
+        );
+        let index: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='idx_albums_artist'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(index, 1);
     }
 
     #[cfg(windows)]

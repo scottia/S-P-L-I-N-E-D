@@ -35,7 +35,9 @@ use splined_core::final_artwork::{
     prepare_embedded_thumbnail, prepare_existing_cover_edit, prepare_selected_artwork_edit,
 };
 use splined_core::inspect::inspect_image;
-use splined_core::local_artwork::{embedded_candidate, install_prepared_canonical_artwork};
+use splined_core::local_artwork::{
+    embedded_candidate, embedded_preview_cache_dir, install_prepared_canonical_artwork,
+};
 use splined_core::media_database::{
     MediaAlbumSnapshot, MediaSnapshot, MediaTrackSnapshot, RuntimeArtworkMaterial,
     clear_album_bypass_from_runtime, fallback_tracks_from_folder, find_media_index_changes,
@@ -4872,6 +4874,11 @@ fn main() -> Result<(), slint::PlatformError> {
     {
         eprintln!("Unable to save SPLINED interface preferences: {error}");
     }
+    if let Ok(app) = state.lock() {
+        let configured = Path::new(&app.config.scan.temporary_cache_dir);
+        splined_core::pipeline::cleanup_run_cache_files(configured);
+        splined_core::pipeline::cleanup_run_cache_files(&embedded_preview_cache_dir(configured));
+    }
     result
 }
 
@@ -5665,10 +5672,16 @@ fn discover_remote_artist_artwork(
                 .download_candidate(reference.source.clone(), &reference.url, index)
                 .await
             {
-                Ok(candidate) => downloaded.push((
-                    format!("{} {kind}", source_display_name(&reference.source)),
-                    candidate.path().to_string_lossy().into_owned(),
-                )),
+                Ok(mut candidate) => match candidate.retain_persistent_path() {
+                    Ok(path) => downloaded.push((
+                        format!("{} {kind}", source_display_name(&reference.source)),
+                        path.to_string_lossy().into_owned(),
+                    )),
+                    Err(error) => warnings.push(format!(
+                        "{} Artist Art cache retention failed: {error}",
+                        source_display_name(&reference.source)
+                    )),
+                },
                 Err(error) => {
                     warnings.push(format!(
                         "{} Artist Art download failed: {error}",
@@ -7368,9 +7381,13 @@ fn load_application_state() -> (ApplicationState, bool, Option<String>) {
         state.push_log(format!("SETUP REQUIRED: {error}"));
         return (state, true, first_error);
     }
-    let cache_cleanup = splined_core::pipeline::cleanup_stale_artwork_on_startup(Path::new(
-        &config.scan.temporary_cache_dir,
-    ));
+    let configured_cache = Path::new(&config.scan.temporary_cache_dir);
+    let cache_cleanups = [
+        splined_core::pipeline::cleanup_stale_artwork_on_startup(configured_cache),
+        splined_core::pipeline::cleanup_stale_artwork_on_startup(&embedded_preview_cache_dir(
+            configured_cache,
+        )),
+    ];
     let snapshot_started = Instant::now();
     let snapshot = match media_snapshot(&config, false) {
         Ok(snapshot) => snapshot,
@@ -7403,13 +7420,15 @@ fn load_application_state() -> (ApplicationState, bool, Option<String>) {
     for diagnostic in diagnostics {
         state.push_log(diagnostic);
     }
-    match cache_cleanup {
-        Ok((count, bytes)) if count > 0 => state.push_log(format!(
-            "Startup cache cleanup removed {count} stale disposable artwork file(s), {:.1} MiB.",
-            bytes as f64 / 1_048_576.0
-        )),
-        Err(error) => state.push_log(format!("WARNING: Startup cache cleanup: {error}")),
-        _ => {}
+    for cache_cleanup in cache_cleanups {
+        match cache_cleanup {
+            Ok((count, bytes)) if count > 0 => state.push_log(format!(
+                "Startup cache cleanup removed {count} stale disposable artwork file(s), {:.1} MiB.",
+                bytes as f64 / 1_048_576.0
+            )),
+            Err(error) => state.push_log(format!("WARNING: Startup cache cleanup: {error}")),
+            _ => {}
+        }
     }
     (state, false, first_error)
 }
@@ -11891,6 +11910,74 @@ fn bind_callbacks(
                                 } else {
                                     format!("Library reconciliation failed · {error}")
                                 };
+                                app.operation_tone = "red".into();
+                                app.last_error = Some(error.clone());
+                                app.push_log(format!("ERROR: {error}"));
+                            }
+                        }
+                    }
+                    if let Some(ui) = weak.upgrade() {
+                        ui.set_media_refresh_running(false);
+                        if result.is_ok() {
+                            ui.set_new_media_warning_visible(false);
+                        }
+                    }
+                    refresh_weak(&weak, &state);
+                });
+            });
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let weak = ui.as_weak();
+        let controller = Arc::clone(&controller);
+        ui.on_reset_database(move || {
+            if controller.is_running()
+                || weak
+                    .upgrade()
+                    .is_some_and(|ui| ui.get_media_refresh_running())
+            {
+                return;
+            }
+            NEW_MEDIA_CHECK_REVISION.fetch_add(1, Ordering::SeqCst);
+            if let Ok(mut app) = state.lock() {
+                app.operation_busy = true;
+                app.operation_status =
+                    "Resetting the SQLite database to zero application records…".into();
+                app.operation_tone = "red".into();
+                app.push_log(
+                    "SQLite reset started; schema/indexes remain and music files will not be changed."
+                        .into(),
+                );
+            }
+            if let Some(ui) = weak.upgrade() {
+                ui.set_media_refresh_running(true);
+            }
+            refresh_weak(&weak, &state);
+            let state = Arc::clone(&state);
+            let weak = weak.clone();
+            let controller = Arc::clone(&controller);
+            std::thread::spawn(move || {
+                let result = controller.reset_library_database();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Ok(mut app) = state.lock() {
+                        app.operation_busy = false;
+                        match &result {
+                            Ok(reset) => {
+                                app.operation_status = format!(
+                                    "SQLite reset complete · removed {} Artists / {} Albums / {} tracks",
+                                    reset.removed_artists,
+                                    reset.removed_albums,
+                                    reset.removed_tracks
+                                );
+                                app.operation_tone = "green".into();
+                                app.push_log(
+                                    "SQLite reset completed; use Refresh DB to create a new media index."
+                                        .into(),
+                                );
+                            }
+                            Err(error) => {
+                                app.operation_status = format!("SQLite reset failed · {error}");
                                 app.operation_tone = "red".into();
                                 app.last_error = Some(error.clone());
                                 app.push_log(format!("ERROR: {error}"));
@@ -17573,7 +17660,7 @@ fn refresh_musicbrainz_cover_preview(
                 })?;
             let front_500 = format!("https://coverartarchive.org/release/{release_mbid}/front-500");
             let front = format!("https://coverartarchive.org/release/{release_mbid}/front");
-            let downloaded = runtime.block_on(async {
+            let mut downloaded = runtime.block_on(async {
                 match cache
                     .download_candidate("coverartarchive", &front_500, 0)
                     .await
@@ -17582,7 +17669,7 @@ fn refresh_musicbrainz_cover_preview(
                     Err(_) => cache.download_candidate("coverartarchive", &front, 0).await,
                 }
             })?;
-            Ok(downloaded.path().to_path_buf())
+            downloaded.retain_persistent_path()
         })();
 
         if let Some(log) = UI_DEBUG_LOG_HANDLE.get() {

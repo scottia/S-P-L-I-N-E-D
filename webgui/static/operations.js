@@ -1191,6 +1191,33 @@ function renderStorageSettings(host) {
     const runtime = node("div", "storage-runtime"); runtime.append(node("strong", "", "Runtime"), node("span", "", `v${value.version} · PostgreSQL · ${(value.mode || "read").toUpperCase()}`)); summary.append(runtime);
   }).catch(error => { clear(summary); summary.append(node("p", "operation-error", error.message)); });
   settingsHelp(host, "What is included in storage usage?", "The exact catalog size comes from PostgreSQL. Persistent Cache, V/A / OST Artist Images, Provider Credentials, and Configuration are mounted paths; SPLINED does not recursively scan those network folders merely to open Settings.");
+  const reset = node("section", "database-reset");
+  reset.append(
+    node("h4", "settings-group-heading", "Reset PostgreSQL Catalog"),
+    node("p", "settings-warning", "Destructive: removes indexed Artists, Albums, tracks, queued work, coordination state, cache/history, Audit, and reconciliation history. PostgreSQL schema, indexes, migrations, and the WebGUI administrator are preserved. Music files are never changed."),
+  );
+  const target = node("code", "storage-path", "Loading active target…");
+  const confirmation = node("input"); confirmation.type = "text"; confirmation.disabled = true;
+  const button = node("button", "operation-button full-action danger-action", "Reset Database to Zero Records");
+  button.type = "button"; button.disabled = true;
+  reset.append(node("p", "settings-subcopy", "Active PostgreSQL target: "), target, confirmation, button);
+  void api("/api/database/reset-target").then(value => {
+    target.textContent = value.target;
+    confirmation.disabled = false;
+    confirmation.placeholder = `Type RESET ${value.target}`;
+    const expected = `RESET ${value.target}`;
+    const update = () => { button.disabled = confirmation.value !== expected; };
+    confirmation.addEventListener("input", update); update();
+    button.addEventListener("click", () => runAction(async () => {
+      if (confirmation.value !== expected) throw new Error("Type the exact reset confirmation first");
+      if (!window.confirm(`Reset ${value.target} to an empty SPLINED catalog? This cannot be undone.`)) return;
+      const result = await post("/api/database/reset", {target: value.target, confirmation: confirmation.value});
+      $("workspaceDialog").close();
+      setStatus(`PostgreSQL reset complete · removed ${result.removed?.artists || 0} Artists / ${result.removed?.albums || 0} Albums / ${result.removed?.tracks || 0} tracks`);
+      await initialize();
+    }));
+  }).catch(error => { target.textContent = error.message; target.classList.add("operation-error"); });
+  host.append(reset);
 }
 function renderSourceOrderSettings(host, draft, selectedProvider, selectProvider, rerender) {
   settingsHelp(host, "Why can a connected provider say Excluded?", "Connection credentials and artwork-search inclusion are separate. Excluded providers can still be tested under Connections but are not queried for candidate artwork.");

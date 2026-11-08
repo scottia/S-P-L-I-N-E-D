@@ -1,6 +1,6 @@
 use crate::candidate::{Candidate, StaticFormat};
 use crate::config::Mode;
-use crate::download::{DownloadCache, DownloadedCandidate};
+use crate::download::{DownloadCache, DownloadedCandidate, temporary_owner_token};
 use crate::evaluate::{best_candidate, evaluate, is_acceptable};
 use crate::final_artwork::{FinalArtworkResult, finalize_selected_candidate};
 use crate::range::Range;
@@ -17,6 +17,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::Semaphore;
+
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER};
+#[cfg(windows)]
+use windows_sys::Win32::System::Threading::{
+    GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+};
 
 static CLEANED_PERSISTENT_CACHE_DIRS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
 const CANDIDATE_DOWNLOAD_CONCURRENCY: usize = 4;
@@ -224,45 +231,6 @@ pub fn prepare_persistent_cache_dir(cache_dir: &Path) -> Result<(), String> {
         return Ok(());
     }
 
-    for entry in fs::read_dir(cache_dir).map_err(|error| {
-        format!(
-            "Unable to enumerate SPLINED persistent cache {}: {error}",
-            cache_dir.display()
-        )
-    })? {
-        let entry = entry.map_err(|error| {
-            format!(
-                "Unable to inspect SPLINED persistent cache entry in {}: {error}",
-                cache_dir.display()
-            )
-        })?;
-        let file_name = entry.file_name();
-        let file_name = file_name.to_string_lossy();
-
-        if !file_name.starts_with("splined-candidate-") {
-            continue;
-        }
-
-        let path = entry.path();
-        let file_type = entry.file_type().map_err(|error| {
-            format!(
-                "Unable to inspect SPLINED persistent cache entry {}: {error}",
-                path.display()
-            )
-        })?;
-
-        if file_type.is_dir() && !file_type.is_symlink() {
-            continue;
-        }
-
-        fs::remove_file(&path).map_err(|error| {
-            format!(
-                "Unable to remove SPLINED persistent cache file {}: {error}",
-                path.display()
-            )
-        })?;
-    }
-
     cleaned_dirs.insert(cache_key);
     Ok(())
 }
@@ -274,17 +242,59 @@ pub fn cleanup_run_cache_files(cache_dir: &Path) {
     let Ok(entries) = fs::read_dir(cache_dir) else {
         return;
     };
+    let candidate_prefix = format!("splined-candidate-{}-", temporary_owner_token());
+    let local_prefix = format!("splined-local-{}-", temporary_owner_token());
     for entry in entries.flatten() {
         let path = entry.path();
         let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
             continue;
         };
-        if (name.starts_with("splined-candidate-") || name.starts_with("splined-local-"))
+        if (name.starts_with(&candidate_prefix) || name.starts_with(&local_prefix))
             && path.is_file()
         {
-            let _ = fs::remove_file(path);
+            if let Err(error) = fs::remove_file(&path)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                eprintln!(
+                    "SPLINED temporary cleanup failed path={} error={error}",
+                    path.display()
+                );
+            }
         }
     }
+}
+
+fn process_scoped_owner_pid(name: &str) -> Option<u32> {
+    for prefix in ["splined-candidate-", "splined-local-"] {
+        if let Some(rest) = name.strip_prefix(prefix) {
+            return rest.split('-').next()?.parse().ok();
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn process_is_active(pid: u32) -> bool {
+    // SAFETY: OpenProcess returns an owned handle which is closed on every
+    // successful path. Query-only access cannot mutate the target process.
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        let error = std::io::Error::last_os_error()
+            .raw_os_error()
+            .unwrap_or_default() as u32;
+        return error == ERROR_ACCESS_DENIED || error != ERROR_INVALID_PARAMETER;
+    }
+    let mut exit_code = 0_u32;
+    // STILL_ACTIVE is 259. A failed query is treated as active so cleanup
+    // never guesses that another live SPLINED process has exited.
+    let queried = unsafe { GetExitCodeProcess(handle, &mut exit_code) } != 0;
+    unsafe { CloseHandle(handle) };
+    !queried || exit_code == 259
+}
+
+#[cfg(not(windows))]
+fn process_is_active(_pid: u32) -> bool {
+    true
 }
 
 /// Prune only known disposable Windows artwork from the configured run cache.
@@ -380,7 +390,11 @@ pub fn cleanup_stale_artwork_on_startup(cache_dir: &Path) -> Result<(usize, u64)
                     entry.path().display()
                 )
             })?;
-            if !metadata.modified().is_ok_and(|modified| modified <= cutoff) {
+            let abandoned_process_file =
+                process_scoped_owner_pid(&name).is_some_and(|pid| !process_is_active(pid));
+            if !abandoned_process_file
+                && !metadata.modified().is_ok_and(|modified| modified <= cutoff)
+            {
                 continue;
             }
             fs::remove_file(entry.path()).map_err(|error| {
@@ -807,7 +821,7 @@ mod tests {
     }
 
     #[test]
-    fn persistent_cache_cleanup_removes_only_splined_candidates() {
+    fn persistent_cache_preparation_preserves_other_session_candidates() {
         use tempfile::TempDir;
         let parent = TempDir::new().unwrap();
         let cache_dir = parent.path().join("cache-root");
@@ -817,7 +831,7 @@ mod tests {
 
         prepare_persistent_cache_dir(&cache_dir).unwrap();
 
-        assert!(!cache_dir.join("splined-candidate-stale.jpg").exists());
+        assert!(cache_dir.join("splined-candidate-stale.jpg").exists());
         assert!(cache_dir.join("keep.txt").exists());
     }
 
@@ -825,12 +839,18 @@ mod tests {
     fn completed_run_cleanup_removes_only_disposable_artwork() {
         let root = tempfile::TempDir::new().expect("run cache fixture should create");
         fs::write(
-            root.path().join("splined-candidate-current.jpg"),
+            root.path().join(format!(
+                "splined-candidate-{}-current.jpg",
+                temporary_owner_token()
+            )),
             b"candidate",
         )
         .unwrap();
         fs::write(
-            root.path().join("splined-local-embedded-current.jpg"),
+            root.path().join(format!(
+                "splined-local-{}-embedded-current.jpg",
+                temporary_owner_token()
+            )),
             b"local",
         )
         .unwrap();
@@ -839,11 +859,22 @@ mod tests {
 
         cleanup_run_cache_files(root.path());
 
-        assert!(!root.path().join("splined-candidate-current.jpg").exists());
         assert!(
             !root
                 .path()
-                .join("splined-local-embedded-current.jpg")
+                .join(format!(
+                    "splined-candidate-{}-current.jpg",
+                    temporary_owner_token()
+                ))
+                .exists()
+        );
+        assert!(
+            !root
+                .path()
+                .join(format!(
+                    "splined-local-{}-embedded-current.jpg",
+                    temporary_owner_token()
+                ))
                 .exists()
         );
         assert!(root.path().join("splined.db").exists());

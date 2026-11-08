@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from contextlib import closing
 from pathlib import Path
+from urllib.parse import urlsplit
 import re
 import sqlite3
 from typing import Any
@@ -116,6 +117,87 @@ class Database:
         return Connection(
             psycopg.connect(self._url, row_factory=dict_row, connect_timeout=10)
         )
+
+    def target(self) -> str:
+        """Return a credential-free database identity for destructive confirms."""
+        parsed = urlsplit(self._url)
+        host = parsed.hostname or "localhost"
+        port = f":{parsed.port}" if parsed.port else ""
+        database = parsed.path.lstrip("/") or "postgres"
+        return f"{host}{port}/{database}"
+
+    def reset_application_data(self) -> dict[str, object]:
+        """Atomically empty SPLINED data while preserving schema, indexes, and admin login.
+
+        This deliberately names every table owned by the accepted schema. An
+        unexpected future/reserved table is never discovered and truncated
+        implicitly; a new foreign-key dependency therefore stops the reset
+        transaction for explicit review instead of broadening its scope.
+        """
+        tables = (
+            "artist_album_appearances",
+            "artist_profiles",
+            "comp_track_write_coordination",
+            "album_artwork_write_coordination",
+            "catalog_sync_authority",
+            "compilation_track_artwork",
+            "compilation_album_progress",
+            "recording_release_candidates",
+            "recording_release_lookups",
+            "album_refresh_review_queue",
+            "tracks",
+            "albums",
+            "artists",
+            "cache_entries",
+            "cache_history",
+            "db_maintenance_state",
+            "picker_inventory",
+            "retired_album_paths",
+            "web_jobs",
+            "web_audit",
+            "web_audit_sessions",
+            "salite_diff",
+            "sqlite_reconciliation_runs",
+            "sqlite_reconciliation_settings",
+        )
+        with closing(self.connect()) as db, db:
+            db.raw.execute("SELECT pg_advisory_xact_lock(741520205)")
+            before = {
+                name: int(
+                    db.raw.execute(f'SELECT count(*) AS n FROM "{name}"').fetchone()["n"]
+                )
+                for name in ("artists", "albums", "tracks")
+            }
+            identifiers = psycopg.sql.SQL(", ").join(
+                psycopg.sql.Identifier(name) for name in tables
+            )
+            db.raw.execute(
+                psycopg.sql.SQL("TRUNCATE TABLE {} RESTART IDENTITY").format(
+                    identifiers
+                )
+            )
+            db.raw.execute(
+                "INSERT INTO sqlite_reconciliation_settings(singleton) VALUES(TRUE)"
+            )
+            for sequence in (
+                "album_artwork_write_revision_seq",
+                "comp_track_write_revision_seq",
+            ):
+                db.raw.execute(
+                    psycopg.sql.SQL("ALTER SEQUENCE {} RESTART WITH 1").format(
+                        psycopg.sql.Identifier(sequence)
+                    )
+                )
+        return {
+            "backend": "PostgreSQL",
+            "target": self.target(),
+            "removed": before,
+            "artists": 0,
+            "albums": 0,
+            "tracks": 0,
+            "schema_preserved": True,
+            "admin_preserved": True,
+        }
 
     def migrate(self):
         with closing(self.connect()) as db, db:

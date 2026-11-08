@@ -132,6 +132,71 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             "adjustments": {"Brightness": 40},
         }
 
+    def test_database_reset_empties_application_data_and_preserves_schema_and_admin(self):
+        with closing(self.db.connect()) as db, db:
+            db.execute(
+                "INSERT INTO web_admin_accounts(username_key,username,password_algorithm,"
+                "password_salt,password_hash) VALUES(?,?,?,?,?)",
+                ("owner", "Owner", "fixture", "salt", "hash"),
+            )
+            db.raw.execute(
+                "INSERT INTO web_jobs(id,kind,state,payload) VALUES(%s,%s,%s,%s)",
+                (uuid4().hex, "index", "staged", Jsonb({"mode": "full"})),
+            )
+
+        result = self.db.reset_application_data()
+
+        self.assertGreater(result["removed"]["artists"], 0)
+        self.assertGreater(result["removed"]["albums"], 0)
+        self.assertGreater(result["removed"]["tracks"], 0)
+        with closing(self.db.connect()) as db:
+            for table in ("artists", "albums", "tracks", "web_jobs", "web_audit"):
+                with self.subTest(table=table):
+                    self.assertEqual(db.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT count(*) FROM web_admin_accounts").fetchone()[0], 1)
+            self.assertGreater(db.execute("SELECT count(*) FROM web_schema_versions").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT count(*) FROM sqlite_reconciliation_settings").fetchone()[0], 1)
+            index = db.raw.execute(
+                "SELECT 1 FROM pg_indexes WHERE schemaname=current_schema() "
+                "AND indexname='idx_albums_artist'"
+            ).fetchone()
+            self.assertIsNotNone(index)
+
+    def test_authenticated_database_reset_endpoint_requires_exact_target_confirmation(self):
+        self.runtime.close()  # The API owns its runtime for this test.
+        app = create_app(self.config, self.url, token="test-access", start_worker=True)
+        with TestClient(app) as client:
+            status = client.get("/api/status").json()
+            client.headers["X-SPLINED-CSRF"] = status["csrf"]
+            setup = client.post(
+                "/api/admin/setup",
+                json={
+                    "username": "administrator",
+                    "password": "StrongPassword123",
+                    "confirmation": "StrongPassword123",
+                    "token": "test-access",
+                },
+            )
+            self.assertEqual(setup.status_code, 200, setup.text)
+            target = client.get("/api/database/reset-target").json()["target"]
+            rejected = client.post(
+                "/api/database/reset",
+                json={"target": target, "confirmation": "RESET wrong-target"},
+            )
+            self.assertEqual(rejected.status_code, 400, rejected.text)
+            self.assertTrue(client.get("/api/artists").json())
+
+            reset = client.post(
+                "/api/database/reset",
+                json={"target": target, "confirmation": f"RESET {target}"},
+            )
+            self.assertEqual(reset.status_code, 200, reset.text)
+            result = reset.json()
+            self.assertTrue(result["ready_for_full_index"])
+            self.assertGreater(result["removed"]["artists"], 0)
+            self.assertEqual(client.get("/api/artists").json(), [])
+            self.assertEqual(client.get("/api/settings").status_code, 200)
+
     @staticmethod
     def set_flac_embedded_cover(path: Path, side: int | None):
         audio = FLAC(path)

@@ -169,6 +169,8 @@ class JobQueue:
         self.stopped.set()
         self.wake.set()
         self.thread.join(timeout=15)
+        if not self.thread.is_alive():
+            self.lease.close()
 
     def audit_job(
         self,

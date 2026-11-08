@@ -276,6 +276,7 @@ class Catalog:
     cover_stem: str = "cover"
     cache: Path | None = None
     temporary_cache: Path | None = None
+    preview_cache: Path | None = None
     artist_sources: tuple[str, ...] = ("fanarttv", "deezer", "lastfm", "discogs")
     images: dict[str, Path | bytes] = field(default_factory=dict)
     metadata_cache: dict[str, dict[str, object]] = field(default_factory=dict)
@@ -422,6 +423,18 @@ class Catalog:
                 return None
             if not self.allowed_image_path(source):
                 return None
+            # Operation workspaces are deleted as soon as their owner finishes.
+            # Publish immutable bytes into the session preview cache before
+            # returning a browser handle so active previews do not pin workdirs.
+            if (
+                self.temporary_cache is not None
+                and inside(source, self.temporary_cache)
+                and not inside(source, self.temporary_cache / "web-images")
+            ):
+                try:
+                    return self.image(source.read_bytes())
+                except OSError:
+                    return None
             # Signed path handles do not consume the bounded in-memory preview
             # cache, so browsing a large library cannot expire its early covers.
             resolved = source.resolve()
@@ -444,7 +457,7 @@ class Catalog:
             with Image.open(BytesIO(source)) as opened:
                 suffix={"JPEG":".jpg","PNG":".png","WEBP":".webp"}.get(opened.format)
                 if not suffix: raise ValueError('Unsupported artwork image format')
-            directory=preview_cache/'web-images'
+            directory=self.preview_cache or preview_cache/'web-images'
             path=directory/(sha256(source).hexdigest()+suffix)
             try:
                 # A preview is immutable once published. Serialize the existence
@@ -1161,7 +1174,8 @@ class Catalog:
                 "AND (COALESCE(albums.compilation,0)=0 "
                 "OR TRIM(COALESCE(albums.musicbrainz_albumid,''))<>'') "
                 "WHERE artists.artist_name LIKE ? ESCAPE '\\' "
-                "GROUP BY artists.artist_key ORDER BY artists.artist_name COLLATE NOCASE ",
+                "GROUP BY artists.artist_key HAVING COUNT(albums.album_key)>0 "
+                "ORDER BY artists.artist_name COLLATE NOCASE ",
                 ("%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%",),
             ).fetchall()
             try:
@@ -1220,7 +1234,8 @@ class Catalog:
                 "FROM artists LEFT JOIN albums ON albums.artist_key=artists.artist_key "
                 "AND (COALESCE(albums.compilation,0)=0 "
                 "OR TRIM(COALESCE(albums.musicbrainz_albumid,''))<>'') "
-                "GROUP BY artists.artist_key ORDER BY artists.artist_name COLLATE NOCASE"
+                "GROUP BY artists.artist_key HAVING COUNT(albums.album_key)>0 "
+                "ORDER BY artists.artist_name COLLATE NOCASE"
             ).fetchall()
         remote_artists = self._navidrome_artists_by_name()
         result = []

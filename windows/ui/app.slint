@@ -1573,6 +1573,7 @@ export component AppWindow inherits Window {
     in-out property <bool> reset-settings-preview-visible: false;
     in-out property <bool> reset-settings-confirm-visible: false;
     in-out property <string> reset-settings-confirmation-text;
+    in-out property <bool> confirm-reset-database: false;
     in-out property <float> media-pane-width: 350;
     in-out property <float> artwork-pane-width: 450;
     in-out property <float> candidate-filter-height: 370;
@@ -1836,7 +1837,7 @@ export component AppWindow inherits Window {
     callback browse-backup-directory(string); callback browse-restore-file(); callback browse-setup-settings-file(); callback load-setup-settings-file();
     callback refresh-archived-backups();
     callback completion-acknowledged(); callback apply-selected-sample();
-    callback load-settings(); callback save-settings(); callback save-interface-settings(); callback save-backup-preferences(); callback reset-advanced-settings(); callback save-setup();
+    callback load-settings(); callback save-settings(); callback save-interface-settings(); callback save-backup-preferences(); callback reset-advanced-settings(); callback reset-database(); callback save-setup();
     callback load-source-policy(string); callback update-source-policy(); callback load-credential(string);
     callback save-credential(string, string, string, string, string, string, string);
     callback test-credential(string, string, string, string, string, string, string);
@@ -2572,7 +2573,7 @@ export component AppWindow inherits Window {
                                                             }
                                                         }
                                                     }
-                                                    if root.compilation-report-visible: Rectangle { height: 94px + root.compilation-report-rows.length * 37px; background: AppTheme.chalk ? #ba8490b8 : (AppTheme.light ? #ba8490b8 : #381821a6); border-radius: 6px; border-color: AppTheme.violet; border-width: 2px;
+                                                    if root.compilation-report-visible: Rectangle { height: 94px + root.compilation-report-rows.length * 37px; background: AppTheme.chalk ? #ba8490cc : (AppTheme.light ? #ba8490cc : #381821c9); border-radius: 6px; border-color: AppTheme.violet; border-width: 2px;
                                                         VerticalLayout { padding: 7px; spacing: 4px;
                                                             HorizontalLayout { height: 28px; spacing: 7px;
                                                                 Rectangle { width: 22px; height: 22px; border-radius: 11px; background: root.compilation-report-preview-mode ? AppTheme.green : #000000; border-color: AppTheme.magenta; border-width: 2px;
@@ -2582,23 +2583,13 @@ export component AppWindow inherits Window {
                                                                     } }
                                                                 }
                                                                 Text { text: "COMP Report · " + (root.overview-mode == "Fallback" ? root.current-album : root.artist-overview-name); color: AppTheme.cyan; font-size: 16px * AppTheme.font-scale; font-weight: 800; horizontal-stretch: 1; vertical-alignment: center; overflow: elide; }
-                                                                if root.overview-mode == "Fallback": NeonAction { label: "REPAIR COMP"; width: 112px; height: 28px; tone: "purple"; enabled: !root.operation-busy && !root.compilation-report-preview-mode; clicked => root.prepare-compilation-repair(root.overview-album-key); }
-                                                                if root.overview-mode == "Fallback": NeonAction { label: "LAUNCH COMP"; width: 112px; height: 28px; tone: "cyan"; enabled: !root.operation-busy && !root.compilation-report-preview-mode; clicked => root.compilation-album-launch(root.overview-album-key, root.include-bypassed); }
-                                                                if root.overview-mode == "Artist": Rectangle { width: 258px; height: 28px; border-radius: 6px; border-width: 1px; border-color: AppTheme.violet; background: AppTheme.card; clip: true;
-                                                                    HorizontalLayout { spacing: 0px;
-                                                                        Rectangle { width: 129px; height: 28px; background: AppTheme.chalk ? #463a50 : #211444;
-                                                                            Text { text: "REPAIR COMP"; color: AppTheme.violet; font-size: 12px * AppTheme.font-scale; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; }
-                                                                            TouchArea { enabled: !root.operation-busy && !root.running && !root.compilation-report-preview-mode; mouse-cursor: pointer; clicked => root.request-artist-compilation-repair(); }
-                                                                        }
-                                                                        Rectangle { width: 129px; height: 28px; border-width: 1px; border-color: AppTheme.cyan; background: AppTheme.chalk ? #303638 : #082b46;
-                                                                            Text { text: "LAUNCH COMP"; color: AppTheme.cyan; font-size: 12px * AppTheme.font-scale; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; }
-                                                                            TouchArea { enabled: !root.operation-busy && !root.running && !root.compilation-report-preview-mode; mouse-cursor: pointer; clicked => root.launch-artist-compilation-report(root.include-bypassed); }
-                                                                        }
-                                                                    }
-                                                                }
+                                                                if root.overview-mode == "Fallback": NeonAction { label: "REPAIR COMP"; width: 112px; height: 28px; tone: "purple"; enabled: !root.operation-busy && !root.compilation-report-preview-mode && root.compilation-report-purple-count > 0; clicked => root.prepare-compilation-repair(root.overview-album-key); }
+                                                                if root.overview-mode == "Fallback": NeonAction { label: "LAUNCH COMP"; width: 112px; height: 28px; tone: "cyan"; enabled: !root.operation-busy && !root.compilation-report-preview-mode && root.compilation-report-blue-count > 0; clicked => root.compilation-album-launch(root.overview-album-key, root.include-bypassed); }
+                                                                if root.overview-mode == "Artist": NeonAction { label: "REPAIR COMP"; width: 112px; height: 28px; tone: "purple"; enabled: !root.operation-busy && !root.running && !root.compilation-report-preview-mode && root.compilation-report-purple-count > 0; clicked => root.request-artist-compilation-repair(); }
+                                                                if root.overview-mode == "Artist": NeonAction { label: "LAUNCH COMP"; width: 112px; height: 28px; tone: "cyan"; enabled: !root.operation-busy && !root.running && !root.compilation-report-preview-mode && root.compilation-report-blue-count > 0; clicked => root.launch-artist-compilation-report(root.include-bypassed); }
                                                                 if root.confirm-compilation-repair: NeonAction { label: "NO"; width: 48px; height: 28px; clicked => { root.confirm-compilation-repair-action(false); root.confirm-compilation-repair = false; } }
                                                                 if root.confirm-compilation-repair: NeonAction { label: "YES, Repair"; width: 130px; height: 28px; tone: "purple"; enabled: !root.operation-busy && !root.compilation-report-preview-mode; clicked => { root.confirm-compilation-repair-action(true); root.confirm-compilation-repair = false; } }
-                                                                if root.overview-mode != "Fallback": NeonAction { label: "Close"; width: 68px; height: 28px; clicked => root.close-compilation-report(); }
+                                                                NeonAction { label: "CLOSE REPORT"; width: 108px; height: 28px; clicked => root.close-compilation-report(); }
                                                             }
                                                             if root.overview-mode == "Artist": HorizontalLayout { height: 18px; spacing: 12px;
                                                                 Text { text: root.compilation-report-album-count + " Albums"; color: AppTheme.foreground; font-size: 12px * AppTheme.font-scale; font-weight: 800; }
@@ -2666,7 +2657,7 @@ export component AppWindow inherits Window {
                                                             NeonAction { row: 0; col: 0; width: (parent.width - 28px) / 5; label-font-size: (parent.width < 900px ? 10px : 12px) * AppTheme.font-scale; label: root.artist-overview-show-all ? "Use Library Status" : "Show All"; height: 34px; tone: root.artist-overview-show-all ? "yellow" : "cyan"; enabled: root.overview-mode == "Artist"; clicked => root.set-artist-overview-show-all(!root.artist-overview-show-all); }
                                                             NeonAction { row: 0; col: 1; width: (parent.width - 28px) / 5; label-font-size: (parent.width < 900px ? 10px : 12px) * AppTheme.font-scale; label: "Navidrome / Apple Info"; height: 34px; enabled: root.overview-mode != "Fallback" && root.artist-overview-external-url != ""; clicked => root.open-artist-external(); }
                                                             NeonAction { row: 0; col: 2; width: (parent.width - 28px) / 5; label-font-size: (parent.width < 900px ? 10px : 12px) * AppTheme.font-scale; label: "MusicBrainz Artist"; height: 34px; enabled: root.overview-mode != "Fallback" && root.artist-overview-musicbrainz-id != ""; clicked => root.open-artist-musicbrainz(); }
-                                                            NeonAction { row: 0; col: 3; width: (parent.width - 28px) / 5; label-font-size: (parent.width < 900px ? 10px : 12px) * AppTheme.font-scale; label: root.overview-mode == "Fallback" ? "REPAIR COMP" : "COMP Report"; height: 34px; tone: "purple"; enabled: root.overview-mode != "Album" && !root.operation-busy && !root.running && !root.compilation-report-preview-mode; clicked => { if (root.overview-mode == "Fallback") { root.prepare-compilation-repair(root.overview-album-key); } else { root.prepare-artist-compilation-repair(); } } }
+                                                            NeonAction { row: 0; col: 3; width: (parent.width - 28px) / 5; label-font-size: (parent.width < 900px ? 10px : 12px) * AppTheme.font-scale; label: root.compilation-report-visible ? "CLOSE REPORT" : (root.overview-mode == "Fallback" ? "REPAIR COMP" : "COMP Report"); height: 34px; tone: "purple"; enabled: root.overview-mode != "Album" && !root.operation-busy && !root.running && !root.compilation-report-preview-mode; clicked => { if (root.compilation-report-visible) { root.close-compilation-report(); } else if (root.overview-mode == "Fallback") { root.prepare-compilation-repair(root.overview-album-key); } else { root.prepare-artist-compilation-repair(); } } }
                                                             NeonAction { row: 0; col: 4; width: (parent.width - 28px) / 5; label-font-size: (parent.width < 900px ? 10px : 12px) * AppTheme.font-scale;
                                                                 label: root.overview-mode == "Album" ? "EMBED Album" : "EMBED All Albums"; height: 34px; tone: "orange";
                                                                 enabled: root.artist-overview-embed-ready && !root.operation-busy && !root.compilation-report-preview-mode;
@@ -3156,6 +3147,22 @@ export component AppWindow inherits Window {
                                     NeonAction { width: 128px; height: 32px; label: "Refresh DB"; tone: "yellow"; enabled: !root.media-refresh-running && !root.running && !root.operation-busy; clicked => root.refresh-library(true); }
                                 }
                                 SettingsHelpTip { summary: "What does Refresh DB do?"; detail: "Perform a deliberate full SQLite index rebuild. One representative track defines each normal Album; unchanged tag evidence is reused and full tags are read for changed COMP/Fallback tracks. The yellow Home notice uses a separate added/changed/removed incremental update. Neither action inspects embedded art or modifies music files. Another Windows client must close the shared database first."; }
+                                if !root.confirm-reset-database: NeonAction {
+                                    width: 220px; height: 32px; label: "Reset SQLite Database"; danger: true;
+                                    enabled: !root.media-refresh-running && !root.running && !root.operation-busy;
+                                    clicked => { root.confirm-reset-database = true; }
+                                }
+                                if root.confirm-reset-database: Rectangle { height: 76px; border-radius: 6px; background: #3d1520; border-color: AppTheme.danger; border-width: 1px;
+                                    VerticalLayout { padding: 7px; spacing: 5px;
+                                        Text { text: "Remove all SQLite index, queue, coordination, cache, and history records? Schema/indexes stay; music files are unchanged."; color: AppTheme.foreground; font-size: 12px * AppTheme.font-scale; wrap: word-wrap; height: 31px; }
+                                        HorizontalLayout { height: 28px; spacing: 7px;
+                                            Rectangle { horizontal-stretch: 1; background: transparent; }
+                                            NeonAction { width: 142px; height: 28px; label: "RESET DATABASE"; danger: true; clicked => { root.confirm-reset-database = false; root.reset-database(); } }
+                                            NeonAction { width: 72px; height: 28px; label: "Cancel"; clicked => { root.confirm-reset-database = false; } }
+                                        }
+                                    }
+                                }
+                                SettingsHelpTip { summary: "What does Reset SQLite Database do?"; detail: "This destructive action empties SPLINED's accepted SQLite application tables while preserving the schema, indexes, and user_version. It does not delete splined.db or touch music. Use Refresh DB afterward to build a new index. Shared database locking is honored."; }
                                 PathSettingField { label: "Temporary Cache Directory *"; value <=> root.settings-temporary-cache-dir; hint: "Disposable run files"; browse => root.browse-setting-directory("temporary"); }
                                 PathSettingField { label: "Provider Credential Directory *"; value <=> root.settings-credential-dir; hint: "Provider JSON files"; browse => root.browse-setting-directory("credentials"); }
                                 SettingField { label: "Ignored Folders"; value <=> root.settings-ignored-subs; hint: "Comma-separated"; }

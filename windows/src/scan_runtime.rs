@@ -2060,21 +2060,24 @@ struct CachedPipelineResult {
 }
 
 impl CachedPipelineResult {
-    fn capture(result: &PipelineResult) -> Self {
-        Self {
+    fn capture(result: &mut PipelineResult) -> Result<Self, String> {
+        Ok(Self {
             candidates: result
                 .candidates
-                .iter()
-                .map(|item| CachedPipelineCandidate {
-                    reference: item.reference.clone(),
-                    path: item.downloaded.path().to_path_buf(),
-                    source_priority: item.downloaded.candidate.source_priority,
-                    strict: item.strict.clone(),
+                .iter_mut()
+                .map(|item| {
+                    let path = item.downloaded.retain_persistent_path()?;
+                    Ok(CachedPipelineCandidate {
+                        reference: item.reference.clone(),
+                        path,
+                        source_priority: item.downloaded.candidate.source_priority,
+                        strict: item.strict.clone(),
+                    })
                 })
-                .collect(),
+                .collect::<Result<Vec<_>, String>>()?,
             best_index: result.best_index,
             diagnostics: result.diagnostics.clone(),
-        }
+        })
     }
 
     fn restore(&self) -> Result<PipelineResult, String> {
@@ -2571,7 +2574,7 @@ async fn run_normal_musicbrainz_browser(
         }
         source_results.insert(
             selected.release_mbid.clone(),
-            CachedPipelineResult::capture(&pipeline),
+            CachedPipelineResult::capture(&mut pipeline)?,
         );
         let suggested_index = pipeline.best_index;
         let display_indices = (0..pipeline.candidates.len())
@@ -3316,7 +3319,7 @@ async fn run_compilation_album(
                     }
                     source_results_cache.insert(
                         selected.release_mbid.clone(),
-                        CachedPipelineResult::capture(&discovered),
+                        CachedPipelineResult::capture(&mut discovered)?,
                     );
                     discovered
                 }
@@ -5655,7 +5658,7 @@ mod tests {
             "https://example.invalid/art.png",
         )
         .unwrap();
-        let original = PipelineResult {
+        let mut original = PipelineResult {
             candidates: vec![PipelineCandidate {
                 reference: ArtworkReference {
                     source: "itunes".to_string(),
@@ -5673,12 +5676,13 @@ mod tests {
             provider_timings: Vec::new(),
         };
 
-        let restored = CachedPipelineResult::capture(&original).restore().unwrap();
+        let original_reference = original.candidates[0].reference.clone();
+        let cached = CachedPipelineResult::capture(&mut original).unwrap();
+        drop(original);
+        assert!(path.exists());
+        let restored = cached.restore().unwrap();
         assert_eq!(restored.best_index, Some(0));
-        assert_eq!(
-            restored.candidates[0].reference,
-            original.candidates[0].reference
-        );
+        assert_eq!(restored.candidates[0].reference, original_reference);
         assert_eq!(restored.candidates[0].downloaded.path(), path);
         assert_eq!(
             restored.candidates[0].downloaded.candidate.source_priority,

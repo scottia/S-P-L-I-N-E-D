@@ -166,6 +166,52 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                 [item["id"] for item in app.albums("Billboard")], ["billboard"]
             )
 
+    def test_comp_only_identity_is_not_a_visible_media_library_artist(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "index.sqlite"
+            credentials = root / "credentials"
+            credentials.mkdir()
+            standard = root / "Adele" / "30"
+            compilation = root / "Various Artists" / "Billboard"
+            for folder in (standard, compilation):
+                folder.mkdir(parents=True)
+                (folder / "song.mp3").touch()
+
+            with closing(connect(database)) as db:
+                db.execute(
+                    "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,"
+                    "musicbrainz_artistid TEXT,primary_path TEXT,status TEXT)"
+                )
+                db.execute(
+                    "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,album_name TEXT,"
+                    "path TEXT,cover_path TEXT,track_count INTEGER,status TEXT,compilation INTEGER,"
+                    "musicbrainz_albumid TEXT,release_year TEXT,embedded_tracks INTEGER,webp_found INTEGER)"
+                )
+                db.execute(
+                    "CREATE TABLE tracks (track_key TEXT PRIMARY KEY,album_key TEXT,path TEXT,title TEXT,artist_name TEXT)"
+                )
+                db.executemany(
+                    "INSERT INTO artists VALUES (?,?,?,?,?)",
+                    [
+                        ("adele", "Adele", "adele-mbid", str(root / "Adele"), "processed"),
+                        ("various", "Various Artists", "", str(root / "Various Artists"), "unprocessed"),
+                    ],
+                )
+                db.executemany(
+                    "INSERT INTO albums VALUES (?,?,?,?,NULL,1,?,?,?, '2021',0,0)",
+                    [
+                        ("30", "adele", "30", str(standard), "processed", 0, "release-30"),
+                        ("billboard", "various", "Billboard Hot 100", str(compilation), "incomplete", 1, ""),
+                    ],
+                )
+                db.commit()
+
+            app = PreviewApp(root, database, root, credentials, cache=root / "cache")
+            self.assertEqual([item["name"] for item in app.artists("")], ["Adele"])
+            with mock.patch.object(app, "_navidrome_artists_by_name", return_value={}):
+                self.assertEqual(app.artist_thumbnails(), [])
+
     def test_persisted_artist_aggregate_excludes_unidentified_comp_fallback(self):
         with closing(connect(":memory:")) as db:
             db.execute(
