@@ -157,7 +157,7 @@ html[data-theme=light] .library-row .status-orbit.selected,html[data-theme=light
 .fallback-toolbar .fallback-preview-radio{width:19px;height:19px;flex:none;border:2px solid var(--pink);border-radius:50%;background:#000;cursor:pointer}
 .fallback-toolbar .fallback-preview-radio.active{background:var(--green)}
 .fallback-report-summary{text-align:right;color:var(--cyan);font-size:10px}
-.comp-report-counts{display:flex;justify-content:flex-start;align-items:center;gap:12px;min-width:0;text-align:left;font-size:11px}.comp-count-albums{color:var(--text);font-weight:800}.comp-count-green{color:var(--green)}.comp-count-purple{color:var(--violet)}.comp-count-blue{color:var(--blue)}.comp-count-checking{color:var(--cyan)}.comp-count-error{color:var(--pink)}
+.comp-report-counts{display:flex;justify-content:flex-start;align-items:center;gap:12px;min-width:0;text-align:left;font-size:11px}.comp-count-albums{color:var(--text);font-weight:800}.comp-count-green{color:var(--green)}.comp-count-purple{color:var(--violet)}.comp-count-blue{color:var(--blue)}.comp-count-override{color:var(--danger)}.comp-count-checking{color:var(--cyan)}.comp-count-error{color:var(--pink)}
 .fallback-report-columns{display:grid;grid-template-columns:minmax(0,1fr) max-content;gap:8px;color:var(--muted);font-size:11px;font-weight:800}.fallback-report-columns span:last-child{text-align:right}
 .fallback-report-album,.fallback-track{position:relative;display:grid;grid-template-columns:minmax(0,1fr) max-content;align-items:center;width:100%;min-height:25px;gap:8px;padding:3px 32px 3px 7px;border:1px solid #398efa;border-radius:4px;background:#182a38;color:var(--text);text-align:left;cursor:pointer}
 .fallback-report-album{grid-template-columns:22px minmax(0,1fr) clamp(170px,38%,310px);padding-right:7px}.fallback-report-toggle{display:grid;place-items:center;width:20px;height:20px;border:1px solid var(--cyan);border-radius:4px;background:#102c3d;color:var(--cyan);font-size:13px;font-weight:900}.fallback-report-album-counts{text-align:right}
@@ -180,7 +180,10 @@ html[data-theme=light] .library-row .status-orbit.selected,html[data-theme=light
 .fallback-library-select{color:var(--pink);font-size:13px;flex:none}
 .fallback-library-track.selected .fallback-library-select{color:var(--green)}
 .hero.fallback-overview .album-grid{margin-bottom:6px}
-html[data-theme=chalk] .fallback-report,html[data-theme=light] .fallback-report{background:#ba8490cc}
+/* The COMP report is a semantic overlay on the Artist banner. Keep the same
+   dark translucent maroon surface in every theme so its hierarchy and track
+   colors remain identical to the accepted 2.0.35 report reference. */
+html[data-theme=chalk] .fallback-report,html[data-theme=light] .fallback-report{background:#381821c9}
 .album-status-key{top:28px;bottom:auto}
 
 .auth-screen{position:fixed;z-index:100;inset:0;display:grid;place-items:center;padding:24px;background:radial-gradient(circle at 20% 15%,#18303b 0,transparent 42%),radial-gradient(circle at 78% 82%,#3b2236 0,transparent 38%),var(--window)}
@@ -288,6 +291,7 @@ body.authenticated .auth-screen{display:none}body.auth-pending>.app-header,body.
 .musicbrainz-release-copy{display:grid;min-width:0;gap:2px}.musicbrainz-release-copy strong{color:var(--text);font-size:11px}.musicbrainz-release-copy small{color:var(--muted);font-size:9px;overflow-wrap:anywhere}.musicbrainz-release-state{color:var(--green)!important}
 .musicbrainz-existing-grid{display:flex;gap:6px;overflow-x:auto;padding:5px 0}.musicbrainz-existing-card{display:grid;grid-template-columns:54px minmax(130px,1fr);grid-template-rows:auto auto auto;width:260px;flex:none;gap:2px 7px;padding:5px;border:1px solid var(--line);border-radius:4px;background:var(--panel);color:var(--text);text-align:left}
 .musicbrainz-existing-card img{grid-row:1/4;width:54px;height:54px;object-fit:contain;background:#05080c}.musicbrainz-existing-card strong{color:var(--cyan)}.musicbrainz-existing-card span,.musicbrainz-existing-card small{color:var(--muted);font-size:9px}.musicbrainz-existing-card.selected{border-color:var(--green);background:var(--selected)}
+.musicbrainz-existing-select{grid-column:2;min-height:25px;border:1px solid var(--green);border-radius:4px;background:var(--card);color:var(--green);font-size:10px;font-weight:900}.musicbrainz-existing-select:hover,.musicbrainz-existing-select:focus-visible{background:var(--selected);color:var(--text)}
 .musicbrainz-empty{margin:8px 0;padding:10px;border:1px solid var(--pink);border-radius:4px;color:var(--pink)}
 .musicbrainz-review-actions{position:sticky;z-index:4;bottom:-66px;display:flex;justify-content:flex-end;gap:6px;margin:10px -2px -62px;padding:8px;border-top:1px solid var(--line);background:color-mix(in srgb,var(--window) 94%,transparent)}
 .musicbrainz-review-actions button{border:1px solid var(--line);border-radius:4px;background:var(--card);color:var(--text);padding:6px 12px}.musicbrainz-review-actions button.primary{border-color:var(--green);color:var(--green);font-weight:800}.musicbrainz-review-actions button:disabled{opacity:.45}

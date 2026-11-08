@@ -5139,7 +5139,7 @@ fn activate_compilation_track(
                     app.compilation_track_preview_path.clear();
                     app.artist_artwork_mode = false;
                     app.operation_status = format!(
-                        "Loading COMP track · {} · matching recording and releases…",
+                        "Selected COMP track · {} · loading embedded artwork…",
                         Path::new(track_path)
                             .file_name()
                             .and_then(|name| name.to_str())
@@ -9611,7 +9611,6 @@ fn bind_callbacks(
     {
         let state = Arc::clone(&state);
         let weak = ui.as_weak();
-        let controller = Arc::clone(&controller);
         ui.on_compilation_report_track_activated(move |album_key, track_path, include_bypassed| {
             if state
                 .lock()
@@ -9628,10 +9627,9 @@ fn bind_callbacks(
                 if let Ok(mut app) = state.lock() {
                     app.compilation_report_preview_track_path = track_path.to_string();
                 }
-                activate_and_run_compilation_track(
+                activate_compilation_track(
                     &state,
                     &weak,
-                    &controller,
                     album_key.as_str(),
                     track_path.as_str(),
                     include_bypassed,
@@ -10784,9 +10782,7 @@ fn bind_callbacks(
                                     format!(" · {inventory_errors} album inventories unavailable")
                                 } else { String::new() },
                             ) };
-                            app.operation_tone = if purple > 0 || missing > 0 {
-                                "violet"
-                            } else if blue > 0 {
+                            app.operation_tone = if inventory_errors > 0 {
                                 "orange"
                             } else {
                                 "green"
@@ -18527,6 +18523,9 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
             .filter(|row| row.status.as_str() == "Blue")
             .count() as i32,
     );
+    ui.set_compilation_report_override_count(
+        count_tracks.iter().filter(|row| row.overridden).count() as i32,
+    );
 
     let sources = state
         .sources
@@ -21429,7 +21428,16 @@ fn group_compilation_report_rows(
         });
         if expanded {
             rows.extend(group.iter().cloned().map(|mut track| {
-                track.album_title = SharedString::default();
+                // Track rows mirror the WebGUI table: filename on the left,
+                // compact COMP status on the right.
+                track.album_title = track.file_name.clone();
+                track.file_name = match track.status.as_str() {
+                    "Green" => "COMP status · complete",
+                    "Purple" => "COMP status · thumbnail repair",
+                    "Checking" => "COMP status · checking thumbnail",
+                    _ => "COMP status · needs artwork",
+                }
+                .into();
                 track
             }));
         }
@@ -23542,12 +23550,23 @@ mod tests {
         );
         assert!(!open[1].album_header && !open[2].album_header);
         assert_eq!(open[3].album_title.as_str(), "Second Album");
+        assert_eq!(open[1].album_title.as_str(), "one.mp3");
+        assert_eq!(open[1].file_name.as_str(), "COMP status · complete");
+        assert_eq!(open[2].album_title.as_str(), "two.mp3");
+        assert_eq!(
+            open[2].file_name.as_str(),
+            "COMP status · thumbnail repair"
+        );
 
         let collapsed = group_compilation_report_rows(&tracks, &HashSet::from(["first".into()]));
         assert_eq!(collapsed.len(), 3);
         assert!(collapsed[0].album_header && !collapsed[0].expanded);
         assert_eq!(collapsed[1].album_title.as_str(), "Second Album");
-        assert_eq!(collapsed[2].file_name.as_str(), "three.mp3");
+        assert_eq!(collapsed[2].album_title.as_str(), "three.mp3");
+        assert_eq!(
+            collapsed[2].file_name.as_str(),
+            "COMP status · needs artwork"
+        );
     }
 
     #[test]

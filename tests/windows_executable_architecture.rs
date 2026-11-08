@@ -212,8 +212,15 @@ fn comp_report_keeps_visible_group_controls_and_track_scoped_coordination() {
     assert!(ui.contains("max(170px, min(310px, parent.width * 0.38))"));
     assert!(!ui.contains("text: \"TRACK FILE\"; width: 310px"));
     assert!(ui.contains("background: #381821c9"));
+    assert!(ui.contains("track.album-header ? #398efa"));
+    assert!(ui.contains("track.album-header ? 25px : 24px"));
+    assert!(ui.contains("root.compilation-report-override-count + \" overridden\""));
     assert!(ui.contains("root.compilation-report-visible ? \"LAUNCH COMP\" : \"LAUNCH\""));
+    assert!(ui.contains("root.running ? \"STOP PROCESS\""));
     assert!(main.contains("recorded thumbnails validated"));
+    assert!(main.contains("\"COMP status · complete\""));
+    assert!(main.contains("track.album_title = track.file_name.clone()"));
+    assert!(main.contains("Selected COMP track · {} · loading embedded artwork…"));
     let summary = ui
         .split(
             "if root.overview-mode == \"Artist\": HorizontalLayout { height: 18px; spacing: 12px;",
