@@ -1523,7 +1523,12 @@ function renderCatalogMaintenance(host, advanced = false) {
   maintenance.append(node("h4", "", "↕ Catalog Maintenance"), node("p", "settings-subcopy", "Refresh the PostgreSQL catalog or import a deliberate read-only SQLite snapshot."));
   maintenance.append(node("p", "settings-warning", "A full refresh deliberately republishes the complete music catalog. Normal added, changed, and removed files use the faster header update."));
   const refresh = node("button", "operation-button full-action", "Full Refresh Library Index"); refresh.type = "button";
-  refresh.addEventListener("click", () => runAction(async () => { $("workspaceDialog").close(); const job = await post("/api/jobs", {kind: "index", payload: {mode: "full"}}); await reviewJob(job.id); }));
+  refresh.addEventListener("click", () => runAction(async () => {
+    setStatus("PostgreSQL full refresh started · scanning the music library…", "busy");
+    $("workspaceDialog").close();
+    const job = await post("/api/jobs", {kind: "index", payload: {mode: "full"}});
+    await reviewJob(job.id);
+  }));
   maintenance.append(refresh, node("h5", "", "Import an existing SQLite catalog"), node("p", "settings-subcopy", "Empty PostgreSQL catalogs only. Choose one server-side .db, .sqlite, or .sqlite3 file—not its containing directory. The source remains unchanged."));
   const path = field(maintenance, "SQLite snapshot file on server (.db)"), importButton = node("button", "operation-button full-action", "Import Catalog"); importButton.type = "button";
   importButton.addEventListener("click", () => runAction(async () => { const result = await post("/api/catalog/import", {path: path.value}); setStatus("Imported " + (result.albums || 0) + " albums"); }));

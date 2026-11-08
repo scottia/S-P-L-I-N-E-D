@@ -239,20 +239,24 @@ pub fn prepare_persistent_cache_dir(cache_dir: &Path) -> Result<(), String> {
 /// interrupted run. The SQLite database, samples, and unrelated files are
 /// intentionally outside this filename contract and are never touched.
 pub fn cleanup_run_cache_files(cache_dir: &Path) {
-    let Ok(entries) = fs::read_dir(cache_dir) else {
-        return;
-    };
     let candidate_prefix = format!("splined-candidate-{}-", temporary_owner_token());
     let local_prefix = format!("splined-local-{}-", temporary_owner_token());
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+    for directory in [
+        cache_dir.to_path_buf(),
+        cache_dir.join("artist-art-candidates"),
+        cache_dir.join("musicbrainz-cover-previews"),
+    ] {
+        let Ok(entries) = fs::read_dir(directory) else {
             continue;
         };
-        if (name.starts_with(&candidate_prefix) || name.starts_with(&local_prefix))
-            && path.is_file()
-        {
-            if let Err(error) = fs::remove_file(&path)
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if (name.starts_with(&candidate_prefix) || name.starts_with(&local_prefix))
+                && path.is_file()
+                && let Err(error) = fs::remove_file(&path)
                 && error.kind() != std::io::ErrorKind::NotFound
             {
                 eprintln!(
@@ -325,6 +329,7 @@ pub fn cleanup_stale_artwork_on_startup(cache_dir: &Path) -> Result<(usize, u64)
     let locations = [
         (cache_dir.to_path_buf(), "root"),
         (cache_dir.join("artist-art-candidates"), "candidates"),
+        (cache_dir.join("musicbrainz-cover-previews"), "candidates"),
         (
             cache_dir.join("navidrome-thumbnails").join("artists"),
             "navidrome",
@@ -908,6 +913,10 @@ mod tests {
     #[test]
     fn completed_run_cleanup_removes_only_disposable_artwork() {
         let root = tempfile::TempDir::new().expect("run cache fixture should create");
+        let artist_candidates = root.path().join("artist-art-candidates");
+        let musicbrainz_candidates = root.path().join("musicbrainz-cover-previews");
+        fs::create_dir_all(&artist_candidates).unwrap();
+        fs::create_dir_all(&musicbrainz_candidates).unwrap();
         fs::write(
             root.path().join(format!(
                 "splined-candidate-{}-current.jpg",
@@ -924,6 +933,18 @@ mod tests {
             b"local",
         )
         .unwrap();
+        let nested_artist = artist_candidates.join(format!(
+            "splined-candidate-{}-artist.jpg",
+            temporary_owner_token()
+        ));
+        let nested_musicbrainz = musicbrainz_candidates.join(format!(
+            "splined-candidate-{}-release.jpg",
+            temporary_owner_token()
+        ));
+        let other_session = artist_candidates.join("splined-candidate-999999-1-other.jpg");
+        for path in [&nested_artist, &nested_musicbrainz, &other_session] {
+            fs::write(path, b"candidate").unwrap();
+        }
         fs::write(root.path().join("splined.db"), b"database").unwrap();
         fs::create_dir(root.path().join("samples")).unwrap();
 
@@ -947,6 +968,9 @@ mod tests {
                 ))
                 .exists()
         );
+        assert!(!nested_artist.exists());
+        assert!(!nested_musicbrainz.exists());
+        assert!(other_session.exists());
         assert!(root.path().join("splined.db").exists());
         assert!(root.path().join("samples").is_dir());
     }
@@ -961,21 +985,30 @@ mod tests {
         let root = tempfile::TempDir::new().unwrap();
         let cache = root.path().join("_cache");
         let candidates = cache.join("artist-art-candidates");
+        let musicbrainz = cache.join("musicbrainz-cover-previews");
         let navidrome = cache.join("navidrome-thumbnails").join("artist-banners");
         fs::create_dir_all(&candidates).unwrap();
+        fs::create_dir_all(&musicbrainz).unwrap();
         fs::create_dir_all(&navidrome).unwrap();
         fs::create_dir_all(cache.join("samples")).unwrap();
         let old_candidate = candidates.join("splined-candidate-old.jpg");
         let old_banner = navidrome.join("banner-v2-old.png");
         let recent_candidate = candidates.join("splined-candidate-recent.png");
+        let old_musicbrainz = musicbrainz.join("splined-candidate-old-release.jpg");
         let database = cache.join("splined.db");
-        for path in [&old_candidate, &old_banner, &recent_candidate, &database] {
+        for path in [
+            &old_candidate,
+            &old_banner,
+            &recent_candidate,
+            &old_musicbrainz,
+            &database,
+        ] {
             fs::write(path, b"fixture").unwrap();
         }
         fs::write(candidates.join("Thumbs.db"), b"keep").unwrap();
         fs::write(cache.join("samples").join("sample.jpg"), b"keep").unwrap();
         let old_time = SystemTime::now() - Duration::from_secs(48 * 60 * 60);
-        for path in [&old_candidate, &old_banner] {
+        for path in [&old_candidate, &old_banner, &old_musicbrainz] {
             fs::File::options()
                 .write(true)
                 .open(path)
@@ -984,9 +1017,10 @@ mod tests {
                 .unwrap();
         }
         let (removed, bytes) = cleanup_stale_artwork_on_startup(&cache).unwrap();
-        assert_eq!((removed, bytes), (2, 14));
+        assert_eq!((removed, bytes), (3, 21));
         assert!(!old_candidate.exists());
         assert!(!old_banner.exists());
+        assert!(!old_musicbrainz.exists());
         assert!(recent_candidate.exists());
         assert!(database.exists());
         assert!(candidates.join("Thumbs.db").exists());

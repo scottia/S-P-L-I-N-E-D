@@ -4878,6 +4878,9 @@ fn main() -> Result<(), slint::PlatformError> {
         let configured = Path::new(&app.config.scan.temporary_cache_dir);
         splined_core::pipeline::cleanup_run_cache_files(configured);
         splined_core::pipeline::cleanup_run_cache_files(&embedded_preview_cache_dir(configured));
+        if let Ok(layout) = splined_core::portable::app_layout() {
+            splined_core::pipeline::cleanup_run_cache_files(&layout.root.join("_cache"));
+        }
     }
     result
 }
@@ -7382,12 +7385,20 @@ fn load_application_state() -> (ApplicationState, bool, Option<String>) {
         return (state, true, first_error);
     }
     let configured_cache = Path::new(&config.scan.temporary_cache_dir);
-    let cache_cleanups = [
+    let portable_cache = splined_core::portable::app_layout()
+        .ok()
+        .map(|layout| layout.root.join("_cache"));
+    let mut cache_cleanups = vec![
         splined_core::pipeline::cleanup_stale_artwork_on_startup(configured_cache),
         splined_core::pipeline::cleanup_stale_artwork_on_startup(&embedded_preview_cache_dir(
             configured_cache,
         )),
     ];
+    if let Some(portable_cache) = portable_cache.as_deref() {
+        cache_cleanups.push(splined_core::pipeline::cleanup_stale_artwork_on_startup(
+            portable_cache,
+        ));
+    }
     let snapshot_started = Instant::now();
     let snapshot = match media_snapshot(&config, false) {
         Ok(snapshot) => snapshot,
