@@ -157,13 +157,12 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                 side_effect=AssertionError("album index must not touch network artwork paths"),
             ):
                 albums = app.albums("")
-            self.assertEqual({item["id"] for item in albums}, {"30", "billboard"})
+            self.assertEqual({item["id"] for item in albums}, {"30"})
             self.assertTrue(all(item["cover"].startswith("/api/album/thumbnail?id=") for item in albums))
+            self.assertEqual({item["id"] for item in app.albums("Adele")}, {"30"})
+            self.assertEqual(app.albums("Billboard"), [])
             self.assertEqual(
-                {item["id"] for item in app.albums("Adele")}, {"30", "billboard"}
-            )
-            self.assertEqual(
-                [item["id"] for item in app.albums("Billboard")], ["billboard"]
+                [item["id"] for item in app.albums("Billboard", True)], ["billboard"]
             )
 
     def test_comp_only_identity_is_not_a_visible_media_library_artist(self):

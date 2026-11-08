@@ -689,6 +689,9 @@ impl LibraryState {
 
     fn album_visible(&self, index: usize, _artists: &BTreeMap<String, Vec<usize>>) -> bool {
         let album = &self.albums[index];
+        if self.view == LibraryView::Albums && !self.show_tracks && Self::is_fallback_album(album) {
+            return false;
+        }
         if !self.text_matches(album) {
             return false;
         }
@@ -729,7 +732,7 @@ impl LibraryState {
     fn album_is_in_active_review_view(&self, album: &AlbumEntry) -> bool {
         if self.show_tracks {
             Self::is_fallback_album(album)
-        } else if self.view == LibraryView::Artists {
+        } else if matches!(self.view, LibraryView::Artists | LibraryView::Albums) {
             !Self::is_fallback_album(album)
         } else {
             true
@@ -4974,6 +4977,31 @@ mod tests {
     }
 
     #[test]
+    fn albums_and_fallback_views_are_mutually_exclusive() {
+        let mut release = album("release", "Alpha", "Release", "unprocessed");
+        release.album_mbid = "release-id".to_string();
+        let fallback = album("fallback", "Various Artists", "Compilation", "unprocessed");
+        let mut state = LibraryState::from_snapshot(MediaSnapshot {
+            schema_version: crate::media_database::SCHEMA_VERSION,
+            database_path: "splined.db".to_string(),
+            canonical_root: "/music".to_string(),
+            local_root: r"C:\Music".to_string(),
+            albums: vec![release, fallback],
+        })
+        .unwrap();
+
+        state.set_view(LibraryView::Albums);
+        let albums = state.rows();
+        assert_eq!(albums.len(), 1);
+        assert_eq!(albums[0].key, "release");
+
+        state.set_show_tracks(true);
+        let fallback = state.fallback_album_rows();
+        assert_eq!(fallback.len(), 1);
+        assert_eq!(fallback[0].key, "fallback");
+    }
+
+    #[test]
     fn artist_overview_navigation_skips_artists_without_pending_work() {
         let mut state = artist_library();
         state.focused_artist = Some("Alpha".to_string());
@@ -7466,7 +7494,7 @@ mod tests {
 
     #[test]
     fn mature_media_filters_and_selection_modes_are_composable() {
-        let mut state = library();
+        let mut state = artist_library();
         state.set_view(LibraryView::Albums);
         state.set_status_filters([StatusFilter::Unprocessed, StatusFilter::Incomplete]);
         assert_eq!(state.rows().len(), 2);

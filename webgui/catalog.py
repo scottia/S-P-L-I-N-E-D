@@ -1324,6 +1324,11 @@ class Catalog:
         return portrait
 
     def albums(self, query: str, fallback_only: bool = False) -> list[dict[str, object]]:
+        identity_clause = (
+            "TRIM(COALESCE(albums.musicbrainz_albumid,''))=''"
+            if fallback_only
+            else "TRIM(COALESCE(albums.musicbrainz_albumid,''))<>''"
+        )
         with closing(self.connect()) as db:
             rows = db.execute(
                 "SELECT albums.album_key, albums.album_name, albums.artist_key, "
@@ -1331,10 +1336,9 @@ class Catalog:
                 "albums.status, albums.compilation, albums.musicbrainz_albumid FROM albums "
                 "JOIN artists ON artists.artist_key=albums.artist_key "
                 "WHERE (albums.album_name LIKE ? ESCAPE '\\' OR artists.artist_name LIKE ? ESCAPE '\\') "
-                "AND (?=0 OR TRIM(COALESCE(albums.musicbrainz_albumid,''))='') "
+                f"AND {identity_clause} "
                 "ORDER BY albums.album_name COLLATE NOCASE ",
-                ("%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%",) * 2
-                + (1 if fallback_only else 0,),
+                ("%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%",) * 2,
             ).fetchall()
             coordination = self._album_write_coordination(
                 db, (row["album_key"] for row in rows)

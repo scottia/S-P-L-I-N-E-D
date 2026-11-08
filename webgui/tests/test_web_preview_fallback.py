@@ -317,7 +317,7 @@ class BrowserFallbackTests(unittest.TestCase):
             projected = next(item for item in fallback if item["id"] == "unidentified-comp")
             self.assertEqual(app.image_bytes(projected["cover"]), folder_cover.read_bytes())
             self.assertNotIn("/api/fallback/thumbnail", projected["cover"])
-            self.assertEqual(len(app.albums("", False)), 3)
+            self.assertEqual([item["id"] for item in app.albums("", False)], ["soundtrack"])
 
     def test_fallback_card_does_not_substitute_embedded_track_art_for_cover(self) -> None:
         with TemporaryDirectory() as directory:
