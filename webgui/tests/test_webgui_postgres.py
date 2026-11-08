@@ -39,7 +39,7 @@ import splined as core
 import splined_compilation_authority_policy as compilation
 
 from webgui.database import Database
-from webgui.catalog_authority import WINDOWS_SYNCHRONIZED_FIELDS
+from webgui.catalog_authority import WINDOWS_SYNCHRONIZED_FIELDS, mark_windows_authority
 from webgui.runtime import Runtime
 from webgui.services import Services
 from webgui.jobs import JobAdapter, JobQueue
@@ -2442,6 +2442,62 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertEqual(
                 db.execute("SELECT count(*) FROM albums").fetchone()[0], 1
             )
+
+    def test_incremental_index_adds_physical_album_with_windows_authority_present(self):
+        with closing(self.db.connect()) as db, db:
+            mark_windows_authority(
+                db.raw,
+                "albums",
+                self.row["album_key"],
+                "fixture-fingerprint",
+                "fixture-windows",
+            )
+
+        added = self.root / "music" / "Compilation Artist" / "New COMP Album"
+        added.mkdir(parents=True)
+        added_track = added / "1.flac"
+        shutil.copy2(self.files[0], added_track)
+        audio = FLAC(added_track)
+        audio["artist"] = "Featured Artist"
+        audio["albumartist"] = "Various Artists"
+        audio["album"] = "New COMP Album"
+        audio.pop("musicbrainz_albumid", None)
+        audio.pop("musicbrainz_artistid", None)
+        audio.save()
+
+        changes = self.services.index_changes()
+        self.assertEqual(changes["added"], 1)
+        result = self.services.refresh_index(mode="incremental")
+        self.assertEqual(result["changed_albums"], 1)
+        self.assertEqual(result["deferred_albums"], 0)
+        with closing(self.db.connect()) as db:
+            indexed = db.execute(
+                "SELECT album_name,path FROM albums WHERE path=?",
+                (str(added),),
+            ).fetchone()
+        self.assertIsNotNone(indexed)
+        self.assertEqual(indexed["album_name"], "New COMP Album")
+
+    def test_library_change_notice_excludes_windows_authoritative_album_deltas(self):
+        with closing(self.db.connect()) as db, db:
+            mark_windows_authority(
+                db.raw,
+                "albums",
+                self.row["album_key"],
+                "fixture-fingerprint",
+                "fixture-windows",
+            )
+        audio = FLAC(self.files[0])
+        audio["title"] = "Windows authoritative physical update"
+        audio.save()
+
+        changes = self.services.index_changes()
+
+        self.assertEqual(changes["count"], 0)
+        self.assertEqual(changes["changed"], 0)
+        self.assertEqual(changes["protected"], 1)
+        result = self.services.refresh_index(mode="incremental")
+        self.assertEqual(result["changed_albums"], 0)
 
     def test_reconciliation_applies_windows_album_authority_and_is_idempotent(self):
         authoritative_time = "2000-01-01T00:00:00+00:00"

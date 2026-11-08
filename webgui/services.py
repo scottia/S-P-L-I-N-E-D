@@ -863,6 +863,7 @@ class Services:
                     "SELECT album_key,path,track_count,inventory_fingerprint,musicbrainz_albumid,representative_file,representative_size,representative_mtime_ns FROM albums"
                 )
             )
+            managed_albums = windows_managed_keys(db.raw, "albums")
         old_paths = {str(row["path"]): row for row in old}
         albums, _ = core.inventory(
             root,
@@ -873,6 +874,7 @@ class Services:
         current_paths = {str(album.path) for album in albums if album.audio_files}
         added = 0
         changed = 0
+        protected = 0
         examples = []
         for album in albums:
             if not album.audio_files:
@@ -888,16 +890,33 @@ class Services:
                 album, not str(prior["musicbrainz_albumid"] or "").strip()
             )
             if not _indexed_album_unchanged(prior, album, fingerprint):
-                changed += 1
-                if len(examples) < 3:
-                    examples.append(path)
-        removed_paths = sorted(set(old_paths) - current_paths, key=str.casefold)
+                if str(prior["album_key"]) in managed_albums:
+                    protected += 1
+                else:
+                    changed += 1
+                    if len(examples) < 3:
+                        examples.append(path)
+        missing_paths = set(old_paths) - current_paths
+        protected += sum(
+            1
+            for path in missing_paths
+            if str(old_paths[path]["album_key"]) in managed_albums
+        )
+        removed_paths = sorted(
+            (
+                path
+                for path in missing_paths
+                if str(old_paths[path]["album_key"]) not in managed_albums
+            ),
+            key=str.casefold,
+        )
         examples.extend(removed_paths[: max(0, 3 - len(examples))])
         return {
             "count": added + changed + len(removed_paths),
             "added": added,
             "changed": changed,
             "removed": len(removed_paths),
+            "protected": protected,
             "examples": examples,
         }
 
@@ -917,7 +936,6 @@ class Services:
             )
             managed_artists = windows_managed_keys(db.raw, "artists")
             managed_albums = windows_managed_keys(db.raw, "albums")
-        windows_authority_configured = bool(managed_artists or managed_albums)
         old_keys = {row["album_key"]: row for row in old}
         old_paths = {row["path"]: row for row in old}
         albums, _ = core.inventory(
@@ -959,6 +977,11 @@ class Services:
                 continue
             prior_at_path = old_paths.get(str(album.path))
             if mode == "incremental" and prior_at_path is not None:
+                if str(prior_at_path["album_key"]) in managed_albums:
+                    # Existing Windows-owned catalog rows advance through
+                    # reconciliation, never through a browser filesystem pass.
+                    seen.add(str(prior_at_path["album_key"]))
+                    continue
                 if _indexed_album_unchanged(
                     prior_at_path, album, str(album.inventory_fingerprint or "")
                 ):
@@ -982,16 +1005,6 @@ class Services:
                 authoritative = old_keys[str(row["album_key"])]
                 row["artist_key"] = str(authoritative["artist_key"])
                 artist["artist_key"] = str(authoritative["artist_key"])
-            elif (
-                windows_authority_configured
-                and prior_at_path is None
-                and str(row["album_key"]) not in old_keys
-            ):
-                # A new synchronized identity must arrive through the next
-                # Windows SNAP. Full Refresh may still inventory and validate
-                # known entities but cannot create a competing catalog row.
-                deferred_albums += 1
-                continue
             artist["splined_version"] = core.VERSION
             row["splined_version"] = core.VERSION
             row["last_seen_at"] = now

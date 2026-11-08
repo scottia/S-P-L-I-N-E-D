@@ -345,7 +345,7 @@ component LibraryItem inherits Rectangle {
                 }
             }
         }
-        Rectangle { width: root.item.kind == "artist" ? 48px : 42px; height: root.item.kind == "artist" ? 48px : 42px; clip: true; border-radius: root.item.kind == "artist" ? 24px : 8px; background: root.item.kind == "artist" ? transparent : (root.item.eligible ? @linear-gradient(135deg, #223e63, #6840a2) : #392f45); border-color: root.item.kind != "artist" && root.item.selected && !root.status-only-album-selection ? AppTheme.magenta : #4d6d83; border-width: 1px;
+        Rectangle { width: root.item.kind == "artist" ? 48px : 42px; height: root.item.kind == "artist" ? 48px : 42px; clip: true; border-radius: self.width / 2; background: root.item.kind == "artist" ? transparent : (root.item.eligible ? @linear-gradient(135deg, #223e63, #6840a2) : #392f45); border-color: root.item.kind != "artist" && root.item.selected && !root.status-only-album-selection ? AppTheme.magenta : #4d6d83; border-width: 1px;
             Text { text: root.item.primary == "" ? "?" : (root.item.kind == "artist" ? root.item.icon : "🎵"); color: AppTheme.foreground; font-size: 19px * AppTheme.font-scale; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; visible: !root.item.has-artwork; }
             Image { source: root.item.artwork; width: parent.width; height: parent.height; image-fit: cover; visible: root.item.has-artwork; }
         }

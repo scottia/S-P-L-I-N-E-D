@@ -10894,6 +10894,7 @@ fn bind_callbacks(
             }
             if let Some(ui) = weak_for_close.upgrade() {
                 ui.set_confirm_compilation_repair(false);
+                ui.set_overview_scroll_y(0.0);
             }
             refresh_weak(&weak_for_close, &state_for_close);
         });
@@ -17791,6 +17792,9 @@ fn schedule_completed_compilation_report_close(
             false
         };
         if closed {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_overview_scroll_y(0.0);
+            }
             refresh_weak(&weak, &state);
         }
     });
@@ -21343,6 +21347,15 @@ fn group_compilation_report_rows(
 }
 
 fn close_artist_compilation_report(app: &mut ApplicationState) {
+    if !app.compilation_report_artist.is_empty() {
+        let overview_key = format!(
+            "overview:Artist:{}",
+            app.compilation_report_artist.to_lowercase()
+        );
+        WORKSPACE_SCROLL_POSITIONS.with(|positions| {
+            positions.borrow_mut().remove(&overview_key);
+        });
+    }
     if app.compilation_report_checking {
         app.operation_busy = false;
     }
@@ -23378,7 +23391,19 @@ mod tests {
                     track.embedded_artwork_recorded = true;
                 }
             }
+            super::WORKSPACE_SCROLL_POSITIONS.with(|positions| {
+                positions
+                    .borrow_mut()
+                    .insert("overview:Artist:alan jackson".into(), -480.0);
+            });
             super::close_artist_compilation_report(&mut app);
+            super::WORKSPACE_SCROLL_POSITIONS.with(|positions| {
+                assert!(
+                    !positions
+                        .borrow()
+                        .contains_key("overview:Artist:alan jackson")
+                );
+            });
             super::begin_artist_compilation_report(&mut app).unwrap();
         }
         let reopened_generation = state.lock().unwrap().compilation_report_generation;

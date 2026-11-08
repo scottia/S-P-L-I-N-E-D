@@ -66,6 +66,12 @@ async function initialize() {
   // saved panel dimensions only after it has measurable width and height.
   requestAnimationFrame(() => { restoreLayout(); fitReviewToViewport(); });
   await loadLibrary(); await pollJobs();
+  // Discover physical library additions after the workspace is usable. This
+  // remains a read-only check; the operator explicitly chooses whether to run
+  // the incremental PostgreSQL refresh from the header notice.
+  void checkLibraryChanges().catch(error => {
+    auditEvent("library-change-check", "failed", {severity: "warning", error: error.message});
+  });
 }
 function showAuthentication(status) {
   document.body.className = "auth-required";
