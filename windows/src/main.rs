@@ -40,10 +40,10 @@ use splined_core::local_artwork::{
 };
 use splined_core::media_database::{
     MediaAlbumSnapshot, MediaSnapshot, MediaTrackSnapshot, RuntimeArtworkMaterial,
-    clear_album_bypass_from_runtime, fallback_tracks_from_folder, find_media_index_changes,
-    load_artist_art_profile, media_snapshot, persist_opposing_album_artwork,
-    persist_opposing_compilation_artwork, record_album_outcome, record_album_outcome_from_runtime,
-    save_artist_art_identity,
+    backfill_windows_comp_track_coordination, clear_album_bypass_from_runtime,
+    fallback_tracks_from_folder, find_media_index_changes, load_artist_art_profile, media_snapshot,
+    persist_opposing_album_artwork, persist_opposing_compilation_artwork, record_album_outcome,
+    record_album_outcome_from_runtime, save_artist_art_identity,
 };
 use splined_core::musicbrainz::{ArtistLookup, ArtistSearchHit, MusicBrainzClient};
 use splined_core::override_coordination::{
@@ -3613,7 +3613,19 @@ fn start_album_coordination_worker(
                 apply_track_coordination_states(&mut app, &states, &mut known_track_states);
             }
             match coordination_database_url(&app.config) {
-                Ok(Some(url)) => Some((database, url, known_states, known_track_states)),
+                Ok(Some(url)) => {
+                    match backfill_windows_comp_track_coordination(&app.config) {
+                        Ok(count) if count > 0 => app.push_log(format!(
+                            "Queued {count} verified historical Windows COMP write{} for coordination.",
+                            if count == 1 { "" } else { "s" }
+                        )),
+                        Ok(_) => {}
+                        Err(error) => app.push_log(format!(
+                            "Unable to rebuild historical COMP coordination notifications: {error}"
+                        )),
+                    }
+                    Some((database, url, known_states, known_track_states))
+                }
                 Ok(None) => None,
                 Err(error) => {
                     app.push_log(error);

@@ -1686,6 +1686,58 @@ test("opposing Windows writes refresh only visible affected WebGUI Album thumbna
   assert.equal(state.albumsIndex[1].cover, "/hidden-cover");
 });
 
+test("new COMP coordination reloads an open Artist report projection", async () => {
+  const path = "Various Artists/COMP/01.flac";
+  const event = {writer: "windows", readable: true, relative_track_path: path};
+  const calls = [];
+  const state = {
+    editorMode: "artist", compReportVisible: true,
+    artist: {id: "artist-1"},
+    compGroups: [{id: "album-1", name: "COMP", year: "2000", tracks: [
+      {key: "track-1", coordination_path: path, completed: false, status: "blue"},
+    ]}],
+    compTrack: {albumId: "album-1", key: "track-1", completed: false, status: "blue"},
+    compTrackOverrides: new Map([[path.toLowerCase(), event]]),
+    fallbackTracks: [],
+  };
+  let renders = 0;
+  const context = load(opposingThumbnailFunctions, {
+    state, encodeURIComponent,
+    normalizedCoordinationPath: value => String(value || "").toLowerCase(),
+    compareCompReportGroups: () => 0,
+    applyCompTrackCoordination: rows => {
+      for (const group of state.compGroups) for (const track of group.tracks) {
+        const override = rows.find(row => row.relative_track_path.toLowerCase()
+          === track.coordination_path.toLowerCase());
+        if (override?.writer === "windows" && override.readable) {
+          track.completed = true;
+          track.status = "green";
+        }
+      }
+      return [];
+    },
+    api: async request => {
+      calls.push(request);
+      return [{id: "album-1", name: "COMP", year: "2000", tracks: [
+        {key: "track-1", coordination_path: path, completed: true, status: "checking"},
+      ]}];
+    },
+    renderHero: () => { renders += 1; },
+    renderCandidates: () => { renders += 1; },
+    renderReview: () => { renders += 1; },
+    renderLibrary: () => { renders += 1; },
+  });
+
+  await context.refreshOpenCompReportAfterCoordination();
+
+  assert.deepEqual(calls, ["/api/artist/comp-report?id=artist-1"]);
+  assert.equal(state.compGroups[0].tracks[0].completed, true);
+  assert.equal(state.compGroups[0].tracks[0].status, "green");
+  assert.equal(state.compTrack.completed, true);
+  assert.equal(state.compTrack.status, "green");
+  assert.equal(renders, 3);
+});
+
 test("Artist Albums row reports shown, Completed, and in Process with status colors", () => {
   const children = [];
   const styles = {};

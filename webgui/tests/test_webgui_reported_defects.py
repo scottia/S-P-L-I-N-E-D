@@ -141,6 +141,11 @@ class ReportedDefectTests(unittest.TestCase):
         self.assertIn('"Overridden"', application)
         self.assertIn('albumOverrides: new Map()', application)
         self.assertIn('/api/coordination/album-overrides', operations)
+        self.assertIn("async function refreshOpenCompReportAfterCoordination()", operations)
+        self.assertIn("await refreshOpenCompReportAfterCoordination();", operations)
+        self.assertIn('/api/coordination/comp-track-overrides', operations)
+        self.assertIn('/api/artist/comp-report?id=', operations)
+        self.assertIn('/api/fallback/tracks?id=', operations)
         self.assertIn(
             ".album-card.windows-card.opposing-override .album-card-picture img"
             "{filter:grayscale(1)}",

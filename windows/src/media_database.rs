@@ -9,7 +9,8 @@ use crate::embedded_artwork::embedded_front_sha256s;
 use crate::history::{AlbumHistoryState, album_history_status, load_completion_history, unix_now};
 use crate::inspect::inspect_image;
 use crate::override_coordination::{
-    ensure_sqlite_schema, queue_windows_album_write, queue_windows_comp_track_write,
+    canonical_track_identity, ensure_sqlite_schema, queue_historical_windows_comp_track_write,
+    queue_windows_album_write, queue_windows_comp_track_write, relative_path,
 };
 use crate::scan::{AlbumDirectory, inventory_album_directories};
 use crate::scan_tags::{AlbumIndexTags, read_album_index_tags, read_local_track_evidence};
@@ -2479,6 +2480,126 @@ pub fn record_compilation_resume_track(
             .map_err(db_error("clear compilation resume cursor"))?;
     }
     Ok(())
+}
+
+/// Publish verified Windows COMP writes that predate coordination setup.
+///
+/// SQLite remains the Windows library authority. This only rebuilds missing
+/// coordination outbox/state rows from its durable COMP ledger, using each
+/// historical completion time so a newer WebGUI write always wins.
+pub fn backfill_windows_comp_track_coordination(config: &Config) -> Result<usize, String> {
+    let (mut connection, mapper) = runtime_connection_and_mapper(config)?;
+    backfill_windows_comp_track_coordination_with(
+        &mut connection,
+        &mapper,
+        |track_path, expected_hash| {
+            embedded_front_sha256s(track_path).is_ok_and(|hashes| {
+                hashes
+                    .iter()
+                    .any(|hash| hash.eq_ignore_ascii_case(expected_hash))
+            })
+        },
+    )
+}
+
+fn backfill_windows_comp_track_coordination_with(
+    connection: &mut Connection,
+    mapper: &PathMapper,
+    mut artwork_matches: impl FnMut(&Path, &str) -> bool,
+) -> Result<usize, String> {
+    ensure_sqlite_schema(connection)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT artwork.track_path,tracks.album_key,artwork.artwork_sha256,artwork.applied_at,\
+             COALESCE(CAST(strftime('%s',artwork.applied_at) AS INTEGER)*1000,0) \
+             FROM compilation_track_artwork AS artwork \
+             JOIN tracks ON lower(tracks.path)=lower(artwork.track_path) \
+             WHERE artwork.outcome IN ('embedded-replaced','embedded-existing') \
+             AND lower(COALESCE(artwork.source_kind,'')) <> 'coordination-webgui' \
+             AND trim(COALESCE(artwork.artwork_sha256,'')) <> '' \
+             ORDER BY artwork.applied_at,artwork.track_path",
+        )
+        .map_err(db_error("prepare historical COMP coordination backfill"))?;
+    let history = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })
+        .map_err(db_error("query historical COMP coordination backfill"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db_error("read historical COMP coordination backfill"))?;
+    drop(statement);
+
+    let mut pending = Vec::new();
+    for (canonical_track, album_key, artwork_sha256, applied_at, completed_ms) in history {
+        if completed_ms <= 0 {
+            continue;
+        }
+        let relative_track_path = relative_path(mapper.canonical_root(), &canonical_track);
+        let track_identity = canonical_track_identity(&album_key, &relative_track_path)?;
+        let queued_ms = connection
+            .query_row(
+                "SELECT MAX(source_completed_ms) FROM comp_track_write_outbox WHERE track_identity=?",
+                [&track_identity],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .map_err(db_error("read historical COMP coordination outbox"))?
+            .unwrap_or_default();
+        // Durable local state proves what Windows last knew, not what a
+        // separately reset PostgreSQL coordination database still contains.
+        // Requeue a stable historical event whenever it is not already in the
+        // outbox. PostgreSQL treats the stable event ID and timestamp as an
+        // idempotent no-op when its row is already current.
+        if queued_ms >= completed_ms {
+            continue;
+        }
+        let Ok(local_track) = mapper.to_local(&canonical_track) else {
+            continue;
+        };
+        let local_track = PathBuf::from(local_track);
+        if !local_track.is_file() || !artwork_matches(&local_track, &artwork_sha256) {
+            continue;
+        }
+        pending.push((
+            canonical_track,
+            album_key,
+            artwork_sha256,
+            applied_at,
+            completed_ms,
+        ));
+    }
+
+    if pending.is_empty() {
+        return Ok(0);
+    }
+    let now = sqlite_now(connection)?;
+    let transaction = connection
+        .transaction()
+        .map_err(db_error("begin historical COMP coordination backfill"))?;
+    for (canonical_track, album_key, artwork_sha256, applied_at, completed_ms) in &pending {
+        queue_historical_windows_comp_track_write(
+            &transaction,
+            album_key,
+            mapper.canonical_root(),
+            canonical_track,
+            artwork_sha256,
+            *completed_ms,
+            if applied_at.trim().is_empty() {
+                &now
+            } else {
+                applied_at
+            },
+        )?;
+    }
+    transaction
+        .commit()
+        .map_err(db_error("commit historical COMP coordination backfill"))?;
+    Ok(pending.len())
 }
 
 fn compilation_resume_cache_key(canonical_album: &str) -> String {
@@ -5780,6 +5901,131 @@ mod tests {
             legacy_track_path
         );
         assert!(snapshot.albums[0].compilation_tracks[1].embedded_artwork_recorded);
+    }
+
+    #[test]
+    fn historical_windows_comp_ledger_is_backfilled_once_with_original_time() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("music");
+        let album = library.join("Various Artists").join("Compilation");
+        let track = album.join("01 - Fixture.mp3");
+        fs::create_dir_all(&album).unwrap();
+        File::create(&track).unwrap();
+        let db = temp.path().join("backfill.db");
+        let mut connection = open_database(&db, false).unwrap();
+        let now = sqlite_now(&connection).unwrap();
+        let root = library.to_string_lossy().into_owned();
+        let album_path = album.to_string_lossy().into_owned();
+        let track_path = track.to_string_lossy().into_owned();
+        connection.execute(
+            "INSERT INTO artists(artist_key,artist_name,primary_path,created_at,updated_at,last_seen_at,splined_version) VALUES('artist','Various Artists',?,?,?,?,'test')",
+            params![library.join("Various Artists").to_string_lossy(), now, now, now],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO albums(album_key,artist_key,album_name,compilation,path,representative_file,tag_signature,track_count,status,created_at,updated_at,last_seen_at,splined_version) VALUES('album','artist','Compilation',1,?,?,'tags',1,'processed',?,?,?,'test')",
+            params![album_path, track_path, now, now, now],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO tracks(track_key,album_key,path,title,artist_name,file_size,file_mtime_ns,updated_at,splined_version) VALUES('track','album',?,'Fixture','Artist',0,0,?,'test')",
+            params![track_path, now],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO compilation_track_artwork(track_path,recording_mbid,artist_mbid,source_kind,source_locator,artwork_sha256,outcome,applied_at,splined_version) VALUES(?,'recording','artist','local','fixture','abc123','embedded-replaced','2026-11-08T21:33:07Z','test')",
+            params![track_path],
+        ).unwrap();
+        let mapper = PathMapper::new(&root, &root).unwrap();
+
+        let queued = backfill_windows_comp_track_coordination_with(
+            &mut connection,
+            &mapper,
+            |path, hash| path == track && hash == "abc123",
+        )
+        .unwrap();
+
+        assert_eq!(queued, 1);
+        let event = connection.query_row(
+            "SELECT relative_track_path,artwork_sha256,source_completed_ms,completed_at FROM comp_track_write_outbox",
+            [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?)),
+        ).unwrap();
+        assert_eq!(event.0, "various artists/compilation/01 - fixture.mp3");
+        assert_eq!(event.1, "abc123");
+        assert_eq!(event.2, 1_794_173_587_000);
+        assert_eq!(event.3, "2026-11-08T21:33:07Z");
+        assert_eq!(
+            backfill_windows_comp_track_coordination_with(&mut connection, &mapper, |_, _| true,)
+                .unwrap(),
+            0,
+            "an already queued historical write must not be duplicated",
+        );
+        connection
+            .execute("DELETE FROM comp_track_write_outbox", [])
+            .unwrap();
+        assert_eq!(
+            backfill_windows_comp_track_coordination_with(&mut connection, &mapper, |_, _| true,)
+                .unwrap(),
+            1,
+            "a PostgreSQL reset must be recoverable after the prior outbox was acknowledged",
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT event_id FROM comp_track_write_outbox", [], |row| {
+                    row.get::<_, String>(0)
+                },)
+                .unwrap(),
+            connection
+                .query_row("SELECT event_id FROM comp_track_write_state", [], |row| row
+                    .get::<_, String>(0),)
+                .unwrap(),
+            "historical replay must retain one stable event identity",
+        );
+    }
+
+    #[test]
+    fn opposing_webgui_comp_ledger_is_never_republished_as_windows() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("music");
+        let album = library.join("Various Artists").join("Compilation");
+        let track = album.join("01 - Fixture.mp3");
+        fs::create_dir_all(&album).unwrap();
+        File::create(&track).unwrap();
+        let db = temp.path().join("opposing.db");
+        let mut connection = open_database(&db, false).unwrap();
+        let now = sqlite_now(&connection).unwrap();
+        let root = library.to_string_lossy().into_owned();
+        let album_path = album.to_string_lossy().into_owned();
+        let track_path = track.to_string_lossy().into_owned();
+        connection.execute(
+            "INSERT INTO artists(artist_key,artist_name,primary_path,created_at,updated_at,last_seen_at,splined_version) VALUES('artist','Various Artists',?,?,?,?,'test')",
+            params![library.join("Various Artists").to_string_lossy(), now, now, now],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO albums(album_key,artist_key,album_name,compilation,path,representative_file,tag_signature,track_count,status,created_at,updated_at,last_seen_at,splined_version) VALUES('album','artist','Compilation',1,?,?,'tags',1,'processed',?,?,?,'test')",
+            params![album_path, track_path, now, now, now],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO tracks(track_key,album_key,path,title,artist_name,file_size,file_mtime_ns,updated_at,splined_version) VALUES('track','album',?,'Fixture','Artist',0,0,?,'test')",
+            params![track_path, now],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO compilation_track_artwork(track_path,recording_mbid,artist_mbid,source_kind,source_locator,artwork_sha256,outcome,applied_at,splined_version) VALUES(?,'recording','artist','coordination-webgui','comp-track-write-coordination','abc123','embedded-existing','2026-11-08T21:33:07Z','test')",
+            params![track_path],
+        ).unwrap();
+        let mapper = PathMapper::new(&root, &root).unwrap();
+
+        assert_eq!(
+            backfill_windows_comp_track_coordination_with(&mut connection, &mapper, |_, _| true,)
+                .unwrap(),
+            0,
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT count(*) FROM comp_track_write_outbox", [], |row| {
+                    row.get::<_, i64>(0)
+                },)
+                .unwrap(),
+            0,
+        );
     }
 
     #[test]
