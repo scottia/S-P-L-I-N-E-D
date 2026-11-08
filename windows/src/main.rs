@@ -21006,7 +21006,7 @@ fn select_pending_artist_compilation_report_tracks(
     let artist = artist.to_string();
     let non_green_paths = artist_compilation_report_track_ui_rows(app)
         .into_iter()
-        .filter(|row| row.status.as_str() != "Green")
+        .filter(|row| row.status.as_str() != "Green" || row.overridden)
         .map(|row| row.path.as_str().to_ascii_lowercase())
         .collect::<HashSet<_>>();
     let tracks = artist_compilation_report_tracks(app)
@@ -21067,7 +21067,7 @@ fn select_pending_artist_compilation_report_tracks(
     app.artist_artwork_mode = false;
     app.scan_scope = ScanScope::Selected;
     app.operation_status = format!(
-        "COMP queued · {} non-green {artist} track{} across the report",
+        "COMP queued · {} pending or overridden {artist} track{} across the report",
         tracks.len(),
         if tracks.len() == 1 { "" } else { "s" }
     );
@@ -21266,29 +21266,15 @@ fn artist_compilation_report_track_ui_rows(app: &ApplicationState) -> Vec<UiComp
         return Vec::new();
     }
     let side = app.config.output.embedded_thumbnail_size;
-    let metadata = EMBEDDED_METADATA_CACHE
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .ok();
     artist_compilation_report_tracks(app)
         .into_iter()
         .map(|track| {
-            let recorded = metadata.as_ref().and_then(|cache| {
-                cache
-                    .get(track.path.to_string_lossy().as_ref())
-                    .map(|(_, _, dimensions)| *dimensions)
-            });
-            let status = if !track.completed {
-                "Blue"
-            } else if app.compilation_report_checking && recorded.is_none() {
-                "Checking"
-            } else if recorded.is_some_and(|dimensions| {
-                dimensions.is_some_and(|(width, height, _)| width == side && height == side)
-            }) {
-                "Green"
-            } else {
-                "Purple"
-            };
+            let status = compilation_report_track_status(
+                &track.path,
+                track.completed,
+                app.compilation_report_checking,
+                side,
+            );
             UiCompilationReportRow {
                 album_key: track.album_key.into(),
                 album_title: track.album_title.into(),
@@ -21322,27 +21308,17 @@ fn fallback_album_report_track_ui_rows(app: &ApplicationState) -> Vec<UiCompilat
         return Vec::new();
     };
     let side = app.config.output.embedded_thumbnail_size;
-    let metadata = EMBEDDED_METADATA_CACHE
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .ok();
     album
         .snapshot
         .compilation_tracks
         .iter()
         .map(|track| {
-            let recorded = metadata
-                .as_ref()
-                .and_then(|cache| cache.get(&track.path).map(|(_, _, dimensions)| *dimensions));
-            let status = if !track.embedded_artwork_recorded {
-                "Blue"
-            } else if recorded.is_some_and(|dimensions| {
-                dimensions.is_some_and(|(width, height, _)| width == side && height == side)
-            }) {
-                "Green"
-            } else {
-                "Purple"
-            };
+            let status = compilation_report_track_status(
+                Path::new(&track.path),
+                track.embedded_artwork_recorded,
+                false,
+                side,
+            );
             UiCompilationReportRow {
                 album_key: key.into(),
                 album_title: album.snapshot.title.clone().into(),
@@ -21362,6 +21338,44 @@ fn fallback_album_report_track_ui_rows(app: &ApplicationState) -> Vec<UiCompilat
             }
         })
         .collect::<Vec<_>>()
+}
+
+fn compilation_report_track_status(
+    track: &Path,
+    completed: bool,
+    checking: bool,
+    side: u32,
+) -> &'static str {
+    if !completed {
+        return "Blue";
+    }
+    let key = track.to_string_lossy();
+    let cached = EMBEDDED_METADATA_CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .ok()
+        .and_then(|cache| {
+            cache
+                .get(key.as_ref())
+                .map(|(_, _, dimensions)| *dimensions)
+        });
+    if checking && cached.is_none() {
+        return "Checking";
+    }
+    // A completed write can replace the audio file after the report first
+    // cached an empty result. Revalidate absent entries instead of presenting
+    // them as a false purple repair target. Purple is reserved for readable
+    // artwork whose dimensions can actually be repaired; missing or unreadable
+    // artwork still needs a replacement search and is therefore blue.
+    let recorded = match cached {
+        Some(dimensions) => dimensions,
+        None => cached_embedded_front_metadata(track),
+    };
+    match recorded {
+        Some((width, height, _)) if width == side && height == side => "Green",
+        Some(_) => "Purple",
+        None => "Blue",
+    }
 }
 
 fn group_compilation_report_rows(
@@ -22463,20 +22477,21 @@ fn trim_large_raw_image_cache(
 mod tests {
     use super::{
         AlbumEmbeddedCheck, AlbumWriteState, ArtistAlbumEmbedTarget, CachedPixels,
-        EmbedQueueSource, EmbedQueueTarget, MaximizeGuard, PREVIEW_CACHE_DIMENSION,
-        ThumbnailAlbumTarget, UiCompilationReportRow, UiMusicBrainzRow, WorkspaceLayout,
-        add_embedded_thumbnail_decision, album_embedded_check, album_embedded_check_cache,
-        album_embedded_check_key, album_overview_queue_target, apply_album_coordination_states,
-        apply_ui_preferences, artist_album_card_artwork_path, artist_album_card_display_title,
-        artist_album_queue_targets, artist_art_candidate_source, artist_art_query_sources,
-        artist_art_targets_for_albums, artist_compilation_thumb_repair_plan,
-        artist_fallback_embedded_track_paths, artist_is_secondary_credit,
-        artist_overview_is_fully_complete, artist_overview_legend_counts,
-        artist_overview_release_banners, artist_overview_ui_model, automatic_backup_is_due,
-        backup_file_in_directory, backup_schedule_interval, begin_musicbrainz_preview_request,
-        cached_artist_banner_with_bottom_blur, cached_circular_artist_thumbnail,
-        canonical_webp_status, choose_musicbrainz_artist_match, circular_artist_art_png,
-        clear_rendered_preview_for_adjustment, compilation_artwork_context,
+        EMBEDDED_METADATA_CACHE, EmbedQueueSource, EmbedQueueTarget, MaximizeGuard,
+        PREVIEW_CACHE_DIMENSION, ThumbnailAlbumTarget, UiCompilationReportRow, UiMusicBrainzRow,
+        WorkspaceLayout, add_embedded_thumbnail_decision, album_embedded_check,
+        album_embedded_check_cache, album_embedded_check_key, album_overview_queue_target,
+        apply_album_coordination_states, apply_ui_preferences, artist_album_card_artwork_path,
+        artist_album_card_display_title, artist_album_queue_targets, artist_art_candidate_source,
+        artist_art_query_sources, artist_art_targets_for_albums,
+        artist_compilation_thumb_repair_plan, artist_fallback_embedded_track_paths,
+        artist_is_secondary_credit, artist_overview_is_fully_complete,
+        artist_overview_legend_counts, artist_overview_release_banners, artist_overview_ui_model,
+        automatic_backup_is_due, backup_file_in_directory, backup_schedule_interval,
+        begin_musicbrainz_preview_request, cached_artist_banner_with_bottom_blur,
+        cached_circular_artist_thumbnail, canonical_webp_status, choose_musicbrainz_artist_match,
+        circular_artist_art_png, clear_rendered_preview_for_adjustment,
+        compilation_artwork_context, compilation_report_track_status,
         compilation_thumb_repair_plan, completed_compilation_track_needs_attention,
         current_embedded_thumbnail_infos, current_local_album_artwork_file, decode_webp_animation,
         disable_embedded_thumbnail_preview, edit_existing_cover, embedded_artwork_footer,
@@ -23264,6 +23279,58 @@ mod tests {
     }
 
     #[test]
+    fn comp_report_reserves_purple_for_readable_wrong_size_artwork() {
+        let prefix = format!("comp-report-status-{}", std::process::id());
+        let correct = PathBuf::from(format!("{prefix}-correct.mp3"));
+        let wrong = PathBuf::from(format!("{prefix}-wrong.mp3"));
+        let missing = PathBuf::from(format!("{prefix}-missing.mp3"));
+        let unchecked = PathBuf::from(format!("{prefix}-unchecked.mp3"));
+        let cache = EMBEDDED_METADATA_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        {
+            let mut cache = cache.lock().unwrap();
+            cache.insert(
+                correct.to_string_lossy().into_owned(),
+                (1, 1, Some((1200, 1200, 90_000))),
+            );
+            cache.insert(
+                wrong.to_string_lossy().into_owned(),
+                (1, 1, Some((900, 900, 90_000))),
+            );
+            cache.insert(missing.to_string_lossy().into_owned(), (1, 1, None));
+        }
+
+        assert_eq!(
+            compilation_report_track_status(&correct, true, false, 1200),
+            "Green"
+        );
+        assert_eq!(
+            compilation_report_track_status(&wrong, true, false, 1200),
+            "Purple"
+        );
+        assert_eq!(
+            compilation_report_track_status(&missing, true, false, 1200),
+            "Blue"
+        );
+        assert_eq!(
+            compilation_report_track_status(&unchecked, true, true, 1200),
+            "Checking"
+        );
+        assert_eq!(
+            compilation_report_track_status(&unchecked, true, false, 1200),
+            "Blue"
+        );
+        assert_eq!(
+            compilation_report_track_status(&correct, false, false, 1200),
+            "Blue"
+        );
+
+        let mut cache = cache.lock().unwrap();
+        for path in [&correct, &wrong, &missing, &unchecked] {
+            cache.remove(path.to_string_lossy().as_ref());
+        }
+    }
+
+    #[test]
     fn comp_thumb_repair_targets_only_green_tracks_for_the_focused_artist() {
         let album = MediaAlbumSnapshot {
             album_key: "comp".into(),
@@ -23373,6 +23440,16 @@ mod tests {
         );
         app.compilation_report_checking = false;
         app.library.albums[1].snapshot.compilation_tracks[0].embedded_artwork_recorded = false;
+        EMBEDDED_METADATA_CACHE
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap()
+            .insert(
+                "C:/Music/COMP/one.mp3".into(),
+                (1, 1, Some((1200, 1200, 90_000))),
+            );
+        app.comp_track_override_writers
+            .insert("c:/music/comp/one.mp3".into(), "webgui".into());
         assert_eq!(
             select_pending_artist_compilation_report_tracks(&mut app, false),
             Ok(3)
@@ -23385,11 +23462,23 @@ mod tests {
                 .all(|target| target.compilation_track_path.is_some())
         );
         assert!(queued.iter().any(|target| target.album_key == "comp"));
+        assert!(queued.iter().any(|target| {
+            target
+                .compilation_track_path
+                .as_deref()
+                .is_some_and(|path| path.eq_ignore_ascii_case("C:/Music/COMP/one.mp3"))
+        }));
         assert!(
             queued
                 .iter()
                 .any(|target| target.album_key == "second-comp")
         );
+        EMBEDDED_METADATA_CACHE
+            .get()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .remove("C:/Music/COMP/one.mp3");
     }
 
     #[test]
@@ -23553,10 +23642,7 @@ mod tests {
         assert_eq!(open[1].album_title.as_str(), "one.mp3");
         assert_eq!(open[1].file_name.as_str(), "COMP status · complete");
         assert_eq!(open[2].album_title.as_str(), "two.mp3");
-        assert_eq!(
-            open[2].file_name.as_str(),
-            "COMP status · thumbnail repair"
-        );
+        assert_eq!(open[2].file_name.as_str(), "COMP status · thumbnail repair");
 
         let collapsed = group_compilation_report_rows(&tracks, &HashSet::from(["first".into()]));
         assert_eq!(collapsed.len(), 3);

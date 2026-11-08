@@ -501,6 +501,31 @@ test("Artist and full-album COMP launches submit independent explicit scopes", a
   assert.deepEqual(reviewed, [["job-1", true], ["job-2", true]]);
 });
 
+test("Windows-overridden COMP tracks remain bulk reprocessable", async () => {
+  const calls = [];
+  const overridden = {key: "windows-track", status: "green", override: true};
+  const state = {
+    artist: {id: "artist-1"}, compReportVisible: true,
+    compGroups: [{id: "comp-1", tracks: [overridden, {key: "finished", status: "green"}]}],
+    album: {id: "comp-1"}, fallbackTracks: [overridden, {key: "finished", status: "green"}],
+  };
+  const context = load(launchCompFunctions, {
+    state,
+    compTrackOverride: track => track.override ? {writer: "windows"} : null,
+    post: async (path, body) => { calls.push([path, body]); return {id: `job-${calls.length}`}; },
+    reviewJob: async () => {}, setStatus() {},
+  });
+
+  await context.launchArtistComp();
+  await context.launchFallback();
+
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.map(call => call[1].payload))), [
+    {artist_id: "artist-1", album_id: "comp-1", track_keys: ["windows-track"]},
+    {album_id: "comp-1", track_keys: ["windows-track"]},
+  ]);
+  assert.match(appSource, /!selectedLaunch && !reprocessable/);
+});
+
 test("explicit blue, purple, and green tracks launch through both COMP controls without scope expansion", async () => {
   for (const status of ["blue", "purple", "green"]) {
     const calls = [];
@@ -799,6 +824,12 @@ test("COMP repair keeps full-Fallback and Artist membership validation independe
   assert.deepEqual(JSON.parse(JSON.stringify(artistCalls)), [["/api/artist/comp-repair", {
     artist_id: "10k-maniacs", album_id: "billboard-1994", track_key: "10k-because-the-night",
   }]]);
+});
+
+test("COMP report colors only validated artwork as complete or repairable", () => {
+  assert.match(appSource, /item\.status === "green" \? "complete" : "pending"/);
+  assert.match(appSource, /track\.status === "green" \? "complete" : "pending"/);
+  assert.match(appSource, /\["green", "purple"\]\.includes\(track\.status\) \? "Recorded" : "Blue"/);
 });
 
 test("completed COMP work chains only within an explicit Artist scope", async () => {

@@ -1011,6 +1011,7 @@ function renderFallbackOverview() {
   const checkErrors = state.fallbackTracks.filter(item => item.status === "check-error").length;
   const complete = state.fallbackTracks.filter(item => item.completed).length;
   const pending = blue;
+  const reprocessable = state.fallbackTracks.filter(item => item.status === "blue" || compTrackOverride(item)?.writer === "windows").length;
   const hero = $("hero"); hero.classList.add("fallback-overview");
   hero.style.backgroundImage = "none";
   $("overviewHeading").textContent = "COMPILATION Fallback Track Embedding";
@@ -1065,8 +1066,8 @@ function renderFallbackOverview() {
   repair.addEventListener("click", () => runAction(repairFallback));
   const launch = node("button", "fallback-launch", "LAUNCH COMP"); launch.type = "button";
   const selectedLaunch = state.fallbackTrack && state.fallbackTracks.find(item => item.key === state.fallbackTrack.key && ["blue", "purple", "green"].includes(item.status));
-  launch.disabled = state.server?.mode !== "write" || (!selectedLaunch && !pending);
-  launch.title = state.server?.mode !== "write" ? "Enable Live Write to process COMP tracks" : selectedLaunch ? "Review only the explicitly selected COMP track" : "Review every blue track in this fallback album";
+  launch.disabled = state.server?.mode !== "write" || (!selectedLaunch && !reprocessable);
+  launch.title = state.server?.mode !== "write" ? "Enable Live Write to process COMP tracks" : selectedLaunch ? "Review only the explicitly selected COMP track" : "Review every blue or Windows-overridden track in this fallback album";
   launch.addEventListener("click", () => runAction(launchFallback));
   toolbar.append(preview, heading, repair, launch); report.append(toolbar);
   report.append(node("div", "fallback-report-summary", `${total} tracks: ${green} green, ${purple} purple, ${blue} blue${checking ? `, ${checking} checking` : ""}${checkErrors ? `, ${checkErrors} retry needed` : ""}`));
@@ -1080,7 +1081,7 @@ function renderFallbackOverview() {
     const row = node("button", "fallback-track" + (track?.key === item.key ? " selected" : ""));
     row.classList.toggle("opposing-track-override", compTrackOverride(item)?.writer === "windows");
     row.type = "button";
-    row.classList.add(item.status === "purple" ? "purple" : ["checking", "check-error"].includes(item.status) ? "checking" : item.completed ? "complete" : "pending");
+    row.classList.add(item.status === "purple" ? "purple" : ["checking", "check-error"].includes(item.status) ? "checking" : item.status === "green" ? "complete" : "pending");
     if (item.status === "check-error") row.title = item.checkError || "Thumbnail validation could not be completed; reload the album to retry";
     row.append(node("span", "fallback-track-spacer"), node("span", "fallback-track-file", item.file),
       node("span", "fallback-track-status", "COMP status · " + (item.status === "green" ? "complete" : item.status === "purple" ? "thumbnail repair" : item.status === "checking" ? "checking thumbnail" : "needs artwork")));
@@ -1125,6 +1126,7 @@ function renderArtistCompReport() {
   const purple = tracks.filter(track => track.status === "purple").length;
   const blue = tracks.filter(track => track.status === "blue").length;
   const overridden = tracks.filter(track => compTrackOverride(track)?.writer === "windows").length;
+  const reprocessable = tracks.filter(track => track.status === "blue" || compTrackOverride(track)?.writer === "windows").length;
   const checking = tracks.filter(track => track.status === "checking").length;
   const checkErrors = tracks.filter(track => track.status === "check-error").length;
   const toolbar = node("div", "fallback-toolbar");
@@ -1140,8 +1142,8 @@ function renderArtistCompReport() {
   repair.addEventListener("click", repairArtistComp);
   const launch = node("button", "fallback-launch", "LAUNCH COMP"); launch.type = "button";
   const selectedLaunch = state.compTrack && tracks.find(track => track.albumId === state.compTrack.albumId && track.key === state.compTrack.key && ["blue", "purple", "green"].includes(track.status));
-  launch.disabled = state.server?.mode !== "write" || (!selectedLaunch && !blue) || state.compBusy;
-  launch.title = state.server?.mode !== "write" ? "Enable Live Write to process COMP tracks" : selectedLaunch ? "Review only the explicitly selected Artist COMP track" : "Review this Artist's blue COMP tracks";
+  launch.disabled = state.server?.mode !== "write" || (!selectedLaunch && !reprocessable) || state.compBusy;
+  launch.title = state.server?.mode !== "write" ? "Enable Live Write to process COMP tracks" : selectedLaunch ? "Review only the explicitly selected Artist COMP track" : "Review this Artist's blue and Windows-overridden COMP tracks";
   launch.addEventListener("click", () => runAction(launchArtistComp));
   const close = node("button", "fallback-close", "CLOSE REPORT"); close.type = "button";
   close.addEventListener("click", closeArtistCompReport);
@@ -1176,7 +1178,7 @@ function renderArtistCompReport() {
       const selected = state.compTrack?.key === track.key && state.compTrack?.albumId === group.id;
       const row = node("button", "fallback-track" + (selected ? " selected" : "")); row.type = "button";
       row.classList.toggle("opposing-track-override", compTrackOverride(track)?.writer === "windows");
-      row.classList.add(track.status === "purple" ? "purple" : ["checking", "check-error"].includes(track.status) ? "checking" : track.completed ? "complete" : "pending");
+      row.classList.add(track.status === "purple" ? "purple" : ["checking", "check-error"].includes(track.status) ? "checking" : track.status === "green" ? "complete" : "pending");
       if (track.status === "check-error") row.title = track.checkError || "Thumbnail validation could not be completed; reopen the report to retry";
       row.append(node("span", "fallback-track-spacer"), node("span", "fallback-track-file", track.file),
         node("span", "fallback-track-status", "COMP status · " + (track.status === "green" ? "complete" : track.status === "purple" ? "thumbnail repair" : track.status === "checking" ? "checking thumbnail" : "needs artwork")));
@@ -1271,7 +1273,7 @@ async function selectArtistCompTrack(albumId, key) {
     const indexed = state.compGroups.find(group => group.id === albumId)?.tracks.find(item => item.key === key);
     state.compTrack = {...indexed, ...track, albumId};
     renderArtistCompReport(); renderReview();
-    setStatus(`${track.completed ? "Recorded" : "Blue"} COMP track · ${track.file}${track.image ? " · existing art available" : " · artwork needed"}`);
+    setStatus(`${["green", "purple"].includes(track.status) ? "Recorded" : "Blue"} COMP track · ${track.file}${track.image ? " · existing art available" : " · artwork needed"}`);
   } catch (error) { if (request === state.compTrackRequest) setStatus(error.message, "error"); }
 }
 
@@ -1604,11 +1606,11 @@ function renderCandidates() {
   $("candidateCount").textContent = candidateItems.length + (candidateItems.length === 1 ? " candidate" : " candidates");
   $("compareButton").disabled = state.compare.size < 2;
   $("candidateHint").textContent = decision ? "Select a candidate to preview; save from Selected Artwork"
-    : artistCompLaunch ? state.compTrack ? "LAUNCH COMP reviews only the explicitly selected Artist track" : "LAUNCH COMP reviews this Artist's blue compilation tracks"
+    : artistCompLaunch ? state.compTrack ? "LAUNCH COMP reviews only the explicitly selected Artist track" : "LAUNCH COMP reviews this Artist's blue and Windows-overridden compilation tracks"
     : state.editorMode === "fallback" ? state.fallbackTrack ? "LAUNCH COMP reviews only the explicitly selected track" : "LAUNCH COMP reviews blue track artwork"
     : state.editorMode === "album" ? "Select a cover candidate to preview" : "Blue: artist · pink: banner · wheel to browse";
   renderCandidateTypeChips();
-  if (!visible.length) { grid.append(node("p", "empty-copy", artistCompLaunch ? "Use LAUNCH COMP to review this Artist's matching compilation tracks."
+  if (!visible.length) { grid.append(node("p", "empty-copy", artistCompLaunch ? "Use LAUNCH COMP to review this Artist's blue and Windows-overridden compilation tracks."
     : state.editorMode === "fallback" ? "Select a COMP track above to inspect its embedded artwork. Use LAUNCH COMP to review track artwork in queued work."
     : candidateItems.length ? "No candidates match the filter." : "Press LAUNCH to search artist art, or select an album to inspect folder art.")); return; }
   for (const candidate of visible) {

@@ -1809,13 +1809,13 @@ class Catalog:
                     "side": self.comp_thumbnail_side}
         artwork = embedded_track_artwork_bytes(path)
         if not artwork:
-            return {"status": "purple", "repairable": False, "width": 0, "height": 0,
+            return {"status": "blue", "repairable": False, "width": 0, "height": 0,
                     "side": self.comp_thumbnail_side}
         try:
             with Image.open(BytesIO(artwork)) as opened:
                 width, height = opened.size
         except (OSError, ValueError):
-            return {"status": "purple", "repairable": False, "width": 0, "height": 0,
+            return {"status": "blue", "repairable": False, "width": 0, "height": 0,
                     "side": self.comp_thumbnail_side}
         return {"status": "green" if width == height == self.comp_thumbnail_side else "purple",
                 "repairable": width != self.comp_thumbnail_side or height != self.comp_thumbnail_side,

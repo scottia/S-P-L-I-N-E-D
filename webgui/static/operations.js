@@ -364,11 +364,14 @@ async function enqueueComp(albumId, keys, artistId = "", signal = null) {
   const result = await post("/api/jobs", {kind: "comp", payload}, signal ? {signal} : {});
   await reviewJob(result.id, true);
 }
+function compTrackIsReprocessable(track) {
+  return track?.status === "blue" || (typeof compTrackOverride === "function" && compTrackOverride(track)?.writer === "windows");
+}
 function fallbackCompLaunchTargets() {
   const selected = state.fallbackTrack?.key
     ? state.fallbackTracks.find(track => track.key === state.fallbackTrack.key) : null;
   return selected && ["blue", "purple", "green"].includes(selected.status)
-    ? [selected] : state.fallbackTracks.filter(track => track.status === "blue");
+    ? [selected] : state.fallbackTracks.filter(compTrackIsReprocessable);
 }
 function artistCompLaunchGroups() {
   if (state.compTrack?.albumId && state.compTrack?.key) {
@@ -377,7 +380,7 @@ function artistCompLaunchGroups() {
     if (selected && ["blue", "purple", "green"].includes(selected.status))
       return [{id: group.id, keys: [selected.key]}];
   }
-  return state.compGroups.map(group => ({id: group.id, keys: group.tracks.filter(track => track.status === "blue").map(track => track.key)})).filter(group => group.keys.length);
+  return state.compGroups.map(group => ({id: group.id, keys: group.tracks.filter(compTrackIsReprocessable).map(track => track.key)})).filter(group => group.keys.length);
 }
 async function launchFallback(signal = null) {
   if (!state.album) return;

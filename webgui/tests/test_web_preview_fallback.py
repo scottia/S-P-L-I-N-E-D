@@ -290,6 +290,37 @@ class BrowserFallbackTests(unittest.TestCase):
             )
             self.assertEqual(len(list((root / "comp-repair-backups").glob("*.original-image"))), 2)
 
+    def test_completed_comp_track_without_readable_art_is_blue_not_false_purple(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            album = root / "comp"
+            album.mkdir()
+            track = album / "01 Missing Art.mp3"
+            track.touch()
+            database = root / "index.sqlite"
+            with closing(connect(database)) as db:
+                db.execute(
+                    "CREATE TABLE albums (album_key TEXT PRIMARY KEY, path TEXT, "
+                    "musicbrainz_albumid TEXT)"
+                )
+                db.execute(
+                    "CREATE TABLE tracks (track_key TEXT PRIMARY KEY, album_key TEXT, path TEXT)"
+                )
+                db.execute(
+                    "CREATE TABLE compilation_track_artwork (track_path TEXT, outcome TEXT)"
+                )
+                db.execute("INSERT INTO albums VALUES ('comp', ?, '')", (str(album),))
+                db.execute("INSERT INTO tracks VALUES ('track', 'comp', ?)", (str(track),))
+                db.execute(
+                    "INSERT INTO compilation_track_artwork VALUES (?, 'embedded-replaced')",
+                    (str(track),),
+                )
+                db.commit()
+            app = PreviewApp(root, database, root, root, allow_comp_repairs=True)
+            result = app.comp_track_status("comp", "track")
+            self.assertEqual(result["status"], "blue")
+            self.assertFalse(result["repairable"])
+
     def test_only_missing_musicbrainz_album_ids_appear_in_fallback(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
