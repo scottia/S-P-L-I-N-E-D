@@ -1140,6 +1140,11 @@ class Services:
         self.catalog.appearance_cache.clear()
         self.catalog.metadata_cache.clear()
         self.catalog.portrait_cache.clear()
+        result.update(
+            artists=len(self.catalog.artists("")),
+            identified_albums=len(self.catalog.albums("", False)),
+            fallback_albums=len(self.catalog.albums("", True)),
+        )
         self.audit("index-refresh", str(root), result)
         return result
 

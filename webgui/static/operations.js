@@ -875,6 +875,12 @@ async function pollJobs() {
           state.reviewJobId = nextComp?.id || null;
           state.reviewJobState = nextComp?.state || "";
           if (job.kind === "embed-album") setStatus("Album track embedding completed and verified · " + (state.album?.name || job.payload?.name || "Album"));
+          else if (job.kind === "index") {
+            const query = state.libraryMode === "artists" ? ($("artistSearch").value || "") : ($("albumSearch").value || "");
+            await loadLibrary(query);
+            const mode = job.result?.mode === "incremental" ? "incremental" : "full";
+            setStatus(`PostgreSQL ${mode} refresh complete · ${job.result?.artists ?? 0} Artists · ${job.result?.identified_albums ?? 0} Albums · ${job.result?.fallback_albums ?? 0} Fallback`, "ready");
+          }
           else if (job.kind === "scan") setStatus(`Album batch complete · ${job.result?.reviewed ?? 0} reviewed · ${job.result?.mode === "write" ? "approved covers written" : "Read mode, no covers written"}`);
           else if (Number(job.result?.unresolved || 0) > 0) setStatus("COMP artwork written and verified · authoritative completion remains pending for " + job.result.unresolved + " track(s)", "error");
           else setStatus("COMP track artwork work complete · " + (job.payload?.name || "Album") + (nextComp ? " · continuing this Artist's next COMP album" : ""));

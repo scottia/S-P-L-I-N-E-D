@@ -818,6 +818,35 @@ test("completed COMP work chains only within an explicit Artist scope", async ()
   ]), "artist-2");
 });
 
+test("PostgreSQL refresh completion reloads the library and reports exact projections", async () => {
+  const job = {id: "index-1", kind: "index", state: "waiting", payload: {mode: "full"}};
+  const state = {
+    server: {authenticated: true, setup_required: false}, embedQueue: [],
+    jobs: [job], reviewJobId: job.id, reviewJobState: "waiting", libraryMode: "artists",
+  };
+  const loaded = [], statuses = [];
+  const context = load(pollJobsFunction, {
+    state,
+    api: async path => path === "/api/jobs" ? [{...job, state: "done", progress: {}, result: {
+      mode: "full", artists: 51, identified_albums: 210, fallback_albums: 6,
+    }}] : {pause_after_album: false, pause_all_albums: false},
+    renderQueue() {}, refreshCompletedAlbum: async () => {}, refreshQueuedAlbumAfterSave: async () => {},
+    renderHero() {}, renderReview() {}, renderJob: async () => {},
+    loadLibrary: async query => { loaded.push(query); },
+    setStatus: (...values) => { statuses.push(values); },
+    applyAlbumCoordination() { return []; }, applyCompTrackCoordination() { return []; },
+    $: id => ({open: false, value: id === "artistSearch" ? "adam" : ""}),
+  });
+
+  await context.pollJobs();
+
+  assert.deepEqual(loaded, ["adam"]);
+  assert.deepEqual(statuses.at(-1), [
+    "PostgreSQL full refresh complete · 51 Artists · 210 Albums · 6 Fallback",
+    "ready",
+  ]);
+});
+
 test("queued COMP candidates submit adjustment and upscale intent with the exact candidate number", async () => {
   const submitted = [];
   const state = {

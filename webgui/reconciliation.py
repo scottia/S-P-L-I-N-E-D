@@ -613,10 +613,18 @@ class SQLiteReconciler:
 
     @staticmethod
     def _find_artist_match(
-        source: dict[str, Any], maps: dict[str, Any]
+        source: dict[str, Any],
+        maps: dict[str, Any],
+        *,
+        authoritative_source_keys: set[str] | None = None,
     ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
         source_mbid = _identity_text(source.get("musicbrainz_artistid")).strip()
         source_key = _identity_text(source.get("artist_key")).strip()
+        protected_keys = {
+            _identity_text(value).casefold()
+            for value in (authoritative_source_keys or set())
+            if _identity_text(value)
+        }
         authoritative_mbid_key = bool(
             source_mbid and source_key.casefold() == ("mbid:" + source_mbid).casefold()
         )
@@ -669,6 +677,22 @@ class SQLiteReconciler:
                 and target_mbid
                 and source_mbid.casefold() != target_mbid.casefold()
             )
+            target_has_its_own_authoritative_source = bool(
+                mbids_conflict
+                and _identity_text(target.get("artist_key")).casefold()
+                in protected_keys
+                and _identity_text(target.get("artist_key")).casefold()
+                != source_key.casefold()
+            )
+            if target_has_its_own_authoritative_source and evidence in {
+                "primary-path",
+                "artist-name",
+            }:
+                # A mapped path or display name is not allowed to collapse two
+                # exact Windows ``mbid:<artist>`` entities.  The target row's
+                # own source entry will update that row; this source remains
+                # unmatched so it can be inserted with its distinct identity.
+                continue
             if evidence == "artist-key" and mbids_conflict:
                 source_path = SQLiteReconciler._artist_path_identity(
                     source.get("primary_path")
@@ -1181,6 +1205,11 @@ class SQLiteReconciler:
                     logical_artist_rows = self._coalesce_transport_artist_aliases(
                         source_rows["artists"]
                     )
+                    authoritative_artist_keys = {
+                        _identity_text(row.get("artist_key"))
+                        for row in logical_artist_rows
+                        if _identity_text(row.get("artist_key"))
+                    }
                     table_counts["artists"]["transport_aliases_coalesced"] = len(
                         source_rows["artists"]
                     ) - len(logical_artist_rows)
@@ -1189,7 +1218,11 @@ class SQLiteReconciler:
                         mapped["_reconciliation_source_key"] = str(
                             mapped.get("artist_key") or ""
                         )
-                        match, identity = self._find_artist_match(mapped, artist_maps)
+                        match, identity = self._find_artist_match(
+                            mapped,
+                            artist_maps,
+                            authoritative_source_keys=authoritative_artist_keys,
+                        )
                         source_key = str(row.get("artist_key") or "")
                         mapped["_reconciliation_source_key"] = source_key
                         if match:

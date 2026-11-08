@@ -320,6 +320,55 @@ class SQLiteReconciliationTests(unittest.TestCase):
         projected = dict(source, artist_key=target["artist_key"])
         self.assertEqual(classify_difference("artists", projected, target), "safe")
 
+    def test_distinct_source_mbid_does_not_consume_an_incumbent_source_artist(self):
+        incumbent = self._artist(
+            "mbid:incumbent-mbid",
+            "Adam and the Ants",
+            "incumbent-mbid",
+            r"E:\Music\Adam Ant",
+        )
+        distinct = self._artist(
+            "mbid:distinct-mbid",
+            "Adam Ant",
+            "distinct-mbid",
+            r"E:\Music\Adam Ant",
+            "2026-01-02T00:00:00Z",
+        )
+        match, identity = SQLiteReconciler._find_artist_match(
+            distinct,
+            SQLiteReconciler._match_maps("artists", [incumbent]),
+            authoritative_source_keys={
+                "mbid:incumbent-mbid",
+                "mbid:distinct-mbid",
+            },
+        )
+        self.assertIsNone(match)
+        self.assertEqual(identity["status"], "unmatched")
+        self.assertEqual(identity["candidate_count"], 0)
+
+    def test_conflicting_mbid_can_still_correct_a_stale_path_only_target(self):
+        stale_target = self._artist(
+            "mbid:stale-mbid",
+            "Adam Ant",
+            "stale-mbid",
+            r"E:\Music\Adam Ant",
+        )
+        authoritative = self._artist(
+            "mbid:authoritative-mbid",
+            "Adam Ant",
+            "authoritative-mbid",
+            r"E:\Music\Adam Ant",
+            "2026-01-02T00:00:00Z",
+        )
+        match, identity = SQLiteReconciler._find_artist_match(
+            authoritative,
+            SQLiteReconciler._match_maps("artists", [stale_target]),
+            authoritative_source_keys={"mbid:authoritative-mbid"},
+        )
+        self.assertEqual(match, stale_target)
+        self.assertEqual(identity["status"], "matched")
+        self.assertEqual(identity["evidence"], "primary-path")
+
     def test_artist_exact_key_cannot_override_conflicting_mbid_without_path_proof(self):
         target = self._artist(
             "mbid:authoritative",
