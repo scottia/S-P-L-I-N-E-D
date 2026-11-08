@@ -1573,6 +1573,8 @@ export component AppWindow inherits Window {
     in-out property <bool> reset-settings-preview-visible: false;
     in-out property <bool> reset-settings-confirm-visible: false;
     in-out property <string> reset-settings-confirmation-text;
+    in-out property <bool> confirm-reset-database: false;
+    in property <string> active-database-target;
     in-out property <float> media-pane-width: 350;
     in-out property <float> artwork-pane-width: 450;
     in-out property <float> candidate-filter-height: 370;
@@ -1792,12 +1794,13 @@ export component AppWindow inherits Window {
     callback compilation-report-track-activated(string, string, bool);
     callback set-compilation-report-preview(bool);
     callback compilation-report-album-toggled(string); callback close-compilation-report();
-    callback load-artist-top-songs(); callback set-artist-overview-show-all(bool);
+    callback load-artist-top-songs(); callback refresh-artist-info(); callback set-artist-overview-show-all(bool);
     callback compilation-track-activated(string, string, bool);
     callback compilation-album-launch(string, bool);
     callback select-filtered(); callback select-none(); callback refresh-library(bool);
     callback set-scan-scope(bool); callback set-launch-mode(bool); callback launch(); callback stop();
     callback candidate-selected(int); callback candidate-action(string); callback candidate-source-filter(string);
+    callback upload-candidate-artwork();
     callback candidate-portrait-preview(int);
     callback artist-preview-pane-selected(string);
     callback artist-current-package-selected();
@@ -1837,6 +1840,7 @@ export component AppWindow inherits Window {
     callback refresh-archived-backups();
     callback completion-acknowledged(); callback apply-selected-sample();
     callback load-settings(); callback save-settings(); callback save-interface-settings(); callback save-backup-preferences(); callback reset-advanced-settings(); callback save-setup();
+    callback reset-database(bool);
     callback load-source-policy(string); callback update-source-policy(); callback load-credential(string);
     callback save-credential(string, string, string, string, string, string, string);
     callback test-credential(string, string, string, string, string, string, string);
@@ -2582,23 +2586,23 @@ export component AppWindow inherits Window {
                                                                     } }
                                                                 }
                                                                 Text { text: "COMP Report · " + (root.overview-mode == "Fallback" ? root.current-album : root.artist-overview-name); color: AppTheme.cyan; font-size: 16px * AppTheme.font-scale; font-weight: 800; horizontal-stretch: 1; vertical-alignment: center; overflow: elide; }
-                                                                if root.overview-mode == "Fallback": NeonAction { label: "REPAIR COMP"; width: 112px; height: 28px; tone: "purple"; enabled: !root.operation-busy && !root.compilation-report-preview-mode; clicked => root.prepare-compilation-repair(root.overview-album-key); }
-                                                                if root.overview-mode == "Fallback": NeonAction { label: "LAUNCH COMP"; width: 112px; height: 28px; tone: "cyan"; enabled: !root.operation-busy && !root.compilation-report-preview-mode; clicked => root.compilation-album-launch(root.overview-album-key, root.include-bypassed); }
+                                                                if root.overview-mode == "Fallback": NeonAction { label: "REPAIR COMP"; width: 112px; height: 28px; tone: "purple"; enabled: !root.operation-busy && !root.compilation-report-preview-mode && root.compilation-report-purple-count > 0; clicked => root.prepare-compilation-repair(root.overview-album-key); }
+                                                                if root.overview-mode == "Fallback": NeonAction { label: "LAUNCH COMP"; width: 112px; height: 28px; tone: "cyan"; enabled: !root.operation-busy && !root.compilation-report-preview-mode && root.compilation-report-blue-count > 0; clicked => root.compilation-album-launch(root.overview-album-key, root.include-bypassed); }
                                                                 if root.overview-mode == "Artist": Rectangle { width: 258px; height: 28px; border-radius: 6px; border-width: 1px; border-color: AppTheme.violet; background: AppTheme.card; clip: true;
                                                                     HorizontalLayout { spacing: 0px;
                                                                         Rectangle { width: 129px; height: 28px; background: AppTheme.chalk ? #463a50 : #211444;
                                                                             Text { text: "REPAIR COMP"; color: AppTheme.violet; font-size: 12px * AppTheme.font-scale; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; }
-                                                                            TouchArea { enabled: !root.operation-busy && !root.running && !root.compilation-report-preview-mode; mouse-cursor: pointer; clicked => root.request-artist-compilation-repair(); }
+                                                                            TouchArea { enabled: !root.operation-busy && !root.running && !root.compilation-report-preview-mode && root.compilation-report-purple-count > 0; mouse-cursor: pointer; clicked => root.request-artist-compilation-repair(); }
                                                                         }
                                                                         Rectangle { width: 129px; height: 28px; border-width: 1px; border-color: AppTheme.cyan; background: AppTheme.chalk ? #303638 : #082b46;
                                                                             Text { text: "LAUNCH COMP"; color: AppTheme.cyan; font-size: 12px * AppTheme.font-scale; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; }
-                                                                            TouchArea { enabled: !root.operation-busy && !root.running && !root.compilation-report-preview-mode; mouse-cursor: pointer; clicked => root.launch-artist-compilation-report(root.include-bypassed); }
+                                                                            TouchArea { enabled: !root.operation-busy && !root.running && !root.compilation-report-preview-mode && root.compilation-report-blue-count > 0; mouse-cursor: pointer; clicked => root.launch-artist-compilation-report(root.include-bypassed); }
                                                                         }
                                                                     }
                                                                 }
                                                                 if root.confirm-compilation-repair: NeonAction { label: "NO"; width: 48px; height: 28px; clicked => { root.confirm-compilation-repair-action(false); root.confirm-compilation-repair = false; } }
                                                                 if root.confirm-compilation-repair: NeonAction { label: "YES, Repair"; width: 130px; height: 28px; tone: "purple"; enabled: !root.operation-busy && !root.compilation-report-preview-mode; clicked => { root.confirm-compilation-repair-action(true); root.confirm-compilation-repair = false; } }
-                                                                if root.overview-mode != "Fallback": NeonAction { label: "Close"; width: 68px; height: 28px; clicked => root.close-compilation-report(); }
+                                                                NeonAction { label: "CLOSE REPORT"; width: 108px; height: 28px; clicked => root.close-compilation-report(); }
                                                             }
                                                             if root.overview-mode == "Artist": HorizontalLayout { height: 18px; spacing: 12px;
                                                                 Text { text: root.compilation-report-album-count + " Albums"; color: AppTheme.foreground; font-size: 12px * AppTheme.font-scale; font-weight: 800; }
@@ -2664,9 +2668,9 @@ export component AppWindow inherits Window {
                                                     }
                                                     if !root.confirm-artist-art-write && !root.confirm-artist-embed: GridLayout { height: 36px; spacing: 7px;
                                                             NeonAction { row: 0; col: 0; width: (parent.width - 28px) / 5; label-font-size: (parent.width < 900px ? 10px : 12px) * AppTheme.font-scale; label: root.artist-overview-show-all ? "Use Library Status" : "Show All"; height: 34px; tone: root.artist-overview-show-all ? "yellow" : "cyan"; enabled: root.overview-mode == "Artist"; clicked => root.set-artist-overview-show-all(!root.artist-overview-show-all); }
-                                                            NeonAction { row: 0; col: 1; width: (parent.width - 28px) / 5; label-font-size: (parent.width < 900px ? 10px : 12px) * AppTheme.font-scale; label: "Navidrome / Apple Info"; height: 34px; enabled: root.overview-mode != "Fallback" && root.artist-overview-external-url != ""; clicked => root.open-artist-external(); }
+                                                            NeonAction { row: 0; col: 1; width: (parent.width - 28px) / 5; label-font-size: (parent.width < 900px ? 10px : 12px) * AppTheme.font-scale; label: "Refresh Artist Info"; height: 34px; enabled: root.overview-mode == "Artist" && !root.operation-busy && !root.running; clicked => root.refresh-artist-info(); }
                                                             NeonAction { row: 0; col: 2; width: (parent.width - 28px) / 5; label-font-size: (parent.width < 900px ? 10px : 12px) * AppTheme.font-scale; label: "MusicBrainz Artist"; height: 34px; enabled: root.overview-mode != "Fallback" && root.artist-overview-musicbrainz-id != ""; clicked => root.open-artist-musicbrainz(); }
-                                                            NeonAction { row: 0; col: 3; width: (parent.width - 28px) / 5; label-font-size: (parent.width < 900px ? 10px : 12px) * AppTheme.font-scale; label: root.overview-mode == "Fallback" ? "REPAIR COMP" : "COMP Report"; height: 34px; tone: "purple"; enabled: root.overview-mode != "Album" && !root.operation-busy && !root.running && !root.compilation-report-preview-mode; clicked => { if (root.overview-mode == "Fallback") { root.prepare-compilation-repair(root.overview-album-key); } else { root.prepare-artist-compilation-repair(); } } }
+                                                            NeonAction { row: 0; col: 3; width: (parent.width - 28px) / 5; label-font-size: (parent.width < 900px ? 10px : 12px) * AppTheme.font-scale; label: root.compilation-report-visible ? "CLOSE REPORT" : (root.overview-mode == "Fallback" ? "REPAIR COMP" : "COMP Report"); height: 34px; tone: "purple"; enabled: root.overview-mode != "Album" && !root.operation-busy && !root.running && !root.compilation-report-preview-mode; clicked => { if (root.compilation-report-visible) { root.close-compilation-report(); } else if (root.overview-mode == "Fallback") { root.prepare-compilation-repair(root.overview-album-key); } else { root.prepare-artist-compilation-repair(); } } }
                                                             NeonAction { row: 0; col: 4; width: (parent.width - 28px) / 5; label-font-size: (parent.width < 900px ? 10px : 12px) * AppTheme.font-scale;
                                                                 label: root.overview-mode == "Album" ? "EMBED Album" : "EMBED All Albums"; height: 34px; tone: "orange";
                                                                 enabled: root.artist-overview-embed-ready && !root.operation-busy && !root.compilation-report-preview-mode;
@@ -3034,33 +3038,43 @@ export component AppWindow inherits Window {
                         VerticalLayout { padding: 8px; spacing: 6px;
                             HorizontalLayout { height: 29px; spacing: 4px;
                                 Text { text: "⌘"; width: 22px; color: AppTheme.magenta; font-size: 22px * AppTheme.font-scale; vertical-alignment: center; }
-                                Heading { text: "Candidate Artwork"; width: 140px; font-size: 16px * AppTheme.font-scale; }
+                                Heading { text: "Candidate Artwork"; width: 120px; font-size: 16px * AppTheme.font-scale; }
                                 Text { text: "⌘"; width: 22px; color: AppTheme.magenta; font-size: 22px * AppTheme.font-scale; vertical-alignment: center; }
                                 LaunchAction {
-                                    width: 126px;
-                                    label: root.awaiting-candidate || root.awaiting-musicbrainz ? "SKIP ALBUM" : (root.running ? "PROCESSING" : "LAUNCH");
-                                    enabled: !root.intro-active && !root.compilation-report-preview-mode && (root.running || root.can-launch);
+                                    width: 108px;
+                                    label: root.compilation-report-visible ? "LAUNCH COMP" : (root.awaiting-candidate || root.awaiting-musicbrainz ? "SKIP ALBUM" : (root.running ? "PROCESSING" : "LAUNCH"));
+                                    enabled: root.compilation-report-visible
+                                        ? !root.intro-active && !root.compilation-report-preview-mode && !root.running && !root.operation-busy && root.compilation-report-blue-count > 0
+                                        : !root.intro-active && !root.compilation-report-preview-mode && (root.running || root.can-launch);
                                     clicked => {
-                                        if (root.awaiting-candidate || root.awaiting-musicbrainz) { root.candidate-action("skip_album"); }
+                                        if (root.compilation-report-visible && root.overview-mode == "Artist") { root.launch-artist-compilation-report(root.include-bypassed); }
+                                        else if (root.compilation-report-visible && root.overview-mode == "Fallback") { root.compilation-album-launch(root.overview-album-key, root.include-bypassed); }
+                                        else if (root.awaiting-candidate || root.awaiting-musicbrainz) { root.candidate-action("skip_album"); }
                                         else if (root.running) { root.stop(); }
                                         else { root.launch(); }
                                     }
                                 }
-                                Rectangle { width: root.artist-artwork-mode && root.operation-busy && root.candidate-rows.length == 0 ? 164px : 94px; height: 27px; border-radius: 6px; background: AppTheme.chalk ? #403343 : (AppTheme.light ? #c9b9cf : #28174f); border-color: root.artist-artwork-mode && root.operation-busy && root.candidate-rows.length == 0 ? AppTheme.cyan : AppTheme.magenta; border-width: 1px;
+                                Rectangle { width: root.artist-artwork-mode && root.operation-busy && root.candidate-rows.length == 0 ? 148px : 82px; height: 27px; border-radius: 6px; background: AppTheme.chalk ? #403343 : (AppTheme.light ? #c9b9cf : #28174f); border-color: root.artist-artwork-mode && root.operation-busy && root.candidate-rows.length == 0 ? AppTheme.cyan : AppTheme.magenta; border-width: 1px;
                                     Text { x: 3px; width: parent.width - 6px; height: parent.height; text: root.artist-artwork-mode && root.operation-busy && root.candidate-rows.length == 0 ? "● Loading Artist Art…" : (root.artist-artwork-mode && root.workspace-mode == 0 ? 0 : root.candidate-rows.length) + " candidates"; color: root.artist-artwork-mode && root.operation-busy && root.candidate-rows.length == 0 ? AppTheme.cyan : AppTheme.magenta; horizontal-alignment: center; vertical-alignment: center; font-size: 11px * AppTheme.font-scale; font-weight: 800; overflow: elide; }
                                 }
-                                Rectangle { width: 24px; background: transparent; }
-                                NeonAction { label: "MusicBrainz"; width: 92px; height: 27px; label-font-size: 12px * AppTheme.font-scale; enabled: !root.intro-active && !root.compilation-report-preview-mode; clicked => root.candidate-action(root.musicbrainz-back-available ? "back_to_musicbrainz" : "retry_musicbrainz"); }
-                                NeonAction { label: "Compare"; width: 75px; height: 27px; label-font-size: 12px * AppTheme.font-scale; enabled: root.candidate-rows.length > 0 && (!root.artist-artwork-mode || root.workspace-mode == 2) && !root.operation-busy && !root.compilation-report-preview-mode; clicked => root.open-candidate-compare(); }
+                                Rectangle { width: 4px; background: transparent; }
+                                NeonAction { label: "MusicBrainz"; width: 82px; height: 27px; label-font-size: 11px * AppTheme.font-scale; enabled: !root.intro-active && !root.compilation-report-visible && !root.compilation-report-preview-mode && (root.awaiting-candidate || root.musicbrainz-retry-available || root.musicbrainz-matches-available || root.musicbrainz-back-available); clicked => root.candidate-action(root.musicbrainz-back-available ? "back_to_musicbrainz" : "retry_musicbrainz"); }
+                                NeonAction { label: "Compare"; width: 66px; height: 27px; label-font-size: 11px * AppTheme.font-scale; enabled: root.candidate-rows.length > 0 && (!root.artist-artwork-mode || root.workspace-mode == 2) && !root.operation-busy && !root.compilation-report-preview-mode; clicked => root.open-candidate-compare(); }
                                 NeonAction {
                                     label: root.current-album-bypassed ? "Bypassed" : "Bypass";
-                                    width: 75px; height: 27px; label-font-size: 12px * AppTheme.font-scale;
+                                    width: 66px; height: 27px; label-font-size: 11px * AppTheme.font-scale;
                                     tone: root.current-album-bypassed ? "red" : "orange";
                                     enabled: !root.operation-busy && !root.compilation-report-preview-mode && (root.current-album-bypassed || root.awaiting-candidate);
                                     clicked => {
                                         if (root.current-album-bypassed) { root.confirm-clear-bypass = true; }
                                         else { root.candidate-action("bypass"); }
                                     }
+                                }
+                                NeonAction {
+                                    label: "Upload Art";
+                                    width: 72px; height: 27px; label-font-size: 11px * AppTheme.font-scale;
+                                    enabled: !root.intro-active && !root.operation-busy && !root.running && !root.compilation-report-preview-mode;
+                                    clicked => root.upload-candidate-artwork();
                                 }
                                 Rectangle { horizontal-stretch: 1; background: transparent; }
                             }
@@ -3154,8 +3168,21 @@ export component AppWindow inherits Window {
                                 HorizontalLayout { height: 36px; spacing: 8px;
                                     Text { text: "Library Index"; color: AppTheme.foreground; font-size: 14px * AppTheme.font-scale; vertical-alignment: center; horizontal-stretch: 1; }
                                     NeonAction { width: 128px; height: 32px; label: "Refresh DB"; tone: "yellow"; enabled: !root.media-refresh-running && !root.running && !root.operation-busy; clicked => root.refresh-library(true); }
+                                    NeonAction { width: 110px; height: 32px; label: "Reset DB"; tone: "red"; enabled: !root.media-refresh-running && !root.running && !root.operation-busy; clicked => { root.confirm-reset-database = true; } }
                                 }
                                 SettingsHelpTip { summary: "What does Refresh DB do?"; detail: "Perform a deliberate full SQLite index rebuild. One representative track defines each normal Album; unchanged tag evidence is reused and full tags are read for changed COMP/Fallback tracks. The yellow Home notice uses a separate added/changed/removed incremental update. Neither action inspects embedded art or modifies music files. Another Windows client must close the shared database first."; }
+                                if root.confirm-reset-database: Rectangle { height: 116px; border-radius: 6px; background: #26131c; border-color: AppTheme.danger; border-width: 1px;
+                                    VerticalLayout { padding: 8px; spacing: 6px;
+                                        Text { text: "Reset SQLite · " + root.active-database-target; color: AppTheme.danger; font-size: 13px * AppTheme.font-scale; font-weight: 800; overflow: elide; }
+                                        Text { text: "Clears all Artists, Albums, Tracks, processing/COMP history, and index snapshots. Preserves settings, credentials, source media, and completed artwork."; color: AppTheme.foreground; font-size: 12px * AppTheme.font-scale; wrap: word-wrap; height: 38px; }
+                                        HorizontalLayout { spacing: 8px;
+                                            Rectangle { horizontal-stretch: 1; background: transparent; }
+                                            NeonAction { width: 84px; height: 28px; label: "Cancel"; clicked => { root.confirm-reset-database = false; root.reset-database(false); } }
+                                            NeonAction { width: 132px; height: 28px; label: "CONFIRM RESET"; tone: "red"; clicked => { root.confirm-reset-database = false; root.reset-database(true); } }
+                                        }
+                                    }
+                                }
+                                SettingsHelpTip { summary: "What does Reset DB preserve?"; detail: "Reset DB affects only the active SPLINED SQLite database shown in the confirmation. Required schema and indexes remain valid. The next library index starts from the beginning."; }
                                 PathSettingField { label: "Temporary Cache Directory *"; value <=> root.settings-temporary-cache-dir; hint: "Disposable run files"; browse => root.browse-setting-directory("temporary"); }
                                 PathSettingField { label: "Provider Credential Directory *"; value <=> root.settings-credential-dir; hint: "Provider JSON files"; browse => root.browse-setting-directory("credentials"); }
                                 SettingField { label: "Ignored Folders"; value <=> root.settings-ignored-subs; hint: "Comma-separated"; }

@@ -5,7 +5,8 @@ use reqwest::{Client, Response};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::OnceLock;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tempfile::{Builder, NamedTempFile, TempDir};
 
 pub const MAX_DOWNLOAD_BYTES: usize = 25 * 1024 * 1024;
@@ -28,7 +29,19 @@ pub struct DownloadCache {
 #[derive(Debug)]
 enum CandidateFile {
     Temporary(NamedTempFile),
-    Persistent(PathBuf),
+    PersistentOwned(PathBuf),
+    Borrowed(PathBuf),
+}
+
+pub(crate) fn temporary_owner_token() -> &'static str {
+    static TOKEN: OnceLock<String> = OnceLock::new();
+    TOKEN.get_or_init(|| {
+        let started = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        format!("{}-{started}", std::process::id())
+    })
 }
 
 #[derive(Debug)]
@@ -131,7 +144,7 @@ impl DownloadCache {
         match &self.root {
             CacheRoot::Temporary(_) => {
                 let mut file = Builder::new()
-                    .prefix("splined-candidate-")
+                    .prefix(&format!("splined-candidate-{}-", temporary_owner_token()))
                     .suffix(cache_suffix(bytes))
                     .tempfile()
                     .map_err(|error| format!("Unable to create cached candidate file: {error}"))?;
@@ -147,7 +160,7 @@ impl DownloadCache {
             }
             CacheRoot::Persistent(root) => {
                 let mut file = Builder::new()
-                    .prefix("splined-candidate-")
+                    .prefix(&format!("splined-candidate-{}-", temporary_owner_token()))
                     .suffix(cache_suffix(bytes))
                     .tempfile_in(root)
                     .map_err(|error| {
@@ -169,7 +182,7 @@ impl DownloadCache {
                 Ok(DownloadedCandidate {
                     candidate,
                     url: url.to_string(),
-                    file: CandidateFile::Persistent(path),
+                    file: CandidateFile::PersistentOwned(path),
                 })
             }
         }
@@ -253,14 +266,46 @@ impl DownloadedCandidate {
         Ok(Self {
             candidate,
             url: url.into(),
-            file: CandidateFile::Persistent(path),
+            file: CandidateFile::Borrowed(path),
         })
     }
 
     pub fn path(&self) -> &Path {
         match &self.file {
             CandidateFile::Temporary(file) => file.path(),
-            CandidateFile::Persistent(path) => path.as_path(),
+            CandidateFile::PersistentOwned(path) | CandidateFile::Borrowed(path) => path.as_path(),
+        }
+    }
+
+    /// Transfer a persistent cache file to the session cleanup lifecycle.
+    /// The current process token in its filename still makes orderly-exit and
+    /// abandoned-startup cleanup safe, but dropping this wrapper no longer
+    /// removes a path retained by the UI model.
+    pub fn retain_persistent_path(&mut self) -> Result<PathBuf, String> {
+        match &self.file {
+            CandidateFile::PersistentOwned(path) => {
+                let path = path.clone();
+                self.file = CandidateFile::Borrowed(path.clone());
+                Ok(path)
+            }
+            CandidateFile::Borrowed(path) => Ok(path.clone()),
+            CandidateFile::Temporary(_) => {
+                Err("A process-temporary candidate cannot outlive its owner.".to_string())
+            }
+        }
+    }
+}
+
+impl Drop for DownloadedCandidate {
+    fn drop(&mut self) {
+        if let CandidateFile::PersistentOwned(path) = &self.file
+            && let Err(error) = fs::remove_file(path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            eprintln!(
+                "SPLINED temporary cleanup failed path={} error={error}",
+                path.display()
+            );
         }
     }
 }
@@ -379,7 +424,7 @@ mod tests {
     }
 
     #[test]
-    fn persistent_cache_keeps_capture_after_candidate_drop() {
+    fn persistent_cache_removes_owned_capture_after_candidate_drop() {
         let root = TempDir::new().expect("persistent cache fixture should create");
         let cache = DownloadCache::new_persistent(root.path()).unwrap();
         let bytes = encoded_image(1800, 1800, ImageFormat::Jpeg);
@@ -394,6 +439,34 @@ mod tests {
                 .unwrap();
             downloaded.path().to_path_buf()
         };
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn borrowed_existing_candidate_is_never_deleted() {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("source.png");
+        fs::write(&path, encoded_image(600, 600, ImageFormat::Png)).unwrap();
+        let downloaded =
+            DownloadedCandidate::from_existing_path("local", path.clone(), 0, "").unwrap();
+        drop(downloaded);
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn retained_persistent_candidate_survives_wrapper_drop() {
+        let root = TempDir::new().unwrap();
+        let cache = DownloadCache::new_persistent(root.path()).unwrap();
+        let bytes = encoded_image(600, 600, ImageFormat::Png);
+        let mut downloaded = cache
+            .candidate_from_bytes(
+                "coverartarchive".to_string(),
+                "https://example.invalid/cover",
+                0,
+                &bytes,
+            )
+            .unwrap();
+        let path = downloaded.retain_persistent_path().unwrap();
         assert!(path.exists());
         fs::remove_file(path).unwrap();
     }

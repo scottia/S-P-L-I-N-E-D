@@ -1185,6 +1185,24 @@ function renderStorageSettings(host) {
     const runtime = node("div", "storage-runtime"); runtime.append(node("strong", "", "Runtime"), node("span", "", `v${value.version} · PostgreSQL · ${(value.mode || "read").toUpperCase()}`)); summary.append(runtime);
   }).catch(error => { clear(summary); summary.append(node("p", "operation-error", error.message)); });
   settingsHelp(host, "What is included in storage usage?", "The exact catalog size comes from PostgreSQL. Persistent Cache, V/A / OST Artist Images, Provider Credentials, and Configuration are mounted paths; SPLINED does not recursively scan those network folders merely to open Settings.");
+  const reset = node("button", "operation-button full-action danger-action", "Reset DB"); reset.type = "button";
+  reset.addEventListener("click", () => runAction(async () => {
+    reset.disabled = true;
+    try {
+      const value = await api("/api/database/reset-target"), target = value.target;
+      const label = `${value.backend} ${target.server}/${target.database} schema ${target.schema}`;
+      const confirmed = window.confirm(
+        `Reset DB for ${label}?\n\nThis clears all SPLINED artists, albums, tracks, processing history, COMP progress, source history, jobs, and cached database snapshots. Connection settings, administrator credentials, source media, completed artwork, and mounted files are preserved. The next index starts from the beginning.`
+      );
+      if (!confirmed) return;
+      const result = await post("/api/database/reset", {confirm: true, target});
+      if ($("workspaceDialog").open) $("workspaceDialog").close();
+      await initialize();
+      setStatus(`Database reset complete · ${result.counts.artists} Artists / ${result.counts.albums} Albums · ready for a full index`, "ready");
+    } finally { reset.disabled = false; }
+  }));
+  host.append(reset);
+  settingsHelp(host, "What does Reset DB preserve?", "Reset DB empties only the active SPLINED PostgreSQL schema data. It retains schema versions, required tables and indexes, the administrator account, connection settings, source media, and completed artwork.");
 }
 function renderSourceOrderSettings(host, draft, selectedProvider, selectProvider, rerender) {
   settingsHelp(host, "Why can a connected provider say Excluded?", "Connection credentials and artwork-search inclusion are separate. Excluded providers can still be tested under Connections but are not queried for candidate artwork.");

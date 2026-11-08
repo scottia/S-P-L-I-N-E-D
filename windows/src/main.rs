@@ -38,10 +38,10 @@ use splined_core::inspect::inspect_image;
 use splined_core::local_artwork::{embedded_candidate, install_prepared_canonical_artwork};
 use splined_core::media_database::{
     MediaAlbumSnapshot, MediaSnapshot, MediaTrackSnapshot, RuntimeArtworkMaterial,
-    clear_album_bypass_from_runtime, fallback_tracks_from_folder, find_media_index_changes,
-    load_artist_art_profile, media_snapshot, persist_opposing_album_artwork,
-    persist_opposing_compilation_artwork, record_album_outcome, record_album_outcome_from_runtime,
-    save_artist_art_identity,
+    clear_album_bypass_from_runtime, database_path, fallback_tracks_from_folder,
+    find_media_index_changes, load_artist_art_profile, media_snapshot,
+    persist_opposing_album_artwork, persist_opposing_compilation_artwork, record_album_outcome,
+    record_album_outcome_from_runtime, reset_database, save_artist_art_identity,
 };
 use splined_core::musicbrainz::{ArtistLookup, ArtistSearchHit, MusicBrainzClient};
 use splined_core::override_coordination::{
@@ -65,7 +65,9 @@ use splined_core::source::{
     ArtworkReference, deezer::Deezer, discogs::Discogs, fanarttv::FanartTv, itunes::ITunes,
     lastfm::LastFm,
 };
-use splined_core::source_policy::{MinimumRangeType, SourcePolicyConfig};
+use splined_core::source_policy::{
+    MinimumRangeType, SourcePolicyConfig, SourcePolicyStatus, effective_candidate_decision,
+};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{self, OpenOptions};
@@ -4872,6 +4874,11 @@ fn main() -> Result<(), slint::PlatformError> {
     {
         eprintln!("Unable to save SPLINED interface preferences: {error}");
     }
+    if let Ok(app) = state.lock() {
+        splined_core::pipeline::cleanup_run_cache_files(Path::new(
+            &app.config.scan.temporary_cache_dir,
+        ));
+    }
     result
 }
 
@@ -5665,10 +5672,16 @@ fn discover_remote_artist_artwork(
                 .download_candidate(reference.source.clone(), &reference.url, index)
                 .await
             {
-                Ok(candidate) => downloaded.push((
-                    format!("{} {kind}", source_display_name(&reference.source)),
-                    candidate.path().to_string_lossy().into_owned(),
-                )),
+                Ok(mut candidate) => match candidate.retain_persistent_path() {
+                    Ok(path) => downloaded.push((
+                        format!("{} {kind}", source_display_name(&reference.source)),
+                        path.to_string_lossy().into_owned(),
+                    )),
+                    Err(error) => warnings.push(format!(
+                        "{} Artist Art cache retention failed: {error}",
+                        source_display_name(&reference.source)
+                    )),
+                },
                 Err(error) => {
                     warnings.push(format!(
                         "{} Artist Art download failed: {error}",
@@ -10478,6 +10491,39 @@ fn bind_callbacks(
     {
         let state = Arc::clone(&state);
         let weak = ui.as_weak();
+        ui.on_refresh_artist_info(move || {
+            let artist = state.lock().ok().and_then(|mut app| {
+                if app.phase != RunPhase::Idle || app.operation_busy {
+                    return None;
+                }
+                let artist = overview_artist_name(&app)?.trim().to_string();
+                let key = artist.to_ascii_lowercase();
+                app.artist_overview_cache.remove(&key);
+                app.artist_top_songs_cache.remove(&key);
+                load_cached_artist_overview(&mut app, &artist);
+                app.operation_status = format!("Refreshing Artist info · {artist}");
+                app.operation_tone = "cyan".to_string();
+                Some(artist)
+            });
+            let Some(artist) = artist else {
+                return;
+            };
+            if let Some(cache) = NAVIDROME_ARTIST_CATALOG.get()
+                && let Ok(mut cache) = cache.lock()
+            {
+                cache.clear();
+            }
+            if let Some(cache) = NAVIDROME_ALBUM_CATALOG.get()
+                && let Ok(mut cache) = cache.lock()
+            {
+                cache.clear();
+            }
+            refresh_navidrome_thumbnails(&state, weak.clone(), Some(artist));
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let weak = ui.as_weak();
         ui.on_load_artist_top_songs(move || {
             let prepared = state.lock().ok().and_then(|mut app| {
                 let artist = overview_artist_name(&app)?.to_string();
@@ -11822,6 +11868,126 @@ fn bind_callbacks(
     {
         let state = Arc::clone(&state);
         let weak = ui.as_weak();
+        let controller = Arc::clone(&controller);
+        ui.on_reset_database(move |confirmed| {
+            if !confirmed {
+                if let Ok(mut app) = state.lock() {
+                    app.operation_status = "Database reset cancelled · no data changed".into();
+                    app.operation_tone = "cyan".into();
+                }
+                refresh_weak(&weak, &state);
+                return;
+            }
+            let config = match state.lock() {
+                Ok(mut app) => {
+                    if app.operation_busy || app.phase != RunPhase::Idle || controller.is_running() {
+                        app.last_error = Some(
+                            "Finish active scanning, embedding, and database work before Reset DB."
+                                .to_string(),
+                        );
+                        app.operation_status =
+                            "Reset DB blocked · active work must finish".to_string();
+                        app.operation_tone = "red".to_string();
+                        None
+                    } else if !app.embed_locked_album_paths.is_empty() {
+                        app.last_error = Some(
+                            "Finish or remove staged and active EMBED Batch work before Reset DB."
+                                .to_string(),
+                        );
+                        app.operation_status =
+                            "Reset DB blocked · EMBED Batch work is still active".to_string();
+                        app.operation_tone = "red".to_string();
+                        None
+                    } else {
+                        app.operation_busy = true;
+                        app.operation_status = format!(
+                            "Resetting SQLite · {}",
+                            database_path(&app.config.scan.cache_dir).display()
+                        );
+                        app.operation_tone = "orange".to_string();
+                        app.push_log(
+                            "SQLite Reset DB started; source media and artwork are preserved."
+                                .to_string(),
+                        );
+                        Some(app.config.clone())
+                    }
+                }
+                Err(_) => None,
+            };
+            refresh_weak(&weak, &state);
+            let Some(config) = config else { return };
+            let state = Arc::clone(&state);
+            let weak = weak.clone();
+            std::thread::spawn(move || {
+                let result = (|| {
+                    embed_queue::remove_all(&embed_queue::local_queue_path())?;
+                    reset_database(&config)
+                })();
+                let _ = slint::invoke_from_event_loop(move || {
+                    match result {
+                        Ok(reset) => {
+                            let replacement = (|| {
+                                let current = state.lock().map_err(|_| {
+                                    "The SPLINED application state is unavailable.".to_string()
+                                })?;
+                                let mut next = ApplicationState::new(
+                                    current.config.clone(),
+                                    empty_snapshot(&current.config),
+                                )?;
+                                next.intro_dismissed = current.intro_dismissed;
+                                next.disable_intro_message = current.disable_intro_message;
+                                next.disable_confirmation_messages =
+                                    current.disable_confirmation_messages;
+                                next.adjustments = current.adjustments.clone();
+                                next.adjustment_presets = current.adjustment_presets.clone();
+                                next.banner_theme_styles = current.banner_theme_styles.clone();
+                                next.album_frame_theme_styles =
+                                    current.album_frame_theme_styles.clone();
+                                next.banner_theme_baseline_styles =
+                                    current.banner_theme_baseline_styles.clone();
+                                next.album_frame_theme_baseline_styles =
+                                    current.album_frame_theme_baseline_styles.clone();
+                                next.appearance_mode = current.appearance_mode.clone();
+                                next.animate_webp_preview = current.animate_webp_preview;
+                                next.operation_status = format!(
+                                    "Database reset complete · {} Artists / {} Albums · ready for a full index",
+                                    reset.artists, reset.albums
+                                );
+                                next.operation_tone = "green".to_string();
+                                next.push_log(format!(
+                                    "SQLite Reset DB completed and verified: {} · {} Artists / {} Albums / {} Tracks.",
+                                    reset.database_path.display(), reset.artists, reset.albums, reset.tracks
+                                ));
+                                Ok::<_, String>(next)
+                            })();
+                            match replacement {
+                                Ok(next) => {
+                                    if let Ok(mut app) = state.lock() {
+                                        *app = next;
+                                    }
+                                    NEW_MEDIA_CHECK_REVISION.fetch_add(1, Ordering::SeqCst);
+                                }
+                                Err(error) => record_action_result(&state, Err(error)),
+                            }
+                        }
+                        Err(error) => {
+                            if let Ok(mut app) = state.lock() {
+                                app.operation_busy = false;
+                                app.operation_status = format!("Reset DB failed · {error}");
+                                app.operation_tone = "red".to_string();
+                                app.last_error = Some(error.clone());
+                                app.push_log(format!("ERROR: Reset DB failed: {error}"));
+                            }
+                        }
+                    }
+                    refresh_weak(&weak, &state);
+                });
+            });
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let weak = ui.as_weak();
         ui.on_clear_artist_scope(move || {
             if let Ok(mut app) = state.lock() {
                 app.library.clear_artist_scope();
@@ -12049,6 +12215,41 @@ fn bind_callbacks(
                 app.operation_tone = "orange".to_string();
             }
             refresh_weak(&weak, &state);
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let weak = ui.as_weak();
+        ui.on_upload_candidate_artwork(move || {
+            let initial = state
+                .lock()
+                .ok()
+                .and_then(|app| {
+                    app.selected_candidate()
+                        .map(|candidate| candidate.cache_path.clone())
+                        .or_else(|| {
+                            (!app.current_album_path.is_empty())
+                                .then(|| app.current_album_path.clone())
+                        })
+                })
+                .unwrap_or_default();
+            let state = Arc::clone(&state);
+            let weak = weak.clone();
+            std::thread::spawn(move || {
+                let selected = browse_for_artwork_file(&initial);
+                let _ = slint::invoke_from_event_loop(move || {
+                    let result = selected.map(|path| {
+                        let mut app = state.lock().map_err(|_| {
+                            "The SPLINED application state is unavailable.".to_string()
+                        })?;
+                        add_uploaded_candidate(&mut app, Path::new(&path))
+                    });
+                    if let Some(result) = result {
+                        record_action_result(&state, result.map(|_| ()));
+                    }
+                    refresh_weak(&weak, &state);
+                });
+            });
         });
     }
     {
@@ -15383,6 +15584,12 @@ fn set_settings_ui(ui: &AppWindow, config: &Config) {
     ui.set_settings_music_library(config.library.music_library.clone().into());
     ui.set_settings_scan_library(config.scan.scan_library_dir.clone().into());
     ui.set_settings_database_dir(config.scan.cache_dir.clone().into());
+    ui.set_active_database_target(
+        database_path(&config.scan.cache_dir)
+            .to_string_lossy()
+            .into_owned()
+            .into(),
+    );
     ui.set_settings_shared_artist_art_dir(
         configured_shared_artist_art_dir(config)
             .to_string_lossy()
@@ -16369,7 +16576,7 @@ fn edit_existing_cover(
     apply: bool,
     guard: Option<(&AtomicU64, u64)>,
 ) -> Result<(), String> {
-    let (path, config, context, artist, album, album_path) = {
+    let (path, selected_candidate, config, context, artist, album, album_path) = {
         let app = state
             .lock()
             .map_err(|_| "The SPLINED application state is unavailable.".to_string())?;
@@ -16379,14 +16586,22 @@ fn edit_existing_cover(
                     .to_string(),
             );
         }
-        if app.current_cover_path.trim().is_empty() {
-            return Err("The current album has no local cover to edit.".to_string());
+        let selected_candidate = app
+            .selected_candidate()
+            .map(|candidate| candidate.cache_path.trim().to_string())
+            .filter(|path| !path.is_empty());
+        let path = selected_candidate
+            .clone()
+            .unwrap_or_else(|| app.current_cover_path.trim().to_string());
+        if path.is_empty() {
+            return Err("The current album has no selected or local cover to edit.".to_string());
         }
         let mut config = app.config.clone();
         config.mode = if apply { Mode::Write } else { Mode::Read };
         project_adjustments(&app, &mut config);
         (
-            app.current_cover_path.clone(),
+            path,
+            selected_candidate.is_some(),
             config,
             preview_context(&app),
             app.current_artist.clone(),
@@ -16406,12 +16621,12 @@ fn edit_existing_cover(
     } else {
         candidate.format
     };
-    let destination = if !config.output.preserve_file {
-        let extension = match target_format {
-            StaticFormat::Jpeg => "jpg",
-            StaticFormat::Png => "png",
-            StaticFormat::Webp => "webp",
-        };
+    let extension = match target_format {
+        StaticFormat::Jpeg => "jpg",
+        StaticFormat::Png => "png",
+        StaticFormat::Webp => "webp",
+    };
+    let destination = if selected_candidate || !config.output.preserve_file {
         Path::new(&album_path).join(format!("{}.{}", config.output.file_name, extension))
     } else if candidate.format == StaticFormat::Webp {
         path.with_extension("jpg")
@@ -16509,6 +16724,118 @@ fn edit_existing_cover(
         });
     }
     Ok(())
+}
+
+fn add_uploaded_candidate(app: &mut ApplicationState, path: &Path) -> Result<usize, String> {
+    const MAX_UPLOAD_BYTES: u64 = 25 * 1024 * 1024;
+    let metadata = fs::metadata(path).map_err(|error| {
+        format!(
+            "Unable to read uploaded artwork {}: {error}",
+            path.display()
+        )
+    })?;
+    if metadata.len() > MAX_UPLOAD_BYTES {
+        return Err("Choose an image smaller than 25 MB.".to_string());
+    }
+    let candidate = Candidate::from_file("local", path, 0)?;
+    let range = Range {
+        min: app.config.range.min,
+        ideal: app.config.range.ideal,
+        max: app.config.range.max,
+        ladder: app.config.range.ladder,
+    };
+    let range_class = format!("{:?}", candidate.range_class(&range));
+    let policy = effective_candidate_decision(&candidate, &range, &app.config.source_policies);
+    let acceptable = policy.status != SourcePolicyStatus::Reject;
+    let index = app
+        .candidates
+        .iter()
+        .map(|candidate| candidate.index)
+        .max()
+        .unwrap_or(949_999)
+        .saturating_add(1)
+        .max(950_000);
+    let path_text = path.to_string_lossy().into_owned();
+    let image_type = if app.artist_artwork_mode {
+        if app.artist_preview_focus == "banner" {
+            "ArtistBanner"
+        } else {
+            "ArtistImage"
+        }
+    } else {
+        "FrontCover"
+    };
+    app.candidates.push(CandidateState {
+        index,
+        source: "local".to_string(),
+        dimensions: format!("{} × {}", candidate.width, candidate.height),
+        width: candidate.width,
+        height: candidate.height,
+        projected_width: candidate.width,
+        projected_height: candidate.height,
+        source_range_class: range_class.clone(),
+        range_class,
+        policy_status: format!("{:?}", policy.status).to_ascii_lowercase(),
+        policy_reason: policy.reason,
+        image_type: image_type.to_string(),
+        cache_path: path_text.clone(),
+        url: String::new(),
+        local_origin: path_text.clone(),
+        acceptable,
+        strict_override_active: false,
+        upscaled: false,
+        approved: acceptable,
+        recommended: false,
+        selected: false,
+    });
+    app.clear_candidate_filters();
+    app.activate_available_candidate_filters();
+    app.select_candidate(index);
+    if app.artist_artwork_mode {
+        app.artist_current_radio_active = false;
+        app.artist_theme_art_enabled = false;
+        if image_type == "ArtistBanner" {
+            app.artist_banner_source_path = path_text.clone();
+            app.artist_banner_preview_path = path_text;
+            app.artist_banner_preview_candidate_index = Some(index);
+            app.artist_banner_radio_active = true;
+            app.artist_banner_zoom = auto_artist_banner_zoom(path);
+            update_artist_preview_activation(app, "banner");
+        } else {
+            app.artist_artwork_draft_path = path_text.clone();
+            app.artist_portrait_preview_path = path_text;
+            app.artist_portrait_preview_candidate_index = Some(index);
+            app.artist_portrait_radio_active = true;
+            app.artist_portrait_zoom = 1.0;
+            app.artist_portrait_horizontal = 0.0;
+            app.artist_portrait_vertical = 0.0;
+            update_artist_preview_activation(app, "portrait");
+        }
+    }
+    if let Some(source) = app
+        .sources
+        .iter_mut()
+        .find(|source| source.name.eq_ignore_ascii_case("local"))
+    {
+        source.candidate_count = app
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.is_local())
+            .count();
+        source.enabled = true;
+        source.status = "Ready".to_string();
+    }
+    app.operation_status = if acceptable {
+        "Uploaded artwork selected · source file remains unchanged".to_string()
+    } else {
+        "Uploaded artwork selected · outside the configured artwork range".to_string()
+    };
+    app.operation_tone = if acceptable { "green" } else { "orange" }.to_string();
+    app.push_log(format!(
+        "Loaded uploaded artwork without taking ownership of the source file: {}",
+        path.display()
+    ));
+    Ok(index)
 }
 
 fn schedule_adjustment_preview(
@@ -17572,7 +17899,7 @@ fn refresh_musicbrainz_cover_preview(
                 })?;
             let front_500 = format!("https://coverartarchive.org/release/{release_mbid}/front-500");
             let front = format!("https://coverartarchive.org/release/{release_mbid}/front");
-            let downloaded = runtime.block_on(async {
+            let mut downloaded = runtime.block_on(async {
                 match cache
                     .download_candidate("coverartarchive", &front_500, 0)
                     .await
@@ -17581,7 +17908,7 @@ fn refresh_musicbrainz_cover_preview(
                     Err(_) => cache.download_candidate("coverartarchive", &front, 0).await,
                 }
             })?;
-            Ok(downloaded.path().to_path_buf())
+            downloaded.retain_persistent_path()
         })();
 
         if let Some(log) = UI_DEBUG_LOG_HANDLE.get() {
@@ -19132,10 +19459,7 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
     } else if state.phase == RunPhase::AwaitingCandidate {
         state.selected_candidate().is_some()
     } else {
-        !current_cover_path.trim().is_empty()
-            || state
-                .selected_candidate()
-                .is_some_and(|candidate| candidate.source.eq_ignore_ascii_case("samples"))
+        !current_cover_path.trim().is_empty() || state.selected_candidate().is_some()
     };
     let selected_artwork_write_ready = selected_artwork_write_ready
         && !current_album_queue_locked
@@ -21745,6 +22069,47 @@ fn browse_for_folder(_initial: &str, _description: &str) -> Option<String> {
 }
 
 #[cfg(windows)]
+fn browse_for_artwork_file(initial: &str) -> Option<String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let script = r#"
+Add-Type -AssemblyName PresentationFramework
+$dialog = New-Object Microsoft.Win32.OpenFileDialog
+$dialog.Title = 'Choose Artwork'
+$dialog.Filter = 'Artwork (*.jpg;*.jpeg;*.png;*.webp)|*.jpg;*.jpeg;*.png;*.webp'
+$dialog.CheckFileExists = $true
+$dialog.Multiselect = $false
+if ($env:SPLINED_ARTWORK_INITIAL) {
+    if (Test-Path -LiteralPath $env:SPLINED_ARTWORK_INITIAL -PathType Leaf) {
+        $dialog.InitialDirectory = [System.IO.Path]::GetDirectoryName($env:SPLINED_ARTWORK_INITIAL)
+        $dialog.FileName = [System.IO.Path]::GetFileName($env:SPLINED_ARTWORK_INITIAL)
+    } elseif (Test-Path -LiteralPath $env:SPLINED_ARTWORK_INITIAL -PathType Container) {
+        $dialog.InitialDirectory = $env:SPLINED_ARTWORK_INITIAL
+    }
+}
+if ($dialog.ShowDialog()) {
+    [Console]::Out.Write($dialog.FileName)
+}
+"#;
+    let output = std::process::Command::new("powershell.exe")
+        .args(["-NoLogo", "-NoProfile", "-STA", "-Command", script])
+        .env("SPLINED_ARTWORK_INITIAL", initial)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let selected = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    (!selected.is_empty()).then_some(selected)
+}
+
+#[cfg(not(windows))]
+fn browse_for_artwork_file(_initial: &str) -> Option<String> {
+    None
+}
+
+#[cfg(windows)]
 fn browse_for_backup_file(initial: &str, restore_type: &str) -> Option<String> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -22352,20 +22717,21 @@ mod tests {
         AlbumEmbeddedCheck, AlbumWriteState, ArtistAlbumEmbedTarget, CachedPixels,
         EmbedQueueSource, EmbedQueueTarget, MaximizeGuard, PREVIEW_CACHE_DIMENSION,
         ThumbnailAlbumTarget, UiCompilationReportRow, UiMusicBrainzRow, WorkspaceLayout,
-        add_embedded_thumbnail_decision, album_embedded_check, album_embedded_check_cache,
-        album_embedded_check_key, album_overview_queue_target, apply_album_coordination_states,
-        apply_ui_preferences, artist_album_card_artwork_path, artist_album_card_display_title,
-        artist_album_queue_targets, artist_art_candidate_source, artist_art_query_sources,
-        artist_art_targets_for_albums, artist_compilation_thumb_repair_plan,
-        artist_fallback_embedded_track_paths, artist_is_secondary_credit,
-        artist_overview_is_fully_complete, artist_overview_legend_counts,
-        artist_overview_release_banners, artist_overview_ui_model, automatic_backup_is_due,
-        backup_file_in_directory, backup_schedule_interval, begin_musicbrainz_preview_request,
-        cached_artist_banner_with_bottom_blur, cached_circular_artist_thumbnail,
-        canonical_webp_status, choose_musicbrainz_artist_match, circular_artist_art_png,
-        clear_rendered_preview_for_adjustment, compilation_artwork_context,
-        compilation_thumb_repair_plan, completed_compilation_track_needs_attention,
-        current_embedded_thumbnail_infos, current_local_album_artwork_file, decode_webp_animation,
+        add_embedded_thumbnail_decision, add_uploaded_candidate, album_embedded_check,
+        album_embedded_check_cache, album_embedded_check_key, album_overview_queue_target,
+        apply_album_coordination_states, apply_ui_preferences, artist_album_card_artwork_path,
+        artist_album_card_display_title, artist_album_queue_targets, artist_art_candidate_source,
+        artist_art_query_sources, artist_art_targets_for_albums,
+        artist_compilation_thumb_repair_plan, artist_fallback_embedded_track_paths,
+        artist_is_secondary_credit, artist_overview_is_fully_complete,
+        artist_overview_legend_counts, artist_overview_release_banners, artist_overview_ui_model,
+        automatic_backup_is_due, backup_file_in_directory, backup_schedule_interval,
+        begin_musicbrainz_preview_request, cached_artist_banner_with_bottom_blur,
+        cached_circular_artist_thumbnail, canonical_webp_status, choose_musicbrainz_artist_match,
+        circular_artist_art_png, clear_rendered_preview_for_adjustment,
+        compilation_artwork_context, compilation_thumb_repair_plan,
+        completed_compilation_track_needs_attention, current_embedded_thumbnail_infos,
+        current_local_album_artwork_file, decode_webp_animation,
         disable_embedded_thumbnail_preview, edit_existing_cover, embedded_artwork_footer,
         embedded_artwork_size_comparison, embedded_thumbnail_owner_key, embedded_thumbnail_ready,
         ensure_webp_album_still, fallback_compilation_cover_suppressed,
@@ -22390,6 +22756,32 @@ mod tests {
         write_artist_art_file, write_artist_art_file_with_stem,
     };
     use serde_json::json;
+
+    #[test]
+    fn uploaded_candidate_is_selected_without_taking_source_ownership() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("chosen.png");
+        image::RgbImage::from_pixel(1800, 1800, image::Rgb([20, 40, 80]))
+            .save_with_format(&source, image::ImageFormat::Png)
+            .unwrap();
+        let snapshot = MediaSnapshot {
+            schema_version: splined_core::media_database::SCHEMA_VERSION,
+            database_path: String::new(),
+            canonical_root: String::new(),
+            local_root: String::new(),
+            albums: Vec::new(),
+        };
+        let mut app = ApplicationState::new(Config::default(), snapshot).unwrap();
+
+        let index = add_uploaded_candidate(&mut app, &source).unwrap();
+        let selected = app.selected_candidate().unwrap();
+        assert_eq!(selected.index, index);
+        assert_eq!(selected.source, "local");
+        assert_eq!(selected.local_origin, source.to_string_lossy());
+        assert!(source.exists());
+        drop(app);
+        assert!(source.exists());
+    }
 
     #[test]
     fn tint_palette_follows_each_image_without_persistent_storage() {

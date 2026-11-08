@@ -222,6 +222,63 @@ class SettingsContractTests(unittest.TestCase):
         self.assertIn("ui.set_selected_album_track_count", main)
         self.assertIn("ui.set_selected_album_embedded_count", main)
 
+    def test_windows_comp_report_keeps_webgui_control_contract(self) -> None:
+        slint = (REPOSITORY / "windows/ui/app.slint").read_text(encoding="utf-8")
+        self.assertGreaterEqual(slint.count('"CLOSE REPORT"'), 2)
+        self.assertIn('label: "REPAIR COMP"', slint)
+        self.assertIn('label: "LAUNCH COMP"', slint)
+        self.assertIn('label: "Refresh Artist Info"', slint)
+        self.assertIn('label: "MusicBrainz Artist"', slint)
+        self.assertIn('"EMBED All Albums"', slint)
+        report_header = slint.index('text: "COMP Report · "')
+        report_close = slint.index('label: "CLOSE REPORT"', report_header)
+        self.assertLess(slint.index('label: "REPAIR COMP"', report_header), report_close)
+        self.assertLess(slint.index('label: "LAUNCH COMP"', report_header), report_close)
+        candidate = slint.index('text: "Candidate Artwork"')
+        candidate_end = slint.index("candidate-artwork-scroll :=", candidate)
+        candidate_row = slint[candidate:candidate_end]
+        ordered = [
+            '"LAUNCH COMP"',
+            '" candidates"',
+            'label: "MusicBrainz"',
+            'label: "Compare"',
+            '"Bypass"',
+            'label: "Upload Art"',
+        ]
+        positions = [candidate_row.index(value) for value in ordered]
+        self.assertEqual(positions, sorted(positions))
+        for label in ('"Upscale Preview"', '"EMBED Batch"'):
+            self.assertIn(label, slint)
+        main = (REPOSITORY / "windows/src/main.rs").read_text(encoding="utf-8")
+        self.assertIn('"EMBED Comp"', main)
+        self.assertIn("border-color: AppTheme.violet", slint)
+        self.assertIn("root.compilation-report-green-count", slint)
+        self.assertIn("root.compilation-report-purple-count", slint)
+        self.assertIn("root.compilation-report-blue-count", slint)
+
+    def test_reset_db_confirmations_identify_targets_and_cancel_without_post(self) -> None:
+        operations = (REPOSITORY / "webgui/static/operations.js").read_text(
+            encoding="utf-8"
+        )
+        reset_start = operations.index(
+            'const reset = node("button", "operation-button full-action danger-action", "Reset DB")'
+        )
+        reset_end = operations.index(
+            'settingsHelp(host, "What does Reset DB preserve?"', reset_start
+        )
+        reset = operations[reset_start:reset_end]
+        self.assertIn('/api/database/reset-target', reset)
+        self.assertIn('target.server', reset)
+        self.assertIn('target.database', reset)
+        self.assertIn('target.schema', reset)
+        self.assertLess(reset.index('if (!confirmed) return;'), reset.index('/api/database/reset"'))
+        self.assertIn('result.counts.artists', reset)
+        self.assertIn('result.counts.albums', reset)
+        slint = (REPOSITORY / "windows/ui/app.slint").read_text(encoding="utf-8")
+        self.assertIn('text: "Reset SQLite · " + root.active-database-target', slint)
+        self.assertIn('label: "Cancel"; clicked => { root.confirm-reset-database = false; root.reset-database(false); }', slint)
+        self.assertIn('label: "CONFIRM RESET"', slint)
+
     def test_webgui_samples_and_future_ai_defaults_are_explicit(self) -> None:
         fields = {
             field["path"]: field

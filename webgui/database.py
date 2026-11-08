@@ -7,14 +7,43 @@ import operation; it is never used as a silent server fallback.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from contextlib import closing
+from contextlib import closing, contextmanager
 from pathlib import Path
 import re
 import sqlite3
 from typing import Any
 
 import psycopg
+from psycopg import sql
 from psycopg.rows import dict_row
+
+
+APPLICATION_DATA_TABLES = (
+    "comp_track_write_coordination",
+    "album_artwork_write_coordination",
+    "catalog_sync_authority",
+    "web_audit_sessions",
+    "sqlite_reconciliation_runs",
+    "salite_diff",
+    "artist_album_appearances",
+    "artist_profiles",
+    "web_audit",
+    "web_jobs",
+    "retired_album_paths",
+    "picker_inventory",
+    "db_maintenance_state",
+    "cache_history",
+    "cache_entries",
+    "album_refresh_review_queue",
+    "compilation_album_progress",
+    "compilation_track_artwork",
+    "recording_release_candidates",
+    "recording_release_lookups",
+    "tracks",
+    "albums",
+    "artists",
+)
+REQUIRED_CATALOG_TABLES = ("artists", "albums", "tracks")
 
 
 class Row(dict):
@@ -116,6 +145,94 @@ class Database:
         return Connection(
             psycopg.connect(self._url, row_factory=dict_row, connect_timeout=10)
         )
+
+    def target(self) -> dict[str, str]:
+        with closing(self.connect()) as db:
+            row = db.raw.execute(
+                "SELECT current_database() AS database,current_schema() AS schema,"
+                "coalesce(inet_server_addr()::text,'local') AS server"
+            ).fetchone()
+        return {key: str(row[key]) for key in ("server", "database", "schema")}
+
+    @contextmanager
+    def application_operation(self):
+        """Fence one logical client operation against a database reset.
+
+        The session-level shared advisory lock spans every transaction opened by
+        the operation. Reset takes the matching exclusive transaction lock, so
+        it waits for active work and new work waits until the reset commits.
+        """
+        db = self.connect()
+        try:
+            db.raw.execute("SELECT pg_advisory_lock_shared(741520205)")
+            yield
+        finally:
+            try:
+                db.raw.execute("SELECT pg_advisory_unlock_shared(741520205)")
+            finally:
+                db.close()
+
+    def reset_application_data(self) -> dict[str, object]:
+        """Atomically empty SPLINED's data tables while retaining schema/auth."""
+        target = self.target()
+        with closing(self.connect()) as db, db:
+            db.raw.execute("SELECT pg_advisory_xact_lock(741520205)")
+            present = {
+                row["table_name"]
+                for row in db.raw.execute(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema=current_schema()"
+                )
+            }
+            missing = sorted(set(REQUIRED_CATALOG_TABLES) - present)
+            if missing:
+                raise RuntimeError(
+                    "Database reset stopped because required tables are missing: "
+                    + ", ".join(missing)
+                )
+            tables = [name for name in APPLICATION_DATA_TABLES if name in present]
+            for table in tables:
+                db.raw.execute(
+                    sql.SQL("LOCK TABLE {} IN ACCESS EXCLUSIVE MODE").format(
+                        sql.Identifier(table)
+                    )
+                )
+            if tables:
+                db.raw.execute(
+                    sql.SQL("TRUNCATE {} RESTART IDENTITY CASCADE").format(
+                        sql.SQL(",").join(map(sql.Identifier, tables))
+                    )
+                )
+            if "sqlite_reconciliation_settings" in present:
+                db.raw.execute(
+                    "UPDATE sqlite_reconciliation_settings "
+                    "SET enabled=FALSE,auto_apply_safe=FALSE,startup_mode='off',"
+                    "interval_minutes=1440,source_path='',source_root='',target_root='',"
+                    "last_run_at=NULL,next_run_at=NULL,updated_at=now()"
+                )
+            invalid_indexes = db.raw.execute(
+                "SELECT indexrelid::regclass::text AS name FROM pg_index "
+                "WHERE indrelid IN (SELECT c.oid FROM pg_class c "
+                "JOIN pg_namespace n ON n.oid=c.relnamespace "
+                "WHERE n.nspname=current_schema()) AND NOT indisvalid"
+            ).fetchall()
+            if invalid_indexes:
+                raise RuntimeError(
+                    "Database reset stopped because invalid indexes remain: "
+                    + ", ".join(row["name"] for row in invalid_indexes)
+                )
+            counts = {}
+            for table in REQUIRED_CATALOG_TABLES:
+                counts[table] = int(
+                    db.raw.execute(
+                        sql.SQL("SELECT count(*) AS count FROM {}").format(
+                            sql.Identifier(table)
+                        )
+                    ).fetchone()["count"]
+                )
+            if any(counts.values()):
+                raise RuntimeError("Database reset verification found library rows")
+        return {"backend": "PostgreSQL", "target": target, "counts": counts}
 
     def migrate(self):
         with closing(self.connect()) as db, db:

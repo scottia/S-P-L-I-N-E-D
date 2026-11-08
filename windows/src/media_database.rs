@@ -15,7 +15,8 @@ use crate::scan::{AlbumDirectory, inventory_album_directories};
 use crate::scan_tags::{AlbumIndexTags, read_album_index_tags, read_local_track_evidence};
 use image::ImageFormat;
 use rusqlite::{
-    Connection, ErrorCode, OpenFlags, OptionalExtension, Transaction, named_params, params,
+    Connection, ErrorCode, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
+    named_params, params,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -625,6 +626,105 @@ enum OutcomeMaterial<'a> {
 
 pub fn database_path(cache_dir: impl AsRef<Path>) -> PathBuf {
     cache_dir.as_ref().join(DB_NAME)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DatabaseResetResult {
+    pub database_path: PathBuf,
+    pub artists: i64,
+    pub albums: i64,
+    pub tracks: i64,
+}
+
+/// Atomically return the active SQLite catalog to its initialized empty state.
+pub fn reset_database(config: &Config) -> Result<DatabaseResetResult, String> {
+    let path = database_path(&config.scan.cache_dir);
+    // Reset always takes the application client lock, even when ordinary local
+    // access does not require one. Shared clients that honor the configured
+    // lock cannot scan or write across the reset boundary.
+    let _reset_lock = claim_shared_database(&path)?;
+    let access = DatabasePathAccess::new(&path, config.scan.sqlite_shared, false)?;
+    let mut connection = open_database(access.path(), config.scan.sqlite_shared)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Exclusive)
+        .map_err(db_error("acquire exclusive SQLite reset transaction"))?;
+    transaction
+        .execute_batch(
+            "DELETE FROM recording_release_candidates;
+             DELETE FROM recording_release_lookups;
+             DELETE FROM compilation_track_artwork;
+             DELETE FROM compilation_album_progress;
+             DELETE FROM album_refresh_review_queue;
+             DELETE FROM cache_history;
+             DELETE FROM cache_entries;
+             DELETE FROM db_maintenance_state;
+             DELETE FROM picker_inventory;
+             DELETE FROM retired_album_paths;
+             DELETE FROM album_artwork_write_outbox;
+             DELETE FROM album_artwork_write_state;
+             DELETE FROM comp_track_write_outbox;
+             DELETE FROM comp_track_write_state;
+             DELETE FROM tracks;
+             DELETE FROM albums;
+             DELETE FROM artists;
+             DELETE FROM artist_art_profiles;
+             DELETE FROM sqlite_sequence;",
+        )
+        .map_err(db_error("clear SQLite application records"))?;
+    let counts = (
+        transaction
+            .query_row("SELECT count(*) FROM artists", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map_err(db_error("verify reset Artist count"))?,
+        transaction
+            .query_row("SELECT count(*) FROM albums", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map_err(db_error("verify reset Album count"))?,
+        transaction
+            .query_row("SELECT count(*) FROM tracks", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map_err(db_error("verify reset Track count"))?,
+    );
+    if counts != (0, 0, 0) {
+        return Err("SQLite reset verification found remaining library rows.".to_string());
+    }
+    let invalid_foreign_keys: i64 = transaction
+        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })
+        .map_err(db_error("verify reset foreign keys"))?;
+    if invalid_foreign_keys != 0 {
+        return Err("SQLite reset verification found foreign-key violations.".to_string());
+    }
+    let required_indexes: i64 = transaction
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='index' AND name IN
+             ('idx_artists_status','idx_albums_artist','idx_tracks_album')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(db_error("verify reset indexes"))?;
+    if required_indexes != 3 {
+        return Err("SQLite reset verification found missing required indexes.".to_string());
+    }
+    transaction
+        .commit()
+        .map_err(db_error("commit SQLite database reset"))?;
+    let integrity: String = connection
+        .query_row("PRAGMA quick_check", [], |row| row.get(0))
+        .map_err(db_error("verify reset database integrity"))?;
+    if !integrity.eq_ignore_ascii_case("ok") {
+        return Err(format!("SQLite reset integrity check failed: {integrity}"));
+    }
+    Ok(DatabaseResetResult {
+        database_path: path,
+        artists: counts.0,
+        albums: counts.1,
+        tracks: counts.2,
+    })
 }
 
 struct DatabasePathAccess {
@@ -6228,5 +6328,72 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn reset_database_clears_application_records_and_retains_usable_schema() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("music");
+        let album = library.join("Artist").join("Album");
+        fs::create_dir_all(&album).unwrap();
+        File::create(album.join("01.mp3")).unwrap();
+        let mut config = Config::default();
+        config.library.music_library = library.to_string_lossy().into_owned();
+        config.scan.cache_dir = temp.path().join("cache").to_string_lossy().into_owned();
+        let snapshot = media_snapshot(&config, true).unwrap();
+        assert_eq!(snapshot.albums.len(), 1);
+        let path = database_path(&config.scan.cache_dir);
+        let connection = open_database(&path, false).unwrap();
+        let now = sqlite_now(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO db_maintenance_state(action_name,completed_at,details_json,splined_version) VALUES('fixture',?,'{}','test')",
+                params![now],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO comp_track_write_state(track_identity,album_identity,album_key,relative_track_path,writer,operation,event_id,artwork_sha256,source_completed_ms,completed_at,updated_at) VALUES('track','album','album','01.mp3','windows','fixture','event','hash',1,?,?)",
+                params![now, now],
+            )
+            .unwrap();
+        drop(connection);
+
+        let result = reset_database(&config).unwrap();
+        assert_eq!((result.artists, result.albums, result.tracks), (0, 0, 0));
+        let connection = open_database(&path, false).unwrap();
+        for table in [
+            "artists",
+            "albums",
+            "tracks",
+            "picker_inventory",
+            "db_maintenance_state",
+            "cache_history",
+            "album_artwork_write_state",
+            "album_artwork_write_outbox",
+            "comp_track_write_state",
+            "comp_track_write_outbox",
+        ] {
+            let count: i64 = connection
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, 0, "{table} should be empty");
+        }
+        let version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        assert_eq!(
+            connection
+                .query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))
+                .unwrap(),
+            "ok"
+        );
+        drop(connection);
+        let rebuilt = media_snapshot(&config, false).unwrap();
+        assert_eq!(rebuilt.albums.len(), 1);
+        assert_eq!(rebuilt.albums[0].track_count, 1);
     }
 }

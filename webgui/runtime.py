@@ -19,6 +19,7 @@ import splined_compilation_authority_policy as compilation
 import splined_ranking_policy as ranking
 
 from webgui.database import Database
+from webgui.tempfiles import TemporaryWorkspaces, recover_conversion_intermediates
 
 
 class CatalogReference:
@@ -47,6 +48,8 @@ class Runtime:
         self.cfg = deepcopy(cfg) if cfg is not None else self.load()
         self.validate(self.cfg)
         self._ensure_cache_directories(self.cfg)
+        self.temporary_files = TemporaryWorkspaces(self.temporary_cache)
+        recover_conversion_intermediates(self.cache)
         self.log_path = core.init_debug_log(self.config_file, self.cfg)
         core.runtime_log("info", "webgui.runtime started database=postgresql")
         compilation.install(core)
@@ -144,6 +147,8 @@ class Runtime:
         if not isinstance(cfg, dict):
             raise ValueError("Settings must be an object")
         cfg = deepcopy(cfg)
+        previous_temporary_cache = self.temporary_cache
+        previous_persistent_cache = self.cache
         self.validate(cfg)
         name = str(cfg.get("output", {}).get("file_name", "cover"))
         core.validate_filename(name)
@@ -181,6 +186,11 @@ class Runtime:
                     finally:
                         Path(temporary).unlink(missing_ok=True)
                     self.cfg = cfg
+                    if self.temporary_cache != previous_temporary_cache:
+                        self.temporary_files.close()
+                        self.temporary_files = TemporaryWorkspaces(self.temporary_cache)
+                    if self.cache != previous_persistent_cache:
+                        recover_conversion_intermediates(self.cache)
                 finally:
                     self.processing.release()
             finally:
@@ -221,6 +231,7 @@ class Runtime:
         return body, dict(info, width=side, height=side, bytes=len(body)), "jpeg"
 
     def close(self):
+        self.temporary_files.close()
         (
             compilation.connect_sqlite,
             compilation._database_path,

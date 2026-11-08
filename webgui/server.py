@@ -45,6 +45,7 @@ def _sqlite_snapshot_roots() -> tuple[Path, ...]:
 
 class Context:
     def __init__(self, config_file, database_url=None, *, start_worker=True):
+        self.lifecycle_lock = threading.RLock()
         self.config_file = Path(config_file).resolve()
         self.explicit_url = (
             database_url
@@ -122,7 +123,66 @@ class Context:
             "error": self.error,
         }
 
+    def reset_database(self, expected_target=None):
+        with self.lifecycle_lock:
+            if expected_target is not None:
+                if not self.runtime or self.runtime.database.target() != expected_target:
+                    raise ValueError(
+                        "Database reset stopped because the active target changed"
+                    )
+            return self._reset_database()
+
+    def _reset_database(self):
+        if not self.runtime or not self.services:
+            raise ValueError("Complete PostgreSQL setup before resetting the database")
+        runtime = self.runtime
+        jobs = self.jobs
+        reconciliation = self.reconciliation
+        if jobs:
+            jobs.close()
+            if jobs.thread.is_alive():
+                raise ValueError(
+                    "Database reset stopped because active work did not finish cancelling"
+                )
+        if reconciliation:
+            reconciliation.close()
+        try:
+            with runtime.job_scope, runtime.processing:
+                result = runtime.database.reset_application_data()
+            self.services = Services(runtime)
+            self.reconciliation = SQLiteReconciler(
+                runtime.database,
+                runtime.cache,
+                runtime.music,
+                self.services.audit,
+                snapshot_roots=_sqlite_snapshot_roots(),
+                start_scheduler=self.start_worker,
+                album_validator=self.services.validate_album_embedding,
+            )
+            self.jobs = JobQueue(self.services) if self.start_worker else None
+            result["ready_for_full_index"] = True
+            return result
+        except Exception:
+            # Restore usable services after a failed reset attempt. The database
+            # transaction itself is atomic, so no partial truncate is exposed.
+            self.services = Services(runtime)
+            self.reconciliation = SQLiteReconciler(
+                runtime.database,
+                runtime.cache,
+                runtime.music,
+                self.services.audit,
+                snapshot_roots=_sqlite_snapshot_roots(),
+                start_scheduler=self.start_worker,
+                album_validator=self.services.validate_album_embedding,
+            )
+            self.jobs = JobQueue(self.services) if self.start_worker else None
+            raise
+
     def configure(self, cfg):
+        with self.lifecycle_lock:
+            return self._configure(cfg)
+
+    def _configure(self, cfg):
         if not isinstance(cfg, dict):
             raise ValueError("Settings must be an object")
         url = (
@@ -267,6 +327,8 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
                 "/api/login",
                 "/api/admin/setup",
                 "/api/admin/recover",
+                "/api/database/reset",
+                "/api/database/reset-target",
             }
             or path.startswith(("/api/image/", "/api/fallback/thumbnail", "/api/audit"))
         )
@@ -389,7 +451,20 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
                 return audit_response(
                     JSONResponse({"error": "Request is too large"}, status_code=413)
                 )
-        response = await call_next(request)
+        # Hold a cross-process shared fence for ordinary API work. Database
+        # reset and Settings target changes use the Context lifecycle lock;
+        # Reset then takes the matching exclusive database fence.
+        database = context.runtime.database if context.runtime else None
+        lifecycle_request = path == "/api/database/reset" or (
+            path == "/api/settings" and request.method == "POST"
+        )
+        if lifecycle_request:
+            response = await call_next(request)
+        elif path.startswith("/api/") and database:
+            with database.application_operation():
+                response = await call_next(request)
+        else:
+            response = await call_next(request)
         response.set_cookie(
             "splined_session",
             sid,
@@ -572,6 +647,19 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
     @app.post("/api/settings")
     def save_settings(payload: dict):
         return context.configure((payload).get("config"))
+
+    @app.get("/api/database/reset-target")
+    def database_reset_target():
+        services = context.require()
+        return {"backend": "PostgreSQL", "target": services.runtime.database.target()}
+
+    @app.post("/api/database/reset")
+    def database_reset(payload: dict):
+        services = context.require()
+        expected = services.runtime.database.target()
+        if payload.get("confirm") is not True or payload.get("target") != expected:
+            raise ValueError("Database reset confirmation did not match the active target")
+        return context.reset_database(expected)
 
     @app.get("/api/diagnostics")
     def diagnostics(
@@ -1058,17 +1146,18 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
         from webgui.imaging import adjusted, encode
 
         image = adjusted(body)
-        directory = context.runtime.temporary_cache / "uploads"
-        directory.mkdir(parents=True, exist_ok=True)
-        path = directory / (uuid4().hex + ".png")
-        path.write_bytes(encode(image))
+        with context.runtime.temporary_files.workspace("uploads") as directory:
+            path = directory / (uuid4().hex + ".png")
+            path.write_bytes(encode(image))
+            image_handle = services.catalog.image(path)
+            size = path.stat().st_size
         return {
-            "image": services.catalog.image(path),
+            "image": image_handle,
             "name": str(payload.get("name", "Uploaded artwork"))[:200],
             "source": "Local",
             "width": image.width,
             "height": image.height,
-            "bytes": path.stat().st_size,
+            "bytes": size,
             "kind": "cover",
             "acceptable": True,
         }

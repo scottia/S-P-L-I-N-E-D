@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import tomllib
 import unittest
+from copy import deepcopy
 from pathlib import Path
 
 import splined
@@ -34,6 +35,34 @@ class ConfigV5ParityTests(unittest.TestCase):
                 self.assertEqual(runtime.temporary_cache, root / "temporary")
                 self.assertTrue(runtime.cache.is_dir())
                 self.assertTrue(runtime.temporary_cache.is_dir())
+            finally:
+                runtime.close()
+
+    def test_changing_temporary_cache_closes_old_session_and_rebinds_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_file = root / "config" / "config.toml"
+            config = load_example("docker/config.example.toml")
+            library = root / "music"
+            library.mkdir()
+            config["library"]["music_library"] = str(library)
+            config["scan"]["cache_dir"] = str(root / "persistent")
+            config["scan"]["temporary_cache_dir"] = str(root / "temporary-one")
+            config["scan"]["log_dir"] = str(root / "logs")
+            runtime = Runtime(config_file, object(), config)
+            try:
+                old_session = runtime.temporary_files.session_workspace("web-images")
+                (old_session / ("a" * 64 + ".png")).write_bytes(b"fixture")
+                replacement = deepcopy(config)
+                replacement["scan"]["temporary_cache_dir"] = str(
+                    root / "temporary-two"
+                )
+                runtime.save_settings(replacement)
+                self.assertFalse(old_session.exists())
+                self.assertEqual(runtime.temporary_files.root, root / "temporary-two")
+                self.assertTrue(
+                    runtime.temporary_files.session_workspace("web-images").is_dir()
+                )
             finally:
                 runtime.close()
 

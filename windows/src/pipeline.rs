@@ -1,6 +1,6 @@
 use crate::candidate::{Candidate, StaticFormat};
 use crate::config::Mode;
-use crate::download::{DownloadCache, DownloadedCandidate};
+use crate::download::{DownloadCache, DownloadedCandidate, temporary_owner_token};
 use crate::evaluate::{best_candidate, evaluate, is_acceptable};
 use crate::final_artwork::{FinalArtworkResult, finalize_selected_candidate};
 use crate::range::Range;
@@ -224,45 +224,6 @@ pub fn prepare_persistent_cache_dir(cache_dir: &Path) -> Result<(), String> {
         return Ok(());
     }
 
-    for entry in fs::read_dir(cache_dir).map_err(|error| {
-        format!(
-            "Unable to enumerate SPLINED persistent cache {}: {error}",
-            cache_dir.display()
-        )
-    })? {
-        let entry = entry.map_err(|error| {
-            format!(
-                "Unable to inspect SPLINED persistent cache entry in {}: {error}",
-                cache_dir.display()
-            )
-        })?;
-        let file_name = entry.file_name();
-        let file_name = file_name.to_string_lossy();
-
-        if !file_name.starts_with("splined-candidate-") {
-            continue;
-        }
-
-        let path = entry.path();
-        let file_type = entry.file_type().map_err(|error| {
-            format!(
-                "Unable to inspect SPLINED persistent cache entry {}: {error}",
-                path.display()
-            )
-        })?;
-
-        if file_type.is_dir() && !file_type.is_symlink() {
-            continue;
-        }
-
-        fs::remove_file(&path).map_err(|error| {
-            format!(
-                "Unable to remove SPLINED persistent cache file {}: {error}",
-                path.display()
-            )
-        })?;
-    }
-
     cleaned_dirs.insert(cache_key);
     Ok(())
 }
@@ -274,15 +235,24 @@ pub fn cleanup_run_cache_files(cache_dir: &Path) {
     let Ok(entries) = fs::read_dir(cache_dir) else {
         return;
     };
+    let candidate_prefix = format!("splined-candidate-{}-", temporary_owner_token());
+    let local_prefix = format!("splined-local-{}-", temporary_owner_token());
     for entry in entries.flatten() {
         let path = entry.path();
         let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
             continue;
         };
-        if (name.starts_with("splined-candidate-") || name.starts_with("splined-local-"))
+        if (name.starts_with(&candidate_prefix) || name.starts_with(&local_prefix))
             && path.is_file()
         {
-            let _ = fs::remove_file(path);
+            if let Err(error) = fs::remove_file(&path)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                eprintln!(
+                    "SPLINED temporary cleanup failed path={} error={error}",
+                    path.display()
+                );
+            }
         }
     }
 }
@@ -807,7 +777,7 @@ mod tests {
     }
 
     #[test]
-    fn persistent_cache_cleanup_removes_only_splined_candidates() {
+    fn persistent_cache_preparation_preserves_other_session_candidates() {
         use tempfile::TempDir;
         let parent = TempDir::new().unwrap();
         let cache_dir = parent.path().join("cache-root");
@@ -817,7 +787,7 @@ mod tests {
 
         prepare_persistent_cache_dir(&cache_dir).unwrap();
 
-        assert!(!cache_dir.join("splined-candidate-stale.jpg").exists());
+        assert!(cache_dir.join("splined-candidate-stale.jpg").exists());
         assert!(cache_dir.join("keep.txt").exists());
     }
 
@@ -825,12 +795,18 @@ mod tests {
     fn completed_run_cleanup_removes_only_disposable_artwork() {
         let root = tempfile::TempDir::new().expect("run cache fixture should create");
         fs::write(
-            root.path().join("splined-candidate-current.jpg"),
+            root.path().join(format!(
+                "splined-candidate-{}-current.jpg",
+                temporary_owner_token()
+            )),
             b"candidate",
         )
         .unwrap();
         fs::write(
-            root.path().join("splined-local-embedded-current.jpg"),
+            root.path().join(format!(
+                "splined-local-{}-embedded-current.jpg",
+                temporary_owner_token()
+            )),
             b"local",
         )
         .unwrap();
@@ -839,11 +815,22 @@ mod tests {
 
         cleanup_run_cache_files(root.path());
 
-        assert!(!root.path().join("splined-candidate-current.jpg").exists());
         assert!(
             !root
                 .path()
-                .join("splined-local-embedded-current.jpg")
+                .join(format!(
+                    "splined-candidate-{}-current.jpg",
+                    temporary_owner_token()
+                ))
+                .exists()
+        );
+        assert!(
+            !root
+                .path()
+                .join(format!(
+                    "splined-local-{}-embedded-current.jpg",
+                    temporary_owner_token()
+                ))
                 .exists()
         );
         assert!(root.path().join("splined.db").exists());

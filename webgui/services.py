@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import closing
+from contextlib import closing, contextmanager, nullcontext
 import logging
 from dataclasses import asdict
 from functools import wraps
@@ -45,6 +45,7 @@ from webgui.catalog_authority import (
     windows_managed_track_keys,
 )
 from webgui.runtime import Runtime
+from webgui.tempfiles import discard_committed_conversion, mark_conversion_backup
 from webgui import imaging
 from webgui.audit import (
     application_revision,
@@ -69,6 +70,23 @@ LOGGER = logging.getLogger("uvicorn.error")
 
 NAME_INVENTORY_PREFIX = "names-v1:"
 TRACK_INVENTORY_PREFIX = "tracks-v1:"
+
+
+@contextmanager
+def _temporary_workspace(runtime, kind: str):
+    """Use the runtime owner manager, with compatibility for small fixtures."""
+    manager = getattr(runtime, "temporary_files", None)
+    if manager is not None:
+        with manager.workspace(kind) as path:
+            yield path
+        return
+    parent = Path(runtime.temporary_cache) / kind
+    parent.mkdir(parents=True, exist_ok=True)
+    path = Path(tempfile.mkdtemp(prefix="fixture-", dir=parent))
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
 
 
 def _track_has_preferred_embedded_artwork(path: Path, preferred_side: int) -> bool:
@@ -127,8 +145,11 @@ def _indexed_album_unchanged(prior, album, fingerprint):
 def serialized(function):
     @wraps(function)
     def operation(self, *args, **kwargs):
+        database = getattr(self.runtime, "database", None)
+        fence = getattr(database, "application_operation", None)
         with self.runtime.processing:
-            return function(self, *args, **kwargs)
+            with fence() if fence else nullcontext():
+                return function(self, *args, **kwargs)
 
     return operation
 
@@ -148,6 +169,7 @@ class Services:
             cover_stem=str(runtime.cfg.get("output", {}).get("file_name", "cover")),
             cache=runtime.cache,
             temporary_cache=runtime.temporary_cache,
+            preview_cache=runtime.temporary_files.session_workspace("web-images"),
         )
         self.catalog.cache = runtime.cache
         self.catalog.artist_sources = tuple(
@@ -449,6 +471,7 @@ class Services:
         app.credentials = r.credentials
         app.cache = r.cache
         app.temporary_cache = r.temporary_cache
+        app.preview_cache = r.temporary_files.session_workspace("web-images")
         app.comp_thumbnail_side = int(
             r.cfg.get("output", {}).get("embedded_thumbnail_size", 1200)
         )
@@ -1393,11 +1416,9 @@ class Services:
         if kind == "cover":
             configured = core.formats(self.runtime.cfg)
             target = source_format if source_format in configured else configured[0]
-            directory = self.runtime.temporary_cache / "prepared-previews"
-            directory.mkdir(parents=True, exist_ok=True)
-            path = directory / (uuid4().hex + ".png")
-            path.write_bytes(body)
-            try:
+            with _temporary_workspace(self.runtime, "prepared-previews") as directory:
+                path = directory / (uuid4().hex + ".png")
+                path.write_bytes(body)
                 candidate = core.Candidate(
                     core.Ref("local", "preview", ""),
                     path,
@@ -1411,8 +1432,6 @@ class Services:
                 )
                 width, height = info["width"], info["height"]
                 upscaled = bool(info.get("upscaled"))
-            finally:
-                path.unlink(missing_ok=True)
         else:
             width, height = image.size
         policy_source_short = min(policy_source_width, policy_source_height)
@@ -1771,6 +1790,10 @@ class Services:
         return normalized, row, record, path
 
     def _prepared_comp_directory(self):
+        manager = getattr(self.runtime, "temporary_files", None)
+        if manager is not None:
+            return manager.session_workspace("prepared-comp")
+        # Compatibility for reduced fixtures which predate Runtime ownership.
         directory = self.runtime.cache / "prepared-comp"
         directory.mkdir(parents=True, exist_ok=True)
         return directory
@@ -2039,6 +2062,7 @@ class Services:
         )
         original = embedded_track_artwork_bytes(path)
         outcome = "embedded-existing" if original == body else "embedded-replaced"
+        backup = None
         if original != body:
             backup_root = self.runtime.cache / "embedded-backups"
             backup_root.mkdir(parents=True, exist_ok=True)
@@ -2051,6 +2075,7 @@ class Services:
                 )
                 if not backup.exists():
                     backup.write_bytes(original)
+                mark_conversion_backup(backup, committed=False)
             compilation.replace_embedded_artwork(path, body, image_format, info)
         self._verify_comp_embedded(record, body, info)
         verified_body = embedded_track_artwork_bytes(path)
@@ -2082,6 +2107,9 @@ class Services:
         coordination = self.record_comp_track_write(
             row, refreshed, "embed-comp-track", artwork_sha256
         )
+        if backup is not None:
+            mark_conversion_backup(backup, committed=True)
+            discard_committed_conversion(backup)
         self._remove_prepared_comp(payload.get("prepared_id"))
         return {
             "album_id": row["album_key"],
@@ -2139,6 +2167,7 @@ class Services:
         self.runtime.cache.mkdir(parents=True, exist_ok=True)
         backup_root = self.runtime.cache / "embedded-backups"
         backup_root.mkdir(exist_ok=True)
+        backups = []
         for index, path in enumerate(files, 1):
             if cancelled and cancelled():
                 raise core.InteractionCancelled()
@@ -2157,6 +2186,9 @@ class Services:
             )
             if original and not backup.exists():
                 backup.write_bytes(original)
+            if original:
+                mark_conversion_backup(backup, committed=False)
+                backups.append(backup)
             compilation.replace_embedded_artwork(
                 path, body, "jpeg", {"width": side, "height": side}
             )
@@ -2192,6 +2224,9 @@ class Services:
             "embed-album", row["album_key"], {"tracks": len(files), "side": side}
         )
         coordination = self.record_album_write(row, "embed-album")
+        for backup in backups:
+            mark_conversion_backup(backup, committed=True)
+            discard_committed_conversion(backup)
         return {
             "tracks": len(files),
             "side": side,
@@ -2211,45 +2246,44 @@ class Services:
         sources = core.resolve_sources(r.cfg, None, None, [])
         release = core.lookup_release(http, r.config_file, r.cfg, mbid)
         refs, warnings = core.discover_all(http, r.config_file, r.cfg, release, sources)
-        cache = r.temporary_cache / "web-candidates" / uuid4().hex
-        cache.mkdir(parents=True, exist_ok=True)
-        found, download_warnings = core.download_candidates(
-            http, refs, sources, cache, r.cfg, clean_first=False
-        )
-        warnings.extend(download_warnings)
-        strict_policy.apply(found, r.cfg, core.source_policy)
-        format_order = core.formats(r.cfg)
-        suggested = core.select_best(found, r.cfg, format_order)
-        candidates = []
-        for candidate in found:
-            target_format = core.target_format_for_candidate(candidate, format_order)
-            projected = core.project_candidate(candidate, r.cfg, target_format)
-            policy = core.source_policy(r.cfg, candidate.source)
-            candidates.append(
-                {
-                    "name": candidate.path.name,
-                    "source": core.provider_label(candidate.source),
-                    "kind": "cover",
-                    "image": self.catalog.image(candidate.path),
-                    "width": candidate.width,
-                    "height": candidate.height,
-                    "bytes": candidate.path.stat().st_size,
-                    "acceptable": projected["acceptable"],
-                    "range_class": projected["range_type"],
-                    "source_range_class": core.classify_range(
-                        candidate.short_side, r.cfg
-                    ),
-                    "projected_width": projected["width"],
-                    "projected_height": projected["height"],
-                    "recommended": candidate is suggested,
-                    "upscaled": projected["upscaled"],
-                    "policy_status": projected["policy_status"],
-                    "policy_reason": projected["policy_reason"],
-                    "strict_override_active": policy["strict_override"],
-                    "strict_status": candidate.strict_status,
-                    "strict_reason": candidate.strict_reason,
-                }
+        with _temporary_workspace(r, "web-candidates") as cache:
+            found, download_warnings = core.download_candidates(
+                http, refs, sources, cache, r.cfg, clean_first=False
             )
+            warnings.extend(download_warnings)
+            strict_policy.apply(found, r.cfg, core.source_policy)
+            format_order = core.formats(r.cfg)
+            suggested = core.select_best(found, r.cfg, format_order)
+            candidates = []
+            for candidate in found:
+                target_format = core.target_format_for_candidate(candidate, format_order)
+                projected = core.project_candidate(candidate, r.cfg, target_format)
+                policy = core.source_policy(r.cfg, candidate.source)
+                candidates.append(
+                    {
+                        "name": candidate.path.name,
+                        "source": core.provider_label(candidate.source),
+                        "kind": "cover",
+                        "image": self.catalog.image(candidate.path),
+                        "width": candidate.width,
+                        "height": candidate.height,
+                        "bytes": candidate.path.stat().st_size,
+                        "acceptable": projected["acceptable"],
+                        "range_class": projected["range_type"],
+                        "source_range_class": core.classify_range(
+                            candidate.short_side, r.cfg
+                        ),
+                        "projected_width": projected["width"],
+                        "projected_height": projected["height"],
+                        "recommended": candidate is suggested,
+                        "upscaled": projected["upscaled"],
+                        "policy_status": projected["policy_status"],
+                        "policy_reason": projected["policy_reason"],
+                        "strict_override_active": policy["strict_override"],
+                        "strict_status": candidate.strict_status,
+                        "strict_reason": candidate.strict_reason,
+                    }
+                )
         return {
             "candidates": candidates,
             "warnings": [core._redact_log_message(str(item)) for item in warnings],
@@ -2561,28 +2595,27 @@ class Services:
             )
 
         summary = core.Summary()
-        cache = r.temporary_cache / "comp-work" / uuid4().hex
-        cache.mkdir(parents=True, exist_ok=True)
-        scan.run_manual_compilation_album(
-            core.AlbumDir(Path(row["path"]), selected_files),
-            tracks,
-            http=core.Http(),
-            config_file=r.config_file,
-            cfg=r.cfg,
-            sources=core.resolve_sources(r.cfg, None, None, []),
-            cache=cache,
-            format_order=core.formats(r.cfg),
-            summary=summary,
-            api_queried=set(),
-            unresolved_items=[],
-            state={},
-            target_track_paths={allowed[key] for key in requested},
-            track_context=update_track_context,
-            prepare_selected_artwork=prepare_selected_artwork,
-            persist_track_authority=persist_track_authority,
-            verify_embedded_artwork=verify_selected_artwork,
-            musicbrainz_results_first=True,
-        )
+        with _temporary_workspace(r, "comp-work") as cache:
+            scan.run_manual_compilation_album(
+                core.AlbumDir(Path(row["path"]), selected_files),
+                tracks,
+                http=core.Http(),
+                config_file=r.config_file,
+                cfg=r.cfg,
+                sources=core.resolve_sources(r.cfg, None, None, []),
+                cache=cache,
+                format_order=core.formats(r.cfg),
+                summary=summary,
+                api_queried=set(),
+                unresolved_items=[],
+                state={},
+                target_track_paths={allowed[key] for key in requested},
+                track_context=update_track_context,
+                prepare_selected_artwork=prepare_selected_artwork,
+                persist_track_authority=persist_track_authority,
+                verify_embedded_artwork=verify_selected_artwork,
+                musicbrainz_results_first=True,
+            )
         self.refresh_album(row["album_key"])
         self.refresh_embedding_stats(row)
         return asdict(summary)
