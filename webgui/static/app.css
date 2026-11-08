@@ -238,12 +238,12 @@ body.authenticated .auth-screen{display:none}body.auth-pending>.app-header,body.
 
 /* Let the overview track pane resizing while its content scrolls independently. */
 .overview-content{position:relative;z-index:1;min-width:0}
-.hero>.overview-actions{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));position:relative;z-index:1;min-width:0;margin:0 10px 5px;padding:0;background:transparent;border:0}
+.overview-content>.overview-actions{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));position:relative;z-index:1;min-width:0;margin:0 10px 5px;padding:0;background:transparent;border:0}
 @media(min-width:801px){
   #findView{display:grid;grid-template-rows:auto minmax(0,1fr);overflow:hidden}
   #findView>*{min-width:0}
   .overview-section{display:grid;grid-template-rows:auto minmax(0,1fr);min-height:0}
-  .overview-section>.hero{display:grid;grid-template-rows:minmax(0,1fr) auto;min-height:0;height:auto;max-height:none;overflow:hidden}
+  .overview-section>.hero{display:grid;grid-template-rows:minmax(0,1fr);min-height:0;height:auto;max-height:none;overflow:hidden}
   .overview-content{min-height:0;overflow:auto;overscroll-behavior:contain}
 }
 
@@ -295,6 +295,8 @@ body.authenticated .auth-screen{display:none}body.auth-pending>.app-header,body.
 .musicbrainz-empty{margin:8px 0;padding:10px;border:1px solid var(--pink);border-radius:4px;color:var(--pink)}
 .musicbrainz-review-actions{position:sticky;z-index:4;bottom:-66px;display:flex;justify-content:flex-end;gap:6px;margin:10px -2px -62px;padding:8px;border-top:1px solid var(--line);background:color-mix(in srgb,var(--window) 94%,transparent)}
 .musicbrainz-review-actions button{border:1px solid var(--line);border-radius:4px;background:var(--card);color:var(--text);padding:6px 12px}.musicbrainz-review-actions button.primary{border-color:var(--green);color:var(--green);font-weight:800}.musicbrainz-review-actions button:disabled{opacity:.45}
+.musicbrainz-review-actions button.stop-process{margin-right:auto;border-color:var(--pink);color:var(--pink);font-weight:900}
+.musicbrainz-release-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px;margin:4px 0 9px;padding:6px;border:1px solid var(--cyan);border-radius:4px;background:color-mix(in srgb,var(--selected) 72%,var(--panel))}.musicbrainz-release-actions button,.musicbrainz-release-actions a{display:grid;place-items:center;min-height:30px;border:1px solid var(--line);border-radius:4px;background:var(--card);color:var(--text);padding:5px 9px;text-decoration:none;font-size:10px}.musicbrainz-release-actions .primary{border-color:var(--green);color:var(--green);font-weight:900}
 @media(max-width:800px){.workspace.musicbrainz-active .work-area,.workspace.musicbrainz-active .review{grid-row:auto}.musicbrainz-authority-fields{grid-template-columns:1fr}.musicbrainz-results-controls{align-items:flex-start;flex-direction:column}.musicbrainz-review-actions{bottom:0;margin-bottom:0}}
 .review.comp-thumbnail-ready .selected-frame{border-color:var(--cyan);box-shadow:inset 0 0 0 1px #2098af}.quality-pill.comp-thumb-ready{color:#85ebff;border-color:#2098af;background:#082f3b}
 .about-card{min-width:min(560px,78vw);padding:20px;border:1px solid var(--cyan);border-radius:7px;background:linear-gradient(145deg,var(--panel),var(--card));box-shadow:0 14px 45px #0008}.about-card h3{margin:0;color:var(--yellow);font-size:25px}.about-tagline{color:var(--cyan)}.about-facts{display:grid;grid-template-columns:120px minmax(0,1fr);gap:7px 14px;margin:18px 0}.about-facts dt{color:var(--muted);font-weight:800}.about-facts dd{margin:0;color:var(--text);overflow-wrap:anywhere}.about-links{display:flex;flex-wrap:wrap;gap:8px}

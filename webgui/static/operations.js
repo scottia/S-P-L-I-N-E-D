@@ -150,8 +150,13 @@ function compTargetScope() {
 }
 function compCandidateSource() {
   const decision = activeArtworkDecision();
+  const musicBrainzIndex = decision?.kind === "musicbrainz-results"
+    ? (Number.isInteger(decision.hoveredResult) ? decision.hoveredResult : decision.selectedResult) : null;
+  const musicBrainz = Number.isInteger(musicBrainzIndex) ? decision.options?.[musicBrainzIndex] : null;
   return decision?.jobKind === "comp" && decision.selected
     ? decision.selected.image
+    : decision?.jobKind === "comp" && musicBrainz?.artwork_url
+      ? musicBrainz.artwork_url
     : state.editorMode === "fallback" ? state.fallbackTrack?.image : state.compTrack?.image;
 }
 function compThumbnailOwner() {
@@ -304,7 +309,10 @@ renderReview = function () {
   const decision = activeArtworkDecision();
   if (decision) {
     const musicBrainzResults = decision.kind === "musicbrainz-results";
-    const compCandidate = decision.jobKind === "comp" && !!decision.selected;
+    const musicBrainzIndex = decision.kind === "musicbrainz-results"
+      ? (Number.isInteger(decision.hoveredResult) ? decision.hoveredResult : decision.selectedResult) : null;
+    const musicBrainz = Number.isInteger(musicBrainzIndex) ? decision.options?.[musicBrainzIndex] : null;
+    const compCandidate = decision.jobKind === "comp" && !!(decision.selected || musicBrainz?.artwork_url);
     $("upscaleButton").disabled = state.compPreviewMode || !editableArtworkSource()
       || decision.jobKind === "comp" && !compCandidate;
     $("writeButton").textContent = decision.jobKind === "comp" ? "EMBED Comp" : "WRITE Cover";
@@ -367,32 +375,33 @@ async function enqueueComp(albumId, keys, artistId = "", signal = null) {
 function compTrackIsReprocessable(track) {
   return track?.status === "blue" || (typeof compTrackOverride === "function" && compTrackOverride(track)?.writer === "windows");
 }
-function fallbackCompLaunchTargets() {
-  const selected = state.fallbackTrack?.key
-    ? state.fallbackTracks.find(track => track.key === state.fallbackTrack.key) : null;
-  return selected && ["blue", "purple", "green"].includes(selected.status)
-    ? [selected] : state.fallbackTracks.filter(compTrackIsReprocessable);
+function fallbackCompLaunchTargets(trackKey = "") {
+  if (trackKey) {
+    const selected = state.fallbackTracks.find(track => track.key === trackKey);
+    return selected && ["blue", "purple", "green"].includes(selected.status) ? [selected] : [];
+  }
+  return state.fallbackTracks.filter(compTrackIsReprocessable);
 }
-function artistCompLaunchGroups() {
-  if (state.compTrack?.albumId && state.compTrack?.key) {
-    const group = state.compGroups.find(item => item.id === state.compTrack.albumId);
-    const selected = group?.tracks.find(track => track.key === state.compTrack.key);
+function artistCompLaunchGroups(target = null) {
+  if (target?.albumId && target?.trackKey) {
+    const group = state.compGroups.find(item => item.id === target.albumId);
+    const selected = group?.tracks.find(track => track.key === target.trackKey);
     if (selected && ["blue", "purple", "green"].includes(selected.status))
       return [{id: group.id, keys: [selected.key]}];
   }
   return state.compGroups.map(group => ({id: group.id, keys: group.tracks.filter(compTrackIsReprocessable).map(track => track.key)})).filter(group => group.keys.length);
 }
-async function launchFallback(signal = null) {
+async function launchFallback(signal = null, trackKey = "") {
   if (!state.album) return;
-  const targets = fallbackCompLaunchTargets();
+  const targets = fallbackCompLaunchTargets(trackKey);
   if (!targets.length) { setStatus("Select a blue, purple, or green COMP track to review"); return; }
   state.fallbackPreviewMode = false;
   await enqueueComp(state.album.id, targets.map(track => track.key), "", signal);
 };
-async function launchArtistComp(signal = null) {
+async function launchArtistComp(signal = null, target = null) {
   if (!state.artist || !state.compReportVisible) throw new Error("Open this Artist's COMP Report before launching work");
   const artistId = state.artist.id;
-  const groups = artistCompLaunchGroups();
+  const groups = artistCompLaunchGroups(target);
   if (!groups.length) { setStatus("Select a blue, purple, or green COMP track to review"); return; }
   state.compPreviewMode = false;
   const trackCount = groups.reduce((total, group) => total + group.keys.length, 0);
@@ -437,7 +446,7 @@ async function stopCandidateWork() {
   ]);
   const stopped = new Set(jobs.map(job => job.id));
   state.jobs = (state.jobs || []).map(job => stopped.has(job.id) ? {...job, state: "cancelled"} : job);
-  if (state.queuedDecision && jobs.some(job => job.id === state.queuedDecision.jobId)) state.queuedDecision = null;
+  if (state.queuedDecision?.jobKind === "scan" || state.queuedDecision?.jobKind === "comp") state.queuedDecision = null;
   if (jobs.some(job => job.id === state.reviewJobId)) { state.reviewJobId = null; state.reviewJobState = ""; }
   state.launchActive = false; state.launchStopping = false; state.launchAbort = null;
   state.pendingMusicBrainzExisting = null;
@@ -449,7 +458,7 @@ async function stopCandidateWork() {
     state.jobs = latestJobs;
     renderQueue();
   }
-  renderCandidates();
+  renderCandidates(); renderHero(); renderWorkspace(); renderReview();
   setStatus("Processing stopped");
 }
 async function activateCandidateWork() {
@@ -468,6 +477,23 @@ async function activateCandidateWork() {
     if (state.launchAbort === controller) {
       state.launchActive = false; state.launchStopping = false; state.launchAbort = null;
       renderCandidateLaunchControl();
+    }
+  }
+}
+async function activateCompTrackWork(target) {
+  if (state.launchStopping) return;
+  const controller = new AbortController();
+  state.launchActive = true; state.launchStopping = false; state.launchAbort = controller;
+  renderCandidateLaunchControl(); renderHero();
+  try {
+    if (target.artistId) await launchArtistComp(controller.signal, {albumId: target.albumId, trackKey: target.trackKey});
+    else await launchFallback(controller.signal, target.trackKey);
+  } catch (error) {
+    if (error?.name !== "AbortError") throw error;
+  } finally {
+    if (state.launchAbort === controller) {
+      state.launchActive = false; state.launchStopping = false; state.launchAbort = null;
+      renderCandidateLaunchControl(); renderHero();
     }
   }
 }
@@ -571,7 +597,7 @@ async function focusQueuedAlbum(decision) {
     const trackKey = promptTrackKey;
     if (trackKey && scopedGroup.tracks.some(track => track.key === trackKey)
       && (state.compTrack?.albumId !== albumId || state.compTrack?.key !== trackKey))
-      await selectArtistCompTrack(albumId, trackKey);
+      await selectArtistCompTrack(albumId, trackKey, false);
     return;
   }
   if (scopeArtistId) {
@@ -592,19 +618,18 @@ async function focusQueuedAlbum(decision) {
     state.fallbackTracks = []; state.fallbackTrack = null; state.upscalePreview = null;
     state.compReportLoading = false; state.compReportVisible = true; state.compPreviewMode = false;
     state.compTrack = null; decision.previousCandidates = [];
-    $("compReportButton").textContent = "CLOSE REPORT";
     renderLibrary(); renderHero(); renderSources(); renderCandidates(); renderWorkspace();
     loadArtistMetadata(scopeArtistId);
     const trackKey = promptTrackKey;
     if (trackKey && group.tracks.some(track => track.key === trackKey))
-      await selectArtistCompTrack(albumId, trackKey);
+      await selectArtistCompTrack(albumId, trackKey, false);
     return;
   }
   if (!albumId) return;
   if (state.album?.id === albumId) {
     if (decision.jobKind === "comp" && state.editorMode === "fallback" && promptTrackKey
       && state.fallbackTrack?.key !== promptTrackKey)
-      await selectFallbackTrack(promptTrackKey, false);
+      await selectFallbackTrack(promptTrackKey, false, false);
     return;
   }
   const request = ++state.selectionRequest;
@@ -636,7 +661,7 @@ async function focusQueuedAlbum(decision) {
   renderLibrary(); renderHero(); renderSources(); renderCandidates(); renderWorkspace();
   loadArtistMetadata(album.artist_id);
   if (fallback && promptTrackKey && tracks.some(track => track.key === promptTrackKey))
-    await selectFallbackTrack(promptTrackKey, false);
+    await selectFallbackTrack(promptTrackKey, false, false);
 }
 async function submitQueuedDecision(value) {
   const decision = state.queuedDecision;
@@ -758,6 +783,7 @@ async function presentQueuedMusicBrainz(job, prompt, options) {
     jobId: job.id, jobKind: job.kind, nonce: prompt.nonce, kind: "musicbrainz-results", context,
     payload: job.payload || {}, previousCandidates, previousSourceDiagnostics, selected: null, options: [...options],
     selectedResult: preserveSelection ? currentDecision.selectedResult : null,
+    hoveredResult: null,
     selectedExisting: preserveSelection ? currentDecision.selectedExisting : null,
     artistFilter: preserveSelection ? currentDecision.artistFilter : "",
     releaseTypeFilter: preserveSelection ? currentDecision.releaseTypeFilter : "",
@@ -877,10 +903,9 @@ async function refreshQueuedAlbumAfterSave(job = null) {
     if (state.artist?.id !== artistId) return;
     state.album = null; state.editorMode = "artist"; state.compReportVisible = true;
     state.compGroups = compGroups; state.compAlbums = compAlbums;
-    $("compReportButton").textContent = "CLOSE REPORT";
     const selectedStillVisible = selected && compGroups.some(group => group.id === selected.albumId
       && group.tracks.some(track => track.key === selected.key));
-    if (selectedStillVisible) await selectArtistCompTrack(selected.albumId, selected.key);
+    if (selectedStillVisible) await selectArtistCompTrack(selected.albumId, selected.key, false);
     else { renderHero(); renderCandidates(); renderReview(); }
     return;
   }
@@ -895,7 +920,7 @@ async function refreshQueuedAlbumAfterSave(job = null) {
     state.compGroups = compGroups; state.compAlbums = compAlbums;
     const selectedStillVisible = selected && compGroups.some(group => group.id === selected.albumId
       && group.tracks.some(track => track.key === selected.key));
-    if (selectedStillVisible) await selectArtistCompTrack(selected.albumId, selected.key);
+    if (selectedStillVisible) await selectArtistCompTrack(selected.albumId, selected.key, false);
     else { renderHero(); renderCandidates(); renderReview(); }
     return;
   }
@@ -910,7 +935,7 @@ async function refreshQueuedAlbumAfterSave(job = null) {
     state.fallbackTracks = await api("/api/fallback/tracks?id=" + encodeURIComponent(albumId));
     probeFallbackStatuses();
     if (selectedKey && state.fallbackTracks.some(track => track.key === selectedKey)) {
-      await selectFallbackTrack(selectedKey, state.fallbackPreviewMode);
+      await selectFallbackTrack(selectedKey, state.fallbackPreviewMode, false);
       return;
     }
     state.fallbackTrack = null;

@@ -523,7 +523,8 @@ test("Windows-overridden COMP tracks remain bulk reprocessable", async () => {
     {artist_id: "artist-1", album_id: "comp-1", track_keys: ["windows-track"]},
     {album_id: "comp-1", track_keys: ["windows-track"]},
   ]);
-  assert.match(appSource, /!selectedLaunch && !reprocessable/);
+  assert.match(appSource, /state\.fallbackPreviewMode \|\| !reprocessable/);
+  assert.match(operationsSource, /function fallbackCompLaunchTargets\(trackKey = ""\)/);
 });
 
 test("explicit blue, purple, and green tracks launch through both COMP controls without scope expansion", async () => {
@@ -542,8 +543,8 @@ test("explicit blue, purple, and green tracks launch through both COMP controls 
       post: async (path, body) => { calls.push([path, body]); return {id: `job-${calls.length}`}; },
       reviewJob: async () => {}, setStatus() {},
     });
-    await context.launchArtistComp();
-    await context.launchFallback();
+    await context.launchArtistComp(null, {albumId: "comp-1", trackKey: selected.key});
+    await context.launchFallback(null, selected.key);
     assert.deepEqual(JSON.parse(JSON.stringify(calls.map(call => call[1].payload))), [
       {artist_id: "artist-1", album_id: "comp-1", track_keys: [selected.key]},
       {album_id: "comp-1", track_keys: [selected.key]},
@@ -570,7 +571,7 @@ test("both Artist COMP launch controls route through the scoped COMP action", as
   await context.launchCandidateWork();
 
   assert.deepEqual(calls, ["artist-comp", "artist", "full-comp"]);
-  assert.match(appSource, /launch\.addEventListener\("click", \(\) => runAction\(launchArtistComp\)\)/);
+  assert.ok((appSource.match(/launch\.addEventListener\("click", \(\) => runAction\(processing \? stopCandidateWork : activateCandidateWork\)\)/g) || []).length >= 2);
   assert.match(appSource, /searchButton"\)\.addEventListener\("click", \(\) => runAction\(activateCandidateWork\)\)/);
   assert.match(operationsSource, /async function stopCandidateWork\(\)/);
   assert.match(operationsSource, /state\.launchAbort\?\.abort\(\)/);
@@ -2049,6 +2050,14 @@ test("WebGUI renders native-parity overview sections and artwork footer", () => 
   assert.match(appSource, /Track\(s\) \(" \+ trackCount \+ "\)"/);
   assert.match(appSource, /Embedded Track\(s\)/);
   assert.match(cssSource, /review-extra\.embedded-metadata-row/);
+  assert.match(indexSource, /id="overviewContent"[\s\S]*id="topSongs"[\s\S]*class="overview-actions"/);
+  assert.match(cssSource, /overview-content>\.overview-actions/);
   assert.match(cssSource, /overview-actions #compReportButton/);
   assert.match(cssSource, /review-actions \.action-orange/);
+  assert.match(appSource, /function renderCompReportButtonState\(\)/);
+  assert.match(appSource, /state\.libraryMode === "artists" && state\.editorMode === "artist"/);
+  assert.match(appSource, /selectFallbackTrack\(item\.key, state\.fallbackPreviewMode, !state\.fallbackPreviewMode\)/);
+  assert.match(appSource, /selectArtistCompTrack\(group\.id, track\.key, !state\.compPreviewMode\)/);
+  assert.match(appSource, /node\("div", "musicbrainz-release-actions"\)/);
+  assert.match(appSource, /"STOP PROCESS"/);
 });

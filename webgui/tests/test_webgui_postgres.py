@@ -4377,10 +4377,10 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         "Other Song"
                     )
 
-                    # Selecting a report track is a complete, direct COMP
-                    # workflow.  Its current embedded thumb is the Selected
-                    # Artwork source; Upscale Preview and EMBED Comp do not
-                    # require opening MusicBrainz release results.
+                    # Explicit preview mode remains a direct saved-art path.
+                    # Outside preview mode, selecting a track immediately
+                    # starts its single-track COMP review.
+                    page.locator("#fallbackReport .fallback-preview-radio").click()
                     page.locator("#fallbackReport .fallback-track").click()
                     expect(page.locator("#selectedSource")).to_have_text(
                         "Embedded track"
@@ -4543,7 +4543,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     expect(page.locator(".musicbrainz-release-row").first).to_be_visible()
                     page.locator(".musicbrainz-release-row").first.click()
                     use_selected = page.locator(
-                        ".musicbrainz-review-actions button.primary"
+                        ".musicbrainz-release-actions button.primary"
                     )
                     expect(use_selected).to_be_enabled()
                     # Job polling can replace this enabled button with an
@@ -4557,7 +4557,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         timeout=15000,
                     ) as action_response:
                         page.evaluate("""() => {
-                            const button = document.querySelector('.musicbrainz-review-actions button.primary');
+                            const button = document.querySelector('.musicbrainz-release-actions button.primary');
                             if (!button || button.disabled) throw new Error('selected release was not retained');
                             button.click();
                         }""")
@@ -4729,7 +4729,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         "an artwork provider was queried before full-Fallback release selection",
                     )
                     page.locator(".musicbrainz-release-row").click()
-                    page.locator(".musicbrainz-review-actions button.primary").click()
+                    page.locator(".musicbrainz-release-actions button.primary").click()
                     expect(page.locator(".candidate-image-button").first).to_be_visible(
                         timeout=15000
                     )

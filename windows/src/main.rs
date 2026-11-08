@@ -9622,6 +9622,7 @@ fn bind_callbacks(
     {
         let state = Arc::clone(&state);
         let weak = ui.as_weak();
+        let controller = Arc::clone(&controller);
         ui.on_compilation_report_track_activated(move |album_key, track_path, include_bypassed| {
             if state
                 .lock()
@@ -9638,9 +9639,10 @@ fn bind_callbacks(
                 if let Ok(mut app) = state.lock() {
                     app.compilation_report_preview_track_path = track_path.to_string();
                 }
-                activate_compilation_track(
+                activate_and_run_compilation_track(
                     &state,
                     &weak,
+                    &controller,
                     album_key.as_str(),
                     track_path.as_str(),
                     include_bypassed,
