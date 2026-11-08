@@ -12,7 +12,6 @@ import os
 import shutil
 import socket
 import threading
-import time
 
 
 LOGGER = logging.getLogger("uvicorn.error")
@@ -134,20 +133,15 @@ class TemporaryWorkspaces:
                     self._owned.discard(path)
 
     def recover_abandoned(self) -> int:
-        """Remove dead-session or aged legacy workspaces, never live owners."""
+        """Remove dead-session and recognized legacy workspaces, never live owners."""
         recovered = 0
-        now = time.time()
         for kind in _RECOVERY_ROOTS:
             parent = self.root / kind
             if not parent.is_dir():
                 continue
             for path in parent.iterdir():
                 if path.is_file():
-                    try:
-                        age = max(0.0, now - path.stat().st_mtime)
-                    except OSError:
-                        continue
-                    if age < self.stale_after_seconds or not _legacy_owned_file(kind, path):
+                    if not _legacy_owned_file(kind, path):
                         continue
                     try:
                         path.unlink()
@@ -172,10 +166,6 @@ class TemporaryWorkspaces:
                     owner = json.loads(marker.read_text(encoding="utf-8"))
                 except (FileNotFoundError, OSError, ValueError, TypeError):
                     pass
-                try:
-                    age = max(0.0, now - path.stat().st_mtime)
-                except OSError:
-                    continue
                 active = False
                 local_owner = False
                 if isinstance(owner, dict) and owner.get("application") == "SPLINED":
@@ -183,8 +173,10 @@ class TemporaryWorkspaces:
                     active = local_owner and _process_is_active(
                         int(owner.get("pid", 0) or 0)
                     )
-                # A marker proves ownership. Legacy UUID directories are eligible
-                # only after the conservative age threshold.
+                # A marker proves ownership. Pre-marker releases used exact UUID
+                # directory names under these application-owned disposable roots;
+                # retaining them defeats crash recovery and cannot protect a live
+                # owner because the old layout recorded no ownership at all.
                 valid_owner = (
                     isinstance(owner, dict)
                     and owner.get("application") == "SPLINED"
@@ -194,7 +186,7 @@ class TemporaryWorkspaces:
                 # work on shared storage. Preserve it because this backend
                 # cannot prove that remote process has exited.
                 eligible = (valid_owner and local_owner and not active) or (
-                    not valid_owner and age >= self.stale_after_seconds
+                    not valid_owner and _legacy_owned_directory(kind, path)
                 )
                 if eligible and self._remove(path, "startup-recovery"):
                     recovered += 1
@@ -226,6 +218,21 @@ def _legacy_owned_file(kind: str, path: Path) -> bool:
             and all(character in "0123456789abcdef" for character in stem)
         )
     return False
+
+
+def _legacy_owned_directory(kind: str, path: Path) -> bool:
+    """Recognize exact pre-marker UUID operation directories."""
+    if kind not in {
+        "web-candidates",
+        "comp-work",
+        "prepared-previews",
+        "prepared-comp",
+        "uploads",
+        "web-images",
+    }:
+        return False
+    name = path.name.casefold()
+    return len(name) == 32 and all(character in "0123456789abcdef" for character in name)
 
 
 def conversion_marker_path(path: Path) -> Path:
@@ -265,7 +272,7 @@ def discard_committed_conversion(path: Path) -> bool:
 
 
 def recover_conversion_intermediates(cache: Path) -> int:
-    """Retry deletion only for backups durably marked as committed."""
+    """Remove committed backups and unusable pre-marker conversion leftovers."""
     root = cache.resolve() / "embedded-backups"
     if not root.is_dir() or root.is_symlink():
         return 0
@@ -282,7 +289,26 @@ def recover_conversion_intermediates(cache: Path) -> int:
             marker = json.loads(
                 conversion_marker_path(path).read_text(encoding="utf-8")
             )
-        except (FileNotFoundError, OSError, ValueError, TypeError):
+        except FileNotFoundError:
+            # Older builds created one-way hashed backups with no target-path
+            # metadata. They cannot be restored and are safe to discard.
+            try:
+                path.unlink()
+                recovered += 1
+                LOGGER.info(
+                    "Removed legacy SPLINED conversion intermediate path=%s "
+                    "reason=missing-recovery-metadata",
+                    path,
+                )
+            except OSError as error:
+                LOGGER.warning(
+                    "Unable to remove legacy SPLINED conversion intermediate "
+                    "path=%s error=%s",
+                    path,
+                    error,
+                )
+            continue
+        except (OSError, ValueError, TypeError):
             continue
         eligible = (
             isinstance(marker, dict)

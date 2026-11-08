@@ -366,6 +366,28 @@ pub fn cleanup_stale_artwork_on_startup(cache_dir: &Path) -> Result<(usize, u64)
                 continue;
             }
             let name = entry.file_name().to_string_lossy().into_owned();
+            let legacy_navidrome_image = kind == "navidrome"
+                && entry
+                    .path()
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|value| {
+                        value.eq_ignore_ascii_case("img") || value.eq_ignore_ascii_case("image")
+                    });
+            if legacy_navidrome_image {
+                let metadata = entry.metadata().map_err(|error| {
+                    format!(
+                        "Unable to inspect cache file {}: {error}",
+                        entry.path().display()
+                    )
+                })?;
+                let discarded = normalize_legacy_navidrome_image(&entry.path())?;
+                removed += 1;
+                if discarded {
+                    bytes = bytes.saturating_add(metadata.len());
+                }
+                continue;
+            }
             let managed = match kind {
                 "root" => {
                     name.starts_with("splined-candidate-") || name.starts_with("splined-local-")
@@ -408,6 +430,54 @@ pub fn cleanup_stale_artwork_on_startup(cache_dir: &Path) -> Result<(usize, u64)
         }
     }
     Ok((removed, bytes))
+}
+
+/// Replace the generic cache extension used by older builds with the detected
+/// static format. Invalid or duplicate generic files are discarded.
+fn normalize_legacy_navidrome_image(path: &Path) -> Result<bool, String> {
+    let inspected = match crate::inspect::inspect_image(path) {
+        Ok(inspected) => inspected,
+        Err(_) => {
+            fs::remove_file(path).map_err(|error| {
+                format!(
+                    "Unable to remove invalid Navidrome cache {}: {error}",
+                    path.display()
+                )
+            })?;
+            return Ok(true);
+        }
+    };
+    let extension = match inspected.format {
+        StaticFormat::Jpeg => "jpg",
+        StaticFormat::Png => "png",
+        StaticFormat::Webp => "webp",
+    };
+    let target = path.with_extension(extension);
+    if target.is_file() && crate::inspect::inspect_image(&target).is_ok() {
+        fs::remove_file(path).map_err(|error| {
+            format!(
+                "Unable to remove duplicate Navidrome cache {}: {error}",
+                path.display()
+            )
+        })?;
+        return Ok(true);
+    }
+    if target.exists() {
+        fs::remove_file(&target).map_err(|error| {
+            format!(
+                "Unable to replace invalid Navidrome cache {}: {error}",
+                target.display()
+            )
+        })?;
+    }
+    fs::rename(path, &target).map_err(|error| {
+        format!(
+            "Unable to normalize Navidrome cache {} to {}: {error}",
+            path.display(),
+            target.display()
+        )
+    })?;
+    Ok(false)
 }
 
 pub async fn run_registry_pipeline_with_cache_dir(
@@ -921,5 +991,27 @@ mod tests {
         assert!(database.exists());
         assert!(candidates.join("Thumbs.db").exists());
         assert!(cache.join("samples").join("sample.jpg").exists());
+    }
+
+    #[test]
+    fn startup_cleanup_normalizes_recent_legacy_navidrome_images() {
+        let root = tempfile::TempDir::new().unwrap();
+        let cache = root.path().join("_cache");
+        let artists = cache.join("navidrome-thumbnails").join("artists");
+        fs::create_dir_all(&artists).unwrap();
+        let valid = artists.join("valid.img");
+        let invalid = artists.join("invalid.image");
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([40, 80, 120, 255]))
+            .save_with_format(&valid, image::ImageFormat::Png)
+            .unwrap();
+        fs::write(&invalid, b"not an image").unwrap();
+
+        let (removed, bytes) = cleanup_stale_artwork_on_startup(&cache).unwrap();
+
+        assert_eq!(removed, 2);
+        assert_eq!(bytes, 12);
+        assert!(!valid.exists());
+        assert!(artists.join("valid.png").is_file());
+        assert!(!invalid.exists());
     }
 }

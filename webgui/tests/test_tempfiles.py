@@ -6,7 +6,6 @@ import asyncio
 import json
 import os
 import socket
-import time
 import unittest
 
 from webgui.tempfiles import (
@@ -101,7 +100,7 @@ class TemporaryWorkspaceTests(unittest.TestCase):
             manager.close()
             self.assertFalse(first.exists())
 
-    def test_startup_recovers_only_known_legacy_temp_files(self):
+    def test_startup_recovers_only_known_legacy_temp_files_immediately(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             managed = root / "uploads" / ("a" * 32 + ".png")
@@ -109,10 +108,20 @@ class TemporaryWorkspaceTests(unittest.TestCase):
             managed.parent.mkdir(parents=True)
             managed.write_bytes(b"managed")
             unrelated.write_bytes(b"keep")
-            old = time.time() - 120
-            os.utime(managed, (old, old))
-            os.utime(unrelated, (old, old))
-            TemporaryWorkspaces(root, stale_after_seconds=60).close()
+            TemporaryWorkspaces(root, stale_after_seconds=3600).close()
+            self.assertFalse(managed.exists())
+            self.assertTrue(unrelated.exists())
+
+    def test_startup_recovers_exact_legacy_uuid_workspace_immediately(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            managed = root / "web-candidates" / ("a" * 32)
+            unrelated = root / "web-candidates" / "operator-files"
+            managed.mkdir(parents=True)
+            unrelated.mkdir(parents=True)
+            (managed / "candidate.jpg").write_bytes(b"managed")
+            (unrelated / "source.jpg").write_bytes(b"keep")
+            TemporaryWorkspaces(root, stale_after_seconds=3600).close()
             self.assertFalse(managed.exists())
             self.assertTrue(unrelated.exists())
 
@@ -123,14 +132,16 @@ class TemporaryWorkspaceTests(unittest.TestCase):
             root.mkdir()
             orphan = root / ("a" * 64 + ".image")
             recent = root / ("b" * 64 + ".image")
+            legacy = root / ("d" * 64 + ".image")
             unrelated = root / "source.image"
-            for path in (orphan, recent, unrelated):
+            for path in (orphan, recent, legacy, unrelated):
                 path.write_bytes(b"fixture")
             mark_conversion_backup(orphan, committed=True)
             mark_conversion_backup(recent, committed=False)
-            self.assertEqual(recover_conversion_intermediates(cache), 1)
+            self.assertEqual(recover_conversion_intermediates(cache), 2)
             self.assertFalse(orphan.exists())
             self.assertTrue(recent.exists())
+            self.assertFalse(legacy.exists())
             self.assertTrue(unrelated.exists())
 
     def test_conversion_recovery_removes_abandoned_committed_marker(self):
