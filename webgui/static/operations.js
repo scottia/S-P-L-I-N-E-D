@@ -300,12 +300,10 @@ renderReview = function () {
   $("musicbrainzButton").disabled = !state.album || state.editorMode !== "album";
   $("bypassButton").disabled = !state.album || state.editorMode !== "album";
   $("writeNotice").textContent = "";
-  if (state.editorMode === "fallback" && state.fallbackPreviewMode
-    || state.compReportVisible && state.compPreviewMode) {
-    $("writeButton").disabled = true;
-    $("upscaleButton").disabled = true;
-    $("embedBatchButton").disabled = true;
-  }
+  // Saved-art preview mode suppresses automatic MusicBrainz processing, but
+  // the displayed track artwork remains an editable COMP source.  This keeps
+  // Upscale Preview and EMBED Comp available for reprocessing an existing or
+  // overridden track while the album-wide launch control stays disabled.
   const decision = activeArtworkDecision();
   if (decision) {
     const musicBrainzResults = decision.kind === "musicbrainz-results";
@@ -313,10 +311,10 @@ renderReview = function () {
       ? (Number.isInteger(decision.hoveredResult) ? decision.hoveredResult : decision.selectedResult) : null;
     const musicBrainz = Number.isInteger(musicBrainzIndex) ? decision.options?.[musicBrainzIndex] : null;
     const compCandidate = decision.jobKind === "comp" && !!(decision.selected || musicBrainz?.artwork_url);
-    $("upscaleButton").disabled = state.compPreviewMode || !editableArtworkSource()
+    $("upscaleButton").disabled = !editableArtworkSource()
       || decision.jobKind === "comp" && !compCandidate;
     $("writeButton").textContent = decision.jobKind === "comp" ? "EMBED Comp" : "WRITE Cover";
-    $("writeButton").disabled = !writable || state.compPreviewMode || musicBrainzResults || !decision.selected;
+    $("writeButton").disabled = !writable || musicBrainzResults || !decision.selected;
     if (decision.jobKind === "comp") $("embedBatchButton").disabled = true;
   }
   $("writeNotice").hidden = true;
