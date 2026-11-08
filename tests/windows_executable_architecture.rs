@@ -207,11 +207,13 @@ fn artist_overview_keeps_native_parity_controls_and_album_row_navigation() {
 fn comp_report_keeps_visible_group_controls_and_track_scoped_coordination() {
     let ui = source("windows/ui/app.slint");
     let main = source("windows/src/main.rs");
-    assert!(ui.contains("track.album-header ? (track.expanded ? \"▾\" : \"▸\")"));
+    assert!(ui.contains("track.album-header ? (track.expanded ? \"−\" : \"+\")"));
     assert!(ui.contains("border-width: track.album-header ? 1px : 0px"));
     assert!(ui.contains("max(170px, min(310px, parent.width * 0.38))"));
     assert!(!ui.contains("text: \"TRACK FILE\"; width: 310px"));
-    assert!(ui.contains("#381821a6"));
+    assert!(ui.contains("background: #381821c9"));
+    assert!(ui.contains("root.compilation-report-visible ? \"LAUNCH COMP\" : \"LAUNCH\""));
+    assert!(main.contains("recorded thumbnails validated"));
     let summary = ui
         .split(
             "if root.overview-mode == \"Artist\": HorizontalLayout { height: 18px; spacing: 12px;",

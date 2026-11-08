@@ -10773,11 +10773,16 @@ fn bind_callbacks(
                                     format!(" · {inventory_errors} album inventories unavailable")
                                 } else { String::new() },
                             );
+                            let recorded = report.len().saturating_sub(blue);
                             app.operation_status = if report.is_empty() && inventory_errors == 0 {
                                 format!("No matching COMP tracks found for {}.", plan.artist)
                             } else { format!(
-                                "COMP report ready · {green} green · {purple} thumb repair{} · {blue} need artwork · {missing} unreadable",
-                                if purple == 1 { "" } else { "s" }
+                                "COMP report ready · {} album{} · {recorded} recorded thumbnails validated{}",
+                                plan.album_paths.len(),
+                                if plan.album_paths.len() == 1 { "" } else { "s" },
+                                if inventory_errors > 0 {
+                                    format!(" · {inventory_errors} album inventories unavailable")
+                                } else { String::new() },
                             ) };
                             app.operation_tone = if purple > 0 || missing > 0 {
                                 "violet"
