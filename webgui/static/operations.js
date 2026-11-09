@@ -412,12 +412,23 @@ function compTrackIsReprocessable(track) {
   return ["blue", "purple", "green"].includes(track?.status)
     || (typeof compTrackOverride === "function" && compTrackOverride(track)?.writer === "windows");
 }
+function compBulkLaunchTargets(tracks) {
+  const eligible = tracks.filter(compTrackIsReprocessable);
+  const pending = eligible.filter(track => ["blue", "purple"].includes(track?.status));
+  if (!pending.length) return eligible;
+  // A normal batch advances unfinished tracks first. Opposing-client
+  // overrides remain actionable in the same pass, while ordinary green
+  // tracks are included only when the report is otherwise complete and the
+  // owner explicitly launches it again for reprocessing.
+  return eligible.filter(track => ["blue", "purple"].includes(track?.status)
+    || (typeof compTrackOverride === "function" && compTrackOverride(track)?.writer === "windows"));
+}
 function fallbackCompLaunchTargets(trackKey = "") {
   if (trackKey) {
     const selected = state.fallbackTracks.find(track => track.key === trackKey);
     return selected && ["blue", "purple", "green"].includes(selected.status) ? [selected] : [];
   }
-  return state.fallbackTracks.filter(compTrackIsReprocessable);
+  return compBulkLaunchTargets(state.fallbackTracks);
 }
 function artistCompLaunchGroups(target = null) {
   if (target?.albumId && target?.trackKey) {
@@ -426,7 +437,12 @@ function artistCompLaunchGroups(target = null) {
     if (selected && ["blue", "purple", "green"].includes(selected.status))
       return [{id: group.id, keys: [selected.key]}];
   }
-  return state.compGroups.map(group => ({id: group.id, keys: group.tracks.filter(compTrackIsReprocessable).map(track => track.key)})).filter(group => group.keys.length);
+  const allTracks = state.compGroups.flatMap(group => group.tracks || []);
+  const selected = new Set(compBulkLaunchTargets(allTracks));
+  return state.compGroups.map(group => ({
+    id: group.id,
+    keys: (group.tracks || []).filter(track => selected.has(track)).map(track => track.key),
+  })).filter(group => group.keys.length);
 }
 async function launchFallback(signal = null, trackKey = "") {
   if (!state.album) return;

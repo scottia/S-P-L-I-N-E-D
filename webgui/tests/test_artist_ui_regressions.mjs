@@ -491,10 +491,10 @@ test("Artist and full-album COMP launches submit independent explicit scopes", a
 
   const submitted = JSON.parse(JSON.stringify(calls));
   assert.deepEqual(submitted[0].slice(0, 2), ["/api/jobs", {kind: "comp", payload: {
-    artist_id: "artist-1", album_id: "comp-1", track_keys: ["artist-track", "completed-track"],
+    artist_id: "artist-1", album_id: "comp-1", track_keys: ["artist-track"],
   }}]);
   assert.deepEqual(submitted[1].slice(0, 2), ["/api/jobs", {kind: "comp", payload: {
-    album_id: "comp-1", track_keys: ["artist-track", "other-track", "completed-track"],
+    album_id: "comp-1", track_keys: ["artist-track", "other-track"],
   }}]);
   assert.equal(calls[0][2].signal, signal);
   assert.equal(calls[1][2].signal, signal);
