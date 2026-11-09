@@ -5861,6 +5861,81 @@ fn load_artist_art_candidates(
     Ok(())
 }
 
+fn add_uploaded_artist_artwork(app: &mut ApplicationState, path: &Path) -> Result<usize, String> {
+    if !app.artist_artwork_mode {
+        return Err("Open Artists Art Enhancements before uploading artwork.".to_string());
+    }
+    let info = inspect_image(path)?;
+    let range = Range {
+        min: app.config.range.min,
+        ideal: app.config.range.ideal,
+        max: app.config.range.max,
+        ladder: app.config.range.ladder,
+    };
+    let range_class = format!("{:?}", range.classify(info.width.min(info.height)));
+    let index = app
+        .candidates
+        .iter()
+        .map(|candidate| candidate.index)
+        .max()
+        .unwrap_or(899_999)
+        .saturating_add(1);
+    let source_path = path.to_string_lossy().into_owned();
+    app.candidates.push(CandidateState {
+        index,
+        source: "local".to_string(),
+        dimensions: format!("{} × {}", info.width, info.height),
+        width: info.width,
+        height: info.height,
+        projected_width: info.width,
+        projected_height: info.height,
+        source_range_class: range_class.clone(),
+        range_class,
+        policy_status: "accept".to_string(),
+        policy_reason: "Uploaded Art".to_string(),
+        image_type: "ArtistImage".to_string(),
+        cache_path: source_path.clone(),
+        url: String::new(),
+        local_origin: source_path.clone(),
+        acceptable: true,
+        strict_override_active: false,
+        upscaled: false,
+        approved: true,
+        recommended: false,
+        selected: false,
+    });
+    app.select_candidate(index);
+    app.artist_current_radio_active = false;
+    app.artist_theme_art_enabled = false;
+    app.artist_theme_portrait_preview_path.clear();
+    app.artist_theme_banner_preview_path.clear();
+    app.artist_portrait_preview_candidate_index = Some(index);
+    app.artist_artwork_draft_path = source_path.clone();
+    app.artist_portrait_preview_path = source_path;
+    app.artist_portrait_zoom = 1.0;
+    app.artist_portrait_horizontal = 0.0;
+    app.artist_portrait_vertical = 0.0;
+    app.artist_portrait_radio_active = true;
+    update_artist_preview_activation(app, "portrait");
+    if let Some(source) = app
+        .sources
+        .iter_mut()
+        .find(|source| source.name.eq_ignore_ascii_case("local"))
+    {
+        source.candidate_count = app
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.source.eq_ignore_ascii_case("local"))
+            .count();
+        source.status = "success".to_string();
+    }
+    app.operation_status =
+        "Uploaded Artist Art selected as blue portrait · choose pink to also use it as the banner"
+            .to_string();
+    app.operation_tone = "cyan".to_string();
+    Ok(index)
+}
+
 fn focused_artist_art_target(
     app: &ApplicationState,
     artist: &str,
@@ -9200,6 +9275,39 @@ fn bind_callbacks(
     {
         let state = Arc::clone(&state);
         let weak = ui.as_weak();
+        ui.on_upload_artist_artwork(move || {
+            let allowed = state.lock().is_ok_and(|app| {
+                app.artist_artwork_mode && !app.operation_busy
+            });
+            if !allowed {
+                record_action_result(
+                    &state,
+                    Err("Open Artists Art Enhancements and wait for the current operation before uploading artwork.".to_string()),
+                );
+                refresh_weak(&weak, &state);
+                return;
+            }
+            let state = Arc::clone(&state);
+            let weak = weak.clone();
+            std::thread::spawn(move || {
+                let selected = browse_for_artist_artwork_file();
+                let _ = slint::invoke_from_event_loop(move || {
+                    let Some(path) = selected else {
+                        return;
+                    };
+                    let result = state
+                        .lock()
+                        .map_err(|_| "The SPLINED application state is unavailable.".to_string())
+                        .and_then(|mut app| add_uploaded_artist_artwork(&mut app, Path::new(&path)).map(|_| ()));
+                    record_action_result(&state, result);
+                    refresh_weak(&weak, &state);
+                });
+            });
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let weak = ui.as_weak();
         let workspace_layout = Rc::clone(&workspace_layout);
         let maximize_guard = maximize_guard.clone();
         let ui_debug_log = ui_debug_log.clone();
@@ -12226,7 +12334,6 @@ fn bind_callbacks(
                     .candidates
                     .iter()
                     .find(|candidate| candidate.index == index)
-                    .filter(|candidate| candidate.image_type != "ArtistBanner")
                     .map(|candidate| candidate.cache_path.clone());
                 if let Some(path) = portrait {
                     app.artist_current_radio_active = false;
@@ -12389,10 +12496,7 @@ fn bind_callbacks(
                     .candidates
                     .iter()
                     .find(|candidate| candidate.index == index.max(0) as usize)
-                    .and_then(|candidate| {
-                        associated_banner_candidate(candidate, &app.candidates)
-                            .map(|banner| banner.cache_path.clone())
-                    });
+                    .map(|candidate| candidate.cache_path.clone());
                 if app.artist_artwork_mode
                     && let Some(path) = candidate
                 {
@@ -17540,18 +17644,6 @@ fn unsaved_adjustment_defaults(app: &ApplicationState) -> bool {
     projected.output != app.config.output
 }
 
-fn associated_banner_candidate<'a>(
-    candidate: &CandidateState,
-    candidates: &'a [CandidateState],
-) -> Option<&'a CandidateState> {
-    if candidate.image_type == "ArtistBanner" {
-        return candidates.iter().find(|row| row.index == candidate.index);
-    }
-    candidates.iter().find(|row| {
-        row.image_type == "ArtistBanner" && row.source.eq_ignore_ascii_case(&candidate.source)
-    })
-}
-
 fn candidate_ui_row(candidate: &CandidateState, compared: bool) -> UiCandidateRow {
     UiCandidateRow {
         index: candidate.index as i32,
@@ -17567,9 +17659,9 @@ fn candidate_ui_row(candidate: &CandidateState, compared: bool) -> UiCandidateRo
         selected: candidate.selected,
         recommended: candidate.recommended,
         compared,
-        portrait_available: candidate.image_type != "ArtistBanner",
+        portrait_available: true,
         portrait_active: false,
-        banner_available: candidate.image_type == "ArtistBanner",
+        banner_available: true,
         banner_active: false,
         preview: load_scaled_image(&candidate.cache_path, 320),
     }
@@ -18651,9 +18743,12 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
             selected: candidate.selected,
             recommended: candidate.recommended,
             compared: state.comparison_candidates.contains(&candidate.index),
-            portrait_available: candidate.image_type != "ArtistBanner",
+            // Source metadata may call a result a portrait or a background,
+            // but role assignment is an operator choice. Every Artist Art
+            // result exposes both the blue portrait and pink banner radios.
+            portrait_available: state.artist_artwork_mode,
             portrait_active: state.artist_portrait_preview_candidate_index == Some(candidate.index),
-            banner_available: associated_banner_candidate(candidate, &state.candidates).is_some(),
+            banner_available: state.artist_artwork_mode,
             banner_active: state.artist_banner_preview_candidate_index == Some(candidate.index),
             preview: load_scaled_image(&candidate.cache_path, 320),
         })
@@ -22058,6 +22153,38 @@ fn browse_for_backup_file(_initial: &str, _restore_type: &str) -> Option<String>
     None
 }
 
+#[cfg(windows)]
+fn browse_for_artist_artwork_file() -> Option<String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let script = r#"
+Add-Type -AssemblyName PresentationFramework
+$dialog = New-Object Microsoft.Win32.OpenFileDialog
+$dialog.Title = 'Upload Artist Art'
+$dialog.Filter = 'Artist artwork (*.jpg;*.jpeg;*.png;*.webp)|*.jpg;*.jpeg;*.png;*.webp'
+$dialog.CheckFileExists = $true
+$dialog.Multiselect = $false
+if ($dialog.ShowDialog()) {
+    [Console]::Out.Write($dialog.FileName)
+}
+"#;
+    let output = std::process::Command::new("powershell.exe")
+        .args(["-NoLogo", "-NoProfile", "-STA", "-Command", script])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let selected = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    (!selected.is_empty()).then_some(selected)
+}
+
+#[cfg(not(windows))]
+fn browse_for_artist_artwork_file() -> Option<String> {
+    None
+}
+
 fn source_display_name(source: &str) -> String {
     match source.trim().to_ascii_lowercase().as_str() {
         "samples" => "Samples".to_string(),
@@ -22613,21 +22740,22 @@ mod tests {
         AlbumEmbeddedCheck, AlbumWriteState, ArtistAlbumEmbedTarget, CachedPixels,
         EMBEDDED_METADATA_CACHE, EMBEDDED_METADATA_ERRORS, EmbedQueueSource, EmbedQueueTarget,
         MaximizeGuard, PREVIEW_CACHE_DIMENSION, ThumbnailAlbumTarget, UiCompilationReportRow,
-        UiMusicBrainzRow, WorkspaceLayout, add_embedded_thumbnail_decision, album_embedded_check,
-        album_embedded_check_cache, album_embedded_check_key, album_overview_queue_target,
-        apply_album_coordination_states, apply_ui_preferences, artist_album_card_artwork_path,
-        artist_album_card_display_title, artist_album_queue_targets, artist_art_candidate_source,
-        artist_art_query_sources, artist_art_targets_for_albums,
-        artist_compilation_thumb_repair_plan, artist_fallback_embedded_track_paths,
-        artist_is_secondary_credit, artist_overview_is_fully_complete,
-        artist_overview_legend_counts, artist_overview_release_banners, artist_overview_ui_model,
-        automatic_backup_is_due, backup_file_in_directory, backup_schedule_interval,
-        begin_musicbrainz_preview_request, cached_artist_banner_with_bottom_blur,
-        cached_circular_artist_thumbnail, canonical_webp_status, choose_musicbrainz_artist_match,
-        circular_artist_art_png, clear_rendered_preview_for_adjustment,
-        compilation_artwork_context, compilation_report_track_status,
-        compilation_thumb_repair_plan, completed_compilation_track_needs_attention,
-        current_embedded_thumbnail_infos, current_local_album_artwork_file, decode_webp_animation,
+        UiMusicBrainzRow, WorkspaceLayout, add_embedded_thumbnail_decision,
+        add_uploaded_artist_artwork, album_embedded_check, album_embedded_check_cache,
+        album_embedded_check_key, album_overview_queue_target, apply_album_coordination_states,
+        apply_ui_preferences, artist_album_card_artwork_path, artist_album_card_display_title,
+        artist_album_queue_targets, artist_art_candidate_source, artist_art_query_sources,
+        artist_art_targets_for_albums, artist_compilation_thumb_repair_plan,
+        artist_fallback_embedded_track_paths, artist_is_secondary_credit,
+        artist_overview_is_fully_complete, artist_overview_legend_counts,
+        artist_overview_release_banners, artist_overview_ui_model, automatic_backup_is_due,
+        backup_file_in_directory, backup_schedule_interval, begin_musicbrainz_preview_request,
+        cached_artist_banner_with_bottom_blur, cached_circular_artist_thumbnail, candidate_ui_row,
+        canonical_webp_status, choose_musicbrainz_artist_match, circular_artist_art_png,
+        clear_rendered_preview_for_adjustment, compilation_artwork_context,
+        compilation_report_track_status, compilation_thumb_repair_plan,
+        completed_compilation_track_needs_attention, current_embedded_thumbnail_infos,
+        current_local_album_artwork_file, decode_webp_animation,
         disable_embedded_thumbnail_preview, edit_existing_cover, embedded_artwork_footer,
         embedded_artwork_size_comparison, embedded_thumbnail_owner_key, embedded_thumbnail_ready,
         ensure_webp_album_still, fallback_compilation_cover_suppressed,
@@ -22653,6 +22781,45 @@ mod tests {
         write_artist_art_file_with_stem,
     };
     use serde_json::json;
+
+    #[test]
+    fn uploaded_artist_art_defaults_to_blue_and_supports_both_roles() {
+        let snapshot = MediaSnapshot {
+            schema_version: splined_core::media_database::SCHEMA_VERSION,
+            database_path: String::new(),
+            canonical_root: String::new(),
+            local_root: String::new(),
+            albums: Vec::new(),
+        };
+        let mut app = ApplicationState::new(Config::default(), snapshot).unwrap();
+        app.artist_artwork_mode = true;
+        app.artist_banner_source_path = "existing-banner.png".to_string();
+        app.artist_banner_preview_path = "existing-banner.png".to_string();
+        app.artist_banner_preview_candidate_index = Some(77);
+        app.artist_banner_radio_active = true;
+        let directory = tempfile::tempdir().unwrap();
+        let upload = directory.path().join("wide-upload.png");
+        image::RgbImage::from_pixel(120, 60, image::Rgb([20, 80, 160]))
+            .save_with_format(&upload, image::ImageFormat::Png)
+            .unwrap();
+
+        let index = add_uploaded_artist_artwork(&mut app, &upload).unwrap();
+        let candidate = app
+            .candidates
+            .iter()
+            .find(|candidate| candidate.index == index)
+            .unwrap();
+        let row = candidate_ui_row(candidate, false);
+
+        assert_eq!(candidate.image_type, "ArtistImage");
+        assert_eq!(app.artist_portrait_preview_candidate_index, Some(index));
+        assert!(app.artist_portrait_radio_active);
+        assert_eq!(app.artist_banner_preview_candidate_index, Some(77));
+        assert!(app.artist_banner_radio_active);
+        assert!(row.portrait_available);
+        assert!(row.banner_available);
+        assert!(app.operation_status.contains("choose pink"));
+    }
 
     #[test]
     fn tint_palette_follows_each_image_without_persistent_storage() {

@@ -395,10 +395,6 @@ function candidateVisible(candidate) {
   }
   return true;
 }
-function candidateBanner(candidate) {
-  if (candidateKind(candidate) === "banner") return candidate;
-  return state.candidates.find(item => item !== candidate && candidateKind(item) === "banner" && sourceKey(item.source) === sourceKey(candidate.source)) || null;
-}
 function activeFxTarget() {
   if (activeArtworkDecision()?.jobKind === "comp" || state.editorMode === "fallback" || state.editorMode === "artist" && state.compReportVisible) return "comp";
   if (state.editorMode === "album") return "album";
@@ -1798,15 +1794,13 @@ function renderCandidates() {
     main.append(node("span", "candidate-source-label", candidate.source));
     main.addEventListener("click", () => selectCandidate(candidate, kind === "banner" ? "banner" : "artist")); picture.append(main);
     if (state.editorMode === "artist" && !decision) {
-      if (kind !== "banner") {
-        const portrait = node("button", "candidate-radio artist" + (state.selectedPortrait === candidate ? " active" : "")); portrait.type = "button"; portrait.setAttribute("aria-label", "Preview as artist image: " + candidate.name);
-        portrait.addEventListener("click", () => selectCandidate(candidate, "artist")); picture.append(portrait);
-      }
-      const bannerCandidate = candidateBanner(candidate);
-      if (bannerCandidate) {
-        const banner = node("button", "candidate-radio banner" + (state.selectedBanner === bannerCandidate ? " active" : "")); banner.type = "button"; banner.setAttribute("aria-label", "Preview banner: " + bannerCandidate.name);
-        banner.addEventListener("click", () => selectCandidate(bannerCandidate, "banner")); picture.append(banner);
-      }
+      // Provider labels describe where an image came from, not the only role
+      // the operator may assign to it. Every Artist Art candidate can be
+      // staged as the blue portrait, the pink banner, or both.
+      const portrait = node("button", "candidate-radio artist" + (state.selectedPortrait === candidate ? " active" : "")); portrait.type = "button"; portrait.setAttribute("aria-label", "Preview as artist image: " + candidate.name);
+      portrait.addEventListener("click", () => selectCandidate(candidate, "artist")); picture.append(portrait);
+      const banner = node("button", "candidate-radio banner" + (state.selectedBanner === candidate ? " active" : "")); banner.type = "button"; banner.setAttribute("aria-label", "Preview as artist banner: " + candidate.name);
+      banner.addEventListener("click", () => selectCandidate(candidate, "banner")); picture.append(banner);
     }
     if (active) picture.append(node("span", "candidate-recommended", "●"));
     card.append(picture);

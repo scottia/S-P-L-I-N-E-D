@@ -174,11 +174,37 @@ const statusFunctions = between(
   "function setStatus",
   "async function api",
 );
+const uploadedArtworkFunction = between(
+  operationsSource,
+  "function useUploadedArtwork",
+  '$("uploadArtwork").addEventListener',
+);
 const albumSummaryFunctions = between(
   appSource,
   "function albumOverride",
   "function renderAlbumStatusKey",
 );
+
+test("uploaded Artist Art starts blue while retaining explicit pink role choice", () => {
+  const state = {editorMode: "artist", candidates: [], radioBanner: true};
+  const selections = [];
+  let renders = 0;
+  const context = load(uploadedArtworkFunction, {
+    state,
+    renderCandidates: () => { renders += 1; },
+    selectCandidate: (candidate, role) => selections.push([candidate, role]),
+  });
+  const candidate = {name: "Uploaded banner-shaped image"};
+
+  context.useUploadedArtwork(candidate);
+
+  assert.equal(candidate.kind, "artist");
+  assert.equal(state.candidates[0], candidate);
+  assert.deepEqual(selections, [[candidate, "artist"]]);
+  assert.equal(renders, 1);
+  assert.match(appSource, /Every Artist Art candidate can be[\s\S]*candidate-radio artist[\s\S]*candidate-radio banner/);
+  assert.doesNotMatch(appSource, /function candidateBanner\(/);
+});
 const stageAllAlbumsFunction = between(
   operationsSource,
   "async function stageAllArtistAlbums",

@@ -1795,7 +1795,7 @@ export component AppWindow inherits Window {
     // full-width paragraph block while the final line remains left aligned.
     pure callback layout-artist-biography(string, float, float) -> [UiBiographyLine];
     callback open-artist-external(); callback open-artist-musicbrainz();
-    callback browse-artist-artwork(); callback write-artist-artwork(); callback approve-banner();
+    callback browse-artist-artwork(); callback upload-artist-artwork(); callback write-artist-artwork(); callback approve-banner();
     callback prepare-artist-embed(); callback confirm-artist-embed-action(bool);
     callback queue-artist-albums();
     callback prepare-compilation-repair(string); callback confirm-compilation-repair-action(bool);
@@ -3069,6 +3069,11 @@ export component AppWindow inherits Window {
                                         if (root.current-album-bypassed) { root.confirm-clear-bypass = true; }
                                         else { root.candidate-action("bypass"); }
                                     }
+                                }
+                                if root.artist-artwork-mode && root.workspace-mode == 2: NeonAction {
+                                    label: "Upload Art"; width: 86px; height: 27px; label-font-size: 12px * AppTheme.font-scale;
+                                    enabled: !root.operation-busy && !root.intro-active;
+                                    clicked => root.upload-artist-artwork();
                                 }
                                 Rectangle { horizontal-stretch: 1; background: transparent; }
                             }

@@ -165,6 +165,9 @@ fn artist_overview_keeps_native_parity_controls_and_album_row_navigation() {
     assert!(ui.contains("artist-summary-visible"));
     assert!(ui.contains("MusicBrainz ID"));
     assert!(ui.contains("root.browse-artist-artwork(); root.workspace-mode = 2;"));
+    assert!(ui.contains("callback browse-artist-artwork(); callback upload-artist-artwork();"));
+    assert!(ui.contains("label: \"Upload Art\""));
+    assert!(ui.contains("clicked => root.upload-artist-artwork();"));
     assert!(ui.contains("thumbnail-size: artist-scroll.visible-width < 520px ? 120px : 170px"));
     assert!(ui.contains("thumbnail-x: 8px"));
     assert!(ui.contains("thumbnail-column-width: self.thumbnail-size + 16px"));

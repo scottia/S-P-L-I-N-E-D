@@ -2055,6 +2055,14 @@ async function stageAllArtistAlbums() {
   setStatus(`${staged} Albums staged${existing ? ` · ${existing} already queued` : ""}${failed ? ` · ${failed} failed` : ""}`, failed ? "error" : "ready");
 }
 $("embedAllAlbums").addEventListener("click", () => runAction(stageAllArtistAlbums));
+function useUploadedArtwork(candidate) {
+  // An upload is neutral Artist Art. Start it in the blue portrait role and
+  // let the card's pink radio explicitly opt the same image into banner use.
+  candidate.kind = state.editorMode === "artist" ? "artist" : "cover";
+  state.candidates.unshift(candidate);
+  renderCandidates();
+  selectCandidate(candidate, candidate.kind === "cover" ? "album" : "artist");
+}
 $("uploadArtwork").addEventListener("click", () => {
   const input = node("input"); input.type = "file"; input.accept = "image/jpeg,image/png,image/webp";
   input.addEventListener("change", () => runAction(async () => {
@@ -2062,8 +2070,7 @@ $("uploadArtwork").addEventListener("click", () => {
     if (file.size > 25 * 1024 * 1024) throw new Error("Choose an image smaller than 25 MB");
     const data = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(",")[1]); reader.onerror = reject; reader.readAsDataURL(file); });
     const candidate = await post("/api/artwork/upload", {name: file.name, data});
-    candidate.kind = state.editorMode === "artist" ? state.radioBanner ? "banner" : "artist" : "cover";
-    state.candidates.unshift(candidate); renderCandidates(); selectCandidate(candidate, candidate.kind === "cover" ? "album" : candidate.kind);
+    useUploadedArtwork(candidate);
   })); input.click();
 });
 $("adminSetupForm").addEventListener("submit", event => {
