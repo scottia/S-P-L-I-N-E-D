@@ -956,6 +956,7 @@ class Services:
             )
             managed_artists = windows_managed_keys(db.raw, "artists")
             managed_albums = windows_managed_keys(db.raw, "albums")
+        windows_authority_configured = bool(managed_artists or managed_albums)
         old_keys = {row["album_key"]: row for row in old}
         old_paths = {row["path"]: row for row in old}
         albums, _ = core.inventory(
@@ -1025,6 +1026,17 @@ class Services:
                 authoritative = old_keys[str(row["album_key"])]
                 row["artist_key"] = str(authoritative["artist_key"])
                 artist["artist_key"] = str(authoritative["artist_key"])
+            elif (
+                windows_authority_configured
+                and prior_at_path is None
+                and str(row["album_key"]) not in old_keys
+            ):
+                # Once Windows authority has been established, synchronized
+                # identities must arrive through reconciliation. Full or
+                # incremental WebGUI refreshes may validate known catalog
+                # rows, but cannot independently create a competing Album.
+                deferred_albums += 1
+                continue
             artist["splined_version"] = core.VERSION
             row["splined_version"] = core.VERSION
             row["last_seen_at"] = now
@@ -2744,6 +2756,47 @@ class Services:
             query_artist=artist or row["artist_name"],
             query_album=title or row["album_name"],
         )
+
+    def musicbrainz_artwork_preview(self, payload):
+        """Import one explicitly identified CAA image into the bounded UI cache."""
+        release_id = core.valid_mbid(str(payload.get("release_id") or ""))
+        group_id = core.valid_mbid(str(payload.get("release_group_id") or ""))
+        if not release_id and not group_id:
+            raise ValueError("Choose a valid MusicBrainz release")
+        locations = []
+        if release_id:
+            locations.append(("release", release_id))
+        if group_id:
+            locations.append(("release-group", group_id))
+        http = core.Http()
+        for entity, identity in locations:
+            response = http.get(
+                f"https://coverartarchive.org/{entity}/{identity}/front",
+                headers={"Accept": "image/*"},
+            )
+            if int(getattr(response, "status_code", 500)) >= 400:
+                continue
+            body = bytes(getattr(response, "content", b"") or b"")
+            if not body or len(body) > 25 * 1024 * 1024:
+                continue
+            try:
+                with Image.open(BytesIO(body)) as opened:
+                    width, height = opened.size
+                    if width * height > 64 * 1024 * 1024:
+                        continue
+                    opened.verify()
+            except (OSError, ValueError):
+                continue
+            return {
+                "image": self.catalog.image(body),
+                "width": int(width),
+                "height": int(height),
+                "bytes": len(body),
+                "source": "MusicBrainz / Cover Art Archive",
+                "entity": entity,
+                "identity": identity,
+            }
+        raise ValueError("MusicBrainz artwork is unavailable for this release")
 
     @serialized
     def bypass(self, album_id, enabled):

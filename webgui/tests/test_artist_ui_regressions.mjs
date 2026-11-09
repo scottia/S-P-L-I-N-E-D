@@ -194,6 +194,11 @@ const chooseAlbumFunction = between(
   "async function chooseAlbum",
   "async function selectFallbackTrack",
 );
+const chooseArtistFunction = between(
+  appSource,
+  "async function chooseArtist",
+  "async function chooseAlbum",
+);
 const compReportOrderFunction = between(
   appSource,
   "function compareCompReportGroups",
@@ -496,8 +501,8 @@ test("Artist and full-album COMP launches submit independent explicit scopes", a
   assert.deepEqual(submitted[1].slice(0, 2), ["/api/jobs", {kind: "comp", payload: {
     album_id: "comp-1", track_keys: ["artist-track", "other-track"],
   }}]);
-  assert.equal(calls[0][2].signal, signal);
-  assert.equal(calls[1][2].signal, signal);
+  assert.equal(calls[0][2], undefined);
+  assert.equal(calls[1][2], undefined);
   assert.deepEqual(reviewed, [["job-1", true], ["job-2", true]]);
 });
 
@@ -577,13 +582,79 @@ test("both Artist COMP launch controls route through the scoped COMP action", as
   assert.match(operationsSource, /state\.launchAbort\?\.abort\(\)/);
   assert.match(operationsSource, /action: "cancel", id: job\.id/);
   assert.match(appSource, /state\.launchStopping \? "STOPPING" : "STOP PROCESS"/);
+  assert.match(appSource, /artistCompLaunch \|\| fallbackCompLaunch \? "LAUNCH COMP" : "LAUNCH"/);
+  assert.match(cssSource, /\.musicbrainz-review-actions\{[^}]*position:sticky[^}]*bottom:0/);
+  assert.match(appSource, /const processing = state\.launchActive \|\| activeLaunchJobs\(\)\.length > 0[\s\S]*?\["scan", "comp", "direct-musicbrainz"\]\.includes\(decision\.jobKind\)/);
+  assert.match(appSource, /if \(processing\)[\s\S]*?"STOP PROCESS"[\s\S]*?stopCandidateWork/);
+});
+
+test("Artist COMP reviews the first job before later Album enqueue back-pressure", async () => {
+  let releaseSecond;
+  const blockedSecond = new Promise(resolve => { releaseSecond = resolve; });
+  let markReviewed;
+  const firstReviewed = new Promise(resolve => { markReviewed = resolve; });
+  let posts = 0;
+  const reviewed = [];
+  const state = {
+    artist: {id: "artist-1"}, compReportVisible: true, compPreviewMode: false,
+    compGroups: [
+      {id: "comp-1", tracks: [{key: "first", status: "green"}]},
+      {id: "comp-2", tracks: [{key: "second", status: "green"}]},
+    ],
+  };
+  const context = load(launchCompFunctions, {
+    state,
+    post: async () => {
+      posts += 1;
+      if (posts === 1) return {id: "job-first"};
+      return blockedSecond;
+    },
+    reviewJob: async (id, quiet) => { reviewed.push([id, quiet]); markReviewed(); },
+    setStatus() {},
+  });
+
+  const launch = context.launchArtistComp();
+  await firstReviewed;
+  await Promise.resolve();
+
+  assert.equal(JSON.stringify(reviewed), JSON.stringify([["job-first", true]]));
+  releaseSecond({id: "job-second"});
+  await launch;
+  assert.equal(posts, 2);
+});
+
+test("STOP cancels a COMP job accepted after its enqueue was already in flight", async () => {
+  let acceptJob;
+  const accepted = new Promise(resolve => { acceptJob = resolve; });
+  const calls = [];
+  let reviews = 0;
+  const controller = new AbortController();
+  const context = load(launchCompFunctions, {
+    state: {sourceDiagnostics: []}, DOMException,
+    post: async (path, body) => {
+      calls.push([path, body]);
+      return path === "/api/jobs" ? accepted : {};
+    },
+    reviewJob: async () => { reviews += 1; }, setStatus() {},
+  });
+
+  const launch = context.enqueueComp("comp-1", ["track-1"], "artist-1", controller.signal);
+  controller.abort();
+  acceptJob({id: "late-job"});
+
+  await assert.rejects(launch, error => error?.name === "AbortError");
+  assert.equal(reviews, 0);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))), [
+    "/api/jobs/action", {action: "cancel", id: "late-job"},
+  ]);
 });
 
 test("stopping Candidate processing cancels unseen scan and COMP queue work", () => {
   assert.match(operationsSource, /action: "cancel", kind: "scan"/);
   assert.match(operationsSource, /action: "cancel", kind: "comp"/);
   assert.match(operationsSource, /launchArtistComp\(signal\)/);
-  assert.match(operationsSource, /signal \? \{signal\} : \{\}/);
+  assert.match(operationsSource, /if \(signal\?\.aborted\)/);
+  assert.match(operationsSource, /action: "cancel", id: result\.id/);
   assert.match(operationsSource, /const latestJobs = await api\("\/api\/jobs"\)/);
   assert.match(operationsSource, /\+\+state\.fallbackTrackRequest/);
   assert.match(operationsSource, /\+\+state\.compTrackRequest/);
@@ -613,6 +684,42 @@ test("automatic COMP launch uses the status bar without a running-work dialog", 
   assert.equal(polls, 1);
   assert.equal(context.state.reviewJobId, job.id);
   assert.match(statuses[0][0], /track 1 of 1/);
+});
+
+test("an action-triggered job refresh is not dropped behind a periodic poll", async () => {
+  let releaseFirst;
+  let jobsCalls = 0;
+  const firstJobs = new Promise(resolve => { releaseFirst = resolve; });
+  const state = {
+    server: {authenticated: true, setup_required: false}, jobs: [], embedQueue: [],
+    queueControls: {}, reviewJobId: null, reviewJobState: "",
+    albumOverrides: new Map(), compTrackOverrides: new Map(),
+  };
+  const context = load(pollJobsFunction, {
+    state,
+    api: async path => {
+      if (path === "/api/jobs") {
+        jobsCalls += 1;
+        return jobsCalls === 1 ? firstJobs : [];
+      }
+      if (path === "/api/jobs/control-state") return {};
+      return [];
+    },
+    renderQueue() {}, renderCandidateLaunchControl() {},
+    applyAlbumCoordination: () => [], applyCompTrackCoordination: () => [],
+    refreshOpposingAlbumThumbnails: async () => {}, refreshOpenCompReportAfterCoordination: async () => {},
+    refreshCompletedAlbum: async () => {}, renderHero() {}, renderReview() {}, renderLibrary() {},
+    refreshQueuedAlbumAfterSave: async () => {}, setStatus() {}, renderJob: async () => {},
+    $: () => ({open: false, value: ""}),
+  });
+
+  const periodic = context.pollJobs();
+  await new Promise(resolve => setImmediate(resolve));
+  const actionRefresh = context.pollJobs();
+  releaseFirst([]);
+  await Promise.all([periodic, actionRefresh]);
+
+  assert.equal(jobsCalls, 2);
 });
 
 test("ordinary queued scan work also stays in the status area without a modal", async () => {
@@ -1046,7 +1153,7 @@ test("selected MusicBrainz release embeds directly from the exact release previe
       kind: "musicbrainz-results", jobKind: "comp", jobId: "job-release",
       context: {album_id: "comp-1", track_key: "track-1"}, payload: {album_id: "comp-1", track_keys: ["track-1"]},
       selectedResult: 0, selectedExisting: null, existingArtwork: [],
-      options: [{artwork_url: "https://coverartarchive.org/release/exact/front", artwork_fallback_url: "https://coverartarchive.org/release-group/family/front"}],
+      options: [{artwork_preview_url: "/api/image/exact-release"}],
     },
     editorMode: "fallback", album: {id: "comp-1"}, fallbackTrack: {key: "track-1"},
     fx: {comp: {Brightness: 7}}, upscalePreview: {image: "/upscaled"}, pendingCompWrite: null,
@@ -1054,6 +1161,7 @@ test("selected MusicBrainz release embeds directly from the exact release previe
   const context = load(writeArtworkFunction, {
     state,
     musicBrainzExistingPreview: () => null,
+    musicBrainzArtworkSource: option => option?.artwork_preview_url || "",
     submitQueuedDecision: async value => decisions.push(JSON.parse(value)),
   });
 
@@ -1062,8 +1170,7 @@ test("selected MusicBrainz release embeds directly from the exact release previe
   assert.deepEqual(JSON.parse(JSON.stringify(decisions)), [{
     action: "webgui-embed-release", number: 1,
     artwork: {
-      image: "https://coverartarchive.org/release/exact/front",
-      fallback_image: "https://coverartarchive.org/release-group/family/front",
+      image: "/api/image/exact-release",
       adjustments: {Brightness: 7}, upscale: true,
     },
   }]);
@@ -1084,6 +1191,19 @@ test("Fallback embedded art is hidden until explicit report preview mode", () =>
     /musicBrainzPreviewOption\(decision\) \|\| musicBrainzExistingCandidate\(decision\)\)\) return/);
   assert.match(operationsSource,
     /state\.fallbackPreviewMode \? state\.fallbackTrack\?\.image : ""/);
+});
+
+test("Artist COMP embedded art is hidden until explicit report preview mode", () => {
+  const state = {
+    editorMode: "artist", compReportVisible: true, compPreviewMode: false,
+    compTrack: {image: "/embedded-cover"}, queuedDecision: null,
+  };
+  const context = load(editableArtworkFunctions, {
+    state, musicBrainzPreviewOption: () => null, musicBrainzExistingPreview: () => null,
+  });
+  assert.equal(context.editableArtworkSource(), "");
+  state.compPreviewMode = true;
+  assert.equal(context.editableArtworkSource(), "/embedded-cover");
 });
 
 test("Selected Artwork follows the report track instead of an unrelated queued COMP decision", async () => {
@@ -1126,11 +1246,17 @@ test("COMP Selected Artwork keeps the Windows button contract", () => {
   assert.match(operationsSource, /Writing selected Artist Art…/);
   assert.match(operationsSource, /Embedding selected COMP artwork…/);
   assert.match(operationsSource, /Staging cover and Album embedding…/);
-  assert.match(appSource, /const previewResult = \(\) => \{ decision\.hoveredResult = resultIndex; renderReview\(\); \}/);
+  assert.match(appSource, /const previewResult = \(\) => \{[\s\S]*?previewMusicBrainzResult\(decision, resultIndex\)/);
   assert.match(appSource, /addEventListener\("mouseenter", previewResult\)/);
-  assert.match(appSource, /const previewExisting = \(\) => \{ decision\.hoveredExisting = index; renderReview\(\); \}/);
+  assert.match(appSource, /const previewExisting = \(\) => \{[\s\S]*?clearCompDerivedPreview\(\);[\s\S]*?decision\.hoveredExisting = index; renderReview\(\);/);
   assert.match(appSource, /addEventListener\("mouseenter", previewExisting\)/);
-  assert.match(appSource, /"Use Selected Album"/);
+  assert.match(appSource, /decision\.jobKind === "comp"[\s\S]*?"EMBED Comp"[\s\S]*?runAction\(writeArtwork\)/);
+  assert.match(appSource, /"Generate Candidate Artwork"/);
+  assert.match(appSource, /Search every enabled artwork source for this selected MusicBrainz release/);
+  assert.match(appSource, /candidates\.addEventListener\("click", \(\) => runAction\(\(\) => submitQueuedDecision\(resultIndex \+ 1\)\)\)/);
+  assert.match(appSource, /\["scan", "comp", "direct-musicbrainz"\]\.includes\(decision\.jobKind\)/);
+  assert.match(operationsSource, /\["scan", "comp", "direct-musicbrainz"\]\.includes\(state\.queuedDecision\?\.jobKind\)/);
+  assert.doesNotMatch(appSource, /"Use Selected Album"/);
   assert.match(appSource, /else if \(musicBrainzPreviewOption\(decision\)\)[\s\S]*?MusicBrainz Release Cover/);
 });
 
@@ -1141,8 +1267,9 @@ test("saved panel sizes restore only after the authenticated workspace is visibl
   assert.match(appSource, /function saveLayout\(\)[\s\S]*localStorage\.setItem\(layoutStorageKey/);
 });
 
-test("changing report tracks cancels an unrelated transient COMP job", async () => {
+test("changing report tracks does not cancel an active COMP batch", async () => {
   const calls = [];
+  const statuses = [];
   const state = {
     queuedDecision: {
       jobKind: "comp", jobId: "old-job",
@@ -1154,13 +1281,54 @@ test("changing report tracks cancels an unrelated transient COMP job", async () 
   const context = load(compDecisionFunctions, {
     state,
     post: async (path, payload) => calls.push([path, payload]),
+    activeLaunchJobs: () => [{id: "old-job", kind: "comp", state: "waiting"}],
+    setStatus: message => statuses.push(message),
+    renderCandidateLaunchControl() {},
   });
 
-  await context.cancelMismatchedCompWork({artist_id: "new-artist", album_id: "new-comp", track_key: "new-track"});
+  const allowed = await context.cancelMismatchedCompWork({artist_id: "new-artist", album_id: "new-comp", track_key: "new-track"});
 
-  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [["/api/jobs/action", {action: "cancel", id: "old-job"}]]);
-  assert.equal(state.queuedDecision, null);
-  assert.equal(state.reviewJobId, null);
+  assert.equal(allowed, false);
+  assert.deepEqual(calls, []);
+  assert.equal(state.queuedDecision.jobId, "old-job");
+  assert.equal(state.reviewJobId, "old-job");
+  assert.match(statuses[0], /STOP PROCESS/);
+});
+
+test("Artist navigation cannot replace an active COMP batch", async () => {
+  const statuses = [];
+  let cancelled = false;
+  const state = {launchActive: true, queuedDecision: {jobKind: "comp"}};
+  const context = load(chooseArtistFunction, {
+    state,
+    activeLaunchJobs: () => [{id: "comp-1", kind: "comp", state: "waiting"}],
+    setStatus: message => statuses.push(message),
+    renderCandidateLaunchControl() {},
+    cancelActiveCompWork: async () => { cancelled = true; },
+  });
+
+  await context.chooseArtist("other-artist");
+
+  assert.equal(cancelled, false);
+  assert.match(statuses[0], /STOP PROCESS/);
+});
+
+test("Album navigation cannot replace an active COMP batch", async () => {
+  const statuses = [];
+  let cancelled = false;
+  const state = {launchActive: false, queuedDecision: {jobKind: "comp"}};
+  const context = load(chooseAlbumFunction, {
+    state,
+    activeLaunchJobs: () => [],
+    setStatus: message => statuses.push(message),
+    renderCandidateLaunchControl() {},
+    cancelActiveCompWork: async () => { cancelled = true; },
+  });
+
+  await context.chooseAlbum("other-album");
+
+  assert.equal(cancelled, false);
+  assert.match(statuses[0], /STOP PROCESS/);
 });
 
 test("MusicBrainz release prompt stays on the Artist COMP track", async () => {
@@ -1287,7 +1455,7 @@ test("MusicBrainz result decisions ignore stale image candidates and preserve re
   assert.equal(grouped[0].options.length, 2);
   assert.equal(grouped[0].section, 0);
   assert.equal(grouped[1].section, 2);
-  assert.match(appSource, /originalIndex[\s\S]*decision\.selectedResult = resultIndex/);
+  assert.match(appSource, /originalIndex[\s\S]*previewMusicBrainzResult\(decision, resultIndex, true\)/);
 });
 
 test("MusicBrainz zero-result prompts open the authority workspace", async () => {

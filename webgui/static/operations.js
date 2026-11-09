@@ -152,13 +152,14 @@ function compCandidateSource() {
   const decision = activeArtworkDecision();
   const musicBrainz = musicBrainzPreviewOption(decision);
   const existing = musicBrainzExistingPreview(decision);
-  return decision?.jobKind === "comp" && musicBrainz?.artwork_url
-    ? musicBrainz.artwork_url
+  return decision?.jobKind === "comp" && musicBrainzArtworkSource(musicBrainz)
+    ? musicBrainzArtworkSource(musicBrainz)
     : decision?.jobKind === "comp" && existing?.image
       ? existing.image
     : decision?.jobKind === "comp" && decision.selected
       ? decision.selected.image
-    : state.editorMode === "fallback" ? (state.fallbackPreviewMode ? state.fallbackTrack?.image : "") : state.compTrack?.image;
+    : state.editorMode === "fallback" ? (state.fallbackPreviewMode ? state.fallbackTrack?.image : "")
+    : state.compPreviewMode ? state.compTrack?.image : "";
 }
 function compThumbnailOwner() {
   const decision = activeArtworkDecision();
@@ -222,11 +223,12 @@ async function writeArtwork() {
     if (decision.jobKind === "comp" && decision.kind === "musicbrainz-results"
       && Number.isInteger(decision.selectedResult)) {
       const release = decision.options?.[decision.selectedResult];
-      if (!release?.artwork_url) throw new Error("The selected MusicBrainz Album has no preview artwork");
+      const releaseArtwork = musicBrainzArtworkSource(release);
+      if (!releaseArtwork) throw new Error("The selected MusicBrainz Album has no preview artwork");
       const prepared = typeof activeCompPrepared === "function" ? activeCompPrepared() : null;
       const value = JSON.stringify({
         action: "webgui-embed-release", number: decision.selectedResult + 1,
-        artwork: {image: release.artwork_url, fallback_image: release.artwork_fallback_url || "",
+        artwork: {image: releaseArtwork,
           adjustments: state.fx.comp || {}, upscale: !!state.upscalePreview,
           ...(prepared ? {prepared_id: prepared.prepared_id, prepared_sha256: prepared.sha256} : {})},
       });
@@ -345,13 +347,13 @@ renderReview = function () {
       ? (Number.isInteger(decision.hoveredResult) ? decision.hoveredResult : decision.selectedResult) : null;
     const musicBrainz = Number.isInteger(musicBrainzIndex) ? decision.options?.[musicBrainzIndex] : null;
     const existing = musicBrainzExistingPreview(decision);
-    const compCandidate = decision.jobKind === "comp" && !!(decision.selected || musicBrainz?.artwork_url || existing?.image);
+    const compCandidate = decision.jobKind === "comp" && !!(decision.selected || musicBrainzArtworkSource(musicBrainz) || existing?.image);
     $("upscaleButton").disabled = !editableArtworkSource()
       || decision.jobKind === "comp" && !compCandidate;
     $("writeButton").textContent = decision.jobKind === "comp" ? "EMBED Comp" : "WRITE Cover";
     $("writeButton").disabled = !writable || (musicBrainzResults
       ? !(existing?.image && Number.isInteger(decision.selectedExisting))
-        && !(musicBrainz?.artwork_url && Number.isInteger(decision.selectedResult))
+        && !(musicBrainzArtworkSource(musicBrainz) && Number.isInteger(decision.selectedResult))
       : !decision.selected);
     if (decision.jobKind === "comp") $("embedBatchButton").disabled = true;
   }
@@ -405,7 +407,14 @@ async function enqueueComp(albumId, keys, artistId = "", signal = null) {
   const payload = {album_id: albumId, track_keys: [...keys]};
   if (artistId) payload.artist_id = artistId;
   state.sourceDiagnostics = [];
-  const result = await post("/api/jobs", {kind: "comp", payload}, signal ? {signal} : {});
+  // Let an in-flight enqueue return its job id even after STOP. Aborting the
+  // fetch can lose that id after the server accepted the job, leaving unseen
+  // replacement work behind the cancelled queue.
+  const result = await post("/api/jobs", {kind: "comp", payload});
+  if (signal?.aborted) {
+    if (result?.id) await post("/api/jobs/action", {action: "cancel", id: result.id}).catch(() => {});
+    throw new DOMException("Processing stopped", "AbortError");
+  }
   await reviewJob(result.id, true);
 }
 function compTrackIsReprocessable(track) {
@@ -465,11 +474,20 @@ async function launchArtistComp(signal = null, target = null) {
     const result = await post(
       "/api/jobs",
       {kind: "comp", payload: {artist_id: artistId, album_id: group.id, track_keys: group.keys}},
-      signal ? {signal} : {},
     );
-    first ||= result.id;
+    if (signal?.aborted) {
+      if (result?.id) await post("/api/jobs/action", {action: "cancel", id: result.id}).catch(() => {});
+      throw new DOMException("Processing stopped", "AbortError");
+    }
+    if (!first) {
+      first = result.id;
+      // Assign and poll the first job before queuing every remaining Album.
+      // The server intentionally back-pressures a full COMP queue; waiting
+      // until the loop ends can therefore deadlock the browser before it ever
+      // renders the first MusicBrainz decision.
+      await reviewJob(first, true);
+    }
   }
-  await reviewJob(first, true);
 };
 async function launchCandidateWork(signal = null) {
   if (state.queuedDecision?.jobKind === "scan") return skipQueuedAlbum();
@@ -504,7 +522,7 @@ async function stopCandidateWork() {
   ]);
   const stopped = new Set(jobs.map(job => job.id));
   state.jobs = (state.jobs || []).map(job => stopped.has(job.id) ? {...job, state: "cancelled"} : job);
-  if (state.queuedDecision?.jobKind === "scan" || state.queuedDecision?.jobKind === "comp") state.queuedDecision = null;
+  if (["scan", "comp", "direct-musicbrainz"].includes(state.queuedDecision?.jobKind)) state.queuedDecision = null;
   if (jobs.some(job => job.id === state.reviewJobId)) { state.reviewJobId = null; state.reviewJobState = ""; }
   state.launchActive = false; state.launchStopping = false; state.launchAbort = null;
   state.pendingMusicBrainzExisting = null;
@@ -759,6 +777,7 @@ async function selectExistingMusicBrainzArtwork(index) {
     throw new Error("Open a COMP MusicBrainz result before selecting existing artwork");
   const existing = decision.existingArtwork?.[index];
   if (!existing) throw new Error("That existing library artwork is no longer available");
+  clearCompDerivedPreview();
   decision.selectedExisting = index;
   decision.selectedResult = null;
   decision.hoveredExisting = null;
@@ -1054,12 +1073,32 @@ async function refreshQueuedAlbumAfterSave(job = null) {
   }
   renderLibrary(); renderHero(); renderSources(); renderCandidates(); renderWorkspace();
 }
-let jobsPolling = false, lastPrompt = "";
+let jobsPolling = null, jobsPollAgain = false, lastPrompt = "";
 async function pollJobs() {
-  if (jobsPolling || !state.server?.authenticated || state.server?.setup_required) return;
-  jobsPolling = true;
+  if (!state.server?.authenticated || state.server?.setup_required) return;
+  if (jobsPolling) {
+    // A launch or write can finish its POST while the periodic poll still
+    // carries the pre-action queue snapshot.  Queue one authoritative
+    // follow-up read and let every caller await the same drain instead of
+    // silently dropping the action-triggered refresh.
+    jobsPollAgain = true;
+    return jobsPolling;
+  }
+  const task = (async () => {
+    do {
+      jobsPollAgain = false;
+      await performJobsPoll();
+    } while (jobsPollAgain);
+  })();
+  jobsPolling = task;
+  try { return await task; }
+  finally { if (jobsPolling === task) jobsPolling = null; }
+}
+async function performJobsPoll() {
   try {
     const priorJobs = new Map((state.jobs || []).map(job => [job.id, job]));
+    const priorCompActive = [...priorJobs.values()].some(job => job.kind === "comp"
+      && ["queued", "running", "waiting"].includes(job.state));
     const priorStaged = new Set(state.embedQueue.map(item => item.id));
     const [jobs, queueControls, albumCoordination, compTrackCoordination] = await Promise.all([
       api("/api/jobs"),
@@ -1068,7 +1107,14 @@ async function pollJobs() {
       api("/api/coordination/comp-track-overrides").catch(() => null),
     ]);
     state.jobs = jobs; state.queueControls = queueControls; renderQueue();
+    const currentCompActive = jobs.some(job => job.kind === "comp"
+      && ["queued", "running", "waiting"].includes(job.state));
     if (typeof renderCandidateLaunchControl === "function") renderCandidateLaunchControl();
+    // The report toolbar owns its own LAUNCH/STOP control. Keep it in step
+    // with the authoritative queue transition instead of leaving the old
+    // control behind when a cancellation finishes between browser polls.
+    if (priorCompActive !== currentCompActive
+      && (state.editorMode === "fallback" || state.compReportVisible)) renderHero();
     const changedOverrides = applyAlbumCoordination(albumCoordination);
     const changedTrackOverrides = applyCompTrackCoordination(compTrackCoordination);
     if (changedOverrides.length) {
@@ -1122,7 +1168,7 @@ async function pollJobs() {
         }
       }
     }
-  } finally { jobsPolling = false; }
+  } finally { /* the single-flight wrapper owns poll lifecycle state */ }
 }
 async function reviewJob(id, quietRunning = false) {
   state.reviewJobId = id; lastPrompt = "";
@@ -2092,7 +2138,9 @@ applyPreviewEffects=function () {
     // 220ms later with the track's currently embedded thumbnail.
     if (decision?.jobKind==='comp'
       && (musicBrainzPreviewOption(decision) || musicBrainzExistingCandidate(decision))) return;
-    if (decision?.jobKind==='comp' && decision.selected || state.editorMode==='fallback' || state.editorMode==='artist' && state.compReportVisible) {
+    const savedCompPreview = !decision?.jobKind && (state.editorMode==='fallback' && state.fallbackPreviewMode
+      || state.editorMode==='artist' && state.compReportVisible && state.compPreviewMode);
+    if (decision?.jobKind==='comp' && decision.selected || savedCompPreview) {
       const source=decision?.jobKind==='comp' && decision.selected
         ? decision.selected.image : state.editorMode==='fallback'
           ? (state.fallbackPreviewMode ? state.fallbackTrack?.image : "") : state.compTrack?.image;

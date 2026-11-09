@@ -967,6 +967,10 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
         )
         return result
 
+    @app.post("/api/musicbrainz/artwork-preview")
+    def musicbrainz_artwork_preview(payload: dict):
+        return context.require().musicbrainz_artwork_preview(payload)
+
     @app.post("/api/preview/render")
     def preview(payload: dict):
         return context.require().preview(payload)

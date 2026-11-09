@@ -132,6 +132,24 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             "adjustments": {"Brightness": 40},
         }
 
+    def test_musicbrainz_artwork_preview_imports_only_verified_release_art(self):
+        rendered = BytesIO()
+        Image.new("RGB", (640, 480), "teal").save(rendered, format="JPEG")
+        response = SimpleNamespace(status_code=200, content=rendered.getvalue())
+        release_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        with patch.object(core.Http, "get", return_value=response) as get:
+            result = self.services.musicbrainz_artwork_preview(
+                {"release_id": release_id, "release_group_id": ""}
+            )
+
+        self.assertTrue(result["image"].startswith("/api/image/"))
+        self.assertEqual((result["width"], result["height"]), (640, 480))
+        self.assertEqual(self.services.catalog.image_bytes(result["image"]), rendered.getvalue())
+        self.assertEqual(
+            get.call_args.args[0],
+            f"https://coverartarchive.org/release/{release_id}/front",
+        )
+
     def test_database_reset_empties_application_data_and_preserves_schema_and_admin(self):
         with closing(self.db.connect()) as db, db:
             db.execute(
@@ -2508,7 +2526,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 db.execute("SELECT count(*) FROM albums").fetchone()[0], 1
             )
 
-    def test_incremental_index_adds_physical_album_with_windows_authority_present(self):
+    def test_incremental_index_defers_new_album_with_windows_authority_present(self):
         with closing(self.db.connect()) as db, db:
             mark_windows_authority(
                 db.raw,
@@ -2533,15 +2551,14 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         changes = self.services.index_changes()
         self.assertEqual(changes["added"], 1)
         result = self.services.refresh_index(mode="incremental")
-        self.assertEqual(result["changed_albums"], 1)
-        self.assertEqual(result["deferred_albums"], 0)
+        self.assertEqual(result["changed_albums"], 0)
+        self.assertEqual(result["deferred_albums"], 1)
         with closing(self.db.connect()) as db:
             indexed = db.execute(
                 "SELECT album_name,path FROM albums WHERE path=?",
                 (str(added),),
             ).fetchone()
-        self.assertIsNotNone(indexed)
-        self.assertEqual(indexed["album_name"], "New COMP Album")
+        self.assertIsNone(indexed)
 
     def test_library_change_notice_excludes_windows_authoritative_album_deltas(self):
         with closing(self.db.connect()) as db, db:
@@ -3981,11 +3998,14 @@ class PostgreSQLBrowserTests(unittest.TestCase):
 
         app = None
         http_calls: list[str] = []
+        release_preview = BytesIO()
+        Image.new("RGB", (760, 620), "gold").save(release_preview, format="JPEG")
 
         class MusicBrainzResponse:
-            def __init__(self, payload, status_code=200):
+            def __init__(self, payload, status_code=200, content=b""):
                 self.status_code = status_code
                 self._payload = payload
+                self.content = content
 
             def json(self):
                 return self._payload
@@ -4035,6 +4055,8 @@ class PostgreSQLBrowserTests(unittest.TestCase):
 
         def fixture_http_get(_http, url, **kwargs):
             http_calls.append(url)
+            if url.startswith("https://coverartarchive.org/"):
+                return MusicBrainzResponse({}, 200, release_preview.getvalue())
             for artist_id, identity in identities.items():
                 if url.endswith("/artist/" + artist_id):
                     return MusicBrainzResponse({
@@ -4542,152 +4564,38 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     ).to_be_disabled()
                     expect(page.locator(".musicbrainz-release-row").first).to_be_visible()
                     page.locator(".musicbrainz-release-row").first.click()
-                    use_selected = page.locator(
+                    direct_embed = page.locator(
                         ".musicbrainz-release-actions button.primary"
                     )
-                    expect(use_selected).to_be_enabled()
-                    # Job polling can replace this enabled button with an
-                    # equivalent node between Playwright's stability checks.
-                    # Query and dispatch atomically on the currently enabled node.
-                    with page.expect_response(
-                        lambda response: response.url.endswith("/api/jobs/action")
-                        and response.request.method == "POST"
-                        and '"value":"1"'
-                        in (response.request.post_data or "").replace(" ", ""),
-                        timeout=15000,
-                    ) as action_response:
-                        page.evaluate("""() => {
-                            const button = document.querySelector('.musicbrainz-release-actions button.primary');
-                            if (!button || button.disabled) throw new Error('selected release was not retained');
-                            button.click();
-                        }""")
-                    self.assertTrue(
-                        action_response.value.ok,
-                        action_response.value.text(),
+                    expect(direct_embed).to_have_text("EMBED Comp")
+                    expect(direct_embed).to_be_enabled()
+                    candidate_search = page.locator(
+                        ".musicbrainz-release-actions button",
+                        has_text="Generate Candidate Artwork",
                     )
-                    expect(page.locator("#statusText")).to_contain_text(
-                        "loading artwork candidates", timeout=15000
-                    )
-                    try:
-                        expect(page.locator(".candidate-image-button").first).to_be_visible(
-                            timeout=15000
-                        )
-                    except AssertionError as error:
-                        job_diagnostics = page.evaluate("""async () => ({
-                            reviewJobId: state.reviewJobId,
-                            reviewJobState: state.reviewJobState,
-                            queuedDecision: state.queuedDecision ? {
-                              jobId: state.queuedDecision.jobId,
-                              nonce: state.queuedDecision.nonce,
-                              kind: state.queuedDecision.kind,
-                              selectedResult: state.queuedDecision.selectedResult,
-                            } : null,
-                            jobs: (await fetch('/api/jobs').then(response => response.json())).map(job => ({
-                              id: job.id, kind: job.kind, state: job.state, error: job.error,
-                              promptKind: job.progress?.prompt?.context?.kind,
-                              promptNonce: job.progress?.prompt?.nonce,
-                              message: job.progress?.message,
-                            })),
-                        })""")
-                        self.fail(
-                            f"candidate handoff did not render: {job_diagnostics!r}; {error}"
-                        )
-                    cards = page.locator("#candidateGrid .candidate-card.queued")
-                    self.assertGreaterEqual(cards.count(), 5)
-                    first_card = cards.first
-                    expect(first_card.locator(".candidate-source-label")).not_to_be_empty()
-                    expect(first_card.locator(".candidate-resolution")).to_be_visible()
-                    expect(first_card.locator(".candidate-quality")).to_be_visible()
-                    first_image = first_card.locator("img")
-                    expect(first_image).to_have_attribute("src", re.compile(r"\S+"))
-                    first_image_url = first_image.evaluate(
-                        "image => new URL(image.getAttribute('src'), document.baseURI).href"
-                    )
-                    first_image_response = page.request.get(first_image_url)
-                    self.assertTrue(first_image_response.ok)
-                    with Image.open(BytesIO(first_image_response.body())) as actual:
-                        displayed = first_card.locator(
-                            ".candidate-resolution"
-                        ).inner_text()
-                        self.assertEqual(
-                            displayed, f"{actual.width} × {actual.height}"
-                        )
-                    grid_box = page.locator("#candidateGrid").bounding_box()
-                    visible_cards = 0
-                    for index in range(cards.count()):
-                        box = cards.nth(index).bounding_box()
-                        if box and box["x"] + box["width"] <= grid_box["x"] + grid_box["width"]:
-                            visible_cards += 1
-                            self.assertLessEqual(
-                                box["y"] + box["height"],
-                                grid_box["y"] + grid_box["height"] + 1,
-                            )
-                    self.assertGreaterEqual(visible_cards, 5)
-                    diagnostics = page.locator("#compDecisionTools .comp-diagnostics")
-                    expect(diagnostics).to_contain_text("Diagnostics (4)")
-                    diagnostics.locator("summary").click()
-                    expect(diagnostics.locator(".comp-diagnostics-list")).to_be_visible()
-                    expect(first_card).to_be_visible()
-                    diagnostics.locator("summary").click()
-                    unavailable = page.locator("#sourceStrip .source-card", has_text="Deezer")
-                    expect(unavailable).to_have_class(re.compile(r"\bunavailable\b"))
-                    expect(unavailable.locator(".source-state")).to_have_text("⚠ Unavailable")
-                    filtered = page.locator("#sourceStrip .source-card", has_text="MusicBrainz")
-                    expect(filtered).to_have_class(re.compile(r"\bfiltered\b"))
-                    expect(filtered.locator(".source-state")).to_have_text("○ Filtered")
-
-                    screenshot_dir = os.environ.get("SPLINED_TEST_SCREENSHOT_DIR")
-                    if screenshot_dir:
-                        screenshot_root = Path(screenshot_dir)
-                        screenshot_root.mkdir(parents=True, exist_ok=True)
-                        page.locator("#candidateDock").screenshot(
-                            path=str(
-                                screenshot_root
-                                / "candidate-area-brave-normal-collapsed.png"
-                            )
-                        )
-                        diagnostics.locator("summary").click()
-                        expect(
-                            diagnostics.locator(".comp-diagnostics-list")
-                        ).to_be_visible()
-                        expect(first_card).to_be_visible()
-                        page.locator("#candidateDock").screenshot(
-                            path=str(
-                                screenshot_root
-                                / "candidate-area-brave-normal-expanded.png"
-                            )
-                        )
-                        diagnostics.locator("summary").click()
-                    page.locator(
-                        "#compDecisionTools button", has_text="MusicBrainz Results"
-                    ).click()
-                    expect(page.locator("#musicbrainzReview")).to_be_visible(
-                        timeout=15000
-                    )
-                    expect(
-                        page.locator(
-                            ".musicbrainz-review-actions button",
-                            has_text="Back to Candidates",
-                        )
-                    ).to_be_enabled()
-                    page.locator(
-                        ".musicbrainz-review-actions button",
-                        has_text="Back to Candidates",
-                    ).click()
-                    expect(page.locator(".candidate-image-button").first).to_be_visible(
-                        timeout=15000
-                    )
-                    page.locator(".candidate-image-button").first.click()
+                    expect(candidate_search).to_be_visible()
+                    expect(candidate_search).to_be_enabled()
                     expect(page.locator("#writeButton")).to_have_text("EMBED Comp")
-                    expect(page.locator("#embedBatchButton")).to_have_text("EMBED Batch")
-                    expect(page.locator("#embedBatchButton")).to_be_disabled()
+                    expect(page.locator("#writeButton")).to_be_enabled()
+                    expect(page.locator("#selectedSource")).to_have_text(
+                        "MusicBrainz / Cover Art Archive"
+                    )
+                    expect(page.locator("#selectedDimensions")).to_have_text(
+                        "760 × 620"
+                    )
                     self.assertEqual(embedded_track_artwork_bytes(target), initial_target_art)
                     page.locator("#upscaleButton").click()
                     expect(page.locator("#statusText")).to_contain_text(
                         "Embedded Thumb Ready · 300 × 300", timeout=15000
                     )
                     expect(page.locator("#selectedDimensions")).to_have_text("300 × 300")
-                    page.locator("#writeButton").click()
+                    with page.expect_response(
+                        lambda response: response.url.endswith("/api/jobs/action")
+                        and "webgui-embed-release" in (response.request.post_data or ""),
+                        timeout=15000,
+                    ) as action_response:
+                        page.locator("#writeButton").click()
+                    self.assertTrue(action_response.value.ok, action_response.value.text())
                     target_art = wait_for_embedded_art(target, initial_target_art)
                     with Image.open(BytesIO(target_art)) as embedded:
                         self.assertEqual(embedded.size, (300, 300))
@@ -4724,17 +4632,24 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     self.assertTrue(
                         all(
                             url.startswith(core.MB_BASE)
+                            or (
+                                url.startswith("https://coverartarchive.org/")
+                                and other_release_id not in url
+                            )
                             for url in http_calls[full_launch_call_start:]
                         ),
                         "an artwork provider was queried before full-Fallback release selection",
                     )
                     page.locator(".musicbrainz-release-row").click()
-                    page.locator(".musicbrainz-release-actions button.primary").click()
-                    expect(page.locator(".candidate-image-button").first).to_be_visible(
-                        timeout=15000
+                    expect(page.locator(".musicbrainz-release-actions button.primary")).to_have_text("EMBED Comp")
+                    candidate_search = page.locator(
+                        ".musicbrainz-release-actions button",
+                        has_text="Generate Candidate Artwork",
                     )
-                    page.locator(".candidate-image-button").first.click()
+                    expect(candidate_search).to_be_visible()
+                    expect(candidate_search).to_be_enabled()
                     expect(page.locator("#writeButton")).to_have_text("EMBED Comp")
+                    expect(page.locator("#writeButton")).to_be_enabled()
                     expect(page.locator("#embedBatchButton")).to_have_text("EMBED Batch")
                     expect(page.locator("#embedBatchButton")).to_be_disabled()
                     self.assertIsNone(embedded_track_artwork_bytes(other))
