@@ -1410,11 +1410,22 @@ function renderSources() {
       : runtime.message ? label + " · " + runtime.message
       : label + (searchable ? " · ready for artist search" : " · unavailable for this selection");
     button.append(icon === "⊘" ? node("span", "source-symbol", "⊘") : image("/assets/source-icons/" + icon + ".svg", "", ""));
-    const mode = artistEnabled && configured ? "Artist / Album" : artistEnabled ? "Artist-only" : configured ? "Album-only" : "Excluded";
+    const mode = artistEnabled && configured ? "Artist / Album" : artistEnabled ? "Artist-Only" : configured ? "Album-Only" : "Deactivated";
+    const modeClass = artistEnabled && configured ? "artist-album" : artistEnabled ? "artist-only" : configured ? "album-only" : "deactivated";
+    const modeTitle = artistEnabled && configured ? "Artist and Album artwork source"
+      : artistEnabled ? "Artist artwork source only"
+      : configured ? "Album artwork source only"
+      : "Deactivated Artist or Album Source. Neither source is active in Settings.";
     button.append(node("strong", "", label));
-    if (artistEnabled) button.append(node("small", "", `🔍 ${artistCount} Artist`));
-    if (configured) button.append(node("small", "", `🔍 ${coverCount} Cover`));
-    button.append(node("span", "source-state" + (searchable ? "" : " pending"), mode));
+    const counts = node("span", "source-counts");
+    counts.append(node("span", "source-search-glyph", "🔍"));
+    const countRows = node("span", "source-count-rows");
+    countRows.append(node("small", artistEnabled ? "" : "inactive", `${artistCount} Artist`));
+    countRows.append(node("small", configured ? "" : "inactive", `${coverCount} Cover`));
+    counts.append(countRows); button.append(counts);
+    const status = node("span", `source-status mode-${modeClass}`); status.title = modeTitle;
+    const radio = node("span", "source-status-radio"); radio.setAttribute("aria-hidden", "true");
+    status.append(radio, node("span", "source-state", mode)); button.append(status);
     button.addEventListener("click", () => { state.activeSource = state.activeSource === key ? "" : key; renderSources(); renderCandidates(); }); strip.append(button);
   }
 }

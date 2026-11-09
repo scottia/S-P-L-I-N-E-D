@@ -18806,9 +18806,9 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
                     && artist_art_source_enabled(&state.config, &source.name));
             let mode = match (artist_enabled, source.enabled) {
                 (true, true) => "Artist / Album",
-                (true, false) => "Artist-only",
-                (false, true) => "Album-only",
-                (false, false) => "Excluded",
+                (true, false) => "Artist-Only",
+                (false, true) => "Album-Only",
+                (false, false) => "Deactivated",
             };
             UiSourceRow {
                 name: SharedString::from(source.name.clone()),

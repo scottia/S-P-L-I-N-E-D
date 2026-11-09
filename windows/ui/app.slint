@@ -754,6 +754,7 @@ component SourceCard inherits Rectangle {
     pure callback make-drag-data(string) -> data-transfer;
     pure callback accept-drop(data-transfer, string) -> bool;
     callback drop-source(data-transfer, string);
+    property <color> mode-color: root.source-row.artist-enabled && root.source-row.enabled ? AppTheme.green : (root.source-row.artist-enabled ? AppTheme.magenta : (root.source-row.enabled ? #ff9738 : AppTheme.danger));
     width: 126px;
     border-radius: 7px;
     border-width: 1px;
@@ -797,18 +798,18 @@ component SourceCard inherits Rectangle {
             }
         }
         Text { text: root.source-row.label; color: AppTheme.foreground; font-size: 14px * AppTheme.font-scale; font-weight: 700; horizontal-alignment: center; overflow: elide; }
-        HorizontalLayout { height: 18px; spacing: 3px; alignment: center;
-            if root.source-row.artist-enabled: Image { source: @image-url("../gui/source-icons/search.svg"); width: 18px; height: 18px; image-fit: contain; }
-            if root.source-row.artist-enabled: Text { text: root.source-row.artist-count + " Artist"; color: AppTheme.secondary-foreground; font-size: 13px * AppTheme.font-scale; vertical-alignment: center; }
+        HorizontalLayout { height: 38px; spacing: 5px; alignment: center;
+            Image { source: @image-url("../gui/source-icons/search.svg"); width: 29px; height: 29px; image-fit: contain; }
+            VerticalLayout { width: 70px; spacing: 0px;
+                Text { text: root.source-row.artist-count + " Artist"; color: root.source-row.artist-enabled ? AppTheme.secondary-foreground : #5c7181; font-size: 13px * AppTheme.font-scale; vertical-alignment: center; }
+                Text { text: root.source-row.cover-count + " Cover"; color: root.source-row.enabled ? AppTheme.secondary-foreground : #5c7181; font-size: 13px * AppTheme.font-scale; vertical-alignment: center; }
+            }
         }
         HorizontalLayout { height: 18px; spacing: 3px; alignment: center;
-            if root.source-row.enabled: Image { source: @image-url("../gui/source-icons/search.svg"); width: 18px; height: 18px; image-fit: contain; }
-            if root.source-row.enabled: Text { text: root.source-row.cover-count + " Cover"; color: AppTheme.secondary-foreground; font-size: 13px * AppTheme.font-scale; vertical-alignment: center; }
-        }
-        HorizontalLayout { height: 18px; spacing: 3px; alignment: center;
-            if root.source-row.enabled || root.source-row.artist-enabled: Image { source: @image-url("../gui/source-icons/ready.svg"); width: 18px; height: 18px; image-fit: contain; }
-            if !root.source-row.enabled && !root.source-row.artist-enabled: Image { source: @image-url("../gui/source-icons/paused.svg"); width: 18px; height: 18px; image-fit: contain; }
-            Text { text: root.source-row.mode; color: root.source-row.enabled || root.source-row.artist-enabled ? AppTheme.green : AppTheme.danger; font-size: 13px * AppTheme.font-scale; vertical-alignment: center; overflow: elide; }
+            Rectangle { width: 14px; height: 14px; border-radius: 7px; border-width: 2px; border-color: root.mode-color; background: transparent;
+                Rectangle { x: 4px; y: 4px; width: 6px; height: 6px; border-radius: 3px; background: root.mode-color; }
+            }
+            Text { text: root.source-row.mode; color: root.mode-color; font-size: 13px * AppTheme.font-scale; vertical-alignment: center; overflow: elide; }
         }
             }
         }

@@ -290,6 +290,14 @@ test("COMP artwork source labels map to the Windows source counters", () => {
   assert.equal(context.sourceDiagnosticStatus(["Fanart.tv: request failed (ConnectionError)"], "fanart").status, "unavailable");
   assert.match(appSource, /const runtimeClass = !currentCount && runtime\.status \? " " \+ runtime\.status : ""/);
   assert.match(appSource, /artistEnabled && configured \? "Artist \/ Album"/);
+  assert.match(appSource, /artistEnabled \? "Artist-Only" : configured \? "Album-Only" : "Deactivated"/);
+  assert.match(appSource, /node\("span", "source-search-glyph", "🔍"\)/);
+  assert.match(appSource, /node\("span", "source-status-radio"\)/);
+  assert.match(cssSource, /\.source-card strong\{font-size:11px;color:#fff/);
+  assert.match(cssSource, /\.source-status\.mode-artist-album\{color:var\(--green\)\}/);
+  assert.match(cssSource, /\.source-status\.mode-artist-only\{color:var\(--pink\)\}/);
+  assert.match(cssSource, /\.source-status\.mode-album-only\{color:#ff9738\}/);
+  assert.match(cssSource, /\.source-status\.mode-deactivated\{color:var\(--danger\)\}/);
 });
 
 function queuedContext({groups, album, artistResponse}) {
