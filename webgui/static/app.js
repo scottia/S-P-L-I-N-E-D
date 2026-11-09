@@ -473,7 +473,7 @@ function editableArtworkSource() {
   if (existing?.image) return existing.image;
   if (decision?.selected?.image) return decision.selected.image;
   if (state.editorMode === "album") return state.selectedCover?.image || state.album?.cover || "";
-  if (state.editorMode === "fallback") return state.fallbackTrack?.image || "";
+  if (state.editorMode === "fallback") return state.fallbackPreviewMode ? state.fallbackTrack?.image || "" : "";
   if (state.editorMode === "artist" && state.compReportVisible) return state.compTrack?.image || "";
   if (state.radioCurrent) return state.selectedPortrait?.image || state.artist?.portrait
     || state.selectedBanner?.image || state.artist?.banner || "";
@@ -1447,7 +1447,7 @@ function renderMusicBrainzWorkspace() {
   const currentAlbumId = decision.context?.album_id || decision.payload?.album_id || "";
   const scopedCompCover = state.compGroups.find(group => group.id === currentAlbumId)?.cover || "";
   const currentImage = decision.jobKind === "comp"
-    ? state.compTrack?.image || state.fallbackTrack?.image || ""
+    ? state.compTrack?.image || (state.fallbackPreviewMode ? state.fallbackTrack?.image || "" : "")
     : scopedCompCover || state.album?.cover || "";
   if (currentImage) currentBody.append(image(currentImage, "musicbrainz-current-cover", current.title || "Current compilation"));
   const currentCopy = node("div"); currentCopy.append(node("b", "", current.title || state.album?.name || "Current compilation"),
@@ -1479,7 +1479,10 @@ function renderMusicBrainzWorkspace() {
         card.tabIndex = 0;
         card.addEventListener("click", () => { decision.selectedExisting = index; decision.selectedResult = null; renderMusicBrainzWorkspace(); renderReview(); });
       }
-      card.addEventListener("pointerenter", () => { decision.hoveredExisting = index; renderReview(); });
+      const previewExisting = () => { decision.hoveredExisting = index; renderReview(); };
+      card.addEventListener("pointerenter", previewExisting);
+      card.addEventListener("mouseenter", previewExisting);
+      card.addEventListener("focusin", previewExisting);
       card.addEventListener("pointerleave", () => { if (decision.hoveredExisting === index) { decision.hoveredExisting = null; renderReview(); } });
       cards.append(card);
     });
@@ -1509,13 +1512,16 @@ function renderMusicBrainzWorkspace() {
           node("small", "musicbrainz-release-state", [option.match_label || String(option.match_basis || "").replaceAll("-", " "), option.resolution,
             option.selection_state === "current" ? "current release" : option.selection_state === "visited" ? "reviewed" : ""].filter(Boolean).join(" · ")));
         row.append(rowCopy);
-        row.addEventListener("pointerenter", () => { decision.hoveredResult = resultIndex; renderReview(); });
+        const previewResult = () => { decision.hoveredResult = resultIndex; renderReview(); };
+        row.addEventListener("pointerenter", previewResult);
+        row.addEventListener("mouseenter", previewResult);
+        row.addEventListener("focus", previewResult);
         row.addEventListener("pointerleave", () => { if (decision.hoveredResult === resultIndex) { decision.hoveredResult = null; renderReview(); } });
         row.addEventListener("click", () => { decision.selectedResult = resultIndex; decision.selectedExisting = null; decision.hoveredResult = null; renderMusicBrainzWorkspace(); renderReview(); });
         familyHost.append(row);
         if (selected) {
           const rowActions = node("div", "musicbrainz-release-actions");
-          const generate = node("button", "primary", "Generate Candidate Artwork"); generate.type = "button";
+          const generate = node("button", "primary", "Use Selected Album"); generate.type = "button";
           generate.addEventListener("click", () => runAction(() => submitQueuedDecision(resultIndex + 1)));
           rowActions.append(generate);
           if (option.musicbrainz_url) {
@@ -1796,7 +1802,8 @@ function renderPanes() {
   $("enhanceTab").textContent = isComp ? "COMP Track Enhancements" : isAlbum ? "Album Art Enhancements" : "Artists Art Enhancements";
   if (isAlbum) {
     $("albumPaneHeading").textContent = isComp ? "COMP TRACK PREVIEW" : "ALBUM COVER PREVIEW";
-    const compTrackImage = state.editorMode === "fallback" ? state.fallbackTrack?.image : state.compTrack?.image;
+    const compTrackImage = state.editorMode === "fallback"
+      ? (state.fallbackPreviewMode ? state.fallbackTrack?.image : "") : state.compTrack?.image;
     const source = isComp ? activeCompPrepared()?.image || state.renderedPreview.comp?.image || state.upscalePreview?.image || decision?.selected?.image || compTrackImage
       : state.editorMode === "fallback" ? state.fallbackTrack?.image : state.renderedPreview.album?.image || state.upscalePreview?.image || state.selectedCover?.image || state.album?.cover;
     paneImage($("albumPane"), source, isComp || state.editorMode === "fallback" ? "Choose a COMP track to preview its embedded image" : "Choose a cover candidate");
@@ -1832,7 +1839,18 @@ function selectedImage() {
     url = state.upscalePreview?.image || option.artwork_url || "";
     type = "MusicBrainz Release Cover"; source = "MusicBrainz / Cover Art Archive";
     quality = state.upscalePreview ? "Upscale Preview" : "Release Preview";
-    if (url) frame.append(image(url, "selected-image", candidate.name));
+    if (url) {
+      const preview = image(url, "selected-image", candidate.name);
+      if (option.artwork_fallback_url && option.artwork_fallback_url !== url) {
+        preview.addEventListener("error", () => {
+          preview.addEventListener("error", () => preview.remove(), {once: true});
+          preview.src = option.artwork_fallback_url;
+        }, {once: true});
+      } else {
+        preview.addEventListener("error", () => preview.remove(), {once: true});
+      }
+      frame.append(preview);
+    }
   } else if (musicBrainzExistingCandidate(decision)) {
     candidate = musicBrainzExistingCandidate(decision);
     url = state.upscalePreview?.image || candidate.image;
@@ -1851,10 +1869,11 @@ function selectedImage() {
     quality = state.upscalePreview ? "Upscale Preview" : candidate ? "Preview" : "Current";
     if (url) frame.append(image(url, "selected-image", state.album?.name + " cover"));
   } else if (state.editorMode === "fallback") {
-    url = state.renderedPreview.comp?.image || state.upscalePreview?.image || state.fallbackTrack?.image;
+    url = state.renderedPreview.comp?.image || state.upscalePreview?.image
+      || (state.fallbackPreviewMode ? state.fallbackTrack?.image : "");
     type = state.fallbackTrack ? "COMP Track" : "Current Cover";
-    source = state.upscalePreview ? "Upscale preview" : state.fallbackTrack ? "Embedded track" : "Local";
-    quality = state.upscalePreview ? "Upscale Preview" : "Current";
+    source = state.upscalePreview ? "Upscale preview" : state.fallbackPreviewMode && state.fallbackTrack ? "Embedded track" : "Choose MusicBrainz artwork";
+    quality = state.upscalePreview ? "Upscale Preview" : state.fallbackPreviewMode ? "Current" : "Review";
     if (url) frame.append(image(url, "selected-image", state.fallbackTrack?.file + " embedded artwork"));
   } else if (state.editorMode === "artist" && state.compReportVisible && state.compTrack) {
     url = state.renderedPreview.comp?.image || state.upscalePreview?.image || state.compTrack.image;

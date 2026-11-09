@@ -166,6 +166,10 @@ class ArtworkAuthoritySourceTests(unittest.TestCase):
         self.assertEqual(options[0]["resolution"], "3000x3000")
         self.assertEqual(
             options[0]["artwork_url"],
+            f"https://coverartarchive.org/release/{current}/front",
+        )
+        self.assertEqual(
+            options[0]["artwork_fallback_url"],
             "https://coverartarchive.org/release-group/"
             "cccccccc-cccc-4ccc-8ccc-cccccccccccc/front",
         )

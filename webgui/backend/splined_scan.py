@@ -1230,6 +1230,36 @@ def _manual_choose_release(
                     }
                     return "existing-embed", rows[existing_number - 1], changes
                 return "existing", rows[existing_number - 1], changes
+        if (
+            isinstance(payload, dict)
+            and payload.get("action") == "webgui-embed-release"
+        ):
+            try:
+                release_number = int(payload.get("number", 0))
+            except (TypeError, ValueError):
+                release_number = 0
+            artwork = payload.get("artwork")
+            if 1 <= release_number <= len(items) and isinstance(artwork, dict):
+                selected_id = options[release_number - 1].get("id", "")
+                selected = next(
+                    (
+                        item
+                        for item in items
+                        if str(item.release_mbid).casefold() == selected_id.casefold()
+                    ),
+                    None,
+                )
+                if selected is not None:
+                    return "selected-embed", selected, {
+                        "webgui_artwork": {
+                            "image": str(artwork.get("image") or ""),
+                            "fallback_image": str(artwork.get("fallback_image") or ""),
+                            "adjustments": artwork.get("adjustments") or {},
+                            "upscale": bool(artwork.get("upscale")),
+                            "prepared_id": str(artwork.get("prepared_id") or ""),
+                            "prepared_sha256": str(artwork.get("prepared_sha256") or ""),
+                        }
+                    }
         if answer.isdigit() and 1 <= int(answer) <= len(items):
             selected_id = options[int(answer) - 1].get("id", "")
             selected = next(
@@ -1553,6 +1583,7 @@ def run_manual_compilation_album(
         selected: core.Candidate | None = None
         selected_artwork_request: dict[str, Any] | None = None
         direct_existing_embed = False
+        direct_release_embed = False
         release: core.Release | None = None
         authority_edit_pending = False
         # Completion authority belongs to the Recording/Artist validation,
@@ -1802,6 +1833,9 @@ def run_manual_compilation_album(
                         force_sources = False
                         interactive_retry = True
                         continue
+                    direct_release_embed = decision == "selected-embed"
+                    if direct_release_embed:
+                        selected_artwork_request = changes.get("webgui_artwork")
                     if discovered_item is None:
                         continue
                     selected_local_row = None
@@ -1963,6 +1997,29 @@ def run_manual_compilation_album(
                 if exact_release and local_rows and release is not None:
                     local_candidates = _manual_local_candidates(local_rows)
 
+            if direct_release_embed and release is not None:
+                # The browser already chose an exact MusicBrainz edition and
+                # supplied its Cover Art Archive image. Do not run the normal
+                # provider candidate search (or wait for a second picker) just
+                # to obtain metadata for the same write.
+                artwork_url = str(
+                    (selected_artwork_request or {}).get("image") or ""
+                )
+                selected = core.Candidate(
+                    core.Ref(
+                        "musicbrainz",
+                        str(release.mbid or authority["release_id"]),
+                        artwork_url,
+                        browser_url=artwork_url,
+                    ),
+                    Path(),
+                    0,
+                    0,
+                    "jpeg",
+                    0,
+                )
+                break
+
             if release is not None and not remote:
                 remote, remote_diagnostics = _manual_remote_candidates(
                     http,
@@ -2049,7 +2106,6 @@ def run_manual_compilation_album(
             if direct_existing_embed and local_candidates:
                 selected = local_candidates[0]
                 break
-
             decision, chosen, changes = _manual_choose_candidate(
                 candidates,
                 cfg,

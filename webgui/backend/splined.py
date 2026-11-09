@@ -4214,11 +4214,21 @@ def decorate_musicbrainz_results(
             item["score"] = str(musicbrainz_title_match(query_album, item.get("title", "")))
         item["query_artist"] = query_artist
         release_group_id = item.get("release_group_id", "").strip().casefold()
+        # The review row represents one exact MusicBrainz release, not its
+        # broader release family. Prefer that edition's cover so hovering two
+        # rows in one family never shows the same (or current embedded) art.
+        # Keep the family image only as a display fallback for editions that
+        # do not have their own Cover Art Archive entry.
         item["artwork_url"] = (
+            f"https://coverartarchive.org/release/{release_id}/front"
+            if release_id
+            else f"https://coverartarchive.org/release-group/{release_group_id}/front"
+            if release_group_id
+            else ""
+        )
+        item["artwork_fallback_url"] = (
             f"https://coverartarchive.org/release-group/{release_group_id}/front"
             if release_group_id
-            else f"https://coverartarchive.org/release/{release_id}/front"
-            if release_id
             else ""
         )
         item["musicbrainz_url"] = (

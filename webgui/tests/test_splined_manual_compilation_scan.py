@@ -269,6 +269,44 @@ class ManualCompilationDecisionTests(unittest.TestCase):
         self.assertIs(selected, existing)
         self.assertEqual(changes["webgui_artwork"], payload["artwork"])
 
+    def test_webgui_release_choice_can_embed_exact_release_artwork(self) -> None:
+        release_id = "8f33a714-f8f6-4c8f-b6f3-8183f48c03bb"
+        release = SimpleNamespace(
+            release_mbid=release_id,
+            recording_mbid="e1efc38f-1f86-4c2c-bd90-df1e0796f789",
+            recording_artist="Aaliyah",
+            release_artist="Aaliyah",
+            recording_title="Miss You",
+            release_title="I Care 4 U",
+            release_date="2002",
+            country="US",
+            release_class="album",
+            release_group_mbid="39dc6a4b-8128-4df9-a4a4-2cf776e94f6d",
+            release_group_title="I Care 4 U",
+            score=100,
+            match_basis="exact-recording",
+        )
+        payload = {
+            "action": "webgui-embed-release",
+            "number": 1,
+            "artwork": {
+                "image": f"https://coverartarchive.org/release/{release_id}/front",
+                "fallback_image": "https://coverartarchive.org/release-group/39dc6a4b-8128-4df9-a4a4-2cf776e94f6d/front",
+                "adjustments": {"Contrast": 9},
+                "upscale": True,
+            },
+        }
+        with mock.patch.object(
+            scan.core, "read_input", return_value=json.dumps(payload)
+        ):
+            decision, selected, changes = scan._manual_choose_release([release])
+
+        self.assertEqual(decision, "selected-embed")
+        self.assertIs(selected, release)
+        self.assertEqual(changes["webgui_artwork"], payload["artwork"] | {
+            "prepared_id": "", "prepared_sha256": "",
+        })
+
     def test_musicbrainz_result_selection_preserves_comp_track_identity(self) -> None:
         target = SimpleNamespace(
             release_mbid="8f33a714-f8f6-4c8f-b6f3-8183f48c03bb",

@@ -2593,9 +2593,23 @@ class Services:
                 "artist_id": scope_artist_id,
                 "album_id": row["album_key"],
             }
-            body, info, image_format, _ = self._prepare_comp_embedded(
-                request, normalized
-            )
+            try:
+                body, info, image_format, _ = self._prepare_comp_embedded(
+                    request, normalized
+                )
+            except ValueError:
+                # A prepared thumbnail is integrity-bound to this exact track
+                # and digest. Never hide a stale or tampered prepared artifact
+                # by silently replacing it with a remote fallback URL.
+                if request.get("prepared_id"):
+                    raise
+                fallback = str(request.get("fallback_image") or "").strip()
+                if not fallback or fallback == str(request.get("image") or "").strip():
+                    raise
+                request["image"] = fallback
+                body, info, image_format, _ = self._prepare_comp_embedded(
+                    request, normalized
+                )
             adapter.context["prepared_id"] = str(request.get("prepared_id", ""))
             return body, info, image_format
 

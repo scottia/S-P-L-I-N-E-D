@@ -1726,7 +1726,7 @@ class Catalog:
             has_ledger = db.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='compilation_track_artwork'"
             ).fetchone() is not None
-            completed = {str(row[0]) for row in db.execute(
+            completed = {str(row[0]).casefold() for row in db.execute(
                 "SELECT track_path FROM compilation_track_artwork "
                 "WHERE outcome IN ('embedded-replaced','embedded-existing')",
             )} if has_ledger else set()
@@ -1774,7 +1774,7 @@ class Catalog:
                     "cover": self.album_thumbnail_url(key),
                     "compilation": True, "album_mbid": "", "tracks": [],
                 }
-            completed_track = str(track_path) in completed
+            completed_track = str(track_path).casefold() in completed
             groups[key]["tracks"].append({
                 "key": row["track_key"], "file": track_path.name, "title": row["title"],
                 "coordination_path": relative_coordination_path(track_path, self.music),
