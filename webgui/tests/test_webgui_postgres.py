@@ -4564,11 +4564,11 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     ).to_be_disabled()
                     expect(page.locator(".musicbrainz-release-row").first).to_be_visible()
                     page.locator(".musicbrainz-release-row").first.click()
-                    direct_embed = page.locator(
-                        ".musicbrainz-release-actions button.primary"
-                    )
-                    expect(direct_embed).to_have_text("EMBED Comp")
-                    expect(direct_embed).to_be_enabled()
+                    expect(
+                        page.locator(
+                            "#musicbrainzReview button", has_text="EMBED Comp"
+                        )
+                    ).to_have_count(0)
                     candidate_search = page.locator(
                         ".musicbrainz-release-actions button",
                         has_text="Generate Candidate Artwork",
@@ -4641,7 +4641,11 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         "an artwork provider was queried before full-Fallback release selection",
                     )
                     page.locator(".musicbrainz-release-row").click()
-                    expect(page.locator(".musicbrainz-release-actions button.primary")).to_have_text("EMBED Comp")
+                    expect(
+                        page.locator(
+                            "#musicbrainzReview button", has_text="EMBED Comp"
+                        )
+                    ).to_have_count(0)
                     candidate_search = page.locator(
                         ".musicbrainz-release-actions button",
                         has_text="Generate Candidate Artwork",

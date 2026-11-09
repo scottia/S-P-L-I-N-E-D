@@ -1250,7 +1250,8 @@ test("COMP Selected Artwork keeps the Windows button contract", () => {
   assert.match(appSource, /addEventListener\("mouseenter", previewResult\)/);
   assert.match(appSource, /const previewExisting = \(\) => \{[\s\S]*?clearCompDerivedPreview\(\);[\s\S]*?decision\.hoveredExisting = index; renderReview\(\);/);
   assert.match(appSource, /addEventListener\("mouseenter", previewExisting\)/);
-  assert.match(appSource, /decision\.jobKind === "comp"[\s\S]*?"EMBED Comp"[\s\S]*?runAction\(writeArtwork\)/);
+  assert.doesNotMatch(appSource, /musicbrainz-release-actions[\s\S]*?const embed = node\("button", "primary", "EMBED Comp"\)/);
+  assert.match(operationsSource, /\$\("writeButton"\)\.textContent = decision\.jobKind === "comp" \? "EMBED Comp"/);
   assert.match(appSource, /"Generate Candidate Artwork"/);
   assert.match(appSource, /Search every enabled artwork source for this selected MusicBrainz release/);
   assert.match(appSource, /candidates\.addEventListener\("click", \(\) => runAction\(\(\) => submitQueuedDecision\(resultIndex \+ 1\)\)\)/);

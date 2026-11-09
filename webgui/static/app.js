@@ -1544,12 +1544,6 @@ function renderMusicBrainzWorkspace() {
         familyHost.append(row);
         if (selected) {
           const rowActions = node("div", "musicbrainz-release-actions");
-          if (decision.jobKind === "comp") {
-            const embed = node("button", "primary", "EMBED Comp"); embed.type = "button";
-            embed.disabled = !musicBrainzArtworkSource(option);
-            embed.addEventListener("click", () => runAction(writeArtwork));
-            rowActions.append(embed);
-          }
           const candidates = node("button", decision.jobKind === "comp" ? "" : "primary", "Generate Candidate Artwork"); candidates.type = "button";
           candidates.title = "Search every enabled artwork source for this selected MusicBrainz release";
           candidates.addEventListener("click", () => runAction(() => submitQueuedDecision(resultIndex + 1)));
@@ -1595,9 +1589,9 @@ function renderMusicBrainzWorkspace() {
   }
   const useExisting = decision.selectedExisting !== null && decision.selectedExisting !== undefined;
   actions.append(back, keep);
-  if (useExisting) {
-    const use = node("button", "primary", decision.jobKind === "comp" ? "EMBED Comp" : "Use Existing Artwork"); use.type = "button";
-    use.addEventListener("click", () => runAction(() => decision.jobKind === "comp" ? writeArtwork() : useSelectedExistingMusicBrainzArtwork()));
+  if (useExisting && decision.jobKind !== "comp") {
+    const use = node("button", "primary", "Use Existing Artwork"); use.type = "button";
+    use.addEventListener("click", () => runAction(useSelectedExistingMusicBrainzArtwork));
     actions.append(use);
   }
   host.append(actions);
