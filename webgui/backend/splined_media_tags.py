@@ -274,7 +274,10 @@ def read_track_identity_tags(audio_path: Path) -> dict[str, str]:
 
     return {
         "title": value("title"),
-        "artist": value("artist"),
+        # TPE1/ARTIST is explicitly multi-value. Keeping only its first value
+        # hides Featured performers from the Artist catalog even though tools
+        # such as Mp3tag and Navidrome correctly expose every credit.
+        "artist": values("artist"),
         "recording_mbid": recording_mbid,
         "artist_mbid": values(
             "musicbrainz_artistid",

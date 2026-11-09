@@ -105,13 +105,11 @@ def _track_has_preferred_embedded_artwork(path: Path, preferred_side: int) -> bo
 
 
 def _album_inventory_fingerprint(album, fallback=False):
-    if fallback:
-        return TRACK_INVENTORY_PREFIX + core.album_scan_fingerprint(album)
-    digest = hashlib.sha256()
-    for path in sorted(album.audio_files, key=lambda value: str(value).casefold()):
-        digest.update(path.name.casefold().encode("utf-8", "surrogateescape"))
-        digest.update(b"\0")
-    return NAME_INVENTORY_PREFIX + digest.hexdigest()
+    del fallback
+    # Per-track Artist credits now participate in every identified Album's
+    # Artist projection. Include size/mtime for all tracks so changing a guest
+    # credit on a non-representative track is visible to incremental refresh.
+    return TRACK_INVENTORY_PREFIX + core.album_scan_fingerprint(album)
 
 
 def _indexed_album_unchanged(prior, album, fingerprint):
@@ -1667,6 +1665,7 @@ class Services:
     def write_artist(self, payload):
         self.runtime.require_write()
         artist_id = str(payload.get("artist_id", ""))
+        artist = self.catalog.artist(artist_id)
         with closing(self.runtime.database.connect()) as db:
             rows = list(
                 db.execute(
@@ -1674,8 +1673,6 @@ class Services:
                     (artist_id,),
                 )
             )
-        if not rows:
-            raise KeyError("Artist not found")
         targets = artist_targets(
             [
                 ArtistAlbum(
@@ -1687,8 +1684,9 @@ class Services:
                 for row in rows
                 if inside(Path(row["path"]), self.runtime.music)
             ],
-            rows[0]["artist_name"],
+            str(artist["name"]),
             self.runtime.artist_art,
+            allow_managed_without_owned_album=bool(artist.get("albums")),
         )
         if not targets:
             raise ValueError("Artist has no eligible artwork destination")

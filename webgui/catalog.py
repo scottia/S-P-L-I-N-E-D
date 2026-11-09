@@ -68,6 +68,21 @@ def artist_credit_position(track_artist: str, artist: str) -> int | None:
     return None
 
 
+def explicit_artist_credits(track_artist: str) -> tuple[str, ...]:
+    """Return authoritative multi-value Artist credits without guessing bands."""
+    return tuple(dict.fromkeys(
+        credit.strip()
+        for credit in re.split(r"[\0;]", str(track_artist or ""))
+        if credit.strip()
+    ))
+
+
+def projected_artist_id(name: str) -> str:
+    """Stable UI identity for an Artist credited only on another owner's Album."""
+    identity = normalized_artist_identity(name)
+    return "credit:" + sha256(identity.encode("utf-8")).hexdigest()[:32]
+
+
 def indexed_track_credit_values(
     track_artist: str, title: str = "", path: str = ""
 ) -> tuple[str, ...]:
@@ -638,6 +653,74 @@ class Catalog:
                     groups.append(blank)
         return groups
 
+    @staticmethod
+    def _projected_track_artists(db) -> dict[str, dict[str, object]]:
+        """Project every real per-track credit from identified Albums.
+
+        These are selectable Artist identities, not Album owners. The Album
+        remains stored once under its tagged Album Artist while every credited
+        performer can receive a Featured/Soundtrack/Various card.
+        """
+        try:
+            rows = db.execute(
+                "SELECT albums.album_key,albums.status,tracks.artist_name,"
+                "tracks.musicbrainz_artistid,tracks.title,tracks.path "
+                "FROM tracks JOIN albums "
+                "ON albums.album_key=tracks.album_key "
+                "WHERE TRIM(COALESCE(albums.musicbrainz_albumid,''))<>'' "
+                "ORDER BY albums.album_key,tracks.path COLLATE NOCASE"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return {}
+        result: dict[str, dict[str, object]] = {}
+        for row in rows:
+            credits = tuple(dict.fromkeys(
+                credit
+                for value in indexed_track_credit_values(
+                    str(row["artist_name"] or ""),
+                    str(row["title"] or ""),
+                    str(row["path"] or ""),
+                )
+                for credit in explicit_artist_credits(value)
+            ))
+            if not credits:
+                continue
+            mbids = re.findall(
+                r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+                r"[0-9a-f]{4}-[0-9a-f]{12}\b",
+                str(row["musicbrainz_artistid"] or ""),
+            )
+            for index, credit in enumerate(credits):
+                if synthetic_album_artist(credit):
+                    continue
+                identity = normalized_artist_identity(credit)
+                projection = result.setdefault(identity, {
+                    "artist_key": projected_artist_id(credit),
+                    "artist_name": credit,
+                    "musicbrainz_artistid": "",
+                    "primary_path": "",
+                    "album_keys": set(),
+                    "statuses": {},
+                })
+                if len(mbids) == len(credits):
+                    projection["musicbrainz_artistid"] = mbids[index].casefold()
+                projection["album_keys"].add(str(row["album_key"]))
+                projection["statuses"][str(row["album_key"])] = str(
+                    row["status"] or "unprocessed"
+                )
+        return result
+
+    @staticmethod
+    def _virtual_artist_row(projection: dict[str, object]) -> dict[str, object]:
+        return {
+            "artist_key": projection["artist_key"],
+            "artist_name": projection["artist_name"],
+            "musicbrainz_artistid": projection["musicbrainz_artistid"],
+            "primary_path": "",
+            "album_count": len(projection["album_keys"]),
+            "status": "unprocessed",
+        }
+
     def _artist_identity_rows(self, db, artist_id: str):
         try:
             selected = db.execute(
@@ -653,17 +736,38 @@ class Catalog:
             ).fetchall()
         except sqlite3.OperationalError:
             # Small read-only SQLite fixtures predate the full catalog schema.
-            selected = db.execute(
-                "SELECT artist_key,artist_name,'' AS musicbrainz_artistid,'' AS primary_path,"
-                "0 AS album_count,'unprocessed' AS status FROM artists WHERE artist_key=?",
-                (artist_id,),
-            ).fetchone()
-            candidates = db.execute(
-                "SELECT artist_key,artist_name,'' AS musicbrainz_artistid,'' AS primary_path,"
-                "0 AS album_count,'unprocessed' AS status FROM artists"
-            ).fetchall()
+            try:
+                selected = db.execute(
+                    "SELECT artist_key,artist_name,musicbrainz_artistid,primary_path,"
+                    "0 AS album_count,status FROM artists WHERE artist_key=?",
+                    (artist_id,),
+                ).fetchone()
+                candidates = db.execute(
+                    "SELECT artist_key,artist_name,musicbrainz_artistid,primary_path,"
+                    "0 AS album_count,status FROM artists"
+                ).fetchall()
+            except sqlite3.OperationalError:
+                selected = db.execute(
+                    "SELECT artist_key,artist_name,'' AS musicbrainz_artistid,'' AS primary_path,"
+                    "0 AS album_count,'unprocessed' AS status FROM artists WHERE artist_key=?",
+                    (artist_id,),
+                ).fetchone()
+                candidates = db.execute(
+                    "SELECT artist_key,artist_name,'' AS musicbrainz_artistid,'' AS primary_path,"
+                    "0 AS album_count,'unprocessed' AS status FROM artists"
+                ).fetchall()
         if selected is None:
-            raise KeyError("Artist not found")
+            projection = next(
+                (
+                    value for value in self._projected_track_artists(db).values()
+                    if str(value["artist_key"]) == str(artist_id)
+                ),
+                None,
+            )
+            if projection is None:
+                raise KeyError("Artist not found")
+            selected = self._virtual_artist_row(projection)
+            candidates = [*candidates, selected]
         identity = normalized_artist_identity(selected["artist_name"])
         selected_mbid = str(selected["musicbrainz_artistid"] or "").strip().casefold()
         selected_path = str(selected["primary_path"] or "").replace("\\", "/").rstrip("/")
@@ -898,7 +1002,9 @@ class Catalog:
             ).fetchall()
         except Exception:
             # SQLite fixtures intentionally do not carry the WebGUI-only table.
-            if isinstance(self.database, Database):
+            if isinstance(self.database, Database) and db.execute(
+                "SELECT 1 FROM artists WHERE artist_key=?", (artist_id,)
+            ).fetchone() is not None:
                 raise
             return {"album_keys": set(), "featured_album_keys": set(), "song_paths": {}}
         return {
@@ -1161,7 +1267,9 @@ class Catalog:
                 self._cache_navidrome_thumbnail(artist, credential, remote_artist)
             except (OSError, ValueError, requests.RequestException):
                 pass
-            if isinstance(self.database, Database):
+            if isinstance(self.database, Database) and db.execute(
+                "SELECT 1 FROM artists WHERE artist_key=?", (canonical_id,)
+            ).fetchone() is not None:
                 db.execute("DELETE FROM artist_album_appearances WHERE artist_key=?", (canonical_id,))
                 for key in sorted(song_paths):
                     db.execute(
@@ -1222,14 +1330,13 @@ class Catalog:
                 "FROM artists LEFT JOIN albums ON albums.artist_key=artists.artist_key "
                 "AND (COALESCE(albums.compilation,0)=0 "
                 "OR TRIM(COALESCE(albums.musicbrainz_albumid,''))<>'') "
-                "WHERE artists.artist_name LIKE ? ESCAPE '\\' "
-                "GROUP BY artists.artist_key HAVING COUNT(albums.album_key)>0 "
+                "GROUP BY artists.artist_key "
                 "ORDER BY artists.artist_name COLLATE NOCASE ",
-                ("%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%",),
             ).fetchall()
+            projected = self._projected_track_artists(db)
             try:
                 status_rows = db.execute(
-                    "SELECT artist_key,status FROM albums "
+                    "SELECT album_key,artist_key,status FROM albums "
                     "WHERE COALESCE(compilation,0)=0 "
                     "OR TRIM(COALESCE(musicbrainz_albumid,''))<>''"
                 ).fetchall()
@@ -1238,19 +1345,48 @@ class Catalog:
                 # Reduced read-only fixtures can predate Album status fields.
                 status_rows = []
                 projected_statuses = False
+        existing_identities = {
+            normalized_artist_identity(row["artist_name"]) for row in rows
+        }
+        rows = [*rows, *(
+            self._virtual_artist_row(value)
+            for identity, value in projected.items()
+            if identity not in existing_identities
+        )]
         statuses_by_artist: dict[str, list] = {}
+        owned_album_keys: dict[str, set[str]] = {}
         for row in status_rows:
             statuses_by_artist.setdefault(str(row["artist_key"]), []).append(row)
+            owned_album_keys.setdefault(str(row["artist_key"]), set()).add(
+                str(row["album_key"])
+            )
         result = []
         for group in self._artist_groups(rows):
             canonical = self._canonical_artist_row(group)
             if synthetic_album_artist(canonical["artist_name"]):
+                continue
+            if query.casefold() not in str(canonical["artist_name"]).casefold():
+                continue
+            identity = normalized_artist_identity(canonical["artist_name"])
+            appearance = projected.get(identity, {})
+            stored_album_count = sum(int(row["album_count"] or 0) for row in group)
+            album_keys = {
+                key
+                for row in group
+                for key in owned_album_keys.get(str(row["artist_key"]), set())
+            } | set(appearance.get("album_keys", set()))
+            if not album_keys and stored_album_count == 0:
                 continue
             status_group = [
                 status
                 for row in group
                 for status in statuses_by_artist.get(str(row["artist_key"]), [])
             ]
+            if appearance:
+                status_group.extend(
+                    {"status": status}
+                    for status in appearance.get("statuses", {}).values()
+                )
             # Initial catalog loading is PostgreSQL-only. Local/Navidrome
             # artwork is hydrated by the dedicated lazy endpoint so hundreds
             # of artist folders never block the first useful render.
@@ -1259,7 +1395,7 @@ class Catalog:
             result.append({
                 "id": canonical["artist_key"],
                 "name": canonical["artist_name"],
-                "albums": sum(int(row["album_count"] or 0) for row in group),
+                "albums": len(album_keys) if album_keys else stored_album_count,
                 "status": (
                     self._aggregate_album_status(status_group)
                     if projected_statuses
@@ -1285,14 +1421,29 @@ class Catalog:
                 "FROM artists LEFT JOIN albums ON albums.artist_key=artists.artist_key "
                 "AND (COALESCE(albums.compilation,0)=0 "
                 "OR TRIM(COALESCE(albums.musicbrainz_albumid,''))<>'') "
-                "GROUP BY artists.artist_key HAVING COUNT(albums.album_key)>0 "
+                "GROUP BY artists.artist_key "
                 "ORDER BY artists.artist_name COLLATE NOCASE"
             ).fetchall()
+            projected = self._projected_track_artists(db)
+        existing_identities = {
+            normalized_artist_identity(row["artist_name"]) for row in rows
+        }
+        rows = [*rows, *(
+            self._virtual_artist_row(value)
+            for identity, value in projected.items()
+            if identity not in existing_identities
+        )]
         remote_artists = self._navidrome_artists_by_name()
         result = []
         for group in self._artist_groups(rows):
             canonical = self._canonical_artist_row(group)
             if synthetic_album_artist(canonical["artist_name"]):
+                continue
+            identity = normalized_artist_identity(canonical["artist_name"])
+            if (
+                sum(int(row["album_count"] or 0) for row in group) == 0
+                and not projected.get(identity, {}).get("album_keys")
+            ):
                 continue
             portrait_path = None
             for row in [canonical, *(item for item in group if item is not canonical)]:
@@ -1308,7 +1459,6 @@ class Catalog:
 
     def artist_thumbnail_path(self, artist) -> Path | None:
         artist_id = str(artist["artist_key"])
-        direct = ArtistArtTarget(Path(str(artist["primary_path"])), "artist")
         raw_id = str(artist["musicbrainz_artistid"] or "").strip()
         try:
             identity = "mbid-" + str(UUID(raw_id))
@@ -1316,7 +1466,13 @@ class Catalog:
             digest = sha256(str(artist["artist_name"]).strip().casefold().encode("utf-8"))
             identity = "name-" + digest.digest()[:16].hex()
         managed = ArtistArtTarget(self.artist_art, "artist-" + identity, True)
-        portrait = saved_package((direct, managed)).portrait
+        primary_path = str(artist["primary_path"] or "").strip()
+        targets = (
+            (ArtistArtTarget(Path(primary_path), "artist"), managed)
+            if primary_path
+            else (managed,)
+        )
+        portrait = saved_package(targets).portrait
         # Re-resolve local Artist Art before consulting the session cache. A
         # Windows write or external artist.* creation must replace an older
         # provider portrait without requiring a WebGUI restart.
@@ -1341,13 +1497,7 @@ class Catalog:
     def artist_thumbnail(self, artist_id: str) -> Path:
         """Resolve saved Artist Art without emitting speculative 404 requests."""
         with closing(self.connect()) as db:
-            artist = db.execute(
-                "SELECT artist_key,artist_name,musicbrainz_artistid,primary_path "
-                "FROM artists WHERE artist_key=?",
-                (artist_id,),
-            ).fetchone()
-            if artist is None:
-                raise KeyError("Artist not found")
+            artist, _aliases = self._artist_identity_rows(db, artist_id)
         portrait = self.artist_thumbnail_path(artist)
         if portrait is None:
             now = time.monotonic()
@@ -1463,14 +1613,47 @@ class Catalog:
                 ).fetchall()
             else:
                 appearance_rows = []
-            top_tracks = [item["title"] for item in db.execute(
-                "SELECT tracks.title FROM tracks JOIN albums ON albums.album_key=tracks.album_key "
-                f"WHERE albums.artist_key IN ({placeholders}) "
+            appearance_track_keys = sorted(appearance_keys)
+            appearance_track_clause = ""
+            top_track_parameters = list(alias_ids)
+            if appearance_track_keys:
+                appearance_track_placeholders = ",".join(
+                    "?" for _ in appearance_track_keys
+                )
+                appearance_track_clause = (
+                    f" OR albums.album_key IN ({appearance_track_placeholders})"
+                )
+                top_track_parameters.extend(appearance_track_keys)
+            top_track_rows = db.execute(
+                "SELECT albums.artist_key,tracks.title,tracks.artist_name,tracks.path "
+                "FROM tracks JOIN albums ON albums.album_key=tracks.album_key "
+                f"WHERE (albums.artist_key IN ({placeholders})"
+                f"{appearance_track_clause}) "
                 "AND (COALESCE(albums.compilation,0)=0 "
                 "OR TRIM(COALESCE(albums.musicbrainz_albumid,''))<>'') "
-                "ORDER BY tracks.title COLLATE NOCASE LIMIT 10",
-                tuple(alias_ids),
-            ).fetchall()]
+                "ORDER BY tracks.title COLLATE NOCASE",
+                tuple(top_track_parameters),
+            ).fetchall()
+            artist_names = {
+                str(row["artist_name"] or "").strip()
+                for row in aliases
+                if str(row["artist_name"] or "").strip()
+            }
+            top_tracks = []
+            for item in top_track_rows:
+                owned = str(item["artist_key"]) in alias_ids or any(
+                    artist_credit_position(credit, name) is not None
+                    for name in artist_names
+                    for credit in indexed_track_credit_values(
+                        str(item["artist_name"] or ""),
+                        str(item["title"] or ""),
+                        str(item["path"] or ""),
+                    )
+                )
+                if owned and str(item["title"]) not in top_tracks:
+                    top_tracks.append(str(item["title"]))
+                if len(top_tracks) == 10:
+                    break
             coordination = self._album_write_coordination(
                 db,
                 [row["album_key"] for row in primary_rows]
@@ -1484,6 +1667,7 @@ class Catalog:
                          row["musicbrainz_albumid"] or "", artist["musicbrainz_artistid"] or "")
              for row in primary_rows if inside(Path(row["path"]), self.music)],
             artist["artist_name"], self.artist_art,
+            allow_managed_without_owned_album=bool(appearance_rows),
         )
         package = saved_package(targets)
         portrait = self.artist_thumbnail_path(artist)
@@ -1529,7 +1713,7 @@ class Catalog:
         return {
             "id": artist["artist_key"], "name": artist["artist_name"],
             "mbid": artist["musicbrainz_artistid"] or "",
-            "status": self._aggregate_album_status(primary_rows), "albums": albums,
+            "status": self._aggregate_album_status(rows), "albums": albums,
             "top_tracks": top_tracks,
             "genres": list(appearance.get("genres", [])),
             "roles": list(appearance.get("roles", [])),
@@ -1971,6 +2155,13 @@ class Catalog:
         if not isinstance(self.database, Database):
             return
         with closing(self.database.connect()) as db, db:
+            if db.execute(
+                "SELECT 1 FROM artists WHERE artist_key=?", (artist_id,)
+            ).fetchone() is None:
+                # Appearance-only Artists remain a read-only projection over
+                # another owner's Album. Their provider metadata stays in the
+                # live cache without weakening Windows catalog authority.
+                return
             db.execute(
                 "INSERT INTO artist_profiles(artist_key,lookup_name,musicbrainz_artistid,biography,external_url,source) "
                 "VALUES(?,?,?,?,?,?) ON CONFLICT(artist_key) DO UPDATE SET "
@@ -2148,13 +2339,7 @@ class Catalog:
     def search_artist(self, artist_id: str) -> dict[str, object]:
         artist = self.artist(artist_id)
         with closing(self.connect()) as db:
-            artist_row = db.execute(
-                "SELECT artist_key,artist_name,musicbrainz_artistid,primary_path "
-                "FROM artists WHERE artist_key=?",
-                (artist_id,),
-            ).fetchone()
-        if artist_row is None:
-            raise KeyError("Artist not found")
+            artist_row, _aliases = self._artist_identity_rows(db, artist_id)
         found, warnings = discover_artist_images(
             str(artist["name"]), str(artist["mbid"]), self.credentials, enabled=self.artist_sources,
         )

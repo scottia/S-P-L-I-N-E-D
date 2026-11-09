@@ -296,6 +296,81 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             self.assertEqual({item["id"] for item in artist["albums"]}, {"tour", "gold"})
             self.assertEqual(set(artist["top_tracks"]), {"Tour Song", "Gold Song"})
 
+    def test_all_track_credits_project_identified_albums_into_real_artists(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "index.sqlite"
+            credentials = root / "credentials"
+            credentials.mkdir()
+            gold = root / "Aaron Neville" / "Gold"
+            soundtrack = root / "[Soundtracks]" / "Film"
+            for folder in (gold, soundtrack):
+                folder.mkdir(parents=True)
+                (folder / "song.mp3").touch()
+
+            with closing(connect(database)) as db:
+                db.execute(
+                    "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,"
+                    "musicbrainz_artistid TEXT,primary_path TEXT,status TEXT)"
+                )
+                db.execute(
+                    "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,album_name TEXT,"
+                    "path TEXT,cover_path TEXT,track_count INTEGER,status TEXT,compilation INTEGER,"
+                    "musicbrainz_albumid TEXT,release_year TEXT,embedded_tracks INTEGER,webp_found INTEGER)"
+                )
+                db.execute(
+                    "CREATE TABLE tracks (track_key TEXT PRIMARY KEY,album_key TEXT,path TEXT,title TEXT,"
+                    "artist_name TEXT,musicbrainz_artistid TEXT)"
+                )
+                db.executemany(
+                    "INSERT INTO artists VALUES (?,?,?,?,?)",
+                    [
+                        ("aaron", "Aaron Neville", "aaron-mbid", str(root / "Aaron Neville"), "processed"),
+                        ("various", "Various Artists", "", str(root / "[Soundtracks]"), "processed"),
+                    ],
+                )
+                db.executemany(
+                    "INSERT INTO albums VALUES (?,?,?,?,NULL,?,?,1,?,'2008',1,0)",
+                    [
+                        ("gold", "aaron", "Gold", str(gold), 2, "processed", "release-gold"),
+                        ("film", "various", "Film", str(soundtrack), 1, "incomplete", "release-film"),
+                    ],
+                )
+                db.executemany(
+                    "INSERT INTO tracks VALUES (?,?,?,?,?,?)",
+                    [
+                        (
+                            "gold-rob", "gold", str(gold / "1-16 - Rob Wasserman - Song.mp3"),
+                            "Song", "Rob Wasserman; Aaron Neville", "rob-mbid; aaron-mbid",
+                        ),
+                        (
+                            "gold-linda", "gold", str(gold / "1-17 - Linda Ronstadt - Duet.mp3"),
+                            "Duet", "Linda Ronstadt; Aaron Neville", "linda-mbid; aaron-mbid",
+                        ),
+                        (
+                            "film-rob", "film", str(soundtrack / "1-01 - Rob Wasserman - Theme.mp3"),
+                            "Theme", "Various Artists", "",
+                        ),
+                    ],
+                )
+                db.commit()
+
+            app = PreviewApp(root, database, root, credentials, cache=root / "cache")
+            artists = {item["name"]: item for item in app.artists("")}
+            self.assertEqual(
+                set(artists), {"Aaron Neville", "Linda Ronstadt", "Rob Wasserman"}
+            )
+            self.assertEqual(artists["Rob Wasserman"]["albums"], 2)
+            rob = app.artist(artists["Rob Wasserman"]["id"])
+            self.assertEqual({item["id"] for item in rob["albums"]}, {"gold", "film"})
+            gold_card = next(item for item in rob["albums"] if item["id"] == "gold")
+            film_card = next(item for item in rob["albums"] if item["id"] == "film")
+            self.assertTrue(gold_card["featured"])
+            self.assertFalse(gold_card["various_artists"])
+            self.assertFalse(film_card["featured"])
+            self.assertTrue(film_card["various_artists"])
+            self.assertEqual(set(rob["top_tracks"]), {"Song", "Theme"})
+
     def test_conflicting_musicbrainz_ids_merge_when_library_path_is_identical(self):
         rows = [
             {

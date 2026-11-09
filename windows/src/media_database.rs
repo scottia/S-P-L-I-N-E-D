@@ -43,7 +43,6 @@ use windows_sys::Win32::NetworkManagement::WNet::{
 pub const DB_NAME: &str = "splined.db";
 pub const SCHEMA_VERSION: i64 = 2;
 const INVENTORY_KEY: &str = "splined-media-library";
-const NAME_INVENTORY_PREFIX: &str = "names-v1:";
 const TRACK_INVENTORY_PREFIX: &str = "tracks-v1:";
 const SCHEMA: &str = include_str!("../../schema/media.sql");
 pub(crate) fn claim_shared_database(path: &Path) -> Result<fs::File, String> {
@@ -105,6 +104,8 @@ pub struct IndexedArtistAppearances {
     pub featured_album_keys: BTreeSet<String>,
 }
 
+pub type IndexedArtistCatalog = BTreeMap<String, BTreeSet<String>>;
+
 fn synthetic_album_artist(artist: &str) -> bool {
     matches!(
         artist
@@ -142,6 +143,14 @@ fn artist_credit_position(track_artist: &str, artist: &str) -> Option<usize> {
         .map(str::trim)
         .filter(|credit| !credit.is_empty())
         .position(|credit| credit == selected)
+}
+
+fn explicit_artist_credits(track_artist: &str) -> Vec<&str> {
+    track_artist
+        .split(['\0', ';'])
+        .map(str::trim)
+        .filter(|credit| !credit.is_empty())
+        .collect()
 }
 
 fn numbered_track_artist_credit(value: &str) -> Option<&str> {
@@ -234,6 +243,82 @@ pub fn indexed_artist_appearances(
         }
     }
     Ok(appearances)
+}
+
+/// Return every real Artist credited on an MBID-backed indexed Album.
+///
+/// Album ownership remains unchanged: the map is a presentation projection
+/// from Artist name to Album keys. This makes Featured/Soundtrack/Various
+/// performers selectable without manufacturing duplicate Album rows or
+/// exposing the synthetic Various Artists/Soundtracks owners.
+pub fn indexed_artist_catalog(database_path: &str) -> Result<IndexedArtistCatalog, String> {
+    let path = Path::new(database_path);
+    if !path.is_file() {
+        return Ok(BTreeMap::new());
+    }
+    let (connection, current) = open_database_read_only(path)?;
+    if current != SCHEMA_VERSION {
+        return Err(incompatible_schema(current));
+    }
+    let mut statement = connection
+        .prepare(
+            "SELECT albums.album_key,owners.artist_name,tracks.artist_name,tracks.title,tracks.path \
+             FROM tracks JOIN albums ON albums.album_key=tracks.album_key \
+             JOIN artists owners ON owners.artist_key=albums.artist_key \
+             WHERE trim(COALESCE(albums.musicbrainz_albumid,''))<>'' \
+             ORDER BY albums.album_key,tracks.path COLLATE NOCASE",
+        )
+        .map_err(db_error("prepare indexed Artist catalog"))?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })
+        .map_err(db_error("query indexed Artist catalog"))?;
+    let mut names = BTreeMap::<String, String>::new();
+    let mut album_keys = BTreeMap::<String, BTreeSet<String>>::new();
+    for row in rows {
+        let (album_key, owner, track_artist, title, path) =
+            row.map_err(db_error("read indexed Artist catalog"))?;
+        let filename = Path::new(&path)
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        let credits = [
+            Some(track_artist.as_str()),
+            numbered_track_artist_credit(&title),
+            numbered_track_artist_credit(filename),
+        ];
+        for credit in credits
+            .into_iter()
+            .flatten()
+            .flat_map(explicit_artist_credits)
+        {
+            if synthetic_album_artist(credit) {
+                continue;
+            }
+            let identity = casefold(credit);
+            let display = if credit.eq_ignore_ascii_case(&owner) {
+                owner.clone()
+            } else {
+                credit.to_string()
+            };
+            names.entry(identity.clone()).or_insert(display);
+            album_keys
+                .entry(identity)
+                .or_default()
+                .insert(album_key.clone());
+        }
+    }
+    Ok(album_keys
+        .into_iter()
+        .filter_map(|(identity, keys)| names.remove(&identity).map(|name| (name, keys)))
+        .collect())
 }
 
 /// A startup notice is deliberately cheaper than an index refresh: compare
@@ -356,7 +441,7 @@ pub fn find_media_index_changes(config: &Config) -> Result<MediaIndexChanges, St
                 saved_representative,
                 saved_size,
                 saved_mtime,
-                fallback,
+                _fallback,
             )| {
                 if *track_count != album.audio_files.len() as i64
                     || !saved_representative.eq_ignore_ascii_case(&canonical_representative)
@@ -365,18 +450,13 @@ pub fn find_media_index_changes(config: &Config) -> Result<MediaIndexChanges, St
                 {
                     return false;
                 }
-                let fingerprint = if *fallback {
-                    fallback_album_inventory_fingerprint(album, &mapper)
-                } else {
-                    album_inventory_fingerprint(album, &mapper)
-                };
+                let fingerprint = fallback_album_inventory_fingerprint(album, &mapper);
                 fingerprint.is_ok_and(|fingerprint| {
                     saved_fingerprint == &fingerprint
                         || (!saved_fingerprint.contains(':')
                             && fingerprint
                                 .strip_prefix(TRACK_INVENTORY_PREFIX)
                                 .is_some_and(|value| value == saved_fingerprint))
-                        || (!saved_fingerprint.contains(':') && !*fallback)
                 })
             },
         );
@@ -1714,7 +1794,7 @@ fn refresh_owned_album_inventory_baseline(
     mapper: &PathMapper,
     album_key: &str,
     album: &AlbumDirectory,
-    fallback_album: bool,
+    _fallback_album: bool,
     now: &str,
 ) -> Result<(), String> {
     let representative = album.audio_files.first().ok_or_else(|| {
@@ -1732,11 +1812,7 @@ fn refresh_owned_album_inventory_baseline(
     })?;
     let representative_size = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
     let representative_mtime_ns = modified_ns(&metadata);
-    let inventory_fingerprint = if fallback_album {
-        fallback_album_inventory_fingerprint(album, mapper)?
-    } else {
-        album_inventory_fingerprint(album, mapper)?
-    };
+    let inventory_fingerprint = fallback_album_inventory_fingerprint(album, mapper)?;
     transaction
         .execute(
             "UPDATE albums SET representative_file=?, representative_size=?, \
@@ -3458,11 +3534,7 @@ fn rebuild_index(
             .unwrap_or(0);
         let mtime = metadata.as_ref().map(modified_ns).unwrap_or(0);
         let prior_fallback = prior.is_some_and(|value| value.album_mbid.trim().is_empty());
-        let mut inventory_fingerprint = if prior_fallback {
-            fallback_album_inventory_fingerprint(album, mapper)?
-        } else {
-            album_inventory_fingerprint(album, mapper)?
-        };
+        let inventory_fingerprint = fallback_album_inventory_fingerprint(album, mapper)?;
         if incremental_refresh
             && prior.is_some_and(|value| {
                 value.track_count == album.audio_files.len() as i64
@@ -3474,8 +3546,7 @@ fn rebuild_index(
                                 .strip_prefix(TRACK_INVENTORY_PREFIX)
                                 .is_some_and(|fingerprint| {
                                     fingerprint == value.inventory_fingerprint
-                                }))
-                        || (!value.inventory_fingerprint.contains(':') && !prior_fallback))
+                                })))
             })
         {
             tag_reuses += 1;
@@ -3587,12 +3658,6 @@ fn rebuild_index(
         } else {
             tag_hash(&tags)
         };
-        let requires_full_track_identity = tags.musicbrainz_album_id.trim().is_empty();
-        if requires_full_track_identity
-            && !inventory_fingerprint.starts_with(TRACK_INVENTORY_PREFIX)
-        {
-            inventory_fingerprint = fallback_album_inventory_fingerprint(album, mapper)?;
-        }
         for track_path in &album.audio_files {
             let canonical_track = mapper.to_canonical(&track_path.to_string_lossy())?;
             let metadata = fs::metadata(track_path).ok();
@@ -3614,7 +3679,7 @@ fn rebuild_index(
                         prior_track.recording_mbid.clone(),
                         prior_track.artist_mbid.clone(),
                     )
-                } else if requires_full_track_identity {
+                } else {
                     track_tag_reads += 1;
                     let evidence = read_local_track_evidence(track_path).ok();
                     let title = evidence
@@ -3648,17 +3713,6 @@ fn rebuild_index(
                         .trim()
                         .to_ascii_lowercase();
                     (title, track_artist, recording_mbid, track_artist_mbid)
-                } else {
-                    (
-                        track_path
-                            .file_stem()
-                            .and_then(|value| value.to_str())
-                            .unwrap_or("Unknown Track")
-                            .to_string(),
-                        artist_name.clone(),
-                        String::new(),
-                        String::new(),
-                    )
                 };
             tracks.push(TrackRow {
                 album_key: logical_key.clone(),
@@ -4374,24 +4428,6 @@ fn load_existing_tracks(connection: &Connection) -> Result<HashMap<String, Exist
         output.insert(casefold(&path), track);
     }
     Ok(output)
-}
-
-fn album_inventory_fingerprint(
-    album: &AlbumDirectory,
-    mapper: &PathMapper,
-) -> Result<String, String> {
-    let mut digest = Sha256::new();
-    for path in &album.audio_files {
-        let canonical = mapper.to_canonical(&path.to_string_lossy())?;
-        let normalized =
-            casefold(relative_text(&canonical, mapper.canonical_root())).replace('\\', "/");
-        digest.update(normalized.as_bytes());
-        digest.update([0]);
-    }
-    Ok(format!(
-        "{NAME_INVENTORY_PREFIX}{}",
-        hex_bytes(&digest.finalize())
-    ))
 }
 
 fn fallback_album_inventory_fingerprint(
@@ -5304,6 +5340,40 @@ mod tests {
             appearances.featured_album_keys,
             ["featured"].into_iter().map(str::to_string).collect()
         );
+
+        let connection = open_database(&db, false).unwrap();
+        connection
+            .execute(
+                "UPDATE tracks SET artist_name=?1 WHERE track_key='featured-track'",
+                ["Album Owner\0Target Artist"],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE tracks SET artist_name='Various Artists',title=?1,path=?2 \
+             WHERE track_key='soundtrack-track'",
+                params![
+                    "1-02 - New Featured Artist - Film Song",
+                    "/music/soundtracks/Film Soundtrack/1-02 - New Featured Artist - Film Song.mp3"
+                ],
+            )
+            .unwrap();
+        drop(connection);
+        let catalog = indexed_artist_catalog(db.to_str().unwrap()).unwrap();
+        assert_eq!(
+            catalog.get("Target Artist"),
+            Some(
+                &["featured", "own", "various-release"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect()
+            )
+        );
+        assert_eq!(
+            catalog.get("New Featured Artist"),
+            Some(&["soundtrack"].into_iter().map(str::to_string).collect())
+        );
+        assert!(!catalog.contains_key("Various Artists"));
     }
 
     #[test]
@@ -5626,7 +5696,7 @@ mod tests {
     }
 
     #[test]
-    fn initial_refresh_reads_all_fallback_tracks_but_only_normal_album_representative() {
+    fn initial_refresh_reads_every_track_credit_for_fallback_and_identified_albums() {
         fn frame(id: &str, text: &str) -> Vec<u8> {
             let mut payload = vec![3];
             payload.extend_from_slice(text.as_bytes());
@@ -5699,7 +5769,7 @@ mod tests {
             .unwrap();
         let payload: Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(payload["tracks"], 4);
-        assert_eq!(payload["track_tag_reads"], 2);
+        assert_eq!(payload["track_tag_reads"], 4);
     }
 
     #[test]

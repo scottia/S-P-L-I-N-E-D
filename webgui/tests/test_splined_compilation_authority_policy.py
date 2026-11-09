@@ -629,6 +629,25 @@ class CompilationAuthorityPolicyTests(unittest.TestCase):
                 {ARTIST_ID, OTHER_ARTIST_ID},
             )
 
+    def test_track_identity_preserves_every_multivalue_artist_credit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "track.mp3"
+            tags = ID3()
+            tags.add(TIT2(encoding=3, text=["Song"]))
+            tags.add(TPE1(encoding=3, text=["Rob Wasserman", "Aaron Neville"]))
+            tags.add(TALB(encoding=3, text=["Gold"]))
+            tags.add(TPE2(encoding=3, text=["Aaron Neville"]))
+            tags.save(path, v2_version=4)
+
+            parsed = SimpleNamespace(tags={
+                "title": ["Song"],
+                "artist": ["Rob Wasserman", "Aaron Neville"],
+            })
+            with patch.object(splined_media_tags, "MutagenFile", return_value=parsed):
+                identity = splined_media_tags.read_track_identity_tags(path)
+
+            self.assertEqual(identity["artist"], "Rob Wasserman; Aaron Neville")
+
     def test_credential_options_use_exact_json_names(self) -> None:
         core = SimpleNamespace(
             credential_file=lambda *_args: Path("musicbrainz.json"),

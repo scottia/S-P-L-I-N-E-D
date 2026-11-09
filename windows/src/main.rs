@@ -2628,6 +2628,15 @@ fn artist_art_targets_for_albums<'a>(
     artist: &str,
     cache_dir: &Path,
 ) -> Vec<ArtistArtTarget> {
+    artist_art_targets_for_albums_with_projection(albums, artist, cache_dir, false)
+}
+
+fn artist_art_targets_for_albums_with_projection<'a>(
+    albums: impl IntoIterator<Item = (&'a str, &'a str, &'a str, &'a str)>,
+    artist: &str,
+    cache_dir: &Path,
+    allow_managed_without_owned_album: bool,
+) -> Vec<ArtistArtTarget> {
     if artist.trim().is_empty() {
         return Vec::new();
     }
@@ -2664,7 +2673,7 @@ fn artist_art_targets_for_albums<'a>(
             .or_insert_with(|| (parent.to_path_buf(), 0));
         entry.1 += 1;
     }
-    if !has_eligible_album {
+    if !has_eligible_album && !allow_managed_without_owned_album {
         return Vec::new();
     }
     let mut targets = directories
@@ -2684,7 +2693,9 @@ fn artist_art_targets_for_albums<'a>(
     });
     // A Soundtracks/Various Artists directory is not the credited Artist's
     // physical folder, even if it currently contains only one indexed Artist.
-    // Never use its unqualified artist.* for Artist Art.
+    // Never use its unqualified artist.* for Artist Art. Callers that have
+    // established an appearance-only Artist explicitly opt into the managed
+    // target below without writing into another Artist's tree.
     let artist_key = if artist_ids.len() == 1 {
         let id = artist_ids.into_iter().next().expect("one Artist ID");
         format!("mbid-{id}")
@@ -2738,7 +2749,7 @@ fn local_artist_art_for_albums(
     artist: &str,
     cache_dir: &Path,
 ) -> Option<PathBuf> {
-    artist_art_targets_for_albums(
+    artist_art_targets_for_albums_with_projection(
         albums.iter().map(|album| {
             (
                 album.artist.as_str(),
@@ -2749,6 +2760,7 @@ fn local_artist_art_for_albums(
         }),
         artist,
         cache_dir,
+        true,
     )
     .into_iter()
     .find_map(|target| local_artist_art_at_target(&target))
@@ -2759,7 +2771,7 @@ fn artist_banner_targets_for_albums<'a>(
     artist: &str,
     directory: &Path,
 ) -> Vec<(PathBuf, String)> {
-    artist_art_targets_for_albums(albums, artist, directory)
+    artist_art_targets_for_albums_with_projection(albums, artist, directory, true)
         .into_iter()
         .map(|target| {
             let stem = if target.managed {
@@ -2825,7 +2837,7 @@ fn local_artist_art_candidates<'a>(
     cache_dir: &Path,
 ) -> Vec<(String, String)> {
     let mut result = Vec::new();
-    for target in artist_art_targets_for_albums(albums, artist, cache_dir) {
+    for target in artist_art_targets_for_albums_with_projection(albums, artist, cache_dir, true) {
         let banner_stem = if target.managed {
             format!("banner-{}", target.stem.trim_start_matches("artist-"))
         } else {
@@ -6015,7 +6027,7 @@ fn focused_artist_art_target(
     app: &ApplicationState,
     artist: &str,
 ) -> Result<ArtistArtTarget, String> {
-    artist_art_targets_for_albums(
+    artist_art_targets_for_albums_with_projection(
         app.library.albums.iter().map(|album| {
             (
                 album.snapshot.artist.as_str(),
@@ -6026,6 +6038,7 @@ fn focused_artist_art_target(
         }),
         artist,
         &configured_shared_artist_art_dir(&app.config),
+        true,
     )
     .into_iter()
     .next()
