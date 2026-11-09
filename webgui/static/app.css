@@ -23,7 +23,7 @@
 .review-heading-actions{display:flex;align-items:center;gap:6px;min-width:0}.themed-packaging{border:1px solid var(--green);border-radius:4px;background:#071b27;color:var(--green);padding:3px 7px;font-size:10px;font-weight:750;white-space:nowrap}.themed-packaging:disabled{opacity:.45}.themed-packaging.active{background:#135d45;color:#f2fff8;box-shadow:0 0 0 1px #32dda055 inset}
 /* Windows workspace parity: dense charcoal surfaces, readable controls, and wheel-only scrolling. */
 :root{--window:#18191b;--panel:#252729;--card:#292c2e;--line:#4a5055;--selected:#34464a;--text:#f2f3f4;--muted:#b7c0c5;--cyan:#79d0de;--blue:#3288e8;--violet:#9a72d2;--pink:#d58ab4;--green:#84c99c;--yellow:#e8c068;--danger:#d97482}
-html[data-theme=chalk]{--window:#241d27;--panel:#302c34;--card:#3e3540;--line:#75637b;--selected:#55445b;--text:#f7edf5;--muted:#d6c7d3;--cyan:#a4dce1;--blue:#84a8ed;--pink:#ed9ccb;--green:#a3ddb1}
+html[data-theme=chalk]{--window:#241d27;--panel:#302c34;--card:#3e3540;--line:#75637b;--selected:#55445b;--text:#f7edf5;--muted:#d6c7d3;--cyan:#a4dce1;--blue:#84a8ed;--violet:#9179a1;--pink:#ed9ccb;--green:#a3ddb1;--yellow:#caa55b;--danger:#ae5b4d}
 html[data-theme=light]{color-scheme:light;--window:#ecebea;--panel:#f8f7f4;--card:#f1f0ed;--line:#b9bfc2;--selected:#d9e8e8;--text:#18252d;--muted:#52616a;--cyan:#007c94;--blue:#215da6;--pink:#a12475;--green:#227a56;--yellow:#8b6c0d;--danger:#ad324a}
 html,body,.app-header,.panel,.enhancements,.source-card,.candidate-card,.library-tabs button,.filter-tabs button,.workspace-tabs button,.group-toggle,.review-choice button{background-color:var(--panel);color:var(--text);border-color:var(--line)}
 html,body{background-color:var(--window);font-size:14px}
@@ -382,15 +382,25 @@ html,body{font-size:var(--ui-font-md)}
 .top-songs-copy{color:var(--text);font-size:var(--ui-font-sm);line-height:1.3}
 html[data-theme=light] .top-genres,html[data-theme=light] .top-songs-copy{text-shadow:none;color:#17242b}
 
-/* Native footer control tones: active green, write amber, and embed violet. */
+/* Theme-aware native control tones: active green, write amber, and embed
+   violet. Keep every control on the active palette instead of allowing the
+   original dark-blue literals to bleed through Chalk or Light. */
+.library-list{background:var(--panel)}
+.library-thumb{background:linear-gradient(135deg,color-mix(in srgb,var(--cyan) 30%,var(--card)),color-mix(in srgb,var(--pink) 30%,var(--card)))}
+.header-actions button,.filter-lock,.candidate-toolbar button,.minor-button,.filter-actions button,.embed-actions button,.queue-card button,.musicbrainz-review-actions button,.review-choice button{border-color:var(--line);background:var(--card);color:var(--text)}
+.workspace-dialog,.embed-summary{background:var(--panel);color:var(--text)}
+.queue-card,.queue-card.state-staged{background:color-mix(in srgb,var(--violet) 14%,var(--card))}
+.candidate-card.queued:hover{background:color-mix(in srgb,var(--cyan) 12%,var(--card))}
+.launch-button{border-color:var(--green);background:color-mix(in srgb,var(--green) 24%,var(--card));color:var(--text)}
+.candidate-count{border-color:var(--violet);background:color-mix(in srgb,var(--violet) 24%,var(--card));color:var(--text)}
 .review-actions button{height:34px;min-height:34px;border-radius:5px;color:var(--text);font-weight:700}
-.review-actions .action-cyan{border-color:#78957e;background:#27352d;color:#eef4ef}
-.review-actions .action-orange{border-color:#d18419;background:#76531d;color:#f5eee4}
-.review-actions .action-purple{border-color:#806893;background:#4d4058;color:#f0e8f5}
+.review-actions .action-cyan{border-color:var(--green);background:color-mix(in srgb,var(--green) 22%,var(--card));color:var(--text)}
+.review-actions .action-orange{border-color:var(--yellow);background:color-mix(in srgb,var(--yellow) 28%,var(--card));color:var(--text)}
+.review-actions .action-purple{border-color:var(--violet);background:color-mix(in srgb,var(--violet) 28%,var(--card));color:var(--text)}
 .overview-actions button{height:34px;padding:4px 6px;border-radius:5px;background:var(--card);color:var(--text)}
-.overview-actions #showAllAlbums{border-color:#568e96;background:#263c3f}
-.overview-actions #compReportButton{border-color:#806893;background:#4d4058}
-.overview-actions #embedAllAlbums{border-color:#d18419;background:#76531d}
+.overview-actions #showAllAlbums{border-color:var(--cyan);background:color-mix(in srgb,var(--cyan) 18%,var(--card))}
+.overview-actions #compReportButton{border-color:var(--violet);background:color-mix(in srgb,var(--violet) 28%,var(--card))}
+.overview-actions #embedAllAlbums{border-color:var(--yellow);background:color-mix(in srgb,var(--yellow) 28%,var(--card))}
 
 /* The second Selected Artwork row uses the same four aligned columns as the
    native Source / Type / Dimensions / File Size grid. */
@@ -400,4 +410,7 @@ html[data-theme=light] .top-genres,html[data-theme=light] .top-songs-copy{text-s
 .review-extra .metric-in-process{color:#efa54e}
 .review-extra .metric-ideal{color:var(--green)}
 .library-row.album-row .library-thumb,.library-row.album-child .library-thumb{border-radius:50%}
-.source-strip{height:91px}
+.source-strip{height:112px}
+.source-card strong{min-height:14px;flex:none;line-height:14px}
+.source-card small.inactive{color:color-mix(in srgb,var(--muted) 48%,var(--card))}
+.source-status.mode-album-only{color:color-mix(in srgb,var(--yellow) 72%,var(--danger))}

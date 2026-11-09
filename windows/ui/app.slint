@@ -43,6 +43,7 @@ export global AppTheme {
     out property <color> magenta: root.chalk ? #a47491 : (root.light ? #87206c : #ef38c7);
     out property <color> green: root.chalk ? #90b189 : (root.light ? #0d6146 : #32dda0);
     out property <color> yellow: root.chalk ? #caa55b : (root.light ? #6f5108 : #f4cc4d);
+    out property <color> orange: root.chalk ? #bd8158 : (root.light ? #9b4c12 : #ff9738);
     out property <color> danger: root.chalk ? #ae5b4d : (root.light ? #9b2637 : #ff5268);
 }
 
@@ -754,7 +755,7 @@ component SourceCard inherits Rectangle {
     pure callback make-drag-data(string) -> data-transfer;
     pure callback accept-drop(data-transfer, string) -> bool;
     callback drop-source(data-transfer, string);
-    property <color> mode-color: root.source-row.artist-enabled && root.source-row.enabled ? AppTheme.green : (root.source-row.artist-enabled ? AppTheme.magenta : (root.source-row.enabled ? #ff9738 : AppTheme.danger));
+    property <color> mode-color: root.source-row.artist-enabled && root.source-row.enabled ? AppTheme.green : (root.source-row.artist-enabled ? AppTheme.magenta : (root.source-row.enabled ? AppTheme.orange : AppTheme.danger));
     width: 126px;
     border-radius: 7px;
     border-width: 1px;
@@ -801,8 +802,8 @@ component SourceCard inherits Rectangle {
         HorizontalLayout { height: 38px; spacing: 5px; alignment: center;
             Image { source: @image-url("../gui/source-icons/search.svg"); width: 29px; height: 29px; image-fit: contain; }
             VerticalLayout { width: 70px; spacing: 0px;
-                Text { text: root.source-row.artist-count + " Artist"; color: root.source-row.artist-enabled ? AppTheme.secondary-foreground : #5c7181; font-size: 13px * AppTheme.font-scale; vertical-alignment: center; }
-                Text { text: root.source-row.cover-count + " Cover"; color: root.source-row.enabled ? AppTheme.secondary-foreground : #5c7181; font-size: 13px * AppTheme.font-scale; vertical-alignment: center; }
+                Text { text: root.source-row.artist-count + " Artist"; color: AppTheme.secondary-foreground; opacity: root.source-row.artist-enabled ? 1 : 0.48; font-size: 13px * AppTheme.font-scale; vertical-alignment: center; }
+                Text { text: root.source-row.cover-count + " Cover"; color: AppTheme.secondary-foreground; opacity: root.source-row.enabled ? 1 : 0.48; font-size: 13px * AppTheme.font-scale; vertical-alignment: center; }
             }
         }
         HorizontalLayout { height: 18px; spacing: 3px; alignment: center;

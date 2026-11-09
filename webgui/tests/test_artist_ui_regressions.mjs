@@ -296,8 +296,17 @@ test("COMP artwork source labels map to the Windows source counters", () => {
   assert.match(cssSource, /\.source-card strong\{font-size:11px;color:#fff/);
   assert.match(cssSource, /\.source-status\.mode-artist-album\{color:var\(--green\)\}/);
   assert.match(cssSource, /\.source-status\.mode-artist-only\{color:var\(--pink\)\}/);
-  assert.match(cssSource, /\.source-status\.mode-album-only\{color:#ff9738\}/);
+  assert.match(cssSource, /\.source-status\.mode-album-only\{color:color-mix\(in srgb,var\(--yellow\) 72%,var\(--danger\)\)\}/);
   assert.match(cssSource, /\.source-status\.mode-deactivated\{color:var\(--danger\)\}/);
+});
+
+test("Chalk theme reaches library and action surfaces through palette variables", () => {
+  assert.match(cssSource, /html\[data-theme=chalk\]\{[^}]*--violet:[^;}]+;[^}]*--yellow:[^;}]+;[^}]*--danger:/);
+  assert.match(cssSource, /\.library-list\{background:var\(--panel\)\}/);
+  assert.match(cssSource, /\.header-actions button,[^{]*\{border-color:var\(--line\);background:var\(--card\);color:var\(--text\)\}/);
+  assert.match(cssSource, /\.workspace-dialog,\.embed-summary\{background:var\(--panel\);color:var\(--text\)\}/);
+  assert.match(cssSource, /\.review-actions \.action-purple\{border-color:var\(--violet\);background:color-mix/);
+  assert.match(cssSource, /\.overview-actions #embedAllAlbums\{border-color:var\(--yellow\);background:color-mix/);
 });
 
 function queuedContext({groups, album, artistResponse}) {
