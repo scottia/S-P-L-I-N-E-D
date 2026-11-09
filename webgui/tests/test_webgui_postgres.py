@@ -4613,7 +4613,10 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     )
                     expect(page.locator("#candidateDock")).to_be_hidden()
                     expect(page.locator("#sourceStrip button", has_text="MusicBrainz")).to_contain_text(
-                        "0 found"
+                        "0 Cover"
+                    )
+                    expect(page.locator("#sourceStrip button", has_text="MusicBrainz")).to_contain_text(
+                        "Album-only"
                     )
                     self.assertTrue(http_calls)
                     self.assertTrue(

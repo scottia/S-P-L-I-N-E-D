@@ -280,7 +280,8 @@ test("COMP artwork source labels map to the Windows source counters", () => {
   assert.equal(context.sourceDiagnosticStatus([["amazon", "Amazon Store search returned HTTP 503"]], "amazon").status, "unavailable");
   assert.equal(context.sourceDiagnosticStatus([["discogs", "policy-filtered: Short side is below the global minimum"]], "discogs").status, "filtered");
   assert.equal(context.sourceDiagnosticStatus(["Fanart.tv: request failed (ConnectionError)"], "fanart").status, "unavailable");
-  assert.match(appSource, /runtime\.status === "unavailable" \? "⚠ Unavailable"/);
+  assert.match(appSource, /const runtimeClass = !currentCount && runtime\.status \? " " \+ runtime\.status : ""/);
+  assert.match(appSource, /artistEnabled && configured \? "Artist \/ Album"/);
 });
 
 function queuedContext({groups, album, artistResponse}) {
