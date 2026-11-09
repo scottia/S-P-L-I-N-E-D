@@ -826,9 +826,21 @@ test("Artist COMP groups use the native descending fallback order", async () => 
 
 test("COMP summary and TRACK FILE columns reserve Album title space", () => {
   assert.match(cssSource, /\.comp-report-counts\{[^}]*justify-content:flex-start/);
+  assert.match(appSource, /const summary = node\("div", "fallback-report-summary comp-report-counts"\)/);
+  assert.match(appSource, /node\("span", "comp-count-override", `\$\{overridden\} overridden`\)/);
   assert.match(cssSource, /\.fallback-report-album\{[^}]*grid-template-columns:22px minmax\(0,1fr\) clamp\(170px,38%,310px\)/);
   assert.match(cssSource, /\.fallback-report-album-counts\{text-align:right\}/);
   assert.match(cssSource, /html\[data-theme=chalk\] \.fallback-report,html\[data-theme=light\] \.fallback-report\{background:#381821c9\}/);
+});
+
+test("all WebGUI MusicBrainz entry contexts use the canonical results workspace", () => {
+  assert.equal((indexSource.match(/id="musicbrainzReview"/g) || []).length, 1);
+  assert.match(appSource,
+    /const active = decision\?\.jobKind === "comp" && decision\?\.kind !== "musicbrainz-results"/);
+  assert.match(renderMusicBrainzFunction, /const directAlbum = decision\.jobKind === "direct-musicbrainz"/);
+  assert.doesNotMatch(renderMusicBrainzFunction, /"EMBED Comp"/);
+  assert.match(renderMusicBrainzFunction, /"Generate Candidate Artwork"/);
+  assert.match(renderMusicBrainzFunction, /"STOP PROCESS"/);
 });
 
 test("EMBED Comp writes only the selected Artist COMP track at the preferred size", async () => {

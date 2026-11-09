@@ -185,6 +185,11 @@ class Services:
         self._track_coordination_outbox_path = (
             runtime.cache / "comp-track-write-coordination-outbox.json"
         )
+        # MusicBrainz discovery belongs to the service session, not to one
+        # queued COMP job.  Keeping this state here lets a second review of the
+        # same Recording/Artist identity reuse the validated release metadata
+        # while artwork previews continue to load independently.
+        self._compilation_discovery_state: dict[str, object] = {}
 
     def _coordination_guard(self):
         """Lazily restore coordination helpers for legacy lightweight fixtures."""
@@ -2635,6 +2640,36 @@ class Services:
                 track, recording_mbid, artist_mbids
             )
 
+        def publish_verified_track_write(track, artwork):
+            """Publish the queued COMP path after read-back verification.
+
+            Direct Selected Artwork writes already call ``embed_comp_track``.
+            The queued Artist/Fallback workflow writes through
+            ``run_manual_compilation_album`` instead, so it previously updated
+            the PostgreSQL completion ledger without emitting the cross-client
+            coordination event.  Keep the event at the verified write boundary
+            and use the indexed track identity selected for this exact job.
+            """
+            path = str(Path(track.path))
+            track_key = keys_by_path.get(path, "")
+            refreshed = self.hydrate_selected_tracks(
+                row["album_key"], [track_key]
+            )
+            record = refreshed[0] if refreshed else {
+                "track_key": track_key,
+                "path": path,
+            }
+            return self.record_comp_track_write(
+                row,
+                record,
+                "embed-comp-track",
+                hashlib.sha256(artwork).hexdigest(),
+            )
+
+        discovery_state = getattr(self, "_compilation_discovery_state", None)
+        if discovery_state is None:
+            discovery_state = {}
+            self._compilation_discovery_state = discovery_state
         summary = core.Summary()
         with _temporary_workspace(r, "comp-work") as cache:
             scan.run_manual_compilation_album(
@@ -2649,12 +2684,13 @@ class Services:
                 summary=summary,
                 api_queried=set(),
                 unresolved_items=[],
-                state={},
+                state=discovery_state,
                 target_track_paths={allowed[key] for key in requested},
                 track_context=update_track_context,
                 prepare_selected_artwork=prepare_selected_artwork,
                 persist_track_authority=persist_track_authority,
                 verify_embedded_artwork=verify_selected_artwork,
+                publish_verified_write=publish_verified_track_write,
                 musicbrainz_results_first=True,
             )
         self.refresh_album(row["album_key"])

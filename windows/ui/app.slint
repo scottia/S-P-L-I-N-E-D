@@ -317,7 +317,10 @@ component LibraryItem inherits Rectangle {
     border-radius: 6px;
     border-width: !root.status-only-album-selection && root.item.kind != "artist" && (root.item.expanded || root.item.selected) ? 1px : 0px;
     border-color: root.status-only-album-selection ? transparent : (root.item.expanded ? AppTheme.border : (root.item.selected ? AppTheme.magenta : transparent));
-    background: !root.status-only-album-selection && root.item.kind != "artist" && (root.item.expanded || root.item.selected) ? (AppTheme.chalk || AppTheme.light ? AppTheme.selected-surface : @linear-gradient(90deg, #142e55, #1d3565)) : (row-touch.has-hover ? AppTheme.card-hover : transparent);
+    // Fallback/Album rows retain their model selection for processing, but do
+    // not paint a hover or selected surface. This keeps them visually aligned
+    // with the Artist file-list treatment without exposing implementation state.
+    background: root.status-only-album-selection ? transparent : (root.item.kind != "artist" && (root.item.expanded || root.item.selected) ? (AppTheme.chalk || AppTheme.light ? AppTheme.selected-surface : @linear-gradient(90deg, #142e55, #1d3565)) : (row-touch.has-hover ? AppTheme.card-hover : transparent));
     row-touch := TouchArea {
         enabled: !root.item.queue-locked;
         mouse-cursor: pointer;
@@ -705,6 +708,7 @@ component MediaLibraryPane inherits NeonPanel {
                         spacing: 0px;
                         LibraryItem {
                             item: row;
+                            status-only-album-selection: true;
                             thumbnail-needed(key, kind) => root.thumbnail-needed(key, kind);
                             activated(key) => root.library-row-activated(key, root.include-bypassed);
                             selection-activated(key) => root.library-row-selection-activated(key, root.include-bypassed);
@@ -719,7 +723,9 @@ component MediaLibraryPane inherits NeonPanel {
                         if row.expanded: VerticalLayout {
                             spacing: 0px;
                             for track in root.compilation-track-rows: Rectangle {
-                                height: 48px; background: track.selected ? AppTheme.selected-surface : AppTheme.card; border-radius: 5px;
+                                height: 48px;
+                                background: transparent;
+                                border-width: 0px;
                                 HorizontalLayout { padding-left: 26px; padding-right: 8px; spacing: 8px;
                                     Text { text: "●"; color: track.status-color; width: 20px; font-size: 20px * AppTheme.font-scale; vertical-alignment: center; horizontal-alignment: center; }
                                     Text { text: track.file-name; color: track.status-color; font-size: 15px * AppTheme.font-scale; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
@@ -1424,6 +1430,8 @@ export component AppWindow inherits Window {
     in property <int> compilation-report-purple-count;
     in property <int> compilation-report-blue-count;
     in property <int> compilation-report-override-count;
+    in property <int> compilation-report-checking-count;
+    in property <int> compilation-report-error-count;
     in property <string> artist-overview-name;
     in property <bool> artist-edit-available: false;
     in property <string> artist-edit-saved-name;
@@ -2596,26 +2604,27 @@ export component AppWindow inherits Window {
                                                                 if root.confirm-compilation-repair: NeonAction { label: "YES, Repair"; width: 130px; height: 28px; tone: "purple"; enabled: !root.operation-busy && !root.compilation-report-preview-mode; clicked => { root.confirm-compilation-repair-action(true); root.confirm-compilation-repair = false; } }
                                                                 NeonAction { label: "CLOSE REPORT"; width: 108px; height: 28px; label-font-size: 11px * AppTheme.font-scale; clicked => root.close-compilation-report(); }
                                                             }
-                                                            if root.overview-mode == "Artist": HorizontalLayout { height: 18px; spacing: 12px;
+                                                            if root.overview-mode == "Artist" || root.overview-mode == "Fallback": HorizontalLayout { height: 18px; spacing: 12px;
                                                                 Text { text: root.compilation-report-album-count + " Albums"; color: AppTheme.foreground; font-size: 11px * AppTheme.font-scale; font-weight: 800; }
                                                                 Text { text: root.compilation-report-green-count + " green"; color: AppTheme.green; font-size: 11px * AppTheme.font-scale; }
                                                                 Text { text: root.compilation-report-purple-count + " purple"; color: AppTheme.violet; font-size: 11px * AppTheme.font-scale; }
                                                                 Text { text: root.compilation-report-blue-count + " blue"; color: AppTheme.blue; font-size: 11px * AppTheme.font-scale; }
                                                                 Text { text: root.compilation-report-override-count + " overridden"; color: AppTheme.danger; font-size: 11px * AppTheme.font-scale; }
+                                                                if root.compilation-report-checking-count > 0: Text { text: root.compilation-report-checking-count + " checking"; color: AppTheme.cyan; font-size: 11px * AppTheme.font-scale; }
+                                                                if root.compilation-report-error-count > 0: Text { text: root.compilation-report-error-count + " errors"; color: AppTheme.danger; font-size: 11px * AppTheme.font-scale; }
                                                                 Rectangle { horizontal-stretch: 1; background: transparent; }
                                                             }
-                                                            if root.overview-mode == "Fallback": Text { text: root.confirm-compilation-repair ? root.compilation-repair-summary : root.compilation-report-summary; color: AppTheme.cyan; font-size: 12px * AppTheme.font-scale; horizontal-alignment: right; overflow: elide; height: 18px; }
                                                             HorizontalLayout { height: 18px; spacing: 8px;
                                                                 Text { text: "ALBUM"; horizontal-stretch: 1; color: AppTheme.secondary-foreground; font-size: 11px * AppTheme.font-scale; font-weight: 800; }
                                                                 Text { text: "TRACK FILE"; width: max(170px, min(310px, parent.width * 0.38)); horizontal-alignment: right; color: AppTheme.secondary-foreground; font-size: 11px * AppTheme.font-scale; font-weight: 800; }
                                                             }
                                                             VerticalLayout { spacing: 3px;
-                                                                for track in root.compilation-report-rows: Rectangle { height: track.album-header ? 25px : 24px; border-radius: 4px; background: track.overridden ? #25272b : (!track.album-header && track.path == root.compilation-report-preview-track-path && track.path != "" ? #263b4b : (track.album-header ? #182a38 : #171d24)); border-color: track.overridden ? AppTheme.danger : (track.album-header ? #398efa : (track.status == "Purple" ? AppTheme.violet : (track.status == "Green" ? AppTheme.green : (track.status == "Checking" ? AppTheme.cyan : AppTheme.blue)))); border-width: 1px;
+                                                                for track in root.compilation-report-rows: Rectangle { height: track.album-header ? 25px : 24px; border-radius: 4px; background: track.overridden ? #25272b : (!track.album-header && track.path == root.compilation-report-preview-track-path && track.path != "" ? #263b4b : (track.album-header ? #182a38 : #171d24)); border-color: track.overridden ? AppTheme.danger : (track.album-header ? #398efa : (track.status == "Purple" ? AppTheme.violet : (track.status == "Green" ? AppTheme.green : (track.status == "Checking" ? AppTheme.cyan : (track.status == "Error" ? AppTheme.danger : AppTheme.blue))))); border-width: 1px;
                                                                     HorizontalLayout { padding-left: 7px; padding-right: 7px; spacing: 8px;
                                                                         Rectangle { width: track.album-header ? 20px : 14px; height: 20px; border-radius: 4px; border-width: track.album-header ? 1px : 0px; border-color: AppTheme.cyan; background: track.album-header ? #102c3d : transparent;
                                                                             Text { text: track.album-header ? (track.expanded ? "−" : "+") : ""; color: AppTheme.cyan; font-size: 13px * AppTheme.font-scale; font-weight: 900; horizontal-alignment: center; vertical-alignment: center; }
                                                                         }
-                                                                        Text { text: track.album-title; horizontal-stretch: 1; color: track.album-header ? AppTheme.foreground : (track.overridden ? AppTheme.secondary-foreground : (track.status == "Purple" ? AppTheme.violet : (track.status == "Green" ? AppTheme.green : (track.status == "Checking" ? AppTheme.cyan : AppTheme.blue)))); font-size: (track.album-header ? 13px : 11px) * AppTheme.font-scale; font-weight: track.album-header ? 800 : 400; overflow: elide; vertical-alignment: center; }
+                                                                        Text { text: track.album-title; horizontal-stretch: 1; color: track.album-header ? AppTheme.foreground : (track.overridden ? AppTheme.secondary-foreground : (track.status == "Purple" ? AppTheme.violet : (track.status == "Green" ? AppTheme.green : (track.status == "Checking" ? AppTheme.cyan : (track.status == "Error" ? AppTheme.danger : AppTheme.blue))))); font-size: (track.album-header ? 13px : 11px) * AppTheme.font-scale; font-weight: track.album-header ? 800 : 400; overflow: elide; vertical-alignment: center; }
                                                                         Text { text: track.file-name; width: max(170px, min(310px, parent.width * 0.38)); horizontal-alignment: right; color: track.album-header ? AppTheme.cyan : AppTheme.secondary-foreground; font-size: (track.album-header ? 10px : 9px) * AppTheme.font-scale; overflow: elide; vertical-alignment: center; }
                                                                     }
                                                                     TouchArea { mouse-cursor: pointer;

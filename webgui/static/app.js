@@ -1103,7 +1103,18 @@ function renderFallbackOverview() {
   launch.title = processing ? "Stop the active COMP run" : state.server?.mode !== "write" ? "Enable Live Write to process COMP tracks" : state.fallbackPreviewMode ? "Turn off saved-art preview mode before launching" : "Review every blue or Windows-overridden track in this fallback album";
   launch.addEventListener("click", () => runAction(processing ? stopCandidateWork : activateCandidateWork));
   toolbar.append(preview, heading, repair, launch); report.append(toolbar);
-  report.append(node("div", "fallback-report-summary", `${total} tracks: ${green} green, ${purple} purple, ${blue} blue${checking ? `, ${checking} checking` : ""}${checkErrors ? `, ${checkErrors} retry needed` : ""}`));
+  const overridden = state.fallbackTracks.filter(item => compTrackOverride(item)?.writer === "windows").length;
+  const summary = node("div", "fallback-report-summary comp-report-counts");
+  summary.append(
+    node("span", "comp-count-albums", album ? "1 Album" : "0 Albums"),
+    node("span", "comp-count-green", `${green} green`),
+    node("span", "comp-count-purple", `${purple} purple`),
+    node("span", "comp-count-blue", `${blue} blue`),
+    node("span", "comp-count-override", `${overridden} overridden`),
+  );
+  if (checking) summary.append(node("span", "comp-count-checking", `${checking} checking`));
+  if (checkErrors) summary.append(node("span", "comp-count-error", `${checkErrors} errors`));
+  report.append(summary);
   const columns = node("div", "fallback-report-columns"); columns.append(node("span", "", "ALBUM"), node("span", "", "TRACK FILE")); report.append(columns);
   const albumRow = node("button", "fallback-report-album"); albumRow.type = "button";
   albumRow.append(node("strong", "", (state.fallbackReportExpanded ? "▾  " : "▸  ") + (album?.name || "Album")),
@@ -1656,7 +1667,11 @@ function musicBrainzExistingCandidate(decision = activeArtworkDecision()) {
 function renderQueuedCompTools() {
   const host = $("compDecisionTools"), decision = activeArtworkDecision();
   clear(host);
-  const active = decision?.jobKind === "comp";
+  // The canonical MusicBrainz workspace owns release grouping, authority,
+  // filters, navigation and actions for Albums, Artist COMP and Fallback.
+  // The candidate dock is retained only after Generate Candidate Artwork has
+  // deliberately moved the operator into provider-candidate review.
+  const active = decision?.jobKind === "comp" && decision?.kind !== "musicbrainz-results";
   host.hidden = !active; $("candidateDock").classList.toggle("comp-review-active", active);
   if (!active) return;
   const authority = decision.authority || {}, ids = node("div", "comp-authority-copy");

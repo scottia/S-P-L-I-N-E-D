@@ -1464,6 +1464,7 @@ def run_manual_compilation_album(
     prepare_selected_artwork: Any | None = None,
     persist_track_authority: Any | None = None,
     verify_embedded_artwork: Any | None = None,
+    publish_verified_write: Any | None = None,
     musicbrainz_results_first: bool = False,
 ) -> bool:
     """Resolve and approve embedded artwork independently for every track."""
@@ -1595,6 +1596,7 @@ def run_manual_compilation_album(
 
         while True:
             if show_discovery:
+                discovery_started = core.time.perf_counter()
                 options = _manual_musicbrainz_options(config_file, cfg, state)
                 search_error = ""
                 cache_key = (
@@ -1654,16 +1656,17 @@ def run_manual_compilation_album(
                         discovery_cache[cache_key] = list(discovery_results)
                     if discovery_identity is not None:
                         identity_cache[cache_key] = discovery_identity
-                    core.debug_log(
-                        "compilation.manual.discovery "
-                        f"file={str(track.path)!r} results={len(discovery_results)} "
-                        f"cached={used_discovery_cache}"
-                    )
                 elif options is None:
                     search_error = str(
                         state.get("mb_options_error")
                         or "Invalid MusicBrainz options"
                     )
+                core.debug_log(
+                    "compilation.manual.discovery "
+                    f"file={str(track.path)!r} results={len(discovery_results)} "
+                    f"cached={used_discovery_cache} "
+                    f"elapsed_ms={int((core.time.perf_counter() - discovery_started) * 1000)}"
+                )
                 if (
                     getattr(discovery_identity, "identity_status", "") == "valid"
                     and getattr(discovery_identity, "recording_status", "") == "valid"
@@ -2133,13 +2136,8 @@ def run_manual_compilation_album(
                 show_discovery = True
                 if decision == "discover":
                     discovery_results = []
-                    state.setdefault("mb_discovery_results", {}).pop(
-                        (
-                            str(track.artist or "").strip().casefold(),
-                            str(track.title or "").strip().casefold(),
-                        ),
-                        None,
-                    )
+                    state.setdefault("mb_discovery_results", {}).pop(cache_key, None)
+                    state.setdefault("mb_discovery_identity", {}).pop(cache_key, None)
                 core.debug_log(
                     "compilation.manual.discovery_open "
                     f"file={str(track.path)!r} refresh={decision == 'discover'}"
@@ -2236,6 +2234,8 @@ def run_manual_compilation_album(
                 )
                 if completion_recorded:
                     completed_paths = next_completed
+                    if publish_verified_write is not None:
+                        publish_verified_write(track, artwork)
                 else:
                     summary.unresolved += 1
                     _manual_unresolved(

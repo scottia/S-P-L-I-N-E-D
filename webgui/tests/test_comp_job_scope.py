@@ -124,6 +124,14 @@ class CompJobScopeTests(unittest.TestCase):
             ]
             self.services.refresh_album = lambda _album_id: None
             self.services.refresh_embedding_stats = lambda _row: None
+            self.services.hydrate_selected_tracks = lambda _album_id, keys: [
+                item for item in self.services.hydrate_tracks(_album_id)
+                if item["track_key"] in keys
+            ]
+            published = []
+            self.services.record_comp_track_write = (
+                lambda *args: published.append(args) or {"durable": True}
+            )
             progress = []
             adapter = SimpleNamespace(context={}, progress=progress.append)
             captured = {}
@@ -137,7 +145,9 @@ class CompJobScopeTests(unittest.TestCase):
                 captured["musicbrainz_results_first"] = kwargs[
                     "musicbrainz_results_first"
                 ]
+                captured["discovery_state"] = kwargs["state"]
                 kwargs["track_context"](tracks[0])
+                kwargs["publish_verified_write"](tracks[0], b"verified-art")
                 return True
 
             track = SimpleNamespace(
@@ -167,6 +177,15 @@ class CompJobScopeTests(unittest.TestCase):
             self.assertIn("track 1 of 1", progress[-1]["message"])
             self.assertTrue(callable(captured.get("persist_track_authority")))
             self.assertIs(captured["musicbrainz_results_first"], True)
+            self.assertIs(
+                captured["discovery_state"],
+                self.services._compilation_discovery_state,
+            )
+            self.assertEqual(published[0][1]["track_key"], "artist-track")
+            self.assertEqual(
+                published[0][3],
+                "bb505d8f86dddf3f2a9513df97de84be1a117ec6d1ffd0a6d1c3e02399217098",
+            )
 
     def test_validated_authority_write_is_atomic_and_preserves_embedded_art(self):
         with TemporaryDirectory() as directory:

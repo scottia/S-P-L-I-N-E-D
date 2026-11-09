@@ -250,6 +250,7 @@ fn webp_animation_metadata(bytes: &[u8]) -> Option<WebpAnimationMetadata> {
 }
 type EmbeddedMetadataCache = HashMap<String, (u64, u128, Option<(u32, u32, u64)>)>;
 static EMBEDDED_METADATA_CACHE: OnceLock<Mutex<EmbeddedMetadataCache>> = OnceLock::new();
+static EMBEDDED_METADATA_ERRORS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static VISIBLE_COMPILATION_CHECKS_PENDING: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static COMP_REPORT_THUMB_CACHE: OnceLock<Mutex<HashMap<String, CachedCompReportThumb>>> =
     OnceLock::new();
@@ -4140,14 +4141,19 @@ fn main() -> Result<(), slint::PlatformError> {
                     };
                     match result {
                         Ok(found) if found.count > 0 => {
-                            let message = format!(
-                                "Music library changes found · {} added · {} changed · {} removed. Apply only these changes to the library index.",
-                                found.added, found.changed, found.removed,
-                            );
+                            // This is an index-refresh notice, not a database
+                            // synchronization warning.  Keep the presentation
+                            // concise and leave the detailed counts in the
+                            // diagnostic log where they cannot be mistaken for
+                            // failed cross-client coordination.
+                            let message = "Music library changes found. Apply Library Changes to update the local index.".to_string();
                             ui.set_new_media_warning_text(message.clone().into());
                             ui.set_new_media_warning_visible(true);
                             if let Ok(mut app) = check_state.lock() {
-                                app.push_log(message);
+                                app.push_log(format!(
+                                    "{message} added={} changed={} removed={}",
+                                    found.added, found.changed, found.removed,
+                                ));
                             }
                         }
                         Ok(_) => {}
@@ -18551,6 +18557,18 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
     ui.set_compilation_report_override_count(
         count_tracks.iter().filter(|row| row.overridden).count() as i32,
     );
+    ui.set_compilation_report_checking_count(
+        count_tracks
+            .iter()
+            .filter(|row| row.status.as_str() == "Checking")
+            .count() as i32,
+    );
+    ui.set_compilation_report_error_count(
+        count_tracks
+            .iter()
+            .filter(|row| row.status.as_str() == "Error")
+            .count() as i32,
+    );
 
     let sources = state
         .sources
@@ -20849,7 +20867,18 @@ fn cached_embedded_front_metadata(track: &Path) -> Option<(u32, u32, u64)> {
     if let Some(info) = cached {
         info
     } else {
-        let info = embedded_front_metadata(track).ok().flatten();
+        let result = embedded_front_metadata(track);
+        let info = result.as_ref().ok().and_then(|value| *value);
+        if let Ok(mut errors) = EMBEDDED_METADATA_ERRORS
+            .get_or_init(|| Mutex::new(HashSet::new()))
+            .lock()
+        {
+            if result.is_err() {
+                errors.insert(key.clone());
+            } else {
+                errors.remove(&key);
+            }
+        }
         if let Ok(mut cache) = cache.lock() {
             cache.insert(key, (metadata.len(), modified, info));
         }
@@ -20858,10 +20887,16 @@ fn cached_embedded_front_metadata(track: &Path) -> Option<(u32, u32, u64)> {
 }
 
 fn invalidate_embedded_track_metadata(track: &Path) {
+    let key = track.to_string_lossy();
     if let Some(cache) = EMBEDDED_METADATA_CACHE.get()
         && let Ok(mut cache) = cache.lock()
     {
-        cache.remove(track.to_string_lossy().as_ref());
+        cache.remove(key.as_ref());
+    }
+    if let Some(errors) = EMBEDDED_METADATA_ERRORS.get()
+        && let Ok(mut errors) = errors.lock()
+    {
+        errors.remove(key.as_ref());
     }
 }
 
@@ -21393,6 +21428,14 @@ fn compilation_report_track_status(
         Some(dimensions) => dimensions,
         None => cached_embedded_front_metadata(track),
     };
+    if EMBEDDED_METADATA_ERRORS
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .ok()
+        .is_some_and(|errors| errors.contains(key.as_ref()))
+    {
+        return "Error";
+    }
     match recorded {
         Some((width, height, _)) if width == side && height == side => "Green",
         Some(_) => "Purple",
@@ -21425,17 +21468,21 @@ fn group_compilation_report_rows(
             .iter()
             .filter(|row| row.status.as_str() == "Checking")
             .count();
+        let errors = group
+            .iter()
+            .filter(|row| row.status.as_str() == "Error")
+            .count();
         let expanded = !collapsed_albums.contains(&album_key.to_ascii_lowercase());
         rows.push(UiCompilationReportRow {
             album_key: album_key.clone(),
             album_title: group[0].album_title.clone(),
             path: SharedString::default(),
             file_name: format!(
-                "{} track{} · {} recorded, {} need artwork{}{}",
+                "{} track{} · {} recorded, {} need artwork{}{}{}",
                 group.len(),
                 if group.len() == 1 { "" } else { "s" },
-                group.len() - blue,
-                blue,
+                group.len().saturating_sub(blue + errors),
+                blue + errors,
                 if purple > 0 {
                     format!(", {purple} thumb check")
                 } else {
@@ -21446,9 +21493,16 @@ fn group_compilation_report_rows(
                 } else {
                     String::new()
                 },
+                if errors > 0 {
+                    format!(", {errors} errors")
+                } else {
+                    String::new()
+                },
             )
             .into(),
-            status: if purple > 0 {
+            status: if errors > 0 {
+                "Error"
+            } else if purple > 0 {
                 "Purple"
             } else if checking > 0 {
                 "Checking"
@@ -21471,6 +21525,7 @@ fn group_compilation_report_rows(
                     "Green" => "COMP status · complete",
                     "Purple" => "COMP status · thumbnail repair",
                     "Checking" => "COMP status · checking thumbnail",
+                    "Error" => "COMP status · validation error",
                     _ => "COMP status · needs artwork",
                 }
                 .into();
@@ -22499,9 +22554,9 @@ fn trim_large_raw_image_cache(
 mod tests {
     use super::{
         AlbumEmbeddedCheck, AlbumWriteState, ArtistAlbumEmbedTarget, CachedPixels,
-        EMBEDDED_METADATA_CACHE, EmbedQueueSource, EmbedQueueTarget, MaximizeGuard,
-        PREVIEW_CACHE_DIMENSION, ThumbnailAlbumTarget, UiCompilationReportRow, UiMusicBrainzRow,
-        WorkspaceLayout, add_embedded_thumbnail_decision, album_embedded_check,
+        EMBEDDED_METADATA_CACHE, EMBEDDED_METADATA_ERRORS, EmbedQueueSource, EmbedQueueTarget,
+        MaximizeGuard, PREVIEW_CACHE_DIMENSION, ThumbnailAlbumTarget, UiCompilationReportRow,
+        UiMusicBrainzRow, WorkspaceLayout, add_embedded_thumbnail_decision, album_embedded_check,
         album_embedded_check_cache, album_embedded_check_key, album_overview_queue_target,
         apply_album_coordination_states, apply_ui_preferences, artist_album_card_artwork_path,
         artist_album_card_display_title, artist_album_queue_targets, artist_art_candidate_source,
@@ -23306,6 +23361,7 @@ mod tests {
         let correct = PathBuf::from(format!("{prefix}-correct.mp3"));
         let wrong = PathBuf::from(format!("{prefix}-wrong.mp3"));
         let missing = PathBuf::from(format!("{prefix}-missing.mp3"));
+        let failed = PathBuf::from(format!("{prefix}-failed.mp3"));
         let unchecked = PathBuf::from(format!("{prefix}-unchecked.mp3"));
         let cache = EMBEDDED_METADATA_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
         {
@@ -23319,7 +23375,13 @@ mod tests {
                 (1, 1, Some((900, 900, 90_000))),
             );
             cache.insert(missing.to_string_lossy().into_owned(), (1, 1, None));
+            cache.insert(failed.to_string_lossy().into_owned(), (1, 1, None));
         }
+        EMBEDDED_METADATA_ERRORS
+            .get_or_init(|| Mutex::new(HashSet::new()))
+            .lock()
+            .unwrap()
+            .insert(failed.to_string_lossy().into_owned());
 
         assert_eq!(
             compilation_report_track_status(&correct, true, false, 1200),
@@ -23332,6 +23394,10 @@ mod tests {
         assert_eq!(
             compilation_report_track_status(&missing, true, false, 1200),
             "Blue"
+        );
+        assert_eq!(
+            compilation_report_track_status(&failed, true, false, 1200),
+            "Error"
         );
         assert_eq!(
             compilation_report_track_status(&unchecked, true, true, 1200),
@@ -23347,9 +23413,14 @@ mod tests {
         );
 
         let mut cache = cache.lock().unwrap();
-        for path in [&correct, &wrong, &missing, &unchecked] {
+        for path in [&correct, &wrong, &missing, &failed, &unchecked] {
             cache.remove(path.to_string_lossy().as_ref());
         }
+        EMBEDDED_METADATA_ERRORS
+            .get_or_init(|| Mutex::new(HashSet::new()))
+            .lock()
+            .unwrap()
+            .remove(failed.to_string_lossy().as_ref());
     }
 
     #[test]

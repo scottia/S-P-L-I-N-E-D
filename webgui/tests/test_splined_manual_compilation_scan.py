@@ -112,6 +112,52 @@ class ManualCompilationDecisionTests(unittest.TestCase):
         )
         remote.assert_not_called()
 
+    def test_comp_musicbrainz_discovery_reuses_service_session_cache(self) -> None:
+        track = SimpleNamespace(
+            path=Path("Miss You.flac"), artist="Aaliyah", title="Miss You",
+            album="Billboard 2003", album_artist="Various Artists",
+            artist_mbid="4bd95eea-b9f6-4d70-a36c-cfea77431553",
+            recording_mbid="e1efc38f-1f86-4c2c-bd90-df1e0796f789",
+        )
+        release = SimpleNamespace(release_mbid="release-id")
+        identity = SimpleNamespace(
+            candidates=(release,), error="", warnings=(), identity_status="valid",
+            identity_message="Recording verified", recording_status="valid",
+            artist_status="valid", friendly_artist=track.artist,
+            friendly_title=track.title, focused_artist_mbid=track.artist_mbid,
+            used_fuzzy_search=False,
+        )
+        shared_state = {}
+        debug = []
+        with (
+            mock.patch.object(scan.core, "compilation_manual_album_eligible", return_value=True, create=True),
+            mock.patch.object(scan.core, "compilation_manual_track_eligible", return_value=(True, ""), create=True),
+            mock.patch.object(scan.core, "compilation_mbids", side_effect=lambda value: {value} if value else set(), create=True),
+            mock.patch.object(scan.core, "ui_cancelled", return_value=False),
+            mock.patch.object(scan, "_manual_musicbrainz_options", return_value=object()),
+            mock.patch.object(scan.core, "compilation_resolve_interactive_identity", return_value=identity, create=True) as resolve,
+            mock.patch.object(scan.core, "compilation_local_artwork_rows", return_value=[], create=True),
+            mock.patch.object(scan, "_manual_choose_release", return_value=("exit-album", None, {})),
+            mock.patch.object(scan.core, "emit_ui"),
+            mock.patch.object(scan.core, "debug_log", side_effect=debug.append),
+        ):
+            for _ in range(2):
+                scan.run_manual_compilation_album(
+                    SimpleNamespace(path=Path("Billboard 2003")), [track],
+                    http=object(), config_file=Path("config.toml"),
+                    cfg={"mode": "read"}, sources=[], cache=Path("cache"),
+                    format_order=["jpeg"], summary=SimpleNamespace(unresolved=0),
+                    api_queried=set(), unresolved_items=[], state=shared_state,
+                    target_track_paths={str(track.path)},
+                    musicbrainz_results_first=True,
+                )
+
+        resolve.assert_called_once()
+        discovery = [line for line in debug if line.startswith("compilation.manual.discovery ")]
+        self.assertEqual(len(discovery), 2)
+        self.assertIn("cached=False", discovery[0])
+        self.assertIn("cached=True", discovery[1])
+
     def test_advanced_ids_preserve_rejected_text_then_persist_only_validated_ids(self) -> None:
         track = SimpleNamespace(
             path=Path("Because the Night.flac"), artist="10,000 Maniacs",
