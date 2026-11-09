@@ -195,9 +195,20 @@ fn artist_overview_keeps_native_parity_controls_and_album_row_navigation() {
     assert!(ui.contains("root.selected-album-track-count + \" tracks · \""));
     assert!(ui.contains("status-only-album-selection: row.kind != \"artist\""));
     assert!(ui.contains("root.status-only-album-selection ? \"○\""));
+    assert!(ui.contains("background: root.status-only-album-selection ? transparent"));
     assert!(ui.contains("row-touch := TouchArea"));
     assert!(ui.contains("clicked => root.activated(root.item.key)"));
     assert!(!ui.contains("#7a1b1d1f"));
+    let fallback_rows = ui
+        .split("for track in root.compilation-track-rows: Rectangle")
+        .nth(1)
+        .unwrap()
+        .split("if root.compilation-track-rows.length == 0")
+        .next()
+        .unwrap();
+    assert!(fallback_rows.contains("background: transparent"));
+    assert!(fallback_rows.contains("clicked => root.compilation-track-activated"));
+    assert!(!fallback_rows.contains("track.selected ?"));
     assert!(!ui.contains("#7a061426"));
     assert!(ui.contains("#14141470"));
     assert!(ui.contains("#0b0b0be0"));
@@ -221,13 +232,14 @@ fn comp_report_keeps_visible_group_controls_and_track_scoped_coordination() {
     assert!(main.contains("\"COMP status · complete\""));
     assert!(main.contains("track.album_title = track.file_name.clone()"));
     assert!(main.contains("Selected COMP track · {} · loading embedded artwork…"));
+    assert!(main.contains(".select_compilation_track(album_key, track_path, include_bypassed)"));
     let summary = ui
         .split(
-            "if root.overview-mode == \"Artist\": HorizontalLayout { height: 18px; spacing: 12px;",
+            "if root.overview-mode == \"Artist\" || root.overview-mode == \"Fallback\": HorizontalLayout { height: 18px; spacing: 12px;",
         )
         .nth(1)
         .unwrap()
-        .split("if root.overview-mode == \"Fallback\"")
+        .split("HorizontalLayout { height: 18px; spacing: 8px;")
         .next()
         .unwrap();
     assert!(summary.find("Albums").unwrap() < summary.find("horizontal-stretch: 1").unwrap());

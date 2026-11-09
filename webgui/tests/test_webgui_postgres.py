@@ -4240,7 +4240,15 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     page.locator("#artistList button", has_text="Test Artist").click()
                     page.locator("button.album-card", has_text="Test Album").click()
                     expect(page.locator("#embedBatchButton")).to_be_enabled()
-                    page.locator("#embedBatchButton").click()
+                    with page.expect_response(
+                        lambda response: response.url.endswith("/api/jobs")
+                        and response.request.method == "POST",
+                        timeout=15000,
+                    ) as stage_response:
+                        page.locator("#embedBatchButton").click()
+                    self.assertTrue(
+                        stage_response.value.ok, stage_response.value.text()
+                    )
                     page.locator("#embedTab").click()
                     expect(page.locator(".queue-card", has_text="Test Album")).to_be_visible()
 
@@ -4642,16 +4650,19 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         "100% match · Release Family"
                     )
                     expect(page.locator("#candidateDock")).to_be_hidden()
-                    self.assertTrue(
-                        all(
+                    unexpected_full_launch_calls = [
+                        url
+                        for url in http_calls[full_launch_call_start:]
+                        if not (
                             url.startswith(core.MB_BASE)
-                            or (
-                                url.startswith("https://coverartarchive.org/")
-                                and other_release_id not in url
-                            )
-                            for url in http_calls[full_launch_call_start:]
-                        ),
-                        "an artwork provider was queried before full-Fallback release selection",
+                            or url.startswith("https://coverartarchive.org/")
+                        )
+                    ]
+                    self.assertFalse(
+                        unexpected_full_launch_calls,
+                        "a non-MusicBrainz artwork provider was queried before "
+                        "full-Fallback release selection: "
+                        f"{unexpected_full_launch_calls}",
                     )
                     page.locator(".musicbrainz-release-row").click()
                     expect(

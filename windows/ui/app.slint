@@ -729,8 +729,10 @@ component MediaLibraryPane inherits NeonPanel {
                                 HorizontalLayout { padding-left: 26px; padding-right: 8px; spacing: 8px;
                                     Text { text: "●"; color: track.status-color; width: 20px; font-size: 20px * AppTheme.font-scale; vertical-alignment: center; horizontal-alignment: center; }
                                     Text { text: track.file-name; color: track.status-color; font-size: 15px * AppTheme.font-scale; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
-                                    Text { text: track.selected ? "●" : "○"; color: track.selected ? AppTheme.green : AppTheme.danger; width: 34px; font-size: 30px * AppTheme.font-scale; vertical-alignment: center; horizontal-alignment: center; }
                                 }
+                                // Keep the active track in the native model for processing,
+                                // but do not expose selection paint in the Fallback file list.
+                                // Any click across the row still activates that track.
                                 TouchArea { mouse-cursor: pointer; clicked => root.compilation-track-activated(track.album-key, track.path, root.include-bypassed); }
                             }
                         }

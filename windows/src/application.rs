@@ -1642,6 +1642,28 @@ impl LibraryState {
         track_path: &str,
         include_bypassed: bool,
     ) -> SelectionResult {
+        self.update_compilation_track_selection(album_key, track_path, include_bypassed, true)
+    }
+
+    /// Select a fallback track without exposing the model's toggle semantics
+    /// to a file-list row. Repeated row clicks remain explicit reprocess
+    /// requests instead of silently deselecting the current track.
+    pub fn select_compilation_track(
+        &mut self,
+        album_key: &str,
+        track_path: &str,
+        include_bypassed: bool,
+    ) -> SelectionResult {
+        self.update_compilation_track_selection(album_key, track_path, include_bypassed, false)
+    }
+
+    fn update_compilation_track_selection(
+        &mut self,
+        album_key: &str,
+        track_path: &str,
+        include_bypassed: bool,
+        toggle_if_selected: bool,
+    ) -> SelectionResult {
         let Some(index) = self
             .albums
             .iter()
@@ -1683,16 +1705,20 @@ impl LibraryState {
         let was_selected = self.selected_compilation_track_paths.contains(&normalized);
         let focused_album_key = album.snapshot.album_key.clone();
 
-        if was_selected {
+        if was_selected && toggle_if_selected {
             self.selection_epoch = self.selection_epoch.wrapping_add(1);
             self.selected_compilation_track_paths.remove(&normalized);
-        } else {
+        } else if !was_selected {
             // A fallback track is a complete, track-scoped processing target.
             // Replace any Artist/Album selection that led the operator here so
             // a normal Artist-folder album cannot run first and overwrite the
             // compilation preview.
             self.select_none();
             self.selected_compilation_track_paths.insert(normalized);
+        } else {
+            // Treat another click on the active file row as a fresh explicit
+            // review request while keeping the internal selection intact.
+            self.selection_epoch = self.selection_epoch.wrapping_add(1);
         }
         self.focused_album_key = Some(focused_album_key);
 
@@ -7018,6 +7044,44 @@ mod tests {
         assert_eq!(
             state.toggle_compilation_track("a", track_path, false),
             SelectionResult::Changed
+        );
+        assert_eq!(state.queue(ScanScope::Selected).len(), 1);
+    }
+
+    #[test]
+    fn fallback_file_row_selection_is_idempotent() {
+        let mut state = library();
+        let track_path = r"C:\Music\Alpha\Fresh\01.flac";
+        let album = state
+            .albums
+            .iter_mut()
+            .find(|album| album.snapshot.album_key == "a")
+            .unwrap();
+        album.snapshot.album_mbid.clear();
+        album.snapshot.compilation = true;
+        album.snapshot.compilation_tracks = vec![MediaTrackSnapshot {
+            path: track_path.to_string(),
+            title: "One".to_string(),
+            artist: "Alpha".to_string(),
+            embedded_artwork_recorded: false,
+        }];
+        state.view = LibraryView::Artists;
+        state.focused_artist = Some("Alpha".to_string());
+
+        assert_eq!(
+            state.select_compilation_track("a", track_path, false),
+            SelectionResult::Changed
+        );
+        let first_epoch = state.selection_epoch;
+        assert_eq!(
+            state.select_compilation_track("a", track_path, false),
+            SelectionResult::Changed
+        );
+        assert_ne!(state.selection_epoch, first_epoch);
+        assert!(
+            state
+                .selected_compilation_track_paths
+                .contains(&track_path.to_ascii_lowercase())
         );
         assert_eq!(state.queue(ScanScope::Selected).len(), 1);
     }

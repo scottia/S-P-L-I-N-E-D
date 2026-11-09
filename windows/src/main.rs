@@ -5144,7 +5144,7 @@ fn activate_compilation_track(
     let preview_request = if let Ok(mut app) = state.lock() {
         let result = app
             .library
-            .toggle_compilation_track(album_key, track_path, include_bypassed);
+            .select_compilation_track(album_key, track_path, include_bypassed);
         if result != SelectionResult::NotFound {
             synchronize_fallback_album(&mut app);
         }
