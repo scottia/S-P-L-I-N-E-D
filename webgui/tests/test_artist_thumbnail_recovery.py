@@ -97,6 +97,17 @@ class ArtistThumbnailRecoveryTests(unittest.TestCase):
         portrait.write_bytes(_png())
         self.assertEqual(self.catalog.artist_thumbnail("artist-1"), portrait)
 
+    def test_cached_provider_thumbnail_yields_to_external_local_artist_art(self) -> None:
+        provider = self.root / "cache" / "navidrome-thumbnails" / "artists" / "provider.png"
+        provider.parent.mkdir(parents=True)
+        provider.write_bytes(_png())
+        self.catalog.portrait_cache["artist-1"] = provider
+        portrait = self.artist_path / "artist.png"
+        portrait.write_bytes(_png())
+
+        self.assertEqual(self.catalog.artist_thumbnail("artist-1"), portrait)
+        self.assertEqual(self.catalog.portrait_cache["artist-1"], portrait)
+
     def test_empty_remote_thumbnail_is_bounded_then_can_recover(self) -> None:
         self._save_credentials()
         remote = {"id": "remote-artist", "name": "Test Artist", "coverArt": "cover-1"}

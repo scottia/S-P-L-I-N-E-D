@@ -78,6 +78,8 @@ const state = {
   albumSearchActive: false, albumSearchAlbumId: "", albumSearchCandidates: [],
   albumLibraryMatches: [], albumLibraryRequest: 0, albumLibraryLoading: false,
   sourceOrder: [],
+  sourcePolicies: {}, artistSourceEnabled: [],
+  sourceCounts: {artist: {}, cover: {}},
   libraryLoading: false, artistMetadataRequest: 0,
   activeActionId: "", artistInfoExpanded: false,
   albumOverrides: new Map(), albumOverrideRevision: 0,
@@ -223,6 +225,21 @@ function image(src, className = "", alt = "") {
   element.alt = alt; element.loading = "lazy"; element.draggable = false; return element;
 }
 function clear(element) { element.replaceChildren(); }
+const ARTIST_IMAGE_SOURCES = new Set(["deezer", "itunes", "fanarttv", "lastfm", "discogs", "navidrome"]);
+function artistSourceConfigured(key) {
+  if (key === "local") return true;
+  if (!ARTIST_IMAGE_SOURCES.has(key)) return false;
+  const value = state.sourcePolicies?.[key]?.include_in_artist_art_search;
+  return value === undefined ? true : value !== false;
+}
+function updateSourceCounts(kind, candidates) {
+  const counts = {};
+  for (const candidate of candidates || []) {
+    const key = sourceKey(candidate.source);
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  state.sourceCounts[kind] = counts;
+}
 function clearFocusCandidates() {
   state.queuedDecision = null; state.reviewJobId = null;
   state.albumSearchActive = false; state.albumSearchAlbumId = ""; state.albumSearchCandidates = [];
@@ -1368,7 +1385,6 @@ function renderSources() {
   const staleDecision = !!state.queuedDecision && !decision;
   const candidates = staleDecision ? [] : state.candidates;
   const diagnostics = staleDecision ? [] : state.sourceDiagnostics;
-  const artistImageSources = new Set(["local", "fanart", "deezer", "lastfm", "discogs", "navidrome"]);
   const sourceByKey = new Map(SOURCES.map(source => [source[1] === "fanart" ? "fanarttv" : source[1], source]));
   const orderedSources = [sourceByKey.get(""), sourceByKey.get("local")];
   const seen = new Set(["", "local"]);
@@ -1380,22 +1396,25 @@ function renderSources() {
     if (!seen.has(key)) { orderedSources.push(source); seen.add(key); }
   }
   for (const [label, key, icon] of orderedSources.filter(Boolean)) {
-    const count = candidates.filter(candidate => sourceKey(candidate.source) === key).length;
+    const currentCount = candidates.filter(candidate => sourceKey(candidate.source) === key).length;
+    const artistCount = Number(state.sourceCounts.artist?.[key] || 0);
+    const coverCount = Number(state.sourceCounts.cover?.[key] || 0);
     const navidromeMetadata = key === "navidrome" && state.artistMetadata?.source === "Navidrome";
     const configured = key === "local" || (state.enabledSources || []).includes(key === "fanart" ? "fanarttv" : key);
-    const searchable = state.editorMode === "album" ? configured
-      : artistImageSources.has(key) && (configured || navidromeMetadata);
+    const artistEnabled = artistSourceConfigured(key === "fanart" ? "fanarttv" : key) || navidromeMetadata;
+    const searchable = state.editorMode === "album" ? configured : artistEnabled;
     const runtime = sourceDiagnosticStatus(diagnostics, key);
-    const runtimeClass = !count && runtime.status ? " " + runtime.status : "";
+    const runtimeClass = !currentCount && runtime.status ? " " + runtime.status : "";
     const button = node("button", "source-card" + runtimeClass + (state.activeSource === key && key ? " active" : "")); button.type = "button";
-    button.title = count ? "Show " + label + " candidates"
+    button.title = currentCount ? "Show " + label + " candidates"
       : runtime.message ? label + " · " + runtime.message
       : label + (searchable ? " · ready for artist search" : " · unavailable for this selection");
     button.append(icon === "⊘" ? node("span", "source-symbol", "⊘") : image("/assets/source-icons/" + icon + ".svg", "", ""));
-    const status = count ? "● Results" : runtime.status === "unavailable" ? "⚠ Unavailable"
-      : runtime.status === "filtered" ? "○ Filtered" : runtime.status === "warning" ? "⚠ Warning"
-      : navidromeMetadata ? "● Metadata" : searchable ? "● Ready" : "○ Inactive";
-    button.append(node("strong", "", label), node("small", "", count + " found"), node("span", "source-state" + (searchable ? "" : " pending"), status));
+    const mode = artistEnabled && configured ? "Artist / Album" : artistEnabled ? "Artist-only" : configured ? "Album-only" : "Excluded";
+    button.append(node("strong", "", label));
+    if (artistEnabled) button.append(node("small", "", `🔍 ${artistCount} Artist`));
+    if (configured) button.append(node("small", "", `🔍 ${coverCount} Cover`));
+    button.append(node("span", "source-state" + (searchable ? "" : " pending"), mode));
     button.addEventListener("click", () => { state.activeSource = state.activeSource === key ? "" : key; renderSources(); renderCandidates(); }); strip.append(button);
   }
 }
@@ -2288,6 +2307,7 @@ async function chooseArtist(id, select = true) {
     state.album = null; state.editorMode = "artist"; state.workspace = "find";
     if (select) markSelectedArtist(artist);
     state.candidates = state.artist.local_candidates || []; resetCandidateFilters();
+    updateSourceCounts("artist", state.candidates);
     state.radioCurrent = true; state.radioArtist = false; state.radioBanner = false;
     state.artistInfoExpanded = false;
     renderAll(); setStatus("Loaded " + state.artist.name + " · " + state.artist.albums.length + " albums");
@@ -2331,6 +2351,7 @@ async function chooseAlbum(id) {
     state.fallbackTracks = tracks;
     markSelectedAlbum(album);
     state.candidates = fallback ? [] : album.candidates || []; resetCandidateFilters();
+    if (!fallback) updateSourceCounts("cover", state.candidates);
     renderAll();
     auditEvent("selection-change", fallback ? "comp-album" : "album", {scope: {artist_id: state.artist?.id || album.artist_id, album_id: album.id}, details: {library_mode: state.libraryMode}});
     setStatus(fallback ? `COMP ready · ${tracks.length} tracks · ${tracks.filter(item => !item.completed).length} pending · validating recorded thumbnails`
@@ -2381,12 +2402,14 @@ async function searchArtist(signal = null) {
     const result = await api("/api/search/artist", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({id}), signal});
     if (request !== state.searchRequest || state.artist?.id !== id || state.editorMode !== "artist") return;
     state.candidates = [...(state.artist.local_candidates || []), ...result.candidates]; state.sourceDiagnostics = result.warnings || []; resetCandidateFilters();
+    updateSourceCounts("artist", state.candidates);
     renderSources(); renderCandidates(); renderPanes(); renderReview();
     setStatus(result.candidates.length + " online candidates found" + (result.warnings.length ? " · " + result.warnings.length + " source warnings" : ""));
   } catch (error) {
     if (error?.name === "AbortError") return;
     if (request !== state.searchRequest) return;
     state.candidates = state.artist?.local_candidates || []; resetCandidateFilters();
+    updateSourceCounts("artist", state.candidates);
     renderSources(); renderCandidates();
     setStatus("Online artist search failed · local art remains available", "error");
   }

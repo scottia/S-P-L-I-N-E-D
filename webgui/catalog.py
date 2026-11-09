@@ -277,7 +277,9 @@ class Catalog:
     cache: Path | None = None
     temporary_cache: Path | None = None
     preview_cache: Path | None = None
-    artist_sources: tuple[str, ...] = ("fanarttv", "deezer", "lastfm", "discogs")
+    artist_sources: tuple[str, ...] = (
+        "fanarttv", "deezer", "lastfm", "discogs", "itunes", "navidrome"
+    )
     images: dict[str, Path | bytes] = field(default_factory=dict)
     metadata_cache: dict[str, dict[str, object]] = field(default_factory=dict)
     appearance_cache: dict[str, dict[str, object]] = field(default_factory=dict)
@@ -724,16 +726,24 @@ class Catalog:
             for item in artists
         )
 
-    def _navidrome_thumbnail_path(self, artist) -> Path | None:
+    def _navidrome_thumbnail_path(self, artist, variant: str = "web-v1") -> Path | None:
         directory = self.cache / "navidrome-thumbnails" if self.cache is not None else None
         if directory is None:
             return None
         identity = sha256(str(artist["artist_key"]).encode("utf-8")).hexdigest()[:32]
-        path = directory / "artists" / ("web-v1-" + identity + ".png")
+        path = directory / "artists" / (variant + "-" + identity + ".png")
         return path if path.is_file() else None
 
-    def _cache_navidrome_thumbnail(self, artist, credential, remote_artist) -> Path | None:
-        cached = self._navidrome_thumbnail_path(artist)
+    def _cache_navidrome_thumbnail(
+        self,
+        artist,
+        credential,
+        remote_artist,
+        *,
+        size: int = 192,
+        variant: str = "web-v1",
+    ) -> Path | None:
+        cached = self._navidrome_thumbnail_path(artist, variant)
         if cached is not None:
             return cached
         cover_id = str(remote_artist.get("coverArt") or "").strip()
@@ -743,7 +753,7 @@ class Catalog:
         base = str(credential.get("server_url") or "").rstrip("/")
         response = requests.get(
             base + "/rest/getCoverArt.view",
-            params={**self._navidrome_auth_query(credential), "id": cover_id, "size": "192"},
+            params={**self._navidrome_auth_query(credential), "id": cover_id, "size": str(size)},
             timeout=20,
             allow_redirects=False,
         )
@@ -755,7 +765,7 @@ class Catalog:
         directory = directory / "artists"
         directory.mkdir(parents=True, exist_ok=True)
         identity = sha256(str(artist["artist_key"]).encode("utf-8")).hexdigest()[:32]
-        path = directory / ("web-v1-" + identity + ".png")
+        path = directory / (variant + "-" + identity + ".png")
         descriptor, temporary = tempfile.mkstemp(prefix=".navidrome-", suffix=".png", dir=directory)
         try:
             os.close(descriptor)
@@ -1255,8 +1265,6 @@ class Catalog:
 
     def artist_thumbnail_path(self, artist) -> Path | None:
         artist_id = str(artist["artist_key"])
-        if artist_id in self.portrait_cache:
-            return self.portrait_cache[artist_id]
         direct = ArtistArtTarget(Path(str(artist["primary_path"])), "artist")
         raw_id = str(artist["musicbrainz_artistid"] or "").strip()
         try:
@@ -1266,6 +1274,12 @@ class Catalog:
             identity = "name-" + digest.digest()[:16].hex()
         managed = ArtistArtTarget(self.artist_art, "artist-" + identity, True)
         portrait = saved_package((direct, managed)).portrait
+        # Re-resolve local Artist Art before consulting the session cache. A
+        # Windows write or external artist.* creation must replace an older
+        # provider portrait without requiring a WebGUI restart.
+        if portrait is None and artist_id in self.portrait_cache:
+            cached = self.portrait_cache[artist_id]
+            portrait = cached if cached.is_file() else None
         if portrait is None:
             portrait = self._navidrome_thumbnail_path(artist)
         if portrait is not None and (
@@ -2090,6 +2104,14 @@ class Catalog:
 
     def search_artist(self, artist_id: str) -> dict[str, object]:
         artist = self.artist(artist_id)
+        with closing(self.connect()) as db:
+            artist_row = db.execute(
+                "SELECT artist_key,artist_name,musicbrainz_artistid,primary_path "
+                "FROM artists WHERE artist_key=?",
+                (artist_id,),
+            ).fetchone()
+        if artist_row is None:
+            raise KeyError("Artist not found")
         found, warnings = discover_artist_images(
             str(artist["name"]), str(artist["mbid"]), self.credentials, enabled=self.artist_sources,
         )
@@ -2104,6 +2126,41 @@ class Catalog:
                 "bytes": len(data), "digest": sha256(data).hexdigest(),
                 "image": self.image(data),
             })
+        if "navidrome" in self.artist_sources:
+            try:
+                navidrome = self._navidrome_thumbnail_path(
+                    artist_row, "web-artist-search-v1"
+                )
+                if navidrome is None:
+                    remote = self._navidrome_artists_by_name().get(
+                        normalized_artist_identity(artist["name"])
+                    )
+                    credential_path = self.credentials / "navidrome.json"
+                    if remote is not None and credential_path.is_file():
+                        credential = json.loads(credential_path.read_text(encoding="utf-8"))
+                        navidrome = self._cache_navidrome_thumbnail(
+                            artist_row,
+                            credential,
+                            remote,
+                            size=1500,
+                            variant="web-artist-search-v1",
+                        )
+                if navidrome is not None:
+                    with Image.open(navidrome) as image:
+                        width, height = image.size
+                    candidates.append({
+                        "source": "Navidrome",
+                        "kind": "artist",
+                        "acceptable": True,
+                        "name": "Navidrome portrait",
+                        "width": width,
+                        "height": height,
+                        "bytes": navidrome.stat().st_size,
+                        "digest": sha256(navidrome.read_bytes()).hexdigest(),
+                        "image": self.image(navidrome),
+                    })
+            except (OSError, ValueError, KeyError, TypeError, requests.RequestException, json.JSONDecodeError) as error:
+                warnings.append(f"Navidrome: request failed ({type(error).__name__})")
         return {"candidates": candidates, "warnings": warnings}
 
 

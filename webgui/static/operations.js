@@ -60,6 +60,8 @@ async function initialize() {
   applyGraphicalEnhancement(settings.config.webgui_ui?.enhancement);
   state.artworkRange = {...state.artworkRange, ...(settings.config.range || {})};
   state.sourceOrder = [...(settings.config.sources?.cover_sources || [])];
+  state.sourcePolicies = {...(settings.config.source_policies || {})};
+  state.artistSourceEnabled = Array.from(ARTIST_IMAGE_SOURCES).filter(key => artistSourceConfigured(key));
   state.enabledSources = state.sourceOrder.filter(key=>!settings.config.sources?.exclude_cover_sources?.includes(key) && settings.config.source_policies?.[key]?.enabled!==false);
   renderAll();
   // The workspace is display:none until authentication succeeds.  Restore
@@ -372,6 +374,7 @@ async function searchAlbum(releaseId = null, signal = null) {
   state.albumSearchActive = true; state.albumSearchAlbumId = id;
   state.albumSearchCandidates = [...(state.album.candidates || []), ...result.candidates];
   state.candidates = state.albumSearchCandidates; state.sourceDiagnostics = result.warnings || []; resetCandidateFilters();
+  updateSourceCounts("cover", state.candidates);
   renderSources(); renderCandidates(); renderReview();
   setStatus(result.candidates.length + " online candidates" + (result.warnings.length ? " · " + result.warnings.join("; ") : ""));
 };
@@ -1527,13 +1530,22 @@ function renderSourceOrderSettings(host, draft, selectedProvider, selectProvider
     setSettingValue(draft, "sources.cover_sources", configured);
   }
   const sourceInfo = new Map(SOURCES.filter(([, key]) => key).map(([label, key, icon]) => [key === "fanart" ? "fanarttv" : key, {label, icon}]));
-  const ordered = ["local", ...configured.filter(key => key !== "local")];
+  const artistOnly = Array.from(ARTIST_IMAGE_SOURCES).filter(key =>
+    !configured.includes(key)
+    && (draft.source_policies?.[key]?.include_in_artist_art_search ?? true));
+  const ordered = ["local", ...configured.filter(key => key !== "local"), ...artistOnly];
   const strip = node("div", "settings-source-strip");
   for (const key of ordered) {
     const info = sourceInfo.get(key) || {label: key, icon: key}, configuredIndex = configured.indexOf(key);
     const card = node("div", "settings-source-card" + (selectedProvider === key ? " active" : "") + (excluded.has(key) ? " excluded" : ""));
     const choose = node("button", "source-card-main"); choose.type = "button";
-    choose.append(info.icon === "⊘" ? node("span", "source-symbol", "⊘") : image("/assets/source-icons/" + info.icon + ".svg", "", ""), node("strong", "", info.label), node("small", "", excluded.has(key) ? "⊘ Excluded" : key === "local" ? "● Always ready" : "● Ready"));
+    const albumEnabled = key === "local" || !excluded.has(key) && draft.source_policies?.[key]?.enabled !== false;
+    const configuredArtist = key === "local" || ARTIST_IMAGE_SOURCES.has(key) && (draft.source_policies?.[key]?.include_in_artist_art_search ?? true);
+    const mode = configuredArtist && albumEnabled ? "Artist / Album" : configuredArtist ? "Artist-only" : albumEnabled ? "Album-only" : "Excluded";
+    choose.append(info.icon === "⊘" ? node("span", "source-symbol", "⊘") : image("/assets/source-icons/" + info.icon + ".svg", "", ""), node("strong", "", info.label));
+    if (configuredArtist) choose.append(node("small", "", `🔍 ${state.sourceCounts.artist?.[key] || 0} Artist`));
+    if (albumEnabled) choose.append(node("small", "", `🔍 ${state.sourceCounts.cover?.[key] || 0} Cover`));
+    choose.append(node("small", "", mode));
     choose.disabled = key === "local";
     if (key !== "local") choose.addEventListener("click", () => { selectProvider(key); rerender(); });
     const moves = node("div", "source-move-buttons");
@@ -1828,6 +1840,8 @@ async function openSettings() {
     applyGraphicalEnhancement(saved.config.webgui_ui?.enhancement);
     state.artworkRange = {...state.artworkRange, ...(saved.config.range || {})};
     state.sourceOrder = [...(saved.config.sources?.cover_sources || [])];
+    state.sourcePolicies = {...(saved.config.source_policies || {})};
+    state.artistSourceEnabled = Array.from(ARTIST_IMAGE_SOURCES).filter(key => artistSourceConfigured(key));
     state.enabledSources = state.sourceOrder.filter(key => !saved.config.sources?.exclude_cover_sources?.includes(key) && saved.config.source_policies?.[key]?.enabled !== false);
     renderAll(); setStatus(message); renderSection(active);
   }
@@ -1884,6 +1898,9 @@ async function openSettings() {
       const select = node("select");
       for (const name of contract.providers) { const option = node("option", "", name); option.value = name; select.append(option); }
       select.value = sourceProvider; select.addEventListener("change", () => { applySettingsInputs(draft, bindings); sourceProvider = select.value; renderSection(active, true); }); picker.append(select); fields.append(picker);
+      const artistSetting = `source_policies.${sourceProvider}.include_in_artist_art_search`;
+      if (settingValue(draft, artistSetting) === undefined)
+        setSettingValue(draft, artistSetting, ARTIST_IMAGE_SOURCES.has(sourceProvider));
       for (const descriptor of section.repeater.fields) settingsInput(fields, descriptor, section.repeater.path + "." + sourceProvider + "." + descriptor.path, draft, bindings, saved);
     }
     if (section.id === "sources") {

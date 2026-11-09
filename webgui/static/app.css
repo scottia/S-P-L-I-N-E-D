@@ -400,3 +400,4 @@ html[data-theme=light] .top-genres,html[data-theme=light] .top-songs-copy{text-s
 .review-extra .metric-in-process{color:#efa54e}
 .review-extra .metric-ideal{color:var(--green)}
 .library-row.album-row .library-thumb,.library-row.album-child .library-thumb{border-radius:50%}
+.source-strip{height:91px}

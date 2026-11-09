@@ -1118,6 +1118,7 @@ mod tests {
             "Discogs".to_string(),
             SourcePolicyConfig {
                 enabled: true,
+                include_in_artist_art_search: Some(true),
                 strict_override: false,
                 source_override: true,
                 minimum_range_type: crate::source_policy::MinimumRangeType::LowerRange,
@@ -1144,6 +1145,7 @@ mod tests {
         assert_eq!(policy.minimum_height, Some(1300));
         assert!(policy.allow_below_minimum_fallback);
         assert!(!policy.primary_image_only);
+        assert_eq!(policy.include_in_artist_art_search, Some(true));
     }
 
     #[test]

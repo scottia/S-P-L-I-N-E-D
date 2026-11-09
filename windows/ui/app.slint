@@ -11,7 +11,7 @@ export struct UiSimilarArtistRow { name: string, artwork: image, available: bool
 export struct UiBiographyLine { words: [string], justified: bool }
 export struct UiCompilationTrackRow { album-key: string, path: string, file-name: string, status-color: color, completed: bool, selected: bool }
 export struct UiCompilationReportRow { album-key: string, album-title: string, path: string, file-name: string, status: string, album-header: bool, expanded: bool, overridden: bool }
-export struct UiSourceRow { name: string, label: string, icon: string, count: int, status: string, enabled: bool }
+export struct UiSourceRow { name: string, label: string, icon: string, count: int, artist-count: int, cover-count: int, status: string, mode: string, enabled: bool, artist-enabled: bool }
 export struct UiCandidateRow { index: int, source: string, dimensions: string, range-class: string, policy: string, image-type: string, selected: bool, recommended: bool, compared: bool, portrait-available: bool, portrait-active: bool, banner-available: bool, banner-active: bool, preview: image }
 export struct UiEmbedQueueRow { id: int, label: string, status: string, detail: string, progress: string, cover-resolution: string, preview: image, retryable: bool, preferred-size: bool }
 export struct UiMusicBrainzRow { index: int, title: string, artist: string, detail: string, section: string, group: string, group-start: bool, current: bool, visited: bool, selected: bool, score: int }
@@ -754,10 +754,10 @@ component SourceCard inherits Rectangle {
     pure callback make-drag-data(string) -> data-transfer;
     pure callback accept-drop(data-transfer, string) -> bool;
     callback drop-source(data-transfer, string);
-    width: 118px;
+    width: 126px;
     border-radius: 7px;
     border-width: 1px;
-    border-color: !root.source-row.enabled ? AppTheme.danger : (root.selected ? AppTheme.violet : AppTheme.border);
+    border-color: !root.source-row.enabled && !root.source-row.artist-enabled ? AppTheme.danger : (root.selected ? AppTheme.violet : AppTheme.border);
     background: source-drop.has-drag ? AppTheme.selected-surface : (root.selected ? AppTheme.selected-surface : (source-touch.has-hover ? AppTheme.card-hover : AppTheme.card));
     source-drop := DropArea {
         width: 100%; height: 100%;
@@ -775,17 +775,17 @@ component SourceCard inherits Rectangle {
             Rectangle {
                 horizontal-stretch: 1;
                 background: transparent;
-                if !root.source-row.enabled: Text { x: (parent.width - self.width) / 2; width: 25px; text: "⊘"; color: AppTheme.danger; font-size: 24px * AppTheme.font-scale; horizontal-alignment: center; vertical-alignment: center; }
-                if root.source-row.enabled && (root.source-row.name == "samples" || root.source-row.name == "navidrome"): Text { x: (parent.width - self.width) / 2; width: 25px; text: root.source-row.icon; color: AppTheme.cyan; font-size: 24px * AppTheme.font-scale; horizontal-alignment: center; vertical-alignment: center; }
-                if root.source-row.enabled && root.source-row.name == "local": Image { x: (parent.width - self.width) / 2; source: @image-url("../gui/source-icons/local.svg"); width: 25px; height: 25px; image-fit: contain; }
-                if root.source-row.enabled && (root.source-row.name == "itunes" || root.source-row.name == "apple"): Image { x: (parent.width - self.width) / 2; source: @image-url("../gui/source-icons/itunes.svg"); width: 25px; height: 25px; image-fit: contain; }
-                if root.source-row.enabled && (root.source-row.name == "fanarttv" || root.source-row.name == "fanart.tv"): Image { x: (parent.width - self.width) / 2; source: @image-url("../gui/source-icons/fanart.svg"); width: 25px; height: 25px; image-fit: contain; }
-                if root.source-row.enabled && (root.source-row.name == "coverartarchive" || root.source-row.name == "cover art archive"): Image { x: (parent.width - self.width) / 2; source: @image-url("../gui/source-icons/coverart.svg"); width: 25px; height: 25px; image-fit: contain; }
-                if root.source-row.enabled && root.source-row.name == "amazon": Image { x: (parent.width - self.width) / 2; source: @image-url("../gui/source-icons/amazon.svg"); width: 25px; height: 25px; image-fit: contain; }
-                if root.source-row.enabled && root.source-row.name == "deezer": Image { x: (parent.width - self.width) / 2; source: @image-url("../gui/source-icons/deezer.svg"); width: 25px; height: 25px; image-fit: contain; }
-                if root.source-row.enabled && (root.source-row.name == "lastfm" || root.source-row.name == "last.fm"): Image { x: (parent.width - self.width) / 2; source: @image-url("../gui/source-icons/lastfm.svg"); width: 25px; height: 25px; image-fit: contain; }
-                if root.source-row.enabled && root.source-row.name == "musicbrainz": Image { x: (parent.width - self.width) / 2; source: @image-url("../gui/source-icons/musicbrainz.svg"); width: 25px; height: 25px; image-fit: contain; }
-                if root.source-row.enabled && root.source-row.name == "discogs": Image { x: (parent.width - self.width) / 2; source: @image-url("../gui/source-icons/discogs.svg"); width: 25px; height: 25px; image-fit: contain; }
+                if !root.source-row.enabled && !root.source-row.artist-enabled: Text { x: (parent.width - self.width) / 2; width: 25px; text: "⊘"; color: AppTheme.danger; font-size: 24px * AppTheme.font-scale; horizontal-alignment: center; vertical-alignment: center; }
+                if (root.source-row.enabled || root.source-row.artist-enabled) && (root.source-row.name == "samples" || root.source-row.name == "navidrome"): Text { x: (parent.width - self.width) / 2; width: 25px; text: root.source-row.icon; color: AppTheme.cyan; font-size: 24px * AppTheme.font-scale; horizontal-alignment: center; vertical-alignment: center; }
+                if (root.source-row.enabled || root.source-row.artist-enabled) && root.source-row.name == "local": Image { x: (parent.width - self.width) / 2; source: @image-url("../gui/source-icons/local.svg"); width: 25px; height: 25px; image-fit: contain; }
+                if (root.source-row.enabled || root.source-row.artist-enabled) && (root.source-row.name == "itunes" || root.source-row.name == "apple"): Image { x: (parent.width - self.width) / 2; source: @image-url("../gui/source-icons/itunes.svg"); width: 25px; height: 25px; image-fit: contain; }
+                if (root.source-row.enabled || root.source-row.artist-enabled) && (root.source-row.name == "fanarttv" || root.source-row.name == "fanart.tv"): Image { x: (parent.width - self.width) / 2; source: @image-url("../gui/source-icons/fanart.svg"); width: 25px; height: 25px; image-fit: contain; }
+                if (root.source-row.enabled || root.source-row.artist-enabled) && (root.source-row.name == "coverartarchive" || root.source-row.name == "cover art archive"): Image { x: (parent.width - self.width) / 2; source: @image-url("../gui/source-icons/coverart.svg"); width: 25px; height: 25px; image-fit: contain; }
+                if (root.source-row.enabled || root.source-row.artist-enabled) && root.source-row.name == "amazon": Image { x: (parent.width - self.width) / 2; source: @image-url("../gui/source-icons/amazon.svg"); width: 25px; height: 25px; image-fit: contain; }
+                if (root.source-row.enabled || root.source-row.artist-enabled) && root.source-row.name == "deezer": Image { x: (parent.width - self.width) / 2; source: @image-url("../gui/source-icons/deezer.svg"); width: 25px; height: 25px; image-fit: contain; }
+                if (root.source-row.enabled || root.source-row.artist-enabled) && (root.source-row.name == "lastfm" || root.source-row.name == "last.fm"): Image { x: (parent.width - self.width) / 2; source: @image-url("../gui/source-icons/lastfm.svg"); width: 25px; height: 25px; image-fit: contain; }
+                if (root.source-row.enabled || root.source-row.artist-enabled) && root.source-row.name == "musicbrainz": Image { x: (parent.width - self.width) / 2; source: @image-url("../gui/source-icons/musicbrainz.svg"); width: 25px; height: 25px; image-fit: contain; }
+                if (root.source-row.enabled || root.source-row.artist-enabled) && root.source-row.name == "discogs": Image { x: (parent.width - self.width) / 2; source: @image-url("../gui/source-icons/discogs.svg"); width: 25px; height: 25px; image-fit: contain; }
             }
             Rectangle { width: 28px; border-radius: 3px; background: AppTheme.quiet-surface;
                 Text { text: "<"; color: AppTheme.secondary-foreground; horizontal-alignment: center; vertical-alignment: center; font-size: 18px * AppTheme.font-scale; font-weight: 700; }
@@ -798,14 +798,17 @@ component SourceCard inherits Rectangle {
         }
         Text { text: root.source-row.label; color: AppTheme.foreground; font-size: 14px * AppTheme.font-scale; font-weight: 700; horizontal-alignment: center; overflow: elide; }
         HorizontalLayout { height: 18px; spacing: 3px; alignment: center;
-            if root.source-row.enabled: Image { source: @image-url("../gui/source-icons/search.svg"); width: 18px; height: 18px; image-fit: contain; }
-            if !root.source-row.enabled: Image { source: @image-url("../gui/source-icons/paused.svg"); width: 18px; height: 18px; image-fit: contain; }
-            Text { text: root.source-row.enabled ? root.source-row.count + " found" : (root.source-row.status == "No images" ? "0 found" : "Excluded"); color: root.source-row.enabled ? AppTheme.secondary-foreground : AppTheme.danger; font-size: 14px * AppTheme.font-scale; vertical-alignment: center; }
+            if root.source-row.artist-enabled: Image { source: @image-url("../gui/source-icons/search.svg"); width: 18px; height: 18px; image-fit: contain; }
+            if root.source-row.artist-enabled: Text { text: root.source-row.artist-count + " Artist"; color: AppTheme.secondary-foreground; font-size: 13px * AppTheme.font-scale; vertical-alignment: center; }
         }
         HorizontalLayout { height: 18px; spacing: 3px; alignment: center;
-            if root.source-row.enabled: Image { source: @image-url("../gui/source-icons/ready.svg"); width: 18px; height: 18px; image-fit: contain; }
-            if !root.source-row.enabled: Image { source: @image-url("../gui/source-icons/paused.svg"); width: 18px; height: 18px; image-fit: contain; }
-            Text { text: root.source-row.status; color: root.source-row.enabled ? AppTheme.green : (root.source-row.status == "No images" ? AppTheme.danger : AppTheme.secondary-foreground); font-size: 14px * AppTheme.font-scale; vertical-alignment: center; overflow: elide; }
+            if root.source-row.enabled: Image { source: @image-url("../gui/source-icons/search.svg"); width: 18px; height: 18px; image-fit: contain; }
+            if root.source-row.enabled: Text { text: root.source-row.cover-count + " Cover"; color: AppTheme.secondary-foreground; font-size: 13px * AppTheme.font-scale; vertical-alignment: center; }
+        }
+        HorizontalLayout { height: 18px; spacing: 3px; alignment: center;
+            if root.source-row.enabled || root.source-row.artist-enabled: Image { source: @image-url("../gui/source-icons/ready.svg"); width: 18px; height: 18px; image-fit: contain; }
+            if !root.source-row.enabled && !root.source-row.artist-enabled: Image { source: @image-url("../gui/source-icons/paused.svg"); width: 18px; height: 18px; image-fit: contain; }
+            Text { text: root.source-row.mode; color: root.source-row.enabled || root.source-row.artist-enabled ? AppTheme.green : AppTheme.danger; font-size: 13px * AppTheme.font-scale; vertical-alignment: center; overflow: elide; }
         }
             }
         }
@@ -1706,6 +1709,7 @@ export component AppWindow inherits Window {
     in-out property <bool> settings-enhancement-changed: false;
     in-out property <string> settings-policy-source: "deezer";
     in-out property <bool> settings-policy-enabled: true;
+    in-out property <bool> settings-policy-artist-enabled: false;
     in-out property <bool> settings-policy-strict: false;
     in-out property <bool> settings-policy-override: false;
     in-out property <string> settings-policy-minimum-range: "LowerRange";
@@ -2045,10 +2049,10 @@ export component AppWindow inherits Window {
                                     Rectangle { horizontal-stretch: 1; background: transparent; }
                                     Text { text: "Recording ID + Artist ID authority"; color: AppTheme.cyan; font-size: 14px * AppTheme.font-scale; font-weight: 700; vertical-alignment: center; }
                                 }
-                                ScrollView { height: 98px;
+                                ScrollView { height: 136px;
                                     HorizontalLayout { padding-left: 6px; padding-right: 6px; spacing: 7px;
                                         for source in root.source-rows: SourceCard {
-                                            height: 91px; source-row: source;
+                                            height: 130px; source-row: source;
                                             selected: source.name == "musicbrainz";
                                             chosen(name) => { root.selected-source-name = name; root.candidate-source-filter(name); }
                                             reorder(name, direction) => root.source-action(name, direction);
@@ -2208,10 +2212,10 @@ export component AppWindow inherits Window {
                                     }
                                     Rectangle { horizontal-stretch: 1; background: transparent; }
                                 }
-                                ScrollView { height: 105px;
+                                ScrollView { height: 136px;
                                     HorizontalLayout { padding-left: 6px; padding-right: 6px; spacing: 7px;
                                         for source in root.source-rows: SourceCard {
-                                            height: 96px; source-row: source; selected: root.selected-source-name == source.name;
+                                            height: 130px; source-row: source; selected: root.selected-source-name == source.name;
                                             chosen(name) => { root.selected-source-name = name; root.candidate-source-filter(name); }
                                             reorder(name, direction) => root.source-action(name, direction);
                                         }
@@ -3526,7 +3530,7 @@ export component AppWindow inherits Window {
                                 ScrollView { height: 130px;
                                     HorizontalLayout { spacing: 6px; padding-left: 6px; padding-right: 6px;
                                     for source in root.settings-source-rows: SourceCard {
-                                        width: 118px; height: 112px; source-row: source;
+                                        width: 126px; height: 130px; source-row: source;
                                         drag-reorder-enabled: true;
                                         selected: root.selected-source-name == source.name;
                                         chosen(name) => { root.selected-source-name = name; root.candidate-source-filter(name); }
@@ -3545,6 +3549,7 @@ export component AppWindow inherits Window {
                                     ComboBox { horizontal-stretch: 1; model: ["deezer", "itunes", "fanarttv", "lastfm", "musicbrainz", "coverartarchive", "discogs", "amazon", "navidrome"]; current-value <=> root.settings-policy-source; selected(value) => root.load-source-policy(value); }
                                 }
                                 SettingToggle { label: "Include In Artwork Search"; value <=> root.settings-policy-enabled; }
+                                SettingToggle { label: "Include in Artist Art Search"; value <=> root.settings-policy-artist-enabled; }
                                 SettingToggle { label: "Strict Range Override"; value <=> root.settings-policy-strict; }
                                 SettingToggle { label: "Custom Source Policy"; value <=> root.settings-policy-override; }
                                 HorizontalLayout { height: 36px; spacing: 8px;

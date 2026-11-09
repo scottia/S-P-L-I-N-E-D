@@ -69,7 +69,9 @@ use splined_core::source::{
     ArtworkReference, deezer::Deezer, discogs::Discogs, fanarttv::FanartTv, itunes::ITunes,
     lastfm::LastFm,
 };
-use splined_core::source_policy::{MinimumRangeType, SourcePolicyConfig};
+use splined_core::source_policy::{
+    MinimumRangeType, SourcePolicyConfig, default_artist_art_search,
+};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{self, OpenOptions};
@@ -1592,6 +1594,41 @@ fn refresh_navidrome_thumbnails(
         return;
     };
     if !needs_refresh {
+        // Provider/biography hydration may be cached for the session, but local
+        // artist.* and banner.* files are mutable cross-client authority. Re-
+        // resolve them on every Artist selection so a WebGUI or external write
+        // immediately replaces an older Navidrome/provider portrait.
+        if let Some(artist) = requested_artist.as_deref() {
+            let saved = saved_artist_package_for_albums(
+                &albums,
+                artist,
+                &configured_shared_artist_art_dir(&config),
+            );
+            let banner = saved.banner.as_deref().and_then(|source| {
+                let cache = Path::new(&config.scan.temporary_cache_dir)
+                    .join("navidrome-thumbnails")
+                    .join("artist-banners");
+                cached_artist_banner_with_bottom_blur(source, &cache, artist)
+                    .ok()
+                    .or_else(|| Some(source.to_path_buf()))
+            });
+            if let Ok(mut app) = state.lock()
+                && overview_artist_name(&app)
+                    .is_some_and(|current| current.trim().eq_ignore_ascii_case(artist))
+            {
+                if let Some(path) = saved.portrait.as_deref() {
+                    app.library.set_artist_artwork_path(artist, path);
+                }
+                if let Some(path) = banner {
+                    let value = path.to_string_lossy().into_owned();
+                    app.artist_overview_banner_path = value.clone();
+                    if let Some(cached) = app.artist_overview_cache.get_mut(artist) {
+                        cached.banner_path = value;
+                        cached.banner_uses_artist_art = false;
+                    }
+                }
+            }
+        }
         if full_refresh {
             FULL_THUMBNAIL_REFRESH_ACTIVE.store(false, Ordering::SeqCst);
         } else {
@@ -5521,14 +5558,22 @@ fn is_artist_art_source(source: &str) -> bool {
     .any(|candidate| source.eq_ignore_ascii_case(candidate))
 }
 
-fn artist_art_query_sources(enabled_sources: &[String], artist_mbid: &str) -> Vec<String> {
+fn artist_art_source_enabled(config: &Config, source: &str) -> bool {
+    config
+        .source_policies
+        .get(&source.trim().to_ascii_lowercase())
+        .map_or_else(
+            || default_artist_art_search(source),
+            |policy| policy.includes_artist_art(source),
+        )
+}
+
+fn artist_art_query_sources(config: &Config, artist_mbid: &str) -> Vec<String> {
     ["fanarttv", "lastfm", "deezer", "discogs", "itunes"]
         .into_iter()
         .filter(|source| {
             (*source != "fanarttv" || !artist_mbid.trim().is_empty())
-                && enabled_sources
-                    .iter()
-                    .any(|enabled| enabled.eq_ignore_ascii_case(source))
+                && artist_art_source_enabled(config, source)
         })
         .map(str::to_string)
         .collect()
@@ -5557,9 +5602,8 @@ fn discover_remote_artist_artwork(
     config: &Config,
     artist: &str,
     artist_mbid: &str,
-    enabled_sources: &[String],
 ) -> Result<ArtistArtworkSearchResult, String> {
-    let queried = artist_art_query_sources(enabled_sources, artist_mbid);
+    let queried = artist_art_query_sources(config, artist_mbid);
     let enabled = |source: &str| queried.iter().any(|value| value == source);
     let cache = DownloadCache::new_persistent(
         &Path::new(&config.scan.temporary_cache_dir).join("artist-art-candidates"),
@@ -5805,16 +5849,21 @@ fn load_artist_art_candidates(
             selected: false,
         });
     }
+    let artist_config = app.config.clone();
     for source in &mut app.sources {
         source.candidate_count = app
             .candidates
             .iter()
             .filter(|candidate| candidate.source.eq_ignore_ascii_case(&source.name))
             .count();
+        source.artist_candidate_count = source.candidate_count;
         if source.name.eq_ignore_ascii_case("samples") {
             continue;
         }
-        if !source.enabled {
+        let artist_enabled = source.name.eq_ignore_ascii_case("local")
+            || (is_artist_art_source(&source.name)
+                && artist_art_source_enabled(&artist_config, &source.name));
+        if !artist_enabled {
             source.status = "Excluded".to_string();
             continue;
         }
@@ -5927,6 +5976,7 @@ fn add_uploaded_artist_artwork(app: &mut ApplicationState, path: &Path) -> Resul
             .iter()
             .filter(|candidate| candidate.source.eq_ignore_ascii_case("local"))
             .count();
+        source.artist_candidate_count = source.candidate_count;
         source.status = "success".to_string();
     }
     app.operation_status =
@@ -10473,14 +10523,16 @@ fn bind_callbacks(
                         .map(|album| album.snapshot.artist_mbid.clone())
                         .unwrap_or_default()
                 };
-                let enabled_sources = app
-                    .sources
+                let queried_sources = artist_art_query_sources(&app.config, &artist_mbid);
+                let existing = app
+                    .artist_overview_artwork_candidates
                     .iter()
-                    .filter(|source| source.enabled)
-                    .map(|source| source.name.clone())
+                    .filter(|(label, _)| {
+                        let source = artist_art_candidate_source(label);
+                        source == "local" || artist_art_source_enabled(&app.config, source)
+                    })
+                    .cloned()
                     .collect::<Vec<_>>();
-                let queried_sources = artist_art_query_sources(&enabled_sources, &artist_mbid);
-                let existing = app.artist_overview_artwork_candidates.clone();
                 let artist_album_paths = app
                     .library
                     .albums
@@ -10515,17 +10567,21 @@ fn bind_callbacks(
                 app.artist_banner_radio_active = false;
                 app.artist_package_overview_enabled = false;
                 app.artist_theme_art_enabled = false;
+                let artist_config = app.config.clone();
                 for source in &mut app.sources {
-                    if source.enabled
+                    let artist_enabled = source.name.eq_ignore_ascii_case("local")
+                        || (is_artist_art_source(&source.name)
+                            && artist_art_source_enabled(&artist_config, &source.name));
+                    if artist_enabled
                         && queried_sources
                             .iter()
                             .any(|queried| queried.eq_ignore_ascii_case(&source.name))
                     {
                         source.candidate_count = 0;
                         source.status = "Searching…".to_string();
-                    } else if source.enabled && !is_artist_art_source(&source.name) {
+                    } else if !artist_enabled && source.enabled {
                         source.status = "Album-only".to_string();
-                    } else if source.enabled
+                    } else if artist_enabled
                         && source.name.eq_ignore_ascii_case("fanarttv")
                         && artist_mbid.trim().is_empty()
                     {
@@ -10551,14 +10607,13 @@ fn bind_callbacks(
                     app.config.clone(),
                     artist,
                     artist_mbid,
-                    enabled_sources,
                     queried_sources,
                     existing,
                     artist_album_paths,
                     app.library.selection_epoch,
                 ))
             });
-            let Some((config, artist, artist_mbid, enabled_sources, queried_sources, existing, artist_album_paths, selection_epoch)) = prepared else {
+            let Some((config, artist, artist_mbid, queried_sources, existing, artist_album_paths, selection_epoch)) = prepared else {
                 record_action_result(
                     &state,
                     Err("Select an artist before finding Artist Art, or wait for the current operation to finish.".to_string()),
@@ -10597,7 +10652,6 @@ fn bind_callbacks(
                     &config,
                     &artist,
                     &artist_mbid,
-                    &enabled_sources,
                 );
                 if let Some(log) = UI_DEBUG_LOG_HANDLE.get() {
                     log.record(format!(
@@ -15776,6 +15830,7 @@ fn set_source_policy_ui(ui: &AppWindow, config: &Config, source: &str) {
             .iter()
             .any(|candidate| candidate.eq_ignore_ascii_case(&source));
     ui.set_settings_policy_enabled(policy.enabled && available);
+    ui.set_settings_policy_artist_enabled(policy.includes_artist_art(&source));
     ui.set_settings_policy_strict(policy.strict_override);
     ui.set_settings_policy_override(policy.source_override);
     ui.set_settings_policy_minimum_range(minimum_range_label(policy.minimum_range_type).into());
@@ -16055,6 +16110,7 @@ fn update_source_policy_from_ui(ui: &AppWindow, config: &mut Config) -> Result<(
     }
     let policy = SourcePolicyConfig {
         enabled: ui.get_settings_policy_enabled(),
+        include_in_artist_art_search: Some(ui.get_settings_policy_artist_enabled()),
         strict_override: ui.get_settings_policy_strict(),
         source_override: ui.get_settings_policy_override(),
         minimum_range_type: parse_minimum_range(ui.get_settings_policy_minimum_range().as_str())?,
@@ -18705,13 +18761,29 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
     let sources = state
         .sources
         .iter()
-        .map(|source| UiSourceRow {
-            name: SharedString::from(source.name.clone()),
-            label: SharedString::from(source_display_name(&source.name)),
-            icon: SharedString::from(source_icon(&source.name)),
-            count: source.candidate_count as i32,
-            status: SharedString::from(source.status.clone()),
-            enabled: source.enabled,
+        .map(|source| {
+            let artist_enabled = source.name.eq_ignore_ascii_case("local")
+                || (!source.name.eq_ignore_ascii_case("samples")
+                    && is_artist_art_source(&source.name)
+                    && artist_art_source_enabled(&state.config, &source.name));
+            let mode = match (artist_enabled, source.enabled) {
+                (true, true) => "Artist / Album",
+                (true, false) => "Artist-only",
+                (false, true) => "Album-only",
+                (false, false) => "Excluded",
+            };
+            UiSourceRow {
+                name: SharedString::from(source.name.clone()),
+                label: SharedString::from(source_display_name(&source.name)),
+                icon: SharedString::from(source_icon(&source.name)),
+                count: source.candidate_count as i32,
+                artist_count: source.artist_candidate_count as i32,
+                cover_count: source.cover_candidate_count as i32,
+                status: SharedString::from(source.status.clone()),
+                mode: SharedString::from(mode),
+                enabled: source.enabled,
+                artist_enabled,
+            }
         })
         .collect::<Vec<_>>();
     ui.set_source_rows(model(sources));
@@ -24604,28 +24676,27 @@ mod tests {
 
     #[test]
     fn artist_art_queries_only_artist_image_providers() {
-        let enabled = [
-            "local",
-            "navidrome",
-            "fanarttv",
-            "lastfm",
-            "deezer",
-            "discogs",
-            "itunes",
-            "amazon",
-            "musicbrainz",
-            "coverartarchive",
-        ]
-        .into_iter()
-        .map(str::to_string)
-        .collect::<Vec<_>>();
+        let config = Config::default();
         assert_eq!(
-            artist_art_query_sources(&enabled, "valid-artist-id"),
+            artist_art_query_sources(&config, "valid-artist-id"),
             ["fanarttv", "lastfm", "deezer", "discogs", "itunes"]
         );
         assert_eq!(
-            artist_art_query_sources(&enabled, ""),
+            artist_art_query_sources(&config, ""),
             ["lastfm", "deezer", "discogs", "itunes"]
+        );
+        let mut artist_only_policy = config;
+        artist_only_policy.source_policies.insert(
+            "itunes".to_string(),
+            splined_core::source_policy::SourcePolicyConfig {
+                enabled: true,
+                include_in_artist_art_search: Some(false),
+                ..splined_core::source_policy::SourcePolicyConfig::default()
+            },
+        );
+        assert!(
+            !artist_art_query_sources(&artist_only_policy, "valid-artist-id")
+                .contains(&"itunes".to_string())
         );
         assert_eq!(artist_art_candidate_source("Deezer Artist Image"), "deezer");
         assert_eq!(

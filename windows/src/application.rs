@@ -12,6 +12,7 @@ use crate::settings::{
     AdjustmentPreset, AlbumFrameThemeStyle, ArtistLookupOverride, BannerThemeStyle,
     default_adjustment_presets, default_album_frame_theme_styles, default_banner_theme_styles,
 };
+use crate::source_policy::default_artist_art_search;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
@@ -2092,6 +2093,8 @@ pub struct SourceState {
     pub name: String,
     pub enabled: bool,
     pub candidate_count: usize,
+    pub artist_candidate_count: usize,
+    pub cover_candidate_count: usize,
     pub status: String,
 }
 
@@ -2577,6 +2580,22 @@ fn candidate_source_card_names(config: &Config) -> Vec<String> {
             names.push(source.clone());
         }
     }
+    for source in [
+        "deezer",
+        "itunes",
+        "fanarttv",
+        "lastfm",
+        "discogs",
+        "navidrome",
+    ] {
+        let artist_enabled = config.source_policies.get(source).map_or_else(
+            || default_artist_art_search(source),
+            |policy| policy.includes_artist_art(source),
+        );
+        if artist_enabled && !names.iter().any(|name| name.eq_ignore_ascii_case(source)) {
+            names.push(source.to_string());
+        }
+    }
     if !names
         .iter()
         .any(|name| name.eq_ignore_ascii_case("navidrome"))
@@ -2607,6 +2626,8 @@ impl ApplicationState {
                 SourceState {
                     enabled,
                     candidate_count: 0,
+                    artist_candidate_count: 0,
+                    cover_candidate_count: 0,
                     status: if is_samples && !config.samples.sample_write {
                         "Excluded".to_string()
                     } else if is_samples {
@@ -2815,6 +2836,10 @@ impl ApplicationState {
                 SourceState {
                     enabled,
                     candidate_count: previous.map_or(0, |source| source.candidate_count),
+                    artist_candidate_count: previous
+                        .map_or(0, |source| source.artist_candidate_count),
+                    cover_candidate_count: previous
+                        .map_or(0, |source| source.cover_candidate_count),
                     status: if is_samples && !config.samples.sample_write {
                         "Excluded".to_string()
                     } else if is_samples {
@@ -3084,6 +3109,7 @@ impl ApplicationState {
             .join(sanitize_sample_component(&self.current_artist));
         if self.current_album.trim().is_empty() {
             source.candidate_count = count_artist_sample_images(&sample_artist_dir);
+            source.artist_candidate_count = source.candidate_count;
             source.status = if source.candidate_count == 0 {
                 "No images".to_string()
             } else {
@@ -3163,6 +3189,7 @@ impl ApplicationState {
             .iter()
             .filter(|candidate| candidate.source.eq_ignore_ascii_case("samples"))
             .count();
+        source.cover_candidate_count = source.candidate_count;
         source.status = if source.candidate_count == 0 {
             "No images".to_string()
         } else {
@@ -4417,6 +4444,7 @@ impl ApplicationState {
                     .filter(|item| item.source.eq_ignore_ascii_case(&source.name))
                     .count()
             };
+            source.cover_candidate_count = source.candidate_count;
         }
         // A running scan emits Samples as real runtime candidates so the visible
         // indexes and the decision queue share one authority. Idle browsing still
@@ -7372,7 +7400,16 @@ mod tests {
                 .iter()
                 .map(|source| source.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["samples", "local", "itunes", "discogs", "navidrome"]
+            vec![
+                "samples",
+                "local",
+                "itunes",
+                "discogs",
+                "deezer",
+                "fanarttv",
+                "lastfm",
+                "navidrome",
+            ]
         );
         let navidrome = state
             .sources
@@ -7423,7 +7460,16 @@ mod tests {
                 .iter()
                 .map(|source| source.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["samples", "local", "navidrome", "discogs", "itunes"]
+            vec![
+                "samples",
+                "local",
+                "navidrome",
+                "discogs",
+                "itunes",
+                "deezer",
+                "fanarttv",
+                "lastfm",
+            ]
         );
         state.move_source_to("navidrome", "itunes").unwrap();
         assert_eq!(
@@ -7494,7 +7540,16 @@ mod tests {
                 .iter()
                 .map(|source| source.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["samples", "local", "itunes", "navidrome"]
+            vec![
+                "samples",
+                "local",
+                "itunes",
+                "deezer",
+                "fanarttv",
+                "lastfm",
+                "discogs",
+                "navidrome",
+            ]
         );
 
         let mut replacement = state.config.clone();
@@ -7508,7 +7563,16 @@ mod tests {
                 .iter()
                 .map(|source| source.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["samples", "local", "discogs", "navidrome"]
+            vec![
+                "samples",
+                "local",
+                "discogs",
+                "deezer",
+                "itunes",
+                "fanarttv",
+                "lastfm",
+                "navidrome",
+            ]
         );
     }
 

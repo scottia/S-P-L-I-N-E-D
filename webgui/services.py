@@ -169,9 +169,7 @@ class Services:
             preview_cache=runtime.temporary_files.session_workspace("web-images"),
         )
         self.catalog.cache = runtime.cache
-        self.catalog.artist_sources = tuple(
-            core.resolve_sources(runtime.cfg, None, None, [])
-        )
+        self.catalog.artist_sources = tuple(core.resolve_artist_sources(runtime.cfg))
         self.lock = threading.RLock()
         self._audit_events_written = 0
         self.audit_session_id = uuid4().hex
@@ -479,7 +477,7 @@ class Services:
         )
         app.allow_comp_repairs = r.cfg.get("mode") == "write"
         app.cover_stem = str(r.cfg.get("output", {}).get("file_name", "cover"))
-        app.artist_sources = tuple(core.resolve_sources(r.cfg, None, None, []))
+        app.artist_sources = tuple(core.resolve_artist_sources(r.cfg))
         app.metadata_cache.clear()
         app.appearance_cache.clear()
         app.portrait_cache.clear()

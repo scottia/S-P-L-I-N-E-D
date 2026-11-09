@@ -313,6 +313,32 @@ def resolve_sources(cfg: dict[str, Any], cover: list[str] | None, only: list[str
     ]
 
 
+ARTIST_ART_SOURCE_CAPABLE = (
+    "deezer",
+    "itunes",
+    "fanarttv",
+    "lastfm",
+    "discogs",
+    "navidrome",
+)
+
+
+def resolve_artist_sources(cfg: dict[str, Any]) -> list[str]:
+    """Resolve Artist Art providers independently from Album cover inclusion."""
+    configured = normalize_sources(
+        section(cfg, "sources").get("cover_sources", []),
+        "configured cover_sources",
+        False,
+    )
+    ordered = [*configured, *(source for source in ARTIST_ART_SOURCE_CAPABLE if source not in configured)]
+    return [
+        source
+        for source in ordered
+        if source in ARTIST_ART_SOURCE_CAPABLE
+        and source_policy(cfg, source)["include_in_artist_art_search"]
+    ]
+
+
 def _bool_value(value: Any, label: str) -> bool:
     if not isinstance(value, bool):
         raise SplinedError(f"{label} must be true or false.")
@@ -362,6 +388,14 @@ def source_policy(cfg: dict[str, Any], source: str) -> dict[str, Any]:
         "enabled": _bool_value(
             raw.get("enabled", source_key != "amazon"),
             f"[source_policies.{source_key}].enabled",
+        ),
+        "include_in_artist_art_search": _bool_value(
+            raw.get(
+                "include_in_artist_art_search",
+                source_key
+                in {"deezer", "itunes", "fanarttv", "lastfm", "discogs", "navidrome"},
+            ),
+            f"[source_policies.{source_key}].include_in_artist_art_search",
         ),
         "source_override": _bool_value(
             raw.get("source_override", False),
