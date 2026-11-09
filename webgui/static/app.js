@@ -485,10 +485,18 @@ function currentCandidate() {
 }
 function editableArtworkSource() {
   const decision = activeArtworkDecision();
-  const musicBrainz = musicBrainzPreviewOption(decision);
-  if (musicBrainzArtworkSource(musicBrainz)) return musicBrainzArtworkSource(musicBrainz);
-  const existing = musicBrainzExistingPreview(decision);
-  if (existing?.image) return existing.image;
+  if (decision?.kind === "musicbrainz-results") {
+    // Hover is preview-only. Editing and writing stay bound to the release or
+    // existing artwork the operator explicitly selected. An unavailable MB
+    // release must never fall through to an older Album candidate/cover.
+    const selectedRelease = Number.isInteger(decision.selectedResult)
+      ? decision.options?.[decision.selectedResult] || null : null;
+    const releaseArtwork = musicBrainzArtworkSource(selectedRelease);
+    if (releaseArtwork) return releaseArtwork;
+    const selectedExisting = Number.isInteger(decision.selectedExisting)
+      ? decision.existingArtwork?.[decision.selectedExisting] || null : null;
+    return selectedExisting?.image || "";
+  }
   if (decision?.selected?.image) return decision.selected.image;
   if (state.editorMode === "album") return state.selectedCover?.image || state.album?.cover || "";
   if (state.editorMode === "fallback") return state.fallbackPreviewMode ? state.fallbackTrack?.image || "" : "";

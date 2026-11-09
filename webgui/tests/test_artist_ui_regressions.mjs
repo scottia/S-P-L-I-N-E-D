@@ -100,6 +100,11 @@ const compThumbnailFunctions = compDecisionFunctions + "\n" + between(
   "function compContextActive",
   "function coverPayload",
 );
+const coverPayloadFunction = between(
+  operationsSource,
+  "function coverPayload",
+  "async function writeArtwork",
+);
 const upscalePreviewStatusFunction = between(
   appSource,
   "function upscalePreviewStatus",
@@ -1223,6 +1228,44 @@ test("Artist COMP embedded art is hidden until explicit report preview mode", ()
   assert.equal(context.editableArtworkSource(), "/embedded-cover");
 });
 
+test("Album MusicBrainz editing cannot fall through to stale candidate artwork", () => {
+  const state = {
+    editorMode: "album",
+    album: {id: "album-1", cover: "/current-cover"},
+    selectedCover: {image: "/stale-provider-candidate"},
+    queuedDecision: {
+      kind: "musicbrainz-results", jobKind: "direct-musicbrainz",
+      selectedResult: 0, hoveredResult: null, selectedExisting: null,
+      options: [{title: "No artwork release", artwork_preview_error: "unavailable"}],
+      existingArtwork: [],
+    },
+  };
+  const context = load(editableArtworkFunctions, {
+    state,
+    musicBrainzArtworkSource: option => option?.artwork_preview_url || "",
+  });
+
+  assert.equal(context.editableArtworkSource(), "");
+  state.queuedDecision.options[0].artwork_preview_url = "/api/image/exact-release-cover";
+  assert.equal(context.editableArtworkSource(), "/api/image/exact-release-cover");
+  state.queuedDecision.hoveredResult = 1;
+  state.queuedDecision.options.push({title: "Hover-only missing artwork"});
+  assert.equal(context.editableArtworkSource(), "/api/image/exact-release-cover");
+});
+
+test("Album embedding stages the exact editable artwork source", () => {
+  const state = {album: {id: "album-1"}, upscalePreview: null};
+  const context = load(coverPayloadFunction, {
+    state,
+    editableArtworkSource: () => "/exact-selected-release",
+    componentPayload: (kind, image, extra) => ({kind, image, ...extra}),
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(context.coverPayload())), {
+    kind: "cover", image: "/exact-selected-release", album_id: "album-1", upscale: false,
+  });
+});
+
 test("Selected Artwork follows the report track instead of an unrelated queued COMP decision", async () => {
   const calls = [];
   const state = {
@@ -1727,6 +1770,7 @@ test("successful EMBED Batch invalidates stale handles and refreshes the Album b
     upscalePreview: {image: "upscale"}, renderedPreview: {album: {image: "rendered"}},
     compare: new Set(["candidate"]), reviewCleared: false,
     selectionRequest: 4, searchRequest: 7,
+    queuedDecision: null,
   };
   const context = load(stageAlbumFunction, {
     state,
@@ -1738,7 +1782,9 @@ test("successful EMBED Batch invalidates stale handles and refreshes the Album b
       return refreshed;
     },
     coverPayload: () => ({album_id: album.id, image: album.cover}),
+    activeArtworkDecision: () => state.queuedDecision,
     pollJobs: async () => { order.push("poll"); }, renderHero() {}, renderReview() {}, renderSources() {}, renderCandidates() {}, renderPanes() {},
+    renderWorkspace() {},
     resetCandidateFilters() {}, setStatus: (...values) => statuses.push(values), auditEvent() {}, encodeURIComponent,
   });
 
@@ -1759,6 +1805,32 @@ test("successful EMBED Batch invalidates stale handles and refreshes the Album b
   assert.equal(state.searchRequest, 8);
   assert.deepEqual(order, ["post", "/api/album?id=album-1", "poll"]);
   assert.match(statuses.at(-1)[0], /Cover written and album staged/);
+});
+
+test("staging or awaiting Album embedding closes direct MusicBrainz results", async () => {
+  const album = {id: "album-1", name: "Album", cover: "/cover"};
+  const state = {
+    album, queuedDecision: {
+      kind: "musicbrainz-results", jobKind: "direct-musicbrainz",
+      context: {album_id: album.id}, payload: {album_id: album.id},
+    },
+    reviewJobId: "", reviewJobState: "", candidates: [], sourceDiagnostics: [],
+  };
+  let workspaceRenders = 0;
+  const context = load(stageAlbumFunction, {
+    state,
+    post: async () => ({id: "existing-job", already_queued: true}),
+    coverPayload: () => ({album_id: album.id, image: album.cover}),
+    activeArtworkDecision: () => state.queuedDecision,
+    pollJobs: async () => {}, renderHero() {}, renderReview() {}, renderSources() {}, renderCandidates() {}, renderPanes() {},
+    renderWorkspace: () => { workspaceRenders += 1; },
+    resetCandidateFilters() {}, setStatus() {}, auditEvent() {}, encodeURIComponent,
+  });
+
+  await context.stageAlbum();
+
+  assert.equal(state.queuedDecision, null);
+  assert.equal(workspaceRenders, 1);
 });
 
 test("fully embedded Album artwork remains editable and queued candidates take precedence", () => {

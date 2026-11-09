@@ -196,7 +196,9 @@ async function prepareCompThumbnail({announce = true} = {}) {
 }
 function coverPayload() {
   if (!state.album) throw new Error("Choose an album first");
-  return componentPayload("cover", state.selectedCover?.image || state.album.cover,
+  const source = editableArtworkSource();
+  if (!source) throw new Error("Select artwork before staging Album embedding");
+  return componentPayload("cover", source,
     {album_id: state.album.id, upscale: !!state.upscalePreview});
 }
 async function writeArtwork() {
@@ -582,6 +584,17 @@ async function stageAlbum() {
   const albumId = state.album.id, albumName = state.album.name;
   setStatus("Staging cover and Album embedding…", "busy");
   const result = await post("/api/jobs", {kind: "embed-album", payload: coverPayload()});
+  const decision = activeArtworkDecision();
+  const musicBrainzClosed = decision?.jobKind === "direct-musicbrainz"
+    && String(decision.context?.album_id || decision.payload?.album_id || "") === String(albumId);
+  if (musicBrainzClosed) {
+    // A successful stage (including an already-staged response) completes
+    // this Album review. Do not leave a stale MB results workspace open over
+    // an Album that is now waiting in the embedding queue.
+    state.queuedDecision = null;
+    state.reviewJobId = null;
+    state.reviewJobState = "";
+  }
   const followUpErrors = [];
   if (!result.already_queued) {
     const refreshRequest = ++state.selectionRequest;
@@ -622,6 +635,7 @@ async function stageAlbum() {
     });
   }
   renderSources(); renderCandidates(); renderPanes(); renderHero(); renderReview();
+  if (musicBrainzClosed) renderWorkspace();
   const message = result.already_queued ? "Album is already staged"
     : "Cover written and album staged · " + (state.album?.name || albumName);
   setStatus(message + (followUpErrors.length ? " · display refresh will retry" : ""));
