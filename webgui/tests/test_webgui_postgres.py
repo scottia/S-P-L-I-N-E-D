@@ -2560,6 +2560,19 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             ).fetchone()
         self.assertIsNone(indexed)
 
+        # A deliberate Full Refresh may revalidate existing managed rows, but
+        # it must honor the same Windows-owned identity boundary for new
+        # filesystem discoveries. Reconciliation is the only insertion path
+        # once Windows authority has been established.
+        result = self.services.refresh_index(mode="full")
+        self.assertEqual(result["deferred_albums"], 1)
+        with closing(self.db.connect()) as db:
+            indexed = db.execute(
+                "SELECT album_name,path FROM albums WHERE path=?",
+                (str(added),),
+            ).fetchone()
+        self.assertIsNone(indexed)
+
     def test_library_change_notice_excludes_windows_authoritative_album_deltas(self):
         with closing(self.db.connect()) as db, db:
             mark_windows_authority(

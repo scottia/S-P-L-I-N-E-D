@@ -2168,7 +2168,7 @@ export component AppWindow inherits Window {
                                                     }
                                                     if result.selected && root.musicbrainz-selected-different: GridLayout {
                                                         height: 74px; spacing: 5px;
-                                                        NeonAction { row: 0; col: 0; label: root.musicbrainz-selected-cover-missing ? "Generate Candidate Artwork" : "Use Selected Album"; height: 34px; emphasized: true; clicked => root.musicbrainz-use-selected(); }
+                                                        NeonAction { row: 0; col: 0; label: "Generate Candidate Artwork"; height: 34px; emphasized: true; clicked => root.musicbrainz-use-selected(); }
                                                         NeonAction { row: 0; col: 1; label: "Open MB Page"; height: 34px; clicked => root.open-musicbrainz-page(-1); }
                                                         NeonAction { row: 1; col: 0; label: "Back to Candidates"; height: 34px; clicked => root.musicbrainz-leave-unchanged(); }
                                                         NeonAction { row: 1; col: 1; label: "Keep Current"; height: 34px; tone: "yellow"; clicked => root.musicbrainz-leave-unchanged(); }
@@ -2183,7 +2183,7 @@ export component AppWindow inherits Window {
                                         if !root.musicbrainz-selected-different: HorizontalLayout { height: 38px; spacing: 7px;
                                             NeonAction { label: "Back to Candidate Artwork"; width: 184px; clicked => root.musicbrainz-leave-unchanged(); }
                                             Rectangle { horizontal-stretch: 1; background: transparent; }
-                                            NeonAction { label: "Use Selected Album"; width: 154px; emphasized: true; enabled: root.musicbrainz-selected-different; clicked => root.musicbrainz-use-selected(); }
+                                            NeonAction { label: "Generate Candidate Artwork"; width: 196px; emphasized: true; enabled: root.musicbrainz-selected-different; clicked => root.musicbrainz-use-selected(); }
                                             NeonAction { label: "Open MB Page"; width: 132px; enabled: root.musicbrainz-selected-different; clicked => root.open-musicbrainz-page(-1); }
                                             NeonAction { label: "Keep Current Authority"; width: 176px; tone: "yellow"; clicked => root.musicbrainz-leave-unchanged(); }
                                         }
