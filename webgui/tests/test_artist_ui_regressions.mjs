@@ -72,6 +72,11 @@ const editableArtworkFunctions = compDecisionFunctions + "\n" + between(
   "function editableArtworkSource",
   "function renderLibrary",
 );
+const compTrackStatusFunction = between(
+  appSource,
+  "function compTrackStatusClass",
+  "function renderLibraryContents",
+);
 const queuedCandidateSelectionFunctions = between(
   appSource,
   "function candidateSelectionKey",
@@ -209,7 +214,7 @@ const artistCompReportFunction = compReportOrderFunction + "\n" + between(
   "async function openArtistCompReport",
   "async function probeArtistCompStatuses",
 );
-const renderArtistCompReportFunction = between(
+const renderArtistCompReportFunction = compTrackStatusFunction + "\n" + between(
   appSource,
   "function renderArtistCompReport",
   "function closeArtistCompReport",
@@ -950,8 +955,8 @@ test("COMP repair keeps full-Fallback and Artist membership validation independe
 });
 
 test("COMP report colors only validated artwork as complete or repairable", () => {
-  assert.match(appSource, /item\.status === "green" \? "complete" : "pending"/);
-  assert.match(appSource, /track\.status === "green" \? "complete" : "pending"/);
+  assert.match(appSource, /row\.classList\.add\(compTrackStatusClass\(item\)\)/);
+  assert.match(appSource, /row\.classList\.add\(compTrackStatusClass\(track\)\)/);
   assert.match(appSource, /\["green", "purple"\]\.includes\(track\.status\) \? "Recorded" : "Blue"/);
 });
 
@@ -2414,4 +2419,17 @@ test("WebGUI renders native-parity overview sections and artwork footer", () => 
   assert.match(appSource, /selectArtistCompTrack\(group\.id, track\.key, !state\.compPreviewMode\)/);
   assert.match(appSource, /node\("div", "musicbrainz-release-actions"\)/);
   assert.match(appSource, /"STOP PROCESS"/);
+});
+
+test("Fallback file-list tracks use the same COMP status palette as report tracks", () => {
+  const context = load(compTrackStatusFunction, {});
+  assert.equal(context.compTrackStatusClass({status: "green"}), "complete");
+  assert.equal(context.compTrackStatusClass({status: "blue"}), "pending");
+  assert.equal(context.compTrackStatusClass({status: "purple"}), "purple");
+  assert.equal(context.compTrackStatusClass({status: "checking"}), "checking");
+  assert.equal(context.compTrackStatusClass({status: "check-error"}), "error");
+  assert.match(appSource, /row\.classList\.add\(compTrackStatusClass\(track\)\)/);
+  assert.match(appSource, /renderLibrary\(\); renderHero\(\);/);
+  assert.match(cssSource, /\.fallback-library-track\.pending\{color:var\(--blue\)!important\}/);
+  assert.doesNotMatch(cssSource, /\.fallback-library-track\{[^}]*color:var\(--green\)!important/);
 });

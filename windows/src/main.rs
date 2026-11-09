@@ -39,11 +39,12 @@ use splined_core::local_artwork::{
     embedded_candidate, embedded_preview_cache_dir, install_prepared_canonical_artwork,
 };
 use splined_core::media_database::{
-    MediaAlbumSnapshot, MediaSnapshot, MediaTrackSnapshot, RuntimeArtworkMaterial,
-    backfill_windows_comp_track_coordination, clear_album_bypass_from_runtime,
-    fallback_tracks_from_folder, find_media_index_changes, load_artist_art_profile, media_snapshot,
-    persist_opposing_album_artwork, persist_opposing_compilation_artwork, record_album_outcome,
-    record_album_outcome_from_runtime, save_artist_art_identity,
+    MediaAlbumSnapshot, MediaIndexChanges, MediaSnapshot, MediaTrackSnapshot,
+    RuntimeArtworkMaterial, backfill_windows_comp_track_coordination,
+    clear_album_bypass_from_runtime, fallback_tracks_from_folder, find_media_index_changes,
+    load_artist_art_profile, media_snapshot, persist_opposing_album_artwork,
+    persist_opposing_compilation_artwork, record_album_outcome, record_album_outcome_from_runtime,
+    save_artist_art_identity,
 };
 use splined_core::musicbrainz::{ArtistLookup, ArtistSearchHit, MusicBrainzClient};
 use splined_core::override_coordination::{
@@ -84,6 +85,10 @@ static FULL_THUMBNAIL_REFRESH_ACTIVE: AtomicBool = AtomicBool::new(false);
 static FOCUSED_THUMBNAIL_REFRESH_REVISION: AtomicU64 = AtomicU64::new(0);
 static PREVIEW_RENDER_REVISION: AtomicU64 = AtomicU64::new(0);
 static NEW_MEDIA_CHECK_REVISION: AtomicU64 = AtomicU64::new(0);
+
+fn should_show_media_index_notice(changes: &MediaIndexChanges) -> bool {
+    changes.added > 0 || changes.removed > 0
+}
 thread_local! {
     static EMBED_QUEUE_WINDOW: RefCell<Option<slint::Weak<EmbedQueueWindow>>> = const { RefCell::new(None) };
     static EMBED_MAIN_WINDOW: RefCell<Option<slint::Weak<AppWindow>>> = const { RefCell::new(None) };
@@ -4140,16 +4145,13 @@ fn main() -> Result<(), slint::PlatformError> {
                         return;
                     };
                     match result {
-                        Ok(found) if found.count > 0 => {
-                            // This is an index-refresh notice, not a database
-                            // synchronization warning.  Keep the presentation
-                            // concise and leave the detailed counts in the
-                            // diagnostic log where they cannot be mistaken for
-                            // failed cross-client coordination.
-                            let message = "Music library changes found. Apply Library Changes to update the local index.".to_string();
+                        Ok(found) if should_show_media_index_notice(&found) => {
+                            let message = "Music library folders were added or removed. Apply Library Changes to update the local index.".to_string();
                             ui.set_new_media_warning_text(message.clone().into());
                             ui.set_new_media_warning_visible(true);
                             if let Ok(mut app) = check_state.lock() {
+                                // Detailed counts remain diagnostic-only and are
+                                // intentionally omitted from the Home notice.
                                 app.push_log(format!(
                                     "{message} added={} changed={} removed={}",
                                     found.added, found.changed, found.removed,
@@ -22552,6 +22554,23 @@ fn trim_large_raw_image_cache(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn media_index_notice_ignores_modified_files() {
+        use splined_core::media_database::MediaIndexChanges;
+
+        let changes = |added, changed, removed| MediaIndexChanges {
+            count: added + changed + removed,
+            added,
+            changed,
+            removed,
+            examples: Vec::new(),
+        };
+
+        assert!(!super::should_show_media_index_notice(&changes(0, 4, 0)));
+        assert!(super::should_show_media_index_notice(&changes(1, 0, 0)));
+        assert!(super::should_show_media_index_notice(&changes(0, 0, 1)));
+    }
+
     use super::{
         AlbumEmbeddedCheck, AlbumWriteState, ArtistAlbumEmbedTarget, CachedPixels,
         EMBEDDED_METADATA_CACHE, EMBEDDED_METADATA_ERRORS, EmbedQueueSource, EmbedQueueTarget,

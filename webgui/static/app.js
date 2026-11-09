@@ -502,6 +502,14 @@ function editableArtworkSource() {
 function renderLibrary() {
   renderWithScrollMemory(["artistList"], state.libraryLoading ? "" : state.libraryMode, renderLibraryContents);
 }
+function compTrackStatusClass(track) {
+  const status = String(track?.status || "blue").toLowerCase();
+  if (status === "green") return "complete";
+  if (status === "purple") return "purple";
+  if (status === "checking") return "checking";
+  if (status === "check-error") return "error";
+  return "pending";
+}
 function renderLibraryContents() {
   $("artistsTab").classList.toggle("active", state.libraryMode === "artists");
   $("albumsTab").classList.toggle("active", state.libraryMode === "albums");
@@ -551,6 +559,8 @@ function renderLibraryContents() {
         for (const track of state.fallbackTracks) {
           const row = node("button", "library-row fallback-library-track"); row.type = "button";
           row.classList.toggle("selected", state.fallbackTrack?.key === track.key);
+          row.classList.add(compTrackStatusClass(track));
+          row.classList.toggle("opposing-track-override", compTrackOverride(track)?.writer === "windows");
           row.append(node("span", "fallback-library-status", "●"),
             node("span", "fallback-library-file", track.file),
             node("span", "fallback-library-select", state.fallbackTrack?.key === track.key ? "●" : "○"));
@@ -1125,7 +1135,7 @@ function renderFallbackOverview() {
     const row = node("button", "fallback-track" + (track?.key === item.key ? " selected" : ""));
     row.classList.toggle("opposing-track-override", compTrackOverride(item)?.writer === "windows");
     row.type = "button";
-    row.classList.add(item.status === "purple" ? "purple" : ["checking", "check-error"].includes(item.status) ? "checking" : item.status === "green" ? "complete" : "pending");
+    row.classList.add(compTrackStatusClass(item));
     if (item.status === "check-error") row.title = item.checkError || "Thumbnail validation could not be completed; reload the album to retry";
     row.append(node("span", "fallback-track-spacer"), node("span", "fallback-track-file", item.file),
       node("span", "fallback-track-status", "COMP status · " + (item.status === "green" ? "complete" : item.status === "purple" ? "thumbnail repair" : item.status === "checking" ? "checking thumbnail" : "needs artwork")));
@@ -1152,7 +1162,7 @@ async function probeFallbackStatuses() {
       if (result.status === "fulfilled") Object.assign(batch[index], result.value);
       else Object.assign(batch[index], {status: "check-error", repairable: false, checkError: result.reason?.message || "Thumbnail validation failed"});
     });
-    renderHero();
+    renderLibrary(); renderHero();
   }
   if (request !== state.fallbackStatusRequest || albumId !== state.album?.id || state.editorMode !== "fallback") return;
   const failures = targets.filter(track => track.status === "check-error").length;
@@ -1222,7 +1232,7 @@ function renderArtistCompReport() {
       const selected = state.compTrack?.key === track.key && state.compTrack?.albumId === group.id;
       const row = node("button", "fallback-track" + (selected ? " selected" : "")); row.type = "button";
       row.classList.toggle("opposing-track-override", compTrackOverride(track)?.writer === "windows");
-      row.classList.add(track.status === "purple" ? "purple" : ["checking", "check-error"].includes(track.status) ? "checking" : track.status === "green" ? "complete" : "pending");
+      row.classList.add(compTrackStatusClass(track));
       if (track.status === "check-error") row.title = track.checkError || "Thumbnail validation could not be completed; reopen the report to retry";
       row.append(node("span", "fallback-track-spacer"), node("span", "fallback-track-file", track.file),
         node("span", "fallback-track-status", "COMP status · " + (track.status === "green" ? "complete" : track.status === "purple" ? "thumbnail repair" : track.status === "checking" ? "checking thumbnail" : "needs artwork")));
