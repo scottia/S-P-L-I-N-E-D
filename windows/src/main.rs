@@ -43,9 +43,9 @@ use splined_core::media_database::{
     MediaAlbumSnapshot, MediaIndexChanges, MediaSnapshot, MediaTrackSnapshot,
     RuntimeArtworkMaterial, backfill_windows_comp_track_coordination,
     clear_album_bypass_from_runtime, fallback_tracks_from_folder, find_media_index_changes,
-    load_artist_art_profile, media_snapshot, persist_opposing_album_artwork,
-    persist_opposing_compilation_artwork, record_album_outcome, record_album_outcome_from_runtime,
-    save_artist_art_identity,
+    indexed_artist_appearances, load_artist_art_profile, media_snapshot,
+    persist_opposing_album_artwork, persist_opposing_compilation_artwork, record_album_outcome,
+    record_album_outcome_from_runtime, save_artist_art_identity,
 };
 use splined_core::musicbrainz::{ArtistLookup, ArtistSearchHit, MusicBrainzClient};
 use splined_core::override_coordination::{
@@ -1694,8 +1694,24 @@ fn refresh_navidrome_thumbnails(
             )
             .unwrap_or_else(|_| source.to_path_buf())
         });
+        let indexed_appearances = requested_artist
+            .as_deref()
+            .map(|artist| match indexed_artist_appearances(&config, artist) {
+                Ok(appearances) => appearances,
+                Err(error) => {
+                    if let Some(log) = UI_DEBUG_LOG_HANDLE.get() {
+                        log.record(format!(
+                            "artist-appearance-sqlite-read-failed artist={artist} error={error}"
+                        ));
+                    }
+                    Default::default()
+                }
+            })
+            .unwrap_or_default();
         if let Some(artist) = requested_artist.as_ref()
-            && (saved_package.portrait.is_some() || saved_banner.is_some())
+            && (saved_package.portrait.is_some()
+                || saved_banner.is_some()
+                || !indexed_appearances.album_keys.is_empty())
         {
             if let Some(path) = saved_package.portrait.as_deref() {
                 preload_scaled_image(&path.to_string_lossy(), 320);
@@ -1718,6 +1734,8 @@ fn refresh_navidrome_thumbnails(
             let artist = artist.clone();
             let portrait = saved_package.portrait.clone();
             let banner = saved_banner.clone();
+            let album_keys = indexed_appearances.album_keys.clone();
+            let featured_album_keys = indexed_appearances.featured_album_keys.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if FOCUSED_THUMBNAIL_REFRESH_REVISION.load(Ordering::SeqCst) != request_revision {
                     return;
@@ -1732,6 +1750,9 @@ fn refresh_navidrome_thumbnails(
                     if let Some(path) = banner {
                         app.artist_overview_banner_path = path.to_string_lossy().into_owned();
                     }
+                    app.artist_overview_album_keys.extend(album_keys);
+                    app.artist_overview_featured_album_keys
+                        .extend(featured_album_keys);
                 }
                 refresh_weak(&weak_local, &state_local);
             });
@@ -1910,8 +1931,9 @@ fn refresh_navidrome_thumbnails(
                                     || appearance_ids.contains(&album.id.to_ascii_lowercase())
                             })
                             .collect::<Vec<_>>();
-                        let mut album_keys = BTreeSet::new();
-                        let mut featured_album_keys = BTreeSet::new();
+                        let mut album_keys = indexed_appearances.album_keys.clone();
+                        let mut featured_album_keys =
+                            indexed_appearances.featured_album_keys.clone();
                         let mut album_ratings = HashMap::new();
                         let mut track_paths_by_album = HashMap::new();
                         for local in &albums {
@@ -1944,15 +1966,16 @@ fn refresh_navidrome_thumbnails(
                                             track_paths_by_album
                                                 .insert(key, local_paths.into_iter().collect());
                                         } else if local_paths.iter().any(|path| {
-                                                read_local_track_evidence(Path::new(path))
-                                                    .ok()
-                                                    .is_some_and(|track| {
-                                                        artist_is_secondary_credit(
-                                                            &track.artist,
-                                                            &artist.name,
-                                                        )
-                                                    })
-                                            })
+                                            read_local_track_evidence(Path::new(path))
+                                                .ok()
+                                                .is_some_and(|track| {
+                                                    artist_overview_track_is_featured(
+                                                        &local.artist,
+                                                        &artist.name,
+                                                        &track.artist,
+                                                    )
+                                                })
+                                        })
                                         {
                                             featured_album_keys.insert(key);
                                         }
@@ -2036,6 +2059,8 @@ fn refresh_navidrome_thumbnails(
                 {
                     artist_metadata = Some(ArtistOverviewMetadata {
                         artist_key,
+                        album_keys: indexed_appearances.album_keys.clone(),
+                        featured_album_keys: indexed_appearances.featured_album_keys.clone(),
                         ..ArtistOverviewMetadata::default()
                     });
                 }
@@ -20425,14 +20450,14 @@ fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRo
             let (soundtrack, various_artists) = artist_overview_release_banners(snapshot);
             let banner_key = if overridden {
                 "override"
-            } else if featured {
-                "featuring"
             } else if fallback {
-                "compiled"
+                if featured { "featuring" } else { "compiled" }
             } else if soundtrack {
                 "soundtrack"
             } else if various_artists {
                 "various"
+            } else if featured {
+                "featuring"
             } else {
                 "artist"
             };
@@ -20708,23 +20733,29 @@ fn artist_overview_legend_counts(
                 _ => {}
             }
         }
-        // Mirror the visible banner's priority, not merely the underlying
-        // metadata: a secondary credit replaces the album-type banner.
+        // Mirror the visible banner's priority. Shared identified releases
+        // remain SOUNDTRACK/VARIOUS even though the selected Artist is not the
+        // synthetic folder owner; only a real Album owner's guest credit is
+        // presented as FEATURED.
         if album.overridden {
             // The OVERRIDE banner replaces the category banner while the
             // opposing application owns the latest successful write.
-        } else if album.featured {
-            counts.feat += 1;
         } else if album.fallback {
-            if album.fallback_complete {
-                counts.comp_complete += 1;
+            if album.featured {
+                counts.feat += 1;
             } else {
-                counts.comp_pending += 1;
+                if album.fallback_complete {
+                    counts.comp_complete += 1;
+                } else {
+                    counts.comp_pending += 1;
+                }
             }
         } else if album.soundtrack {
             counts.ost += 1;
         } else if album.various_artists {
             counts.various += 1;
+        } else if album.featured {
+            counts.feat += 1;
         } else {
             counts.artist += 1;
         }
@@ -20745,17 +20776,20 @@ fn artist_overview_legend_counts(
 // Card order is presentation-only: do not change the library's selection or
 // LAUNCH order when grouping the Artist Overview by album type.
 fn artist_overview_sort_group(state: &ApplicationState, album: &AlbumEntry) -> u8 {
-    if artist_overview_is_featured(state, album) {
-        return 1; // Featured appearances follow owned Artist Albums.
-    }
     if album.snapshot.album_mbid.trim().is_empty() {
-        return 4; // COMP fallback is always the final Album-card group.
+        return if artist_overview_is_featured(state, album) {
+            1 // Preserve the established COMP appearance presentation.
+        } else {
+            4 // COMP fallback is always the final Album-card group.
+        };
     }
     let (soundtrack, various_artists) = artist_overview_release_banners(&album.snapshot);
     if soundtrack {
         2
     } else if various_artists {
         3
+    } else if artist_overview_is_featured(state, album) {
+        1 // A real Album owner's guest appearance follows owned Artist Albums.
     } else {
         0 // Processing state never changes an owned Artist Album's position.
     }
@@ -20846,6 +20880,20 @@ fn artist_is_secondary_credit(track_artist: &str, selected_artist: &str) -> bool
         track_artist,
         selected_artist,
     )
+}
+
+fn artist_overview_track_is_featured(
+    album_artist: &str,
+    selected_artist: &str,
+    track_artist: &str,
+) -> bool {
+    let album_artist = album_artist.trim().trim_matches(['[', ']']);
+    !album_artist.eq_ignore_ascii_case(selected_artist)
+        && !matches!(
+            album_artist.to_ascii_lowercase().as_str(),
+            "soundtrack" | "soundtracks" | "various artist" | "various artists"
+        )
+        && artist_is_secondary_credit(track_artist, selected_artist)
 }
 
 fn compilation_track_ui_rows(state: &ApplicationState) -> Vec<UiCompilationTrackRow> {
@@ -22820,8 +22868,9 @@ mod tests {
         artist_art_targets_for_albums, artist_compilation_thumb_repair_plan,
         artist_fallback_embedded_track_paths, artist_is_secondary_credit,
         artist_overview_is_fully_complete, artist_overview_legend_counts,
-        artist_overview_release_banners, artist_overview_ui_model, automatic_backup_is_due,
-        backup_file_in_directory, backup_schedule_interval, begin_musicbrainz_preview_request,
+        artist_overview_release_banners, artist_overview_track_is_featured,
+        artist_overview_ui_model, automatic_backup_is_due, backup_file_in_directory,
+        backup_schedule_interval, begin_musicbrainz_preview_request,
         cached_artist_banner_with_bottom_blur, cached_circular_artist_thumbnail, candidate_ui_row,
         canonical_webp_status, choose_musicbrainz_artist_match, circular_artist_art_png,
         clear_rendered_preview_for_adjustment, compilation_artwork_context,
@@ -23426,6 +23475,26 @@ mod tests {
         assert!(artist_is_secondary_credit(
             "Merle Haggard with George Jones",
             "George Jones"
+        ));
+        assert!(artist_overview_track_is_featured(
+            "Mariah Carey",
+            "98°",
+            "Mariah Carey & Joe & 98°",
+        ));
+        assert!(!artist_overview_track_is_featured(
+            "Aaron Neville",
+            "Aaron Neville",
+            "Linda Ronstadt with Aaron Neville",
+        ));
+        assert!(!artist_overview_track_is_featured(
+            "Various Artists",
+            "3 Doors Down",
+            "3 Doors Down",
+        ));
+        assert!(!artist_overview_track_is_featured(
+            "[Soundtracks]",
+            "3 Doors Down",
+            "American Pie 2 - 3 Doors Down",
         ));
     }
 
@@ -24301,7 +24370,7 @@ mod tests {
                 "FEAT Old",
                 "2001",
                 "processed",
-                "[Various Artists]",
+                "Album Owner",
                 true,
             ),
             (
@@ -24325,8 +24394,8 @@ mod tests {
                 "FEAT New",
                 "2022",
                 "processed",
-                "Mariah Carey",
-                false,
+                "Album Owner",
+                true,
             ),
             (
                 "ost-old",
@@ -24355,7 +24424,7 @@ mod tests {
                 album.status = status.into();
                 album.path = format!(r"N:\media\music\{folder}\{title}");
                 if appearance {
-                    album.artist = "Various Artists".into();
+                    album.artist = folder.trim_matches(['[', ']']).into();
                     album.tagged_artist = album.artist.clone();
                 }
                 if key.starts_with("comp-") {
@@ -24389,6 +24458,11 @@ mod tests {
             .into_iter()
             .map(str::to_string)
             .collect();
+
+        // Stale/provider metadata may label a shared release as a secondary
+        // credit. Its explicit release type must still own the visible banner.
+        app.artist_overview_featured_album_keys
+            .extend(["va-old", "ost-old"].into_iter().map(str::to_string));
 
         let cards = artist_overview_ui_model(&app);
         let actual = (0..cards.row_count())
@@ -24442,7 +24516,7 @@ mod tests {
         );
         app.library.view = LibraryView::Albums;
         app.library.focused_album_key = Some("feat-new".into());
-        assert_eq!(overview_artist_name(&app), Some("Mariah Carey"));
+        assert_eq!(overview_artist_name(&app), Some("Album Owner"));
         let album_only = artist_overview_ui_model(&app);
         assert_eq!(album_only.row_count(), 1);
         assert_eq!(album_only.row_data(0).unwrap().key, "feat-new");

@@ -22,7 +22,7 @@ use rusqlite::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
@@ -97,6 +97,143 @@ pub struct ArtistArtProfile {
     pub musicbrainz_id: String,
     pub biography: String,
     pub external_url: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IndexedArtistAppearances {
+    pub album_keys: BTreeSet<String>,
+    pub featured_album_keys: BTreeSet<String>,
+}
+
+fn synthetic_album_artist(artist: &str) -> bool {
+    matches!(
+        artist
+            .trim()
+            .trim_matches(['[', ']'])
+            .to_ascii_lowercase()
+            .as_str(),
+        "soundtrack" | "soundtracks" | "various artist" | "various artists"
+    )
+}
+
+fn artist_credit_position(track_artist: &str, artist: &str) -> Option<usize> {
+    let selected = artist.trim().to_lowercase();
+    if selected.is_empty() {
+        return None;
+    }
+    let explicit = track_artist
+        .split(['\0', ';'])
+        .map(str::trim)
+        .filter(|credit| !credit.is_empty())
+        .collect::<Vec<_>>();
+    if let Some(position) = explicit
+        .iter()
+        .position(|credit| credit.to_lowercase() == selected)
+    {
+        return Some(position);
+    }
+    let credits = [" & ", " feat. ", " featuring ", " ft. ", " with "]
+        .iter()
+        .fold(track_artist.to_lowercase(), |text, separator| {
+            text.replace(separator, "\0")
+        });
+    credits
+        .split(['\0', ';'])
+        .map(str::trim)
+        .filter(|credit| !credit.is_empty())
+        .position(|credit| credit == selected)
+}
+
+fn numbered_track_artist_credit(value: &str) -> Option<&str> {
+    let mut fields = value.split(" - ");
+    let number = fields.next()?.trim();
+    let artist = fields.next()?.trim();
+    let title = fields.next()?.trim();
+    let numbered = !number.is_empty()
+        && number.split('-').all(|part| {
+            !part.is_empty() && part.chars().all(|character| character.is_ascii_digit())
+        });
+    (numbered && !artist.is_empty() && !title.is_empty()).then_some(artist)
+}
+
+/// Project MBID-backed shared and Featured releases from the indexed tracks.
+///
+/// This is read-only SQLite authority: it lets the native Artist Overview use
+/// the same strict per-track credit evidence as WebGUI without depending on a
+/// provider cache or manufacturing selectable Various Artists/Soundtracks.
+pub fn indexed_artist_appearances(
+    config: &Config,
+    artist_name: &str,
+) -> Result<IndexedArtistAppearances, String> {
+    let artist_name = artist_name.trim();
+    if artist_name.is_empty() {
+        return Ok(IndexedArtistAppearances::default());
+    }
+    let db_path = database_path(&config.scan.cache_dir);
+    let database_access = DatabasePathAccess::new(
+        &db_path,
+        config.scan.sqlite_shared,
+        config.scan.windows_client_lock,
+    )?;
+    if !database_access.path().is_file() {
+        return Ok(IndexedArtistAppearances::default());
+    }
+    let (connection, current) = open_database_read_only(database_access.path())?;
+    if current != SCHEMA_VERSION {
+        return Err(incompatible_schema(current));
+    }
+    let escaped = artist_name
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    let pattern = format!("%{escaped}%");
+    let mut statement = connection
+        .prepare(
+            "SELECT albums.album_key,owners.artist_name,tracks.artist_name,tracks.title,tracks.path \
+             FROM tracks JOIN albums ON albums.album_key=tracks.album_key \
+             JOIN artists owners ON owners.artist_key=albums.artist_key \
+             WHERE trim(COALESCE(albums.musicbrainz_albumid,''))<>'' \
+             AND (tracks.artist_name LIKE ?1 ESCAPE '\\' \
+                  OR tracks.title LIKE ?1 ESCAPE '\\' \
+                  OR tracks.path LIKE ?1 ESCAPE '\\')",
+        )
+        .map_err(db_error("prepare indexed Artist appearances"))?;
+    let rows = statement
+        .query_map([pattern], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })
+        .map_err(db_error("query indexed Artist appearances"))?;
+    let mut appearances = IndexedArtistAppearances::default();
+    for row in rows {
+        let (album_key, owner, track_artist, title, path) =
+            row.map_err(db_error("read indexed Artist appearance"))?;
+        let filename = Path::new(&path)
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        let matched = [
+            Some(track_artist.as_str()),
+            numbered_track_artist_credit(&title),
+            numbered_track_artist_credit(filename),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|credit| artist_credit_position(credit, artist_name).is_some());
+        if !matched {
+            continue;
+        }
+        appearances.album_keys.insert(album_key.clone());
+        if !owner.trim().eq_ignore_ascii_case(artist_name) && !synthetic_album_artist(&owner) {
+            appearances.featured_album_keys.insert(album_key);
+        }
+    }
+    Ok(appearances)
 }
 
 /// A startup notice is deliberately cheaper than an index refresh: compare
@@ -5057,6 +5194,116 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn indexed_artist_appearances_distinguish_shared_and_featured_releases() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = database_path(temp.path());
+        let connection = open_database(&db, false).unwrap();
+        let now = sqlite_now(&connection).unwrap();
+        for (key, name) in [
+            ("target", "Target Artist"),
+            ("owner", "Album Owner"),
+            ("various", "Various Artists"),
+            ("soundtracks", "Soundtracks"),
+        ] {
+            connection.execute(
+                "INSERT INTO artists(artist_key,artist_name,primary_path,created_at,updated_at,last_seen_at,splined_version) \
+                 VALUES(?1,?2,?3,?4,?4,?4,'test')",
+                params![key, name, format!("/music/{name}"), now],
+            ).unwrap();
+        }
+        for (key, owner, title, mbid) in [
+            ("own", "target", "Own Release", "release-own"),
+            ("featured", "owner", "Featured Release", "release-featured"),
+            (
+                "various-release",
+                "various",
+                "Shared Release",
+                "release-various",
+            ),
+            (
+                "soundtrack",
+                "soundtracks",
+                "Film Soundtrack",
+                "release-soundtrack",
+            ),
+            ("fallback", "various", "COMP Fallback", ""),
+            ("ordinary", "owner", "Ordinary Release", "release-ordinary"),
+        ] {
+            connection.execute(
+                "INSERT INTO albums(album_key,artist_key,album_name,musicbrainz_albumid,path,representative_file,tag_signature,created_at,updated_at,last_seen_at,splined_version) \
+                 VALUES(?1,?2,?3,?4,?5,?6,'tags',?7,?7,?7,'test')",
+                params![key, owner, title, mbid, format!("/music/{owner}/{title}"), format!("/music/{owner}/{title}/01.mp3"), now],
+            ).unwrap();
+        }
+        for (key, album, title, artist, path) in [
+            (
+                "own-track",
+                "own",
+                "Own Song",
+                "Target Artist",
+                "/music/target/Own Release/01.mp3",
+            ),
+            (
+                "featured-track",
+                "featured",
+                "Guest Song",
+                "Album Owner feat. Target Artist",
+                "/music/owner/Featured Release/01.mp3",
+            ),
+            (
+                "various-track",
+                "various-release",
+                "1-01 - Target Artist - Shared Song",
+                "Various Artists",
+                "/music/various/Shared Release/01.mp3",
+            ),
+            (
+                "soundtrack-track",
+                "soundtrack",
+                "Film Song",
+                "Soundtracks",
+                "/music/soundtracks/Film Soundtrack/1-02 - Target Artist - Film Song.mp3",
+            ),
+            (
+                "fallback-track",
+                "fallback",
+                "1-03 - Target Artist - COMP Song",
+                "Various Artists",
+                "/music/various/COMP Fallback/01.mp3",
+            ),
+            (
+                "ordinary-track",
+                "ordinary",
+                "A Song About Target Artist",
+                "Album Owner",
+                "/music/owner/Ordinary Release/01.mp3",
+            ),
+        ] {
+            connection.execute(
+                "INSERT INTO tracks(track_key,album_key,path,title,artist_name,file_size,file_mtime_ns,updated_at,splined_version) \
+                 VALUES(?1,?2,?3,?4,?5,1,1,?6,'test')",
+                params![key, album, path, title, artist, now],
+            ).unwrap();
+        }
+        drop(connection);
+        let mut config = Config::default();
+        config.scan.cache_dir = temp.path().to_string_lossy().into_owned();
+
+        let appearances = indexed_artist_appearances(&config, "Target Artist").unwrap();
+        assert_eq!(
+            appearances.album_keys,
+            ["featured", "own", "soundtrack", "various-release"]
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+        );
+        assert_eq!(
+            appearances.featured_album_keys,
+            ["featured"].into_iter().map(str::to_string).collect()
+        );
     }
 
     #[test]

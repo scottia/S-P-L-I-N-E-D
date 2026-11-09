@@ -457,12 +457,26 @@ impl LibraryState {
     fn artists(&self) -> BTreeMap<String, Vec<usize>> {
         let mut values = BTreeMap::<String, Vec<usize>>::new();
         for (index, album) in self.albums.iter().enumerate() {
+            if Self::is_synthetic_album_artist(&album.snapshot.artist) {
+                continue;
+            }
             values
                 .entry(album.snapshot.artist.clone())
                 .or_default()
                 .push(index);
         }
         values
+    }
+
+    fn is_synthetic_album_artist(artist: &str) -> bool {
+        matches!(
+            artist
+                .trim()
+                .trim_matches(['[', ']'])
+                .to_ascii_lowercase()
+                .as_str(),
+            "soundtrack" | "soundtracks" | "various artist" | "various artists"
+        )
     }
 
     fn artist_album_indices(&self, indices: &[usize]) -> Vec<usize> {
@@ -5462,6 +5476,60 @@ mod tests {
                 .any(|album| { album.snapshot.album_key == "b" && !album.selected })
         );
         assert_eq!(state.adjacent_pending_artist(1).as_deref(), Some("Alpha"));
+    }
+
+    #[test]
+    fn artist_sidebar_excludes_synthetic_release_owners_without_hiding_their_albums() {
+        let mut soundtrack = album("soundtrack", "Soundtracks", "American Pie 2", "unprocessed");
+        soundtrack.album_mbid = "soundtrack-release".into();
+        let mut various = album(
+            "various",
+            "Various Artists",
+            "Gold Collection",
+            "unprocessed",
+        );
+        various.album_mbid = "various-release".into();
+        let fallback = album("comp", "Various Artists", "Billboard COMP", "unprocessed");
+        let mut owned = album("owned", "3 Doors Down", "Away from the Sun", "unprocessed");
+        owned.album_mbid = "owned-release".into();
+        let mut state = LibraryState::from_snapshot(MediaSnapshot {
+            schema_version: crate::media_database::SCHEMA_VERSION,
+            database_path: "splined.db".into(),
+            canonical_root: "/music".into(),
+            local_root: r"C:\Music".into(),
+            albums: vec![soundtrack, various, fallback, owned],
+        })
+        .unwrap();
+
+        let artist_rows = state
+            .rows()
+            .into_iter()
+            .filter(|row| row.kind == "artist")
+            .map(|row| row.primary)
+            .collect::<Vec<_>>();
+        assert_eq!(artist_rows, vec!["3 Doors Down"]);
+
+        state.set_top_level_view(LibraryView::Albums);
+        let album_keys = state
+            .rows()
+            .into_iter()
+            .map(|row| row.key)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            album_keys,
+            ["owned", "soundtrack", "various"]
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+        );
+
+        state.set_show_tracks(true);
+        assert!(
+            state
+                .fallback_album_rows()
+                .iter()
+                .any(|row| row.key == "comp")
+        );
     }
 
     #[test]

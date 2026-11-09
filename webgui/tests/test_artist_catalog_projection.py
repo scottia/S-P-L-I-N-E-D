@@ -459,6 +459,19 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             listed = [item for item in app.artists("") if item["name"].casefold().endswith("nsync")]
             self.assertEqual(len(listed), 1)
             self.assertEqual(listed[0]["albums"], 3)
+            self.assertNotIn(
+                "Various Artists",
+                {item["name"] for item in app.artists("")},
+            )
+            self.assertNotIn(
+                "Soundtracks",
+                {item["name"] for item in app.artists("")},
+            )
+            self.assertEqual(
+                {item["id"] for item in app.albums("")},
+                {"artist-2001", "artist-2000", "artist-1998", "soundtrack", "various"},
+            )
+            self.assertEqual([item["id"] for item in app.albums("", True)], ["comp"])
 
             artist = app.artist("nsync-duplicate")
             self.assertEqual(artist["id"], "nsync-main")
@@ -467,6 +480,8 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             })
             self.assertTrue(next(item for item in artist["albums"] if item["id"] == "soundtrack")["soundtrack"])
             self.assertTrue(next(item for item in artist["albums"] if item["id"] == "various")["various_artists"])
+            self.assertFalse(next(item for item in artist["albums"] if item["id"] == "soundtrack")["featured"])
+            self.assertFalse(next(item for item in artist["albums"] if item["id"] == "various")["featured"])
 
             comp = app.artist_comp_albums(artist["id"])
             self.assertEqual([group["id"] for group in comp], ["comp"])

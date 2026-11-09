@@ -37,6 +37,14 @@ const albumBannerFunctions = between(
   "function albumBannerKind",
   "function applyAlbumCoordination",
 );
+
+test("shared release types outrank secondary-credit banners", () => {
+  const context = load(albumBannerFunctions, {});
+  assert.equal(context.albumBannerKind({album_mbid: "release", featured: true, soundtrack: true}, {}), "soundtrack");
+  assert.equal(context.albumBannerKind({album_mbid: "release", featured: true, various_artists: true}, {}), "various");
+  assert.equal(context.albumBannerKind({album_mbid: "release", featured: true}, {}), "featuring");
+  assert.equal(context.albumBannerKind({album_mbid: "release"}, {}), "artist");
+});
 const coordinationFunctions = between(
   appSource,
   "function applyAlbumCoordination",

@@ -97,6 +97,21 @@ def normalized_artist_identity(value: str) -> str:
     return "".join(character.casefold() for character in visible if character.isalnum())
 
 
+def synthetic_album_artist(value: str) -> bool:
+    """Return true for catalog owners that are not selectable real Artists.
+
+    Soundtrack and Various Artists folders remain first-class Album owners, but
+    their identified releases are projected into each credited real Artist's
+    overview instead of manufacturing duplicate Artist sidebar identities.
+    """
+    return normalized_artist_identity(value) in {
+        "soundtrack",
+        "soundtracks",
+        "variousartist",
+        "variousartists",
+    }
+
+
 def artist_display_sort_key(value: object) -> str:
     """Sort visible Artist names without discarding meaningful punctuation.
 
@@ -872,8 +887,13 @@ class Catalog:
     def _stored_artist_appearances(self, db, artist_id: str) -> dict[str, object]:
         try:
             rows = db.execute(
-                "SELECT album_key,featured,navidrome_album_id,song_paths_json "
-                "FROM artist_album_appearances WHERE artist_key=?",
+                "SELECT appearances.album_key,appearances.featured,"
+                "appearances.navidrome_album_id,appearances.song_paths_json,"
+                "owners.artist_name AS album_artist_name "
+                "FROM artist_album_appearances appearances "
+                "LEFT JOIN albums ON albums.album_key=appearances.album_key "
+                "LEFT JOIN artists owners ON owners.artist_key=albums.artist_key "
+                "WHERE appearances.artist_key=?",
                 (artist_id,),
             ).fetchall()
         except Exception:
@@ -883,7 +903,15 @@ class Catalog:
             return {"album_keys": set(), "featured_album_keys": set(), "song_paths": {}}
         return {
             "album_keys": {str(row["album_key"]) for row in rows},
-            "featured_album_keys": {str(row["album_key"]) for row in rows if bool(row["featured"])},
+            "featured_album_keys": {
+                str(row["album_key"])
+                for row in rows
+                if bool(row["featured"])
+                and (
+                    row["album_artist_name"] is None
+                    or not synthetic_album_artist(row["album_artist_name"])
+                )
+            },
             "song_paths": {
                 str(row["album_key"]): json.loads(str(row["song_paths_json"] or "[]"))
                 for row in rows
@@ -974,7 +1002,10 @@ class Catalog:
             key = str(row["album_key"])
             album_keys.add(key)
             paths.setdefault(key, set()).add(str(row["path"] or "").replace("\\", "/").strip("/"))
-            if str(row["artist_key"]) not in alias_ids:
+            if (
+                str(row["artist_key"]) not in alias_ids
+                and not synthetic_album_artist(row["album_artist_name"])
+            ):
                 featured.add(key)
         return {
             "album_keys": album_keys,
@@ -1107,7 +1138,15 @@ class Catalog:
             alias_ids = {str(row["artist_key"]) for row in aliases}
             featured = {
                 key for key in song_paths
-                if next((str(row["artist_key"]) for row in all_albums if str(row["album_key"]) == key), "") not in alias_ids
+                if next(
+                    (
+                        str(row["artist_key"]) not in alias_ids
+                        and not synthetic_album_artist(row["artist_name"])
+                        for row in all_albums
+                        if str(row["album_key"]) == key
+                    ),
+                    False,
+                )
             }
             remote_context = {
                 "album_keys": set(song_paths),
@@ -1205,6 +1244,8 @@ class Catalog:
         result = []
         for group in self._artist_groups(rows):
             canonical = self._canonical_artist_row(group)
+            if synthetic_album_artist(canonical["artist_name"]):
+                continue
             status_group = [
                 status
                 for row in group
@@ -1251,6 +1292,8 @@ class Catalog:
         result = []
         for group in self._artist_groups(rows):
             canonical = self._canonical_artist_row(group)
+            if synthetic_album_artist(canonical["artist_name"]):
+                continue
             portrait_path = None
             for row in [canonical, *(item for item in group if item is not canonical)]:
                 portrait_path = self.artist_thumbnail_path(row)
