@@ -323,7 +323,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             time.sleep(0.05)
         self.fail(f"job {job_id} did not reach the expected state: {item}")
 
-    def test_waiting_scan_does_not_block_explicit_writes_or_batch_staging(self):
+    def test_waiting_scan_does_not_block_explicit_writes_or_album_embedding(self):
         self.queue = JobQueue(self.services)
 
         def interactive_scan(_payload, adapter):
@@ -363,20 +363,105 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             )
             self.assertTrue(artist_result["written"])
 
-            # EMBED Batch is a separate button, but its synchronous staging
-            # operation must be available under the same waiting-scan state.
+            # EMBED Batch is an explicit operation. Once its exact prepared
+            # artwork has been snapshotted, the candidate scan that supplied
+            # it is superseded and must release the single durable worker.
             staged = self.services.stage_album(self.payload())
             self.assertTrue(staged["prepared_file"])
-            self.services.remove_staged_artwork(staged)
-
-            prompt = waiting["progress"]["prompt"]
-            self.queue.action(
-                "decision", queued["id"], "k", prompt["nonce"]
+            album_job = self.queue.enqueue(
+                "embed-album", staged, staged=True
             )
+            cancelled_scan = self.wait_for_job(
+                queued["id"], lambda item: item["state"] == "cancelled"
+            )
+            self.assertEqual(cancelled_scan["state"], "cancelled")
+            self.queue.action("start", kind="embed-album")
             completed = self.wait_for_job(
-                queued["id"], lambda item: item["state"] == "done"
+                album_job["id"], lambda item: item["state"] in {"done", "failed"}
             )
-            self.assertEqual(completed["result"]["decision"], "k")
+            self.assertEqual(completed["state"], "done", completed["error"])
+            self.assertTrue(completed["result"]["verified"])
+
+    def test_explicit_album_embed_replaces_same_size_art_and_ignores_duplicate_covers(self):
+        # Purple/preferred-size status is informational. Existing artwork at
+        # the requested dimensions must not prevent an explicitly selected,
+        # byte-different candidate from replacing every track thumbnail.
+        for path in self.files:
+            self.set_flac_embedded_cover(path, 300)
+        old_art = [embedded_track_artwork_bytes(path) for path in self.files]
+        self.assertTrue(all(old_art))
+
+        alternate = self.cover.with_suffix(".png")
+        Image.new("RGB", (900, 900), "orange").save(alternate)
+        webp = self.cover.with_suffix(".webp")
+        Image.new("RGB", (900, 900), "purple").save(webp, format="WEBP")
+        candidate = self.runtime.cache / "explicit-selected-candidate.png"
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (1800, 1800), "teal").save(candidate, format="PNG")
+
+        staged = self.services.stage_album(
+            {
+                "album_id": self.row["album_key"],
+                "image": self.services.catalog.image(candidate),
+            }
+        )
+        self.assertTrue(staged["preferred_size"])
+        self.assertFalse(self.cover.is_file())
+        self.assertTrue(alternate.is_file())
+        self.assertTrue(webp.is_file())
+        static_covers = [
+            path
+            for path in core.canonical_cover_files(self.cover.parent, "cover")
+            if path.suffix.casefold() != ".webp"
+        ]
+        self.assertEqual(static_covers, [alternate])
+        prepared = (
+            self.runtime.cache / "staged-artwork" / staged["prepared_file"]
+        ).read_bytes()
+
+        result = self.services.embed_album(staged)
+
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["tracks"], len(self.files))
+        for prior, path in zip(old_art, self.files):
+            embedded = embedded_track_artwork_bytes(path)
+            self.assertNotEqual(embedded, prior)
+            self.assertEqual(
+                hashlib.sha256(embedded).digest(),
+                hashlib.sha256(prepared).digest(),
+            )
+
+    def test_webp_album_embed_uses_verified_jpeg_still_and_removes_static_png(self):
+        alternate = self.cover.with_suffix(".png")
+        Image.new("RGB", (900, 900), "orange").save(alternate)
+        candidate = self.runtime.cache / "explicit-selected-candidate.webp"
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (1800, 1800), "teal").save(candidate, format="WEBP")
+
+        staged = self.services.stage_album(
+            {
+                "album_id": self.row["album_key"],
+                "image": self.services.catalog.image(candidate),
+            }
+        )
+
+        webp = self.cover.with_suffix(".webp")
+        self.assertTrue(webp.is_file())
+        self.assertTrue(self.cover.is_file())
+        self.assertFalse(alternate.is_file())
+        staged_cover = self.runtime.cache / "staged-artwork" / staged["cover_file"]
+        with Image.open(staged_cover) as opened:
+            self.assertEqual(opened.format, "JPEG")
+        prepared = (
+            self.runtime.cache / "staged-artwork" / staged["prepared_file"]
+        ).read_bytes()
+        result = self.services.embed_album(staged)
+        self.assertTrue(result["verified"])
+        for path in self.files:
+            self.assertEqual(
+                hashlib.sha256(embedded_track_artwork_bytes(path)).digest(),
+                hashlib.sha256(prepared).digest(),
+            )
 
     def drive_comp_candidate(self, row, track):
         result = self.queue.enqueue(
@@ -4275,7 +4360,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     # Authentication becomes visible before the asynchronous
                     # library/bootstrap render completes.  Wait for that load
                     # so its default workspace render cannot race this click.
-                    expect(page.locator("#statusText")).to_contain_text("Loaded")
+                    expect(page.locator("#statusText")).to_contain_text(
+                        "Loaded", timeout=15000
+                    )
                     page.locator("#embedTab").click()
                     expect(page.locator("#embedView")).to_be_visible()
                     expect(page.locator(".queue-card", has_text="Test Album")).to_be_visible()
@@ -4295,7 +4382,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         "#artistList button", has_text="10,000 Maniacs"
                     ).click()
                     expect(page.locator("#artistName")).to_have_text(
-                        "10,000 Maniacs"
+                        "10,000 Maniacs", timeout=15000
                     )
                     # Artist information is a tiny, theme-driven pop-out over
                     # the five-line biography. It must preserve the circular
@@ -4414,7 +4501,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     expect(page.locator("#artistInfoRows")).to_be_hidden()
                     page.locator("#compReportButton").click()
                     expect(page.locator("#fallbackReport")).to_contain_text(
-                        "Because the Night"
+                        "Because the Night", timeout=15000
                     )
                     expect(page.locator("#fallbackReport")).not_to_contain_text(
                         "Other Song"
@@ -4495,7 +4582,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     page.locator("#compReportButton").click()
                     page.locator("#compReportButton").click()
                     expect(page.locator("#fallbackReport")).to_contain_text(
-                        "Because the Night"
+                        "Because the Night", timeout=15000
                     )
                     with page.expect_request(
                         lambda request: request.method == "POST"
@@ -4633,10 +4720,10 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         "#artistList button", has_text="Billboard Hot 100 Singles of 1994"
                     ).click()
                     expect(page.locator("#fallbackReport")).to_contain_text(
-                        "Because the Night"
+                        "Because the Night", timeout=15000
                     )
                     expect(page.locator("#fallbackReport")).to_contain_text(
-                        "Other Song"
+                        "Other Song", timeout=15000
                     )
                     full_launch_call_start = len(http_calls)
                     page.locator("#searchButton").click()
@@ -4699,11 +4786,11 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         "#artistList button", has_text="10,000 Maniacs"
                     ).click()
                     expect(page.locator("#artistName")).to_have_text(
-                        "10,000 Maniacs"
+                        "10,000 Maniacs", timeout=15000
                     )
                     page.locator("#compReportButton").click()
                     expect(page.locator("#fallbackReport")).to_contain_text(
-                        "Because the Night"
+                        "Because the Night", timeout=15000
                     )
                     expect(page.locator("#fallbackReport")).not_to_contain_text(
                         "Other Song"

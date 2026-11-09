@@ -134,6 +134,29 @@ pub fn enqueue(
     Ok(connection.last_insert_rowid())
 }
 
+pub fn replace_staged_thumbnail(
+    path: &Path,
+    id: i64,
+    thumbnail: &[u8],
+    side: u32,
+) -> Result<(), String> {
+    if thumbnail.is_empty() || !(300..=4000).contains(&side) {
+        return Err("A staged embed job needs a prepared thumbnail at the preferred size.".into());
+    }
+    let changed = open(path)?
+        .execute(
+            "UPDATE embed_jobs SET thumbnail=?2,side=?3 WHERE id=?1 AND state='staged'",
+            params![id, thumbnail, side],
+        )
+        .map_err(|error| format!("Unable to bind the verified cover to its embed job: {error}"))?;
+    if changed != 1 {
+        return Err(
+            "The Album embed job was no longer staged while its cover was verified.".into(),
+        );
+    }
+    Ok(())
+}
+
 fn map_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<EmbedJob> {
     Ok(EmbedJob {
         id: row.get(0)?,

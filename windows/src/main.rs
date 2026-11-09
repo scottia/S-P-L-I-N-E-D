@@ -31,8 +31,9 @@ use splined_core::embedded_artwork::{
     replace_embedded_front_with_trace,
 };
 use splined_core::final_artwork::{
-    apply_selected_image_adjustments, install_prepared_artwork, prepare_configured_artwork,
-    prepare_embedded_thumbnail, prepare_existing_cover_edit, prepare_selected_artwork_edit,
+    PreparedArtwork, PreparedArtworkInfo, UpscaleBackend, apply_selected_image_adjustments,
+    install_prepared_artwork, prepare_configured_artwork, prepare_embedded_thumbnail,
+    prepare_existing_cover_edit, prepare_selected_artwork_edit,
 };
 use splined_core::inspect::inspect_image;
 use splined_core::local_artwork::{
@@ -7755,6 +7756,7 @@ fn snapshot_embed_queue_target_from_app(
         "Select a readable Artist Album cover or render its upscale preview; COMP fallback stays track-scoped."
             .to_string()
     })?;
+    let source_identity = source.clone();
     let source = if source.starts_with("memory-preview://") {
         let bytes = full_edit_preview_bytes(&source).ok_or_else(|| {
             "The upscale preview expired; render it again before staging.".to_string()
@@ -7774,7 +7776,8 @@ fn snapshot_embed_queue_target_from_app(
         side: app.config.output.embedded_thumbnail_size,
         cover_config: Some(app.config.clone()),
         preferred_cover: Some(PathBuf::from(&app.current_cover_path)).filter(|cover| {
-            cover.is_file()
+            source_identity.eq_ignore_ascii_case(&cover.to_string_lossy())
+                && cover.is_file()
                 && cover.parent().is_some_and(|parent| {
                     parent
                         .to_string_lossy()
@@ -7837,11 +7840,11 @@ fn saved_album_queue_target(
             .contains(&snapshot.path.to_lowercase()))
     .then(|| EmbedQueueTarget {
         album: PathBuf::from(&snapshot.path),
-        source: EmbedQueueSource::File(cover),
+        source: EmbedQueueSource::File(cover.clone()),
         label: format!("{} — {}", snapshot.artist, snapshot.title),
         side: app.config.output.embedded_thumbnail_size,
-        cover_config: None,
-        preferred_cover: None,
+        cover_config: Some(app.config.clone()),
+        preferred_cover: Some(cover),
     })
 }
 
@@ -8009,7 +8012,13 @@ fn write_staged_album_cover(
     ) {
         return Err("The selected cover must be JPEG, PNG, or WebP.".to_string());
     }
-    let preferred_is_png = preferred_cover.is_some_and(|cover| {
+    let preferred_static = preferred_cover.filter(|cover| {
+        cover
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| matches!(ext.to_ascii_lowercase().as_str(), "jpg" | "jpeg" | "png"))
+    });
+    let preferred_is_png = preferred_static.is_some_and(|cover| {
         cover
             .extension()
             .and_then(|ext| ext.to_str())
@@ -8039,7 +8048,7 @@ fn write_staged_album_cover(
             .map_err(|error| format!("Unable to encode the selected cover as JPEG: {error}"))?;
         encoded
     };
-    let destination = preferred_cover.map(Path::to_path_buf).unwrap_or_else(|| {
+    let destination = preferred_static.map(Path::to_path_buf).unwrap_or_else(|| {
         album.join(format!(
             "{}.{}",
             config.output.file_name,
@@ -8047,14 +8056,41 @@ fn write_staged_album_cover(
         ))
     });
     let dimensions = (image.width(), image.height());
-    replace_binary_file(&destination, &bytes, "staged album cover", |staged| {
-        let info = inspect_image(staged)?;
-        if (info.width, info.height, info.format) == (dimensions.0, dimensions.1, expected) {
-            Ok(())
-        } else {
-            Err("The staged cover does not match the selected artwork.".to_string())
-        }
-    })?;
+    let prepared = PreparedArtwork {
+        bytes,
+        info: PreparedArtworkInfo {
+            width: dimensions.0,
+            height: dimensions.1,
+            format: expected,
+            resized: false,
+            converted: match expected {
+                StaticFormat::Jpeg => format != image::ImageFormat::Jpeg,
+                StaticFormat::Png => format != image::ImageFormat::Png,
+                StaticFormat::Webp => format != image::ImageFormat::WebP,
+            },
+            upscale_backend: UpscaleBackend::None,
+            brightness_percent: 0,
+            contrast_percent: 0,
+            exposure_percent: 0,
+            picture_percent: 0,
+            sharpen_percent: 0,
+            softness_percent: 0,
+            gamma_percent: 0,
+            color_temperature: 0,
+            adaptive_defaults: false,
+            quality_eligible: true,
+        },
+    };
+    if config.output.preserve_file {
+        install_prepared_artwork(&destination, &prepared)?;
+    } else {
+        install_prepared_canonical_artwork(
+            album,
+            &config.output.file_name,
+            &destination,
+            &prepared,
+        )?;
+    }
     let mut completion_config = config.clone();
     completion_config.mode = Mode::Write;
     completion_config.scan.scan_mode_timeout = ScanTimeout(0.0);
@@ -8086,12 +8122,7 @@ fn queue_saved_album(
                 prepare_embedded_thumbnail(&source, target.side, StaticFormat::Jpeg)?,
                 width,
                 height,
-                (!cover.parent().is_some_and(|parent| {
-                    parent
-                        .to_string_lossy()
-                        .eq_ignore_ascii_case(&target.album.to_string_lossy())
-                }))
-                .then_some(source),
+                Some(source),
             )
         }
         EmbedQueueSource::Preview(source) => {
@@ -8130,8 +8161,15 @@ fn queue_saved_album(
                 &config,
                 target.preferred_cover.as_deref(),
             )
-            .and_then(|path| media_snapshot(&config, false).map(|snapshot| (path, snapshot)))
-            {
+            .and_then(|path| {
+                let verified = fs::read(&path).map_err(|error| {
+                    format!("Unable to read back the verified Album cover: {error}")
+                })?;
+                let thumbnail =
+                    prepare_embedded_thumbnail(&verified, target.side, StaticFormat::Jpeg)?;
+                embed_queue::replace_staged_thumbnail(database, id, &thumbnail, target.side)?;
+                media_snapshot(&config, false).map(|snapshot| (path, snapshot))
+            }) {
                 Ok((path, snapshot)) => (Some(path), Some(snapshot)),
                 Err(error) => {
                     let cleanup = embed_queue::remove(database, id);
@@ -22608,10 +22646,11 @@ mod tests {
         primary_credit_biography_artist, queue_saved_album, raw_image_cache,
         require_active_compilation_write_target, restore_request_from_args, safe_reset_config,
         select_pending_artist_compilation_report_tracks, selected_artist_album_embed_sources,
-        selected_artwork_preview_type, selected_artwork_write_label, split_values,
-        switch_artist_preview_focus, synchronize_fallback_album, trim_large_raw_image_cache,
-        update_artist_bulk_completion, update_artist_preview_activation, webp_animation_metadata,
-        write_artist_art_file, write_artist_art_file_with_stem,
+        selected_artwork_preview_type, selected_artwork_write_label,
+        snapshot_embed_queue_target_from_app, split_values, switch_artist_preview_focus,
+        synchronize_fallback_album, trim_large_raw_image_cache, update_artist_bulk_completion,
+        update_artist_preview_activation, webp_animation_metadata, write_artist_art_file,
+        write_artist_art_file_with_stem,
     };
     use serde_json::json;
 
@@ -23173,6 +23212,44 @@ mod tests {
         assert_eq!(decision["preserve_source_resolution"], false);
         assert_eq!(decision["apply_edit_profile"], true);
         assert_eq!(decision["use_upscaled_preview"], true);
+    }
+
+    #[test]
+    fn generated_candidate_staging_uses_candidate_format_not_prior_cover_extension() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let album = directory.path().join("Artist").join("Album");
+        fs::create_dir_all(&album).unwrap();
+        let current = album.join("cover.jpg");
+        let candidate = directory.path().join("candidate.png");
+        image::RgbImage::from_pixel(96, 96, image::Rgb([10, 20, 30]))
+            .save_with_format(&current, image::ImageFormat::Jpeg)
+            .unwrap();
+        image::RgbImage::from_pixel(144, 144, image::Rgb([30, 120, 80]))
+            .save_with_format(&candidate, image::ImageFormat::Png)
+            .unwrap();
+        let snapshot = MediaSnapshot {
+            schema_version: splined_core::media_database::SCHEMA_VERSION,
+            database_path: String::new(),
+            canonical_root: String::new(),
+            local_root: String::new(),
+            albums: Vec::new(),
+        };
+        let mut app = ApplicationState::new(Config::default(), snapshot).unwrap();
+        app.current_artist = "Artist".into();
+        app.current_album = "Album".into();
+        app.current_album_path = album.to_string_lossy().into_owned();
+        app.current_cover_path = current.to_string_lossy().into_owned();
+        app.phase = RunPhase::AwaitingMusicBrainz;
+        app.musicbrainz_cover_preview_path = candidate.to_string_lossy().into_owned();
+
+        let selected = snapshot_embed_queue_target_from_app(&app).unwrap();
+        assert!(selected.preferred_cover.is_none());
+        assert!(matches!(selected.source, EmbedQueueSource::File(path) if path == candidate));
+
+        app.phase = RunPhase::Idle;
+        app.musicbrainz_cover_preview_path.clear();
+        let saved = snapshot_embed_queue_target_from_app(&app).unwrap();
+        assert_eq!(saved.preferred_cover.as_deref(), Some(current.as_path()));
     }
 
     #[test]
@@ -25854,7 +25931,6 @@ mod tests {
             .join("temporary")
             .to_string_lossy()
             .into_owned();
-
         let mut snapshot = media_snapshot(&config, false).unwrap();
         assert_eq!(snapshot.albums.len(), 1);
         assert_eq!(snapshot.albums[0].status, "unprocessed");
@@ -25889,8 +25965,15 @@ mod tests {
         fs::create_dir_all(&album).unwrap();
         fs::write(album.join("01.mp3"), []).unwrap();
         let cover = album.join("cover.jpg");
+        let png_cover = album.join("cover.png");
         image::RgbImage::from_pixel(96, 96, image::Rgb([10, 20, 30]))
             .save_with_format(&cover, image::ImageFormat::Jpeg)
+            .unwrap();
+        image::RgbImage::from_pixel(96, 96, image::Rgb([30, 20, 10]))
+            .save_with_format(&png_cover, image::ImageFormat::Png)
+            .unwrap();
+        image::RgbImage::from_pixel(96, 96, image::Rgb([20, 30, 10]))
+            .save_with_format(album.join("cover.webp"), image::ImageFormat::WebP)
             .unwrap();
         let preview_file = directory.path().join("preview.png");
         image::RgbaImage::from_pixel(144, 144, image::Rgba([180, 90, 40, 255]))
@@ -25901,6 +25984,7 @@ mod tests {
             mode: Mode::Write,
             ..Config::default()
         };
+        config.output.preserve_file = false;
         config.library.music_library = library.to_string_lossy().into_owned();
         config.scan.scan_library_dir = config.library.music_library.clone();
         config.scan.cache_dir = directory
@@ -25913,6 +25997,7 @@ mod tests {
             .join("temporary")
             .to_string_lossy()
             .into_owned();
+        let embedded_thumbnail_size = config.output.embedded_thumbnail_size;
         assert_eq!(
             media_snapshot(&config, false).unwrap().albums[0].status,
             "unprocessed"
@@ -25924,19 +26009,21 @@ mod tests {
                 album: album.clone(),
                 source: EmbedQueueSource::Preview(preview),
                 label: "Artist — Album".into(),
-                side: config.output.embedded_thumbnail_size,
-                cover_config: Some(config),
-                preferred_cover: Some(cover.clone()),
+                side: embedded_thumbnail_size,
+                cover_config: Some(config.clone()),
+                preferred_cover: None,
             },
         )
         .unwrap();
-        assert_eq!(staged.written_cover.as_deref(), Some(cover.as_path()));
-        let info = inspect_image(&cover).unwrap();
+        assert_eq!(staged.written_cover.as_deref(), Some(png_cover.as_path()));
+        let info = inspect_image(&png_cover).unwrap();
         assert_eq!(
             (info.width, info.height, info.format),
-            (144, 144, StaticFormat::Jpeg)
+            (144, 144, StaticFormat::Png)
         );
-        assert!(!album.join("cover.png").exists());
+        assert!(!cover.exists());
+        assert!(png_cover.exists());
+        assert!(album.join("cover.webp").exists());
         assert_eq!(
             staged.snapshot.take().unwrap().albums[0].status,
             "processed"
@@ -25945,6 +26032,89 @@ mod tests {
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].state, "staged");
         assert_eq!(jobs[0].completed, 0);
+        assert_eq!(
+            jobs[0].thumbnail,
+            splined_core::final_artwork::prepare_embedded_thumbnail(
+                &fs::read(&png_cover).unwrap(),
+                embedded_thumbnail_size,
+                StaticFormat::Jpeg,
+            )
+            .unwrap()
+        );
+
+        // A later queue from an already-saved local cover follows the same
+        // configured WRITE Cover transaction instead of bypassing its audit.
+        embed_queue::remove(&queue_db, jobs[0].id).unwrap();
+        image::RgbImage::from_pixel(96, 96, image::Rgb([30, 20, 10]))
+            .save_with_format(&cover, image::ImageFormat::Jpeg)
+            .unwrap();
+        queue_saved_album(
+            &queue_db,
+            EmbedQueueTarget {
+                album: album.clone(),
+                source: EmbedQueueSource::File(png_cover.clone()),
+                label: "Artist — Album".into(),
+                side: embedded_thumbnail_size,
+                cover_config: Some(config.clone()),
+                preferred_cover: Some(png_cover.clone()),
+            },
+        )
+        .unwrap();
+        assert!(!cover.exists());
+        assert!(png_cover.exists());
+        assert!(album.join("cover.webp").exists());
+        let jobs = embed_queue::list(&queue_db).unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(
+            jobs[0].thumbnail,
+            splined_core::final_artwork::prepare_embedded_thumbnail(
+                &fs::read(&png_cover).unwrap(),
+                embedded_thumbnail_size,
+                StaticFormat::Jpeg,
+            )
+            .unwrap()
+        );
+
+        // WebP remains outside static cleanup, while its verified JPEG still
+        // becomes the sole JPG/JPEG/PNG presentation and embed source.
+        embed_queue::remove(&queue_db, jobs[0].id).unwrap();
+        image::RgbImage::from_pixel(96, 96, image::Rgb([10, 20, 30]))
+            .save_with_format(&cover, image::ImageFormat::Jpeg)
+            .unwrap();
+        image::RgbImage::from_pixel(96, 96, image::Rgb([30, 20, 10]))
+            .save_with_format(&png_cover, image::ImageFormat::Png)
+            .unwrap();
+        let staged_webp = directory.path().join("selected.webp");
+        image::RgbImage::from_pixel(144, 144, image::Rgb([80, 160, 100]))
+            .save_with_format(&staged_webp, image::ImageFormat::WebP)
+            .unwrap();
+        queue_saved_album(
+            &queue_db,
+            EmbedQueueTarget {
+                album: album.clone(),
+                source: EmbedQueueSource::Preview(fs::read(&staged_webp).unwrap()),
+                label: "Artist — Album".into(),
+                side: embedded_thumbnail_size,
+                cover_config: Some(config),
+                preferred_cover: Some(album.join("cover.webp")),
+            },
+        )
+        .unwrap();
+        assert!(cover.exists());
+        assert!(!png_cover.exists());
+        assert!(album.join("cover.webp").exists());
+        assert_eq!(inspect_image(&cover).unwrap().format, StaticFormat::Jpeg);
+        let jobs = embed_queue::list(&queue_db).unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(
+            jobs[0].thumbnail,
+            splined_core::final_artwork::prepare_embedded_thumbnail(
+                &fs::read(&cover).unwrap(),
+                embedded_thumbnail_size,
+                StaticFormat::Jpeg,
+            )
+            .unwrap()
+        );
     }
 
     #[test]

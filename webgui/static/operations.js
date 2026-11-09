@@ -911,7 +911,7 @@ function renderQueue() {
     copy.append(node("strong", "", title), node("small", "", detail));
     if (job.payload?.cover_width && job.payload?.cover_height)
       copy.append(node("small", "queue-resolution", `staged cover resolution ${job.payload.cover_width} × ${job.payload.cover_height}`));
-    if (preferred) copy.append(node("small", "queue-preferred", "Preferred embedded size already present"));
+    if (preferred) copy.append(node("small", "queue-preferred", "Preferred embedded size detected · explicit embed will still replace it"));
     if (job.state === "done") copy.append(node("p", "operation-success", `Completed write · ${total} tracks verified`));
     if (job.payload?.staged_error) copy.append(node("p", "operation-error", job.payload.staged_error));
     if (job.error) copy.append(node("p", "operation-error", job.error)); card.append(copy);

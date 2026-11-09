@@ -1308,7 +1308,7 @@ export component EmbedQueueWindow inherits Window {
                         Image { source: job.preview; width: 76px; height: 76px; image-fit: contain; }
                         VerticalLayout { spacing: 3px; horizontal-stretch: 1;
                             Text { text: job.label; color: AppTheme.foreground; font-weight: 700; overflow: elide; }
-                            Text { text: (job.preferred-size && (job.status == "staged" || job.status == "queued" || job.status == "paused") ? "Preferred size already" : job.status) + " · " + job.progress; color: job.status == "failed" ? #ff8386 : (job.status == "done" ? #7eeaba : (job.status == "running" ? #ff7935 : (job.preferred-size ? AppTheme.blue : AppTheme.violet))); }
+                            Text { text: (job.preferred-size && (job.status == "staged" || job.status == "queued" || job.status == "paused") ? "Preferred size detected; explicit embed remains available" : job.status) + " · " + job.progress; color: job.status == "failed" ? #ff8386 : (job.status == "done" ? #7eeaba : (job.status == "running" ? #ff7935 : (job.preferred-size ? AppTheme.blue : AppTheme.violet))); }
                             Text { text: job.cover-resolution; color: AppTheme.green; overflow: elide; }
                             Text { text: job.detail; color: AppTheme.secondary-foreground; overflow: elide; }
                         }

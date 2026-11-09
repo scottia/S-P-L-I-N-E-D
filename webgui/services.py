@@ -1627,11 +1627,11 @@ class Services:
         else:
             removed = [path.name for path in core.install_canonical_cover(destination, body, stem)]
 
-        written = [path.name for path, _ in outputs]
         presentation = next(
             (path for path, _ in outputs if path.suffix.casefold() != ".webp"),
             destination,
         )
+        written = [path.name for path, _ in outputs if path.is_file()]
         verified = presentation.read_bytes()
         with Image.open(BytesIO(verified)) as opened:
             verified_size = [int(opened.width), int(opened.height)]
@@ -1655,8 +1655,14 @@ class Services:
         return {
             "written": written,
             "preserved": preserved,
+            "removed": removed,
             "coordination": coordination,
             **rendered,
+            # The verified canonical presentation, not a temporary candidate
+            # handle or an arbitrary sibling cover.*, is the source of truth
+            # for a following Album Track Embedding stage.
+            "file": presentation.name,
+            "sha256": hashlib.sha256(verified).hexdigest(),
         }
 
     @serialized
@@ -2334,8 +2340,14 @@ class Services:
         files = self.album_files(row)
         if not files:
             raise ValueError("Album has no supported tracks to stage")
+        # EMBED Batch uses the same configured canonical-cover transaction as
+        # WRITE Cover. Its verified readback—not whichever cover.* happens to
+        # be discovered later—is snapshotted for every track in this job.
         result = self.write_cover(payload)
-        cover_body = self.catalog.image_bytes(result["image"])
+        authoritative_cover = Path(row["path"]) / str(result["file"])
+        cover_body = authoritative_cover.read_bytes()
+        if hashlib.sha256(cover_body).hexdigest() != result["sha256"]:
+            raise ValueError("The written Album cover changed before embedding was staged")
         side = int(
             self.runtime.cfg.get("output", {}).get(
                 "embedded_thumbnail_size", 1200
@@ -2346,11 +2358,10 @@ class Services:
             prepared_body = imaging.encode(thumbnail, "jpeg")
         directory = self.runtime.cache / "staged-artwork"
         directory.mkdir(parents=True, exist_ok=True)
-        cover_name = uuid4().hex + {
-            "jpeg": ".jpg",
-            "png": ".png",
-            "webp": ".webp",
-        }[result["format"]]
+        cover_suffix = authoritative_cover.suffix.casefold()
+        if cover_suffix not in {".jpg", ".jpeg", ".png"}:
+            raise ValueError("The verified Album presentation is not a static cover")
+        cover_name = uuid4().hex + cover_suffix
         prepared_name = uuid4().hex + ".jpg"
         try:
             self._atomic_artwork(directory / cover_name, cover_body)
