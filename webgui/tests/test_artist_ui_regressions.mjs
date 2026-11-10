@@ -182,6 +182,11 @@ const statusFunctions = between(
   "function setStatus",
   "async function api",
 );
+const heroPortraitFunction = between(
+  appSource,
+  "function renderHeroPortrait",
+  "function renderArtistInfoVisibility",
+);
 const uploadedArtworkFunction = between(
   operationsSource,
   "function useUploadedArtwork",
@@ -212,6 +217,32 @@ test("uploaded Artist Art starts blue while retaining explicit pink role choice"
   assert.equal(renders, 1);
   assert.match(appSource, /Every Artist Art candidate can be[\s\S]*candidate-radio artist[\s\S]*candidate-radio banner/);
   assert.doesNotMatch(appSource, /function candidateBanner\(/);
+});
+
+test("Artist metadata rerenders retain the visible portrait element", () => {
+  let replacement = null;
+  const current = {
+    tagName: "IMG",
+    className: "hero-portrait",
+    alt: "",
+    src: "/artist.jpg",
+    getAttribute: name => name === "src" ? "/artist.jpg" : null,
+    replaceWith: value => { replacement = value; },
+  };
+  const context = load(heroPortraitFunction, {
+    $: id => {
+      assert.equal(id, "heroPortrait");
+      return current;
+    },
+    image: () => { throw new Error("unchanged portrait must not be replaced"); },
+    node: () => { throw new Error("unchanged portrait must not become a placeholder"); },
+  });
+
+  context.renderHeroPortrait({name: "Test Artist", portrait: "/artist.jpg"});
+
+  assert.equal(replacement, null);
+  assert.equal(current.className, "hero-portrait");
+  assert.equal(current.alt, "Test Artist artist image");
 });
 const stageAllAlbumsFunction = between(
   operationsSource,

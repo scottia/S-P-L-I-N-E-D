@@ -905,6 +905,30 @@ function renderHero() {
     : state.artist ? "artist:" + state.artist.id : "";
   renderWithScrollMemory(["overviewContent", "albumGrid", "findView"], context, renderHeroContents);
 }
+function renderHeroPortrait(artist) {
+  const current = $("heroPortrait");
+  const source = String(artist?.portrait || "").trim();
+  if (source) {
+    if (current.tagName === "IMG") {
+      if (current.getAttribute("src") !== source) current.src = source;
+      current.className = "hero-portrait";
+      current.alt = artist.name + " artist image";
+      return;
+    }
+    const replacement = image(source, "hero-portrait", artist.name + " artist image");
+    replacement.id = "heroPortrait";
+    current.replaceWith(replacement);
+    return;
+  }
+  if (current.tagName === "DIV") {
+    current.className = "hero-portrait placeholder";
+    current.textContent = "♪";
+    return;
+  }
+  const replacement = node("div", "hero-portrait placeholder", "♪");
+  replacement.id = "heroPortrait";
+  current.replaceWith(replacement);
+}
 function renderArtistInfoVisibility(artist = state.artist) {
   $("artistInfoRows").hidden = !state.artistInfoExpanded;
   $("artistInfoToggle").disabled = !artist;
@@ -993,9 +1017,7 @@ function renderHeroContents() {
     );
   }
   $("hero").style.backgroundImage = artist?.banner ? `url("${artist.banner}")` : artist?.portrait ? `url("${artist.portrait}")` : "none";
-  const portrait = $("heroPortrait");
-  const replacement = artist?.portrait ? image(artist.portrait, "hero-portrait", artist.name + " artist image") : node("div", "hero-portrait placeholder", "♪");
-  replacement.id = "heroPortrait"; portrait.replaceWith(replacement);
+  renderHeroPortrait(artist);
   $("artistArtEntry").disabled = !artist;
   $("artistArtEntry").title = "Open Artist Art Enhancements";
   $("artistArtEntry").setAttribute("aria-label", "Open Artist Art Enhancements");
