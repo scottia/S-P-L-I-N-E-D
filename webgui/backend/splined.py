@@ -960,6 +960,71 @@ def _is_inventory_local_art(path: Path, configured_file_name: str) -> bool:
     return stem.startswith("cover") or stem.startswith(configured)
 
 
+def iter_inventory(
+    root: Path,
+    ignored_subs: list[str],
+    configured_file_name: str = "cover",
+    *,
+    progress: Callable[[int, int], None] | None = None,
+    cancelled: Callable[[], bool] | None = None,
+):
+    """Yield one Album directory at a time using bounded memory.
+
+    Only current directory entries and the remaining directory stack are
+    retained. Track tags, artwork pixels, and provider data are deliberately
+    outside this inventory phase.
+    """
+    if not root.exists():
+        raise SplinedError(f"SPLINED scan directory does not exist: {root}")
+    if not root.is_dir():
+        raise SplinedError(f"SPLINED scan path is not a directory: {root}")
+    pending = [root]
+    directories_seen = 0
+    albums_seen = 0
+    while pending:
+        if cancelled is not None and cancelled():
+            raise InteractionCancelled()
+        directory = pending.pop()
+        try:
+            with os.scandir(directory) as iterator:
+                entries = sorted(iterator, key=lambda entry: entry.name.casefold())
+        except OSError as exc:
+            raise SplinedError(
+                f"Unable to read SPLINED scan directory {directory}: {exc}"
+            ) from exc
+        audio: list[Path] = []
+        local_art: list[Path] = []
+        children: list[Path] = []
+        for entry in entries:
+            if entry.is_symlink():
+                continue
+            path = Path(entry.path)
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    if not should_ignore(entry.name, ignored_subs):
+                        children.append(path)
+                    continue
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+            except OSError:
+                continue
+            if path.suffix.lower() in AUDIO_EXTENSIONS:
+                audio.append(path)
+            elif _is_inventory_local_art(path, configured_file_name):
+                local_art.append(path)
+        directories_seen += 1
+        pending.extend(reversed(children))
+        if audio:
+            albums_seen += 1
+            yield AlbumDir(directory, sorted(audio), sorted(local_art))
+        if progress is not None and (
+            directories_seen == 1 or directories_seen % 100 == 0
+        ):
+            progress(directories_seen, albums_seen)
+    if progress is not None:
+        progress(directories_seen, albums_seen)
+
+
 def inventory(
     root: Path,
     ignored_subs: list[str],

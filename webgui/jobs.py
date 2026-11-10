@@ -136,6 +136,14 @@ class JobQueue:
             self.lease.close()
             raise ValueError("Another WebGUI worker already owns this catalog")
         with closing(self.db.connect()) as db, db:
+            # Owning the process-wide worker lock proves the prior WebGUI
+            # worker is gone; expire its generation lease for checkpointed
+            # recovery instead of failing or duplicating the index.
+            db.raw.execute(
+                "UPDATE catalog_generations SET lease_expires_at=now(),"
+                "phase='recovering',updated_at=now() WHERE backend='postgresql' "
+                "AND state IN ('building','validating','publishing')"
+            )
             # COMP review is interactive, track-scoped browser work rather
             # than a durable embedding queue.  Never resume or retain it
             # across a server lifecycle: authority/candidate state must be
@@ -153,8 +161,13 @@ class JobQueue:
             # next explicit LAUNCH and hide the current review prompt.
             db.execute(
                 "UPDATE web_jobs SET state='paused',decision=NULL,error='Interrupted by server restart',updated_at=now() "
-                "WHERE kind<>'comp' AND (state IN ('running','waiting') "
+                "WHERE kind NOT IN ('comp','index') AND (state IN ('running','waiting') "
                 "OR (kind='scan' AND state='queued'))"
+            )
+            db.execute(
+                "UPDATE web_jobs SET state='queued',decision=NULL,"
+                "error='Recovering interrupted catalog generation',updated_at=now() "
+                "WHERE kind='index' AND state IN ('running','waiting')"
             )
         for row in comp_rows:
             prepared = row["progress"].get("prepared_comp", {})
@@ -269,6 +282,34 @@ class JobQueue:
         payload.setdefault("library_root", str(self.services.runtime.music))
         job_id = uuid4().hex
         with closing(self.db.connect()) as db, db:
+            if kind == "index":
+                db.raw.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
+                    ("index:catalog",),
+                )
+                active = db.raw.execute(
+                    "SELECT id,state,payload FROM web_jobs WHERE kind='index' "
+                    "AND state IN ('queued','running','waiting') "
+                    "ORDER BY created_at LIMIT 1"
+                ).fetchone()
+                if active:
+                    correlation = payload.get("_audit", {})
+                    self.services.audit(
+                        "job-deduplicated", kind,
+                        {
+                            "already_queued": True,
+                            "requested_mode": payload.get("mode", "incremental"),
+                            "active_mode": active["payload"].get("mode", "incremental"),
+                        },
+                        action_id=str(correlation.get("action_id") or ""),
+                        trace_id=str(correlation.get("trace_id") or ""),
+                        job_id=active["id"], stage="queue", request_status="existing",
+                    )
+                    return {
+                        "id": active["id"],
+                        "already_queued": True,
+                        "state": active["state"],
+                    }
             if kind == "scan":
                 # Browser scans are interactive and the single worker cannot
                 # advance a second scan while the current one is waiting for a

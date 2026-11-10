@@ -135,6 +135,11 @@ class Database:
         transaction for explicit review instead of broadening its scope.
         """
         tables = (
+            "catalog_generation_albums",
+            "catalog_index_events",
+            "catalog_change_manifest",
+            "catalog_index_state",
+            "catalog_generations",
             "artist_album_appearances",
             "artist_profiles",
             "comp_track_write_coordination",
@@ -175,6 +180,10 @@ class Database:
                 psycopg.sql.SQL("TRUNCATE TABLE {} RESTART IDENTITY").format(
                     identifiers
                 )
+            )
+            db.raw.execute(
+                "INSERT INTO catalog_index_state(singleton,catalog_state) "
+                "VALUES(TRUE,'initializing')"
             )
             db.raw.execute(
                 "INSERT INTO sqlite_reconciliation_settings(singleton) VALUES(TRUE)"

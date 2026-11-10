@@ -19,7 +19,7 @@ import secrets
 import tempfile
 import time
 import sqlite3
-from threading import Lock
+from threading import BoundedSemaphore, Lock
 from urllib.parse import quote, urlsplit
 from uuid import UUID
 import unicodedata
@@ -348,6 +348,9 @@ class Catalog:
     navidrome_directory_failures: int = 0
     navidrome_directory_loading: bool = False
     lock: Lock = field(default_factory=Lock)
+    thumbnail_download_slots: BoundedSemaphore = field(
+        default_factory=lambda: BoundedSemaphore(3), repr=False
+    )
     image_key: bytes = field(default_factory=lambda: secrets.token_bytes(32),repr=False)
 
     @staticmethod
@@ -899,31 +902,34 @@ class Catalog:
         if not cover_id or directory is None:
             return None
         base = str(credential.get("server_url") or "").rstrip("/")
-        response = requests.get(
-            base + "/rest/getCoverArt.view",
-            params={**self._navidrome_auth_query(credential), "id": cover_id, "size": str(size)},
-            timeout=20,
-            allow_redirects=False,
-        )
-        response.raise_for_status()
-        if len(response.content) > 8 * 1024 * 1024:
-            raise ValueError("Navidrome artist thumbnail exceeds 8 MB")
-        with Image.open(BytesIO(response.content)) as opened:
-            opened.verify()
-        directory = directory / "artists"
-        directory.mkdir(parents=True, exist_ok=True)
-        identity = sha256(str(artist["artist_key"]).encode("utf-8")).hexdigest()[:32]
-        path = directory / (variant + "-" + identity + ".png")
-        descriptor, temporary = tempfile.mkstemp(prefix=".navidrome-", suffix=".png", dir=directory)
-        try:
-            os.close(descriptor)
+        with self.thumbnail_download_slots:
+            cached = self._navidrome_thumbnail_path(artist, variant)
+            if cached is not None:
+                return cached
+            response = requests.get(
+                base + "/rest/getCoverArt.view",
+                params={**self._navidrome_auth_query(credential), "id": cover_id, "size": str(size)},
+                timeout=20,
+                allow_redirects=False,
+            )
+            response.raise_for_status()
+            if len(response.content) > 8 * 1024 * 1024:
+                raise ValueError("Navidrome artist thumbnail exceeds 8 MB")
             with Image.open(BytesIO(response.content)) as opened:
-                opened.convert("RGBA").save(temporary, format="PNG", optimize=True)
-            os.replace(temporary, path)
-        finally:
-            Path(temporary).unlink(missing_ok=True)
-        for row_id in list(self.portrait_cache):
-            self.portrait_cache.pop(row_id, None)
+                opened.verify()
+            directory = directory / "artists"
+            directory.mkdir(parents=True, exist_ok=True)
+            identity = sha256(str(artist["artist_key"]).encode("utf-8")).hexdigest()[:32]
+            path = directory / (variant + "-" + identity + ".png")
+            descriptor, temporary = tempfile.mkstemp(prefix=".navidrome-", suffix=".png", dir=directory)
+            try:
+                os.close(descriptor)
+                with Image.open(BytesIO(response.content)) as opened:
+                    opened.convert("RGBA").save(temporary, format="PNG", optimize=True)
+                os.replace(temporary, path)
+            finally:
+                Path(temporary).unlink(missing_ok=True)
+        self.portrait_cache.pop(str(artist["artist_key"]), None)
         return path
 
     def _cache_navidrome_similar_thumbnail(
@@ -1446,6 +1452,7 @@ class Catalog:
 
     def artist_thumbnails(self) -> list[dict[str, str]]:
         """Return local thumbnails immediately and Navidrome fallbacks lazily."""
+        maintenance_active = self.index_maintenance_active()
         with closing(self.connect()) as db:
             rows = db.execute(
                 "SELECT artists.artist_key, artists.artist_name, artists.musicbrainz_artistid, "
@@ -1465,7 +1472,7 @@ class Catalog:
             for identity, value in projected.items()
             if identity not in existing_identities
         )]
-        remote_artists = self._navidrome_artists_by_name()
+        remote_artists = {} if maintenance_active else self._navidrome_artists_by_name()
         result = []
         for group in self._artist_groups(rows):
             canonical = self._canonical_artist_row(group)
@@ -1532,6 +1539,8 @@ class Catalog:
             artist, _aliases = self._artist_identity_rows(db, artist_id)
         portrait = self.artist_thumbnail_path(artist)
         if portrait is None:
+            if self.index_maintenance_active():
+                raise KeyError("Artist thumbnail hydration is paused while indexing")
             now = time.monotonic()
             with self.lock:
                 if now < self.portrait_retry_at.get(str(artist["artist_key"]), 0.0):
@@ -1561,6 +1570,19 @@ class Catalog:
         if portrait is None:
             raise KeyError("Saved Artist Art is unavailable")
         return portrait
+
+    def index_maintenance_active(self) -> bool:
+        try:
+            with closing(self.connect()) as db:
+                row = db.execute(
+                    "SELECT catalog_state FROM catalog_index_state WHERE singleton=TRUE"
+                ).fetchone()
+            return row is not None and str(row["catalog_state"]) in {
+                "initializing",
+                "maintenance",
+            }
+        except Exception:
+            return False
 
     def albums(self, query: str, fallback_only: bool = False) -> list[dict[str, object]]:
         identity_clause = (

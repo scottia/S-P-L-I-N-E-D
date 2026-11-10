@@ -196,6 +196,114 @@ CREATE TABLE IF NOT EXISTS retired_album_paths (
     splined_version TEXT NOT NULL
 );
 
+-- Catalog Index Coordinator.  Generation rows and album payloads are durable
+-- checkpoints; the existing catalog tables remain the last published reader
+-- snapshot until one atomic publication transaction completes.
+CREATE TABLE IF NOT EXISTS catalog_generations (
+    generation_id TEXT PRIMARY KEY,
+    backend TEXT NOT NULL DEFAULT 'sqlite',
+    mode TEXT NOT NULL CHECK(mode IN ('initial','incremental','full')),
+    state TEXT NOT NULL CHECK(state IN (
+        'building','validating','publishing','published',
+        'cancelled','failed','abandoned'
+    )),
+    base_generation_id TEXT NOT NULL DEFAULT '',
+    library_root TEXT NOT NULL,
+    owner_token TEXT NOT NULL,
+    lease_expires_at TEXT NOT NULL,
+    discovered_albums INTEGER NOT NULL DEFAULT 0,
+    completed_albums INTEGER NOT NULL DEFAULT 0,
+    changed_albums INTEGER NOT NULL DEFAULT 0,
+    unchanged_albums INTEGER NOT NULL DEFAULT 0,
+    removed_albums INTEGER NOT NULL DEFAULT 0,
+    error_count INTEGER NOT NULL DEFAULT 0,
+    current_path TEXT NOT NULL DEFAULT '',
+    phase TEXT NOT NULL DEFAULT 'enumerating',
+    timings_json TEXT NOT NULL DEFAULT '{}',
+    error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    published_at TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_catalog_generations_one_active
+    ON catalog_generations(backend)
+    WHERE state IN ('building','validating','publishing');
+
+CREATE INDEX IF NOT EXISTS idx_catalog_generations_recovery
+    ON catalog_generations(state,lease_expires_at,updated_at);
+
+CREATE TABLE IF NOT EXISTS catalog_index_state (
+    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+    active_generation_id TEXT NOT NULL DEFAULT '',
+    maintenance_generation_id TEXT NOT NULL DEFAULT '',
+    catalog_state TEXT NOT NULL DEFAULT 'initializing' CHECK(
+        catalog_state IN ('initializing','ready','maintenance','failed')
+    ),
+    change_summary_json TEXT NOT NULL DEFAULT
+        '{"count":0,"added":0,"changed":0,"removed":0,"examples":[]}',
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS catalog_generation_albums (
+    generation_id TEXT NOT NULL,
+    album_path TEXT NOT NULL,
+    scan_token TEXT NOT NULL,
+    album_key TEXT NOT NULL DEFAULT '',
+    artist_key TEXT NOT NULL DEFAULT '',
+    inventory_signature TEXT NOT NULL,
+    artwork_signature TEXT NOT NULL DEFAULT '',
+    tag_signature TEXT NOT NULL DEFAULT '',
+    track_count INTEGER NOT NULL DEFAULT 0,
+    total_size INTEGER NOT NULL DEFAULT 0,
+    newest_mtime_ns INTEGER NOT NULL DEFAULT 0,
+    disposition TEXT NOT NULL CHECK(disposition IN (
+        'changed','unchanged','protected','deferred','error'
+    )),
+    artist_payload_json TEXT,
+    album_payload_json TEXT,
+    tracks_payload_json TEXT,
+    review_payload_json TEXT,
+    error TEXT NOT NULL DEFAULT '',
+    completed_at TEXT NOT NULL,
+    PRIMARY KEY(generation_id,album_path),
+    FOREIGN KEY(generation_id) REFERENCES catalog_generations(generation_id)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_catalog_generation_albums_key
+    ON catalog_generation_albums(generation_id,album_key);
+
+CREATE TABLE IF NOT EXISTS catalog_change_manifest (
+    album_path TEXT PRIMARY KEY COLLATE NOCASE,
+    album_key TEXT NOT NULL,
+    inventory_signature TEXT NOT NULL,
+    artwork_signature TEXT NOT NULL DEFAULT '',
+    tag_signature TEXT NOT NULL DEFAULT '',
+    track_count INTEGER NOT NULL DEFAULT 0,
+    total_size INTEGER NOT NULL DEFAULT 0,
+    newest_mtime_ns INTEGER NOT NULL DEFAULT 0,
+    last_seen_generation TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_catalog_change_manifest_generation
+    ON catalog_change_manifest(last_seen_generation);
+
+CREATE TABLE IF NOT EXISTS catalog_index_events (
+    event_id TEXT PRIMARY KEY,
+    generation_id TEXT NOT NULL,
+    album_key TEXT NOT NULL,
+    album_path TEXT NOT NULL,
+    operation TEXT NOT NULL CHECK(operation IN ('upsert','remove','move')),
+    inventory_signature TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    UNIQUE(generation_id,album_path,operation)
+);
+
+CREATE INDEX IF NOT EXISTS idx_catalog_index_events_generation
+    ON catalog_index_events(generation_id,created_at);
+
 -- Cross-client artwork provenance is deliberately separate from catalog and
 -- processing state. The outbox survives PostgreSQL outages; the state table
 -- preserves the last acknowledged writer across Windows restarts and SNAPs.

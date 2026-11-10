@@ -30,6 +30,7 @@ from webgui.credentials import Credentials
 from webgui.auth import AdminAuth
 from webgui.audit import sanitize, sanitize_text, utc_now
 from webgui.reconciliation import SQLiteReconciler
+from webgui import index_coordinator as indexer
 
 
 SETTINGS_UI = Path(__file__).resolve().parents[1] / "schema/settings-ui.json"
@@ -801,6 +802,12 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
     @app.get("/api/library/changes")
     def library_changes():
         return context.require().index_changes()
+
+    @app.get("/api/library/index-status")
+    def library_index_status():
+        # Bypass the media-processing mutex so progress remains responsive.
+        services = context.require()
+        return indexer.status(services.runtime.database)
 
     @app.get("/api/artist")
     def artist(id: str):
