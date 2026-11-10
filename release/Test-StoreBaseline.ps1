@@ -79,6 +79,20 @@ try {
             -SubmissionPath (Join-Path $fixtures "store-submission-1.0.71.json")
     }
 
+    $readOnlyPending = Join-Path $testRoot "pending-read-only"
+    & $resolver `
+        -TargetVersion 1.0.78 `
+        -RepositoryRoot $RepositoryRoot `
+        -OutputDirectory $readOnlyPending `
+        -ApplicationPath (Join-Path $fixtures "store-app-pending.json") `
+        -SubmissionPath (Join-Path $fixtures "store-submission-1.0.71.json") `
+        -AllowPendingSubmission
+    $readOnlyMetadata = Get-Content -Raw -LiteralPath (Join-Path $readOnlyPending "STORE-BASELINE.json") | ConvertFrom-Json
+    if ($readOnlyMetadata.baseline_version -cne "1.0.71" -or
+        $readOnlyMetadata.target_version -cne "1.0.78") {
+        throw "Read-only review mode did not retain the last published Store baseline while a pending submission existed."
+    }
+
     Assert-ThrowsLike -Pattern "must be newer" -Action {
         & $resolver `
             -TargetVersion 1.0.71 `

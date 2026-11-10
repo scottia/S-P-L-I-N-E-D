@@ -101,10 +101,10 @@ fn store_workflows_preserve_their_distinct_review_and_submission_modes() {
     let full = source(FULL);
     assert!(full.contains("store_submit_update:"));
     assert!(full.contains("store_submit_draft:"));
-    assert!(full.contains("Review MSIX/No Store Access"));
-    assert!(full.contains("Never contact Partner Center"));
+    assert!(full.contains("Review Bundle/No Submit"));
+    assert!(full.contains("Never stage or submit"));
     assert!(full.contains("Select only one Store mode"));
-    assert!(full.contains("Store publication requires Windows or All"));
+    assert!(full.contains("Store bundle preparation requires Windows or All"));
 
     let recovery = source(STORE);
     assert!(recovery.contains("store_submit_update:"));
@@ -118,6 +118,12 @@ fn store_workflows_preserve_their_distinct_review_and_submission_modes() {
     assert!(recovery.contains("$env:RELEASE_VERSION.0"));
     assert!(!recovery.contains("git tag -a"));
     assert!(!recovery.contains("gh release create"));
+
+    let resolver = source("release/Resolve-StoreBaseline.ps1");
+    let resolver_test = source("release/Test-StoreBaseline.ps1");
+    assert!(resolver.contains("[switch]$AllowPendingSubmission"));
+    assert!(resolver.contains("if (-not $AllowPendingSubmission)"));
+    assert!(resolver_test.contains("-AllowPendingSubmission"));
 }
 
 #[test]
@@ -157,24 +163,38 @@ fn full_release_always_builds_the_manual_msix_but_publishes_only_when_selected()
         .split("  release-summary:")
         .next()
         .expect("Partner Center publication job body");
-    assert!(publish_store.contains("inputs.store_submit_update &&"));
-    assert!(!publish_store.contains("inputs.store_submit_draft"));
-    assert!(!publish_store.contains("STORE_DRAFT"));
+    assert!(publish_store.contains("(inputs.store_submit_update || inputs.store_submit_draft)"));
     assert!(!publish_store.contains("-DraftOnly"));
     assert!(publish_store.contains("Download exact Store package"));
+    for file in [
+        "store-submission/SPLINED-x64-store-unsigned.msix",
+        "store-submission/STORE-HIGHLIGHTS.txt",
+        "store-submission/STORE-SUBMISSION.json",
+    ] {
+        assert!(publish_store.contains(file), "review bundle omits {file}");
+    }
+    assert!(publish_store.contains("name: splined-windows-store-submission"));
+    let upload = publish_store
+        .find("- name: Upload Store submission audit artifact")
+        .expect("review bundle upload");
+    let submit = publish_store
+        .find("- name: Stage package and Highlights and submit the selected Store update")
+        .expect("automatic submission step");
+    assert!(upload < submit);
+    let submit_body = &publish_store[submit..];
+    assert!(submit_body.contains("if: ${{ inputs.store_submit_update }}"));
 
     let release_summary = workflow
         .split("  release-summary:")
         .nth(1)
         .expect("release summary job");
-    assert!(release_summary.contains("[ \"$STORE_UPDATE\" = true ]"));
     assert!(
-        !release_summary
+        release_summary
             .contains("{ [ \"$STORE_UPDATE\" = true ] || [ \"$STORE_DRAFT\" = true ]; }")
     );
     assert!(
         release_summary.contains(
-            "validated manual-review MSIX artifact created; Partner Center not contacted"
+            "MSIX-only package and complete review bundle retained; Partner Center history read only; nothing staged or submitted"
         )
     );
 }
