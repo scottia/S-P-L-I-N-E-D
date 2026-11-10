@@ -290,6 +290,8 @@ def inspect_album_tracks(
     album: Any,
     album_key: str,
     existing_by_path: Mapping[str, Mapping[str, Any]],
+    *,
+    force_read: bool = False,
 ) -> tuple[list[dict[str, Any]], int, int]:
     """Build exact Recording/Artist relationships without remote inference."""
     rows: list[dict[str, Any]] = []
@@ -311,7 +313,8 @@ def inspect_album_tracks(
 
         prior = existing_by_path.get(path)
         if (
-            prior is not None
+            not force_read
+            and prior is not None
             and int(prior["file_size"] or 0) == size
             and int(prior["file_mtime_ns"] or 0) == modified
         ):

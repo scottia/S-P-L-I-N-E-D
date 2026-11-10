@@ -17,6 +17,7 @@ from mutagen.id3 import ID3, TALB, TCMP, TIT2, TPE1, TPE2
 from PIL import Image
 
 import splined as core
+import splined_media_tags as media_tags
 from webgui.catalog import embedded_track_artwork_bytes
 from webgui.services import Services
 
@@ -79,6 +80,42 @@ class CompJobScopeTests(unittest.TestCase):
         self.assertEqual(normalized["track_keys"], ["artist-track", "other-track"])
         self.assertNotIn("artist_id", normalized)
         self.assertNotIn("artist_name", normalized)
+
+    def test_full_refresh_can_republish_unchanged_multivalue_artist_tags(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "track.mp3"
+            path.write_bytes(b"fixture")
+            stat = path.stat()
+            prior = {
+                str(path): {
+                    "title": "Song",
+                    "artist_name": "A Great Big World",
+                    "musicbrainz_recordingid": "",
+                    "musicbrainz_artistid": "",
+                    "file_size": stat.st_size,
+                    "file_mtime_ns": stat.st_mtime_ns,
+                }
+            }
+            with patch.object(
+                media_tags,
+                "read_track_identity_tags",
+                return_value={
+                    "title": "Song",
+                    "artist": "A Great Big World; Christina Aguilera",
+                    "recording_mbid": "",
+                    "artist_mbid": "",
+                },
+            ) as read_tags:
+                rows, reads, reuses = media_tags.inspect_album_tracks(
+                    SimpleNamespace(audio_files=[path]),
+                    "album",
+                    prior,
+                    force_read=True,
+                )
+
+            self.assertEqual(rows[0]["artist_name"], "A Great Big World; Christina Aguilera")
+            self.assertEqual((reads, reuses), (1, 0))
+            read_tags.assert_called_once_with(path)
 
     def test_missing_empty_and_duplicate_track_selections_never_expand(self):
         for track_keys in (None, [], ["artist-track", "artist-track"]):

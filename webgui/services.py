@@ -1077,7 +1077,9 @@ class Services:
             # releases do not need the separate embedded-art scan here.
             fallback = not str(row["musicbrainz_albumid"] or "").strip()
             self.hydrate_tracks(
-                row["album_key"], refresh_embedding_stats=fallback
+                row["album_key"],
+                refresh_embedding_stats=fallback,
+                force_tag_read=mode == "full",
             )
             if progress:
                 progress(
@@ -1161,7 +1163,13 @@ class Services:
         self.audit("index-refresh", str(root), result)
         return result
 
-    def hydrate_tracks(self, album_id, *, refresh_embedding_stats=True):
+    def hydrate_tracks(
+        self,
+        album_id,
+        *,
+        refresh_embedding_stats=True,
+        force_tag_read=False,
+    ):
         row = self.album_row(album_id)
         files = self.album_files(row)
         with closing(self.runtime.database.connect()) as db:
@@ -1174,7 +1182,10 @@ class Services:
             album_managed = windows_managed(db.raw, "albums", album_id)
             managed_tracks = windows_managed_track_keys(db.raw, album_id)
         records, _, _ = tags.inspect_album_tracks(
-            core.AlbumDir(Path(row["path"]), files), album_id, old
+            core.AlbumDir(Path(row["path"]), files),
+            album_id,
+            old,
+            force_read=force_tag_read,
         )
         with closing(self.runtime.database.connect()) as db, db:
             for record in records:
