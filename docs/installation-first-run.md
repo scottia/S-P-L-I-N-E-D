@@ -128,9 +128,10 @@ builds target only `x86_64-pc-windows-msvc`.
 
 ## Linux
 
-Use the Linux portable instructions when a matching release artifact is
-published, or build the separate root Cargo project from source. Keep the
-`splined` executable and run it from a terminal. Config v5 may be supplied with
+Build the separate root Cargo project from source using the
+[Linux source-build instructions](../release/README-LINUX.txt). The numbered
+release workflow does not publish a Linux archive. Keep the `splined`
+executable and run it from a terminal. Config v5 may be supplied with
 `--config`; see the configuration reference.
 
 ## macOS

@@ -1,23 +1,27 @@
-S:P:L:I:N:E:D — LINUX PORTABLE
-=========================================
+S:P:L:I:N:E:D — LINUX NATIVE SOURCE BUILD
+==================================================
 
 CONFIGURATION: Config v5
 
-FRESH INSTALL
--------------
+BUILD AND INSTALL
+-----------------
 
-1. Extract the complete archive into the final directory where SPLINED will
-   live.
+1. Install stable Rust and check out the intended SPLINED tag or branch.
 
-2. Restore executable permission if necessary:
+2. Build the locked root-native command-line implementation:
+
+   cargo build --locked --release
+
+3. Copy target/release/splined into a writable application directory. Restore
+   executable permission if necessary:
 
    chmod +x ./splined
 
-3. Run SPLINED directly:
+4. Run SPLINED directly:
 
    ./splined --help
 
-4. SPLINED creates and uses its application-owned layout as required:
+5. SPLINED creates and uses its application-owned layout as required:
 
    splined
    config/
@@ -32,11 +36,13 @@ FRESH INSTALL
 The native portable runtime may also create docker_builds/ for local container
 build artifacts. It is not required for normal scanning.
 
-No setup launcher or executable rename is required.
+The numbered release workflow does not publish a Linux archive. This file
+documents a deliberate source build; no setup launcher or executable rename is
+required.
 
 
-UPGRADE AN EXISTING PORTABLE INSTALL
-------------------------------------
+UPDATE AN EXISTING SOURCE BUILD
+-------------------------------
 
 1. Stop SPLINED.
 
@@ -46,8 +52,9 @@ UPGRADE AN EXISTING PORTABLE INSTALL
    credentials/
    _cache/splined.db
 
-3. Extract the new application files into the existing directory, replacing
-   the program files while preserving the persistent locations above.
+3. Check out the intended new tag or branch, run the same locked release build,
+   and replace only the `splined` program while preserving the persistent
+   locations above.
 
 4. Restore executable permission when needed and run:
 

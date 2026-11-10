@@ -191,6 +191,9 @@ must fit the 1,500-character Store limit; generation fails instead of
 truncating. `STORE-SUBMISSION.json` records the target, published baseline,
 range, git-cliff version, and Highlights checksum.
 
+The active scripts, templates, and intentionally historical Store regression
+fixtures are inventoried in the [release support-file guide](../release/README.md).
+
 Store product `9P8G4GMBBVBS` uses the repository's
 `AZURE_AD_APPLICATION_CLIENT_ID`, `AZURE_AD_APPLICATION_SECRET`,
 `AZURE_AD_TENANT_ID`, and `SELLER_ID` Actions secrets. The publisher retrieves

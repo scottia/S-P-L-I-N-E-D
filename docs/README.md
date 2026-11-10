@@ -71,12 +71,12 @@ diagnostic reports.
 - [Windows Rust/Slint architecture checklist](windows-rust-slint-migration-checklist.md)
   — current single-executable architecture and retired implementation boundary.
 
-Portable artifact instructions are distributed with the artifacts:
-[Windows](../release/README-WINDOWS.txt),
-[Linux](../release/README-LINUX.txt). An instruction file documents an artifact
-format; it does not by itself guarantee that every release publishes that
-platform. macOS is unsupported on `main` and `dev`; experimental work is
-isolated on [`dev-macos`](https://github.com/scottia/S-P-L-I-N-E-D/tree/dev-macos).
+The [Windows portable instructions](../release/README-WINDOWS.txt) ship with
+the supported Windows archive. The
+[Linux instructions](../release/README-LINUX.txt) describe a deliberate source
+build; the numbered release workflow does not publish a Linux archive. macOS is
+unsupported on `main` and `dev`; experimental work is isolated on
+[`dev-macos`](https://github.com/scottia/S-P-L-I-N-E-D/tree/dev-macos).
 
 ## Cross-client UI behavior
 
