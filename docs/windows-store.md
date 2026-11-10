@@ -72,7 +72,7 @@ validation** before automated Store submission. The Windows
 job performs one clean x64
 build, uses that exact executable for the Portable ZIP and Store MSIX,
 and validates both before the workflow may create the numeric tag. WebGUI /
-Python-only and macOS-only runs cannot select a Store mode.
+WebGUI/Python-only runs cannot select a Store mode.
 
 The production layout is created directly from the Partner Center manifest and
 the same version/commit-bound binaries used by the Portable ZIP. It updates

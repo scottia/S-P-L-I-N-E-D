@@ -67,14 +67,12 @@ fn git_cliff_is_the_shared_pinned_release_note_engine() {
 #[test]
 fn full_release_has_selected_os_gates_and_optional_strict_windows_validation() {
     let workflow = source(FULL);
-    for choice in [
-        "- \"All\"",
-        "- \"Windows\"",
-        "- \"WebGUI / Python\"",
-        "- \"macOS\"",
-    ] {
+    for choice in ["- \"All\"", "- \"Windows\"", "- \"WebGUI / Python\""] {
         assert!(workflow.contains(choice), "missing OS choice {choice}");
     }
+    assert!(!workflow.contains("- \"macOS\""));
+    assert!(!workflow.contains("build-macos"));
+    assert!(!workflow.contains("splined-macos"));
     assert!(workflow.contains("extended_windows_validation:"));
     assert!(workflow.contains("cargo fmt --manifest-path windows/Cargo.toml -- --check"));
     assert!(workflow.contains("cargo clippy --locked --manifest-path windows/Cargo.toml"));
@@ -83,7 +81,7 @@ fn full_release_has_selected_os_gates_and_optional_strict_windows_validation() {
     assert!(workflow.contains("--notes-file ../release-notes/GITHUB-RELEASE.md"));
     assert!(workflow.contains("gh release create \"$RELEASE_VERSION\""));
     let finalize = workflow.split("  finalize-tag:").nth(1).unwrap();
-    for build in ["build-windows", "build-webgui", "build-macos"] {
+    for build in ["build-windows", "build-webgui"] {
         assert!(finalize.contains(build));
     }
 }

@@ -1,8 +1,8 @@
 # Installation and first run
 
 SPLINED maintains a native Windows application, an Ubuntu WebGUI/Python stack,
-and a separate root-native Rust command-line implementation for Linux and
-macOS. Release artifacts vary by selected release target; use a platform's
+and a separate root-native Rust command-line implementation for Linux. Release
+artifacts vary by selected release target; use a platform's
 instructions only when the matching artifact is published, or build the
 root-native source deliberately. Keep configuration, credentials, and
 databases outside source control.
@@ -135,11 +135,13 @@ published, or build the separate root Cargo project from source. Keep the
 
 ## macOS
 
-The selected release workflow can package the separate root-native macOS
-command-line implementation. Extract a published archive, keep the `splined`
-executable, and run it from a terminal. If downloaded-file quarantine applies,
-review the file and clear quarantine according to local policy before
-execution.
+macOS is unsupported on `main` and `dev`; it is not built by the full-release
+workflow and is not actively reviewed or developed on those branches.
+Experimental development is isolated on the
+[`dev-macos`](https://github.com/scottia/S-P-L-I-N-E-D/tree/dev-macos) branch
+and is planned for removal from SPLINED by December 31, 2026. Apple developers
+interested in testing and maintaining that branch are welcome to ask about
+joining the project team.
 
 ## WebGUI / Python
 

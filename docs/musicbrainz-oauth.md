@@ -58,7 +58,7 @@ The default callback is `urn:ietf:wg:oauth:2.0:oob` and the default scope is
 Supported non-Windows login entry points are:
 
 ```text
-./splined --mb-oauth-login          # Linux/macOS native
+./splined --mb-oauth-login          # Linux native
 ```
 
 ## Windows login

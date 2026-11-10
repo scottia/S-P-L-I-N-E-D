@@ -84,7 +84,7 @@ Account authorization is a separate workflow:
 4. retain `username`, `session_key`, and `subscriber` without losing the API key or shared secret.
 
 On Windows, save `lastfm.json`, choose **Authorize** in Credentials, approve the
-browser request, and choose **Complete**. Linux/macOS and Python/container
+browser request, and choose **Complete**. Native Linux and Python/container
 commands expose `--lastfm-login` and perform the same API sequence.
 
 ## Discogs

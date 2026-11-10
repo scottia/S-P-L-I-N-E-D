@@ -50,7 +50,7 @@ save covers, Artist Art, or embedded track artwork.
   portable ZIP, with Windows-owned settings and SQLite backup tools.
 - 🌐 **Ubuntu WebGUI** — provides browser-based review and Docker deployment,
   with PostgreSQL-backed catalog and queue state.
-- 💻 **Native Linux/macOS CLI** — remains a separate root Rust implementation;
+- 💻 **Native Linux CLI** — remains a separate root Rust implementation;
   artifact availability follows the selected release targets.
 
 ---
@@ -67,7 +67,6 @@ following its portable instructions.
 | **Windows Portable** | Native Windows application in an extracted folder; portable settings; SQLite | [Windows portable instructions](release/README-WINDOWS.txt) · [Releases](https://github.com/scottia/S-P-L-I-N-E-D/releases) |
 | **Ubuntu WebGUI / Docker** | Python/browser application; PostgreSQL and persistent mounted files | [Docker deployment](docker/README.md) · [WebGUI guide](docs/browser-workspace-guide.md) |
 | **Native Linux** | Separate root Rust command-line implementation when a matching artifact or source build is available | [Linux instructions](release/README-LINUX.txt) · [Installation guide](docs/installation-first-run.md) |
-| **Native macOS** | Separate root Rust command-line implementation when selected for a release | [macOS instructions](release/README-MACOS.txt) · [Installation guide](docs/installation-first-run.md) |
 
 After installation, configure the runtime's music-library view, persistent
 state, cache, and provider credentials. Build or refresh the catalog, then
@@ -98,7 +97,7 @@ SPLINED keeps its supported implementations separate:
 - [`windows/`](windows/README.md) contains the native Rust/Slint Windows
   application, its processing core, and Windows packaging.
 - Root [`Cargo.toml`](Cargo.toml), [`Cargo.lock`](Cargo.lock), and [`src/`](src/)
-  contain the separate native command-line implementation for Linux/macOS.
+  contain the separate native command-line implementation for Linux.
 - [`webgui/`](webgui/) contains the Python server and browser interface;
   [`docker/`](docker/README.md) contains its PostgreSQL deployment.
 
@@ -227,7 +226,7 @@ checked-in [native](config.example.toml) or
 
 ---
 
-## ▶️ Native Linux/macOS command-line usage
+## ▶️ Native Linux command-line usage
 
 The root Rust project is a separate native command-line implementation. When a
 matching artifact or source build is available, begin with:
@@ -280,6 +279,17 @@ database. Windows uses SQLite and Windows backup/restore tools; WebGUI requires
 a consistent PostgreSQL dump plus its persistent mounted files. Temporary
 candidates, samples, and logs are not substitutes for those backups. Avoid
 simultaneous Windows/WebGUI writers to the same music files.
+
+---
+
+## macOS status
+
+macOS is not a supported SPLINED runtime on `main` or `dev`, and its build is
+not actively reviewed or developed there. Experimental work is isolated on the
+[`dev-macos`](https://github.com/scottia/S-P-L-I-N-E-D/tree/dev-macos) branch;
+the remaining macOS implementation is planned for removal from SPLINED by
+December 31, 2026. Apple developers interested in testing and developing that
+branch are welcome to ask about joining the SPLINED project team.
 
 ---
 

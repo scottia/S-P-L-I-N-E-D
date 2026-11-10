@@ -7,7 +7,7 @@ Highlights; no workflow is run merely by editing these files.
 
 | Workflow | Use | Effect |
 |---|---|---|
-| `01. Full Release - Build Selected Target and Publish` | New versioned release from `main`; choose All, Windows, macOS, or WebGUI / Python. | Validates the selected release targets, creates the version commit and numeric tag only after they pass, publishes the GitHub Release and GHCR, and optionally stages or submits Store. |
+| `01. Full Release - Build Selected Target and Publish` | New versioned release from `main`; choose All, Windows, or WebGUI / Python. | Validates the selected release targets, creates the version commit and numeric tag only after they pass, publishes the GitHub Release and GHCR, and optionally stages or submits Store. |
 | `02. Store Recovery - Tagged Draft or Update` | Rebuild a Store MSIX from an **existing** numeric Git tag if workflow 01's Store path failed. | Rebuilds/validates Windows package, generates git-cliff Store Highlights, then stages a draft or submits for certification. Does not create a tag, release, or GHCR image. |
 | `03. GHCR Recovery - Existing Published Release` | Safely recover missing GHCR tags for the latest **existing published** numeric release if workflow 01's GHCR path failed. | Verifies existing tag digests and OCI source/version/revision labels, performs no work when both tags are valid, and publishes only missing GHCR tags. Never changes a GitHub Release, release asset, Git tag, version, or Store submission. |
 
@@ -34,7 +34,7 @@ The **WebGUI / Python** target is the browser application, not a native Ubuntu
 Rust build. It runs the Python/PostgreSQL suite, validates browser JavaScript,
 builds and smoke-tests the container against PostgreSQL, and publishes a
 WebGUI/Python source archive with the release. `All` runs that validation along
-with Windows and macOS. GitHub release notes classify explicit `webgui`,
+with Windows. GitHub release notes classify explicit `webgui`,
 `python`, and `postgres` commits under **WebGUI / Python** before evaluating
 the separate Microsoft Store and Windows categories. A release fixture guards
 against classifying `restore` as Store or `webgui` as generic Windows GUI work.
@@ -85,6 +85,10 @@ the tested source through `dev` and `main`; pull requests publish the
 permanent-exception compatibility report rather than Windows diagnostics.
 Workflow 01 always performs a clean optimized build from the versioned `main`
 source before producing the portable archive or Store MSIX.
+
+macOS is deliberately absent from Workflow 01. Development-only macOS checks
+belong to the `dev-macos` branch's dedicated workflow and do not create SPLINED
+tags, releases, or published assets.
 
 The two Store options are both off by default and mutually exclusive:
 

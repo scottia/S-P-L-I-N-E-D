@@ -73,10 +73,10 @@ diagnostic reports.
 
 Portable artifact instructions are distributed with the artifacts:
 [Windows](../release/README-WINDOWS.txt),
-[Linux](../release/README-LINUX.txt), and
-[macOS](../release/README-MACOS.txt). An instruction file documents an artifact
+[Linux](../release/README-LINUX.txt). An instruction file documents an artifact
 format; it does not by itself guarantee that every release publishes that
-platform.
+platform. macOS is unsupported on `main` and `dev`; experimental work is
+isolated on [`dev-macos`](https://github.com/scottia/S-P-L-I-N-E-D/tree/dev-macos).
 
 ## Cross-client UI behavior
 
@@ -110,10 +110,15 @@ behavior until implemented, validated, and documented in a current guide.
 | --- | --- | --- |
 | Windows | Native Rust/Slint application | SQLite plus Windows-owned Config/UI state |
 | Ubuntu WebGUI | Python/browser application deployed with Docker | PostgreSQL plus mounted config, credentials, cache, and artwork state |
-| Root-native Linux/macOS | Separate Rust command-line implementation | Runtime-selected native configuration and cache/database paths |
+| Root-native Linux | Separate Rust command-line implementation | Runtime-selected native configuration and cache/database paths |
 
 The runtimes share concepts, not a live database or guaranteed interface
 parity. Avoid simultaneous writers to the same music files.
+
+macOS is not actively reviewed or developed on `main` or `dev`, and its
+remaining experimental implementation is planned for removal by December 31,
+2026. Apple developers interested in testing and developing the `dev-macos`
+branch are welcome to ask about joining the SPLINED project team.
 
 - Read mode evaluates without installing music-library artwork.
 - Write mode changes album or embedded artwork; test with a backup, snapshot,

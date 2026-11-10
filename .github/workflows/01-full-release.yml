@@ -16,7 +16,6 @@ on:
         options:
           - "All"
           - "Windows"
-          - "macOS"
           - "WebGUI / Python"
       extended_windows_validation:
         description: "Run the full Rust/Slint Windows regression suite before packaging"
@@ -701,71 +700,12 @@ jobs:
           path: release-assets/splined-webgui-python.tar.gz
           if-no-files-found: error
 
-  build-macos:
-    name: Build Release — macOS
-    needs: prepare-release
-    if: ${{ inputs.platform == 'macOS' || inputs.platform == 'All' }}
-    runs-on: macos-latest
-
-    steps:
-      - name: Checkout release base
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: main
-          fetch-depth: 0
-
-      - name: Download exact release source commit
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: release-source-commit
-          path: .release-source
-
-      - name: Checkout exact untagged release commit
-        shell: bash
-        env:
-          RELEASE_COMMIT: ${{ needs.prepare-release.outputs.commit }}
-        run: |
-          set -euo pipefail
-          git fetch .release-source/release-source.bundle HEAD
-          test "$(git rev-parse FETCH_HEAD)" = "$RELEASE_COMMIT"
-          git checkout --detach "$RELEASE_COMMIT"
-          test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
-
-      - name: Install stable Rust
-        shell: bash
-        run: |
-          set -euo pipefail
-          rustup toolchain install stable --profile minimal --no-self-update
-          rustup default stable
-
-      - name: Build macOS release
-        shell: bash
-        run: cargo build --locked --release
-
-      - name: Package macOS release
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p release-package release-assets
-          cp target/release/splined release-package/splined
-          cp release/README-MACOS.txt release-package/README-MACOS.txt
-          chmod +x release-package/splined
-          tar -czf release-assets/splined-macos.tar.gz -C release-package splined README-MACOS.txt
-
-      - name: Upload macOS artifact
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: splined-macos
-          path: release-assets/splined-macos.tar.gz
-          if-no-files-found: error
-
   finalize-tag:
     name: Publish numeric tag and release commit after successful builds
     needs:
       - prepare-release
       - build-windows
       - build-webgui
-      - build-macos
     if: >-
       ${{
         always() &&
@@ -774,26 +714,17 @@ jobs:
           (
             inputs.platform == 'Windows' &&
             needs.build-windows.result == 'success' &&
-            needs.build-webgui.result == 'skipped' &&
-            needs.build-macos.result == 'skipped'
+            needs.build-webgui.result == 'skipped'
           ) ||
           (
             inputs.platform == 'WebGUI / Python' &&
             needs.build-windows.result == 'skipped' &&
-            needs.build-webgui.result == 'success' &&
-            needs.build-macos.result == 'skipped'
-          ) ||
-          (
-            inputs.platform == 'macOS' &&
-            needs.build-windows.result == 'skipped' &&
-            needs.build-webgui.result == 'skipped' &&
-            needs.build-macos.result == 'success'
+            needs.build-webgui.result == 'success'
           ) ||
           (
             inputs.platform == 'All' &&
             needs.build-windows.result == 'success' &&
-            needs.build-webgui.result == 'success' &&
-            needs.build-macos.result == 'success'
+            needs.build-webgui.result == 'success'
           )
         )
       }}
@@ -906,7 +837,6 @@ jobs:
       - prepare-release
       - build-windows
       - build-webgui
-      - build-macos
       - finalize-tag
       - generate-release-notes
     if: >-
@@ -916,8 +846,7 @@ jobs:
         needs.finalize-tag.result == 'success' &&
         needs.generate-release-notes.result == 'success' &&
         (needs.build-windows.result == 'success' || needs.build-windows.result == 'skipped') &&
-        (needs.build-webgui.result == 'success' || needs.build-webgui.result == 'skipped') &&
-        (needs.build-macos.result == 'success' || needs.build-macos.result == 'skipped')
+        (needs.build-webgui.result == 'success' || needs.build-webgui.result == 'skipped')
       }}
     runs-on: ubuntu-latest
     permissions:
@@ -942,13 +871,6 @@ jobs:
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: splined-webgui-python
-          path: release-assets
-
-      - name: Download macOS release asset
-        if: ${{ inputs.platform == 'macOS' || inputs.platform == 'All' }}
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: splined-macos
           path: release-assets
 
       - name: Create checksums and GitHub Release
@@ -1180,7 +1102,6 @@ jobs:
       - prepare-release
       - build-windows
       - build-webgui
-      - build-macos
       - finalize-tag
       - generate-release-notes
       - publish-release
@@ -1199,7 +1120,6 @@ jobs:
           PREPARE_RESULT: ${{ needs.prepare-release.result }}
           WINDOWS_RESULT: ${{ needs.build-windows.result }}
           WEBGUI_RESULT: ${{ needs.build-webgui.result }}
-          MACOS_RESULT: ${{ needs.build-macos.result }}
           TAG_RESULT: ${{ needs.finalize-tag.result }}
           NOTES_RESULT: ${{ needs.generate-release-notes.result }}
           GITHUB_RELEASE_RESULT: ${{ needs.publish-release.result }}
@@ -1224,22 +1144,14 @@ jobs:
             Windows)
               expect_result "Windows build" "$WINDOWS_RESULT" success
               expect_result "WebGUI / Python validation" "$WEBGUI_RESULT" skipped
-              expect_result "macOS build" "$MACOS_RESULT" skipped
               ;;
             "WebGUI / Python")
               expect_result "Windows build" "$WINDOWS_RESULT" skipped
               expect_result "WebGUI / Python validation" "$WEBGUI_RESULT" success
-              expect_result "macOS build" "$MACOS_RESULT" skipped
-              ;;
-            macOS)
-              expect_result "Windows build" "$WINDOWS_RESULT" skipped
-              expect_result "WebGUI / Python validation" "$WEBGUI_RESULT" skipped
-              expect_result "macOS build" "$MACOS_RESULT" success
               ;;
             All)
               expect_result "Windows build" "$WINDOWS_RESULT" success
               expect_result "WebGUI / Python validation" "$WEBGUI_RESULT" success
-              expect_result "macOS build" "$MACOS_RESULT" success
               ;;
             *)
               echo "::error title=Invalid release platform::Unsupported platform '$RELEASE_PLATFORM'."

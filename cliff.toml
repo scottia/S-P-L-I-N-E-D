@@ -26,7 +26,6 @@ commit_parsers = [
   { message = "(?i)(\\bstore\\b|\\bmsix\\b|microsoft[- ]store)", group = "🛍️ Microsoft Store" },
   { message = "(?i)(\\bwindows\\b|\\bwinforms\\b|\\bgui\\b)", group = "🪟 Windows" },
   { message = "(?i)(linux|ubuntu|ratatui|tui)", group = "🐧 Linux / Ubuntu" },
-  { message = "(?i)(macos|darwin)", group = "🍎 macOS" },
   { message = "(?i)(docker|ghcr|container)", group = "🐳 Docker / GHCR" },
   { message = "^feat", group = "✨ Highlights" },
   { message = "^(fix|perf|revert)", group = "🛠️ Fixes & Reliability" },
