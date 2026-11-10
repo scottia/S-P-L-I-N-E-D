@@ -66,7 +66,7 @@ following its portable instructions.
 | **Microsoft Store** | Native Windows application; Store-managed installation and updates; SQLite | [Install SPLINED](https://apps.microsoft.com/detail/9p8g4gmbbvbs?hl=en-US&gl=US) · [Store guide](docs/windows-store.md) |
 | **Windows Portable** | Native Windows application in an extracted folder; portable settings; SQLite | [Windows portable instructions](release/README-WINDOWS.txt) · [Releases](https://github.com/scottia/S-P-L-I-N-E-D/releases) |
 | **Ubuntu WebGUI / Docker** | Python/browser application; PostgreSQL and persistent mounted files | [Docker deployment](docker/README.md) · [WebGUI guide](docs/browser-workspace-guide.md) |
-| **Native Linux** | Separate root Rust command-line implementation when a matching artifact or source build is available | [Linux instructions](release/README-LINUX.txt) · [Installation guide](docs/installation-first-run.md) |
+| **Native Linux** | Separate root Rust command-line implementation built deliberately from source | [Linux source-build instructions](release/README-LINUX.txt) · [Installation guide](docs/installation-first-run.md) |
 
 After installation, configure the runtime's music-library view, persistent
 state, cache, and provider credentials. Build or refresh the catalog, then

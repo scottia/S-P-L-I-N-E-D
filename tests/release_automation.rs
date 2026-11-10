@@ -65,6 +65,16 @@ fn git_cliff_is_the_shared_pinned_release_note_engine() {
 }
 
 #[test]
+fn release_support_files_distinguish_active_fixtures_from_retired_notes() {
+    let inventory = source("release/README.md");
+    assert!(inventory.contains("intentionally historical, synthetic Microsoft Store JSON"));
+    assert!(
+        inventory.contains("numbered release workflow does not currently publish a Linux archive")
+    );
+    assert!(!std::path::Path::new("release/RELEASE-NOTES-WINDOWS.md").exists());
+}
+
+#[test]
 fn full_release_has_selected_os_gates_and_optional_strict_windows_validation() {
     let workflow = source(FULL);
     for choice in ["- \"All\"", "- \"Windows\"", "- \"WebGUI / Python\""] {
