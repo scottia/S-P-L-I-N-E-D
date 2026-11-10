@@ -941,11 +941,74 @@ class Services:
         )
 
     def index_changes(self, cancelled=None):
-        del cancelled
-        # Change detection is performed by the background incremental indexer.
-        # A browser status request must never walk the NAS or wait for the
-        # catalog publication mutex.
-        return indexer.change_summary(self.runtime.database)
+        r = self.runtime
+        root = r.music
+        if not root.is_dir():
+            raise ValueError("Set an existing music library in Settings")
+        with closing(r.database.connect()) as db:
+            old = list(
+                db.execute(
+                    "SELECT album_key,path,track_count,inventory_fingerprint,"
+                    "musicbrainz_albumid,representative_file,representative_size,"
+                    "representative_mtime_ns FROM albums"
+                )
+            )
+            managed_albums = windows_managed_keys(db.raw, "albums")
+        old_paths = {str(row["path"]): row for row in old}
+        albums, _ = core.inventory(
+            root,
+            list(r.cfg.get("library", {}).get("ignored_subs", [])),
+            str(r.cfg.get("output", {}).get("file_name", "cover")),
+            cancelled=cancelled,
+        )
+        current_paths = {str(album.path) for album in albums if album.audio_files}
+        added = 0
+        changed = 0
+        protected = 0
+        examples = []
+        for album in albums:
+            if not album.audio_files:
+                continue
+            path = str(album.path)
+            prior = old_paths.get(path)
+            if prior is None:
+                added += 1
+                if len(examples) < 3:
+                    examples.append(path)
+                continue
+            fingerprint = _album_inventory_fingerprint(
+                album, not str(prior["musicbrainz_albumid"] or "").strip()
+            )
+            if not _indexed_album_unchanged(prior, album, fingerprint):
+                if str(prior["album_key"]) in managed_albums:
+                    protected += 1
+                else:
+                    changed += 1
+                    if len(examples) < 3:
+                        examples.append(path)
+        missing_paths = set(old_paths) - current_paths
+        protected += sum(
+            1
+            for path in missing_paths
+            if str(old_paths[path]["album_key"]) in managed_albums
+        )
+        removed_paths = sorted(
+            (
+                path
+                for path in missing_paths
+                if str(old_paths[path]["album_key"]) not in managed_albums
+            ),
+            key=str.casefold,
+        )
+        examples.extend(removed_paths[: max(0, 3 - len(examples))])
+        return {
+            "count": added + changed + len(removed_paths),
+            "added": added,
+            "changed": changed,
+            "removed": len(removed_paths),
+            "protected": protected,
+            "examples": examples,
+        }
 
     @serialized
     def refresh_index(self, progress=None, cancelled=None, mode="full"):
