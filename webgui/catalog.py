@@ -43,6 +43,7 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 AUDIO_EXTENSIONS = {".mp3", ".flac", ".m4a", ".mp4", ".ogg", ".opus", ".wav", ".aiff", ".aif"}
 LOGGER = logging.getLogger("uvicorn.error")
 DEFAULT_ARTIST_SEPARATOR_REGEX = r"(?i)(?: / | feat\. | feat | ft\. | ft |; )"
+ARTIST_CREDIT_SEPARATOR = "\x1f"
 
 
 def _artist_credit_pattern(separator_regex: str) -> re.Pattern[str]:
@@ -58,14 +59,19 @@ def explicit_artist_credits(
 ) -> tuple[str, ...]:
     """Return ordered Artist credits without guessing joined band names.
 
-    NUL is the durable representation of a real multi-value Artist/TPE1 tag
-    and always wins. The configured separator is used only when a tag (or a
-    strict numbered filename credit) arrived as one joined string.
+    ASCII Unit Separator is the PostgreSQL-safe durable representation of a
+    real multi-value Artist/TPE1 tag and always wins. NUL remains accepted at
+    SQLite/reconciliation boundaries. The configured separator is used only
+    when a tag (or a strict numbered filename credit) arrived as one joined
+    string.
     """
     value = str(track_artist or "")
-    parts = value.split("\0") if "\0" in value else _artist_credit_pattern(
-        separator_regex
-    ).split(value)
+    normalized = value.replace("\0", ARTIST_CREDIT_SEPARATOR)
+    parts = (
+        normalized.split(ARTIST_CREDIT_SEPARATOR)
+        if ARTIST_CREDIT_SEPARATOR in normalized
+        else _artist_credit_pattern(separator_regex).split(normalized)
+    )
     return tuple(dict.fromkeys(credit.strip() for credit in parts if credit.strip()))
 
 

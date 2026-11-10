@@ -5933,7 +5933,7 @@ fn load_artist_art_candidates(
             continue;
         }
         if !is_artist_art_source(&source.name) {
-            source.status = "Album-only".to_string();
+            source.status = "Album-Only".to_string();
             continue;
         }
         if source.candidate_count > 0 {
@@ -10646,7 +10646,7 @@ fn bind_callbacks(
                         source.candidate_count = 0;
                         source.status = "Searching…".to_string();
                     } else if !artist_enabled && source.enabled {
-                        source.status = "Album-only".to_string();
+                        source.status = "Album-Only".to_string();
                     } else if artist_enabled
                         && source.name.eq_ignore_ascii_case("fanarttv")
                         && artist_mbid.trim().is_empty()

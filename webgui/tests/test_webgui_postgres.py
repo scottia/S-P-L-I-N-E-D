@@ -4616,7 +4616,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         "0 Cover"
                     )
                     expect(page.locator("#sourceStrip button", has_text="MusicBrainz")).to_contain_text(
-                        "Album-only"
+                        "Album-Only"
                     )
                     self.assertTrue(http_calls)
                     self.assertTrue(

@@ -646,7 +646,12 @@ class CompilationAuthorityPolicyTests(unittest.TestCase):
             with patch.object(splined_media_tags, "MutagenFile", return_value=parsed):
                 identity = splined_media_tags.read_track_identity_tags(path)
 
-            self.assertEqual(identity["artist"], "Rob Wasserman\0Aaron Neville")
+            self.assertEqual(
+                identity["artist"],
+                "Rob Wasserman"
+                + splined_media_tags.ARTIST_CREDIT_SEPARATOR
+                + "Aaron Neville",
+            )
 
     def test_credential_options_use_exact_json_names(self) -> None:
         core = SimpleNamespace(

@@ -26,6 +26,7 @@ _MBID_PATTERN = re.compile(
     r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
     r"[0-9a-f]{4}-[0-9a-f]{12}\b"
 )
+ARTIST_CREDIT_SEPARATOR = "\x1f"
 
 
 def utc_now() -> str:
@@ -102,12 +103,17 @@ def _all_text(value: Any) -> str:
 
 
 def _all_text_multivalue(value: Any) -> str:
-    """Preserve a real multi-value tag independently from display joining."""
+    """Preserve a real multi-value tag in PostgreSQL-safe text.
+
+    PostgreSQL rejects NUL in TEXT.  The ASCII Unit Separator retains the
+    authoritative value boundary without colliding with user-configured
+    filename/tag splitting rules.
+    """
     text_values = getattr(value, "text", None)
     if text_values is not None:
         value = text_values
     values = value if isinstance(value, (list, tuple)) else [value]
-    return "\0".join(
+    return ARTIST_CREDIT_SEPARATOR.join(
         text
         for text in (_tag_text(item) for item in values)
         if text
@@ -246,16 +252,21 @@ def normalize_artist_credit_text(
     authoritative. The configured expression is only applied to one joined
     Artist/TPE1 (or a filename credit handled by the catalog).
     """
-    explicit = tuple(part.strip() for part in str(value or "").split("\0") if part.strip())
+    text = str(value or "").replace("\0", ARTIST_CREDIT_SEPARATOR)
+    explicit = tuple(
+        part.strip() for part in text.split(ARTIST_CREDIT_SEPARATOR) if part.strip()
+    )
     if len(explicit) > 1:
-        return "\0".join(dict.fromkeys(explicit))
+        return ARTIST_CREDIT_SEPARATOR.join(dict.fromkeys(explicit))
     if not explicit:
         return ""
     try:
         parts = re.split(separator_regex, explicit[0])
     except re.error as exc:
         raise ValueError(f"Artist separator Regex is invalid: {exc}") from exc
-    return "\0".join(dict.fromkeys(part.strip() for part in parts if part.strip()))
+    return ARTIST_CREDIT_SEPARATOR.join(
+        dict.fromkeys(part.strip() for part in parts if part.strip())
+    )
 
 
 def read_track_identity_tags(

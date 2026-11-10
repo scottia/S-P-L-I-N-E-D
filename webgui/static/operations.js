@@ -1587,7 +1587,7 @@ function renderSourceOrderSettings(host, draft, selectedProvider, selectProvider
     const choose = node("button", "source-card-main"); choose.type = "button";
     const albumEnabled = key === "local" || !excluded.has(key) && draft.source_policies?.[key]?.enabled !== false;
     const configuredArtist = key === "local" || ARTIST_IMAGE_SOURCES.has(key) && (draft.source_policies?.[key]?.include_in_artist_art_search ?? true);
-    const mode = configuredArtist && albumEnabled ? "Artist / Album" : configuredArtist ? "Artist-only" : albumEnabled ? "Album-only" : "Excluded";
+    const mode = configuredArtist && albumEnabled ? "Artist / Album" : configuredArtist ? "Artist-Only" : albumEnabled ? "Album-Only" : "Excluded";
     choose.append(info.icon === "⊘" ? node("span", "source-symbol", "⊘") : image("/assets/source-icons/" + info.icon + ".svg", "", ""), node("strong", "", info.label));
     if (configuredArtist) choose.append(node("small", "", `🔍 ${state.sourceCounts.artist?.[key] || 0} Artist`));
     if (albumEnabled) choose.append(node("small", "", `🔍 ${state.sourceCounts.cover?.[key] || 0} Cover`));
