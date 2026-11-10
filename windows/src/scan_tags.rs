@@ -402,7 +402,12 @@ fn decode_text_frame(payload: &[u8]) -> Option<String> {
         3 => String::from_utf8_lossy(content).into_owned(),
         _ => return None,
     };
-    clean_value(Some(decoded.trim_end_matches('\0')))
+    let values = decoded
+        .trim_end_matches('\0')
+        .split('\0')
+        .filter_map(|value| clean_value(Some(value)))
+        .collect::<Vec<_>>();
+    (!values.is_empty()).then(|| values.join("\0"))
 }
 
 fn decode_utf16(bytes: &[u8], forced_big_endian: Option<bool>) -> String {
@@ -634,6 +639,19 @@ mod tests {
         let evidence = read_local_track_evidence(&path).unwrap();
         assert_eq!(evidence.artist, "Rob Wasserman\0Aaron Neville");
         fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn strips_bom_from_each_multivalue_utf16_segment() {
+        let mut payload = vec![1, 0xFF, 0xFE];
+        for unit in "Ariana Grande\0\u{feff}Iggy Azalea".encode_utf16() {
+            payload.extend_from_slice(&unit.to_le_bytes());
+        }
+
+        assert_eq!(
+            decode_text_frame(&payload).as_deref(),
+            Some("Ariana Grande\0Iggy Azalea")
+        );
     }
 
     #[test]

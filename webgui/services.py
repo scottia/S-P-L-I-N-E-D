@@ -1001,14 +1001,26 @@ class Services:
                 ("artist-credit-separator",),
             ).fetchone()
         indexed_separator = ""
+        separator_details = {}
         if separator_state is not None:
             try:
-                details = json.loads(str(separator_state["details_json"] or "{}"))
+                separator_details = json.loads(
+                    str(separator_state["details_json"] or "{}")
+                )
                 indexed_separator = str(
-                    details.get("artist_separator_regex", "")
+                    separator_details.get("artist_separator_regex", "")
                 ).strip()
             except (TypeError, ValueError):
                 indexed_separator = ""
+                separator_details = {}
+        # Earlier builds stored the separator after incremental refreshes and
+        # did not update Windows-managed track credits.  Use a separate marker
+        # for the one-time complete credit republish.  Afterwards full refresh
+        # can use file size/mtime and reread only tracks whose tags changed.
+        managed_credit_refresh = int(
+            separator_details.get("managed_track_credit_refresh", 0) or 0
+        )
+        force_track_credit_read = mode == "full" and managed_credit_refresh < 1
         if indexed_separator and indexed_separator != separator_regex:
             raise ValueError(
                 "Artist separator settings changed. Reset the PostgreSQL Database, "
@@ -1146,7 +1158,8 @@ class Services:
             self.hydrate_tracks(
                 row["album_key"],
                 refresh_embedding_stats=fallback,
-                force_tag_read=mode == "full",
+                force_tag_read=force_track_credit_read,
+                refresh_managed_track_tags=mode == "full",
             )
             if progress:
                 progress(
@@ -1222,6 +1235,9 @@ class Services:
                         {
                             "artist_separator_regex": separator_regex,
                             "artist_separator_profile": separator_profile,
+                            "managed_track_credit_refresh": (
+                                1 if mode == "full" else managed_credit_refresh
+                            ),
                         },
                         sort_keys=True,
                     ),
@@ -1256,6 +1272,7 @@ class Services:
         *,
         refresh_embedding_stats=True,
         force_tag_read=False,
+        refresh_managed_track_tags=False,
     ):
         row = self.album_row(album_id)
         files = self.album_files(row)
@@ -1280,7 +1297,49 @@ class Services:
                 if album_managed and str(record["track_key"]) not in managed_tracks:
                     continue
                 record["splined_version"] = core.VERSION
-                self._upsert(db, "tracks", record, "track_key")
+                if (
+                    refresh_managed_track_tags
+                    and str(record["track_key"]) in managed_tracks
+                ):
+                    # Full refresh may revalidate only file-derived fields for
+                    # an already matched Windows track.  Album/Artist identity,
+                    # track membership, authority, and insertion/deletion stay
+                    # Windows-owned.  This lets a corrected shared media tag
+                    # update WebGUI's Featured Artist projection without
+                    # opening a competing catalog identity path.
+                    prior = old.get(str(record["path"]))
+                    fields = (
+                        "title",
+                        "artist_name",
+                        "musicbrainz_recordingid",
+                        "musicbrainz_artistid",
+                        "file_size",
+                        "file_mtime_ns",
+                    )
+                    if prior is not None and all(
+                        str(prior[field] or "") == str(record[field] or "")
+                        for field in fields
+                    ):
+                        continue
+                    db.execute(
+                        "UPDATE tracks SET title=?,artist_name=?,"
+                        "musicbrainz_recordingid=?,musicbrainz_artistid=?,"
+                        "file_size=?,file_mtime_ns=?,updated_at=? "
+                        "WHERE track_key=? AND album_key=?",
+                        (
+                            record["title"],
+                            record["artist_name"],
+                            record["musicbrainz_recordingid"],
+                            record["musicbrainz_artistid"],
+                            record["file_size"],
+                            record["file_mtime_ns"],
+                            record["updated_at"],
+                            record["track_key"],
+                            album_id,
+                        ),
+                    )
+                else:
+                    self._upsert(db, "tracks", record, "track_key")
             existing = {str(p) for p in files}
             for path in old:
                 if path not in existing and path not in managed_tracks:

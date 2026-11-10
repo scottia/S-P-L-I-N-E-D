@@ -45,7 +45,7 @@ from webgui.services import Services
 from webgui.jobs import JobAdapter, JobQueue
 from webgui.reconciliation import SQLiteReconciler
 from webgui.server import create_app
-from webgui.catalog import embedded_track_artwork_bytes
+from webgui.catalog import embedded_track_artwork_bytes, explicit_artist_credits
 from webgui.coordination import current_rows, current_track_rows, record_event
 from webgui.credentials import Credentials
 
@@ -2611,6 +2611,70 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 db.execute("SELECT count(*) FROM albums").fetchone()[0], 1
             )
 
+    def test_full_refresh_revalidates_existing_windows_managed_track_tags(self):
+        with closing(self.db.connect()) as db, db:
+            track = db.execute(
+                "SELECT * FROM tracks WHERE album_key=? ORDER BY path LIMIT 1",
+                (self.row["album_key"],),
+            ).fetchone()
+            mark_windows_authority(
+                db.raw,
+                "albums",
+                self.row["album_key"],
+                "fixture-album-fingerprint",
+                "fixture-windows",
+            )
+            mark_windows_authority(
+                db.raw,
+                "tracks",
+                track["track_key"],
+                "fixture-track-fingerprint",
+                "fixture-windows",
+            )
+
+        audio = FLAC(self.files[0])
+        audio["artist"] = ["Test Artist", "Featured Artist"]
+        audio["musicbrainz_artistid"] = [
+            "22222222-2222-4222-8222-222222222222",
+            "77777777-7777-4777-8777-777777777777",
+        ]
+        audio.save()
+
+        self.services.refresh_index(mode="full")
+
+        with closing(self.db.connect()) as db:
+            refreshed = db.execute(
+                "SELECT artist_name,musicbrainz_artistid,file_size,file_mtime_ns "
+                "FROM tracks WHERE track_key=?",
+                (track["track_key"],),
+            ).fetchone()
+            album = db.execute(
+                "SELECT album_key,artist_key,album_name FROM albums WHERE album_key=?",
+                (self.row["album_key"],),
+            ).fetchone()
+            track_count = db.execute(
+                "SELECT count(*) FROM tracks WHERE album_key=?",
+                (self.row["album_key"],),
+            ).fetchone()[0]
+
+        self.assertEqual(
+            explicit_artist_credits(refreshed["artist_name"]),
+            ("Test Artist", "Featured Artist"),
+        )
+        self.assertIn(
+            "77777777-7777-4777-8777-777777777777",
+            refreshed["musicbrainz_artistid"],
+        )
+        self.assertEqual(refreshed["file_size"], self.files[0].stat().st_size)
+        self.assertEqual(refreshed["file_mtime_ns"], self.files[0].stat().st_mtime_ns)
+        self.assertEqual(album["artist_key"], self.row["artist_key"])
+        self.assertEqual(album["album_name"], self.row["album_name"])
+        self.assertEqual(track_count, 2)
+        self.assertIn(
+            "Featured Artist",
+            {item["name"] for item in self.services.catalog.artists("")},
+        )
+
     def test_incremental_index_defers_new_album_with_windows_authority_present(self):
         with closing(self.db.connect()) as db, db:
             mark_windows_authority(
@@ -2916,21 +2980,35 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         for name in WINDOWS_SYNCHRONIZED_FIELDS[table]
                     },
                 )
+            # A deliberate Full Refresh may revalidate file-derived fields on
+            # an existing matched track.  It must not change track identity,
+            # Album membership, paths, or create/remove Windows-owned rows.
             self.assertEqual(
                 [
                     {
                         name: row[name]
-                        for name in WINDOWS_SYNCHRONIZED_FIELDS["tracks"]
+                        for name in ("track_key", "album_key", "path")
                     }
                     for row in before_refresh["tracks"]
                 ],
                 [
                     {
                         name: row[name]
-                        for name in WINDOWS_SYNCHRONIZED_FIELDS["tracks"]
+                        for name in ("track_key", "album_key", "path")
                     }
                     for row in after_refresh["tracks"]
                 ],
+            )
+            self.assertEqual(
+                [row["title"] for row in after_refresh["tracks"]],
+                ["WebGUI Refresh Track 1", "WebGUI Refresh Track 2"],
+            )
+            self.assertTrue(
+                all(
+                    row["musicbrainz_artistid"]
+                    == "99999999-9999-4999-8999-999999999999"
+                    for row in after_refresh["tracks"]
+                )
             )
             self.assertEqual(
                 after_refresh["album"]["embedded_validation_status"], "verified"
@@ -2941,11 +3019,32 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 str(self.root / "music"),
                 str(self.root / "music"),
             )
-            self.assertEqual(repeated["safe"], 0)
+            # The explicit filesystem refresh exposed two newer physical-tag
+            # projections, so the older authoritative SQLite snapshot now has
+            # one safe track correction per file. Applying that snapshot must
+            # still win, which preserves Windows catalog authority.
+            self.assertEqual(repeated["safe"], len(before_refresh["tracks"]))
             self.assertEqual(repeated["conflicts"], 1)
             repeated_apply = reconciler.apply(repeated["run_id"])
-            self.assertEqual(repeated_apply["attempted"], 0)
+            self.assertEqual(
+                repeated_apply["attempted"], len(before_refresh["tracks"])
+            )
+            self.assertEqual(
+                repeated_apply["applied"], len(before_refresh["tracks"])
+            )
             self.assertEqual(repeated_apply["failures"], 0)
+            with closing(self.db.connect()) as db:
+                restored_titles = [
+                    row["title"]
+                    for row in db.execute(
+                        "SELECT title FROM tracks WHERE album_key=? ORDER BY track_key",
+                        (self.row["album_key"],),
+                    )
+                ]
+            self.assertEqual(
+                restored_titles,
+                [row["title"] for row in before_refresh["tracks"]],
+            )
 
             settings = reconciler.save_settings({
                 "enabled": False,

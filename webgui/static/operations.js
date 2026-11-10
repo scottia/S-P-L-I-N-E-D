@@ -1152,9 +1152,14 @@ async function performJobsPoll() {
       const job = state.jobs.find(item => item.id === state.reviewJobId);
       const key = job?.id + ":" + job?.state + ":" + job?.progress.prompt?.nonce
         + ":" + (job?.progress?.message || "");
-      if (job?.kind === "comp" && ["queued", "running"].includes(job.state)
+      if (["queued", "running"].includes(job?.state)
         && job.progress?.message && key !== lastPrompt) {
-        setStatus(job.progress.message, "busy");
+        if (job.kind === "comp") setStatus(job.progress.message, "busy");
+        else if (job.kind === "index") {
+          const completed = Number(job.progress?.completed || 0);
+          const total = Number(job.progress?.total || 0);
+          setStatus(`PostgreSQL ${job.payload?.mode === "incremental" ? "incremental" : "full"} refresh · ${completed}/${total || "?"} Albums · ${job.progress.message}`, "busy");
+        }
       }
       if (job && key !== lastPrompt && (job.state === "waiting" || $("workspaceDialog").open)) {
         lastPrompt = key; await renderJob(job);
@@ -1172,6 +1177,7 @@ async function performJobsPoll() {
           if (job.kind === "embed-album") setStatus("Album track embedding completed and verified · " + (state.album?.name || job.payload?.name || "Album"));
           else if (job.kind === "index") {
             const query = state.libraryMode === "artists" ? ($("artistSearch").value || "") : ($("albumSearch").value || "");
+            setStatus("PostgreSQL refresh complete · updating the library view…", "busy");
             await loadLibrary(query);
             const mode = job.result?.mode === "incremental" ? "incremental" : "full";
             const details = [];

@@ -1085,6 +1085,8 @@ test("PostgreSQL refresh completion reloads the library and reports exact projec
 test("PostgreSQL full refresh announces work before closing Settings", () => {
   assert.match(operationsSource, /PostgreSQL full refresh started · scanning the music library/);
   assert.match(operationsSource, /setStatus\("PostgreSQL full refresh started[^\n]+"busy"\);\s*\$\("workspaceDialog"\)\.close\(\)/);
+  assert.match(operationsSource, /PostgreSQL \$\{job\.payload\?\.mode === "incremental" \? "incremental" : "full"\} refresh · \$\{completed\}\/\$\{total \|\| "\?"\} Albums/);
+  assert.match(operationsSource, /PostgreSQL refresh complete · updating the library view/);
 });
 
 test("queued COMP candidates submit adjustment and upscale intent with the exact candidate number", async () => {
