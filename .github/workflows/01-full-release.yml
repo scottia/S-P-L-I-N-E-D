@@ -28,7 +28,7 @@ on:
         default: false
         type: boolean
       store_submit_draft:
-        description: "Review MSIX/No Store Access - build and retain the validated package for manual review/upload. Never contact Partner Center."
+        description: "Review Bundle/No Submit - use read-only Store history to retain the MSIX, Highlights, and audit JSON. Never stage or submit."
         required: false
         default: false
         type: boolean
@@ -83,7 +83,7 @@ jobs:
           fi
           if { [ "$STORE_UPDATE" = true ] || [ "$STORE_DRAFT" = true ]; } &&
              [ "$RELEASE_PLATFORM" != Windows ] && [ "$RELEASE_PLATFORM" != All ]; then
-            echo "::error title=Windows build required::Store publication requires Windows or All."
+            echo "::error title=Windows build required::Store bundle preparation requires Windows or All."
             exit 1
           fi
           if [ "$EXTENDED_WINDOWS_VALIDATION" = true ] &&
@@ -583,8 +583,8 @@ jobs:
           - Cargo dependency cache exact hit: ``${{ steps.rust-cache.outputs.cache-hit }}``
           - Rust toolchain: ``${{ env.RUST_TOOLCHAIN }}``
           - Cargo build: ``${{ steps.windows-build.outputs.elapsed_seconds }} seconds``
-          - Manual Store submission MSIX: ``splined-windows-store-package``
-          - Automated Partner Center update: ``${{ inputs.store_submit_update }}``; manual-review MSIX: ``${{ inputs.store_submit_draft }}``
+          - Store package-only artifact: ``splined-windows-store-package``
+          - Automated Partner Center update: ``${{ inputs.store_submit_update }}``; complete review bundle: ``${{ inputs.store_submit_draft }}``
           - Portable and Store outputs use the same release executable and Rust DLL build.
           "@ | Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY
 
@@ -949,7 +949,7 @@ jobs:
           docker push "$IMAGE_NAME:latest"
 
   publish-store:
-    name: Submit Microsoft Store update
+    name: Prepare or submit Microsoft Store bundle
     needs:
       - prepare-release
       - generate-release-notes
@@ -957,7 +957,7 @@ jobs:
     if: >-
       ${{
         always() &&
-        inputs.store_submit_update &&
+        (inputs.store_submit_update || inputs.store_submit_draft) &&
         (inputs.platform == 'Windows' || inputs.platform == 'All') &&
         needs.prepare-release.result == 'success' &&
         needs.generate-release-notes.result == 'success' &&
@@ -1040,11 +1040,13 @@ jobs:
           RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
         run: |
           $ErrorActionPreference = "Stop"
+          $reviewOnly = "${{ inputs.store_submit_draft }}" -eq "true"
           & release/Resolve-StoreBaseline.ps1 `
             -TargetVersion $env:RELEASE_VERSION `
             -RepositoryRoot . `
             -ProductId 9P8G4GMBBVBS `
-            -OutputDirectory store-notes
+            -OutputDirectory store-notes `
+            -AllowPendingSubmission:$reviewOnly
 
       - name: Render cumulative Store Highlights from published baseline
         id: store-highlights
@@ -1081,6 +1083,7 @@ jobs:
           if-no-files-found: error
 
       - name: Stage package and Highlights and submit the selected Store update
+        if: ${{ inputs.store_submit_update }}
         shell: pwsh
         env:
           AZURE_AD_APPLICATION_CLIENT_ID: ${{ secrets.AZURE_AD_APPLICATION_CLIENT_ID }}
@@ -1165,7 +1168,7 @@ jobs:
           expect_result "GHCR publication" "$GHCR_RESULT" success
 
           if { [ "$RELEASE_PLATFORM" = Windows ] || [ "$RELEASE_PLATFORM" = All ]; } &&
-             [ "$STORE_UPDATE" = true ]; then
+             { [ "$STORE_UPDATE" = true ] || [ "$STORE_DRAFT" = true ]; }; then
             expect_result "Microsoft Store selected mode" "$STORE_RESULT" success
           else
             expect_result "Microsoft Store selected mode" "$STORE_RESULT" skipped
@@ -1193,11 +1196,15 @@ jobs:
             echo "- GitHub Release: published"
             echo "- GHCR: \`ghcr.io/scottia/splined:v$RELEASE_VERSION\`"
             echo "- GHCR latest: \`ghcr.io/scottia/splined:latest\`"
-            echo "- Automated Partner Center update: \`${{ inputs.store_submit_update }}\`; manual-review MSIX: \`${{ inputs.store_submit_draft }}\`"
+            echo "- Automated Partner Center update: \`${{ inputs.store_submit_update }}\`; complete review bundle: \`${{ inputs.store_submit_draft }}\`"
             if [ "${{ needs.publish-store.result }}" = "success" ]; then
-              echo "- Microsoft Store: package and Highlights submitted for certification"
+              if [ "${{ inputs.store_submit_update }}" = true ]; then
+                echo "- Microsoft Store: package and Highlights submitted for certification"
+              else
+                echo "- Microsoft Store: MSIX-only package and complete review bundle retained; Partner Center history read only; nothing staged or submitted"
+              fi
             elif [ "${{ inputs.store_submit_draft }}" = true ]; then
-              echo "- Microsoft Store: validated manual-review MSIX artifact created; Partner Center not contacted"
+              echo "- Microsoft Store: requested review bundle was not created"
             else
               echo "- Microsoft Store: not run (disabled or no Windows target selected)"
             fi

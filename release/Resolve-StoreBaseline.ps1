@@ -8,7 +8,8 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$OutputDirectory,
     [string]$ApplicationPath,
-    [string]$SubmissionPath
+    [string]$SubmissionPath,
+    [switch]$AllowPendingSubmission
 )
 
 $ErrorActionPreference = "Stop"
@@ -93,7 +94,10 @@ $pendingSubmission = Get-CaseInsensitivePropertyValue -Object $application -Name
 if ($null -ne $pendingSubmission) {
     $pendingId = [string](Get-CaseInsensitivePropertyValue -Object $pendingSubmission -Name "id")
     if ([String]::IsNullOrWhiteSpace($pendingId)) { $pendingId = "unknown" }
-    throw "Microsoft Store has an active or unresolved submission ($pendingId). Refusing to replace it or derive highlights from a pending draft."
+    if (-not $AllowPendingSubmission) {
+        throw "Microsoft Store has an active or unresolved submission ($pendingId). Refusing to replace it or derive highlights from a pending draft."
+    }
+    Write-Warning "Microsoft Store has an active or unresolved submission ($pendingId). Read-only review mode will use the last published package baseline and will not change the pending submission."
 }
 $lastPublishedSubmission = Get-CaseInsensitivePropertyValue -Object $application -Name "lastPublishedApplicationSubmission"
 $lastPublishedSubmissionId = [string](Get-CaseInsensitivePropertyValue -Object $lastPublishedSubmission -Name "id")

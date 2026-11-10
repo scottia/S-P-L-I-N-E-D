@@ -96,18 +96,21 @@ The two Store options are both off by default and mutually exclusive:
   Partner Center, update en-US Highlights, then immediately submit it for
   certification. The Store CLI creates a draft internally, but there is no
   manual draft-review pause.
-- **Review MSIX/No Store Access:** build, validate, smoke-test, and retain the
-  MSIX Actions artifact for manual review and upload. This mode never
-  authenticates to Partner Center, reads Store history, or creates a draft.
+- **Review Bundle/No Submit:** build, validate, and smoke-test the MSIX; read
+  the last published Partner Center package history; generate cumulative Store
+  Highlights and the submission audit JSON; and retain both downloadable Store
+  artifacts. This mode never stages a draft or submits for certification.
 
 Either Store option requires `Windows` or `All`. Selecting both, or requesting
 Windows-only validation for a non-Windows build, fails before release work.
 Every `Windows` or `All` run also builds, strictly validates, development-smoke
 tests, and uploads the unsigned `splined-windows-store-package` Actions artifact
-for manual Microsoft Store submission. Selecting **Review MSIX/No Store
-Access**, or leaving both Store options off, skips Partner Center
-authentication, history lookup, staging, and submission; neither choice
-suppresses the manual MSIX artifact.
+for manual Microsoft Store submission. Selecting **Review Bundle/No Submit**
+also uploads `splined-windows-store-submission`, containing the exact MSIX,
+`STORE-HIGHLIGHTS.txt`, and `STORE-SUBMISSION.json`. It authenticates only to
+read the published Store baseline and performs no staging or submission.
+Leaving both Store options off skips Partner Center authentication, history
+lookup, staging, and submission without suppressing the package-only artifact.
 Store and GHCR publication are independent after GitHub Release creation, so
 one can succeed if the other fails.
 
@@ -122,9 +125,10 @@ MSIX manifest uses the corresponding four-part version, `2.0.0.0`. Workflow
 
 The unsigned Store MSIX is never attached to the public GitHub Release. Every
 Windows/All run retains the validated MSIX in the Actions artifact
-`splined-windows-store-package`. When **Submit Update/No Draft** is explicitly
-selected, the workflow additionally retains `splined-windows-store-submission`
-with the exact MSIX, Highlights, and submission metadata.
+`splined-windows-store-package`. Selecting either Store mode additionally
+retains `splined-windows-store-submission` with the exact MSIX, Highlights, and
+submission metadata. The review mode stops after uploading those artifacts;
+only **Submit Update/No Draft** stages and submits the package.
 
 ## Workflow 02: Store recovery
 
@@ -144,7 +148,9 @@ update fails after internally staging its package, neither workflow overwrites
 or cancels the resulting draft. Inspect and resolve that submission in Partner
 Center before rerunning recovery. This is deliberate: an ambiguous active
 submission cannot safely be identified as a retry target. Workflow 01's
-**Review MSIX/No Store Access** mode does not participate in this Store check.
+**Review Bundle/No Submit** mode may still read the last published baseline
+while a pending submission exists because it cannot stage, replace, cancel, or
+submit that pending work.
 
 ## Workflow 03: GHCR-only recovery
 
