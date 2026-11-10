@@ -166,6 +166,37 @@ fn numbered_track_artist_credit(value: &str) -> Option<&str> {
     (numbered && !artist.is_empty() && !title.is_empty()).then_some(artist)
 }
 
+fn indexed_track_artist_credits<'a>(
+    track_artist: &'a str,
+    title: &'a str,
+    filename: &'a str,
+) -> Vec<&'a str> {
+    let mut credits = explicit_artist_credits(track_artist);
+    // Explicit multi-value ARTIST/TPE1 tags are authoritative.  Adding the
+    // filename's joined display credit would manufacture a duplicate combined
+    // Artist (for example, "Rob Wasserman & Aaron Neville") beside the two
+    // correctly tagged performers.
+    if credits.len() > 1 {
+        return credits;
+    }
+    for inferred in [
+        numbered_track_artist_credit(title),
+        numbered_track_artist_credit(filename),
+    ]
+    .into_iter()
+    .flatten()
+    .flat_map(explicit_artist_credits)
+    {
+        if !credits
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(inferred))
+        {
+            credits.push(inferred);
+        }
+    }
+    credits
+}
+
 /// Project MBID-backed shared and Featured releases from the indexed tracks.
 ///
 /// This is read-only SQLite authority: it lets the native Artist Overview use
@@ -227,14 +258,9 @@ pub fn indexed_artist_appearances(
             .file_stem()
             .and_then(|value| value.to_str())
             .unwrap_or_default();
-        let matched = [
-            Some(track_artist.as_str()),
-            numbered_track_artist_credit(&title),
-            numbered_track_artist_credit(filename),
-        ]
-        .into_iter()
-        .flatten()
-        .any(|credit| artist_credit_position(credit, artist_name).is_some());
+        let matched = indexed_track_artist_credits(&track_artist, &title, filename)
+            .into_iter()
+            .any(|credit| artist_credit_position(credit, artist_name).is_some());
         if !matched {
             continue;
         }
@@ -290,16 +316,7 @@ pub fn indexed_artist_catalog(database_path: &str) -> Result<IndexedArtistCatalo
             .file_stem()
             .and_then(|value| value.to_str())
             .unwrap_or_default();
-        let credits = [
-            Some(track_artist.as_str()),
-            numbered_track_artist_credit(&title),
-            numbered_track_artist_credit(filename),
-        ];
-        for credit in credits
-            .into_iter()
-            .flatten()
-            .flat_map(explicit_artist_credits)
-        {
+        for credit in indexed_track_artist_credits(&track_artist, &title, filename) {
             if synthetic_album_artist(credit) {
                 continue;
             }
@@ -5366,8 +5383,12 @@ mod tests {
         let connection = open_database(&db, false).unwrap();
         connection
             .execute(
-                "UPDATE tracks SET artist_name=?1 WHERE track_key='featured-track'",
-                ["Album Owner\0Target Artist"],
+                "UPDATE tracks SET artist_name=?1,title=?2,path=?3 WHERE track_key='featured-track'",
+                params![
+                    "Album Owner\0Target Artist",
+                    "Guest Song",
+                    "/music/owner/Featured Release/1-01 - Album Owner & Target Artist - Guest Song.mp3"
+                ],
             )
             .unwrap();
         connection
@@ -5395,6 +5416,7 @@ mod tests {
             catalog.get("New Featured Artist"),
             Some(&["soundtrack"].into_iter().map(str::to_string).collect())
         );
+        assert!(!catalog.contains_key("Album Owner & Target Artist"));
         assert!(!catalog.contains_key("Various Artists"));
     }
 

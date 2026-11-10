@@ -340,11 +340,11 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                     "INSERT INTO tracks VALUES (?,?,?,?,?,?)",
                     [
                         (
-                            "gold-rob", "gold", str(gold / "1-16 - Rob Wasserman - Song.mp3"),
+                            "gold-rob", "gold", str(gold / "1-16 - Rob Wasserman & Aaron Neville - Song.mp3"),
                             "Song", "Rob Wasserman; Aaron Neville", "rob-mbid; aaron-mbid",
                         ),
                         (
-                            "gold-linda", "gold", str(gold / "1-17 - Linda Ronstadt - Duet.mp3"),
+                            "gold-linda", "gold", str(gold / "1-17 - Linda Ronstadt & Aaron Neville - Duet.mp3"),
                             "Duet", "Linda Ronstadt; Aaron Neville", "linda-mbid; aaron-mbid",
                         ),
                         (
@@ -360,6 +360,8 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             self.assertEqual(
                 set(artists), {"Aaron Neville", "Linda Ronstadt", "Rob Wasserman"}
             )
+            self.assertNotIn("Rob Wasserman & Aaron Neville", artists)
+            self.assertNotIn("Linda Ronstadt & Aaron Neville", artists)
             self.assertEqual(artists["Rob Wasserman"]["albums"], 2)
             rob = app.artist(artists["Rob Wasserman"]["id"])
             self.assertEqual({item["id"] for item in rob["albums"]}, {"gold", "film"})

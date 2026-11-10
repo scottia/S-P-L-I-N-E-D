@@ -94,7 +94,15 @@ def indexed_track_credit_values(
     appearances. Accept only that numbered convention so ordinary song titles
     containing an Artist name cannot manufacture a Featured appearance.
     """
-    values = [str(track_artist or "").strip()]
+    tagged = str(track_artist or "").strip()
+    # A real multi-value ARTIST/TPE1 field is authoritative.  Do not append
+    # the human-readable filename credit as another Artist identity: a file
+    # such as ``Rob Wasserman & Aaron Neville`` would otherwise manufacture a
+    # third, combined Artist beside the two correctly tagged performers.
+    if len(explicit_artist_credits(tagged)) > 1:
+        return (tagged,)
+
+    values = [tagged]
     for candidate in (str(title or ""), Path(str(path or "")).stem):
         match = re.match(r"^\s*(?:\d+-)?\d+\s+-\s+(.+?)\s+-\s+.+$", candidate)
         if match:
