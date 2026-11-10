@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import closing
+from contextlib import closing, contextmanager
 import logging
 from dataclasses import asdict
 from functools import wraps
@@ -45,6 +45,7 @@ from webgui.catalog_authority import (
     windows_managed_track_keys,
 )
 from webgui.runtime import Runtime
+from webgui.tempfiles import discard_committed_conversion, mark_conversion_backup
 from webgui import imaging
 from webgui.audit import (
     application_revision,
@@ -71,6 +72,23 @@ NAME_INVENTORY_PREFIX = "names-v1:"
 TRACK_INVENTORY_PREFIX = "tracks-v1:"
 
 
+@contextmanager
+def _temporary_workspace(runtime, kind: str):
+    """Use ownership-aware workspaces, retaining fixture compatibility."""
+    manager = getattr(runtime, "temporary_files", None)
+    if manager is not None:
+        with manager.workspace(kind) as path:
+            yield path
+        return
+    parent = Path(runtime.temporary_cache) / kind
+    parent.mkdir(parents=True, exist_ok=True)
+    path = Path(tempfile.mkdtemp(prefix="fixture-", dir=parent))
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
+
+
 def _track_has_preferred_embedded_artwork(path: Path, preferred_side: int) -> bool:
     """Return physical thumbnail compliance while preserving track read failures."""
     artwork = embedded_track_artwork_bytes(path, strict=True)
@@ -87,13 +105,11 @@ def _track_has_preferred_embedded_artwork(path: Path, preferred_side: int) -> bo
 
 
 def _album_inventory_fingerprint(album, fallback=False):
-    if fallback:
-        return TRACK_INVENTORY_PREFIX + core.album_scan_fingerprint(album)
-    digest = hashlib.sha256()
-    for path in sorted(album.audio_files, key=lambda value: str(value).casefold()):
-        digest.update(path.name.casefold().encode("utf-8", "surrogateescape"))
-        digest.update(b"\0")
-    return NAME_INVENTORY_PREFIX + digest.hexdigest()
+    del fallback
+    # Per-track Artist credits now participate in every identified Album's
+    # Artist projection. Include size/mtime for all tracks so changing a guest
+    # credit on a non-representative track is visible to incremental refresh.
+    return TRACK_INVENTORY_PREFIX + core.album_scan_fingerprint(album)
 
 
 def _indexed_album_unchanged(prior, album, fingerprint):
@@ -136,6 +152,33 @@ def serialized(function):
 class Services:
     def __init__(self, runtime: Runtime):
         self.runtime = runtime
+        configured_artist_separator = str(
+            runtime.cfg.get("scan", {}).get(
+                "artist_separator_regex", core.DEFAULT_ARTIST_SEPARATOR_REGEX
+            )
+        )
+        active_artist_separator = configured_artist_separator
+        try:
+            with closing(runtime.database.connect()) as db:
+                separator_state = db.execute(
+                    "SELECT details_json FROM db_maintenance_state "
+                    "WHERE action_name=?",
+                    ("artist-credit-separator",),
+                ).fetchone()
+                album_count = int(db.execute("SELECT count(*) FROM albums").fetchone()[0])
+            if separator_state is not None:
+                indexed = json.loads(str(separator_state["details_json"] or "{}"))
+                active_artist_separator = str(
+                    indexed.get("artist_separator_regex", "")
+                    or core.DEFAULT_ARTIST_SEPARATOR_REGEX
+                )
+            elif album_count and configured_artist_separator != core.DEFAULT_ARTIST_SEPARATOR_REGEX:
+                # A saved rule becomes active only after the reset/full-refresh
+                # contract records it. Until then, preserve the rule that built
+                # a pre-feature catalog instead of reinterpreting stored rows.
+                active_artist_separator = core.DEFAULT_ARTIST_SEPARATOR_REGEX
+        except (KeyError, TypeError, ValueError):
+            active_artist_separator = configured_artist_separator
         self.catalog = Catalog(
             runtime.music,
             runtime.database,
@@ -148,11 +191,11 @@ class Services:
             cover_stem=str(runtime.cfg.get("output", {}).get("file_name", "cover")),
             cache=runtime.cache,
             temporary_cache=runtime.temporary_cache,
+            preview_cache=runtime.temporary_files.session_workspace("web-images"),
+            artist_separator_regex=active_artist_separator,
         )
         self.catalog.cache = runtime.cache
-        self.catalog.artist_sources = tuple(
-            core.resolve_sources(runtime.cfg, None, None, [])
-        )
+        self.catalog.artist_sources = tuple(core.resolve_artist_sources(runtime.cfg))
         self.lock = threading.RLock()
         self._audit_events_written = 0
         self.audit_session_id = uuid4().hex
@@ -166,6 +209,11 @@ class Services:
         self._track_coordination_outbox_path = (
             runtime.cache / "comp-track-write-coordination-outbox.json"
         )
+        # MusicBrainz discovery belongs to the service session, not to one
+        # queued COMP job.  Keeping this state here lets a second review of the
+        # same Recording/Artist identity reuse the validated release metadata
+        # while artwork previews continue to load independently.
+        self._compilation_discovery_state: dict[str, object] = {}
 
     def _coordination_guard(self):
         """Lazily restore coordination helpers for legacy lightweight fixtures."""
@@ -449,12 +497,13 @@ class Services:
         app.credentials = r.credentials
         app.cache = r.cache
         app.temporary_cache = r.temporary_cache
+        app.preview_cache = r.temporary_files.session_workspace("web-images")
         app.comp_thumbnail_side = int(
             r.cfg.get("output", {}).get("embedded_thumbnail_size", 1200)
         )
         app.allow_comp_repairs = r.cfg.get("mode") == "write"
         app.cover_stem = str(r.cfg.get("output", {}).get("file_name", "cover"))
-        app.artist_sources = tuple(core.resolve_sources(r.cfg, None, None, []))
+        app.artist_sources = tuple(core.resolve_artist_sources(r.cfg))
         app.metadata_cache.clear()
         app.appearance_cache.clear()
         app.portrait_cache.clear()
@@ -863,6 +912,7 @@ class Services:
                     "SELECT album_key,path,track_count,inventory_fingerprint,musicbrainz_albumid,representative_file,representative_size,representative_mtime_ns FROM albums"
                 )
             )
+            managed_albums = windows_managed_keys(db.raw, "albums")
         old_paths = {str(row["path"]): row for row in old}
         albums, _ = core.inventory(
             root,
@@ -873,6 +923,7 @@ class Services:
         current_paths = {str(album.path) for album in albums if album.audio_files}
         added = 0
         changed = 0
+        protected = 0
         examples = []
         for album in albums:
             if not album.audio_files:
@@ -888,16 +939,33 @@ class Services:
                 album, not str(prior["musicbrainz_albumid"] or "").strip()
             )
             if not _indexed_album_unchanged(prior, album, fingerprint):
-                changed += 1
-                if len(examples) < 3:
-                    examples.append(path)
-        removed_paths = sorted(set(old_paths) - current_paths, key=str.casefold)
+                if str(prior["album_key"]) in managed_albums:
+                    protected += 1
+                else:
+                    changed += 1
+                    if len(examples) < 3:
+                        examples.append(path)
+        missing_paths = set(old_paths) - current_paths
+        protected += sum(
+            1
+            for path in missing_paths
+            if str(old_paths[path]["album_key"]) in managed_albums
+        )
+        removed_paths = sorted(
+            (
+                path
+                for path in missing_paths
+                if str(old_paths[path]["album_key"]) not in managed_albums
+            ),
+            key=str.casefold,
+        )
         examples.extend(removed_paths[: max(0, 3 - len(examples))])
         return {
             "count": added + changed + len(removed_paths),
             "added": added,
             "changed": changed,
             "removed": len(removed_paths),
+            "protected": protected,
             "examples": examples,
         }
 
@@ -909,6 +977,16 @@ class Services:
             raise ValueError("Set an existing music library in Settings")
         if mode not in {"full", "incremental"}:
             raise ValueError("Library index mode must be full or incremental")
+        separator_regex = str(
+            r.cfg.get("scan", {}).get(
+                "artist_separator_regex", core.DEFAULT_ARTIST_SEPARATOR_REGEX
+            )
+        ).strip()
+        separator_profile = str(
+            r.cfg.get("scan", {}).get(
+                "artist_separator_profile", core.DEFAULT_ARTIST_SEPARATOR_PROFILE
+            )
+        ).strip() or core.DEFAULT_ARTIST_SEPARATOR_PROFILE
         with closing(r.database.connect()) as db:
             old = list(
                 db.execute(
@@ -917,6 +995,47 @@ class Services:
             )
             managed_artists = windows_managed_keys(db.raw, "artists")
             managed_albums = windows_managed_keys(db.raw, "albums")
+            separator_state = db.execute(
+                "SELECT details_json FROM db_maintenance_state "
+                "WHERE action_name=?",
+                ("artist-credit-separator",),
+            ).fetchone()
+        indexed_separator = ""
+        separator_details = {}
+        if separator_state is not None:
+            try:
+                separator_details = json.loads(
+                    str(separator_state["details_json"] or "{}")
+                )
+                indexed_separator = str(
+                    separator_details.get("artist_separator_regex", "")
+                ).strip()
+            except (TypeError, ValueError):
+                indexed_separator = ""
+                separator_details = {}
+        # Earlier builds stored the separator after incremental refreshes and
+        # did not update Windows-managed track credits.  Use a separate marker
+        # for the one-time complete credit republish.  Afterwards full refresh
+        # can use file size/mtime and reread only tracks whose tags changed.
+        managed_credit_refresh = int(
+            separator_details.get("managed_track_credit_refresh", 0) or 0
+        )
+        force_track_credit_read = mode == "full" and managed_credit_refresh < 1
+        if indexed_separator and indexed_separator != separator_regex:
+            raise ValueError(
+                "Artist separator settings changed. Reset the PostgreSQL Database, "
+                "then use Full Refresh Library Index so every Artist identity is "
+                "rebuilt with one rule."
+            )
+        if (
+            not indexed_separator
+            and old
+            and separator_regex != core.DEFAULT_ARTIST_SEPARATOR_REGEX
+        ):
+            raise ValueError(
+                "This PostgreSQL catalog predates the selected Artist separator. "
+                "Reset the PostgreSQL Database, then use Full Refresh Library Index."
+            )
         windows_authority_configured = bool(managed_artists or managed_albums)
         old_keys = {row["album_key"]: row for row in old}
         old_paths = {row["path"]: row for row in old}
@@ -959,6 +1078,11 @@ class Services:
                 continue
             prior_at_path = old_paths.get(str(album.path))
             if mode == "incremental" and prior_at_path is not None:
+                if str(prior_at_path["album_key"]) in managed_albums:
+                    # Existing Windows-owned catalog rows advance through
+                    # reconciliation, never through a browser filesystem pass.
+                    seen.add(str(prior_at_path["album_key"]))
+                    continue
                 if _indexed_album_unchanged(
                     prior_at_path, album, str(album.inventory_fingerprint or "")
                 ):
@@ -987,9 +1111,10 @@ class Services:
                 and prior_at_path is None
                 and str(row["album_key"]) not in old_keys
             ):
-                # A new synchronized identity must arrive through the next
-                # Windows SNAP. Full Refresh may still inventory and validate
-                # known entities but cannot create a competing catalog row.
+                # Once Windows authority has been established, synchronized
+                # identities must arrive through reconciliation. Full or
+                # incremental WebGUI refreshes may validate known catalog
+                # rows, but cannot independently create a competing Album.
                 deferred_albums += 1
                 continue
             artist["splined_version"] = core.VERSION
@@ -1031,7 +1156,10 @@ class Services:
             # releases do not need the separate embedded-art scan here.
             fallback = not str(row["musicbrainz_albumid"] or "").strip()
             self.hydrate_tracks(
-                row["album_key"], refresh_embedding_stats=fallback
+                row["album_key"],
+                refresh_embedding_stats=fallback,
+                force_tag_read=force_track_credit_read,
+                refresh_managed_track_tags=mode == "full",
             )
             if progress:
                 progress(
@@ -1093,6 +1221,29 @@ class Services:
                 self._update_artist_presentation(
                     db, artist_key, artist_key in managed_artists
                 )
+            db.execute(
+                "INSERT INTO db_maintenance_state"
+                "(action_name,completed_at,details_json,splined_version) "
+                "VALUES(?,?,?,?) ON CONFLICT(action_name) DO UPDATE SET "
+                "completed_at=excluded.completed_at,"
+                "details_json=excluded.details_json,"
+                "splined_version=excluded.splined_version",
+                (
+                    "artist-credit-separator",
+                    tags.utc_now(),
+                    json.dumps(
+                        {
+                            "artist_separator_regex": separator_regex,
+                            "artist_separator_profile": separator_profile,
+                            "managed_track_credit_refresh": (
+                                1 if mode == "full" else managed_credit_refresh
+                            ),
+                        },
+                        sort_keys=True,
+                    ),
+                    core.VERSION,
+                ),
+            )
         result = {
             "mode": mode,
             "albums": len(current_paths),
@@ -1107,10 +1258,22 @@ class Services:
         self.catalog.appearance_cache.clear()
         self.catalog.metadata_cache.clear()
         self.catalog.portrait_cache.clear()
+        result.update(
+            artists=len(self.catalog.artists("")),
+            identified_albums=len(self.catalog.albums("", False)),
+            fallback_albums=len(self.catalog.albums("", True)),
+        )
         self.audit("index-refresh", str(root), result)
         return result
 
-    def hydrate_tracks(self, album_id, *, refresh_embedding_stats=True):
+    def hydrate_tracks(
+        self,
+        album_id,
+        *,
+        refresh_embedding_stats=True,
+        force_tag_read=False,
+        refresh_managed_track_tags=False,
+    ):
         row = self.album_row(album_id)
         files = self.album_files(row)
         with closing(self.runtime.database.connect()) as db:
@@ -1123,14 +1286,60 @@ class Services:
             album_managed = windows_managed(db.raw, "albums", album_id)
             managed_tracks = windows_managed_track_keys(db.raw, album_id)
         records, _, _ = tags.inspect_album_tracks(
-            core.AlbumDir(Path(row["path"]), files), album_id, old
+            core.AlbumDir(Path(row["path"]), files),
+            album_id,
+            old,
+            force_read=force_tag_read,
+            artist_separator_regex=self.catalog.artist_separator_regex,
         )
         with closing(self.runtime.database.connect()) as db, db:
             for record in records:
                 if album_managed and str(record["track_key"]) not in managed_tracks:
                     continue
                 record["splined_version"] = core.VERSION
-                self._upsert(db, "tracks", record, "track_key")
+                if (
+                    refresh_managed_track_tags
+                    and str(record["track_key"]) in managed_tracks
+                ):
+                    # Full refresh may revalidate only file-derived fields for
+                    # an already matched Windows track.  Album/Artist identity,
+                    # track membership, authority, and insertion/deletion stay
+                    # Windows-owned.  This lets a corrected shared media tag
+                    # update WebGUI's Featured Artist projection without
+                    # opening a competing catalog identity path.
+                    prior = old.get(str(record["path"]))
+                    fields = (
+                        "title",
+                        "artist_name",
+                        "musicbrainz_recordingid",
+                        "musicbrainz_artistid",
+                        "file_size",
+                        "file_mtime_ns",
+                    )
+                    if prior is not None and all(
+                        str(prior[field] or "") == str(record[field] or "")
+                        for field in fields
+                    ):
+                        continue
+                    db.execute(
+                        "UPDATE tracks SET title=?,artist_name=?,"
+                        "musicbrainz_recordingid=?,musicbrainz_artistid=?,"
+                        "file_size=?,file_mtime_ns=?,updated_at=? "
+                        "WHERE track_key=? AND album_key=?",
+                        (
+                            record["title"],
+                            record["artist_name"],
+                            record["musicbrainz_recordingid"],
+                            record["musicbrainz_artistid"],
+                            record["file_size"],
+                            record["file_mtime_ns"],
+                            record["updated_at"],
+                            record["track_key"],
+                            album_id,
+                        ),
+                    )
+                else:
+                    self._upsert(db, "tracks", record, "track_key")
             existing = {str(p) for p in files}
             for path in old:
                 if path not in existing and path not in managed_tracks:
@@ -1180,7 +1389,10 @@ class Services:
         files = [Path(item["path"]) for item in indexed]
         old = {str(item["path"]): item for item in indexed}
         records, _, _ = tags.inspect_album_tracks(
-            core.AlbumDir(Path(row["path"]), files), album_id, old
+            core.AlbumDir(Path(row["path"]), files),
+            album_id,
+            old,
+            artist_separator_regex=self.catalog.artist_separator_regex,
         )
         with closing(self.runtime.database.connect()) as db, db:
             for record in records:
@@ -1393,11 +1605,9 @@ class Services:
         if kind == "cover":
             configured = core.formats(self.runtime.cfg)
             target = source_format if source_format in configured else configured[0]
-            directory = self.runtime.temporary_cache / "prepared-previews"
-            directory.mkdir(parents=True, exist_ok=True)
-            path = directory / (uuid4().hex + ".png")
-            path.write_bytes(body)
-            try:
+            with _temporary_workspace(self.runtime, "prepared-previews") as directory:
+                path = directory / (uuid4().hex + ".png")
+                path.write_bytes(body)
                 candidate = core.Candidate(
                     core.Ref("local", "preview", ""),
                     path,
@@ -1411,8 +1621,6 @@ class Services:
                 )
                 width, height = info["width"], info["height"]
                 upscaled = bool(info.get("upscaled"))
-            finally:
-                path.unlink(missing_ok=True)
         else:
             width, height = image.size
         policy_source_short = min(policy_source_width, policy_source_height)
@@ -1576,11 +1784,11 @@ class Services:
         else:
             removed = [path.name for path in core.install_canonical_cover(destination, body, stem)]
 
-        written = [path.name for path, _ in outputs]
         presentation = next(
             (path for path, _ in outputs if path.suffix.casefold() != ".webp"),
             destination,
         )
+        written = [path.name for path, _ in outputs if path.is_file()]
         verified = presentation.read_bytes()
         with Image.open(BytesIO(verified)) as opened:
             verified_size = [int(opened.width), int(opened.height)]
@@ -1604,14 +1812,21 @@ class Services:
         return {
             "written": written,
             "preserved": preserved,
+            "removed": removed,
             "coordination": coordination,
             **rendered,
+            # The verified canonical presentation, not a temporary candidate
+            # handle or an arbitrary sibling cover.*, is the source of truth
+            # for a following Album Track Embedding stage.
+            "file": presentation.name,
+            "sha256": hashlib.sha256(verified).hexdigest(),
         }
 
     @serialized
     def write_artist(self, payload):
         self.runtime.require_write()
         artist_id = str(payload.get("artist_id", ""))
+        artist = self.catalog.artist(artist_id)
         with closing(self.runtime.database.connect()) as db:
             rows = list(
                 db.execute(
@@ -1619,8 +1834,6 @@ class Services:
                     (artist_id,),
                 )
             )
-        if not rows:
-            raise KeyError("Artist not found")
         targets = artist_targets(
             [
                 ArtistAlbum(
@@ -1632,8 +1845,9 @@ class Services:
                 for row in rows
                 if inside(Path(row["path"]), self.runtime.music)
             ],
-            rows[0]["artist_name"],
+            str(artist["name"]),
             self.runtime.artist_art,
+            allow_managed_without_owned_album=bool(artist.get("albums")),
         )
         if not targets:
             raise ValueError("Artist has no eligible artwork destination")
@@ -1771,6 +1985,10 @@ class Services:
         return normalized, row, record, path
 
     def _prepared_comp_directory(self):
+        manager = getattr(self.runtime, "temporary_files", None)
+        if manager is not None:
+            return manager.session_workspace("prepared-comp")
+        # Compatibility for reduced fixtures which predate Runtime ownership.
         directory = self.runtime.cache / "prepared-comp"
         directory.mkdir(parents=True, exist_ok=True)
         return directory
@@ -2039,6 +2257,7 @@ class Services:
         )
         original = embedded_track_artwork_bytes(path)
         outcome = "embedded-existing" if original == body else "embedded-replaced"
+        backup = None
         if original != body:
             backup_root = self.runtime.cache / "embedded-backups"
             backup_root.mkdir(parents=True, exist_ok=True)
@@ -2051,6 +2270,7 @@ class Services:
                 )
                 if not backup.exists():
                     backup.write_bytes(original)
+                mark_conversion_backup(backup, committed=False)
             compilation.replace_embedded_artwork(path, body, image_format, info)
         self._verify_comp_embedded(record, body, info)
         verified_body = embedded_track_artwork_bytes(path)
@@ -2082,6 +2302,9 @@ class Services:
         coordination = self.record_comp_track_write(
             row, refreshed, "embed-comp-track", artwork_sha256
         )
+        if backup is not None:
+            mark_conversion_backup(backup, committed=True)
+            discard_committed_conversion(backup)
         self._remove_prepared_comp(payload.get("prepared_id"))
         return {
             "album_id": row["album_key"],
@@ -2139,6 +2362,7 @@ class Services:
         self.runtime.cache.mkdir(parents=True, exist_ok=True)
         backup_root = self.runtime.cache / "embedded-backups"
         backup_root.mkdir(exist_ok=True)
+        backups = []
         for index, path in enumerate(files, 1):
             if cancelled and cancelled():
                 raise core.InteractionCancelled()
@@ -2157,6 +2381,9 @@ class Services:
             )
             if original and not backup.exists():
                 backup.write_bytes(original)
+            if original:
+                mark_conversion_backup(backup, committed=False)
+                backups.append(backup)
             compilation.replace_embedded_artwork(
                 path, body, "jpeg", {"width": side, "height": side}
             )
@@ -2192,6 +2419,9 @@ class Services:
             "embed-album", row["album_key"], {"tracks": len(files), "side": side}
         )
         coordination = self.record_album_write(row, "embed-album")
+        for backup in backups:
+            mark_conversion_backup(backup, committed=True)
+            discard_committed_conversion(backup)
         return {
             "tracks": len(files),
             "side": side,
@@ -2211,45 +2441,44 @@ class Services:
         sources = core.resolve_sources(r.cfg, None, None, [])
         release = core.lookup_release(http, r.config_file, r.cfg, mbid)
         refs, warnings = core.discover_all(http, r.config_file, r.cfg, release, sources)
-        cache = r.temporary_cache / "web-candidates" / uuid4().hex
-        cache.mkdir(parents=True, exist_ok=True)
-        found, download_warnings = core.download_candidates(
-            http, refs, sources, cache, r.cfg, clean_first=False
-        )
-        warnings.extend(download_warnings)
-        strict_policy.apply(found, r.cfg, core.source_policy)
-        format_order = core.formats(r.cfg)
-        suggested = core.select_best(found, r.cfg, format_order)
-        candidates = []
-        for candidate in found:
-            target_format = core.target_format_for_candidate(candidate, format_order)
-            projected = core.project_candidate(candidate, r.cfg, target_format)
-            policy = core.source_policy(r.cfg, candidate.source)
-            candidates.append(
-                {
-                    "name": candidate.path.name,
-                    "source": core.provider_label(candidate.source),
-                    "kind": "cover",
-                    "image": self.catalog.image(candidate.path),
-                    "width": candidate.width,
-                    "height": candidate.height,
-                    "bytes": candidate.path.stat().st_size,
-                    "acceptable": projected["acceptable"],
-                    "range_class": projected["range_type"],
-                    "source_range_class": core.classify_range(
-                        candidate.short_side, r.cfg
-                    ),
-                    "projected_width": projected["width"],
-                    "projected_height": projected["height"],
-                    "recommended": candidate is suggested,
-                    "upscaled": projected["upscaled"],
-                    "policy_status": projected["policy_status"],
-                    "policy_reason": projected["policy_reason"],
-                    "strict_override_active": policy["strict_override"],
-                    "strict_status": candidate.strict_status,
-                    "strict_reason": candidate.strict_reason,
-                }
+        with _temporary_workspace(r, "web-candidates") as cache:
+            found, download_warnings = core.download_candidates(
+                http, refs, sources, cache, r.cfg, clean_first=False
             )
+            warnings.extend(download_warnings)
+            strict_policy.apply(found, r.cfg, core.source_policy)
+            format_order = core.formats(r.cfg)
+            suggested = core.select_best(found, r.cfg, format_order)
+            candidates = []
+            for candidate in found:
+                target_format = core.target_format_for_candidate(candidate, format_order)
+                projected = core.project_candidate(candidate, r.cfg, target_format)
+                policy = core.source_policy(r.cfg, candidate.source)
+                candidates.append(
+                    {
+                        "name": candidate.path.name,
+                        "source": core.provider_label(candidate.source),
+                        "kind": "cover",
+                        "image": self.catalog.image(candidate.path),
+                        "width": candidate.width,
+                        "height": candidate.height,
+                        "bytes": candidate.path.stat().st_size,
+                        "acceptable": projected["acceptable"],
+                        "range_class": projected["range_type"],
+                        "source_range_class": core.classify_range(
+                            candidate.short_side, r.cfg
+                        ),
+                        "projected_width": projected["width"],
+                        "projected_height": projected["height"],
+                        "recommended": candidate is suggested,
+                        "upscaled": projected["upscaled"],
+                        "policy_status": projected["policy_status"],
+                        "policy_reason": projected["policy_reason"],
+                        "strict_override_active": policy["strict_override"],
+                        "strict_status": candidate.strict_status,
+                        "strict_reason": candidate.strict_reason,
+                    }
+                )
         return {
             "candidates": candidates,
             "warnings": [core._redact_log_message(str(item)) for item in warnings],
@@ -2268,8 +2497,14 @@ class Services:
         files = self.album_files(row)
         if not files:
             raise ValueError("Album has no supported tracks to stage")
+        # EMBED Batch uses the same configured canonical-cover transaction as
+        # WRITE Cover. Its verified readback—not whichever cover.* happens to
+        # be discovered later—is snapshotted for every track in this job.
         result = self.write_cover(payload)
-        cover_body = self.catalog.image_bytes(result["image"])
+        authoritative_cover = Path(row["path"]) / str(result["file"])
+        cover_body = authoritative_cover.read_bytes()
+        if hashlib.sha256(cover_body).hexdigest() != result["sha256"]:
+            raise ValueError("The written Album cover changed before embedding was staged")
         side = int(
             self.runtime.cfg.get("output", {}).get(
                 "embedded_thumbnail_size", 1200
@@ -2280,11 +2515,10 @@ class Services:
             prepared_body = imaging.encode(thumbnail, "jpeg")
         directory = self.runtime.cache / "staged-artwork"
         directory.mkdir(parents=True, exist_ok=True)
-        cover_name = uuid4().hex + {
-            "jpeg": ".jpg",
-            "png": ".png",
-            "webp": ".webp",
-        }[result["format"]]
+        cover_suffix = authoritative_cover.suffix.casefold()
+        if cover_suffix not in {".jpg", ".jpeg", ".png"}:
+            raise ValueError("The verified Album presentation is not a static cover")
+        cover_name = uuid4().hex + cover_suffix
         prepared_name = uuid4().hex + ".jpg"
         try:
             self._atomic_artwork(directory / cover_name, cover_body)
@@ -2544,9 +2778,23 @@ class Services:
                 "artist_id": scope_artist_id,
                 "album_id": row["album_key"],
             }
-            body, info, image_format, _ = self._prepare_comp_embedded(
-                request, normalized
-            )
+            try:
+                body, info, image_format, _ = self._prepare_comp_embedded(
+                    request, normalized
+                )
+            except ValueError:
+                # A prepared thumbnail is integrity-bound to this exact track
+                # and digest. Never hide a stale or tampered prepared artifact
+                # by silently replacing it with a remote fallback URL.
+                if request.get("prepared_id"):
+                    raise
+                fallback = str(request.get("fallback_image") or "").strip()
+                if not fallback or fallback == str(request.get("image") or "").strip():
+                    raise
+                request["image"] = fallback
+                body, info, image_format, _ = self._prepare_comp_embedded(
+                    request, normalized
+                )
             adapter.context["prepared_id"] = str(request.get("prepared_id", ""))
             return body, info, image_format
 
@@ -2560,29 +2808,59 @@ class Services:
                 track, recording_mbid, artist_mbids
             )
 
+        def publish_verified_track_write(track, artwork):
+            """Publish the queued COMP path after read-back verification.
+
+            Direct Selected Artwork writes already call ``embed_comp_track``.
+            The queued Artist/Fallback workflow writes through
+            ``run_manual_compilation_album`` instead, so it previously updated
+            the PostgreSQL completion ledger without emitting the cross-client
+            coordination event.  Keep the event at the verified write boundary
+            and use the indexed track identity selected for this exact job.
+            """
+            path = str(Path(track.path))
+            track_key = keys_by_path.get(path, "")
+            refreshed = self.hydrate_selected_tracks(
+                row["album_key"], [track_key]
+            )
+            record = refreshed[0] if refreshed else {
+                "track_key": track_key,
+                "path": path,
+            }
+            return self.record_comp_track_write(
+                row,
+                record,
+                "embed-comp-track",
+                hashlib.sha256(artwork).hexdigest(),
+            )
+
+        discovery_state = getattr(self, "_compilation_discovery_state", None)
+        if discovery_state is None:
+            discovery_state = {}
+            self._compilation_discovery_state = discovery_state
         summary = core.Summary()
-        cache = r.temporary_cache / "comp-work" / uuid4().hex
-        cache.mkdir(parents=True, exist_ok=True)
-        scan.run_manual_compilation_album(
-            core.AlbumDir(Path(row["path"]), selected_files),
-            tracks,
-            http=core.Http(),
-            config_file=r.config_file,
-            cfg=r.cfg,
-            sources=core.resolve_sources(r.cfg, None, None, []),
-            cache=cache,
-            format_order=core.formats(r.cfg),
-            summary=summary,
-            api_queried=set(),
-            unresolved_items=[],
-            state={},
-            target_track_paths={allowed[key] for key in requested},
-            track_context=update_track_context,
-            prepare_selected_artwork=prepare_selected_artwork,
-            persist_track_authority=persist_track_authority,
-            verify_embedded_artwork=verify_selected_artwork,
-            musicbrainz_results_first=True,
-        )
+        with _temporary_workspace(r, "comp-work") as cache:
+            scan.run_manual_compilation_album(
+                core.AlbumDir(Path(row["path"]), selected_files),
+                tracks,
+                http=core.Http(),
+                config_file=r.config_file,
+                cfg=r.cfg,
+                sources=core.resolve_sources(r.cfg, None, None, []),
+                cache=cache,
+                format_order=core.formats(r.cfg),
+                summary=summary,
+                api_queried=set(),
+                unresolved_items=[],
+                state=discovery_state,
+                target_track_paths={allowed[key] for key in requested},
+                track_context=update_track_context,
+                prepare_selected_artwork=prepare_selected_artwork,
+                persist_track_authority=persist_track_authority,
+                verify_embedded_artwork=verify_selected_artwork,
+                publish_verified_write=publish_verified_track_write,
+                musicbrainz_results_first=True,
+            )
         self.refresh_album(row["album_key"])
         self.refresh_embedding_stats(row)
         return asdict(summary)
@@ -2682,6 +2960,47 @@ class Services:
             query_artist=artist or row["artist_name"],
             query_album=title or row["album_name"],
         )
+
+    def musicbrainz_artwork_preview(self, payload):
+        """Import one explicitly identified CAA image into the bounded UI cache."""
+        release_id = core.valid_mbid(str(payload.get("release_id") or ""))
+        group_id = core.valid_mbid(str(payload.get("release_group_id") or ""))
+        if not release_id and not group_id:
+            raise ValueError("Choose a valid MusicBrainz release")
+        locations = []
+        if release_id:
+            locations.append(("release", release_id))
+        if group_id:
+            locations.append(("release-group", group_id))
+        http = core.Http()
+        for entity, identity in locations:
+            response = http.get(
+                f"https://coverartarchive.org/{entity}/{identity}/front",
+                headers={"Accept": "image/*"},
+            )
+            if int(getattr(response, "status_code", 500)) >= 400:
+                continue
+            body = bytes(getattr(response, "content", b"") or b"")
+            if not body or len(body) > 25 * 1024 * 1024:
+                continue
+            try:
+                with Image.open(BytesIO(body)) as opened:
+                    width, height = opened.size
+                    if width * height > 64 * 1024 * 1024:
+                        continue
+                    opened.verify()
+            except (OSError, ValueError):
+                continue
+            return {
+                "image": self.catalog.image(body),
+                "width": int(width),
+                "height": int(height),
+                "bytes": len(body),
+                "source": "MusicBrainz / Cover Art Archive",
+                "entity": entity,
+                "identity": identity,
+            }
+        raise ValueError("MusicBrainz artwork is unavailable for this release")
 
     @serialized
     def bypass(self, album_id, enabled):

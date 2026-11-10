@@ -3,7 +3,10 @@
 use crate::application::{ApplicationState, RunPhase, ScanTarget};
 use crate::config::resolve_sources;
 use crate::gui_events::{self, ScanContext};
-use crate::media_database::{media_snapshot, media_snapshot_incremental};
+use crate::media_database::{
+    DatabaseResetResult, MediaSnapshot, SCHEMA_VERSION, media_snapshot, media_snapshot_incremental,
+    reset_media_database,
+};
 use crate::scan_runtime::run_scan_library_read_report;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -572,6 +575,53 @@ impl ScanController {
                 .replace_snapshot(snapshot)?;
             let _ = self.notices.send(ControllerNotice::StateChanged);
             Ok(())
+        })();
+        self.refreshing.store(false, Ordering::SeqCst);
+        result
+    }
+
+    pub fn reset_library_database(&self) -> Result<DatabaseResetResult, String> {
+        if self
+            .refreshing
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Err("A database refresh or reset is already in progress.".to_string());
+        }
+        let result = (|| {
+            if self.is_running() {
+                return Err("The database cannot be reset during an active run.".to_string());
+            }
+            let config = self
+                .state
+                .lock()
+                .map_err(|_| "The SPLINED application state is unavailable.".to_string())?
+                .config
+                .clone();
+            let reset = reset_media_database(&config)?;
+            let empty = MediaSnapshot {
+                schema_version: SCHEMA_VERSION,
+                database_path: reset.database_path.to_string_lossy().into_owned(),
+                canonical_root: config.library.music_library.clone(),
+                local_root: config.library.music_library.clone(),
+                albums: Vec::new(),
+            };
+            let mut app = self
+                .state
+                .lock()
+                .map_err(|_| "The SPLINED application state is unavailable.".to_string())?;
+            app.library.replace_snapshot(empty)?;
+            app.current_artist.clear();
+            app.current_album.clear();
+            app.current_album_path.clear();
+            app.current_cover_path.clear();
+            app.compilation_report_artist.clear();
+            app.compilation_report_summary.clear();
+            app.compilation_report_preview_album_key.clear();
+            app.compilation_report_preview_track_path.clear();
+            app.compilation_report_collapsed_albums.clear();
+            let _ = self.notices.send(ControllerNotice::StateChanged);
+            Ok(reset)
         })();
         self.refreshing.store(false, Ordering::SeqCst);
         result

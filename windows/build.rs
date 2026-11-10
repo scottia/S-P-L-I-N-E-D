@@ -12,6 +12,7 @@ fn main() {
 
     let manifest_dir =
         PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is not set"));
+    emit_git_revision_inputs(&manifest_dir);
     let commit = build_commit(&manifest_dir);
     println!("cargo:rustc-env=SPLINED_BUILD_COMMIT={commit}");
 
@@ -107,21 +108,47 @@ fn build_commit(manifest_dir: &std::path::Path) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+/// Cargo does not otherwise know that advancing the checked-out branch changes
+/// the revision embedded in the executable. Watch both the worktree HEAD and
+/// its resolved branch ref so incremental release builds cannot retain an old
+/// commit label after source changes.
+fn emit_git_revision_inputs(manifest_dir: &std::path::Path) {
+    for name in [
+        Some("HEAD".to_string()),
+        git_text(manifest_dir, &["symbolic-ref", "-q", "HEAD"]),
+        Some("packed-refs".to_string()),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Some(path) = git_text(manifest_dir, &["rev-parse", "--git-path", &name]) {
+            println!("cargo:rerun-if-changed={path}");
+        }
+    }
+}
+
 fn valid_commit(value: &str) -> bool {
     let value = value.trim();
     (7..=40).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn git_commit(manifest_dir: &std::path::Path) -> Option<String> {
+    let value = git_text(manifest_dir, &["rev-parse", "HEAD"])?;
+    let value = value.trim();
+    valid_commit(value).then(|| value.to_ascii_lowercase())
+}
+
+fn git_text(manifest_dir: &std::path::Path, args: &[&str]) -> Option<String> {
     let output = Command::new("git")
-        .args(["rev-parse", "HEAD"])
+        .args(args)
         .current_dir(manifest_dir)
         .output()
         .ok()?;
     if !output.status.success() {
         return None;
     }
-    let value = String::from_utf8(output.stdout).ok()?;
-    let value = value.trim();
-    valid_commit(value).then(|| value.to_ascii_lowercase())
+    String::from_utf8(output.stdout)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }

@@ -165,6 +165,9 @@ fn artist_overview_keeps_native_parity_controls_and_album_row_navigation() {
     assert!(ui.contains("artist-summary-visible"));
     assert!(ui.contains("MusicBrainz ID"));
     assert!(ui.contains("root.browse-artist-artwork(); root.workspace-mode = 2;"));
+    assert!(ui.contains("callback browse-artist-artwork(); callback upload-artist-artwork();"));
+    assert!(ui.contains("label: \"Upload Art\""));
+    assert!(ui.contains("clicked => root.upload-artist-artwork();"));
     assert!(ui.contains("thumbnail-size: artist-scroll.visible-width < 520px ? 120px : 170px"));
     assert!(ui.contains("thumbnail-x: 8px"));
     assert!(ui.contains("thumbnail-column-width: self.thumbnail-size + 16px"));
@@ -195,9 +198,20 @@ fn artist_overview_keeps_native_parity_controls_and_album_row_navigation() {
     assert!(ui.contains("root.selected-album-track-count + \" tracks · \""));
     assert!(ui.contains("status-only-album-selection: row.kind != \"artist\""));
     assert!(ui.contains("root.status-only-album-selection ? \"○\""));
+    assert!(ui.contains("background: root.status-only-album-selection ? transparent"));
     assert!(ui.contains("row-touch := TouchArea"));
     assert!(ui.contains("clicked => root.activated(root.item.key)"));
     assert!(!ui.contains("#7a1b1d1f"));
+    let fallback_rows = ui
+        .split("for track in root.compilation-track-rows: Rectangle")
+        .nth(1)
+        .unwrap()
+        .split("if root.compilation-track-rows.length == 0")
+        .next()
+        .unwrap();
+    assert!(fallback_rows.contains("background: transparent"));
+    assert!(fallback_rows.contains("clicked => root.compilation-track-activated"));
+    assert!(!fallback_rows.contains("track.selected ?"));
     assert!(!ui.contains("#7a061426"));
     assert!(ui.contains("#14141470"));
     assert!(ui.contains("#0b0b0be0"));
@@ -207,18 +221,28 @@ fn artist_overview_keeps_native_parity_controls_and_album_row_navigation() {
 fn comp_report_keeps_visible_group_controls_and_track_scoped_coordination() {
     let ui = source("windows/ui/app.slint");
     let main = source("windows/src/main.rs");
-    assert!(ui.contains("track.album-header ? (track.expanded ? \"▾\" : \"▸\")"));
+    assert!(ui.contains("track.album-header ? (track.expanded ? \"−\" : \"+\")"));
     assert!(ui.contains("border-width: track.album-header ? 1px : 0px"));
     assert!(ui.contains("max(170px, min(310px, parent.width * 0.38))"));
     assert!(!ui.contains("text: \"TRACK FILE\"; width: 310px"));
-    assert!(ui.contains("#381821a6"));
+    assert!(ui.contains("background: #381821c9"));
+    assert!(ui.contains("track.album-header ? #398efa"));
+    assert!(ui.contains("track.album-header ? 25px : 24px"));
+    assert!(ui.contains("root.compilation-report-override-count + \" overridden\""));
+    assert!(ui.contains("root.compilation-report-visible ? \"LAUNCH COMP\" : \"LAUNCH\""));
+    assert!(ui.contains("root.running ? \"STOP PROCESS\""));
+    assert!(main.contains("recorded thumbnails validated"));
+    assert!(main.contains("\"COMP status · complete\""));
+    assert!(main.contains("track.album_title = track.file_name.clone()"));
+    assert!(main.contains("Selected COMP track · {} · loading embedded artwork…"));
+    assert!(main.contains(".select_compilation_track(album_key, track_path, include_bypassed)"));
     let summary = ui
         .split(
-            "if root.overview-mode == \"Artist\": HorizontalLayout { height: 18px; spacing: 12px;",
+            "if root.overview-mode == \"Artist\" || root.overview-mode == \"Fallback\": HorizontalLayout { height: 18px; spacing: 12px;",
         )
         .nth(1)
         .unwrap()
-        .split("if root.overview-mode == \"Fallback\"")
+        .split("HorizontalLayout { height: 18px; spacing: 8px;")
         .next()
         .unwrap();
     assert!(summary.find("Albums").unwrap() < summary.find("horizontal-stretch: 1").unwrap());

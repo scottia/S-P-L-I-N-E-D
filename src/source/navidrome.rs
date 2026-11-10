@@ -9,6 +9,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::error::Error as _;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -19,6 +20,74 @@ const INTERNAL_SCHEME: &str = "splined+navidrome://";
 
 static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
 static DOWNLOAD_SESSIONS: OnceLock<Mutex<HashMap<u64, NavidromeCredential>>> = OnceLock::new();
+
+fn cached_image_extension(bytes: &[u8]) -> Result<&'static str, String> {
+    match image::guess_format(bytes) {
+        Ok(image::ImageFormat::Jpeg) => Ok("jpg"),
+        Ok(image::ImageFormat::Png) => Ok("png"),
+        Ok(image::ImageFormat::WebP) => Ok("webp"),
+        Ok(other) => Err(format!(
+            "Navidrome returned unsupported image format {other:?}."
+        )),
+        Err(error) => Err(format!(
+            "Navidrome returned unrecognized image bytes: {error}"
+        )),
+    }
+}
+
+fn existing_cached_image(
+    cache_directory: &Path,
+    filename: &str,
+) -> Result<Option<PathBuf>, String> {
+    for extension in ["jpg", "png", "webp"] {
+        let path = cache_directory.join(format!("{filename}.{extension}"));
+        if path.is_file() && crate::inspect::inspect_image(&path).is_ok() {
+            return Ok(Some(path));
+        }
+    }
+
+    // Migrate the old content-detected `.img` cache entry to its real static
+    // extension so converted generic files are not retained indefinitely.
+    let legacy = cache_directory.join(format!("{filename}.img"));
+    if !legacy.is_file() {
+        return Ok(None);
+    }
+    let inspected = match crate::inspect::inspect_image(&legacy) {
+        Ok(inspected) => inspected,
+        Err(_) => {
+            fs::remove_file(&legacy).map_err(|error| {
+                format!(
+                    "Unable to remove invalid Navidrome cache {}: {error}",
+                    legacy.display()
+                )
+            })?;
+            return Ok(None);
+        }
+    };
+    let extension = match inspected.format {
+        crate::candidate::StaticFormat::Jpeg => "jpg",
+        crate::candidate::StaticFormat::Png => "png",
+        crate::candidate::StaticFormat::Webp => "webp",
+    };
+    let target = cache_directory.join(format!("{filename}.{extension}"));
+    if target.is_file() && crate::inspect::inspect_image(&target).is_ok() {
+        fs::remove_file(&legacy).map_err(|error| {
+            format!(
+                "Unable to remove legacy Navidrome cache {}: {error}",
+                legacy.display()
+            )
+        })?;
+    } else {
+        fs::rename(&legacy, &target).map_err(|error| {
+            format!(
+                "Unable to normalize Navidrome cache {} to {}: {error}",
+                legacy.display(),
+                target.display()
+            )
+        })?;
+    }
+    Ok(Some(target))
+}
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default)]
@@ -686,8 +755,7 @@ impl NavidromeCompanion {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
-        let path = cache_directory.join(format!("{filename}.img"));
-        if path.is_file() && crate::inspect::inspect_image(&path).is_ok() {
+        if let Some(path) = existing_cached_image(cache_directory, &filename)? {
             self.artwork_cache_stats
                 .hits
                 .fetch_add(1, Ordering::Relaxed);
@@ -714,6 +782,7 @@ impl NavidromeCompanion {
         if bytes.is_empty() || bytes.len() > MAX_DOWNLOAD_BYTES {
             return Err("Navidrome returned invalid artist-art bytes.".to_string());
         }
+        let path = cache_directory.join(format!("{filename}.{}", cached_image_extension(&bytes)?));
         crate::safe_write::replace_binary_file(
             &path,
             &bytes,
@@ -745,8 +814,7 @@ impl NavidromeCompanion {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
-        let path = cache_directory.join(format!("{filename}.img"));
-        if path.is_file() && crate::inspect::inspect_image(&path).is_ok() {
+        if let Some(path) = existing_cached_image(cache_directory, &filename)? {
             self.artwork_cache_stats
                 .hits
                 .fetch_add(1, Ordering::Relaxed);
@@ -782,6 +850,7 @@ impl NavidromeCompanion {
         if bytes.is_empty() || bytes.len() > MAX_DOWNLOAD_BYTES {
             return Err("Navidrome returned invalid cover-art bytes.".to_string());
         }
+        let path = cache_directory.join(format!("{filename}.{}", cached_image_extension(&bytes)?));
         crate::safe_write::replace_binary_file(
             &path,
             &bytes,
@@ -1870,6 +1939,15 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(first, second);
+        assert_eq!(
+            first.extension().and_then(|value| value.to_str()),
+            Some("png")
+        );
+        assert!(!cache.path().read_dir().unwrap().any(|entry| {
+            entry.ok().is_some_and(|item| {
+                item.path().extension().and_then(|value| value.to_str()) == Some("img")
+            })
+        }));
         assert!(crate::inspect::inspect_image(&first).is_ok());
         assert_eq!(companion.artwork_cache_stats().misses, 1);
         assert_eq!(companion.artwork_cache_stats().hits, 1);
@@ -1880,6 +1958,21 @@ mod tests {
             .filter(|request| request.contains("/rest/getCoverArt.view"))
             .count();
         assert_eq!(cover_requests, 1);
+    }
+
+    #[test]
+    fn legacy_generic_image_cache_is_renamed_to_detected_format() {
+        let cache = tempfile::tempdir().unwrap();
+        let legacy = cache.path().join("fixture.img");
+        std::fs::write(&legacy, one_pixel_png()).unwrap();
+
+        let normalized = existing_cached_image(cache.path(), "fixture")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(normalized, cache.path().join("fixture.png"));
+        assert!(normalized.is_file());
+        assert!(!legacy.exists());
     }
 
     #[tokio::test]

@@ -141,6 +141,11 @@ class ReportedDefectTests(unittest.TestCase):
         self.assertIn('"Overridden"', application)
         self.assertIn('albumOverrides: new Map()', application)
         self.assertIn('/api/coordination/album-overrides', operations)
+        self.assertIn("async function refreshOpenCompReportAfterCoordination()", operations)
+        self.assertIn("await refreshOpenCompReportAfterCoordination();", operations)
+        self.assertIn('/api/coordination/comp-track-overrides', operations)
+        self.assertIn('/api/artist/comp-report?id=', operations)
+        self.assertIn('/api/fallback/tracks?id=', operations)
         self.assertIn(
             ".album-card.windows-card.opposing-override .album-card-picture img"
             "{filter:grayscale(1)}",
@@ -236,12 +241,15 @@ class ReportedDefectTests(unittest.TestCase):
         self.assertEqual(adapter.progress_values[0]["total"], 2)
         self.assertEqual(adapter.progress_values[-1]["completed"], 2)
 
-    def test_static_workspace_has_structured_artist_information_and_no_automatic_inventory_scan(self):
+    def test_static_workspace_has_structured_artist_information_and_library_change_notice(self):
         static = Path(__file__).parents[1] / "static"
         document = (static / "index.html").read_text(encoding="utf-8")
         application = (static / "app.js").read_text(encoding="utf-8")
         operations = (static / "operations.js").read_text(encoding="utf-8")
         styles = (static / "app.css").read_text(encoding="utf-8")
+        native = (Path(__file__).parents[2] / "windows" / "ui" / "app.slint").read_text(
+            encoding="utf-8"
+        )
         for identity in (
             'id="heroPortrait"',
             'id="artistInfoRows"',
@@ -259,7 +267,17 @@ class ReportedDefectTests(unittest.TestCase):
         initialize = operations.split("async function initialize", 1)[1].split(
             "function showAuthentication", 1
         )[0]
-        self.assertNotIn("checkLibraryChanges", initialize)
+        self.assertIn("checkLibraryChanges", initialize)
+        self.assertIn("void checkLibraryChanges().catch", initialize)
+        self.assertIn(
+            ".library-row.album-row .library-thumb,.library-row.album-child "
+            ".library-thumb{border-radius:50%}",
+            styles,
+        )
+        self.assertIn(
+            "border-radius: self.width / 2; background: root.item.kind == \"artist\"",
+            native,
+        )
         self.assertIn("track.thumbnail", application)
         self.assertIn("COMP status", application)
         self.assertIn('id="artistInfoRows" class="artist-info-rows" aria-label="Selected Artist information" hidden', document)

@@ -18,6 +18,7 @@ import splined as core
 MUSICBRAINZ_API = "https://musicbrainz.org/ws/2"
 LASTFM_API = "https://ws.audioscrobbler.com/2.0/"
 DISCOGS_API = "https://api.discogs.com/database/search"
+ITUNES_API = "https://itunes.apple.com/search"
 
 
 def _same_artist(left: str, right: str) -> bool:
@@ -126,6 +127,7 @@ def _allowed_image_url(url: str) -> bool:
             "i.discogs.com",
             "img.discogs.com",
             "discogs.com",
+            "mzstatic.com",
         )
     )
 
@@ -271,10 +273,70 @@ def _discogs_references(
     return references[:3]
 
 
+def _itunes_artist_artwork_url(html: str) -> str:
+    match = re.search(
+        r'<meta\s+[^>]*property=["\']og:image["\'][^>]*content=["\']([^"\']+)',
+        html,
+        re.IGNORECASE,
+    )
+    if not match:
+        return ""
+    parsed = urlparse(unescape(match.group(1)))
+    if (
+        parsed.scheme != "https"
+        or not (parsed.hostname or "").casefold().endswith(".mzstatic.com")
+        or not parsed.path.startswith("/image/thumb/")
+    ):
+        return ""
+    prefix, separator, sized = parsed.path.rpartition("/")
+    if not separator or "." not in sized:
+        return ""
+    extension = sized.rsplit(".", 1)[1].casefold()
+    if extension not in {"jpg", "jpeg", "png", "webp"}:
+        return ""
+    return parsed._replace(path=f"{prefix}/1200x1200bb.{extension}").geturl()
+
+
+def _itunes_references(artist: str, http: requests.Session) -> list[tuple[str, str]]:
+    response = http.get(
+        ITUNES_API,
+        params={
+            "term": artist,
+            "media": "music",
+            "entity": "musicArtist",
+            "country": "us",
+            "limit": "10",
+        },
+        timeout=15,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    values = payload.get("results", []) if isinstance(payload, dict) else []
+    references: list[tuple[str, str]] = []
+    for item in values if isinstance(values, list) else []:
+        if (
+            not isinstance(item, dict)
+            or not _same_artist(str(item.get("artistName") or ""), artist)
+        ):
+            continue
+        profile = str(item.get("artistLinkUrl") or "")
+        parsed = urlparse(profile)
+        if parsed.scheme != "https" or parsed.hostname != "music.apple.com":
+            continue
+        page = http.get(profile, timeout=15)
+        page.raise_for_status()
+        artwork = _itunes_artist_artwork_url(page.text)
+        if artwork:
+            references.append(("iTunes portrait", artwork))
+        if len(references) >= 3:
+            break
+    return references
+
+
 def discover_artist_images(
     artist: str, artist_mbid: str, credential_dir: Path,
     *, http: requests.Session | None = None,
-    enabled=("fanarttv", "deezer", "lastfm", "discogs"),
+    enabled=("fanarttv", "deezer", "lastfm", "discogs", "itunes"),
 ) -> tuple[list[tuple[str, bytes]], list[str]]:
     """Download a bounded set of verified images; caller owns their preview life."""
     session = http or requests.Session()
@@ -286,8 +348,9 @@ def discover_artist_images(
         ("Deezer", lambda: _deezer_references(artist, session)),
         ("Last.fm", lambda: _lastfm_references(artist, artist_mbid, credential_dir, session)),
         ("Discogs", lambda: _discogs_references(artist, credential_dir, session)),
+        ("iTunes", lambda: _itunes_references(artist, session)),
     ):
-        source_key = {"Fanart.tv": "fanarttv", "Deezer": "deezer", "Last.fm": "lastfm", "Discogs": "discogs"}[source]
+        source_key = {"Fanart.tv": "fanarttv", "Deezer": "deezer", "Last.fm": "lastfm", "Discogs": "discogs", "iTunes": "itunes"}[source]
         if source_key not in enabled:
             continue
         try:

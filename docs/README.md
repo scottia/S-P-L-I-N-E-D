@@ -53,6 +53,9 @@ diagnostic reports.
 
 ## Maintainer procedures and architecture
 
+- [PR #168 acceptance and promotion record](pr-168-acceptance.md) — accepted
+  catalog projection, COMP/Fallback, Artist Art, MusicBrainz, embedding, and
+  disposable-state scope for promotion through `dev` to `main`.
 - [Release automation](release-automation.md) — numbered release/recovery
   workflows, validation selection, Store handling, and release-note authority.
 - [Windows source/build guide](../windows/README.md) — native Rust/Slint build,

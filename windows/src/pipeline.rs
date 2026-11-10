@@ -1,6 +1,6 @@
 use crate::candidate::{Candidate, StaticFormat};
 use crate::config::Mode;
-use crate::download::{DownloadCache, DownloadedCandidate};
+use crate::download::{DownloadCache, DownloadedCandidate, temporary_owner_token};
 use crate::evaluate::{best_candidate, evaluate, is_acceptable};
 use crate::final_artwork::{FinalArtworkResult, finalize_selected_candidate};
 use crate::range::Range;
@@ -17,6 +17,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::Semaphore;
+
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER};
+#[cfg(windows)]
+use windows_sys::Win32::System::Threading::{
+    GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+};
 
 static CLEANED_PERSISTENT_CACHE_DIRS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
 const CANDIDATE_DOWNLOAD_CONCURRENCY: usize = 4;
@@ -224,45 +231,6 @@ pub fn prepare_persistent_cache_dir(cache_dir: &Path) -> Result<(), String> {
         return Ok(());
     }
 
-    for entry in fs::read_dir(cache_dir).map_err(|error| {
-        format!(
-            "Unable to enumerate SPLINED persistent cache {}: {error}",
-            cache_dir.display()
-        )
-    })? {
-        let entry = entry.map_err(|error| {
-            format!(
-                "Unable to inspect SPLINED persistent cache entry in {}: {error}",
-                cache_dir.display()
-            )
-        })?;
-        let file_name = entry.file_name();
-        let file_name = file_name.to_string_lossy();
-
-        if !file_name.starts_with("splined-candidate-") {
-            continue;
-        }
-
-        let path = entry.path();
-        let file_type = entry.file_type().map_err(|error| {
-            format!(
-                "Unable to inspect SPLINED persistent cache entry {}: {error}",
-                path.display()
-            )
-        })?;
-
-        if file_type.is_dir() && !file_type.is_symlink() {
-            continue;
-        }
-
-        fs::remove_file(&path).map_err(|error| {
-            format!(
-                "Unable to remove SPLINED persistent cache file {}: {error}",
-                path.display()
-            )
-        })?;
-    }
-
     cleaned_dirs.insert(cache_key);
     Ok(())
 }
@@ -271,20 +239,66 @@ pub fn prepare_persistent_cache_dir(cache_dir: &Path) -> Result<(), String> {
 /// interrupted run. The SQLite database, samples, and unrelated files are
 /// intentionally outside this filename contract and are never touched.
 pub fn cleanup_run_cache_files(cache_dir: &Path) {
-    let Ok(entries) = fs::read_dir(cache_dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+    let candidate_prefix = format!("splined-candidate-{}-", temporary_owner_token());
+    let local_prefix = format!("splined-local-{}-", temporary_owner_token());
+    for directory in [
+        cache_dir.to_path_buf(),
+        cache_dir.join("artist-art-candidates"),
+        cache_dir.join("musicbrainz-cover-previews"),
+    ] {
+        let Ok(entries) = fs::read_dir(directory) else {
             continue;
         };
-        if (name.starts_with("splined-candidate-") || name.starts_with("splined-local-"))
-            && path.is_file()
-        {
-            let _ = fs::remove_file(path);
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if (name.starts_with(&candidate_prefix) || name.starts_with(&local_prefix))
+                && path.is_file()
+                && let Err(error) = fs::remove_file(&path)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                eprintln!(
+                    "SPLINED temporary cleanup failed path={} error={error}",
+                    path.display()
+                );
+            }
         }
     }
+}
+
+fn process_scoped_owner_pid(name: &str) -> Option<u32> {
+    for prefix in ["splined-candidate-", "splined-local-"] {
+        if let Some(rest) = name.strip_prefix(prefix) {
+            return rest.split('-').next()?.parse().ok();
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn process_is_active(pid: u32) -> bool {
+    // SAFETY: OpenProcess returns an owned handle which is closed on every
+    // successful path. Query-only access cannot mutate the target process.
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        let error = std::io::Error::last_os_error()
+            .raw_os_error()
+            .unwrap_or_default() as u32;
+        return error == ERROR_ACCESS_DENIED || error != ERROR_INVALID_PARAMETER;
+    }
+    let mut exit_code = 0_u32;
+    // STILL_ACTIVE is 259. A failed query is treated as active so cleanup
+    // never guesses that another live SPLINED process has exited.
+    let queried = unsafe { GetExitCodeProcess(handle, &mut exit_code) } != 0;
+    unsafe { CloseHandle(handle) };
+    !queried || exit_code == 259
+}
+
+#[cfg(not(windows))]
+fn process_is_active(_pid: u32) -> bool {
+    true
 }
 
 /// Prune only known disposable Windows artwork from the configured run cache.
@@ -315,6 +329,7 @@ pub fn cleanup_stale_artwork_on_startup(cache_dir: &Path) -> Result<(usize, u64)
     let locations = [
         (cache_dir.to_path_buf(), "root"),
         (cache_dir.join("artist-art-candidates"), "candidates"),
+        (cache_dir.join("musicbrainz-cover-previews"), "candidates"),
         (
             cache_dir.join("navidrome-thumbnails").join("artists"),
             "navidrome",
@@ -356,6 +371,28 @@ pub fn cleanup_stale_artwork_on_startup(cache_dir: &Path) -> Result<(usize, u64)
                 continue;
             }
             let name = entry.file_name().to_string_lossy().into_owned();
+            let legacy_navidrome_image = kind == "navidrome"
+                && entry
+                    .path()
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|value| {
+                        value.eq_ignore_ascii_case("img") || value.eq_ignore_ascii_case("image")
+                    });
+            if legacy_navidrome_image {
+                let metadata = entry.metadata().map_err(|error| {
+                    format!(
+                        "Unable to inspect cache file {}: {error}",
+                        entry.path().display()
+                    )
+                })?;
+                let discarded = normalize_legacy_navidrome_image(&entry.path())?;
+                removed += 1;
+                if discarded {
+                    bytes = bytes.saturating_add(metadata.len());
+                }
+                continue;
+            }
             let managed = match kind {
                 "root" => {
                     name.starts_with("splined-candidate-") || name.starts_with("splined-local-")
@@ -380,7 +417,11 @@ pub fn cleanup_stale_artwork_on_startup(cache_dir: &Path) -> Result<(usize, u64)
                     entry.path().display()
                 )
             })?;
-            if !metadata.modified().is_ok_and(|modified| modified <= cutoff) {
+            let abandoned_process_file =
+                process_scoped_owner_pid(&name).is_some_and(|pid| !process_is_active(pid));
+            if !abandoned_process_file
+                && !metadata.modified().is_ok_and(|modified| modified <= cutoff)
+            {
                 continue;
             }
             fs::remove_file(entry.path()).map_err(|error| {
@@ -394,6 +435,54 @@ pub fn cleanup_stale_artwork_on_startup(cache_dir: &Path) -> Result<(usize, u64)
         }
     }
     Ok((removed, bytes))
+}
+
+/// Replace the generic cache extension used by older builds with the detected
+/// static format. Invalid or duplicate generic files are discarded.
+fn normalize_legacy_navidrome_image(path: &Path) -> Result<bool, String> {
+    let inspected = match crate::inspect::inspect_image(path) {
+        Ok(inspected) => inspected,
+        Err(_) => {
+            fs::remove_file(path).map_err(|error| {
+                format!(
+                    "Unable to remove invalid Navidrome cache {}: {error}",
+                    path.display()
+                )
+            })?;
+            return Ok(true);
+        }
+    };
+    let extension = match inspected.format {
+        StaticFormat::Jpeg => "jpg",
+        StaticFormat::Png => "png",
+        StaticFormat::Webp => "webp",
+    };
+    let target = path.with_extension(extension);
+    if target.is_file() && crate::inspect::inspect_image(&target).is_ok() {
+        fs::remove_file(path).map_err(|error| {
+            format!(
+                "Unable to remove duplicate Navidrome cache {}: {error}",
+                path.display()
+            )
+        })?;
+        return Ok(true);
+    }
+    if target.exists() {
+        fs::remove_file(&target).map_err(|error| {
+            format!(
+                "Unable to replace invalid Navidrome cache {}: {error}",
+                target.display()
+            )
+        })?;
+    }
+    fs::rename(path, &target).map_err(|error| {
+        format!(
+            "Unable to normalize Navidrome cache {} to {}: {error}",
+            path.display(),
+            target.display()
+        )
+    })?;
+    Ok(false)
 }
 
 pub async fn run_registry_pipeline_with_cache_dir(
@@ -807,7 +896,7 @@ mod tests {
     }
 
     #[test]
-    fn persistent_cache_cleanup_removes_only_splined_candidates() {
+    fn persistent_cache_preparation_preserves_other_session_candidates() {
         use tempfile::TempDir;
         let parent = TempDir::new().unwrap();
         let cache_dir = parent.path().join("cache-root");
@@ -817,35 +906,71 @@ mod tests {
 
         prepare_persistent_cache_dir(&cache_dir).unwrap();
 
-        assert!(!cache_dir.join("splined-candidate-stale.jpg").exists());
+        assert!(cache_dir.join("splined-candidate-stale.jpg").exists());
         assert!(cache_dir.join("keep.txt").exists());
     }
 
     #[test]
     fn completed_run_cleanup_removes_only_disposable_artwork() {
         let root = tempfile::TempDir::new().expect("run cache fixture should create");
+        let artist_candidates = root.path().join("artist-art-candidates");
+        let musicbrainz_candidates = root.path().join("musicbrainz-cover-previews");
+        fs::create_dir_all(&artist_candidates).unwrap();
+        fs::create_dir_all(&musicbrainz_candidates).unwrap();
         fs::write(
-            root.path().join("splined-candidate-current.jpg"),
+            root.path().join(format!(
+                "splined-candidate-{}-current.jpg",
+                temporary_owner_token()
+            )),
             b"candidate",
         )
         .unwrap();
         fs::write(
-            root.path().join("splined-local-embedded-current.jpg"),
+            root.path().join(format!(
+                "splined-local-{}-embedded-current.jpg",
+                temporary_owner_token()
+            )),
             b"local",
         )
         .unwrap();
+        let nested_artist = artist_candidates.join(format!(
+            "splined-candidate-{}-artist.jpg",
+            temporary_owner_token()
+        ));
+        let nested_musicbrainz = musicbrainz_candidates.join(format!(
+            "splined-candidate-{}-release.jpg",
+            temporary_owner_token()
+        ));
+        let other_session = artist_candidates.join("splined-candidate-999999-1-other.jpg");
+        for path in [&nested_artist, &nested_musicbrainz, &other_session] {
+            fs::write(path, b"candidate").unwrap();
+        }
         fs::write(root.path().join("splined.db"), b"database").unwrap();
         fs::create_dir(root.path().join("samples")).unwrap();
 
         cleanup_run_cache_files(root.path());
 
-        assert!(!root.path().join("splined-candidate-current.jpg").exists());
         assert!(
             !root
                 .path()
-                .join("splined-local-embedded-current.jpg")
+                .join(format!(
+                    "splined-candidate-{}-current.jpg",
+                    temporary_owner_token()
+                ))
                 .exists()
         );
+        assert!(
+            !root
+                .path()
+                .join(format!(
+                    "splined-local-{}-embedded-current.jpg",
+                    temporary_owner_token()
+                ))
+                .exists()
+        );
+        assert!(!nested_artist.exists());
+        assert!(!nested_musicbrainz.exists());
+        assert!(other_session.exists());
         assert!(root.path().join("splined.db").exists());
         assert!(root.path().join("samples").is_dir());
     }
@@ -860,21 +985,30 @@ mod tests {
         let root = tempfile::TempDir::new().unwrap();
         let cache = root.path().join("_cache");
         let candidates = cache.join("artist-art-candidates");
+        let musicbrainz = cache.join("musicbrainz-cover-previews");
         let navidrome = cache.join("navidrome-thumbnails").join("artist-banners");
         fs::create_dir_all(&candidates).unwrap();
+        fs::create_dir_all(&musicbrainz).unwrap();
         fs::create_dir_all(&navidrome).unwrap();
         fs::create_dir_all(cache.join("samples")).unwrap();
         let old_candidate = candidates.join("splined-candidate-old.jpg");
         let old_banner = navidrome.join("banner-v2-old.png");
         let recent_candidate = candidates.join("splined-candidate-recent.png");
+        let old_musicbrainz = musicbrainz.join("splined-candidate-old-release.jpg");
         let database = cache.join("splined.db");
-        for path in [&old_candidate, &old_banner, &recent_candidate, &database] {
+        for path in [
+            &old_candidate,
+            &old_banner,
+            &recent_candidate,
+            &old_musicbrainz,
+            &database,
+        ] {
             fs::write(path, b"fixture").unwrap();
         }
         fs::write(candidates.join("Thumbs.db"), b"keep").unwrap();
         fs::write(cache.join("samples").join("sample.jpg"), b"keep").unwrap();
         let old_time = SystemTime::now() - Duration::from_secs(48 * 60 * 60);
-        for path in [&old_candidate, &old_banner] {
+        for path in [&old_candidate, &old_banner, &old_musicbrainz] {
             fs::File::options()
                 .write(true)
                 .open(path)
@@ -883,12 +1017,35 @@ mod tests {
                 .unwrap();
         }
         let (removed, bytes) = cleanup_stale_artwork_on_startup(&cache).unwrap();
-        assert_eq!((removed, bytes), (2, 14));
+        assert_eq!((removed, bytes), (3, 21));
         assert!(!old_candidate.exists());
         assert!(!old_banner.exists());
+        assert!(!old_musicbrainz.exists());
         assert!(recent_candidate.exists());
         assert!(database.exists());
         assert!(candidates.join("Thumbs.db").exists());
         assert!(cache.join("samples").join("sample.jpg").exists());
+    }
+
+    #[test]
+    fn startup_cleanup_normalizes_recent_legacy_navidrome_images() {
+        let root = tempfile::TempDir::new().unwrap();
+        let cache = root.path().join("_cache");
+        let artists = cache.join("navidrome-thumbnails").join("artists");
+        fs::create_dir_all(&artists).unwrap();
+        let valid = artists.join("valid.img");
+        let invalid = artists.join("invalid.image");
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([40, 80, 120, 255]))
+            .save_with_format(&valid, image::ImageFormat::Png)
+            .unwrap();
+        fs::write(&invalid, b"not an image").unwrap();
+
+        let (removed, bytes) = cleanup_stale_artwork_on_startup(&cache).unwrap();
+
+        assert_eq!(removed, 2);
+        assert_eq!(bytes, 12);
+        assert!(!valid.exists());
+        assert!(artists.join("valid.png").is_file());
+        assert!(!invalid.exists());
     }
 }

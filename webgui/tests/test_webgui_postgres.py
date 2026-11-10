@@ -39,13 +39,13 @@ import splined as core
 import splined_compilation_authority_policy as compilation
 
 from webgui.database import Database
-from webgui.catalog_authority import WINDOWS_SYNCHRONIZED_FIELDS
+from webgui.catalog_authority import WINDOWS_SYNCHRONIZED_FIELDS, mark_windows_authority
 from webgui.runtime import Runtime
 from webgui.services import Services
 from webgui.jobs import JobAdapter, JobQueue
 from webgui.reconciliation import SQLiteReconciler
 from webgui.server import create_app
-from webgui.catalog import embedded_track_artwork_bytes
+from webgui.catalog import embedded_track_artwork_bytes, explicit_artist_credits
 from webgui.coordination import current_rows, current_track_rows, record_event
 from webgui.credentials import Credentials
 
@@ -131,6 +131,89 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             "image": self.services.catalog.image(self.cover),
             "adjustments": {"Brightness": 40},
         }
+
+    def test_musicbrainz_artwork_preview_imports_only_verified_release_art(self):
+        rendered = BytesIO()
+        Image.new("RGB", (640, 480), "teal").save(rendered, format="JPEG")
+        response = SimpleNamespace(status_code=200, content=rendered.getvalue())
+        release_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        with patch.object(core.Http, "get", return_value=response) as get:
+            result = self.services.musicbrainz_artwork_preview(
+                {"release_id": release_id, "release_group_id": ""}
+            )
+
+        self.assertTrue(result["image"].startswith("/api/image/"))
+        self.assertEqual((result["width"], result["height"]), (640, 480))
+        self.assertEqual(self.services.catalog.image_bytes(result["image"]), rendered.getvalue())
+        self.assertEqual(
+            get.call_args.args[0],
+            f"https://coverartarchive.org/release/{release_id}/front",
+        )
+
+    def test_database_reset_empties_application_data_and_preserves_schema_and_admin(self):
+        with closing(self.db.connect()) as db, db:
+            db.execute(
+                "INSERT INTO web_admin_accounts(username_key,username,password_algorithm,"
+                "password_salt,password_hash) VALUES(?,?,?,?,?)",
+                ("owner", "Owner", "fixture", "salt", "hash"),
+            )
+            db.raw.execute(
+                "INSERT INTO web_jobs(id,kind,state,payload) VALUES(%s,%s,%s,%s)",
+                (uuid4().hex, "index", "staged", Jsonb({"mode": "full"})),
+            )
+
+        result = self.db.reset_application_data()
+
+        self.assertGreater(result["removed"]["artists"], 0)
+        self.assertGreater(result["removed"]["albums"], 0)
+        self.assertGreater(result["removed"]["tracks"], 0)
+        with closing(self.db.connect()) as db:
+            for table in ("artists", "albums", "tracks", "web_jobs", "web_audit"):
+                with self.subTest(table=table):
+                    self.assertEqual(db.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT count(*) FROM web_admin_accounts").fetchone()[0], 1)
+            self.assertGreater(db.execute("SELECT count(*) FROM web_schema_versions").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT count(*) FROM sqlite_reconciliation_settings").fetchone()[0], 1)
+            index = db.raw.execute(
+                "SELECT 1 FROM pg_indexes WHERE schemaname=current_schema() "
+                "AND indexname='idx_albums_artist'"
+            ).fetchone()
+            self.assertIsNotNone(index)
+
+    def test_authenticated_database_reset_endpoint_requires_exact_target_confirmation(self):
+        self.runtime.close()  # The API owns its runtime for this test.
+        app = create_app(self.config, self.url, token="test-access", start_worker=True)
+        with TestClient(app) as client:
+            status = client.get("/api/status").json()
+            client.headers["X-SPLINED-CSRF"] = status["csrf"]
+            setup = client.post(
+                "/api/admin/setup",
+                json={
+                    "username": "administrator",
+                    "password": "StrongPassword123",
+                    "confirmation": "StrongPassword123",
+                    "token": "test-access",
+                },
+            )
+            self.assertEqual(setup.status_code, 200, setup.text)
+            target = client.get("/api/database/reset-target").json()["target"]
+            rejected = client.post(
+                "/api/database/reset",
+                json={"target": target, "confirmation": "RESET wrong-target"},
+            )
+            self.assertEqual(rejected.status_code, 400, rejected.text)
+            self.assertTrue(client.get("/api/artists").json())
+
+            reset = client.post(
+                "/api/database/reset",
+                json={"target": target, "confirmation": f"RESET {target}"},
+            )
+            self.assertEqual(reset.status_code, 200, reset.text)
+            result = reset.json()
+            self.assertTrue(result["ready_for_full_index"])
+            self.assertGreater(result["removed"]["artists"], 0)
+            self.assertEqual(client.get("/api/artists").json(), [])
+            self.assertEqual(client.get("/api/settings").status_code, 200)
 
     @staticmethod
     def set_flac_embedded_cover(path: Path, side: int | None):
@@ -240,7 +323,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             time.sleep(0.05)
         self.fail(f"job {job_id} did not reach the expected state: {item}")
 
-    def test_waiting_scan_does_not_block_explicit_writes_or_batch_staging(self):
+    def test_waiting_scan_does_not_block_explicit_writes_or_album_embedding(self):
         self.queue = JobQueue(self.services)
 
         def interactive_scan(_payload, adapter):
@@ -280,20 +363,105 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             )
             self.assertTrue(artist_result["written"])
 
-            # EMBED Batch is a separate button, but its synchronous staging
-            # operation must be available under the same waiting-scan state.
+            # EMBED Batch is an explicit operation. Once its exact prepared
+            # artwork has been snapshotted, the candidate scan that supplied
+            # it is superseded and must release the single durable worker.
             staged = self.services.stage_album(self.payload())
             self.assertTrue(staged["prepared_file"])
-            self.services.remove_staged_artwork(staged)
-
-            prompt = waiting["progress"]["prompt"]
-            self.queue.action(
-                "decision", queued["id"], "k", prompt["nonce"]
+            album_job = self.queue.enqueue(
+                "embed-album", staged, staged=True
             )
+            cancelled_scan = self.wait_for_job(
+                queued["id"], lambda item: item["state"] == "cancelled"
+            )
+            self.assertEqual(cancelled_scan["state"], "cancelled")
+            self.queue.action("start", kind="embed-album")
             completed = self.wait_for_job(
-                queued["id"], lambda item: item["state"] == "done"
+                album_job["id"], lambda item: item["state"] in {"done", "failed"}
             )
-            self.assertEqual(completed["result"]["decision"], "k")
+            self.assertEqual(completed["state"], "done", completed["error"])
+            self.assertTrue(completed["result"]["verified"])
+
+    def test_explicit_album_embed_replaces_same_size_art_and_ignores_duplicate_covers(self):
+        # Purple/preferred-size status is informational. Existing artwork at
+        # the requested dimensions must not prevent an explicitly selected,
+        # byte-different candidate from replacing every track thumbnail.
+        for path in self.files:
+            self.set_flac_embedded_cover(path, 300)
+        old_art = [embedded_track_artwork_bytes(path) for path in self.files]
+        self.assertTrue(all(old_art))
+
+        alternate = self.cover.with_suffix(".png")
+        Image.new("RGB", (900, 900), "orange").save(alternate)
+        webp = self.cover.with_suffix(".webp")
+        Image.new("RGB", (900, 900), "purple").save(webp, format="WEBP")
+        candidate = self.runtime.cache / "explicit-selected-candidate.png"
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (1800, 1800), "teal").save(candidate, format="PNG")
+
+        staged = self.services.stage_album(
+            {
+                "album_id": self.row["album_key"],
+                "image": self.services.catalog.image(candidate),
+            }
+        )
+        self.assertTrue(staged["preferred_size"])
+        self.assertFalse(self.cover.is_file())
+        self.assertTrue(alternate.is_file())
+        self.assertTrue(webp.is_file())
+        static_covers = [
+            path
+            for path in core.canonical_cover_files(self.cover.parent, "cover")
+            if path.suffix.casefold() != ".webp"
+        ]
+        self.assertEqual(static_covers, [alternate])
+        prepared = (
+            self.runtime.cache / "staged-artwork" / staged["prepared_file"]
+        ).read_bytes()
+
+        result = self.services.embed_album(staged)
+
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["tracks"], len(self.files))
+        for prior, path in zip(old_art, self.files):
+            embedded = embedded_track_artwork_bytes(path)
+            self.assertNotEqual(embedded, prior)
+            self.assertEqual(
+                hashlib.sha256(embedded).digest(),
+                hashlib.sha256(prepared).digest(),
+            )
+
+    def test_webp_album_embed_uses_verified_jpeg_still_and_removes_static_png(self):
+        alternate = self.cover.with_suffix(".png")
+        Image.new("RGB", (900, 900), "orange").save(alternate)
+        candidate = self.runtime.cache / "explicit-selected-candidate.webp"
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (1800, 1800), "teal").save(candidate, format="WEBP")
+
+        staged = self.services.stage_album(
+            {
+                "album_id": self.row["album_key"],
+                "image": self.services.catalog.image(candidate),
+            }
+        )
+
+        webp = self.cover.with_suffix(".webp")
+        self.assertTrue(webp.is_file())
+        self.assertTrue(self.cover.is_file())
+        self.assertFalse(alternate.is_file())
+        staged_cover = self.runtime.cache / "staged-artwork" / staged["cover_file"]
+        with Image.open(staged_cover) as opened:
+            self.assertEqual(opened.format, "JPEG")
+        prepared = (
+            self.runtime.cache / "staged-artwork" / staged["prepared_file"]
+        ).read_bytes()
+        result = self.services.embed_album(staged)
+        self.assertTrue(result["verified"])
+        for path in self.files:
+            self.assertEqual(
+                hashlib.sha256(embedded_track_artwork_bytes(path)).digest(),
+                hashlib.sha256(prepared).digest(),
+            )
 
     def drive_comp_candidate(self, row, track):
         result = self.queue.enqueue(
@@ -2443,6 +2611,138 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 db.execute("SELECT count(*) FROM albums").fetchone()[0], 1
             )
 
+    def test_full_refresh_revalidates_existing_windows_managed_track_tags(self):
+        with closing(self.db.connect()) as db, db:
+            track = db.execute(
+                "SELECT * FROM tracks WHERE album_key=? ORDER BY path LIMIT 1",
+                (self.row["album_key"],),
+            ).fetchone()
+            mark_windows_authority(
+                db.raw,
+                "albums",
+                self.row["album_key"],
+                "fixture-album-fingerprint",
+                "fixture-windows",
+            )
+            mark_windows_authority(
+                db.raw,
+                "tracks",
+                track["track_key"],
+                "fixture-track-fingerprint",
+                "fixture-windows",
+            )
+
+        audio = FLAC(self.files[0])
+        audio["artist"] = ["Test Artist", "Featured Artist"]
+        audio["musicbrainz_artistid"] = [
+            "22222222-2222-4222-8222-222222222222",
+            "77777777-7777-4777-8777-777777777777",
+        ]
+        audio.save()
+
+        self.services.refresh_index(mode="full")
+
+        with closing(self.db.connect()) as db:
+            refreshed = db.execute(
+                "SELECT artist_name,musicbrainz_artistid,file_size,file_mtime_ns "
+                "FROM tracks WHERE track_key=?",
+                (track["track_key"],),
+            ).fetchone()
+            album = db.execute(
+                "SELECT album_key,artist_key,album_name FROM albums WHERE album_key=?",
+                (self.row["album_key"],),
+            ).fetchone()
+            track_count = db.execute(
+                "SELECT count(*) FROM tracks WHERE album_key=?",
+                (self.row["album_key"],),
+            ).fetchone()[0]
+
+        self.assertEqual(
+            explicit_artist_credits(refreshed["artist_name"]),
+            ("Test Artist", "Featured Artist"),
+        )
+        self.assertIn(
+            "77777777-7777-4777-8777-777777777777",
+            refreshed["musicbrainz_artistid"],
+        )
+        self.assertEqual(refreshed["file_size"], self.files[0].stat().st_size)
+        self.assertEqual(refreshed["file_mtime_ns"], self.files[0].stat().st_mtime_ns)
+        self.assertEqual(album["artist_key"], self.row["artist_key"])
+        self.assertEqual(album["album_name"], self.row["album_name"])
+        self.assertEqual(track_count, 2)
+        self.assertIn(
+            "Featured Artist",
+            {item["name"] for item in self.services.catalog.artists("")},
+        )
+
+    def test_incremental_index_defers_new_album_with_windows_authority_present(self):
+        with closing(self.db.connect()) as db, db:
+            mark_windows_authority(
+                db.raw,
+                "albums",
+                self.row["album_key"],
+                "fixture-fingerprint",
+                "fixture-windows",
+            )
+
+        added = self.root / "music" / "Compilation Artist" / "New COMP Album"
+        added.mkdir(parents=True)
+        added_track = added / "1.flac"
+        shutil.copy2(self.files[0], added_track)
+        audio = FLAC(added_track)
+        audio["artist"] = "Featured Artist"
+        audio["albumartist"] = "Various Artists"
+        audio["album"] = "New COMP Album"
+        audio.pop("musicbrainz_albumid", None)
+        audio.pop("musicbrainz_artistid", None)
+        audio.save()
+
+        changes = self.services.index_changes()
+        self.assertEqual(changes["added"], 1)
+        result = self.services.refresh_index(mode="incremental")
+        self.assertEqual(result["changed_albums"], 0)
+        self.assertEqual(result["deferred_albums"], 1)
+        with closing(self.db.connect()) as db:
+            indexed = db.execute(
+                "SELECT album_name,path FROM albums WHERE path=?",
+                (str(added),),
+            ).fetchone()
+        self.assertIsNone(indexed)
+
+        # A deliberate Full Refresh may revalidate existing managed rows, but
+        # it must honor the same Windows-owned identity boundary for new
+        # filesystem discoveries. Reconciliation is the only insertion path
+        # once Windows authority has been established.
+        result = self.services.refresh_index(mode="full")
+        self.assertEqual(result["deferred_albums"], 1)
+        with closing(self.db.connect()) as db:
+            indexed = db.execute(
+                "SELECT album_name,path FROM albums WHERE path=?",
+                (str(added),),
+            ).fetchone()
+        self.assertIsNone(indexed)
+
+    def test_library_change_notice_excludes_windows_authoritative_album_deltas(self):
+        with closing(self.db.connect()) as db, db:
+            mark_windows_authority(
+                db.raw,
+                "albums",
+                self.row["album_key"],
+                "fixture-fingerprint",
+                "fixture-windows",
+            )
+        audio = FLAC(self.files[0])
+        audio["title"] = "Windows authoritative physical update"
+        audio.save()
+
+        changes = self.services.index_changes()
+
+        self.assertEqual(changes["count"], 0)
+        self.assertEqual(changes["changed"], 0)
+        self.assertEqual(changes["protected"], 1)
+        result = self.services.refresh_index(mode="incremental")
+        self.assertEqual(result["changed_albums"], 0)
+
     def test_reconciliation_applies_windows_album_authority_and_is_idempotent(self):
         authoritative_time = "2000-01-01T00:00:00+00:00"
         snapshot = self.root / "cache" / "processed.sqlite"
@@ -2680,21 +2980,35 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         for name in WINDOWS_SYNCHRONIZED_FIELDS[table]
                     },
                 )
+            # A deliberate Full Refresh may revalidate file-derived fields on
+            # an existing matched track.  It must not change track identity,
+            # Album membership, paths, or create/remove Windows-owned rows.
             self.assertEqual(
                 [
                     {
                         name: row[name]
-                        for name in WINDOWS_SYNCHRONIZED_FIELDS["tracks"]
+                        for name in ("track_key", "album_key", "path")
                     }
                     for row in before_refresh["tracks"]
                 ],
                 [
                     {
                         name: row[name]
-                        for name in WINDOWS_SYNCHRONIZED_FIELDS["tracks"]
+                        for name in ("track_key", "album_key", "path")
                     }
                     for row in after_refresh["tracks"]
                 ],
+            )
+            self.assertEqual(
+                [row["title"] for row in after_refresh["tracks"]],
+                ["WebGUI Refresh Track 1", "WebGUI Refresh Track 2"],
+            )
+            self.assertTrue(
+                all(
+                    row["musicbrainz_artistid"]
+                    == "99999999-9999-4999-8999-999999999999"
+                    for row in after_refresh["tracks"]
+                )
             )
             self.assertEqual(
                 after_refresh["album"]["embedded_validation_status"], "verified"
@@ -2705,11 +3019,32 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 str(self.root / "music"),
                 str(self.root / "music"),
             )
-            self.assertEqual(repeated["safe"], 0)
+            # The explicit filesystem refresh exposed two newer physical-tag
+            # projections, so the older authoritative SQLite snapshot now has
+            # one safe track correction per file. Applying that snapshot must
+            # still win, which preserves Windows catalog authority.
+            self.assertEqual(repeated["safe"], len(before_refresh["tracks"]))
             self.assertEqual(repeated["conflicts"], 1)
             repeated_apply = reconciler.apply(repeated["run_id"])
-            self.assertEqual(repeated_apply["attempted"], 0)
+            self.assertEqual(
+                repeated_apply["attempted"], len(before_refresh["tracks"])
+            )
+            self.assertEqual(
+                repeated_apply["applied"], len(before_refresh["tracks"])
+            )
             self.assertEqual(repeated_apply["failures"], 0)
+            with closing(self.db.connect()) as db:
+                restored_titles = [
+                    row["title"]
+                    for row in db.execute(
+                        "SELECT title FROM tracks WHERE album_key=? ORDER BY track_key",
+                        (self.row["album_key"],),
+                    )
+                ]
+            self.assertEqual(
+                restored_titles,
+                [row["title"] for row in before_refresh["tracks"]],
+            )
 
             settings = reconciler.save_settings({
                 "enabled": False,
@@ -3860,11 +4195,14 @@ class PostgreSQLBrowserTests(unittest.TestCase):
 
         app = None
         http_calls: list[str] = []
+        release_preview = BytesIO()
+        Image.new("RGB", (760, 620), "gold").save(release_preview, format="JPEG")
 
         class MusicBrainzResponse:
-            def __init__(self, payload, status_code=200):
+            def __init__(self, payload, status_code=200, content=b""):
                 self.status_code = status_code
                 self._payload = payload
+                self.content = content
 
             def json(self):
                 return self._payload
@@ -3914,6 +4252,8 @@ class PostgreSQLBrowserTests(unittest.TestCase):
 
         def fixture_http_get(_http, url, **kwargs):
             http_calls.append(url)
+            if url.startswith("https://coverartarchive.org/"):
+                return MusicBrainzResponse({}, 200, release_preview.getvalue())
             for artist_id, identity in identities.items():
                 if url.endswith("/artist/" + artist_id):
                     return MusicBrainzResponse({
@@ -4084,7 +4424,15 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     page.locator("#artistList button", has_text="Test Artist").click()
                     page.locator("button.album-card", has_text="Test Album").click()
                     expect(page.locator("#embedBatchButton")).to_be_enabled()
-                    page.locator("#embedBatchButton").click()
+                    with page.expect_response(
+                        lambda response: response.url.endswith("/api/jobs")
+                        and response.request.method == "POST",
+                        timeout=15000,
+                    ) as stage_response:
+                        page.locator("#embedBatchButton").click()
+                    self.assertTrue(
+                        stage_response.value.ok, stage_response.value.text()
+                    )
                     page.locator("#embedTab").click()
                     expect(page.locator(".queue-card", has_text="Test Album")).to_be_visible()
 
@@ -4111,7 +4459,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     # Authentication becomes visible before the asynchronous
                     # library/bootstrap render completes.  Wait for that load
                     # so its default workspace render cannot race this click.
-                    expect(page.locator("#statusText")).to_contain_text("Loaded")
+                    expect(page.locator("#statusText")).to_contain_text(
+                        "Loaded", timeout=15000
+                    )
                     page.locator("#embedTab").click()
                     expect(page.locator("#embedView")).to_be_visible()
                     expect(page.locator(".queue-card", has_text="Test Album")).to_be_visible()
@@ -4131,7 +4481,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         "#artistList button", has_text="10,000 Maniacs"
                     ).click()
                     expect(page.locator("#artistName")).to_have_text(
-                        "10,000 Maniacs"
+                        "10,000 Maniacs", timeout=15000
                     )
                     # Artist information is a tiny, theme-driven pop-out over
                     # the five-line biography. It must preserve the circular
@@ -4250,16 +4600,16 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     expect(page.locator("#artistInfoRows")).to_be_hidden()
                     page.locator("#compReportButton").click()
                     expect(page.locator("#fallbackReport")).to_contain_text(
-                        "Because the Night"
+                        "Because the Night", timeout=15000
                     )
                     expect(page.locator("#fallbackReport")).not_to_contain_text(
                         "Other Song"
                     )
 
-                    # Selecting a report track is a complete, direct COMP
-                    # workflow.  Its current embedded thumb is the Selected
-                    # Artwork source; Upscale Preview and EMBED Comp do not
-                    # require opening MusicBrainz release results.
+                    # Explicit preview mode remains a direct saved-art path.
+                    # Outside preview mode, selecting a track immediately
+                    # starts its single-track COMP review.
+                    page.locator("#fallbackReport .fallback-preview-radio").click()
                     page.locator("#fallbackReport .fallback-track").click()
                     expect(page.locator("#selectedSource")).to_have_text(
                         "Embedded track"
@@ -4331,7 +4681,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     page.locator("#compReportButton").click()
                     page.locator("#compReportButton").click()
                     expect(page.locator("#fallbackReport")).to_contain_text(
-                        "Because the Night"
+                        "Because the Night", timeout=15000
                     )
                     with page.expect_request(
                         lambda request: request.method == "POST"
@@ -4362,7 +4712,10 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     )
                     expect(page.locator("#candidateDock")).to_be_hidden()
                     expect(page.locator("#sourceStrip button", has_text="MusicBrainz")).to_contain_text(
-                        "0 found"
+                        "0 Cover"
+                    )
+                    expect(page.locator("#sourceStrip button", has_text="MusicBrainz")).to_contain_text(
+                        "Album-Only"
                     )
                     self.assertTrue(http_calls)
                     self.assertTrue(
@@ -4421,152 +4774,38 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     ).to_be_disabled()
                     expect(page.locator(".musicbrainz-release-row").first).to_be_visible()
                     page.locator(".musicbrainz-release-row").first.click()
-                    use_selected = page.locator(
-                        ".musicbrainz-review-actions button.primary"
-                    )
-                    expect(use_selected).to_be_enabled()
-                    # Job polling can replace this enabled button with an
-                    # equivalent node between Playwright's stability checks.
-                    # Query and dispatch atomically on the currently enabled node.
-                    with page.expect_response(
-                        lambda response: response.url.endswith("/api/jobs/action")
-                        and response.request.method == "POST"
-                        and '"value":"1"'
-                        in (response.request.post_data or "").replace(" ", ""),
-                        timeout=15000,
-                    ) as action_response:
-                        page.evaluate("""() => {
-                            const button = document.querySelector('.musicbrainz-review-actions button.primary');
-                            if (!button || button.disabled) throw new Error('selected release was not retained');
-                            button.click();
-                        }""")
-                    self.assertTrue(
-                        action_response.value.ok,
-                        action_response.value.text(),
-                    )
-                    expect(page.locator("#statusText")).to_contain_text(
-                        "loading artwork candidates", timeout=15000
-                    )
-                    try:
-                        expect(page.locator(".candidate-image-button").first).to_be_visible(
-                            timeout=15000
-                        )
-                    except AssertionError as error:
-                        job_diagnostics = page.evaluate("""async () => ({
-                            reviewJobId: state.reviewJobId,
-                            reviewJobState: state.reviewJobState,
-                            queuedDecision: state.queuedDecision ? {
-                              jobId: state.queuedDecision.jobId,
-                              nonce: state.queuedDecision.nonce,
-                              kind: state.queuedDecision.kind,
-                              selectedResult: state.queuedDecision.selectedResult,
-                            } : null,
-                            jobs: (await fetch('/api/jobs').then(response => response.json())).map(job => ({
-                              id: job.id, kind: job.kind, state: job.state, error: job.error,
-                              promptKind: job.progress?.prompt?.context?.kind,
-                              promptNonce: job.progress?.prompt?.nonce,
-                              message: job.progress?.message,
-                            })),
-                        })""")
-                        self.fail(
-                            f"candidate handoff did not render: {job_diagnostics!r}; {error}"
-                        )
-                    cards = page.locator("#candidateGrid .candidate-card.queued")
-                    self.assertGreaterEqual(cards.count(), 5)
-                    first_card = cards.first
-                    expect(first_card.locator(".candidate-source-label")).not_to_be_empty()
-                    expect(first_card.locator(".candidate-resolution")).to_be_visible()
-                    expect(first_card.locator(".candidate-quality")).to_be_visible()
-                    first_image = first_card.locator("img")
-                    expect(first_image).to_have_attribute("src", re.compile(r"\S+"))
-                    first_image_url = first_image.evaluate(
-                        "image => new URL(image.getAttribute('src'), document.baseURI).href"
-                    )
-                    first_image_response = page.request.get(first_image_url)
-                    self.assertTrue(first_image_response.ok)
-                    with Image.open(BytesIO(first_image_response.body())) as actual:
-                        displayed = first_card.locator(
-                            ".candidate-resolution"
-                        ).inner_text()
-                        self.assertEqual(
-                            displayed, f"{actual.width} × {actual.height}"
-                        )
-                    grid_box = page.locator("#candidateGrid").bounding_box()
-                    visible_cards = 0
-                    for index in range(cards.count()):
-                        box = cards.nth(index).bounding_box()
-                        if box and box["x"] + box["width"] <= grid_box["x"] + grid_box["width"]:
-                            visible_cards += 1
-                            self.assertLessEqual(
-                                box["y"] + box["height"],
-                                grid_box["y"] + grid_box["height"] + 1,
-                            )
-                    self.assertGreaterEqual(visible_cards, 5)
-                    diagnostics = page.locator("#compDecisionTools .comp-diagnostics")
-                    expect(diagnostics).to_contain_text("Diagnostics (4)")
-                    diagnostics.locator("summary").click()
-                    expect(diagnostics.locator(".comp-diagnostics-list")).to_be_visible()
-                    expect(first_card).to_be_visible()
-                    diagnostics.locator("summary").click()
-                    unavailable = page.locator("#sourceStrip .source-card", has_text="Deezer")
-                    expect(unavailable).to_have_class(re.compile(r"\bunavailable\b"))
-                    expect(unavailable.locator(".source-state")).to_have_text("⚠ Unavailable")
-                    filtered = page.locator("#sourceStrip .source-card", has_text="MusicBrainz")
-                    expect(filtered).to_have_class(re.compile(r"\bfiltered\b"))
-                    expect(filtered.locator(".source-state")).to_have_text("○ Filtered")
-
-                    screenshot_dir = os.environ.get("SPLINED_TEST_SCREENSHOT_DIR")
-                    if screenshot_dir:
-                        screenshot_root = Path(screenshot_dir)
-                        screenshot_root.mkdir(parents=True, exist_ok=True)
-                        page.locator("#candidateDock").screenshot(
-                            path=str(
-                                screenshot_root
-                                / "candidate-area-brave-normal-collapsed.png"
-                            )
-                        )
-                        diagnostics.locator("summary").click()
-                        expect(
-                            diagnostics.locator(".comp-diagnostics-list")
-                        ).to_be_visible()
-                        expect(first_card).to_be_visible()
-                        page.locator("#candidateDock").screenshot(
-                            path=str(
-                                screenshot_root
-                                / "candidate-area-brave-normal-expanded.png"
-                            )
-                        )
-                        diagnostics.locator("summary").click()
-                    page.locator(
-                        "#compDecisionTools button", has_text="MusicBrainz Results"
-                    ).click()
-                    expect(page.locator("#musicbrainzReview")).to_be_visible(
-                        timeout=15000
-                    )
                     expect(
                         page.locator(
-                            ".musicbrainz-review-actions button",
-                            has_text="Back to Candidates",
+                            "#musicbrainzReview button", has_text="EMBED Comp"
                         )
-                    ).to_be_enabled()
-                    page.locator(
-                        ".musicbrainz-review-actions button",
-                        has_text="Back to Candidates",
-                    ).click()
-                    expect(page.locator(".candidate-image-button").first).to_be_visible(
-                        timeout=15000
+                    ).to_have_count(0)
+                    candidate_search = page.locator(
+                        ".musicbrainz-release-actions button",
+                        has_text="Generate Candidate Artwork",
                     )
-                    page.locator(".candidate-image-button").first.click()
+                    expect(candidate_search).to_be_visible()
+                    expect(candidate_search).to_be_enabled()
                     expect(page.locator("#writeButton")).to_have_text("EMBED Comp")
-                    expect(page.locator("#embedBatchButton")).to_have_text("EMBED Batch")
-                    expect(page.locator("#embedBatchButton")).to_be_disabled()
+                    expect(page.locator("#writeButton")).to_be_enabled()
+                    expect(page.locator("#selectedSource")).to_have_text(
+                        "MusicBrainz / Cover Art Archive"
+                    )
+                    expect(page.locator("#selectedDimensions")).to_have_text(
+                        "760 × 620"
+                    )
                     self.assertEqual(embedded_track_artwork_bytes(target), initial_target_art)
                     page.locator("#upscaleButton").click()
                     expect(page.locator("#statusText")).to_contain_text(
                         "Embedded Thumb Ready · 300 × 300", timeout=15000
                     )
                     expect(page.locator("#selectedDimensions")).to_have_text("300 × 300")
-                    page.locator("#writeButton").click()
+                    with page.expect_response(
+                        lambda response: response.url.endswith("/api/jobs/action")
+                        and "webgui-embed-release" in (response.request.post_data or ""),
+                        timeout=15000,
+                    ) as action_response:
+                        page.locator("#writeButton").click()
+                    self.assertTrue(action_response.value.ok, action_response.value.text())
                     target_art = wait_for_embedded_art(target, initial_target_art)
                     with Image.open(BytesIO(target_art)) as embedded:
                         self.assertEqual(embedded.size, (300, 300))
@@ -4583,10 +4822,10 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         "#artistList button", has_text="Billboard Hot 100 Singles of 1994"
                     ).click()
                     expect(page.locator("#fallbackReport")).to_contain_text(
-                        "Because the Night"
+                        "Because the Night", timeout=15000
                     )
                     expect(page.locator("#fallbackReport")).to_contain_text(
-                        "Other Song"
+                        "Other Song", timeout=15000
                     )
                     full_launch_call_start = len(http_calls)
                     page.locator("#searchButton").click()
@@ -4600,20 +4839,34 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         "100% match · Release Family"
                     )
                     expect(page.locator("#candidateDock")).to_be_hidden()
-                    self.assertTrue(
-                        all(
+                    unexpected_full_launch_calls = [
+                        url
+                        for url in http_calls[full_launch_call_start:]
+                        if not (
                             url.startswith(core.MB_BASE)
-                            for url in http_calls[full_launch_call_start:]
-                        ),
-                        "an artwork provider was queried before full-Fallback release selection",
+                            or url.startswith("https://coverartarchive.org/")
+                        )
+                    ]
+                    self.assertFalse(
+                        unexpected_full_launch_calls,
+                        "a non-MusicBrainz artwork provider was queried before "
+                        "full-Fallback release selection: "
+                        f"{unexpected_full_launch_calls}",
                     )
                     page.locator(".musicbrainz-release-row").click()
-                    page.locator(".musicbrainz-review-actions button.primary").click()
-                    expect(page.locator(".candidate-image-button").first).to_be_visible(
-                        timeout=15000
+                    expect(
+                        page.locator(
+                            "#musicbrainzReview button", has_text="EMBED Comp"
+                        )
+                    ).to_have_count(0)
+                    candidate_search = page.locator(
+                        ".musicbrainz-release-actions button",
+                        has_text="Generate Candidate Artwork",
                     )
-                    page.locator(".candidate-image-button").first.click()
+                    expect(candidate_search).to_be_visible()
+                    expect(candidate_search).to_be_enabled()
                     expect(page.locator("#writeButton")).to_have_text("EMBED Comp")
+                    expect(page.locator("#writeButton")).to_be_enabled()
                     expect(page.locator("#embedBatchButton")).to_have_text("EMBED Batch")
                     expect(page.locator("#embedBatchButton")).to_be_disabled()
                     self.assertIsNone(embedded_track_artwork_bytes(other))
@@ -4635,11 +4888,11 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         "#artistList button", has_text="10,000 Maniacs"
                     ).click()
                     expect(page.locator("#artistName")).to_have_text(
-                        "10,000 Maniacs"
+                        "10,000 Maniacs", timeout=15000
                     )
                     page.locator("#compReportButton").click()
                     expect(page.locator("#fallbackReport")).to_contain_text(
-                        "Because the Night"
+                        "Because the Night", timeout=15000
                     )
                     expect(page.locator("#fallbackReport")).not_to_contain_text(
                         "Other Song"

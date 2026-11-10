@@ -6,12 +6,16 @@
 
 use crate::config::{Config, Mode, configured_samples_dir, resolve_sources};
 use crate::inspect::inspect_image;
-use crate::media_database::{MediaAlbumSnapshot, MediaSnapshot, MediaTrackSnapshot};
+use crate::media_database::{
+    MediaAlbumSnapshot, MediaSnapshot, MediaTrackSnapshot, artist_projection_identity,
+    indexed_artist_catalog_projection,
+};
 use crate::range::Range;
 use crate::settings::{
     AdjustmentPreset, AlbumFrameThemeStyle, ArtistLookupOverride, BannerThemeStyle,
     default_adjustment_presets, default_album_frame_theme_styles, default_banner_theme_styles,
 };
+use crate::source_policy::default_artist_art_search;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
@@ -277,16 +281,39 @@ pub struct LibraryState {
     /// name. These IDs authorize the explicit Artist Overview write action;
     /// SPLINED never guesses an artist endpoint from display text alone.
     pub artist_navidrome_ids: HashMap<String, String>,
+    /// Read-only Artist appearances derived from complete per-track credits on
+    /// MBID-backed Albums. Keys are real display Artists; values are Album
+    /// keys. Album ownership and the Albums/Fallback lists remain unchanged.
+    pub artist_appearance_album_keys: BTreeMap<String, BTreeSet<String>>,
+    /// Positionally paired local Artist MBIDs for projected/Featured Artists.
+    /// This is stronger identity evidence than a conflicting Navidrome row.
+    pub artist_appearance_musicbrainz_ids: HashMap<String, String>,
 }
 
 impl LibraryState {
     pub fn from_snapshot(snapshot: MediaSnapshot) -> Result<Self, String> {
+        Self::from_snapshot_with_separator(snapshot, crate::config::DEFAULT_ARTIST_SEPARATOR_REGEX)
+    }
+
+    pub fn from_snapshot_with_separator(
+        snapshot: MediaSnapshot,
+        artist_separator_regex: &str,
+    ) -> Result<Self, String> {
         if snapshot.schema_version != crate::media_database::SCHEMA_VERSION {
             return Err(format!(
                 "SPLINED media database schema {} is not supported by this application.",
                 snapshot.schema_version
             ));
         }
+        let projection =
+            indexed_artist_catalog_projection(&snapshot.database_path, artist_separator_regex)
+                .unwrap_or_default();
+        let artist_appearance_album_keys = projection.album_keys;
+        let artist_appearance_musicbrainz_ids = projection
+            .musicbrainz_ids
+            .into_iter()
+            .map(|(artist, mbid)| (artist.trim().to_ascii_lowercase(), mbid))
+            .collect();
         let mut albums = snapshot
             .albums
             .into_iter()
@@ -347,6 +374,8 @@ impl LibraryState {
             artist_artwork_paths: HashMap::new(),
             album_artwork_paths,
             artist_navidrome_ids: HashMap::new(),
+            artist_appearance_album_keys,
+            artist_appearance_musicbrainz_ids,
         })
     }
 
@@ -373,6 +402,8 @@ impl LibraryState {
             artist_artwork_paths: HashMap::new(),
             album_artwork_paths: HashMap::new(),
             artist_navidrome_ids: HashMap::new(),
+            artist_appearance_album_keys: BTreeMap::new(),
+            artist_appearance_musicbrainz_ids: HashMap::new(),
         }
     }
 
@@ -456,12 +487,75 @@ impl LibraryState {
     fn artists(&self) -> BTreeMap<String, Vec<usize>> {
         let mut values = BTreeMap::<String, Vec<usize>>::new();
         for (index, album) in self.albums.iter().enumerate() {
+            if Self::is_synthetic_album_artist(&album.snapshot.artist) {
+                continue;
+            }
             values
                 .entry(album.snapshot.artist.clone())
                 .or_default()
                 .push(index);
         }
+        for (appearance_artist, album_keys) in &self.artist_appearance_album_keys {
+            if Self::is_synthetic_album_artist(appearance_artist) {
+                continue;
+            }
+            let appearance_identity = artist_projection_identity(appearance_artist);
+            let display = values
+                .keys()
+                .find(|artist| artist_projection_identity(artist) == appearance_identity)
+                .cloned()
+                .unwrap_or_else(|| appearance_artist.clone());
+            let indices = values.entry(display).or_default();
+            for (index, album) in self.albums.iter().enumerate() {
+                if album_keys
+                    .iter()
+                    .any(|key| key.eq_ignore_ascii_case(&album.snapshot.album_key))
+                    && !indices.contains(&index)
+                {
+                    indices.push(index);
+                }
+            }
+        }
         values
+    }
+
+    fn artist_indices(&self, artist: &str) -> Vec<usize> {
+        let identity = artist_projection_identity(artist);
+        self.artists()
+            .into_iter()
+            .find(|(name, _)| artist_projection_identity(name) == identity)
+            .map(|(_, indices)| indices)
+            .unwrap_or_default()
+    }
+
+    fn text_matches_for_artist(&self, artist: &str, album: &AlbumEntry) -> bool {
+        let needle = self.text_filter.trim().to_ascii_lowercase();
+        let global_matches = needle.is_empty()
+            || artist.to_ascii_lowercase().contains(&needle)
+            || album.snapshot.artist.to_ascii_lowercase().contains(&needle)
+            || album.snapshot.title.to_ascii_lowercase().contains(&needle)
+            || album.snapshot.path.to_ascii_lowercase().contains(&needle);
+        let artist_filter = self.artist_filter.trim().to_ascii_lowercase();
+        let album_title = self.album_filter.trim().to_ascii_lowercase();
+        global_matches
+            && (artist_filter.is_empty() || artist.to_ascii_lowercase().contains(&artist_filter))
+            && (album_title.is_empty()
+                || album
+                    .snapshot
+                    .title
+                    .to_ascii_lowercase()
+                    .contains(&album_title))
+    }
+
+    fn is_synthetic_album_artist(artist: &str) -> bool {
+        matches!(
+            artist
+                .trim()
+                .trim_matches(['[', ']'])
+                .to_ascii_lowercase()
+                .as_str(),
+            "soundtrack" | "soundtracks" | "various artist" | "various artists"
+        )
     }
 
     fn artist_album_indices(&self, indices: &[usize]) -> Vec<usize> {
@@ -480,12 +574,12 @@ impl LibraryState {
         let artists = self.artists();
         let pending = artists
             .iter()
-            .filter(|(_, indices)| {
+            .filter(|(artist, indices)| {
                 indices.iter().any(|index| {
                     let album = &self.albums[*index];
                     !Self::is_fallback_album(album)
                         && album.eligible_by_default()
-                        && self.text_matches(album)
+                        && self.text_matches_for_artist(artist, album)
                 })
             })
             .map(|(artist, _)| artist.clone())
@@ -689,6 +783,9 @@ impl LibraryState {
 
     fn album_visible(&self, index: usize, _artists: &BTreeMap<String, Vec<usize>>) -> bool {
         let album = &self.albums[index];
+        if self.view == LibraryView::Albums && !self.show_tracks && Self::is_fallback_album(album) {
+            return false;
+        }
         if !self.text_matches(album) {
             return false;
         }
@@ -729,7 +826,7 @@ impl LibraryState {
     fn album_is_in_active_review_view(&self, album: &AlbumEntry) -> bool {
         if self.show_tracks {
             Self::is_fallback_album(album)
-        } else if self.view == LibraryView::Artists {
+        } else if matches!(self.view, LibraryView::Artists | LibraryView::Albums) {
             !Self::is_fallback_album(album)
         } else {
             true
@@ -827,7 +924,7 @@ impl LibraryState {
                         .iter()
                         .copied()
                         .filter(|index| {
-                            self.text_matches(&self.albums[*index])
+                            self.text_matches_for_artist(artist, &self.albums[*index])
                                 && self.album_matches_artist_active_status(
                                     &self.albums[*index],
                                     &artist_album_indices,
@@ -1173,13 +1270,7 @@ impl LibraryState {
             let Some(artist) = self.focused_artist.as_deref() else {
                 return 0;
             };
-            let indices = self
-                .albums
-                .iter()
-                .enumerate()
-                .filter(|(_, album)| album.snapshot.artist.eq_ignore_ascii_case(artist))
-                .map(|(index, _)| index)
-                .collect::<Vec<_>>();
+            let indices = self.artist_indices(artist);
             return usize::from(
                 !indices.is_empty()
                     && (value == StatusFilter::All || self.artist_matches_filter(&indices, value)),
@@ -1279,13 +1370,13 @@ impl LibraryState {
     }
 
     pub fn toggle_artist_scope(&mut self, artist: &str) -> bool {
-        if !self
-            .albums
-            .iter()
-            .any(|album| album.snapshot.artist.eq_ignore_ascii_case(artist))
-        {
+        let canonical = self
+            .artists()
+            .into_keys()
+            .find(|name| name.eq_ignore_ascii_case(artist));
+        let Some(canonical) = canonical else {
             return false;
-        }
+        };
         if self
             .focused_artist
             .as_ref()
@@ -1293,7 +1384,7 @@ impl LibraryState {
         {
             self.focused_artist = None;
         } else {
-            self.focused_artist = Some(artist.to_string());
+            self.focused_artist = Some(canonical);
         }
         true
     }
@@ -1318,11 +1409,11 @@ impl LibraryState {
     }
 
     pub fn focus_artist(&mut self, artist: &str) -> bool {
-        let Some(album) = self
-            .albums
-            .iter()
-            .find(|album| album.snapshot.artist.eq_ignore_ascii_case(artist))
-        else {
+        let canonical = self
+            .artists()
+            .into_keys()
+            .find(|name| name.eq_ignore_ascii_case(artist));
+        let Some(canonical) = canonical else {
             return false;
         };
         if self
@@ -1332,7 +1423,7 @@ impl LibraryState {
         {
             self.selection_epoch = self.selection_epoch.wrapping_add(1);
         }
-        self.focused_artist = Some(album.snapshot.artist.clone());
+        self.focused_artist = Some(canonical);
         true
     }
 
@@ -1424,17 +1515,14 @@ impl LibraryState {
 
     pub fn toggle_artist(&mut self, artist: &str, include_bypassed: bool) -> SelectionResult {
         self.selection_epoch = self.selection_epoch.wrapping_add(1);
-        let indices = self
-            .albums
-            .iter()
-            .enumerate()
-            .filter(|(_, album)| album.snapshot.artist.eq_ignore_ascii_case(artist))
-            .map(|(index, _)| index)
-            .collect::<Vec<_>>();
+        let indices = self.artist_indices(artist);
         if indices.is_empty() {
             return SelectionResult::NotFound;
         }
-        self.focused_artist = Some(self.albums[indices[0]].snapshot.artist.clone());
+        self.focused_artist = self
+            .artists()
+            .into_keys()
+            .find(|name| name.eq_ignore_ascii_case(artist));
         let selected = !indices.iter().any(|index| self.albums[*index].selected);
         self.artist_run_scope_active = selected;
         let deselected_track_paths = if selected {
@@ -1583,23 +1671,16 @@ impl LibraryState {
         artist: &str,
         include_bypassed: bool,
     ) -> SelectionResult {
-        if !self
-            .albums
-            .iter()
-            .any(|album| album.snapshot.artist.eq_ignore_ascii_case(artist))
-        {
+        let indices = self.artist_indices(artist);
+        if indices.is_empty() {
             return SelectionResult::NotFound;
         }
-        let indices = self
-            .albums
-            .iter()
-            .enumerate()
-            .filter(|(_, album)| album.snapshot.artist.eq_ignore_ascii_case(artist))
-            .map(|(index, _)| index)
-            .collect::<Vec<_>>();
         self.select_none();
         self.artist_run_scope_active = true;
-        self.focused_artist = Some(self.albums[indices[0]].snapshot.artist.clone());
+        self.focused_artist = self
+            .artists()
+            .into_keys()
+            .find(|name| name.eq_ignore_ascii_case(artist));
         for index in indices {
             let album = &mut self.albums[index];
             match album.state {
@@ -1638,6 +1719,28 @@ impl LibraryState {
         album_key: &str,
         track_path: &str,
         include_bypassed: bool,
+    ) -> SelectionResult {
+        self.update_compilation_track_selection(album_key, track_path, include_bypassed, true)
+    }
+
+    /// Select a fallback track without exposing the model's toggle semantics
+    /// to a file-list row. Repeated row clicks remain explicit reprocess
+    /// requests instead of silently deselecting the current track.
+    pub fn select_compilation_track(
+        &mut self,
+        album_key: &str,
+        track_path: &str,
+        include_bypassed: bool,
+    ) -> SelectionResult {
+        self.update_compilation_track_selection(album_key, track_path, include_bypassed, false)
+    }
+
+    fn update_compilation_track_selection(
+        &mut self,
+        album_key: &str,
+        track_path: &str,
+        include_bypassed: bool,
+        toggle_if_selected: bool,
     ) -> SelectionResult {
         let Some(index) = self
             .albums
@@ -1680,16 +1783,20 @@ impl LibraryState {
         let was_selected = self.selected_compilation_track_paths.contains(&normalized);
         let focused_album_key = album.snapshot.album_key.clone();
 
-        if was_selected {
+        if was_selected && toggle_if_selected {
             self.selection_epoch = self.selection_epoch.wrapping_add(1);
             self.selected_compilation_track_paths.remove(&normalized);
-        } else {
+        } else if !was_selected {
             // A fallback track is a complete, track-scoped processing target.
             // Replace any Artist/Album selection that led the operator here so
             // a normal Artist-folder album cannot run first and overwrite the
             // compilation preview.
             self.select_none();
             self.selected_compilation_track_paths.insert(normalized);
+        } else {
+            // Treat another click on the active file row as a fresh explicit
+            // review request while keeping the internal selection intact.
+            self.selection_epoch = self.selection_epoch.wrapping_add(1);
         }
         self.focused_album_key = Some(focused_album_key);
 
@@ -1703,8 +1810,9 @@ impl LibraryState {
         SelectionResult::Changed
     }
 
-    /// Queue only unfinished fallback tracks belonging to the Artist Overview
-    /// performer. A COMP launch never silently includes other artists' tracks.
+    /// Queue every fallback track belonging to the current report scope.
+    /// LAUNCH COMP is an explicit reprocess command, so completed green tracks
+    /// remain eligible; the Artist view still never includes another performer.
     pub fn select_pending_compilation_tracks(
         &mut self,
         album_key: &str,
@@ -1735,7 +1843,6 @@ impl LibraryState {
             .snapshot
             .compilation_tracks
             .iter()
-            .filter(|track| !track.embedded_artwork_recorded)
             .filter(|track| {
                 self.show_tracks
                     || self.view != LibraryView::Artists
@@ -1779,9 +1886,13 @@ impl LibraryState {
             .focused_artist
             .clone()
             .ok_or_else(|| "Select [ALL] requires an Artist.".to_string())?;
+        let indices = self
+            .artist_indices(&artist)
+            .into_iter()
+            .collect::<BTreeSet<_>>();
         self.select_none();
-        for album in &mut self.albums {
-            if album.snapshot.artist.eq_ignore_ascii_case(&artist) && album.eligible_by_default() {
+        for (index, album) in self.albums.iter_mut().enumerate() {
+            if indices.contains(&index) && album.eligible_by_default() {
                 album.selected = true;
                 album.bypass_override = album.state == AlbumState::Bypassed
                     && album.compilation_track_artwork_pending();
@@ -1802,6 +1913,11 @@ impl LibraryState {
                 .unwrap_or(0);
         }
         let artists = self.artists();
+        let focused_indices = self.focused_artist.as_deref().map(|artist| {
+            self.artist_indices(artist)
+                .into_iter()
+                .collect::<BTreeSet<_>>()
+        });
         let visible = self
             .albums
             .iter()
@@ -1810,9 +1926,9 @@ impl LibraryState {
                 self.album_is_in_active_review_view(album)
                     && self.album_matches_active_status(*index, &artists)
                     && (self.show_tracks
-                        || self.focused_artist.as_ref().is_none_or(|artist| {
-                            album.snapshot.artist.eq_ignore_ascii_case(artist)
-                        }))
+                        || focused_indices
+                            .as_ref()
+                            .is_none_or(|indices| indices.contains(index)))
             })
             .map(|(index, _)| index)
             .collect::<Vec<_>>();
@@ -1969,20 +2085,21 @@ impl LibraryState {
         let focused_artist = self.focused_artist.clone();
         let focused_album_key = self.focused_album_key.clone();
         let focused_artist_anchor = focused_artist.as_deref().and_then(|artist| {
-            self.albums
+            let indices = self.artist_indices(artist);
+            indices
                 .iter()
-                .find(|album| {
-                    album.snapshot.artist.eq_ignore_ascii_case(artist)
-                        && focused_album_key
-                            .as_deref()
-                            .is_some_and(|key| album.snapshot.album_key.eq_ignore_ascii_case(key))
+                .find_map(|index| {
+                    let album = &self.albums[*index];
+                    focused_album_key
+                        .as_deref()
+                        .is_some_and(|key| album.snapshot.album_key.eq_ignore_ascii_case(key))
+                        .then(|| album.snapshot.album_key.clone())
                 })
                 .or_else(|| {
-                    self.albums
-                        .iter()
-                        .find(|album| album.snapshot.artist.eq_ignore_ascii_case(artist))
+                    indices
+                        .first()
+                        .map(|index| self.albums[*index].snapshot.album_key.clone())
                 })
-                .map(|album| album.snapshot.album_key.clone())
         });
         let completed_fallback_return_key = self.completed_fallback_return_key.clone();
         let selected_compilation_track_paths = self.selected_compilation_track_paths.clone();
@@ -1999,13 +2116,23 @@ impl LibraryState {
         refreshed.artist_filter = artist_filter;
         refreshed.album_filter = album_filter;
         refreshed.show_tracks = show_tracks;
-        let refreshed_artist = focused_artist_anchor.as_deref().and_then(|key| {
-            refreshed
-                .albums
-                .iter()
-                .find(|album| album.snapshot.album_key.eq_ignore_ascii_case(key))
-                .map(|album| album.snapshot.artist.clone())
-        });
+        let refreshed_artist = focused_artist
+            .as_deref()
+            .and_then(|artist| {
+                refreshed
+                    .artists()
+                    .into_keys()
+                    .find(|candidate| candidate.eq_ignore_ascii_case(artist))
+            })
+            .or_else(|| {
+                focused_artist_anchor.as_deref().and_then(|key| {
+                    refreshed
+                        .albums
+                        .iter()
+                        .find(|album| album.snapshot.album_key.eq_ignore_ascii_case(key))
+                        .map(|album| album.snapshot.artist.clone())
+                })
+            });
         refreshed.focused_artist = refreshed_artist.clone().or(focused_artist.clone());
         refreshed.focused_album_key = focused_album_key;
         refreshed.completed_fallback_return_key = completed_fallback_return_key;
@@ -2063,6 +2190,8 @@ pub struct SourceState {
     pub name: String,
     pub enabled: bool,
     pub candidate_count: usize,
+    pub artist_candidate_count: usize,
+    pub cover_candidate_count: usize,
     pub status: String,
 }
 
@@ -2548,6 +2677,22 @@ fn candidate_source_card_names(config: &Config) -> Vec<String> {
             names.push(source.clone());
         }
     }
+    for source in [
+        "deezer",
+        "itunes",
+        "fanarttv",
+        "lastfm",
+        "discogs",
+        "navidrome",
+    ] {
+        let artist_enabled = config.source_policies.get(source).map_or_else(
+            || default_artist_art_search(source),
+            |policy| policy.includes_artist_art(source),
+        );
+        if artist_enabled && !names.iter().any(|name| name.eq_ignore_ascii_case(source)) {
+            names.push(source.to_string());
+        }
+    }
     if !names
         .iter()
         .any(|name| name.eq_ignore_ascii_case("navidrome"))
@@ -2566,6 +2711,10 @@ impl ApplicationState {
             Mode::Read => LaunchMode::Read,
             Mode::Write => LaunchMode::LiveWrite,
         };
+        let library = LibraryState::from_snapshot_with_separator(
+            snapshot,
+            &config.scan.artist_separator_regex,
+        )?;
         let sources = candidate_source_card_names(&config)
             .into_iter()
             .map(|name| {
@@ -2578,6 +2727,8 @@ impl ApplicationState {
                 SourceState {
                     enabled,
                     candidate_count: 0,
+                    artist_candidate_count: 0,
+                    cover_candidate_count: 0,
                     status: if is_samples && !config.samples.sample_write {
                         "Excluded".to_string()
                     } else if is_samples {
@@ -2593,7 +2744,7 @@ impl ApplicationState {
             .collect();
         Ok(Self {
             config,
-            library: LibraryState::from_snapshot(snapshot)?,
+            library,
             sources,
             scan_scope: ScanScope::Selected,
             auto_scan_enabled: false,
@@ -2786,6 +2937,10 @@ impl ApplicationState {
                 SourceState {
                     enabled,
                     candidate_count: previous.map_or(0, |source| source.candidate_count),
+                    artist_candidate_count: previous
+                        .map_or(0, |source| source.artist_candidate_count),
+                    cover_candidate_count: previous
+                        .map_or(0, |source| source.cover_candidate_count),
                     status: if is_samples && !config.samples.sample_write {
                         "Excluded".to_string()
                     } else if is_samples {
@@ -3055,6 +3210,7 @@ impl ApplicationState {
             .join(sanitize_sample_component(&self.current_artist));
         if self.current_album.trim().is_empty() {
             source.candidate_count = count_artist_sample_images(&sample_artist_dir);
+            source.artist_candidate_count = source.candidate_count;
             source.status = if source.candidate_count == 0 {
                 "No images".to_string()
             } else {
@@ -3134,6 +3290,7 @@ impl ApplicationState {
             .iter()
             .filter(|candidate| candidate.source.eq_ignore_ascii_case("samples"))
             .count();
+        source.cover_candidate_count = source.candidate_count;
         source.status = if source.candidate_count == 0 {
             "No images".to_string()
         } else {
@@ -4388,6 +4545,7 @@ impl ApplicationState {
                     .filter(|item| item.source.eq_ignore_ascii_case(&source.name))
                     .count()
             };
+            source.cover_candidate_count = source.candidate_count;
         }
         // A running scan emits Samples as real runtime candidates so the visible
         // indexes and the decision queue share one authority. Idle browsing still
@@ -4974,6 +5132,31 @@ mod tests {
     }
 
     #[test]
+    fn albums_and_fallback_views_are_mutually_exclusive() {
+        let mut release = album("release", "Alpha", "Release", "unprocessed");
+        release.album_mbid = "release-id".to_string();
+        let fallback = album("fallback", "Various Artists", "Compilation", "unprocessed");
+        let mut state = LibraryState::from_snapshot(MediaSnapshot {
+            schema_version: crate::media_database::SCHEMA_VERSION,
+            database_path: "splined.db".to_string(),
+            canonical_root: "/music".to_string(),
+            local_root: r"C:\Music".to_string(),
+            albums: vec![release, fallback],
+        })
+        .unwrap();
+
+        state.set_view(LibraryView::Albums);
+        let albums = state.rows();
+        assert_eq!(albums.len(), 1);
+        assert_eq!(albums[0].key, "release");
+
+        state.set_show_tracks(true);
+        let fallback = state.fallback_album_rows();
+        assert_eq!(fallback.len(), 1);
+        assert_eq!(fallback[0].key, "fallback");
+    }
+
+    #[test]
     fn artist_overview_navigation_skips_artists_without_pending_work() {
         let mut state = artist_library();
         state.focused_artist = Some("Alpha".to_string());
@@ -5333,6 +5516,67 @@ mod tests {
     }
 
     #[test]
+    fn per_track_credits_create_selectable_featured_artist_rows() {
+        let mut state = artist_library();
+        state.artist_appearance_album_keys.insert(
+            "Rob Wasserman".to_string(),
+            BTreeSet::from(["a".to_string()]),
+        );
+        state.artist_appearance_album_keys.insert(
+            "Various Artists".to_string(),
+            BTreeSet::from(["a".to_string()]),
+        );
+
+        let artists = state
+            .rows()
+            .into_iter()
+            .filter(|row| row.kind == "artist")
+            .map(|row| row.primary)
+            .collect::<BTreeSet<_>>();
+        assert!(artists.contains("Rob Wasserman"));
+        assert!(!artists.contains("Various Artists"));
+        assert!(state.focus_artist("Rob Wasserman"));
+        assert_eq!(state.focused_artist.as_deref(), Some("Rob Wasserman"));
+        assert_eq!(
+            state.artist_indices("Rob Wasserman"),
+            vec![
+                state
+                    .albums
+                    .iter()
+                    .position(|album| album.snapshot.album_key == "a")
+                    .unwrap()
+            ]
+        );
+    }
+
+    #[test]
+    fn artist_file_list_prefers_tagged_owner_over_folder_safe_alias() {
+        let mut release = album("back", "AC/DC", "Back in Black", "processed");
+        release.album_mbid = "release-acdc".into();
+        release.path = r"C:\Music\AC-DC\Back in Black".into();
+        let mut state = LibraryState::from_snapshot(MediaSnapshot {
+            schema_version: crate::media_database::SCHEMA_VERSION,
+            database_path: "splined.db".into(),
+            canonical_root: "/music".into(),
+            local_root: r"C:\Music".into(),
+            albums: vec![release],
+        })
+        .unwrap();
+        state
+            .artist_appearance_album_keys
+            .insert("AC-DC".into(), BTreeSet::from(["back".into()]));
+
+        let artist_rows = state
+            .rows()
+            .into_iter()
+            .filter(|row| row.kind == "artist")
+            .map(|row| row.primary)
+            .collect::<Vec<_>>();
+
+        assert_eq!(artist_rows, vec!["AC/DC"]);
+    }
+
+    #[test]
     fn artist_sidebar_excludes_comp_fallback_albums_but_keeps_artist_albums() {
         let mut state = library();
         state
@@ -5380,6 +5624,60 @@ mod tests {
                 .any(|album| { album.snapshot.album_key == "b" && !album.selected })
         );
         assert_eq!(state.adjacent_pending_artist(1).as_deref(), Some("Alpha"));
+    }
+
+    #[test]
+    fn artist_sidebar_excludes_synthetic_release_owners_without_hiding_their_albums() {
+        let mut soundtrack = album("soundtrack", "Soundtracks", "American Pie 2", "unprocessed");
+        soundtrack.album_mbid = "soundtrack-release".into();
+        let mut various = album(
+            "various",
+            "Various Artists",
+            "Gold Collection",
+            "unprocessed",
+        );
+        various.album_mbid = "various-release".into();
+        let fallback = album("comp", "Various Artists", "Billboard COMP", "unprocessed");
+        let mut owned = album("owned", "3 Doors Down", "Away from the Sun", "unprocessed");
+        owned.album_mbid = "owned-release".into();
+        let mut state = LibraryState::from_snapshot(MediaSnapshot {
+            schema_version: crate::media_database::SCHEMA_VERSION,
+            database_path: "splined.db".into(),
+            canonical_root: "/music".into(),
+            local_root: r"C:\Music".into(),
+            albums: vec![soundtrack, various, fallback, owned],
+        })
+        .unwrap();
+
+        let artist_rows = state
+            .rows()
+            .into_iter()
+            .filter(|row| row.kind == "artist")
+            .map(|row| row.primary)
+            .collect::<Vec<_>>();
+        assert_eq!(artist_rows, vec!["3 Doors Down"]);
+
+        state.set_top_level_view(LibraryView::Albums);
+        let album_keys = state
+            .rows()
+            .into_iter()
+            .map(|row| row.key)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            album_keys,
+            ["owned", "soundtrack", "various"]
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+        );
+
+        state.set_show_tracks(true);
+        assert!(
+            state
+                .fallback_album_rows()
+                .iter()
+                .any(|row| row.key == "comp")
+        );
     }
 
     #[test]
@@ -6778,7 +7076,7 @@ mod tests {
     }
 
     #[test]
-    fn comp_launch_queues_only_pending_focused_artist_tracks_and_selection_can_abort() {
+    fn comp_launch_requeues_all_focused_artist_tracks_and_selection_can_abort() {
         let mut state = library();
         state.focused_artist = Some("Alpha".to_string());
         let album = state
@@ -6814,24 +7112,24 @@ mod tests {
                 embedded_artwork_recorded: false,
             },
         ];
-        assert_eq!(state.select_pending_compilation_tracks("b", false), Ok(2));
+        assert_eq!(state.select_pending_compilation_tracks("b", false), Ok(3));
         let queue = state.queue(ScanScope::Selected);
         assert_eq!(
             queue
                 .iter()
                 .filter_map(|target| target.compilation_track_path.as_deref())
                 .collect::<Vec<_>>(),
-            vec!["two.mp3", "four.mp3"]
+            vec!["one.mp3", "two.mp3", "four.mp3"]
         );
         let launch_epoch = state.selection_epoch;
         state.mark_target_completed(&queue[0]);
         assert_eq!(state.selection_epoch, launch_epoch);
-        assert_eq!(state.queue(ScanScope::Selected).len(), 1);
+        assert_eq!(state.queue(ScanScope::Selected).len(), 2);
         assert!(state.toggle_album("a", false) == SelectionResult::Changed);
         assert_ne!(state.selection_epoch, launch_epoch);
         assert!(state.selected_compilation_track_paths.is_empty());
         assert_eq!(state.queue(ScanScope::Selected)[0].album_key, "a");
-        assert_eq!(state.select_pending_compilation_tracks("b", false), Ok(2));
+        assert_eq!(state.select_pending_compilation_tracks("b", false), Ok(3));
         let relaunch_epoch = state.selection_epoch;
         assert_eq!(
             state.toggle_compilation_track("b", "four.mp3", false),
@@ -6841,7 +7139,7 @@ mod tests {
     }
 
     #[test]
-    fn fallback_select_all_launches_each_pending_track_without_closing_album() {
+    fn fallback_select_all_reprocesses_each_track_without_closing_album() {
         let mut state = library();
         let album = state
             .albums
@@ -6871,22 +7169,24 @@ mod tests {
         ];
         state.set_show_tracks(true);
         state.focused_album_key = Some("b".into());
-        assert_eq!(state.select_all_for_review(), 2);
+        assert_eq!(state.select_all_for_review(), 3);
         let queue = state.queue(ScanScope::Selected);
-        assert_eq!(queue.len(), 2);
-        assert_eq!(queue[0].compilation_track_path.as_deref(), Some("next.mp3"));
-        assert_eq!(queue[1].compilation_track_path.as_deref(), Some("last.mp3"));
+        assert_eq!(queue.len(), 3);
+        assert_eq!(queue[0].compilation_track_path.as_deref(), Some("done.mp3"));
+        assert_eq!(queue[1].compilation_track_path.as_deref(), Some("next.mp3"));
+        assert_eq!(queue[2].compilation_track_path.as_deref(), Some("last.mp3"));
         let selection_epoch = state.selection_epoch;
         state.mark_target_completed(&queue[0]);
         assert_eq!(state.selection_epoch, selection_epoch);
         assert_eq!(state.focused_album_key.as_deref(), Some("b"));
         let remaining = state.queue(ScanScope::Selected);
-        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining.len(), 2);
         assert_eq!(
             remaining[0].compilation_track_path.as_deref(),
-            Some("last.mp3")
+            Some("next.mp3")
         );
         state.mark_target_completed(&queue[1]);
+        state.mark_target_completed(&queue[2]);
         assert!(state.queue(ScanScope::Selected).is_empty());
         assert_eq!(state.focused_album_key.as_deref(), Some("b"));
     }
@@ -6988,6 +7288,44 @@ mod tests {
         assert_eq!(
             state.toggle_compilation_track("a", track_path, false),
             SelectionResult::Changed
+        );
+        assert_eq!(state.queue(ScanScope::Selected).len(), 1);
+    }
+
+    #[test]
+    fn fallback_file_row_selection_is_idempotent() {
+        let mut state = library();
+        let track_path = r"C:\Music\Alpha\Fresh\01.flac";
+        let album = state
+            .albums
+            .iter_mut()
+            .find(|album| album.snapshot.album_key == "a")
+            .unwrap();
+        album.snapshot.album_mbid.clear();
+        album.snapshot.compilation = true;
+        album.snapshot.compilation_tracks = vec![MediaTrackSnapshot {
+            path: track_path.to_string(),
+            title: "One".to_string(),
+            artist: "Alpha".to_string(),
+            embedded_artwork_recorded: false,
+        }];
+        state.view = LibraryView::Artists;
+        state.focused_artist = Some("Alpha".to_string());
+
+        assert_eq!(
+            state.select_compilation_track("a", track_path, false),
+            SelectionResult::Changed
+        );
+        let first_epoch = state.selection_epoch;
+        assert_eq!(
+            state.select_compilation_track("a", track_path, false),
+            SelectionResult::Changed
+        );
+        assert_ne!(state.selection_epoch, first_epoch);
+        assert!(
+            state
+                .selected_compilation_track_paths
+                .contains(&track_path.to_ascii_lowercase())
         );
         assert_eq!(state.queue(ScanScope::Selected).len(), 1);
     }
@@ -7278,7 +7616,16 @@ mod tests {
                 .iter()
                 .map(|source| source.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["samples", "local", "itunes", "discogs", "navidrome"]
+            vec![
+                "samples",
+                "local",
+                "itunes",
+                "discogs",
+                "deezer",
+                "fanarttv",
+                "lastfm",
+                "navidrome",
+            ]
         );
         let navidrome = state
             .sources
@@ -7329,7 +7676,16 @@ mod tests {
                 .iter()
                 .map(|source| source.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["samples", "local", "navidrome", "discogs", "itunes"]
+            vec![
+                "samples",
+                "local",
+                "navidrome",
+                "discogs",
+                "itunes",
+                "deezer",
+                "fanarttv",
+                "lastfm",
+            ]
         );
         state.move_source_to("navidrome", "itunes").unwrap();
         assert_eq!(
@@ -7400,7 +7756,16 @@ mod tests {
                 .iter()
                 .map(|source| source.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["samples", "local", "itunes", "navidrome"]
+            vec![
+                "samples",
+                "local",
+                "itunes",
+                "deezer",
+                "fanarttv",
+                "lastfm",
+                "discogs",
+                "navidrome",
+            ]
         );
 
         let mut replacement = state.config.clone();
@@ -7414,7 +7779,16 @@ mod tests {
                 .iter()
                 .map(|source| source.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["samples", "local", "discogs", "navidrome"]
+            vec![
+                "samples",
+                "local",
+                "discogs",
+                "deezer",
+                "itunes",
+                "fanarttv",
+                "lastfm",
+                "navidrome",
+            ]
         );
     }
 
@@ -7466,7 +7840,7 @@ mod tests {
 
     #[test]
     fn mature_media_filters_and_selection_modes_are_composable() {
-        let mut state = library();
+        let mut state = artist_library();
         state.set_view(LibraryView::Albums);
         state.set_status_filters([StatusFilter::Unprocessed, StatusFilter::Incomplete]);
         assert_eq!(state.rows().len(), 2);

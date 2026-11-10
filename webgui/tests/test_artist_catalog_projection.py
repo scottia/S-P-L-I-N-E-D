@@ -17,6 +17,7 @@ from webgui.catalog import (
     PreviewApp,
     artist_display_sort_key,
     embedded_album_artwork_summary,
+    normalized_artist_identity,
 )
 from splined_media_database import update_artist_aggregate
 
@@ -51,6 +52,12 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
         self.assertEqual(
             sorted(artists, key=artist_display_sort_key),
             ["*NSYNC", "10,000 Maniacs", "Aaliyah", "Nirvana"],
+        )
+
+    def test_folder_safe_alias_matches_tagged_artist_projection_identity(self):
+        self.assertEqual(
+            normalized_artist_identity("AC-DC"),
+            normalized_artist_identity("AC/DC"),
         )
 
     def test_artist_list_is_database_only_until_lazy_thumbnail_hydration(self):
@@ -157,14 +164,59 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                 side_effect=AssertionError("album index must not touch network artwork paths"),
             ):
                 albums = app.albums("")
-            self.assertEqual({item["id"] for item in albums}, {"30", "billboard"})
+            self.assertEqual({item["id"] for item in albums}, {"30"})
             self.assertTrue(all(item["cover"].startswith("/api/album/thumbnail?id=") for item in albums))
+            self.assertEqual({item["id"] for item in app.albums("Adele")}, {"30"})
+            self.assertEqual(app.albums("Billboard"), [])
             self.assertEqual(
-                {item["id"] for item in app.albums("Adele")}, {"30", "billboard"}
+                [item["id"] for item in app.albums("Billboard", True)], ["billboard"]
             )
-            self.assertEqual(
-                [item["id"] for item in app.albums("Billboard")], ["billboard"]
-            )
+
+    def test_comp_only_identity_is_not_a_visible_media_library_artist(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "index.sqlite"
+            credentials = root / "credentials"
+            credentials.mkdir()
+            standard = root / "Adele" / "30"
+            compilation = root / "Various Artists" / "Billboard"
+            for folder in (standard, compilation):
+                folder.mkdir(parents=True)
+                (folder / "song.mp3").touch()
+
+            with closing(connect(database)) as db:
+                db.execute(
+                    "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,"
+                    "musicbrainz_artistid TEXT,primary_path TEXT,status TEXT)"
+                )
+                db.execute(
+                    "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,album_name TEXT,"
+                    "path TEXT,cover_path TEXT,track_count INTEGER,status TEXT,compilation INTEGER,"
+                    "musicbrainz_albumid TEXT,release_year TEXT,embedded_tracks INTEGER,webp_found INTEGER)"
+                )
+                db.execute(
+                    "CREATE TABLE tracks (track_key TEXT PRIMARY KEY,album_key TEXT,path TEXT,title TEXT,artist_name TEXT)"
+                )
+                db.executemany(
+                    "INSERT INTO artists VALUES (?,?,?,?,?)",
+                    [
+                        ("adele", "Adele", "adele-mbid", str(root / "Adele"), "processed"),
+                        ("various", "Various Artists", "", str(root / "Various Artists"), "unprocessed"),
+                    ],
+                )
+                db.executemany(
+                    "INSERT INTO albums VALUES (?,?,?,?,NULL,1,?,?,?, '2021',0,0)",
+                    [
+                        ("30", "adele", "30", str(standard), "processed", 0, "release-30"),
+                        ("billboard", "various", "Billboard Hot 100", str(compilation), "incomplete", 1, ""),
+                    ],
+                )
+                db.commit()
+
+            app = PreviewApp(root, database, root, credentials, cache=root / "cache")
+            self.assertEqual([item["name"] for item in app.artists("")], ["Adele"])
+            with mock.patch.object(app, "_navidrome_artists_by_name", return_value={}):
+                self.assertEqual(app.artist_thumbnails(), [])
 
     def test_persisted_artist_aggregate_excludes_unidentified_comp_fallback(self):
         with closing(connect(":memory:")) as db:
@@ -250,6 +302,83 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             artist = app.artist("aaron")
             self.assertEqual({item["id"] for item in artist["albums"]}, {"tour", "gold"})
             self.assertEqual(set(artist["top_tracks"]), {"Tour Song", "Gold Song"})
+
+    def test_all_track_credits_project_identified_albums_into_real_artists(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "index.sqlite"
+            credentials = root / "credentials"
+            credentials.mkdir()
+            gold = root / "Aaron Neville" / "Gold"
+            soundtrack = root / "[Soundtracks]" / "Film"
+            for folder in (gold, soundtrack):
+                folder.mkdir(parents=True)
+                (folder / "song.mp3").touch()
+
+            with closing(connect(database)) as db:
+                db.execute(
+                    "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,"
+                    "musicbrainz_artistid TEXT,primary_path TEXT,status TEXT)"
+                )
+                db.execute(
+                    "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,album_name TEXT,"
+                    "path TEXT,cover_path TEXT,track_count INTEGER,status TEXT,compilation INTEGER,"
+                    "musicbrainz_albumid TEXT,release_year TEXT,embedded_tracks INTEGER,webp_found INTEGER)"
+                )
+                db.execute(
+                    "CREATE TABLE tracks (track_key TEXT PRIMARY KEY,album_key TEXT,path TEXT,title TEXT,"
+                    "artist_name TEXT,musicbrainz_artistid TEXT)"
+                )
+                db.executemany(
+                    "INSERT INTO artists VALUES (?,?,?,?,?)",
+                    [
+                        ("aaron", "Aaron Neville", "aaron-mbid", str(root / "Aaron Neville"), "processed"),
+                        ("various", "Various Artists", "", str(root / "[Soundtracks]"), "processed"),
+                    ],
+                )
+                db.executemany(
+                    "INSERT INTO albums VALUES (?,?,?,?,NULL,?,?,1,?,'2008',1,0)",
+                    [
+                        ("gold", "aaron", "Gold", str(gold), 2, "processed", "release-gold"),
+                        ("film", "various", "Film", str(soundtrack), 1, "incomplete", "release-film"),
+                    ],
+                )
+                db.executemany(
+                    "INSERT INTO tracks VALUES (?,?,?,?,?,?)",
+                    [
+                        (
+                            "gold-rob", "gold", str(gold / "1-16 - Rob Wasserman & Aaron Neville - Song.mp3"),
+                            "Song", "Rob Wasserman; Aaron Neville", "rob-mbid; aaron-mbid",
+                        ),
+                        (
+                            "gold-linda", "gold", str(gold / "1-17 - Linda Ronstadt & Aaron Neville - Duet.mp3"),
+                            "Duet", "Linda Ronstadt; Aaron Neville", "linda-mbid; aaron-mbid",
+                        ),
+                        (
+                            "film-rob", "film", str(soundtrack / "1-01 - Rob Wasserman - Theme.mp3"),
+                            "Theme", "Various Artists", "",
+                        ),
+                    ],
+                )
+                db.commit()
+
+            app = PreviewApp(root, database, root, credentials, cache=root / "cache")
+            artists = {item["name"]: item for item in app.artists("")}
+            self.assertEqual(
+                set(artists), {"Aaron Neville", "Linda Ronstadt", "Rob Wasserman"}
+            )
+            self.assertNotIn("Rob Wasserman & Aaron Neville", artists)
+            self.assertNotIn("Linda Ronstadt & Aaron Neville", artists)
+            self.assertEqual(artists["Rob Wasserman"]["albums"], 2)
+            rob = app.artist(artists["Rob Wasserman"]["id"])
+            self.assertEqual({item["id"] for item in rob["albums"]}, {"gold", "film"})
+            gold_card = next(item for item in rob["albums"] if item["id"] == "gold")
+            film_card = next(item for item in rob["albums"] if item["id"] == "film")
+            self.assertTrue(gold_card["featured"])
+            self.assertFalse(gold_card["various_artists"])
+            self.assertFalse(film_card["featured"])
+            self.assertTrue(film_card["various_artists"])
+            self.assertEqual(set(rob["top_tracks"]), {"Song", "Theme"})
 
     def test_conflicting_musicbrainz_ids_merge_when_library_path_is_identical(self):
         rows = [
@@ -414,6 +543,19 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             listed = [item for item in app.artists("") if item["name"].casefold().endswith("nsync")]
             self.assertEqual(len(listed), 1)
             self.assertEqual(listed[0]["albums"], 3)
+            self.assertNotIn(
+                "Various Artists",
+                {item["name"] for item in app.artists("")},
+            )
+            self.assertNotIn(
+                "Soundtracks",
+                {item["name"] for item in app.artists("")},
+            )
+            self.assertEqual(
+                {item["id"] for item in app.albums("")},
+                {"artist-2001", "artist-2000", "artist-1998", "soundtrack", "various"},
+            )
+            self.assertEqual([item["id"] for item in app.albums("", True)], ["comp"])
 
             artist = app.artist("nsync-duplicate")
             self.assertEqual(artist["id"], "nsync-main")
@@ -422,6 +564,8 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             })
             self.assertTrue(next(item for item in artist["albums"] if item["id"] == "soundtrack")["soundtrack"])
             self.assertTrue(next(item for item in artist["albums"] if item["id"] == "various")["various_artists"])
+            self.assertFalse(next(item for item in artist["albums"] if item["id"] == "soundtrack")["featured"])
+            self.assertFalse(next(item for item in artist["albums"] if item["id"] == "various")["featured"])
 
             comp = app.artist_comp_albums(artist["id"])
             self.assertEqual([group["id"] for group in comp], ["comp"])
@@ -496,7 +640,7 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                         "filename-featured-track",
                         "filename-featured",
                         str(folders["filename-featured"] / "song.mp3"),
-                        "1-07 - Album Owner & Target Artist - Guest Song",
+                        "1-07 - Album Owner feat. Target Artist - Guest Song",
                         "Album Owner",
                     ),
                     (

@@ -313,6 +313,32 @@ def resolve_sources(cfg: dict[str, Any], cover: list[str] | None, only: list[str
     ]
 
 
+ARTIST_ART_SOURCE_CAPABLE = (
+    "deezer",
+    "itunes",
+    "fanarttv",
+    "lastfm",
+    "discogs",
+    "navidrome",
+)
+
+
+def resolve_artist_sources(cfg: dict[str, Any]) -> list[str]:
+    """Resolve Artist Art providers independently from Album cover inclusion."""
+    configured = normalize_sources(
+        section(cfg, "sources").get("cover_sources", []),
+        "configured cover_sources",
+        False,
+    )
+    ordered = [*configured, *(source for source in ARTIST_ART_SOURCE_CAPABLE if source not in configured)]
+    return [
+        source
+        for source in ordered
+        if source in ARTIST_ART_SOURCE_CAPABLE
+        and source_policy(cfg, source)["include_in_artist_art_search"]
+    ]
+
+
 def _bool_value(value: Any, label: str) -> bool:
     if not isinstance(value, bool):
         raise SplinedError(f"{label} must be true or false.")
@@ -362,6 +388,14 @@ def source_policy(cfg: dict[str, Any], source: str) -> dict[str, Any]:
         "enabled": _bool_value(
             raw.get("enabled", source_key != "amazon"),
             f"[source_policies.{source_key}].enabled",
+        ),
+        "include_in_artist_art_search": _bool_value(
+            raw.get(
+                "include_in_artist_art_search",
+                source_key
+                in {"deezer", "itunes", "fanarttv", "lastfm", "discogs", "navidrome"},
+            ),
+            f"[source_policies.{source_key}].include_in_artist_art_search",
         ),
         "source_override": _bool_value(
             raw.get("source_override", False),
@@ -4214,11 +4248,21 @@ def decorate_musicbrainz_results(
             item["score"] = str(musicbrainz_title_match(query_album, item.get("title", "")))
         item["query_artist"] = query_artist
         release_group_id = item.get("release_group_id", "").strip().casefold()
+        # The review row represents one exact MusicBrainz release, not its
+        # broader release family. Prefer that edition's cover so hovering two
+        # rows in one family never shows the same (or current embedded) art.
+        # Keep the family image only as a display fallback for editions that
+        # do not have their own Cover Art Archive entry.
         item["artwork_url"] = (
+            f"https://coverartarchive.org/release/{release_id}/front"
+            if release_id
+            else f"https://coverartarchive.org/release-group/{release_group_id}/front"
+            if release_group_id
+            else ""
+        )
+        item["artwork_fallback_url"] = (
             f"https://coverartarchive.org/release-group/{release_group_id}/front"
             if release_group_id
-            else f"https://coverartarchive.org/release/{release_id}/front"
-            if release_id
             else ""
         )
         item["musicbrainz_url"] = (
@@ -5054,6 +5098,8 @@ def resolve_scan_root(
 APP_NAME = "SPLINED"
 VERSION = "2.0.35"
 CONFIG_VERSION = 5
+DEFAULT_ARTIST_SEPARATOR_REGEX = r"(?i)(?: / | feat\. | feat | ft\. | ft |; )"
+DEFAULT_ARTIST_SEPARATOR_PROFILE = "Navidrome default"
 
 
 def display_version() -> str:
@@ -5206,6 +5252,24 @@ def validate_config_v5(cfg: dict[str, Any]) -> None:
     credentials = section(cfg, "credentials")
     if not str(credentials.get("credential_dir", "")).strip():
         raise SplinedError("[credentials].credential_dir cannot be empty.")
+
+    scan = section(cfg, "scan")
+    artist_separator_regex = str(
+        scan.get("artist_separator_regex", DEFAULT_ARTIST_SEPARATOR_REGEX)
+    ).strip()
+    if not artist_separator_regex:
+        raise SplinedError("[scan].artist_separator_regex cannot be empty.")
+    try:
+        re.compile(artist_separator_regex)
+    except re.error as exc:
+        raise SplinedError(
+            f"[scan].artist_separator_regex is invalid: {exc}"
+        ) from exc
+    artist_separator_profile = str(
+        scan.get("artist_separator_profile", DEFAULT_ARTIST_SEPARATOR_PROFILE)
+    ).strip()
+    if not artist_separator_profile:
+        raise SplinedError("[scan].artist_separator_profile cannot be empty.")
 
     ranges = section(cfg, "range")
     try:

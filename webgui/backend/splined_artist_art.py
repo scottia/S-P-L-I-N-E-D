@@ -143,7 +143,8 @@ def _valid_mbid(value: str) -> str:
 
 
 def artist_targets(
-    albums: Iterable[ArtistAlbum], artist: str, managed_directory: Path
+    albums: Iterable[ArtistAlbum], artist: str, managed_directory: Path,
+    *, allow_managed_without_owned_album: bool = False,
 ) -> list[ArtistArtTarget]:
     """Return Artist folder targets, then one managed shared-folder target."""
     if not artist.strip():
@@ -153,7 +154,7 @@ def artist_targets(
         if album.artist.strip().casefold() == artist.strip().casefold()
         and album.album_mbid.strip()
     ]
-    if not eligible:
+    if not eligible and not allow_managed_without_owned_album:
         return []
     direct: dict[str, tuple[Path, int]] = {}
     artist_ids: set[str] = set()
@@ -172,6 +173,9 @@ def artist_targets(
         for directory, count in direct.values()
     ]
     targets.sort(key=lambda item: (-item.album_count, str(item.directory).casefold()))
+    # An Artist credited only on another owner's identified release has no
+    # dedicated physical Artist directory. Callers that have established that
+    # projection explicitly opt into the managed destination below.
     identity = (
         f"mbid-{next(iter(artist_ids))}"
         if len(artist_ids) == 1

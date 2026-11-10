@@ -11,12 +11,17 @@ use crate::musicbrainz::{MusicBrainzClient, RecordingRelease, WorkRecording};
 use crate::scan_musicbrainz::LocalTrackEvidence;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::sync::{Mutex, OnceLock};
 
 const MAX_WORK_RECORDING_LOOKUPS: usize = 8;
 const MUSICBRAINZ_EMBEDDED_RELEASE_LIMIT: usize = 25;
 const MAX_FUZZY_DETAIL_LOOKUPS: usize = 8;
 const MIN_FUZZY_SCORE: u16 = 55;
 const MAX_INTERACTIVE_RECORDING_RELEASES: usize = 500;
+const MAX_INTERACTIVE_RESOLUTION_CACHE: usize = 128;
+
+static INTERACTIVE_RESOLUTION_CACHE: OnceLock<Mutex<HashMap<String, MusicBrainzResolution>>> =
+    OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -128,6 +133,59 @@ impl CompilationMatchCache {
     }
 
     async fn resolve_identity_matches(
+        &mut self,
+        client: &MusicBrainzClient,
+        config: Option<&Config>,
+        recording_mbid: Option<&str>,
+        local_artist_mbids: &[String],
+        artist: &str,
+        title: &str,
+    ) -> MusicBrainzResolution {
+        let cache_key = format!(
+            "{}|{}|{}|{}|{}",
+            if config.is_some() {
+                "automatic"
+            } else {
+                "browser"
+            },
+            recording_mbid.unwrap_or("").trim().to_ascii_lowercase(),
+            artist_key(local_artist_mbids),
+            artist.trim().to_ascii_lowercase(),
+            title.trim().to_ascii_lowercase(),
+        );
+        if let Some(cached) = INTERACTIVE_RESOLUTION_CACHE
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .ok()
+            .and_then(|cache| cache.get(&cache_key).cloned())
+        {
+            return cached;
+        }
+        let resolution = self
+            .resolve_identity_matches_uncached(
+                client,
+                config,
+                recording_mbid,
+                local_artist_mbids,
+                artist,
+                title,
+            )
+            .await;
+        if !resolution.matches.is_empty()
+            && resolution.artist_status == "valid"
+            && let Ok(mut cache) = INTERACTIVE_RESOLUTION_CACHE
+                .get_or_init(|| Mutex::new(HashMap::new()))
+                .lock()
+        {
+            if cache.len() >= MAX_INTERACTIVE_RESOLUTION_CACHE {
+                cache.clear();
+            }
+            cache.insert(cache_key, resolution.clone());
+        }
+        resolution
+    }
+
+    async fn resolve_identity_matches_uncached(
         &mut self,
         client: &MusicBrainzClient,
         config: Option<&Config>,

@@ -7,6 +7,7 @@
 use crate::config::Config;
 use crate::credential_store::load_album_coordination_database_url;
 use rusqlite::{Connection, Transaction, params};
+use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Row, postgres::PgPoolOptions};
 use std::collections::HashMap;
 use std::path::Path;
@@ -365,7 +366,7 @@ fn event_id(completed_ms: i64) -> String {
     format!("windows-{}-{completed_ms}-{counter}", std::process::id())
 }
 
-fn relative_path(canonical_root: &str, canonical_album: &str) -> String {
+pub(crate) fn relative_path(canonical_root: &str, canonical_album: &str) -> String {
     let root = canonical_root
         .replace('\\', "/")
         .trim_end_matches('/')
@@ -428,12 +429,72 @@ pub fn queue_windows_comp_track_write(
     operation: &str,
     now: &str,
 ) -> Result<String, String> {
+    queue_windows_comp_track_write_at(
+        transaction,
+        album_key,
+        canonical_root,
+        canonical_track,
+        artwork_sha256,
+        operation,
+        source_completed_ms(),
+        now,
+        None,
+    )
+}
+
+/// Queue a verified historical Windows COMP write with its original completion
+/// time. This lets an existing SQLite ledger join coordination after credentials
+/// are configured without incorrectly outranking a newer WebGUI write.
+pub fn queue_historical_windows_comp_track_write(
+    transaction: &Transaction<'_>,
+    album_key: &str,
+    canonical_root: &str,
+    canonical_track: &str,
+    artwork_sha256: &str,
+    completed_ms: i64,
+    now: &str,
+) -> Result<String, String> {
+    let relative_track_path = relative_path(canonical_root, canonical_track);
+    let track_identity = canonical_track_identity(album_key, &relative_track_path)?;
+    let track_digest = Sha256::digest(track_identity.as_bytes());
+    let track_digest = track_digest[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let artwork_digest = normalize_coordination_value(artwork_sha256)
+        .chars()
+        .take(16)
+        .collect::<String>();
+    let stable_event_id = format!("windows-history-{completed_ms}-{track_digest}-{artwork_digest}");
+    queue_windows_comp_track_write_at(
+        transaction,
+        album_key,
+        canonical_root,
+        canonical_track,
+        artwork_sha256,
+        "embed-comp-track",
+        completed_ms,
+        now,
+        Some(stable_event_id),
+    )
+}
+
+fn queue_windows_comp_track_write_at(
+    transaction: &Transaction<'_>,
+    album_key: &str,
+    canonical_root: &str,
+    canonical_track: &str,
+    artwork_sha256: &str,
+    operation: &str,
+    completed_ms: i64,
+    now: &str,
+    explicit_event_id: Option<String>,
+) -> Result<String, String> {
     let album_key = normalize_coordination_value(album_key);
     let album_identity = canonical_album_identity(&album_key)?;
     let relative_track_path = relative_path(canonical_root, canonical_track);
     let track_identity = canonical_track_identity(&album_key, &relative_track_path)?;
-    let completed_ms = source_completed_ms();
-    let event_id = event_id(completed_ms);
+    let event_id = explicit_event_id.unwrap_or_else(|| event_id(completed_ms));
     transaction
         .execute(
             "INSERT INTO comp_track_write_outbox(event_id,track_identity,album_identity,album_key,relative_track_path,writer,operation,artwork_sha256,source_completed_ms,completed_at,created_at) \

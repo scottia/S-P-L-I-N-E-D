@@ -161,7 +161,12 @@ fn evidence_from_tagged_file(
     tagged_file: &TaggedFile,
 ) -> Result<LocalTrackEvidence, String> {
     let title = read_required(tagged_file, &ItemKey::TrackTitle, "TITLE", path)?;
-    let artist = read_required(tagged_file, &ItemKey::TrackArtist, "ARTIST", path)?;
+    let artist = read_all(tagged_file, &ItemKey::TrackArtist).ok_or_else(|| {
+        format!(
+            "SPLINED scan requires ARTIST in actual file tags: {}",
+            path.display()
+        )
+    })?;
     let musicbrainz_album_id = read_optional(tagged_file, &ItemKey::MusicBrainzReleaseId);
 
     Ok(LocalTrackEvidence {
@@ -172,7 +177,7 @@ fn evidence_from_tagged_file(
         album_artist: read_optional(tagged_file, &ItemKey::AlbumArtist),
         musicbrainz_album_id,
         musicbrainz_track_id: read_optional(tagged_file, &ItemKey::MusicBrainzRecordingId),
-        musicbrainz_artist_id: read_optional(tagged_file, &ItemKey::MusicBrainzArtistId),
+        musicbrainz_artist_id: read_all(tagged_file, &ItemKey::MusicBrainzArtistId),
         compilation: read_optional(tagged_file, &ItemKey::FlagCompilation),
     })
 }
@@ -397,7 +402,12 @@ fn decode_text_frame(payload: &[u8]) -> Option<String> {
         3 => String::from_utf8_lossy(content).into_owned(),
         _ => return None,
     };
-    clean_value(Some(decoded.trim_end_matches('\0')))
+    let values = decoded
+        .trim_end_matches('\0')
+        .split('\0')
+        .filter_map(|value| clean_value(Some(value)))
+        .collect::<Vec<_>>();
+    (!values.is_empty()).then(|| values.join("\0"))
 }
 
 fn decode_utf16(bytes: &[u8], forced_big_endian: Option<bool>) -> String {
@@ -462,6 +472,24 @@ fn read_optional(tagged_file: &TaggedFile, key: &ItemKey) -> Option<String> {
         .tags()
         .iter()
         .find_map(|tag| clean_value(tag.get_string(*key)))
+}
+
+/// Preserve every value from multi-value Artist fields. A single Album can
+/// credit several real performers, and collapsing TPE1/ARTIST to its first
+/// value prevents the remaining performers from entering Artist Overview.
+fn read_all(tagged_file: &TaggedFile, key: &ItemKey) -> Option<String> {
+    let mut values = Vec::new();
+    for value in tagged_file
+        .tags()
+        .iter()
+        .flat_map(|tag| tag.get_strings(*key))
+        .filter_map(|value| clean_value(Some(value)))
+    {
+        if !values.iter().any(|existing| existing == &value) {
+            values.push(value);
+        }
+    }
+    (!values.is_empty()).then(|| values.join("\0"))
 }
 
 fn clean_value(value: Option<&str>) -> Option<String> {
@@ -597,6 +625,33 @@ mod tests {
         assert_eq!(evidence.musicbrainz_track_id.as_deref(), Some(RECORDING_ID));
         assert_eq!(evidence.compilation.as_deref(), Some("1"));
         fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn preserves_every_multivalue_mp3_artist_credit() {
+        let path = write_id3_fixture(&[
+            id3_text_frame("TIT2", "Song"),
+            id3_text_frame("TPE1", "Rob Wasserman\0Aaron Neville"),
+            id3_text_frame("TALB", "Gold"),
+            id3_text_frame("TPE2", "Aaron Neville"),
+            id3_user_text_frame("MUSICBRAINZ_ALBUMID", RELEASE_ID),
+        ]);
+        let evidence = read_local_track_evidence(&path).unwrap();
+        assert_eq!(evidence.artist, "Rob Wasserman\0Aaron Neville");
+        fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn strips_bom_from_each_multivalue_utf16_segment() {
+        let mut payload = vec![1, 0xFF, 0xFE];
+        for unit in "Ariana Grande\0\u{feff}Iggy Azalea".encode_utf16() {
+            payload.extend_from_slice(&unit.to_le_bytes());
+        }
+
+        assert_eq!(
+            decode_text_frame(&payload).as_deref(),
+            Some("Ariana Grande\0Iggy Azalea")
+        );
     }
 
     #[test]

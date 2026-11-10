@@ -129,6 +129,22 @@ class ArtworkAuthoritySourceTests(unittest.TestCase):
         self.assertFalse(draft.policies["amazon"]["enabled"])
         self.assertTrue(draft.policies["amazon"]["strict_override"])
         self.assertTrue(draft.policies["navidrome"]["enabled"])
+        self.assertTrue(
+            draft.policies["navidrome"]["include_in_artist_art_search"]
+        )
+        self.assertTrue(draft.policies["itunes"]["include_in_artist_art_search"])
+        self.assertFalse(
+            draft.policies["musicbrainz"]["include_in_artist_art_search"]
+        )
+        self.assertFalse(
+            draft.policies["coverartarchive"]["include_in_artist_art_search"]
+        )
+        self.assertEqual(
+            splined.resolve_artist_sources(
+                {"sources": {"cover_sources": ["amazon", "itunes", "navidrome"]}}
+            ),
+            ["itunes", "navidrome", "deezer", "fanarttv", "lastfm", "discogs"],
+        )
         self.assertEqual(
             draft.policies["musicbrainz"]["minimum_range_type"],
             "LowerRange",
@@ -166,6 +182,10 @@ class ArtworkAuthoritySourceTests(unittest.TestCase):
         self.assertEqual(options[0]["resolution"], "3000x3000")
         self.assertEqual(
             options[0]["artwork_url"],
+            f"https://coverartarchive.org/release/{current}/front",
+        )
+        self.assertEqual(
+            options[0]["artwork_fallback_url"],
             "https://coverartarchive.org/release-group/"
             "cccccccc-cccc-4ccc-8ccc-cccccccccccc/front",
         )

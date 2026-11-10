@@ -49,6 +49,8 @@ impl MinimumRangeType {
 #[serde(default)]
 pub struct SourcePolicyConfig {
     pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include_in_artist_art_search: Option<bool>,
     pub strict_override: bool,
     pub source_override: bool,
     pub minimum_range_type: MinimumRangeType,
@@ -68,6 +70,7 @@ impl Default for SourcePolicyConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            include_in_artist_art_search: None,
             strict_override: false,
             source_override: false,
             minimum_range_type: MinimumRangeType::LowerRange,
@@ -82,6 +85,11 @@ impl Default for SourcePolicyConfig {
 }
 
 impl SourcePolicyConfig {
+    pub fn includes_artist_art(&self, source: &str) -> bool {
+        self.include_in_artist_art_search
+            .unwrap_or_else(|| default_artist_art_search(source))
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         for (name, value) in [
             ("minimum_short_side", self.minimum_short_side),
@@ -102,6 +110,13 @@ impl SourcePolicyConfig {
 
         Ok(())
     }
+}
+
+pub fn default_artist_art_search(source: &str) -> bool {
+    matches!(
+        source.trim().to_ascii_lowercase().as_str(),
+        "local" | "navidrome" | "fanarttv" | "lastfm" | "deezer" | "discogs" | "itunes"
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -307,6 +322,15 @@ mod tests {
             source_override: true,
             ..SourcePolicyConfig::default()
         }
+    }
+
+    #[test]
+    fn legacy_artist_art_defaults_are_source_specific() {
+        let policy = SourcePolicyConfig::default();
+        assert!(policy.includes_artist_art("itunes"));
+        assert!(policy.includes_artist_art("navidrome"));
+        assert!(!policy.includes_artist_art("amazon"));
+        assert!(!policy.includes_artist_art("coverartarchive"));
     }
 
     #[test]

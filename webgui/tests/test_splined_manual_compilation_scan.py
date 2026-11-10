@@ -112,6 +112,52 @@ class ManualCompilationDecisionTests(unittest.TestCase):
         )
         remote.assert_not_called()
 
+    def test_comp_musicbrainz_discovery_reuses_service_session_cache(self) -> None:
+        track = SimpleNamespace(
+            path=Path("Miss You.flac"), artist="Aaliyah", title="Miss You",
+            album="Billboard 2003", album_artist="Various Artists",
+            artist_mbid="4bd95eea-b9f6-4d70-a36c-cfea77431553",
+            recording_mbid="e1efc38f-1f86-4c2c-bd90-df1e0796f789",
+        )
+        release = SimpleNamespace(release_mbid="release-id")
+        identity = SimpleNamespace(
+            candidates=(release,), error="", warnings=(), identity_status="valid",
+            identity_message="Recording verified", recording_status="valid",
+            artist_status="valid", friendly_artist=track.artist,
+            friendly_title=track.title, focused_artist_mbid=track.artist_mbid,
+            used_fuzzy_search=False,
+        )
+        shared_state = {}
+        debug = []
+        with (
+            mock.patch.object(scan.core, "compilation_manual_album_eligible", return_value=True, create=True),
+            mock.patch.object(scan.core, "compilation_manual_track_eligible", return_value=(True, ""), create=True),
+            mock.patch.object(scan.core, "compilation_mbids", side_effect=lambda value: {value} if value else set(), create=True),
+            mock.patch.object(scan.core, "ui_cancelled", return_value=False),
+            mock.patch.object(scan, "_manual_musicbrainz_options", return_value=object()),
+            mock.patch.object(scan.core, "compilation_resolve_interactive_identity", return_value=identity, create=True) as resolve,
+            mock.patch.object(scan.core, "compilation_local_artwork_rows", return_value=[], create=True),
+            mock.patch.object(scan, "_manual_choose_release", return_value=("exit-album", None, {})),
+            mock.patch.object(scan.core, "emit_ui"),
+            mock.patch.object(scan.core, "debug_log", side_effect=debug.append),
+        ):
+            for _ in range(2):
+                scan.run_manual_compilation_album(
+                    SimpleNamespace(path=Path("Billboard 2003")), [track],
+                    http=object(), config_file=Path("config.toml"),
+                    cfg={"mode": "read"}, sources=[], cache=Path("cache"),
+                    format_order=["jpeg"], summary=SimpleNamespace(unresolved=0),
+                    api_queried=set(), unresolved_items=[], state=shared_state,
+                    target_track_paths={str(track.path)},
+                    musicbrainz_results_first=True,
+                )
+
+        resolve.assert_called_once()
+        discovery = [line for line in debug if line.startswith("compilation.manual.discovery ")]
+        self.assertEqual(len(discovery), 2)
+        self.assertIn("cached=False", discovery[0])
+        self.assertIn("cached=True", discovery[1])
+
     def test_advanced_ids_preserve_rejected_text_then_persist_only_validated_ids(self) -> None:
         track = SimpleNamespace(
             path=Path("Because the Night.flac"), artist="10,000 Maniacs",
@@ -244,6 +290,68 @@ class ManualCompilationDecisionTests(unittest.TestCase):
                 "prepared_sha256": "b" * 64,
             },
         )
+
+    def test_webgui_existing_choice_can_embed_directly_with_adjustments(self) -> None:
+        existing = {"album_name": "Aaliyah", "cover_path": "cover.webp"}
+        payload = {
+            "action": "webgui-embed-existing",
+            "number": 1,
+            "artwork": {
+                "image": "/api/image/existing",
+                "adjustments": {"Contrast": 9},
+                "upscale": True,
+                "prepared_id": "a" * 32,
+                "prepared_sha256": "b" * 64,
+            },
+        }
+        with mock.patch.object(
+            scan.core, "read_input", return_value=json.dumps(payload)
+        ):
+            decision, selected, changes = scan._manual_choose_release(
+                [], existing_rows=[existing]
+            )
+
+        self.assertEqual(decision, "existing-embed")
+        self.assertIs(selected, existing)
+        self.assertEqual(changes["webgui_artwork"], payload["artwork"])
+
+    def test_webgui_release_choice_can_embed_exact_release_artwork(self) -> None:
+        release_id = "8f33a714-f8f6-4c8f-b6f3-8183f48c03bb"
+        release = SimpleNamespace(
+            release_mbid=release_id,
+            recording_mbid="e1efc38f-1f86-4c2c-bd90-df1e0796f789",
+            recording_artist="Aaliyah",
+            release_artist="Aaliyah",
+            recording_title="Miss You",
+            release_title="I Care 4 U",
+            release_date="2002",
+            country="US",
+            release_class="album",
+            release_group_mbid="39dc6a4b-8128-4df9-a4a4-2cf776e94f6d",
+            release_group_title="I Care 4 U",
+            score=100,
+            match_basis="exact-recording",
+        )
+        payload = {
+            "action": "webgui-embed-release",
+            "number": 1,
+            "artwork": {
+                "image": f"https://coverartarchive.org/release/{release_id}/front",
+                "fallback_image": "https://coverartarchive.org/release-group/39dc6a4b-8128-4df9-a4a4-2cf776e94f6d/front",
+                "adjustments": {"Contrast": 9},
+                "upscale": True,
+            },
+        }
+        with mock.patch.object(
+            scan.core, "read_input", return_value=json.dumps(payload)
+        ):
+            decision, selected, changes = scan._manual_choose_release([release])
+
+        self.assertEqual(decision, "selected-embed")
+        self.assertIs(selected, release)
+        self.assertEqual(changes["webgui_artwork"], payload["artwork"] | {
+            "prepared_id": "", "prepared_sha256": "",
+        })
 
     def test_musicbrainz_result_selection_preserves_comp_track_identity(self) -> None:
         target = SimpleNamespace(

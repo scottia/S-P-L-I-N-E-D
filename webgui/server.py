@@ -58,6 +58,7 @@ class Context:
         self.reconciliation = None
         self.url = ""
         self.error = ""
+        self.lifecycle_lock = threading.RLock()
         try:
             cfg = (
                 tomllib.loads(self.config_file.read_text(encoding="utf-8"))
@@ -123,6 +124,10 @@ class Context:
         }
 
     def configure(self, cfg):
+        with self.lifecycle_lock:
+            return self._configure(cfg)
+
+    def _configure(self, cfg):
         if not isinstance(cfg, dict):
             raise ValueError("Settings must be an object")
         url = (
@@ -186,6 +191,53 @@ class Context:
             self.url = url
             self.error = ""
         return self.settings()
+
+    def _rebuild_services(self):
+        runtime = self.runtime
+        if runtime is None:
+            raise ValueError("Complete PostgreSQL setup before resetting the database")
+        self.services = Services(runtime)
+        self.reconciliation = SQLiteReconciler(
+            runtime.database,
+            runtime.cache,
+            runtime.music,
+            self.services.audit,
+            snapshot_roots=_sqlite_snapshot_roots(),
+            start_scheduler=self.start_worker,
+            album_validator=self.services.validate_album_embedding,
+        )
+        self.jobs = JobQueue(self.services) if self.start_worker else None
+
+    def reset_database(self, target: str, confirmation: str):
+        with self.lifecycle_lock:
+            runtime = self.runtime
+            if runtime is None or self.services is None:
+                raise ValueError("Complete PostgreSQL setup before resetting the database")
+            expected = runtime.database.target()
+            if target != expected or confirmation != f"RESET {expected}":
+                raise ValueError("Database reset confirmation does not match the active target")
+
+            jobs = self.jobs
+            reconciliation = self.reconciliation
+            self.jobs = None
+            self.reconciliation = None
+            if jobs is not None:
+                jobs.close()
+                if jobs.thread.is_alive():
+                    self.jobs = jobs
+                    self.reconciliation = reconciliation
+                    raise ValueError("Database reset stopped because active work did not finish")
+            if reconciliation is not None:
+                reconciliation.close()
+            try:
+                with runtime.job_scope, runtime.processing:
+                    result = runtime.database.reset_application_data()
+                self._rebuild_services()
+                result["ready_for_full_index"] = True
+                return result
+            except Exception:
+                self._rebuild_services()
+                raise
 
 
 def create_app(config_file=None, database_url=None, *, token=None, start_worker=True):
@@ -267,6 +319,8 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
                 "/api/login",
                 "/api/admin/setup",
                 "/api/admin/recover",
+                "/api/database/reset",
+                "/api/database/reset-target",
             }
             or path.startswith(("/api/image/", "/api/fallback/thumbnail", "/api/audit"))
         )
@@ -572,6 +626,21 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
     @app.post("/api/settings")
     def save_settings(payload: dict):
         return context.configure((payload).get("config"))
+
+    @app.get("/api/database/reset-target")
+    def database_reset_target():
+        services = context.require()
+        return {
+            "backend": "PostgreSQL",
+            "target": services.runtime.database.target(),
+        }
+
+    @app.post("/api/database/reset")
+    def database_reset(payload: dict):
+        return context.reset_database(
+            str(payload.get("target", "")),
+            str(payload.get("confirmation", "")),
+        )
 
     @app.get("/api/diagnostics")
     def diagnostics(
@@ -898,6 +967,10 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
         )
         return result
 
+    @app.post("/api/musicbrainz/artwork-preview")
+    def musicbrainz_artwork_preview(payload: dict):
+        return context.require().musicbrainz_artwork_preview(payload)
+
     @app.post("/api/preview/render")
     def preview(payload: dict):
         return context.require().preview(payload)
@@ -1058,17 +1131,18 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
         from webgui.imaging import adjusted, encode
 
         image = adjusted(body)
-        directory = context.runtime.temporary_cache / "uploads"
-        directory.mkdir(parents=True, exist_ok=True)
-        path = directory / (uuid4().hex + ".png")
-        path.write_bytes(encode(image))
+        with context.runtime.temporary_files.workspace("uploads") as directory:
+            path = directory / (uuid4().hex + ".png")
+            path.write_bytes(encode(image))
+            image_handle = services.catalog.image(path)
+            size = path.stat().st_size
         return {
-            "image": services.catalog.image(path),
+            "image": image_handle,
             "name": str(payload.get("name", "Uploaded artwork"))[:200],
             "source": "Local",
             "width": image.width,
             "height": image.height,
-            "bytes": path.stat().st_size,
+            "bytes": size,
             "kind": "cover",
             "acceptable": True,
         }

@@ -48,6 +48,9 @@ OPTIONAL_DIMENSIONS = (
 PRIMARY_METADATA_SOURCES = frozenset(
     {"musicbrainz", "coverartarchive", "discogs", "amazon", "navidrome"}
 )
+ARTIST_IMAGE_SOURCES = frozenset(
+    {"deezer", "itunes", "fanarttv", "lastfm", "discogs", "navidrome"}
+)
 
 
 def _section(cfg: dict[str, Any], name: str) -> dict[str, Any]:
@@ -61,6 +64,9 @@ def _policy_defaults(raw: dict[str, Any], source: str = "") -> dict[str, Any]:
         # v5 files predate this provider, so saving Source Priority must not
         # silently add Store traffic to every album scan.
         "enabled": bool(raw.get("enabled", source != "amazon")),
+        "include_in_artist_art_search": bool(
+            raw.get("include_in_artist_art_search", source in ARTIST_IMAGE_SOURCES)
+        ),
         "strict_override": bool(raw.get("strict_override", source == "amazon")),
         "source_override": bool(raw.get("source_override", False)),
         "minimum_range_type": str(raw.get("minimum_range_type", "LowerRange")),
@@ -249,6 +255,7 @@ def persist_policy_draft(
         table = _ensure_table(policies, source)
         for key in (
             "enabled",
+            "include_in_artist_art_search",
             "strict_override",
             "source_override",
             "minimum_range_type",

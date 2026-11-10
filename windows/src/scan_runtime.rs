@@ -25,7 +25,7 @@ use crate::media_database::{
     CompilationArtworkApplication, CompilationLocalArtwork, RuntimeArtworkMaterial,
     cached_artist_musicbrainz_identity, cached_track_musicbrainz_identity,
     clear_album_bypass_from_runtime, compilation_resume_track, completed_compilation_track_paths,
-    find_existing_compilation_artwork, find_local_compilation_artwork,
+    find_existing_compilation_artworks, find_local_compilation_artwork,
     find_local_compilation_artworks, persist_track_musicbrainz_identity,
     record_album_outcome_from_runtime, record_compilation_artwork_application,
     record_compilation_progress, record_compilation_resume_track,
@@ -2060,21 +2060,24 @@ struct CachedPipelineResult {
 }
 
 impl CachedPipelineResult {
-    fn capture(result: &PipelineResult) -> Self {
-        Self {
+    fn capture(result: &mut PipelineResult) -> Result<Self, String> {
+        Ok(Self {
             candidates: result
                 .candidates
-                .iter()
-                .map(|item| CachedPipelineCandidate {
-                    reference: item.reference.clone(),
-                    path: item.downloaded.path().to_path_buf(),
-                    source_priority: item.downloaded.candidate.source_priority,
-                    strict: item.strict.clone(),
+                .iter_mut()
+                .map(|item| {
+                    let path = item.downloaded.retain_persistent_path()?;
+                    Ok(CachedPipelineCandidate {
+                        reference: item.reference.clone(),
+                        path,
+                        source_priority: item.downloaded.candidate.source_priority,
+                        strict: item.strict.clone(),
+                    })
                 })
-                .collect(),
+                .collect::<Result<Vec<_>, String>>()?,
             best_index: result.best_index,
             diagnostics: result.diagnostics.clone(),
-        }
+        })
     }
 
     fn restore(&self) -> Result<PipelineResult, String> {
@@ -2571,7 +2574,7 @@ async fn run_normal_musicbrainz_browser(
         }
         source_results.insert(
             selected.release_mbid.clone(),
-            CachedPipelineResult::capture(&pipeline),
+            CachedPipelineResult::capture(&mut pipeline)?,
         );
         let suggested_index = pipeline.best_index;
         let display_indices = (0..pipeline.candidates.len())
@@ -2899,51 +2902,55 @@ async fn run_compilation_album(
             }
         }
         let embedded_existing = match recording_mbid.as_deref() {
-            Some(recording) => match find_existing_compilation_artwork(
+            Some(recording) => match find_existing_compilation_artworks(
                 config,
                 recording,
                 &artist_mbids,
                 &track.path,
                 &track.title,
             ) {
-                Ok(Some(existing)) => {
-                    match embedded_candidate(&existing.track_path, &embedded_preview_cache) {
-                        Ok(Some(candidate)) => fs::read(candidate.path()).ok().and_then(|bytes| {
-                            let digest = Sha256::digest(&bytes);
-                            let actual_hash = digest
-                                .iter()
-                                .map(|byte| format!("{byte:02x}"))
-                                .collect::<String>();
-                            (actual_hash.eq_ignore_ascii_case(&existing.artwork_sha256)).then(
-                                || {
-                                    (
-                                        existing.track_path,
-                                        candidate.path().to_path_buf(),
-                                        "embedded-track",
-                                    )
-                                },
-                            )
-                        }),
-                        Ok(None) | Err(_) => None,
-                    }
-                }
-                Ok(None) => None,
+                Ok(found) => found
+                    .into_iter()
+                    .filter_map(|existing| {
+                        match embedded_candidate(&existing.track_path, &embedded_preview_cache) {
+                            Ok(Some(candidate)) => {
+                                fs::read(candidate.path()).ok().and_then(|bytes| {
+                                    let digest = Sha256::digest(&bytes);
+                                    let actual_hash = digest
+                                        .iter()
+                                        .map(|byte| format!("{byte:02x}"))
+                                        .collect::<String>();
+                                    actual_hash
+                                        .eq_ignore_ascii_case(&existing.artwork_sha256)
+                                        .then(|| {
+                                            (
+                                                existing.track_path,
+                                                candidate.path().to_path_buf(),
+                                                "embedded-track",
+                                            )
+                                        })
+                                })
+                            }
+                            Ok(None) | Err(_) => None,
+                        }
+                    })
+                    .collect::<Vec<_>>(),
                 Err(error) => {
                     gui_events::emit(json!({"event": "compilation_lookup_warning",
                         "track_path": track.path, "message": format!("Existing artwork lookup unavailable: {error}")}));
-                    None
+                    Vec::new()
                 }
             },
-            None => None,
+            None => Vec::new(),
         };
-        if let Some(source) = embedded_existing
-            && !existing_sources.iter().any(|item| {
+        for source in embedded_existing {
+            if !existing_sources.iter().any(|item| {
                 item.0
                     .to_string_lossy()
                     .eq_ignore_ascii_case(&source.0.to_string_lossy())
-            })
-        {
-            existing_sources.push(source);
+            }) {
+                existing_sources.push(source);
+            }
         }
         let mut existing_source = existing_sources.first().cloned();
         if let Some(source) = &existing_source {
@@ -3316,7 +3323,7 @@ async fn run_compilation_album(
                     }
                     source_results_cache.insert(
                         selected.release_mbid.clone(),
-                        CachedPipelineResult::capture(&discovered),
+                        CachedPipelineResult::capture(&mut discovered)?,
                     );
                     discovered
                 }
@@ -3403,19 +3410,24 @@ async fn run_compilation_album(
                     "image_type": candidate_image_category(&item.reference.types),
                     "cache_path": item.downloaded.path(), "recommended": Some(*candidate_index) == suggested_index })
             }).collect::<Vec<_>>();
-            gui_events::emit(
-                json!({ "event": "candidates", "album_path": album.path, "track_path": track.path,
-                "items": gui_candidates, "recommended_index": suggested_index.map(|value| value + 1),
-                "hidden_by_source_policy": pipeline.candidates.len() - display_indices.len(), "fallback": false,
-                "compilation_track": true, "musicbrainz_back_available": needs_musicbrainz }),
-            );
-            gui_events::emit(
-                json!({ "event": "decision_required", "album_path": album.path, "track_path": track.path,
-                "reason": "compilation-track", "suggested_index": suggested_index.map(|value| value + 1),
-                "allow_bypass": true, "musicbrainz_back_available": needs_musicbrainz }),
-            );
-
             let writing_mb_preview = direct_preview.is_some();
+            // Existing-library artwork and an explicitly selected MusicBrainz preview are
+            // already final write choices. Do not flash an intermediate candidate review or
+            // pause for a second click after the operator presses Embed Existing / EMBED Comp.
+            if !use_existing && !writing_mb_preview {
+                gui_events::emit(
+                    json!({ "event": "candidates", "album_path": album.path, "track_path": track.path,
+                    "items": gui_candidates, "recommended_index": suggested_index.map(|value| value + 1),
+                    "hidden_by_source_policy": pipeline.candidates.len() - display_indices.len(), "fallback": false,
+                    "compilation_track": true, "musicbrainz_back_available": needs_musicbrainz }),
+                );
+                gui_events::emit(
+                    json!({ "event": "decision_required", "album_path": album.path, "track_path": track.path,
+                    "reason": "compilation-track", "suggested_index": suggested_index.map(|value| value + 1),
+                    "allow_bypass": true, "musicbrainz_back_available": needs_musicbrainz }),
+                );
+            }
+
             let (chosen_index, upscale_overrides, explicit_write) = if use_existing {
                 (0, existing_upscale.take(), true)
             } else if let Some((_, upscale)) = direct_preview.take() {
@@ -5655,7 +5667,7 @@ mod tests {
             "https://example.invalid/art.png",
         )
         .unwrap();
-        let original = PipelineResult {
+        let mut original = PipelineResult {
             candidates: vec![PipelineCandidate {
                 reference: ArtworkReference {
                     source: "itunes".to_string(),
@@ -5673,12 +5685,13 @@ mod tests {
             provider_timings: Vec::new(),
         };
 
-        let restored = CachedPipelineResult::capture(&original).restore().unwrap();
+        let original_reference = original.candidates[0].reference.clone();
+        let cached = CachedPipelineResult::capture(&mut original).unwrap();
+        drop(original);
+        assert!(path.exists());
+        let restored = cached.restore().unwrap();
         assert_eq!(restored.best_index, Some(0));
-        assert_eq!(
-            restored.candidates[0].reference,
-            original.candidates[0].reference
-        );
+        assert_eq!(restored.candidates[0].reference, original_reference);
         assert_eq!(restored.candidates[0].downloaded.path(), path);
         assert_eq!(
             restored.candidates[0].downloaded.candidate.source_priority,

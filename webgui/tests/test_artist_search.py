@@ -22,8 +22,8 @@ def _png(color: str) -> bytes:
 
 
 class _Response:
-    def __init__(self, payload=None, content=b"", status_code=200):
-        self.payload, self.content, self.status_code = payload, content, status_code
+    def __init__(self, payload=None, content=b"", status_code=200, text=""):
+        self.payload, self.content, self.status_code, self.text = payload, content, status_code, text
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -48,6 +48,16 @@ class _Http:
                 {"name": "3 Doors Down", "picture_xl": "https://e-cdns-images.dzcdn.net/deezer.jpg"},
                 {"name": "Another Artist", "picture_xl": "https://e-cdns-images.dzcdn.net/wrong.jpg"},
             ]})
+        if url == "https://itunes.apple.com/search":
+            return _Response({"results": [{
+                "artistId": 123,
+                "artistName": "3 Doors Down",
+                "artistLinkUrl": "https://music.apple.com/us/artist/3-doors-down/123",
+            }]})
+        if url == "https://music.apple.com/us/artist/3-doors-down/123":
+            return _Response(text='<meta property="og:image" content="https://is1-ssl.mzstatic.com/image/thumb/Features/portrait.png/1200x630cw.png">')
+        if "mzstatic.com" in url:
+            return _Response(content=_png("orange"))
         if url.endswith("banner.png"):
             return _Response(content=_png("blue"))
         if url.endswith("portrait.png"):
@@ -106,6 +116,7 @@ class ArtistSearchTests(unittest.TestCase):
         self.assertTrue(_allowed_image_url("https://e-cdns-images.dzcdn.net/art.jpg"))
         self.assertTrue(_allowed_image_url("https://lastfm.freetls.fastly.net/i/u/art.jpg"))
         self.assertTrue(_allowed_image_url("https://i.discogs.com/art.jpg"))
+        self.assertTrue(_allowed_image_url("https://is1-ssl.mzstatic.com/image/thumb/art.jpg"))
         self.assertFalse(_allowed_image_url("https://fanart.tv.evil.example/art.png"))
         self.assertFalse(_allowed_image_url("http://assets.fanart.tv/art.png"))
 
@@ -118,7 +129,7 @@ class ArtistSearchTests(unittest.TestCase):
                 "3 Doors Down", "03cd9e6d-0a23-4c52-876f-0e909c84c653", credentials, http=http,
             )
             self.assertEqual([label for label, _ in found],
-                             ["Fanart banner", "Fanart portrait", "Deezer portrait"])
+                             ["Fanart banner", "Fanart portrait", "Deezer portrait", "iTunes portrait"])
             self.assertEqual(warnings, [])
             self.assertNotIn("wrong.jpg", [url for url, _ in http.calls])
             self.assertEqual(http.calls[0][1]["headers"]["api-key"], "fixture-key")
@@ -127,7 +138,7 @@ class ArtistSearchTests(unittest.TestCase):
     def test_search_without_credentials_still_uses_deezer(self):
         with tempfile.TemporaryDirectory() as temporary:
             found, warnings = discover_artist_images("3 Doors Down", "", Path(temporary), http=_Http())
-            self.assertEqual([label for label, _ in found], ["Deezer portrait"])
+            self.assertEqual([label for label, _ in found], ["Deezer portrait", "iTunes portrait"])
             self.assertEqual(warnings, [])
 
     def test_bad_fanart_credentials_do_not_block_deezer(self):
@@ -137,7 +148,7 @@ class ArtistSearchTests(unittest.TestCase):
             found, warnings = discover_artist_images(
                 "3 Doors Down", "03cd9e6d-0a23-4c52-876f-0e909c84c653", credentials, http=_Http(),
             )
-            self.assertEqual([label for label, _ in found], ["Deezer portrait"])
+            self.assertEqual([label for label, _ in found], ["Deezer portrait", "iTunes portrait"])
             self.assertEqual(len(warnings), 1)
             self.assertTrue(warnings[0].startswith("Fanart.tv:"))
 

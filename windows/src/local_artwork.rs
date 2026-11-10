@@ -666,7 +666,8 @@ fn cache_path(
         .map(|byte| format!("{byte:02x}"))
         .collect();
     cache_dir.join(format!(
-        "splined-local-{kind}-{}.{}",
+        "splined-local-{}-{kind}-{}.{}",
+        crate::download::temporary_owner_token(),
         &digest[..24],
         extension
     ))

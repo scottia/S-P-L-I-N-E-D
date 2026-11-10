@@ -48,6 +48,13 @@ class ArtistArtStorageTests(unittest.TestCase):
             root = Path(temporary)
             albums = [ArtistAlbum("Air", root / "Music" / "Air" / "No ID", "", ARTIST_ID)]
             self.assertEqual(artist_targets(albums, "Air", root / "artist-art"), [])
+            targets = artist_targets(
+                [], "Air", root / "artist-art",
+                allow_managed_without_owned_album=True,
+            )
+            self.assertEqual(len(targets), 1)
+            self.assertTrue(targets[0].managed)
+            self.assertEqual(targets[0].directory, root / "artist-art")
 
     def test_dedicated_artist_folder_precedes_managed_fallback(self) -> None:
         with TemporaryDirectory() as temporary:
