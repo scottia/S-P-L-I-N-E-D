@@ -53,6 +53,9 @@ diagnostic reports.
 
 ## Maintainer procedures and architecture
 
+- [PostgreSQL-only catalog development plan](postgresql-sqlx-catalog-plan.md)
+  — active, unimplemented Windows `sqlx-postgres` and shared-catalog proposal;
+  it does not describe current release behavior.
 - [PR #168 acceptance and promotion record](pr-168-acceptance.md) — accepted
   catalog projection, COMP/Fallback, Artist Art, MusicBrainz, embedding, and
   disposable-state scope for promotion through `dev` to `main`.
