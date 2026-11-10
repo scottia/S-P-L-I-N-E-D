@@ -204,10 +204,9 @@ fn indexed_track_artist_credits<'a>(
     .flatten()
     .flat_map(|value| artist_credit_values(value, separator))
     {
-        if !credits
-            .iter()
-            .any(|existing| existing.eq_ignore_ascii_case(&inferred))
-        {
+        if !credits.iter().any(|existing| {
+            artist_projection_identity(existing) == artist_projection_identity(&inferred)
+        }) {
             credits.push(inferred);
         }
     }
@@ -349,8 +348,8 @@ pub fn indexed_artist_catalog_projection(
             if synthetic_album_artist(credit) {
                 continue;
             }
-            let identity = casefold(credit);
-            let display = if credit.eq_ignore_ascii_case(&owner) {
+            let identity = artist_projection_identity(credit);
+            let display = if identity == artist_projection_identity(&owner) {
                 owner.clone()
             } else {
                 credit.to_string()
@@ -383,7 +382,7 @@ pub fn indexed_artist_catalog_projection(
         .filter_map(|(identity, mbid)| {
             album_keys
                 .keys()
-                .find(|name| casefold(name) == identity)
+                .find(|name| artist_projection_identity(name) == identity)
                 .cloned()
                 .map(|name| (name, mbid))
         })
@@ -4888,6 +4887,19 @@ fn casefold(value: &str) -> String {
     value.case_fold().collect()
 }
 
+/// Presentation identity for Artist catalog aliases. This intentionally
+/// matches WebGUI's punctuation-insensitive projection without changing the
+/// durable Album/Artist keys stored in SQLite. Folder-safe filename evidence
+/// such as `AC-DC` must not create a second selectable Artist beside the
+/// authoritative tagged owner `AC/DC`.
+pub(crate) fn artist_projection_identity(value: &str) -> String {
+    value
+        .nfkc()
+        .case_fold()
+        .filter(|character| character.is_alphanumeric())
+        .collect()
+}
+
 fn modified_ns(metadata: &fs::Metadata) -> i64 {
     metadata
         .modified()
@@ -5551,6 +5563,46 @@ mod tests {
             Some(aaron)
         );
         assert_eq!(projection.album_keys.get("Rob Wasserman").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn projected_filename_alias_does_not_duplicate_tagged_artist_owner() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = database_path(temp.path());
+        let connection = open_database(&db, false).unwrap();
+        let now = sqlite_now(&connection).unwrap();
+        let acdc = "66c662b6-6e2f-4930-8610-912e24c63ed1";
+        connection.execute(
+            "INSERT INTO artists(artist_key,artist_name,primary_path,musicbrainz_artistid,created_at,updated_at,last_seen_at,splined_version) \
+             VALUES('acdc','AC/DC','/music/AC-DC',?1,?2,?2,?2,'test')",
+            params![acdc, now],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO albums(album_key,artist_key,album_name,musicbrainz_albumid,path,representative_file,tag_signature,created_at,updated_at,last_seen_at,splined_version) \
+             VALUES('back','acdc','Back in Black','release-acdc','/music/AC-DC/Back in Black','/music/AC-DC/Back in Black/1-01 - AC-DC - Hells Bells.mp3','tags',?1,?1,?1,'test')",
+            params![now],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO tracks(track_key,album_key,path,title,artist_name,musicbrainz_artistid,file_size,file_mtime_ns,updated_at,splined_version) \
+             VALUES('hells-bells','back','/music/AC-DC/Back in Black/1-01 - AC-DC - Hells Bells.mp3','Hells Bells','AC/DC',?1,1,1,?2,'test')",
+            params![acdc, now],
+        ).unwrap();
+        drop(connection);
+
+        let projection = indexed_artist_catalog_projection(
+            db.to_str().unwrap(),
+            crate::config::DEFAULT_ARTIST_SEPARATOR_REGEX,
+        )
+        .unwrap();
+
+        assert_eq!(
+            projection.album_keys.keys().cloned().collect::<Vec<_>>(),
+            vec!["AC/DC"]
+        );
+        assert_eq!(
+            projection.musicbrainz_ids.get("AC/DC").map(String::as_str),
+            Some(acdc)
+        );
     }
 
     #[test]

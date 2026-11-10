@@ -7,7 +7,8 @@
 use crate::config::{Config, Mode, configured_samples_dir, resolve_sources};
 use crate::inspect::inspect_image;
 use crate::media_database::{
-    MediaAlbumSnapshot, MediaSnapshot, MediaTrackSnapshot, indexed_artist_catalog_projection,
+    MediaAlbumSnapshot, MediaSnapshot, MediaTrackSnapshot, artist_projection_identity,
+    indexed_artist_catalog_projection,
 };
 use crate::range::Range;
 use crate::settings::{
@@ -498,9 +499,10 @@ impl LibraryState {
             if Self::is_synthetic_album_artist(appearance_artist) {
                 continue;
             }
+            let appearance_identity = artist_projection_identity(appearance_artist);
             let display = values
                 .keys()
-                .find(|artist| artist.eq_ignore_ascii_case(appearance_artist))
+                .find(|artist| artist_projection_identity(artist) == appearance_identity)
                 .cloned()
                 .unwrap_or_else(|| appearance_artist.clone());
             let indices = values.entry(display).or_default();
@@ -518,9 +520,10 @@ impl LibraryState {
     }
 
     fn artist_indices(&self, artist: &str) -> Vec<usize> {
+        let identity = artist_projection_identity(artist);
         self.artists()
             .into_iter()
-            .find(|(name, _)| name.eq_ignore_ascii_case(artist))
+            .find(|(name, _)| artist_projection_identity(name) == identity)
             .map(|(_, indices)| indices)
             .unwrap_or_default()
     }
@@ -5544,6 +5547,33 @@ mod tests {
                     .unwrap()
             ]
         );
+    }
+
+    #[test]
+    fn artist_file_list_prefers_tagged_owner_over_folder_safe_alias() {
+        let mut release = album("back", "AC/DC", "Back in Black", "processed");
+        release.album_mbid = "release-acdc".into();
+        release.path = r"C:\Music\AC-DC\Back in Black".into();
+        let mut state = LibraryState::from_snapshot(MediaSnapshot {
+            schema_version: crate::media_database::SCHEMA_VERSION,
+            database_path: "splined.db".into(),
+            canonical_root: "/music".into(),
+            local_root: r"C:\Music".into(),
+            albums: vec![release],
+        })
+        .unwrap();
+        state
+            .artist_appearance_album_keys
+            .insert("AC-DC".into(), BTreeSet::from(["back".into()]));
+
+        let artist_rows = state
+            .rows()
+            .into_iter()
+            .filter(|row| row.kind == "artist")
+            .map(|row| row.primary)
+            .collect::<Vec<_>>();
+
+        assert_eq!(artist_rows, vec!["AC/DC"]);
     }
 
     #[test]

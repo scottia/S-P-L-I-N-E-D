@@ -17,6 +17,7 @@ from webgui.catalog import (
     PreviewApp,
     artist_display_sort_key,
     embedded_album_artwork_summary,
+    normalized_artist_identity,
 )
 from splined_media_database import update_artist_aggregate
 
@@ -51,6 +52,12 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
         self.assertEqual(
             sorted(artists, key=artist_display_sort_key),
             ["*NSYNC", "10,000 Maniacs", "Aaliyah", "Nirvana"],
+        )
+
+    def test_folder_safe_alias_matches_tagged_artist_projection_identity(self):
+        self.assertEqual(
+            normalized_artist_identity("AC-DC"),
+            normalized_artist_identity("AC/DC"),
         )
 
     def test_artist_list_is_database_only_until_lazy_thumbnail_hydration(self):
