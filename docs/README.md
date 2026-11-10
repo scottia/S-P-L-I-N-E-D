@@ -62,6 +62,8 @@ diagnostic reports.
   runtime layout, packaging, and source validation.
 - [Docker deployment](../docker/README.md) — Compose, PostgreSQL, persistent
   mounts, backup, and container validation.
+- [macOS development branch](macos-development.md) — experimental branch-only
+  validation, local development commands, and contribution boundary.
 - [Browser workspace schematic](browser-workspace-schematic.md) — maintainer
   map of browser regions and source locations; not a parity guarantee.
 - [Cross-client Album override implementation](cross-client-album-override-implementation.md)

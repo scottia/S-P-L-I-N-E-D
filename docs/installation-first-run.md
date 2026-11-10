@@ -139,7 +139,8 @@ macOS is unsupported on `main` and `dev`; it is not built by the full-release
 workflow and is not actively reviewed or developed on those branches.
 Experimental development is isolated on the
 [`dev-macos`](https://github.com/scottia/S-P-L-I-N-E-D/tree/dev-macos) branch
-and is planned for removal from SPLINED by December 31, 2026. Apple developers
+and documented in the [macOS branch guide](macos-development.md). It is planned
+for removal from SPLINED by December 31, 2026. Apple developers
 interested in testing and maintaining that branch are welcome to ask about
 joining the project team.
 

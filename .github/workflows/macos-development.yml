@@ -1,0 +1,65 @@
+name: macOS Development - dev-macos
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [dev-macos]
+  pull_request:
+    branches: [dev-macos]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-development-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-and-build:
+    name: Validate and build experimental macOS CLI
+    runs-on: macos-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout development source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install stable Rust with development tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy --no-self-update
+          rustup default stable
+
+      - name: Check formatting
+        run: cargo +stable fmt -- --check
+
+      - name: Run Clippy
+        run: cargo +stable clippy --locked --all-targets -- -D warnings
+
+      - name: Run macOS tests
+        run: cargo +stable test --locked
+
+      - name: Build optimized macOS development binary
+        run: cargo +stable build --locked --release
+
+      - name: Smoke-test command-line startup
+        run: ./target/release/splined --help
+
+      - name: Package development artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p macos-development-package
+          cp target/release/splined macos-development-package/splined
+          cp release/README-MACOS.txt macos-development-package/README-MACOS.txt
+          chmod +x macos-development-package/splined
+          tar -czf splined-macos-development.tar.gz -C macos-development-package splined README-MACOS.txt
+
+      - name: Upload short-lived development artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: splined-macos-development-${{ github.sha }}
+          path: splined-macos-development.tar.gz
+          if-no-files-found: error
+          retention-days: 14

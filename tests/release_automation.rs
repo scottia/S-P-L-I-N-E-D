@@ -158,10 +158,15 @@ fn full_release_always_builds_the_manual_msix_but_publishes_only_when_selected()
         .nth(1)
         .expect("release summary job");
     assert!(release_summary.contains("[ \"$STORE_UPDATE\" = true ]"));
-    assert!(!release_summary
-        .contains("{ [ \"$STORE_UPDATE\" = true ] || [ \"$STORE_DRAFT\" = true ]; }"));
-    assert!(release_summary
-        .contains("validated manual-review MSIX artifact created; Partner Center not contacted"));
+    assert!(
+        !release_summary
+            .contains("{ [ \"$STORE_UPDATE\" = true ] || [ \"$STORE_DRAFT\" = true ]; }")
+    );
+    assert!(
+        release_summary.contains(
+            "validated manual-review MSIX artifact created; Partner Center not contacted"
+        )
+    );
 }
 
 #[test]

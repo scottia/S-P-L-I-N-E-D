@@ -289,7 +289,8 @@ not actively reviewed or developed there. Experimental work is isolated on the
 [`dev-macos`](https://github.com/scottia/S-P-L-I-N-E-D/tree/dev-macos) branch;
 the remaining macOS implementation is planned for removal from SPLINED by
 December 31, 2026. Apple developers interested in testing and developing that
-branch are welcome to ask about joining the SPLINED project team.
+branch are welcome to ask about joining the SPLINED project team. Development
+and validation details are in the [macOS branch guide](docs/macos-development.md).
 
 ---
 
