@@ -44,6 +44,7 @@ pub const DB_NAME: &str = "splined.db";
 pub const SCHEMA_VERSION: i64 = 2;
 const INVENTORY_KEY: &str = "splined-media-library";
 const TRACK_INVENTORY_PREFIX: &str = "tracks-v1:";
+const TRACK_CREDIT_INDEX_VERSION: i64 = 1;
 const SCHEMA: &str = include_str!("../../schema/media.sql");
 pub(crate) fn claim_shared_database(path: &Path) -> Result<fs::File, String> {
     let lock_path = path.with_file_name(format!(
@@ -3479,6 +3480,21 @@ fn validate_signature(config: &Config, saved: Option<&Value>) -> Result<(), Stri
     Ok(())
 }
 
+fn published_track_credit_index_version(connection: &Connection) -> i64 {
+    connection
+        .query_row(
+            "SELECT details_json FROM db_maintenance_state WHERE action_name='media-index-refresh'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+        .and_then(|details| serde_json::from_str::<Value>(&details).ok())
+        .and_then(|details| details["track_credit_index_version"].as_i64())
+        .unwrap_or(0)
+}
+
 fn rebuild_index(
     connection: &mut Connection,
     config: &Config,
@@ -3490,6 +3506,8 @@ fn rebuild_index(
     let existing = load_existing(connection)?;
     let existing_tracks = load_existing_tracks(connection)?;
     let incremental_refresh = reason == "incremental-refresh" && !existing.is_empty();
+    let refresh_track_credits =
+        published_track_credit_index_version(connection) < TRACK_CREDIT_INDEX_VERSION;
     let completion_history = load_completion_history(config);
     let sources = resolve_sources(&config.sources, &config.source_policies, None, None, &[])
         .unwrap_or_else(|_| config.sources.cover_sources.clone());
@@ -3536,6 +3554,7 @@ fn rebuild_index(
         let prior_fallback = prior.is_some_and(|value| value.album_mbid.trim().is_empty());
         let inventory_fingerprint = fallback_album_inventory_fingerprint(album, mapper)?;
         if incremental_refresh
+            && !refresh_track_credits
             && prior.is_some_and(|value| {
                 value.track_count == album.audio_files.len() as i64
                     && representative_unchanged(value, &canonical_representative, size, mtime)
@@ -3671,7 +3690,9 @@ fn rebuild_index(
                 value.file_size == file_size && value.file_mtime_ns == file_mtime_ns
             });
             let (title, track_artist, recording_mbid, track_artist_mbid) =
-                if let Some(prior_track) = prior_track.filter(|_| unchanged) {
+                if let Some(prior_track) =
+                    prior_track.filter(|_| unchanged && !refresh_track_credits)
+                {
                     track_tag_reuses += 1;
                     (
                         prior_track.title.clone(),
@@ -3994,6 +4015,7 @@ fn promote_incremental_rows(
         "album_tag_reuses": tag_reuses,
         "track_tag_reads": track_tag_reads,
         "track_tag_reuses": track_tag_reuses,
+        "track_credit_index_version": TRACK_CREDIT_INDEX_VERSION,
     });
     transaction.execute(
         "INSERT INTO cache_history(cache_key, cache_type, album_key, action, payload_json, splined_version, event_at) VALUES(?, 'picker_inventory', NULL, ?, ?, ?, ?)",
@@ -4124,12 +4146,12 @@ fn promote_rows(
     ).map_err(db_error("publish media-index inventory"))?;
     transaction.execute(
         "INSERT INTO cache_history(cache_key, cache_type, album_key, action, payload_json, splined_version, event_at) VALUES(?, 'picker_inventory', NULL, ?, ?, ?, ?)",
-        params![INVENTORY_KEY, reason, json!({"artists": artists.len(), "albums": rows.len(), "tracks": tracks.len(), "album_tag_reads": tag_reads, "album_tag_reuses": tag_reuses, "track_tag_reads": track_tag_reads, "track_tag_reuses": track_tag_reuses}).to_string(), env!("CARGO_PKG_VERSION"), now],
+        params![INVENTORY_KEY, reason, json!({"artists": artists.len(), "albums": rows.len(), "tracks": tracks.len(), "album_tag_reads": tag_reads, "album_tag_reuses": tag_reuses, "track_tag_reads": track_tag_reads, "track_tag_reuses": track_tag_reuses, "track_credit_index_version": TRACK_CREDIT_INDEX_VERSION}).to_string(), env!("CARGO_PKG_VERSION"), now],
     ).map_err(db_error("write media-index audit"))?;
     transaction.execute(
         "INSERT INTO db_maintenance_state(action_name, completed_at, details_json, splined_version) VALUES('media-index-refresh', ?, ?, ?) \
          ON CONFLICT(action_name) DO UPDATE SET completed_at=excluded.completed_at, details_json=excluded.details_json, splined_version=excluded.splined_version",
-        params![now, json!({"reason": reason, "albums": rows.len(), "tracks": tracks.len(), "album_tag_reads": tag_reads, "album_tag_reuses": tag_reuses, "track_tag_reads": track_tag_reads, "track_tag_reuses": track_tag_reuses}).to_string(), env!("CARGO_PKG_VERSION")],
+        params![now, json!({"reason": reason, "albums": rows.len(), "tracks": tracks.len(), "album_tag_reads": tag_reads, "album_tag_reuses": tag_reuses, "track_tag_reads": track_tag_reads, "track_tag_reuses": track_tag_reuses, "track_credit_index_version": TRACK_CREDIT_INDEX_VERSION}).to_string(), env!("CARGO_PKG_VERSION")],
     ).map_err(db_error("write media-index maintenance"))?;
     transaction
         .commit()
@@ -5770,6 +5792,47 @@ mod tests {
         let payload: Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(payload["tracks"], 4);
         assert_eq!(payload["track_tag_reads"], 4);
+
+        // A database published before the multi-value Artist credit contract
+        // can have unchanged track files but stale single-value Artist rows.
+        // The next explicit refresh must republish those credits once instead
+        // of preserving the old row forever through size/mtime reuse.
+        connection
+            .execute(
+                "UPDATE tracks SET artist_name='Stale Artist' WHERE lower(path) LIKE '%01.mp3'",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE db_maintenance_state SET details_json='{}' WHERE action_name='media-index-refresh'",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        media_snapshot(&config, true).unwrap();
+        let connection = Connection::open(database_path(&config.scan.cache_dir)).unwrap();
+        let refreshed_artist: String = connection
+            .query_row(
+                "SELECT artist_name FROM tracks WHERE lower(path) LIKE '%normal album%01.mp3'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(refreshed_artist, "Artist");
+        let details: String = connection
+            .query_row(
+                "SELECT details_json FROM db_maintenance_state WHERE action_name='media-index-refresh'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let details: Value = serde_json::from_str(&details).unwrap();
+        assert_eq!(
+            details["track_credit_index_version"],
+            TRACK_CREDIT_INDEX_VERSION
+        );
     }
 
     #[test]
