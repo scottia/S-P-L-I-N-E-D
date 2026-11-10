@@ -1,4 +1,4 @@
-# PostgreSQL-only catalog development plan
+# SQLite/PostgreSQL-SQLx migration plan
 
 This document defines the development and acceptance contract for replacing
 the separate Windows SQLite catalog and WebGUI PostgreSQL catalog with one

@@ -53,7 +53,7 @@ diagnostic reports.
 
 ## Maintainer procedures and architecture
 
-- [PostgreSQL-only catalog development plan](postgresql-sqlx-catalog-plan.md)
+- [SQLite/PostgreSQL-SQLx migration plan](postgresql-sqlx-catalog-plan.md)
   — active, unimplemented Windows `sqlx-postgres` and shared-catalog proposal;
   it does not describe current release behavior.
 - [PR #168 acceptance and promotion record](pr-168-acceptance.md) — accepted
