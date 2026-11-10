@@ -468,6 +468,7 @@ fn repository_exposes_release_recovery_and_validation_workflows() {
             "01-full-release.yml".to_string(),
             "02-store-recovery.yml".to_string(),
             "03-ghcr-recovery.yml".to_string(),
+            "macos-development.yml".to_string(),
             "validate.yml".to_string(),
         ])
     );
