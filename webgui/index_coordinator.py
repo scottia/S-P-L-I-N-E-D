@@ -97,7 +97,9 @@ def claim(database, requested_mode: str, library_root: str) -> GenerationLease:
                 db.raw.execute(
                     "UPDATE catalog_generations SET owner_token=%s,"
                     "lease_expires_at=%s,state='building',phase='recovering',"
-                    "updated_at=now(),error='' WHERE generation_id=%s",
+                    "discovered_albums=0,completed_albums=0,changed_albums=0,"
+                    "unchanged_albums=0,removed_albums=0,error_count=0,"
+                    "current_path='',updated_at=now(),error='' WHERE generation_id=%s",
                     (owner, _lease_deadline(), generation_id),
                 )
                 db.raw.execute(
@@ -153,7 +155,7 @@ def heartbeat(database, lease: GenerationLease, *, phase: str, current_path: str
         updated = db.raw.execute(
             "UPDATE catalog_generations SET lease_expires_at=%s,phase=%s,"
             "current_path=%s,updated_at=now() WHERE generation_id=%s "
-            "AND owner_token=%s AND state='building'",
+            "AND owner_token=%s AND state='building' AND lease_expires_at>now()",
             (
                 _lease_deadline(),
                 phase,
@@ -209,12 +211,17 @@ def touch_completed(
             "UPDATE catalog_generation_albums SET scan_token=%s,"
             "completed_at=now() WHERE generation_id=%s AND album_path=%s "
             "AND inventory_signature=%s AND disposition<>'error' "
+            "AND EXISTS(SELECT 1 FROM catalog_generations generation "
+            "WHERE generation.generation_id=catalog_generation_albums.generation_id "
+            "AND generation.owner_token=%s AND generation.state='building' "
+            "AND generation.lease_expires_at>now()) "
             "RETURNING disposition",
             (
                 lease.owner_token,
                 lease.generation_id,
                 album_path,
                 inventory_signature,
+                lease.owner_token,
             ),
         ).fetchone()
     return str(row["disposition"]) if row is not None else None
@@ -238,7 +245,7 @@ def stage_batch(
             "discovered_albums=%s,completed_albums=%s,changed_albums=%s,"
             "unchanged_albums=%s,current_path=%s,phase='indexing',"
             "updated_at=now() WHERE generation_id=%s AND owner_token=%s "
-            "AND state='building'",
+            "AND state='building' AND lease_expires_at>now()",
             (
                 _lease_deadline(),
                 discovered,

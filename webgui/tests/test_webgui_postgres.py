@@ -2611,6 +2611,156 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 db.execute("SELECT count(*) FROM albums").fetchone()[0], 1
             )
 
+    def test_unchanged_incremental_index_reuses_catalog_without_tag_reads(self):
+        result = self.services.refresh_index(mode="incremental")
+        self.assertEqual(result["changed_albums"], 0)
+        self.assertEqual(result["unchanged_albums"], 1)
+        with closing(self.db.connect()) as db:
+            timings = db.execute(
+                "SELECT timings FROM catalog_generations WHERE generation_id=?",
+                (result["generation_id"],),
+            ).fetchone()[0]
+        self.assertEqual(timings["album_tag_reads"], 0)
+        self.assertEqual(timings["track_tag_reads"], 0)
+
+    def test_catalog_refresh_streams_bounded_batches_without_missing_records(self):
+        from webgui import index_coordinator as coordinator
+
+        for number in range(7):
+            album = self.root / "music" / f"Stream Artist {number}" / f"Album {number}"
+            album.mkdir(parents=True)
+            track = album / "01.flac"
+            shutil.copy2(self.files[0], track)
+            audio = FLAC(track)
+            audio["artist"] = f"Stream Artist {number}"
+            audio["albumartist"] = f"Stream Artist {number}"
+            audio["album"] = f"Album {number}"
+            audio["musicbrainz_albumid"] = str(uuid4())
+            audio["musicbrainz_artistid"] = str(uuid4())
+            audio["musicbrainz_trackid"] = str(uuid4())
+            audio.save()
+
+        self.runtime.cfg["scan"]["index_batch_size"] = 3
+        original_inventory = core.iter_inventory
+        original_stage = coordinator.stage_batch
+        source = {"yielded": 0, "exhausted": False}
+        batch_sizes = []
+        batch_objects = []
+        flush_before_exhaustion = []
+        durable_counts = []
+        live_counts = []
+
+        def instrumented_inventory(*args, **kwargs):
+            for album in original_inventory(*args, **kwargs):
+                source["yielded"] += 1
+                yield album
+            source["exhausted"] = True
+
+        def observed_stage(database, lease, rows, **kwargs):
+            batch_sizes.append(len(rows))
+            batch_objects.append(id(rows))
+            flush_before_exhaustion.append(not source["exhausted"])
+            result = original_stage(database, lease, rows, **kwargs)
+            with closing(database.connect()) as db:
+                durable_counts.append(
+                    db.execute(
+                        "SELECT count(*) AS n FROM catalog_generation_albums "
+                        "WHERE generation_id=? AND scan_token=?",
+                        (lease.generation_id, lease.owner_token),
+                    ).fetchone()["n"]
+                )
+                live_counts.append(
+                    db.execute("SELECT count(*) AS n FROM albums").fetchone()["n"]
+                )
+            return result
+
+        with (
+            patch.object(core, "iter_inventory", new=instrumented_inventory),
+            patch.object(coordinator, "stage_batch", new=observed_stage),
+        ):
+            self.services.refresh_index(mode="full")
+
+        self.assertEqual(source["yielded"], 8)
+        self.assertTrue(flush_before_exhaustion[0])
+        self.assertTrue(batch_sizes)
+        self.assertLessEqual(max(batch_sizes), 3)
+        self.assertEqual(batch_sizes, [3, 3, 2])
+        self.assertEqual(durable_counts, [3, 6, 8])
+        self.assertEqual(live_counts, [1, 1, 1])
+        self.assertEqual(len(set(batch_objects)), len(batch_objects))
+        with closing(self.db.connect()) as db:
+            counts = db.raw.execute(
+                "SELECT count(*) AS albums,count(DISTINCT path) AS paths,"
+                "(SELECT count(*) FROM tracks) AS tracks FROM albums"
+            ).fetchone()
+        self.assertEqual(counts["albums"], 8)
+        self.assertEqual(counts["paths"], 8)
+        self.assertEqual(counts["tracks"], 9)
+
+    def test_catalog_refresh_recovers_durable_batch_without_partial_publication(self):
+        from webgui import index_coordinator as coordinator
+
+        for number in range(5):
+            album = self.root / "music" / f"Recovery Artist {number}" / f"Album {number}"
+            album.mkdir(parents=True)
+            track = album / "01.flac"
+            shutil.copy2(self.files[0], track)
+            audio = FLAC(track)
+            audio["artist"] = f"Recovery Artist {number}"
+            audio["albumartist"] = f"Recovery Artist {number}"
+            audio["album"] = f"Album {number}"
+            audio["musicbrainz_albumid"] = str(uuid4())
+            audio["musicbrainz_artistid"] = str(uuid4())
+            audio["musicbrainz_trackid"] = str(uuid4())
+            audio.save()
+
+        self.runtime.cfg["scan"]["index_batch_size"] = 3
+        original_stage = coordinator.stage_batch
+        interrupted = {"done": False, "generation": ""}
+
+        def interrupt_after_durable_batch(database, lease, rows, **kwargs):
+            result = original_stage(database, lease, rows, **kwargs)
+            if not interrupted["done"]:
+                interrupted["done"] = True
+                interrupted["generation"] = lease.generation_id
+                raise KeyboardInterrupt("simulated worker loss after durable checkpoint")
+            return result
+
+        with (
+            patch.object(coordinator, "stage_batch", new=interrupt_after_durable_batch),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            self.services.refresh_index(mode="full")
+
+        with closing(self.db.connect()) as db, db:
+            self.assertEqual(db.execute("SELECT count(*) FROM albums").fetchone()[0], 1)
+            self.assertEqual(
+                db.execute(
+                    "SELECT count(*) FROM catalog_generation_albums "
+                    "WHERE generation_id=?",
+                    (interrupted["generation"],),
+                ).fetchone()[0],
+                3,
+            )
+            db.raw.execute(
+                "UPDATE catalog_generations SET lease_expires_at=now()-interval '1 second' "
+                "WHERE generation_id=%s",
+                (interrupted["generation"],),
+            )
+
+        recovered = self.services.refresh_index(mode="full")
+        self.assertTrue(recovered["resumed"])
+        self.assertEqual(recovered["generation_id"], interrupted["generation"])
+        with closing(self.db.connect()) as db:
+            state = db.execute(
+                "SELECT active_generation_id,maintenance_generation_id,catalog_state "
+                "FROM catalog_index_state WHERE singleton=TRUE"
+            ).fetchone()
+            self.assertEqual(state["active_generation_id"], interrupted["generation"])
+            self.assertEqual(state["maintenance_generation_id"], "")
+            self.assertEqual(state["catalog_state"], "ready")
+            self.assertEqual(db.execute("SELECT count(*) FROM albums").fetchone()[0], 6)
+
     def test_full_refresh_revalidates_existing_windows_managed_track_tags(self):
         with closing(self.db.connect()) as db, db:
             track = db.execute(

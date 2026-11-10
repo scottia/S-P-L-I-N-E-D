@@ -50,6 +50,10 @@ fn default_artist_separator_regex() -> String {
     DEFAULT_ARTIST_SEPARATOR_REGEX.to_string()
 }
 
+fn default_index_batch_size() -> usize {
+    16
+}
+
 fn default_artist_separator_profile() -> String {
     DEFAULT_ARTIST_SEPARATOR_PROFILE.to_string()
 }
@@ -104,6 +108,9 @@ pub struct ScanConfig {
     #[serde(default = "default_log_dir")]
     pub log_dir: String,
     pub scan_library_dir: String,
+    /// Maximum Album checkpoints committed in one bounded index transaction.
+    #[serde(default = "default_index_batch_size")]
+    pub index_batch_size: usize,
     /// Regex used only when a track/filename supplies one joined Artist value.
     /// Native multi-value ARTIST/TPE1 values are preserved without splitting.
     #[serde(default = "default_artist_separator_regex")]
@@ -375,6 +382,7 @@ impl Default for ScanConfig {
             windows_client_lock: false,
             log_dir: default_log_dir(),
             scan_library_dir: DEFAULT_SCAN_LIBRARY_DIR.to_string(),
+            index_batch_size: default_index_batch_size(),
             artist_separator_regex: default_artist_separator_regex(),
             artist_separator_profile: default_artist_separator_profile(),
         }
@@ -663,6 +671,7 @@ pub fn parse_config(text: &str) -> Result<Config, String> {
         return Err("SPLINED scan_mode_timeout must be finite and non-negative.".to_string());
     }
 
+    config.scan.index_batch_size = config.scan.index_batch_size.clamp(1, 64);
     config.scan.artist_separator_regex = config.scan.artist_separator_regex.trim().to_string();
     if config.scan.artist_separator_regex.is_empty() {
         return Err("Artist separator Regex cannot be empty.".to_string());

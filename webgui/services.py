@@ -940,75 +940,169 @@ class Services:
             ),
         )
 
-    def index_changes(self, cancelled=None):
+    def index_changes(self, cancelled=None, *, refresh=True):
+        # Direct service callers retain the established immediate detection
+        # contract. The HTTP route passes refresh=False and schedules this
+        # same detector on the background worker, so a browser status request
+        # never walks the NAS or waits for publication.
+        if refresh:
+            return self.detect_index_changes(cancelled=cancelled)
+        return indexer.change_summary(self.runtime.database)
+
+    def detect_index_changes(self, progress=None, cancelled=None):
+        """Refresh the stored change summary without opening tags or artwork."""
         r = self.runtime
         root = r.music
         if not root.is_dir():
             raise ValueError("Set an existing music library in Settings")
+        cover_name = str(r.cfg.get("output", {}).get("file_name", "cover"))
+        ignored = list(r.cfg.get("library", {}).get("ignored_subs", []))
+        discovered = 0
+        batch = []
+        started = time.perf_counter()
+
         with closing(r.database.connect()) as db:
-            old = list(
-                db.execute(
-                    "SELECT album_key,path,track_count,inventory_fingerprint,"
-                    "musicbrainz_albumid,representative_file,representative_size,"
-                    "representative_mtime_ns FROM albums"
+            db.raw.execute(
+                "CREATE TEMP TABLE catalog_inventory_probe("
+                "album_path TEXT PRIMARY KEY,inventory_signature TEXT NOT NULL,"
+                "artwork_signature TEXT NOT NULL,track_count BIGINT NOT NULL,"
+                "total_size BIGINT NOT NULL,newest_mtime_ns BIGINT NOT NULL) "
+                "ON COMMIT PRESERVE ROWS"
+            )
+            db.commit()
+
+            def flush_probe():
+                nonlocal batch
+                if not batch:
+                    return
+                with db.raw.cursor() as cursor:
+                    cursor.executemany(
+                        "INSERT INTO catalog_inventory_probe("
+                        "album_path,inventory_signature,artwork_signature,track_count,"
+                        "total_size,newest_mtime_ns) VALUES(%s,%s,%s,%s,%s,%s) "
+                        "ON CONFLICT(album_path) DO UPDATE SET "
+                        "inventory_signature=excluded.inventory_signature,"
+                        "artwork_signature=excluded.artwork_signature,"
+                        "track_count=excluded.track_count,"
+                        "total_size=excluded.total_size,"
+                        "newest_mtime_ns=excluded.newest_mtime_ns",
+                        batch,
+                    )
+                db.commit()
+                batch = []
+
+            for album in core.iter_inventory(
+                root, ignored, cover_name, cancelled=cancelled
+            ):
+                if cancelled and cancelled():
+                    raise core.InteractionCancelled()
+                facts = _album_manifest_facts(album)
+                batch.append(
+                    (
+                        str(album.path),
+                        _album_inventory_fingerprint(album),
+                        facts["artwork_signature"],
+                        facts["track_count"],
+                        facts["total_size"],
+                        facts["newest_mtime_ns"],
+                    )
                 )
-            )
-            managed_albums = windows_managed_keys(db.raw, "albums")
-        old_paths = {str(row["path"]): row for row in old}
-        albums, _ = core.inventory(
-            root,
-            list(r.cfg.get("library", {}).get("ignored_subs", [])),
-            str(r.cfg.get("output", {}).get("file_name", "cover")),
-            cancelled=cancelled,
-        )
-        current_paths = {str(album.path) for album in albums if album.audio_files}
-        added = 0
-        changed = 0
-        protected = 0
-        examples = []
-        for album in albums:
-            if not album.audio_files:
-                continue
-            path = str(album.path)
-            prior = old_paths.get(path)
-            if prior is None:
-                added += 1
-                if len(examples) < 3:
-                    examples.append(path)
-                continue
-            fingerprint = _album_inventory_fingerprint(
-                album, not str(prior["musicbrainz_albumid"] or "").strip()
-            )
-            if not _indexed_album_unchanged(prior, album, fingerprint):
-                if str(prior["album_key"]) in managed_albums:
-                    protected += 1
-                else:
-                    changed += 1
-                    if len(examples) < 3:
-                        examples.append(path)
-        missing_paths = set(old_paths) - current_paths
-        protected += sum(
-            1
-            for path in missing_paths
-            if str(old_paths[path]["album_key"]) in managed_albums
-        )
-        removed_paths = sorted(
-            (
-                path
-                for path in missing_paths
-                if str(old_paths[path]["album_key"]) not in managed_albums
-            ),
-            key=str.casefold,
-        )
-        examples.extend(removed_paths[: max(0, 3 - len(examples))])
-        return {
-            "count": added + changed + len(removed_paths),
+                discovered += 1
+                if len(batch) >= 64:
+                    flush_probe()
+                if progress and (discovered == 1 or discovered % 64 == 0):
+                    progress(
+                        {
+                            "phase": "inventory",
+                            "completed": discovered,
+                            "total": 0,
+                            "message": album.path.name,
+                        }
+                    )
+            flush_probe()
+
+            counts = db.raw.execute(
+                "WITH authoritative AS ("
+                " SELECT albums.path FROM albums JOIN catalog_sync_authority authority "
+                " ON authority.entity_table='albums' "
+                " AND authority.entity_key=albums.album_key "
+                " AND authority.authority='windows'),"
+                "added AS ("
+                " SELECT probe.* FROM catalog_inventory_probe probe "
+                " LEFT JOIN catalog_change_manifest saved "
+                " ON saved.album_path=probe.album_path "
+                " WHERE saved.album_path IS NULL),"
+                "removed AS ("
+                " SELECT saved.*,authoritative.path IS NOT NULL AS protected "
+                " FROM catalog_change_manifest saved "
+                " LEFT JOIN catalog_inventory_probe probe "
+                " ON probe.album_path=saved.album_path "
+                " LEFT JOIN authoritative ON authoritative.path=saved.album_path "
+                " WHERE probe.album_path IS NULL),"
+                "changed AS ("
+                " SELECT probe.album_path,authoritative.path IS NOT NULL AS protected "
+                " FROM catalog_inventory_probe probe "
+                " JOIN catalog_change_manifest saved "
+                " ON saved.album_path=probe.album_path "
+                " LEFT JOIN authoritative ON authoritative.path=probe.album_path "
+                " WHERE saved.inventory_signature<>probe.inventory_signature OR "
+                " saved.artwork_signature<>probe.artwork_signature OR "
+                " saved.track_count<>probe.track_count OR "
+                " saved.total_size<>probe.total_size OR "
+                " saved.newest_mtime_ns<>probe.newest_mtime_ns),"
+                "moved AS ("
+                " SELECT COALESCE(sum(LEAST(current_count,saved_count)),0) AS n "
+                " FROM (SELECT inventory_signature,count(*) AS current_count "
+                " FROM added GROUP BY inventory_signature) current_items "
+                " JOIN (SELECT inventory_signature,count(*) AS saved_count "
+                " FROM removed WHERE NOT protected "
+                " GROUP BY inventory_signature) saved_items "
+                " USING(inventory_signature)) "
+                "SELECT (SELECT count(*) FROM added) AS raw_added,"
+                "(SELECT count(*) FROM removed WHERE NOT protected) AS raw_removed,"
+                "(SELECT n FROM moved) AS moved,"
+                "(SELECT count(*) FROM changed WHERE NOT protected) AS changed,"
+                "((SELECT count(*) FROM changed WHERE protected)+"
+                "(SELECT count(*) FROM removed WHERE protected)) AS protected"
+            ).fetchone()
+            moved = int(counts["moved"] or 0)
+            added = max(0, int(counts["raw_added"] or 0) - moved)
+            removed = max(0, int(counts["raw_removed"] or 0) - moved)
+            changed = int(counts["changed"] or 0)
+            protected = int(counts["protected"] or 0)
+            examples = [
+                str(row["album_path"])
+                for row in db.raw.execute(
+                    "SELECT album_path FROM ("
+                    " SELECT probe.album_path,0 AS ordering "
+                    " FROM catalog_inventory_probe probe "
+                    " LEFT JOIN catalog_change_manifest saved "
+                    " ON saved.album_path=probe.album_path "
+                    " WHERE saved.album_path IS NULL OR "
+                    "saved.inventory_signature<>probe.inventory_signature OR "
+                    "saved.artwork_signature<>probe.artwork_signature "
+                    " UNION ALL SELECT saved.album_path,1 "
+                    " FROM catalog_change_manifest saved "
+                    " LEFT JOIN catalog_inventory_probe probe "
+                    " ON probe.album_path=saved.album_path "
+                    " WHERE probe.album_path IS NULL) changes "
+                    "ORDER BY ordering,album_path LIMIT 10"
+                )
+            ]
+
+        summary = {
+            "count": added + changed + removed + moved,
             "added": added,
             "changed": changed,
-            "removed": len(removed_paths),
+            "removed": removed,
+            "moved": moved,
             "protected": protected,
             "examples": examples,
+            "scanned_albums": discovered,
+            "scan_seconds": round(time.perf_counter() - started, 3),
         }
+        indexer.update_change_summary(r.database, summary)
+        return summary
 
     @serialized
     def refresh_index(self, progress=None, cancelled=None, mode="full"):
@@ -1034,10 +1128,8 @@ class Services:
         lease = indexer.claim(r.database, mode, str(root))
         started = time.perf_counter()
         with closing(r.database.connect()) as db:
-            old = list(
-                db.execute(
-                    "SELECT albums.*,artists.artist_name,artists.artist_sort,artists.musicbrainz_artistid,artists.primary_path FROM albums JOIN artists ON artists.artist_key=albums.artist_key"
-                )
+            old_count = int(
+                db.execute("SELECT count(*) AS n FROM albums").fetchone()["n"]
             )
             managed_artists = windows_managed_keys(db.raw, "artists")
             managed_albums = windows_managed_keys(db.raw, "albums")
@@ -1074,7 +1166,7 @@ class Services:
             )
         if (
             not indexed_separator
-            and old
+            and old_count
             and separator_regex != core.DEFAULT_ARTIST_SEPARATOR_REGEX
         ):
             raise ValueError(
@@ -1082,14 +1174,60 @@ class Services:
                 "Reset the PostgreSQL Database, then use Full Refresh Library Index."
             )
         windows_authority_configured = bool(managed_artists or managed_albums)
-        old_keys = {row["album_key"]: row for row in old}
-        old_paths = {row["path"]: row for row in old}
-        used = (
-            {str(row["album_key"]): str(row["path"]) for row in old}
-            if mode == "incremental"
-            else {}
-        )
-        recovered = indexer.completed_paths(r.database, lease)
+
+        def existing_album(column, value):
+            if not value:
+                return None
+            if column not in {"album_key", "path"}:
+                raise ValueError("Unsupported catalog lookup")
+            with closing(r.database.connect()) as db:
+                row = db.execute(
+                    f"SELECT albums.*,artists.artist_name,artists.artist_sort,"
+                    f"artists.musicbrainz_artistid,artists.primary_path "
+                    f"FROM albums JOIN artists ON artists.artist_key=albums.artist_key "
+                    f"WHERE albums.{column}=? LIMIT 1",
+                    (value,),
+                ).fetchone()
+            return dict(row) if row is not None else None
+
+        class ExistingAlbums:
+            def __init__(self, column):
+                self.column = column
+
+            def get(self, value, default=None):
+                return existing_album(self.column, value) or default
+
+            def __contains__(self, value):
+                return self.get(value) is not None
+
+        old_keys = ExistingAlbums("album_key")
+        old_paths = ExistingAlbums("path")
+
+        class GenerationKeys:
+            def __init__(self):
+                self.pending = {}
+
+            def get(self, key, default=None):
+                if key in self.pending:
+                    return self.pending[key]
+                with closing(r.database.connect()) as db:
+                    staged = db.execute(
+                        "SELECT album_path FROM catalog_generation_albums "
+                        "WHERE generation_id=? AND scan_token=? AND album_key=? LIMIT 1",
+                        (lease.generation_id, lease.owner_token, key),
+                    ).fetchone()
+                if staged is not None:
+                    return str(staged["album_path"])
+                if mode == "incremental":
+                    prior = existing_album("album_key", key)
+                    if prior is not None:
+                        return str(prior["path"])
+                return default
+
+            def __setitem__(self, key, path):
+                self.pending[key] = path
+
+        used = GenerationKeys()
         batch_size = max(
             1,
             min(64, int(r.cfg.get("scan", {}).get("index_batch_size", 16))),
@@ -1105,12 +1243,17 @@ class Services:
         tag_reuses = 0
         track_reads = 0
         track_reuses = 0
+        inventory_seconds = 0.0
+        filesystem_metadata_seconds = 0.0
+        checkpoint_seconds = 0.0
+        checkpoint_commits = 0
         cover_name = str(r.cfg.get("output", {}).get("file_name", "cover"))
 
         def flush():
-            nonlocal batch
+            nonlocal batch, checkpoint_seconds, checkpoint_commits
             if not batch:
                 return
+            checkpoint_started = time.perf_counter()
             indexer.stage_batch(
                 r.database,
                 lease,
@@ -1121,7 +1264,10 @@ class Services:
                 unchanged=unchanged_albums,
                 current_path=str(batch[-1]["album_path"]),
             )
+            checkpoint_seconds += time.perf_counter() - checkpoint_started
+            checkpoint_commits += 1
             batch = []
+            used.pending.clear()
 
         try:
             iterator = core.iter_inventory(
@@ -1130,7 +1276,14 @@ class Services:
                 cover_name,
                 cancelled=cancelled,
             )
-            for album in iterator:
+            while True:
+                inventory_started = time.perf_counter()
+                try:
+                    album = next(iterator)
+                except StopIteration:
+                    inventory_seconds += time.perf_counter() - inventory_started
+                    break
+                inventory_seconds += time.perf_counter() - inventory_started
                 if cancelled and cancelled():
                     raise core.InteractionCancelled()
                 discovered += 1
@@ -1140,12 +1293,12 @@ class Services:
                     prior_at_path is not None
                     and not str(prior_at_path["musicbrainz_albumid"] or "").strip()
                 )
-                album.inventory_fingerprint = _album_inventory_fingerprint(
-                    album, fallback
-                )
+                filesystem_started = time.perf_counter()
+                album.inventory_fingerprint = _album_inventory_fingerprint(album, fallback)
                 facts = _album_manifest_facts(album)
+                filesystem_metadata_seconds += time.perf_counter() - filesystem_started
                 facts["inventory_signature"] = str(album.inventory_fingerprint)
-                if recovered.get(path) == facts["inventory_signature"]:
+                if lease.resumed:
                     disposition = indexer.touch_completed(
                         r.database,
                         lease,
@@ -1200,6 +1353,7 @@ class Services:
                                     (prior_at_path["album_key"],),
                                 )
                             }
+                        filesystem_started = time.perf_counter()
                         records, reads, reuses = tags.inspect_album_tracks(
                             album,
                             str(prior_at_path["album_key"]),
@@ -1207,24 +1361,28 @@ class Services:
                             force_read=True,
                             artist_separator_regex=separator_regex,
                         )
+                        filesystem_metadata_seconds += (
+                            time.perf_counter() - filesystem_started
+                        )
                         track_reads += reads
                         track_reuses += reuses
                 elif unchanged:
                     disposition = "unchanged"
                     unchanged_albums += 1
                 else:
+                    filesystem_started = time.perf_counter()
                     artist, row, review, reused_tags = tags.inspect_album(
-                        album,
-                        root,
-                        cover_name,
-                        old_keys,
-                        old_paths,
-                        used,
+                        album, root, cover_name, old_keys, old_paths, used
                     )
+                    filesystem_metadata_seconds += time.perf_counter() - filesystem_started
                     tag_reuses += int(reused_tags)
                     tag_reads += int(not reused_tags)
                     if str(row["album_key"]) in managed_albums:
-                        authoritative = old_keys[str(row["album_key"])]
+                        authoritative = old_keys.get(str(row["album_key"]))
+                        if authoritative is None:
+                            raise ValueError(
+                                "Windows-managed Album authority disappeared during indexing"
+                            )
                         row["artist_key"] = str(authoritative["artist_key"])
                         artist["artist_key"] = str(authoritative["artist_key"])
                         disposition = "protected"
@@ -1250,12 +1408,16 @@ class Services:
                                     (row["album_key"],),
                                 )
                             }
+                        filesystem_started = time.perf_counter()
                         records, reads, reuses = tags.inspect_album_tracks(
                             album,
                             str(row["album_key"]),
                             old_tracks,
                             force_read=force_track_credit_read,
                             artist_separator_regex=separator_regex,
+                        )
+                        filesystem_metadata_seconds += (
+                            time.perf_counter() - filesystem_started
                         )
                         track_reads += reads
                         track_reuses += reuses
@@ -1313,6 +1475,13 @@ class Services:
                     "album_tag_reuses": tag_reuses,
                     "track_tag_reads": track_reads,
                     "track_tag_reuses": track_reuses,
+                    "inventory_seconds": round(inventory_seconds, 3),
+                    "filesystem_metadata_seconds": round(
+                        filesystem_metadata_seconds, 3
+                    ),
+                    "checkpoint_seconds": round(checkpoint_seconds, 3),
+                    "checkpoint_commits": checkpoint_commits,
+                    "batch_size": batch_size,
                 },
             )
         except core.InteractionCancelled:
@@ -1368,7 +1537,8 @@ class Services:
             owner = db.raw.execute(
                 "UPDATE catalog_generations SET state='validating',"
                 "phase='validating',updated_at=now() WHERE generation_id=%s "
-                "AND owner_token=%s AND state='building' RETURNING generation_id",
+                "AND owner_token=%s AND state='building' "
+                "AND lease_expires_at>now() RETURNING generation_id",
                 (lease.generation_id, lease.owner_token),
             ).fetchone()
             if owner is None:
@@ -1407,12 +1577,17 @@ class Services:
                 raise ValueError(
                     f"Catalog generation contains duplicate Album identity {duplicate['album_key']}"
                 )
-            db.raw.execute(
+            publishing = db.raw.execute(
                 "UPDATE catalog_generations SET state='publishing',"
                 "phase='publishing',updated_at=now() WHERE generation_id=%s "
-                "AND owner_token=%s AND state='validating'",
+                "AND owner_token=%s AND state='validating' "
+                "AND lease_expires_at>now() RETURNING generation_id",
                 (lease.generation_id, lease.owner_token),
-            )
+            ).fetchone()
+            if publishing is None:
+                raise indexer.GenerationLeaseLost(
+                    "Catalog publication lease expired during validation"
+                )
             stage_rows = db.raw.execute(
                 "SELECT * FROM catalog_generation_albums "
                 "WHERE generation_id=%s AND scan_token=%s "
@@ -1635,7 +1810,7 @@ class Services:
             publication_timings["artists"] = int(counts["artists"])
             publication_timings["albums"] = int(counts["albums"])
             publication_timings["tracks"] = int(counts["tracks"])
-            db.raw.execute(
+            published = db.raw.execute(
                 "UPDATE catalog_generations SET state='published',"
                 "phase='complete',removed_albums=%s,timings=%s,"
                 "published_at=now(),updated_at=now() WHERE generation_id=%s "
@@ -1646,8 +1821,12 @@ class Services:
                     lease.generation_id,
                     lease.owner_token,
                 ),
-            )
-            db.raw.execute(
+            ).rowcount
+            if published != 1:
+                raise indexer.GenerationLeaseLost(
+                    "Catalog publication rejected a stale generation owner"
+                )
+            activated = db.raw.execute(
                 "UPDATE catalog_index_state SET active_generation_id=%s,"
                 "maintenance_generation_id='',catalog_state='ready',"
                 "change_summary=%s,updated_at=now() WHERE singleton=TRUE "
@@ -1665,7 +1844,11 @@ class Services:
                     ),
                     lease.generation_id,
                 ),
-            )
+            ).rowcount
+            if activated != 1:
+                raise indexer.GenerationLeaseLost(
+                    "Catalog generation could not atomically become active"
+                )
         return {"removed_albums": len(removed)}
 
     def hydrate_tracks(
@@ -1906,16 +2089,32 @@ class Services:
         row = self.album_row(album_id)
         folder = Path(row["path"])
         files = self.album_files(row)
-        album = core.AlbumDir(folder, files)
+        configured_cover = str(
+            self.runtime.cfg.get("output", {}).get("file_name", "cover")
+        )
+        configured_stem = (configured_cover.strip() or "cover").casefold()
+        local_art = sorted(
+            path
+            for path in folder.iterdir()
+            if path.is_file()
+            and not path.is_symlink()
+            and path.suffix.casefold() in {".jpg", ".jpeg", ".png", ".webp"}
+            and (
+                path.stem.casefold().startswith("cover")
+                or path.stem.casefold().startswith(configured_stem)
+            )
+        )
+        album = core.AlbumDir(folder, files, local_art)
         cover = tags.cover_statistics(
             album,
-            str(self.runtime.cfg.get("output", {}).get("file_name", "cover")),
+            configured_cover,
         )
         representative = sorted(files, key=lambda value: str(value).casefold())[0]
         representative_stat = representative.stat()
         fingerprint = _album_inventory_fingerprint(
             album, not str(row["musicbrainz_albumid"] or "").strip()
         )
+        manifest = _album_manifest_facts(album)
         now = tags.utc_now()
         with closing(self.runtime.database.connect()) as db, db:
             db.execute(
@@ -1955,6 +2154,25 @@ class Services:
                         str(path),
                     ),
                 )
+            # A verified SPLINED write becomes the new filesystem baseline.
+            # Refresh only this Album's existing manifest row so a following
+            # change probe does not report our own cover/tag/embed operation.
+            # External mutations remain visible because no general-purpose
+            # catalog read calls this write-boundary refresh.
+            db.raw.execute(
+                "UPDATE catalog_change_manifest SET "
+                "inventory_signature=%s,artwork_signature=%s,track_count=%s,"
+                "total_size=%s,newest_mtime_ns=%s,updated_at=now() "
+                "WHERE album_path=%s",
+                (
+                    fingerprint,
+                    manifest["artwork_signature"],
+                    manifest["track_count"],
+                    manifest["total_size"],
+                    manifest["newest_mtime_ns"],
+                    str(folder),
+                ),
+            )
             media.update_artist_aggregate(db, row["artist_key"])
 
     def preview(self, payload):
