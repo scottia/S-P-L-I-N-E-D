@@ -48,4 +48,3 @@ WebGUI interaction results, reset-isolation checks, MusicBrainz timing data,
 cross-client COMP evidence, installed revisions, and automated suite totals.
 This document deliberately records the accepted contract without duplicating
 volatile test-run identifiers.
-
