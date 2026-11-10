@@ -633,7 +633,7 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                         "filename-featured-track",
                         "filename-featured",
                         str(folders["filename-featured"] / "song.mp3"),
-                        "1-07 - Album Owner & Target Artist - Guest Song",
+                        "1-07 - Album Owner feat. Target Artist - Guest Song",
                         "Album Owner",
                     ),
                     (

@@ -101,6 +101,19 @@ def _all_text(value: Any) -> str:
     )
 
 
+def _all_text_multivalue(value: Any) -> str:
+    """Preserve a real multi-value tag independently from display joining."""
+    text_values = getattr(value, "text", None)
+    if text_values is not None:
+        value = text_values
+    values = value if isinstance(value, (list, tuple)) else [value]
+    return "\0".join(
+        text
+        for text in (_tag_text(item) for item in values)
+        if text
+    )
+
+
 def _raw_alias_value(parsed: Any, *aliases: str) -> str:
     tags = getattr(parsed, "tags", None)
     if not tags:
@@ -143,7 +156,7 @@ def _raw_alias_values(parsed: Any, *aliases: str) -> str:
     for key, value in items:
         key_text = re.sub(r"[^a-z0-9]+", "", str(key).casefold())
         if any(alias in key_text for alias in wanted):
-            return _all_text(value)
+            return _all_text_multivalue(value)
     return ""
 
 
@@ -220,7 +233,35 @@ def read_album_tags(audio_path: Path) -> dict[str, Any]:
     }
 
 
-def read_track_identity_tags(audio_path: Path) -> dict[str, str]:
+DEFAULT_ARTIST_SEPARATOR_REGEX = r"(?i)(?: / | feat\. | feat | ft\. | ft |; )"
+
+
+def normalize_artist_credit_text(
+    value: str,
+    separator_regex: str = DEFAULT_ARTIST_SEPARATOR_REGEX,
+) -> str:
+    """Return canonical NUL-separated credits for one indexed Artist value.
+
+    Real multi-value tags are already NUL-separated by the readers and remain
+    authoritative. The configured expression is only applied to one joined
+    Artist/TPE1 (or a filename credit handled by the catalog).
+    """
+    explicit = tuple(part.strip() for part in str(value or "").split("\0") if part.strip())
+    if len(explicit) > 1:
+        return "\0".join(dict.fromkeys(explicit))
+    if not explicit:
+        return ""
+    try:
+        parts = re.split(separator_regex, explicit[0])
+    except re.error as exc:
+        raise ValueError(f"Artist separator Regex is invalid: {exc}") from exc
+    return "\0".join(dict.fromkeys(part.strip() for part in parts if part.strip()))
+
+
+def read_track_identity_tags(
+    audio_path: Path,
+    artist_separator_regex: str = DEFAULT_ARTIST_SEPARATOR_REGEX,
+) -> dict[str, str]:
     """Read only the local fields needed for authoritative track matching."""
     easy = None
     raw: Any = None
@@ -246,7 +287,7 @@ def read_track_identity_tags(audio_path: Path) -> dict[str, str]:
         if tags:
             for key in keys:
                 try:
-                    found = _all_text(tags.get(key))
+                    found = _all_text_multivalue(tags.get(key))
                 except Exception:
                     found = ""
                 if found:
@@ -277,7 +318,9 @@ def read_track_identity_tags(audio_path: Path) -> dict[str, str]:
         # TPE1/ARTIST is explicitly multi-value. Keeping only its first value
         # hides Featured performers from the Artist catalog even though tools
         # such as Mp3tag and Navidrome correctly expose every credit.
-        "artist": values("artist"),
+        "artist": normalize_artist_credit_text(
+            values("artist"), artist_separator_regex
+        ),
         "recording_mbid": recording_mbid,
         "artist_mbid": values(
             "musicbrainz_artistid",
@@ -292,6 +335,7 @@ def inspect_album_tracks(
     existing_by_path: Mapping[str, Mapping[str, Any]],
     *,
     force_read: bool = False,
+    artist_separator_regex: str = DEFAULT_ARTIST_SEPARATOR_REGEX,
 ) -> tuple[list[dict[str, Any]], int, int]:
     """Build exact Recording/Artist relationships without remote inference."""
     rows: list[dict[str, Any]] = []
@@ -329,7 +373,7 @@ def inspect_album_tracks(
             reuses += 1
         else:
             try:
-                tags = read_track_identity_tags(raw_path)
+                tags = read_track_identity_tags(raw_path, artist_separator_regex)
             except Exception:
                 tags = {
                     "title": raw_path.stem,

@@ -21,6 +21,8 @@ cache_dir = "/_cache"
 shared_artist_art_dir = ""
 # Disposable previews, candidates, uploads, and COMP work live below this path.
 temporary_cache_dir = "/_cache/_tmp"
+artist_separator_regex = '(?i)(?: / | feat\. | feat | ft\. | ft |; )'
+artist_separator_profile = "Navidrome default"
 # Per-run diagnostic logs are created under log_dir/run and pruned by retention.
 log_dir = "/_logs"
 

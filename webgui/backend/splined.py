@@ -5098,6 +5098,8 @@ def resolve_scan_root(
 APP_NAME = "SPLINED"
 VERSION = "2.0.35"
 CONFIG_VERSION = 5
+DEFAULT_ARTIST_SEPARATOR_REGEX = r"(?i)(?: / | feat\. | feat | ft\. | ft |; )"
+DEFAULT_ARTIST_SEPARATOR_PROFILE = "Navidrome default"
 
 
 def display_version() -> str:
@@ -5250,6 +5252,24 @@ def validate_config_v5(cfg: dict[str, Any]) -> None:
     credentials = section(cfg, "credentials")
     if not str(credentials.get("credential_dir", "")).strip():
         raise SplinedError("[credentials].credential_dir cannot be empty.")
+
+    scan = section(cfg, "scan")
+    artist_separator_regex = str(
+        scan.get("artist_separator_regex", DEFAULT_ARTIST_SEPARATOR_REGEX)
+    ).strip()
+    if not artist_separator_regex:
+        raise SplinedError("[scan].artist_separator_regex cannot be empty.")
+    try:
+        re.compile(artist_separator_regex)
+    except re.error as exc:
+        raise SplinedError(
+            f"[scan].artist_separator_regex is invalid: {exc}"
+        ) from exc
+    artist_separator_profile = str(
+        scan.get("artist_separator_profile", DEFAULT_ARTIST_SEPARATOR_PROFILE)
+    ).strip()
+    if not artist_separator_profile:
+        raise SplinedError("[scan].artist_separator_profile cannot be empty.")
 
     ranges = section(cfg, "range")
     try:

@@ -152,6 +152,33 @@ def serialized(function):
 class Services:
     def __init__(self, runtime: Runtime):
         self.runtime = runtime
+        configured_artist_separator = str(
+            runtime.cfg.get("scan", {}).get(
+                "artist_separator_regex", core.DEFAULT_ARTIST_SEPARATOR_REGEX
+            )
+        )
+        active_artist_separator = configured_artist_separator
+        try:
+            with closing(runtime.database.connect()) as db:
+                separator_state = db.execute(
+                    "SELECT details_json FROM db_maintenance_state "
+                    "WHERE action_name=?",
+                    ("artist-credit-separator",),
+                ).fetchone()
+                album_count = int(db.execute("SELECT count(*) FROM albums").fetchone()[0])
+            if separator_state is not None:
+                indexed = json.loads(str(separator_state["details_json"] or "{}"))
+                active_artist_separator = str(
+                    indexed.get("artist_separator_regex", "")
+                    or core.DEFAULT_ARTIST_SEPARATOR_REGEX
+                )
+            elif album_count and configured_artist_separator != core.DEFAULT_ARTIST_SEPARATOR_REGEX:
+                # A saved rule becomes active only after the reset/full-refresh
+                # contract records it. Until then, preserve the rule that built
+                # a pre-feature catalog instead of reinterpreting stored rows.
+                active_artist_separator = core.DEFAULT_ARTIST_SEPARATOR_REGEX
+        except (KeyError, TypeError, ValueError):
+            active_artist_separator = configured_artist_separator
         self.catalog = Catalog(
             runtime.music,
             runtime.database,
@@ -165,6 +192,7 @@ class Services:
             cache=runtime.cache,
             temporary_cache=runtime.temporary_cache,
             preview_cache=runtime.temporary_files.session_workspace("web-images"),
+            artist_separator_regex=active_artist_separator,
         )
         self.catalog.cache = runtime.cache
         self.catalog.artist_sources = tuple(core.resolve_artist_sources(runtime.cfg))
@@ -949,6 +977,16 @@ class Services:
             raise ValueError("Set an existing music library in Settings")
         if mode not in {"full", "incremental"}:
             raise ValueError("Library index mode must be full or incremental")
+        separator_regex = str(
+            r.cfg.get("scan", {}).get(
+                "artist_separator_regex", core.DEFAULT_ARTIST_SEPARATOR_REGEX
+            )
+        ).strip()
+        separator_profile = str(
+            r.cfg.get("scan", {}).get(
+                "artist_separator_profile", core.DEFAULT_ARTIST_SEPARATOR_PROFILE
+            )
+        ).strip() or core.DEFAULT_ARTIST_SEPARATOR_PROFILE
         with closing(r.database.connect()) as db:
             old = list(
                 db.execute(
@@ -957,6 +995,35 @@ class Services:
             )
             managed_artists = windows_managed_keys(db.raw, "artists")
             managed_albums = windows_managed_keys(db.raw, "albums")
+            separator_state = db.execute(
+                "SELECT details_json FROM db_maintenance_state "
+                "WHERE action_name=?",
+                ("artist-credit-separator",),
+            ).fetchone()
+        indexed_separator = ""
+        if separator_state is not None:
+            try:
+                details = json.loads(str(separator_state["details_json"] or "{}"))
+                indexed_separator = str(
+                    details.get("artist_separator_regex", "")
+                ).strip()
+            except (TypeError, ValueError):
+                indexed_separator = ""
+        if indexed_separator and indexed_separator != separator_regex:
+            raise ValueError(
+                "Artist separator settings changed. Reset the PostgreSQL Database, "
+                "then use Full Refresh Library Index so every Artist identity is "
+                "rebuilt with one rule."
+            )
+        if (
+            not indexed_separator
+            and old
+            and separator_regex != core.DEFAULT_ARTIST_SEPARATOR_REGEX
+        ):
+            raise ValueError(
+                "This PostgreSQL catalog predates the selected Artist separator. "
+                "Reset the PostgreSQL Database, then use Full Refresh Library Index."
+            )
         windows_authority_configured = bool(managed_artists or managed_albums)
         old_keys = {row["album_key"]: row for row in old}
         old_paths = {row["path"]: row for row in old}
@@ -1141,6 +1208,26 @@ class Services:
                 self._update_artist_presentation(
                     db, artist_key, artist_key in managed_artists
                 )
+            db.execute(
+                "INSERT INTO db_maintenance_state"
+                "(action_name,completed_at,details_json,splined_version) "
+                "VALUES(?,?,?,?) ON CONFLICT(action_name) DO UPDATE SET "
+                "completed_at=excluded.completed_at,"
+                "details_json=excluded.details_json,"
+                "splined_version=excluded.splined_version",
+                (
+                    "artist-credit-separator",
+                    tags.utc_now(),
+                    json.dumps(
+                        {
+                            "artist_separator_regex": separator_regex,
+                            "artist_separator_profile": separator_profile,
+                        },
+                        sort_keys=True,
+                    ),
+                    core.VERSION,
+                ),
+            )
         result = {
             "mode": mode,
             "albums": len(current_paths),
@@ -1186,6 +1273,7 @@ class Services:
             album_id,
             old,
             force_read=force_tag_read,
+            artist_separator_regex=self.catalog.artist_separator_regex,
         )
         with closing(self.runtime.database.connect()) as db, db:
             for record in records:
@@ -1242,7 +1330,10 @@ class Services:
         files = [Path(item["path"]) for item in indexed]
         old = {str(item["path"]): item for item in indexed}
         records, _, _ = tags.inspect_album_tracks(
-            core.AlbumDir(Path(row["path"]), files), album_id, old
+            core.AlbumDir(Path(row["path"]), files),
+            album_id,
+            old,
+            artist_separator_regex=self.catalog.artist_separator_regex,
         )
         with closing(self.runtime.database.connect()) as db, db:
             for record in records:

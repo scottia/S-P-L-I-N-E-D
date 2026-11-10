@@ -1053,7 +1053,7 @@ test("completed COMP work chains only within an explicit Artist scope", async ()
 });
 
 test("PostgreSQL refresh completion reloads the library and reports exact projections", async () => {
-  const job = {id: "index-1", kind: "index", state: "waiting", payload: {mode: "full"}};
+  const job = {id: "index-1", kind: "index", state: "waiting", payload: {mode: "full"}, created_at: "2026-11-09T12:00:00Z", updated_at: "2026-11-09T12:00:00Z"};
   const state = {
     server: {authenticated: true, setup_required: false}, embedQueue: [],
     jobs: [job], reviewJobId: job.id, reviewJobState: "waiting", libraryMode: "artists",
@@ -1063,7 +1063,8 @@ test("PostgreSQL refresh completion reloads the library and reports exact projec
     state,
     api: async path => path === "/api/jobs" ? [{...job, state: "done", progress: {}, result: {
       mode: "full", artists: 51, identified_albums: 210, fallback_albums: 6,
-    }}] : {pause_after_album: false, pause_all_albums: false},
+      changed_albums: 4, removed_albums: 1,
+    }, updated_at: "2026-11-09T12:04:47Z"}] : {pause_after_album: false, pause_all_albums: false},
     renderQueue() {}, refreshCompletedAlbum: async () => {}, refreshQueuedAlbumAfterSave: async () => {},
     renderHero() {}, renderReview() {}, renderJob: async () => {},
     loadLibrary: async query => { loaded.push(query); },
@@ -1076,7 +1077,7 @@ test("PostgreSQL refresh completion reloads the library and reports exact projec
 
   assert.deepEqual(loaded, ["adam"]);
   assert.deepEqual(statuses.at(-1), [
-    "PostgreSQL full refresh complete · 51 Artists · 210 Albums · 6 Fallback",
+    "PostgreSQL full refresh complete · 51 Artists · 210 Albums · 6 Fallback · elapsed 4m 47s · 4 changed · 1 removed",
     "ready",
   ]);
 });

@@ -1647,6 +1647,8 @@ export component AppWindow inherits Window {
     in property <string> setup-message;
     in-out property <string> settings-music-library;
     in-out property <string> settings-scan-library;
+    in-out property <string> settings-artist-separator-regex;
+    in-out property <string> settings-artist-separator-profile: "Navidrome default";
     in-out property <string> settings-database-dir;
     in-out property <string> settings-shared-artist-art-dir;
     in-out property <string> storage-cache-usage: "Calculating…";
@@ -1850,7 +1852,7 @@ export component AppWindow inherits Window {
     callback show-embed-queue();
     callback embed-panel-start-staged(); callback embed-panel-set-paused(bool); callback embed-panel-set-pause-all(bool);
     callback embed-panel-retry(int); callback embed-panel-remove(int); callback embed-panel-remove-all();
-    callback apply-enhancement-defaults(); callback browse-setting-directory(string); callback browse-sample-directory();
+    callback apply-enhancement-defaults(); callback browse-setting-directory(string); callback browse-sample-directory(); callback browse-artist-separator-profile();
     callback browse-backup-directory(string); callback browse-restore-file(); callback browse-setup-settings-file(); callback load-setup-settings-file();
     callback refresh-archived-backups();
     callback completion-acknowledged(); callback apply-selected-sample();
@@ -3191,6 +3193,17 @@ export component AppWindow inherits Window {
                                     }
                                 }
                                 SettingsHelpTip { summary: "What does Reset SQLite Database do?"; detail: "This destructive action empties SPLINED's accepted SQLite application tables while preserving the schema, indexes, and user_version. It does not delete splined.db or touch music. Use Refresh DB afterward to build a new index. Shared database locking is honored."; }
+                                if root.settings-advanced-visible: VerticalLayout { spacing: 6px;
+                                    Heading { text: "Artist Credit Separator"; height: 27px; color: AppTheme.cyan; }
+                                    HorizontalLayout { height: 30px; spacing: 8px;
+                                        Text { text: "Profile"; color: AppTheme.foreground; font-size: 14px * AppTheme.font-scale; width: 208px; vertical-alignment: center; }
+                                        Text { text: root.settings-artist-separator-profile; color: AppTheme.yellow; font-size: 14px * AppTheme.font-scale; horizontal-stretch: 1; vertical-alignment: center; }
+                                    }
+                                    SettingField { label: "Artist Filename / Tag Separator Regex"; value <=> root.settings-artist-separator-regex; hint: "Python/Rust-compatible regular expression"; }
+                                    NeonAction { width: 200px; height: 32px; label: "Browse / Import JSON…"; tone: "cyan"; clicked => root.browse-artist-separator-profile(); }
+                                    Text { text: "Navidrome default · spaced slash, feat./feat, ft./ft, semicolon-space"; color: AppTheme.secondary-foreground; font-size: 12px * AppTheme.font-scale; height: 22px; wrap: word-wrap; }
+                                    SettingsHelpTip { summary: "How is the Artist separator applied?"; detail: "Advanced: applied only to one joined Artist/TPE1 value and strict numbered filename credits. A real multi-value tag remains authoritative. JSON may contain artist_separator_regex (and optional artist_separator_profile) or a separators array. After changing and saving this setting, Reset SQLite Database before Refresh DB so one index never mixes identity rules."; }
+                                }
                                 PathSettingField { label: "Temporary Cache Directory *"; value <=> root.settings-temporary-cache-dir; hint: "Disposable run files"; browse => root.browse-setting-directory("temporary"); }
                                 PathSettingField { label: "Provider Credential Directory *"; value <=> root.settings-credential-dir; hint: "Provider JSON files"; browse => root.browse-setting-directory("credentials"); }
                                 SettingField { label: "Ignored Folders"; value <=> root.settings-ignored-subs; hint: "Comma-separated"; }

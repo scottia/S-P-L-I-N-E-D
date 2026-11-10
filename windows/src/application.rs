@@ -7,7 +7,7 @@
 use crate::config::{Config, Mode, configured_samples_dir, resolve_sources};
 use crate::inspect::inspect_image;
 use crate::media_database::{
-    MediaAlbumSnapshot, MediaSnapshot, MediaTrackSnapshot, indexed_artist_catalog,
+    MediaAlbumSnapshot, MediaSnapshot, MediaTrackSnapshot, indexed_artist_catalog_projection,
 };
 use crate::range::Range;
 use crate::settings::{
@@ -284,18 +284,35 @@ pub struct LibraryState {
     /// MBID-backed Albums. Keys are real display Artists; values are Album
     /// keys. Album ownership and the Albums/Fallback lists remain unchanged.
     pub artist_appearance_album_keys: BTreeMap<String, BTreeSet<String>>,
+    /// Positionally paired local Artist MBIDs for projected/Featured Artists.
+    /// This is stronger identity evidence than a conflicting Navidrome row.
+    pub artist_appearance_musicbrainz_ids: HashMap<String, String>,
 }
 
 impl LibraryState {
     pub fn from_snapshot(snapshot: MediaSnapshot) -> Result<Self, String> {
+        Self::from_snapshot_with_separator(snapshot, crate::config::DEFAULT_ARTIST_SEPARATOR_REGEX)
+    }
+
+    pub fn from_snapshot_with_separator(
+        snapshot: MediaSnapshot,
+        artist_separator_regex: &str,
+    ) -> Result<Self, String> {
         if snapshot.schema_version != crate::media_database::SCHEMA_VERSION {
             return Err(format!(
                 "SPLINED media database schema {} is not supported by this application.",
                 snapshot.schema_version
             ));
         }
-        let artist_appearance_album_keys =
-            indexed_artist_catalog(&snapshot.database_path).unwrap_or_default();
+        let projection =
+            indexed_artist_catalog_projection(&snapshot.database_path, artist_separator_regex)
+                .unwrap_or_default();
+        let artist_appearance_album_keys = projection.album_keys;
+        let artist_appearance_musicbrainz_ids = projection
+            .musicbrainz_ids
+            .into_iter()
+            .map(|(artist, mbid)| (artist.trim().to_ascii_lowercase(), mbid))
+            .collect();
         let mut albums = snapshot
             .albums
             .into_iter()
@@ -357,6 +374,7 @@ impl LibraryState {
             album_artwork_paths,
             artist_navidrome_ids: HashMap::new(),
             artist_appearance_album_keys,
+            artist_appearance_musicbrainz_ids,
         })
     }
 
@@ -384,6 +402,7 @@ impl LibraryState {
             album_artwork_paths: HashMap::new(),
             artist_navidrome_ids: HashMap::new(),
             artist_appearance_album_keys: BTreeMap::new(),
+            artist_appearance_musicbrainz_ids: HashMap::new(),
         }
     }
 
@@ -2689,6 +2708,10 @@ impl ApplicationState {
             Mode::Read => LaunchMode::Read,
             Mode::Write => LaunchMode::LiveWrite,
         };
+        let library = LibraryState::from_snapshot_with_separator(
+            snapshot,
+            &config.scan.artist_separator_regex,
+        )?;
         let sources = candidate_source_card_names(&config)
             .into_iter()
             .map(|name| {
@@ -2718,7 +2741,7 @@ impl ApplicationState {
             .collect();
         Ok(Self {
             config,
-            library: LibraryState::from_snapshot(snapshot)?,
+            library,
             sources,
             scan_scope: ScanScope::Selected,
             auto_scan_enabled: false,

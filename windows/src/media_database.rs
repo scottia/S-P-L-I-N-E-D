@@ -15,6 +15,7 @@ use crate::override_coordination::{
 use crate::scan::{AlbumDirectory, inventory_album_directories};
 use crate::scan_tags::{AlbumIndexTags, read_album_index_tags, read_local_track_evidence};
 use image::ImageFormat;
+use regex::Regex;
 use rusqlite::{
     Connection, ErrorCode, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
     named_params, params,
@@ -107,6 +108,14 @@ pub struct IndexedArtistAppearances {
 
 pub type IndexedArtistCatalog = BTreeMap<String, BTreeSet<String>>;
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IndexedArtistCatalogProjection {
+    pub album_keys: IndexedArtistCatalog,
+    /// Exact positionally paired Artist MBIDs keyed by projected display name.
+    /// Ambiguous or conflicting identities are deliberately omitted.
+    pub musicbrainz_ids: BTreeMap<String, String>,
+}
+
 fn synthetic_album_artist(artist: &str) -> bool {
     matches!(
         artist
@@ -118,40 +127,47 @@ fn synthetic_album_artist(artist: &str) -> bool {
     )
 }
 
-fn artist_credit_position(track_artist: &str, artist: &str) -> Option<usize> {
+fn artist_credit_position(track_artist: &str, artist: &str, separator: &Regex) -> Option<usize> {
     let selected = artist.trim().to_lowercase();
     if selected.is_empty() {
         return None;
     }
-    let explicit = track_artist
-        .split(['\0', ';'])
-        .map(str::trim)
-        .filter(|credit| !credit.is_empty())
-        .collect::<Vec<_>>();
+    let explicit = artist_credit_values(track_artist, separator);
     if let Some(position) = explicit
         .iter()
         .position(|credit| credit.to_lowercase() == selected)
     {
         return Some(position);
     }
-    let credits = [" & ", " feat. ", " featuring ", " ft. ", " with "]
-        .iter()
-        .fold(track_artist.to_lowercase(), |text, separator| {
-            text.replace(separator, "\0")
-        });
-    credits
-        .split(['\0', ';'])
-        .map(str::trim)
-        .filter(|credit| !credit.is_empty())
-        .position(|credit| credit == selected)
+    None
 }
 
-fn explicit_artist_credits(track_artist: &str) -> Vec<&str> {
-    track_artist
-        .split(['\0', ';'])
+/// Canonicalize one Artist string for durable indexing. Real multi-value tags
+/// arrive NUL-separated and are never split again; the configured Regex is
+/// applied only to one joined Artist/TPE1 or filename credit.
+fn artist_credit_values(track_artist: &str, separator: &Regex) -> Vec<String> {
+    let explicit = track_artist
+        .split('\0')
         .map(str::trim)
         .filter(|credit| !credit.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if explicit.len() > 1 {
+        return explicit;
+    }
+    let Some(joined) = explicit.first() else {
+        return Vec::new();
+    };
+    separator
+        .split(joined)
+        .map(str::trim)
+        .filter(|credit| !credit.is_empty())
+        .map(str::to_string)
         .collect()
+}
+
+fn canonical_artist_credit_text(track_artist: &str, separator: &Regex) -> String {
+    artist_credit_values(track_artist, separator).join("\0")
 }
 
 fn numbered_track_artist_credit(value: &str) -> Option<&str> {
@@ -170,8 +186,9 @@ fn indexed_track_artist_credits<'a>(
     track_artist: &'a str,
     title: &'a str,
     filename: &'a str,
-) -> Vec<&'a str> {
-    let mut credits = explicit_artist_credits(track_artist);
+    separator: &Regex,
+) -> Vec<String> {
+    let mut credits = artist_credit_values(track_artist, separator);
     // Explicit multi-value ARTIST/TPE1 tags are authoritative.  Adding the
     // filename's joined display credit would manufacture a duplicate combined
     // Artist (for example, "Rob Wasserman & Aaron Neville") beside the two
@@ -185,11 +202,11 @@ fn indexed_track_artist_credits<'a>(
     ]
     .into_iter()
     .flatten()
-    .flat_map(explicit_artist_credits)
+    .flat_map(|value| artist_credit_values(value, separator))
     {
         if !credits
             .iter()
-            .any(|existing| existing.eq_ignore_ascii_case(inferred))
+            .any(|existing| existing.eq_ignore_ascii_case(&inferred))
         {
             credits.push(inferred);
         }
@@ -223,6 +240,8 @@ pub fn indexed_artist_appearances(
     if current != SCHEMA_VERSION {
         return Err(incompatible_schema(current));
     }
+    let separator = Regex::new(&config.scan.artist_separator_regex)
+        .map_err(|error| format!("Artist separator Regex is invalid: {error}"))?;
     let escaped = artist_name
         .replace('\\', "\\\\")
         .replace('%', "\\%")
@@ -258,9 +277,9 @@ pub fn indexed_artist_appearances(
             .file_stem()
             .and_then(|value| value.to_str())
             .unwrap_or_default();
-        let matched = indexed_track_artist_credits(&track_artist, &title, filename)
+        let matched = indexed_track_artist_credits(&track_artist, &title, filename, &separator)
             .into_iter()
-            .any(|credit| artist_credit_position(credit, artist_name).is_some());
+            .any(|credit| artist_credit_position(&credit, artist_name, &separator).is_some());
         if !matched {
             continue;
         }
@@ -278,18 +297,23 @@ pub fn indexed_artist_appearances(
 /// from Artist name to Album keys. This makes Featured/Soundtrack/Various
 /// performers selectable without manufacturing duplicate Album rows or
 /// exposing the synthetic Various Artists/Soundtracks owners.
-pub fn indexed_artist_catalog(database_path: &str) -> Result<IndexedArtistCatalog, String> {
+pub fn indexed_artist_catalog_projection(
+    database_path: &str,
+    artist_separator_regex: &str,
+) -> Result<IndexedArtistCatalogProjection, String> {
     let path = Path::new(database_path);
     if !path.is_file() {
-        return Ok(BTreeMap::new());
+        return Ok(IndexedArtistCatalogProjection::default());
     }
     let (connection, current) = open_database_read_only(path)?;
     if current != SCHEMA_VERSION {
         return Err(incompatible_schema(current));
     }
+    let separator = Regex::new(artist_separator_regex)
+        .map_err(|error| format!("Artist separator Regex is invalid: {error}"))?;
     let mut statement = connection
         .prepare(
-            "SELECT albums.album_key,owners.artist_name,tracks.artist_name,tracks.title,tracks.path \
+            "SELECT albums.album_key,owners.artist_name,tracks.artist_name,tracks.title,tracks.path,COALESCE(tracks.musicbrainz_artistid,'') \
              FROM tracks JOIN albums ON albums.album_key=tracks.album_key \
              JOIN artists owners ON owners.artist_key=albums.artist_key \
              WHERE trim(COALESCE(albums.musicbrainz_albumid,''))<>'' \
@@ -304,19 +328,24 @@ pub fn indexed_artist_catalog(database_path: &str) -> Result<IndexedArtistCatalo
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
                 row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
             ))
         })
         .map_err(db_error("query indexed Artist catalog"))?;
     let mut names = BTreeMap::<String, String>::new();
     let mut album_keys = BTreeMap::<String, BTreeSet<String>>::new();
+    let mut musicbrainz_ids = BTreeMap::<String, String>::new();
+    let mut ambiguous_ids = BTreeSet::<String>::new();
     for row in rows {
-        let (album_key, owner, track_artist, title, path) =
+        let (album_key, owner, track_artist, title, path, track_artist_mbids) =
             row.map_err(db_error("read indexed Artist catalog"))?;
         let filename = Path::new(&path)
             .file_stem()
             .and_then(|value| value.to_str())
             .unwrap_or_default();
-        for credit in indexed_track_artist_credits(&track_artist, &title, filename) {
+        let credits = indexed_track_artist_credits(&track_artist, &title, filename, &separator);
+        let mbids = extract_mbids(&track_artist_mbids);
+        for (position, credit) in credits.iter().enumerate() {
             if synthetic_album_artist(credit) {
                 continue;
             }
@@ -328,15 +357,46 @@ pub fn indexed_artist_catalog(database_path: &str) -> Result<IndexedArtistCatalo
             };
             names.entry(identity.clone()).or_insert(display);
             album_keys
-                .entry(identity)
+                .entry(identity.clone())
                 .or_default()
                 .insert(album_key.clone());
+            if mbids.len() == credits.len() && !ambiguous_ids.contains(&identity) {
+                let candidate = mbids[position].to_ascii_lowercase();
+                if musicbrainz_ids
+                    .get(&identity)
+                    .is_some_and(|saved| !saved.eq_ignore_ascii_case(&candidate))
+                {
+                    musicbrainz_ids.remove(&identity);
+                    ambiguous_ids.insert(identity.clone());
+                } else {
+                    musicbrainz_ids.insert(identity.clone(), candidate);
+                }
+            }
         }
     }
-    Ok(album_keys
+    let album_keys = album_keys
         .into_iter()
         .filter_map(|(identity, keys)| names.remove(&identity).map(|name| (name, keys)))
-        .collect())
+        .collect::<IndexedArtistCatalog>();
+    let musicbrainz_ids = musicbrainz_ids
+        .into_iter()
+        .filter_map(|(identity, mbid)| {
+            album_keys
+                .keys()
+                .find(|name| casefold(name) == identity)
+                .cloned()
+                .map(|name| (name, mbid))
+        })
+        .collect();
+    Ok(IndexedArtistCatalogProjection {
+        album_keys,
+        musicbrainz_ids,
+    })
+}
+
+pub fn indexed_artist_catalog(database_path: &str) -> Result<IndexedArtistCatalog, String> {
+    indexed_artist_catalog_projection(database_path, crate::config::DEFAULT_ARTIST_SEPARATOR_REGEX)
+        .map(|projection| projection.album_keys)
 }
 
 /// A startup notice is deliberately cheaper than an index refresh: compare
@@ -3099,7 +3159,7 @@ fn normalized_artist_key(values: &[String]) -> String {
 fn extract_mbids(value: &str) -> Vec<String> {
     value
         .split(|character: char| {
-            character.is_whitespace() || matches!(character, ',' | ';' | '/' | '\\' | '|')
+            character.is_whitespace() || matches!(character, '\0' | ',' | ';' | '/' | '\\' | '|')
         })
         .map(str::trim)
         .filter(|part| {
@@ -3462,6 +3522,7 @@ fn expected_signature(config: &Config, canonical_root: &str) -> Value {
         "library_root": canonical_root,
         "ignored_subs": ignored,
         "cover_name": casefold(&config.output.file_name),
+        "artist_separator_regex": config.scan.artist_separator_regex,
     })
 }
 
@@ -3478,12 +3539,35 @@ fn validate_signature(config: &Config, saved: Option<&Value>) -> Result<(), Stri
     // client maps its local library root onto that canonical inventory and
     // must not impose its own scan exclusions or cover filename.
     let fields: &[&str] = if config.scan.sqlite_shared {
-        &["schema_version"]
+        &["schema_version", "artist_separator_regex"]
     } else {
-        &["schema_version", "ignored_subs", "cover_name"]
+        &[
+            "schema_version",
+            "ignored_subs",
+            "cover_name",
+            "artist_separator_regex",
+        ]
     };
     for field in fields {
-        if saved.get(field) != expected.get(field) {
+        let values_match = if *field == "artist_separator_regex" {
+            saved
+                .get(field)
+                .and_then(Value::as_str)
+                .unwrap_or(crate::config::DEFAULT_ARTIST_SEPARATOR_REGEX)
+                == expected
+                    .get(field)
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+        } else {
+            saved.get(field) == expected.get(field)
+        };
+        if !values_match {
+            if *field == "artist_separator_regex" {
+                return Err(
+                    "Artist separator settings changed. Reset the SQLite Database, then use Refresh DB so every Artist identity is rebuilt with one rule."
+                        .to_string(),
+                );
+            }
             let authority = if config.scan.sqlite_shared {
                 "shared"
             } else {
@@ -3518,6 +3602,8 @@ fn rebuild_index(
     mapper: &PathMapper,
     reason: &str,
 ) -> Result<(), String> {
+    let artist_separator = Regex::new(&config.scan.artist_separator_regex)
+        .map_err(|error| format!("Artist separator Regex is invalid: {error}"))?;
     let inventory =
         inventory_album_directories(Path::new(mapper.local_root()), &config.library.ignored_subs)?;
     let existing = load_existing(connection)?;
@@ -3736,7 +3822,7 @@ fn rebuild_index(
                         .as_ref()
                         .map(|value| value.artist.trim())
                         .filter(|value| !value.is_empty())
-                        .map(str::to_string)
+                        .map(|value| canonical_artist_credit_text(value, &artist_separator))
                         .unwrap_or_else(|| artist_name.clone());
                     let recording_mbid = evidence
                         .as_ref()
@@ -5421,6 +5507,66 @@ mod tests {
     }
 
     #[test]
+    fn projected_featured_artist_keeps_its_positionally_paired_musicbrainz_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = database_path(temp.path());
+        let connection = open_database(&db, false).unwrap();
+        let now = sqlite_now(&connection).unwrap();
+        let rob = "77b5f0ca-5c13-4348-8d4d-d6b15440e3ec";
+        let aaron = "2f53411b-ec29-4979-aa46-62786a2bb377";
+        connection.execute(
+            "INSERT INTO artists(artist_key,artist_name,primary_path,musicbrainz_artistid,created_at,updated_at,last_seen_at,splined_version) \
+             VALUES('aaron','Aaron Neville','/music/Aaron Neville',?1,?2,?2,?2,'test')",
+            params![aaron, now],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO albums(album_key,artist_key,album_name,musicbrainz_albumid,path,representative_file,tag_signature,created_at,updated_at,last_seen_at,splined_version) \
+             VALUES('gold','aaron','Gold','30a86440-3c1c-448c-85ce-84b7e53cc756','/music/Aaron Neville/Gold','/music/Aaron Neville/Gold/1-16.mp3','tags',?1,?1,?1,'test')",
+            params![now],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO tracks(track_key,album_key,path,title,artist_name,musicbrainz_artistid,file_size,file_mtime_ns,updated_at,splined_version) \
+             VALUES('stardust','gold','/music/Aaron Neville/Gold/1-16 - Rob Wasserman & Aaron Neville - Stardust.mp3','Stardust',?1,?2,1,1,?3,'test')",
+            params!["Rob Wasserman\0Aaron Neville", format!("{rob}\0{aaron}"), now],
+        ).unwrap();
+        drop(connection);
+
+        let projection = indexed_artist_catalog_projection(
+            db.to_str().unwrap(),
+            crate::config::DEFAULT_ARTIST_SEPARATOR_REGEX,
+        )
+        .unwrap();
+        assert_eq!(
+            projection
+                .musicbrainz_ids
+                .get("Rob Wasserman")
+                .map(String::as_str),
+            Some(rob)
+        );
+        assert_eq!(
+            projection
+                .musicbrainz_ids
+                .get("Aaron Neville")
+                .map(String::as_str),
+            Some(aaron)
+        );
+        assert_eq!(projection.album_keys.get("Rob Wasserman").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn configured_separator_never_resplits_native_multivalue_artist_tags() {
+        let separator = Regex::new(r"\\+").unwrap();
+        assert_eq!(
+            artist_credit_values("Rob Wasserman\0Aaron Neville", &separator),
+            ["Rob Wasserman", "Aaron Neville"]
+        );
+        assert_eq!(
+            artist_credit_values(r"Rob Wasserman\\Aaron Neville", &separator),
+            ["Rob Wasserman", "Aaron Neville"]
+        );
+    }
+
+    #[test]
     fn established_database_warm_connection_is_read_only() {
         let temp = tempfile::tempdir().unwrap();
         let db = database_path(temp.path());
@@ -5946,7 +6092,13 @@ mod tests {
             .unwrap();
         assert_eq!(
             serde_json::from_str::<Value>(&saved).unwrap(),
-            published_signature
+            json!({
+                "schema_version": SCHEMA_VERSION,
+                "library_root": "/music",
+                "ignored_subs": ["ignore-me"],
+                "cover_name": "folder",
+                "artist_separator_regex": crate::config::DEFAULT_ARTIST_SEPARATOR_REGEX,
+            })
         );
         assert_eq!(find_media_index_changes(&config).unwrap().count, 0);
     }

@@ -41,6 +41,18 @@ pub const DEFAULT_CACHE_DIR: &str = "_cache";
 pub const DEFAULT_SAMPLE_DIR: &str = DEFAULT_CACHE_DIR;
 pub const DEFAULT_CREDENTIAL_DIR: &str = "credentials";
 pub const DEFAULT_IGNORED_SUBS: [&str; 0] = [];
+/// Navidrome's default single-value Artist split contract. True multi-value
+/// tags remain authoritative and are never split with this expression.
+pub const DEFAULT_ARTIST_SEPARATOR_REGEX: &str = r"(?i)(?: / | feat\. | feat | ft\. | ft |; )";
+pub const DEFAULT_ARTIST_SEPARATOR_PROFILE: &str = "Navidrome default";
+
+fn default_artist_separator_regex() -> String {
+    DEFAULT_ARTIST_SEPARATOR_REGEX.to_string()
+}
+
+fn default_artist_separator_profile() -> String {
+    DEFAULT_ARTIST_SEPARATOR_PROFILE.to_string()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -92,6 +104,13 @@ pub struct ScanConfig {
     #[serde(default = "default_log_dir")]
     pub log_dir: String,
     pub scan_library_dir: String,
+    /// Regex used only when a track/filename supplies one joined Artist value.
+    /// Native multi-value ARTIST/TPE1 values are preserved without splitting.
+    #[serde(default = "default_artist_separator_regex")]
+    pub artist_separator_regex: String,
+    /// Human-readable source shown in Settings (Navidrome, Custom, or import).
+    #[serde(default = "default_artist_separator_profile")]
+    pub artist_separator_profile: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
@@ -356,6 +375,8 @@ impl Default for ScanConfig {
             windows_client_lock: false,
             log_dir: default_log_dir(),
             scan_library_dir: DEFAULT_SCAN_LIBRARY_DIR.to_string(),
+            artist_separator_regex: default_artist_separator_regex(),
+            artist_separator_profile: default_artist_separator_profile(),
         }
     }
 }
@@ -640,6 +661,22 @@ pub fn parse_config(text: &str) -> Result<Config, String> {
 
     if config.scan.scan_mode_timeout.0 < 0.0 || !config.scan.scan_mode_timeout.0.is_finite() {
         return Err("SPLINED scan_mode_timeout must be finite and non-negative.".to_string());
+    }
+
+    config.scan.artist_separator_regex = config.scan.artist_separator_regex.trim().to_string();
+    if config.scan.artist_separator_regex.is_empty() {
+        return Err("Artist separator Regex cannot be empty.".to_string());
+    }
+    regex::Regex::new(&config.scan.artist_separator_regex)
+        .map_err(|error| format!("Artist separator Regex is invalid: {error}"))?;
+    config.scan.artist_separator_profile = config.scan.artist_separator_profile.trim().to_string();
+    if config.scan.artist_separator_profile.is_empty() {
+        config.scan.artist_separator_profile =
+            if config.scan.artist_separator_regex == DEFAULT_ARTIST_SEPARATOR_REGEX {
+                DEFAULT_ARTIST_SEPARATOR_PROFILE.to_string()
+            } else {
+                "Custom Regex".to_string()
+            };
     }
 
     config.library.music_library = normalize_optional_directory(&config.library.music_library);

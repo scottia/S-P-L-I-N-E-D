@@ -1174,7 +1174,15 @@ async function performJobsPoll() {
             const query = state.libraryMode === "artists" ? ($("artistSearch").value || "") : ($("albumSearch").value || "");
             await loadLibrary(query);
             const mode = job.result?.mode === "incremental" ? "incremental" : "full";
-            setStatus(`PostgreSQL ${mode} refresh complete · ${job.result?.artists ?? 0} Artists · ${job.result?.identified_albums ?? 0} Albums · ${job.result?.fallback_albums ?? 0} Fallback`, "ready");
+            const details = [];
+            const started = Date.parse(job.created_at || ""), finished = Date.parse(job.updated_at || "");
+            if (Number.isFinite(started) && Number.isFinite(finished) && finished >= started) {
+              const seconds = Math.round((finished - started) / 1000), minutes = Math.floor(seconds / 60);
+              details.push(`elapsed ${minutes ? minutes + "m " : ""}${seconds % 60}s`);
+            }
+            if (job.result?.changed_albums !== undefined) details.push(`${job.result.changed_albums} changed`);
+            if (job.result?.removed_albums !== undefined) details.push(`${job.result.removed_albums} removed`);
+            setStatus(`PostgreSQL ${mode} refresh complete · ${job.result?.artists ?? 0} Artists · ${job.result?.identified_albums ?? 0} Albums · ${job.result?.fallback_albums ?? 0} Fallback${details.length ? " · " + details.join(" · ") : ""}`, "ready");
           }
           else if (job.kind === "scan") setStatus(`Album batch complete · ${job.result?.reviewed ?? 0} reviewed · ${job.result?.mode === "write" ? "approved covers written" : "Read mode, no covers written"}`);
           else if (Number(job.result?.unresolved || 0) > 0) setStatus("COMP artwork written and verified · authoritative completion remains pending for " + job.result.unresolved + " track(s)", "error");
@@ -1331,6 +1339,44 @@ function applySettingsInputs(draft, bindings, strict = true) {
     } else value = input.value;
     setSettingValue(draft, path, value);
   }
+}
+const DEFAULT_ARTIST_SEPARATOR_REGEX = "(?i)(?: / | feat\\. | feat | ft\\. | ft |; )";
+function importedArtistSeparator(value) {
+  const root = value?.scan && typeof value.scan === "object" ? value.scan : value;
+  if (!root || typeof root !== "object" || Array.isArray(root)) throw new Error("The selected JSON must contain an Artist separator object");
+  let regex = String(root.artist_separator_regex ?? root.separator_regex ?? "").trim();
+  const separators = root.artist_separators ?? root.separators;
+  if (!regex && Array.isArray(separators)) {
+    const values = separators.map(value => String(value)).filter(Boolean);
+    if (!values.length) throw new Error("The Artist separator list is empty");
+    regex = "(?:" + values.map(value => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|") + ")";
+  }
+  if (!regex) throw new Error("The selected JSON has no artist_separator_regex or separators list");
+  const profile = String(root.artist_separator_profile ?? root.profile ?? root.name ?? "Imported JSON").trim() || "Imported JSON";
+  return {regex, profile};
+}
+function renderArtistSeparatorImport(host, draft, rerender) {
+  const panel = node("section", "artist-separator-import");
+  const current = settingValue(draft, "scan.artist_separator_regex", DEFAULT_ARTIST_SEPARATOR_REGEX);
+  const profile = settingValue(draft, "scan.artist_separator_profile", "Navidrome default");
+  panel.append(
+    node("h5", "", "Artist credit parsing profile"),
+    node("p", "settings-subcopy", `${profile} · ${current === DEFAULT_ARTIST_SEPARATOR_REGEX ? "Navidrome defaults: spaced slash, feat./feat, ft./ft, semicolon-space" : "custom Regex"}`),
+  );
+  const file = node("input"); file.type = "file"; file.accept = ".json,application/json"; file.hidden = true;
+  const browse = node("button", "operation-button", "Browse / Import JSON…"); browse.type = "button";
+  browse.addEventListener("click", () => file.click());
+  file.addEventListener("change", () => runAction(async () => {
+    if (!file.files?.length) return;
+    const imported = importedArtistSeparator(JSON.parse(await file.files[0].text()));
+    setSettingValue(draft, "scan.artist_separator_regex", imported.regex);
+    setSettingValue(draft, "scan.artist_separator_profile", imported.profile);
+    setStatus(`Loaded Artist separator profile · ${imported.profile} · save Library & Files, reset PostgreSQL, then run Full Refresh`);
+    rerender();
+  }));
+  panel.append(file, browse);
+  settingsHelp(panel, "How is the Artist separator applied?", "Advanced: SPLINED applies this Python-compatible Regex only to one joined Artist/TPE1 value and strict numbered filename credits. A real multi-value tag is never split again. JSON may contain artist_separator_regex (optionally artist_separator_profile) or a separators array. Changing the saved rule requires Reset PostgreSQL Catalog before Full Refresh so one index never mixes identity rules.");
+  host.append(panel);
 }
 function enhancementValues(draft) {
   return ENHANCEMENT_VALUE_FIELDS.map(([, path, fallback]) => Number(settingValue(draft, path, fallback)));
@@ -1836,6 +1882,11 @@ async function openSettings() {
   }
   async function saveCurrentSection(section, message = section.label + " settings saved") {
     applySettingsInputs(draft, bindings);
+    if (section.id === "library") {
+      const separator = String(settingValue(draft, "scan.artist_separator_regex", DEFAULT_ARTIST_SEPARATOR_REGEX)).trim();
+      const importedProfile = String(settingValue(draft, "scan.artist_separator_profile", "")).trim();
+      setSettingValue(draft, "scan.artist_separator_profile", separator === DEFAULT_ARTIST_SEPARATOR_REGEX ? "Navidrome default" : (importedProfile && importedProfile !== "Navidrome default" ? importedProfile : "Custom Regex"));
+    }
     saved = await post("/api/settings", {config: draft}); await sessionStatus();
     applyGraphicalEnhancement(saved.config.webgui_ui?.enhancement);
     state.artworkRange = {...state.artworkRange, ...(saved.config.range || {})};
@@ -1848,7 +1899,7 @@ async function openSettings() {
   function renderSection(id, preserveDraft = false) {
     active = id; bindings = [];
     if (!preserveDraft) draft = structuredClone(saved.config);
-    draft.scan ||= {}; draft.scan.shared_artist_art_dir ??= ""; draft.scan.temporary_cache_dir ??= draft.scan.cache_dir || ""; delete draft.scan.sqlite_shared; delete draft.scan.windows_client_lock;
+    draft.scan ||= {}; draft.scan.shared_artist_art_dir ??= ""; draft.scan.temporary_cache_dir ??= draft.scan.cache_dir || ""; draft.scan.artist_separator_regex ??= DEFAULT_ARTIST_SEPARATOR_REGEX; draft.scan.artist_separator_profile ??= "Navidrome default"; delete draft.scan.sqlite_shared; delete draft.scan.windows_client_lock;
     draft.samples ||= {}; draft.aisplined ||= {};
     const section = available.find(item => item.id === id); clear(content); renderNav();
     const header = node("header", "settings-content-header"), copy = node("div");
@@ -1864,7 +1915,7 @@ async function openSettings() {
     if (section.id === "runtime") renderRuntimeSettings(fields, section, draft, bindings, saved, advanced);
     else {
       let displayedGroup = "";
-      const groupFor = path => section.id === "library" ? (["library.music_library", "scan.scan_mode", "scan.scan_library_dir"].includes(path) ? "Library And Application Paths" : path === "database.url" ? "Database" : "Persistent Folders")
+      const groupFor = path => section.id === "library" ? (["library.music_library", "scan.scan_mode", "scan.scan_library_dir"].includes(path) ? "Library And Application Paths" : path.startsWith("scan.artist_separator_") ? "Library Index" : path === "database.url" ? "Database" : "Persistent Folders")
         : section.id === "artwork" ? (path.startsWith("output.") ? "Output Files" : path === "scan.shared_artist_art_dir" ? "V/A / OST Artist Images Directory" : "Sample Images")
         : section.id === "enhancement" ? "Resolution Range" : "";
       for (const descriptor of section.fields || []) {
@@ -1889,6 +1940,7 @@ async function openSettings() {
           const updateScanPath = () => { scanField.hidden = !scanToggle.checked; scanDirectory.disabled = !scanToggle.checked; scanDirectory.required = false; scanDirectory.placeholder = "Optional"; };
           scanToggle.addEventListener("change", updateScanPath); updateScanPath();
         }
+        if (advanced) renderArtistSeparatorImport(fields, draft, () => renderSection(active, true));
         renderStorageSettings(fields);
       }
     }

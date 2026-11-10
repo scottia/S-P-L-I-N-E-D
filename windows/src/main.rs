@@ -19,7 +19,8 @@ use splined_core::backup::{
 };
 use splined_core::candidate::{Candidate, StaticFormat};
 use splined_core::config::{
-    Config, Mode, ScanTimeout, Verbosity, configured_samples_dir, configured_shared_artist_art_dir,
+    Config, DEFAULT_ARTIST_SEPARATOR_PROFILE, DEFAULT_ARTIST_SEPARATOR_REGEX, Mode, ScanTimeout,
+    Verbosity, configured_samples_dir, configured_shared_artist_art_dir,
 };
 use splined_core::credential_store::{
     ALBUM_COORDINATION_PROVIDER, CredentialEditor, load_editor, save_editor, test_editor,
@@ -1549,7 +1550,7 @@ fn refresh_navidrome_thumbnails(
     {
         ui.invoke_load_artist_top_songs();
     }
-    let Some((config, albums, needs_refresh, lookup_override)) =
+    let Some((config, albums, needs_refresh, lookup_override, indexed_artist_mbid)) =
         state.lock().ok().map(|mut app| {
             let lookup_override = requested_artist
                 .as_ref()
@@ -1585,7 +1586,22 @@ fn refresh_navidrome_thumbnails(
                     app.operation_tone = "green".to_string();
                 }
             }
-            (app.config.clone(), albums, needs_refresh, lookup_override)
+            let indexed_artist_mbid = requested_artist
+                .as_ref()
+                .and_then(|artist| {
+                    app.library
+                        .artist_appearance_musicbrainz_ids
+                        .get(&artist.trim().to_ascii_lowercase())
+                })
+                .cloned()
+                .unwrap_or_default();
+            (
+                app.config.clone(),
+                albums,
+                needs_refresh,
+                lookup_override,
+                indexed_artist_mbid,
+            )
         })
     else {
         if full_refresh {
@@ -1647,7 +1663,8 @@ fn refresh_navidrome_thumbnails(
             let musicbrainz_id = lookup_override
                 .as_ref()
                 .map(|hint| hint.musicbrainz_id.as_str())
-                .unwrap_or_default();
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(indexed_artist_mbid.as_str());
             match load_artist_art_profile(&config, artist, musicbrainz_id) {
                 Ok(profile) => profile,
                 Err(error) => {
@@ -1671,6 +1688,15 @@ fn refresh_navidrome_thumbnails(
                 musicbrainz_id: profile.musicbrainz_id.clone(),
             })
             .or(lookup_override);
+        let lookup_override = if indexed_artist_mbid.trim().is_empty() {
+            lookup_override
+        } else {
+            Some(ArtistLookupOverride {
+                artist: requested_artist.clone().unwrap_or_default(),
+                lookup_name: requested_artist.clone().unwrap_or_default(),
+                musicbrainz_id: indexed_artist_mbid.clone(),
+            })
+        };
         // Saved Artist Art is an independent local package. Show it while the
         // slower Navidrome biography, appearances, and candidates hydrate.
         let saved_package = requested_artist
@@ -2031,7 +2057,9 @@ fn refresh_navidrome_thumbnails(
                             artist_key,
                             biography: info.biography,
                             external_url: info.external_url,
-                            musicbrainz_id: if info.musicbrainz_id.trim().is_empty() {
+                            musicbrainz_id: if !indexed_artist_mbid.trim().is_empty() {
+                                indexed_artist_mbid.clone()
+                            } else if info.musicbrainz_id.trim().is_empty() {
                                 if artist.musicbrainz_id.trim().is_empty() {
                                     lookup_override.as_ref().map(|hint| hint.musicbrainz_id.clone()).unwrap_or_default()
                                 } else {
@@ -14144,6 +14172,38 @@ fn bind_callbacks(
     }
     {
         let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_browse_artist_separator_profile(move || {
+            let weak = weak.clone();
+            let state = Arc::clone(&state);
+            std::thread::spawn(move || {
+                let selected = browse_for_artist_separator_profile_file();
+                let imported = selected
+                    .as_deref()
+                    .map(artist_separator_profile_from_json)
+                    .transpose();
+                let _ = slint::invoke_from_event_loop(move || match imported {
+                    Ok(Some((profile, pattern))) => {
+                        if let Some(ui) = weak.upgrade() {
+                            ui.set_settings_artist_separator_profile(profile.clone().into());
+                            ui.set_settings_artist_separator_regex(pattern.into());
+                            ui.set_settings_section_dirty(true);
+                        }
+                        if let Ok(mut app) = state.lock() {
+                            app.operation_status = format!(
+                                "Loaded Artist separator profile · {profile} · save Library, reset SQLite, then Refresh DB"
+                            );
+                            app.operation_tone = "yellow".to_string();
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => record_action_result(&state, Err(error)),
+                });
+            });
+        });
+    }
+    {
+        let weak = ui.as_weak();
         ui.on_browse_backup_directory(move |kind| {
             let kind = kind.to_string();
             let current = weak
@@ -15738,6 +15798,8 @@ fn ensure_active_tint_palette(app: &mut ApplicationState) {
 fn set_settings_ui(ui: &AppWindow, config: &Config) {
     ui.set_settings_music_library(config.library.music_library.clone().into());
     ui.set_settings_scan_library(config.scan.scan_library_dir.clone().into());
+    ui.set_settings_artist_separator_regex(config.scan.artist_separator_regex.clone().into());
+    ui.set_settings_artist_separator_profile(config.scan.artist_separator_profile.clone().into());
     ui.set_settings_database_dir(config.scan.cache_dir.clone().into());
     ui.set_settings_shared_artist_art_dir(
         configured_shared_artist_art_dir(config)
@@ -15883,6 +15945,14 @@ fn set_source_policy_ui(ui: &AppWindow, config: &Config, source: &str) {
 fn apply_settings_ui(ui: &AppWindow, config: &mut Config) -> Result<(), String> {
     config.library.music_library = ui.get_settings_music_library().trim().to_string();
     config.scan.scan_library_dir = ui.get_settings_scan_library().trim().to_string();
+    config.scan.artist_separator_regex =
+        ui.get_settings_artist_separator_regex().trim().to_string();
+    regex::Regex::new(&config.scan.artist_separator_regex)
+        .map_err(|error| format!("Artist separator Regex is invalid: {error}"))?;
+    config.scan.artist_separator_profile = artist_separator_profile_label(
+        &config.scan.artist_separator_regex,
+        ui.get_settings_artist_separator_profile().as_str(),
+    );
     config.scan.cache_dir = ui.get_settings_database_dir().trim().to_string();
     config.scan.shared_artist_art_dir = ui.get_settings_shared_artist_art_dir().trim().to_string();
     if config.scan.shared_artist_art_dir.is_empty() {
@@ -15982,6 +16052,14 @@ fn apply_settings_section_ui(
         "Library" => {
             config.library.music_library = ui.get_settings_music_library().trim().to_string();
             config.scan.scan_library_dir = ui.get_settings_scan_library().trim().to_string();
+            config.scan.artist_separator_regex =
+                ui.get_settings_artist_separator_regex().trim().to_string();
+            regex::Regex::new(&config.scan.artist_separator_regex)
+                .map_err(|error| format!("Artist separator Regex is invalid: {error}"))?;
+            config.scan.artist_separator_profile = artist_separator_profile_label(
+                &config.scan.artist_separator_regex,
+                ui.get_settings_artist_separator_profile().as_str(),
+            );
             config.scan.scan_mode = ui.get_settings_scan_mode();
             config.scan.cache_dir = ui.get_settings_database_dir().trim().to_string();
             config.scan.shared_artist_art_dir =
@@ -16114,6 +16192,8 @@ fn safe_reset_config(current: &Config) -> Config {
     reset.scan.log_dir = current.scan.log_dir.clone();
     reset.scan.sqlite_shared = current.scan.sqlite_shared;
     reset.scan.windows_client_lock = current.scan.windows_client_lock;
+    reset.scan.artist_separator_regex = current.scan.artist_separator_regex.clone();
+    reset.scan.artist_separator_profile = current.scan.artist_separator_profile.clone();
     reset.credentials = current.credentials.clone();
     reset
 }
@@ -18476,11 +18556,18 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
     ));
     let indexed_artist_mbid = overview_artist
         .and_then(|artist| {
-            state.library.albums.iter().find_map(|album| {
-                (album.snapshot.artist.trim().eq_ignore_ascii_case(artist)
-                    && !album.snapshot.artist_mbid.trim().is_empty())
-                .then(|| album.snapshot.artist_mbid.trim().to_string())
-            })
+            state
+                .library
+                .artist_appearance_musicbrainz_ids
+                .get(&artist.trim().to_ascii_lowercase())
+                .cloned()
+                .or_else(|| {
+                    state.library.albums.iter().find_map(|album| {
+                        (album.snapshot.artist.trim().eq_ignore_ascii_case(artist)
+                            && !album.snapshot.artist_mbid.trim().is_empty())
+                        .then(|| album.snapshot.artist_mbid.trim().to_string())
+                    })
+                })
         })
         .unwrap_or_default();
     ui.set_artist_edit_indexed_id(indexed_artist_mbid.clone().into());
@@ -22216,6 +22303,98 @@ fn browse_for_folder(_initial: &str, _description: &str) -> Option<String> {
     None
 }
 
+fn artist_separator_profile_label(pattern: &str, imported: &str) -> String {
+    if pattern == DEFAULT_ARTIST_SEPARATOR_REGEX {
+        DEFAULT_ARTIST_SEPARATOR_PROFILE.to_string()
+    } else {
+        let imported = imported.trim();
+        if imported.is_empty() || imported == DEFAULT_ARTIST_SEPARATOR_PROFILE {
+            "Custom Regex".to_string()
+        } else {
+            imported.to_string()
+        }
+    }
+}
+
+fn artist_separator_profile_from_json(path: &str) -> Result<(String, String), String> {
+    let body = fs::read_to_string(path)
+        .map_err(|error| format!("Unable to read Artist separator JSON: {error}"))?;
+    let document: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|error| format!("Artist separator JSON is invalid: {error}"))?;
+    let root = document
+        .get("scan")
+        .filter(|value| value.is_object())
+        .unwrap_or(&document);
+    let mut pattern = root
+        .get("artist_separator_regex")
+        .or_else(|| root.get("separator_regex"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if pattern.is_empty() {
+        let separators = root
+            .get("artist_separators")
+            .or_else(|| root.get("separators"))
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| {
+                "Artist separator JSON must contain artist_separator_regex or a separators array."
+                    .to_string()
+            })?;
+        let escaped = separators
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(regex::escape)
+            .collect::<Vec<_>>();
+        if escaped.is_empty() {
+            return Err("The Artist separator list is empty.".to_string());
+        }
+        pattern = format!("(?:{})", escaped.join("|"));
+    }
+    regex::Regex::new(&pattern)
+        .map_err(|error| format!("Artist separator Regex is invalid: {error}"))?;
+    let imported = root
+        .get("artist_separator_profile")
+        .or_else(|| root.get("profile"))
+        .or_else(|| root.get("name"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("Imported JSON");
+    Ok((artist_separator_profile_label(&pattern, imported), pattern))
+}
+
+#[cfg(windows)]
+fn browse_for_artist_separator_profile_file() -> Option<String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let script = r#"
+Add-Type -AssemblyName PresentationFramework
+$dialog = New-Object Microsoft.Win32.OpenFileDialog
+$dialog.Title = 'Import Artist Separator Profile'
+$dialog.Filter = 'JSON profile (*.json)|*.json'
+$dialog.CheckFileExists = $true
+$dialog.Multiselect = $false
+if ($dialog.ShowDialog()) {
+    [Console]::Out.Write($dialog.FileName)
+}
+"#;
+    let output = std::process::Command::new("powershell.exe")
+        .args(["-NoLogo", "-NoProfile", "-STA", "-Command", script])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let selected = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    (!selected.is_empty()).then_some(selected)
+}
+
+#[cfg(not(windows))]
+fn browse_for_artist_separator_profile_file() -> Option<String> {
+    None
+}
+
 #[cfg(windows)]
 fn browse_for_backup_file(initial: &str, restore_type: &str) -> Option<String> {
     use std::os::windows::process::CommandExt;
@@ -22882,8 +23061,8 @@ mod tests {
         artist_fallback_embedded_track_paths, artist_is_secondary_credit,
         artist_overview_is_fully_complete, artist_overview_legend_counts,
         artist_overview_release_banners, artist_overview_track_is_featured,
-        artist_overview_ui_model, automatic_backup_is_due, backup_file_in_directory,
-        backup_schedule_interval, begin_musicbrainz_preview_request,
+        artist_overview_ui_model, artist_separator_profile_from_json, automatic_backup_is_due,
+        backup_file_in_directory, backup_schedule_interval, begin_musicbrainz_preview_request,
         cached_artist_banner_with_bottom_blur, cached_circular_artist_thumbnail, candidate_ui_row,
         canonical_webp_status, choose_musicbrainz_artist_match, circular_artist_art_png,
         clear_rendered_preview_for_adjustment, compilation_artwork_context,
@@ -22915,6 +23094,32 @@ mod tests {
         write_artist_art_file_with_stem,
     };
     use serde_json::json;
+
+    #[test]
+    fn artist_separator_json_import_accepts_regex_and_literal_lists() {
+        let directory = tempfile::tempdir().unwrap();
+        let direct = directory.path().join("direct.json");
+        fs::write(
+            &direct,
+            r#"{"scan":{"artist_separator_profile":"My player","artist_separator_regex":"\\\\+"}}"#,
+        )
+        .unwrap();
+        let (profile, pattern) =
+            artist_separator_profile_from_json(direct.to_str().unwrap()).unwrap();
+        assert_eq!(profile, "My player");
+        assert_eq!(pattern, r"\\+");
+
+        let listed = directory.path().join("listed.json");
+        fs::write(
+            &listed,
+            r#"{"name":"Literal separators","separators":[" / "," & "]}"#,
+        )
+        .unwrap();
+        let (profile, pattern) =
+            artist_separator_profile_from_json(listed.to_str().unwrap()).unwrap();
+        assert_eq!(profile, "Literal separators");
+        assert_eq!(pattern, r"(?: / | \& )");
+    }
 
     #[test]
     fn uploaded_artist_art_defaults_to_blue_and_supports_both_roles() {

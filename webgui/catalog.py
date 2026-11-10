@@ -42,39 +42,48 @@ ASSETS = Path(__file__).with_name("static")
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 AUDIO_EXTENSIONS = {".mp3", ".flac", ".m4a", ".mp4", ".ogg", ".opus", ".wav", ".aiff", ".aif"}
 LOGGER = logging.getLogger("uvicorn.error")
+DEFAULT_ARTIST_SEPARATOR_REGEX = r"(?i)(?: / | feat\. | feat | ft\. | ft |; )"
 
 
-def artist_credit_position(track_artist: str, artist: str) -> int | None:
+def _artist_credit_pattern(separator_regex: str) -> re.Pattern[str]:
+    try:
+        return re.compile(separator_regex)
+    except re.error:
+        return re.compile(DEFAULT_ARTIST_SEPARATOR_REGEX)
+
+
+def explicit_artist_credits(
+    track_artist: str,
+    separator_regex: str = DEFAULT_ARTIST_SEPARATOR_REGEX,
+) -> tuple[str, ...]:
+    """Return ordered Artist credits without guessing joined band names.
+
+    NUL is the durable representation of a real multi-value Artist/TPE1 tag
+    and always wins. The configured separator is used only when a tag (or a
+    strict numbered filename credit) arrived as one joined string.
+    """
+    value = str(track_artist or "")
+    parts = value.split("\0") if "\0" in value else _artist_credit_pattern(
+        separator_regex
+    ).split(value)
+    return tuple(dict.fromkeys(credit.strip() for credit in parts if credit.strip()))
+
+
+def artist_credit_position(
+    track_artist: str,
+    artist: str,
+    separator_regex: str = DEFAULT_ARTIST_SEPARATOR_REGEX,
+) -> int | None:
     """Match Windows' explicit and joined multi-artist credit rules."""
     selected = artist.strip().casefold()
     if not selected:
         return None
-    explicit = [
-        credit.strip()
-        for credit in re.split(r"[\0;]", track_artist)
-        if credit.strip()
-    ]
-    for position, credit in enumerate(explicit):
+    for position, credit in enumerate(
+        explicit_artist_credits(track_artist, separator_regex)
+    ):
         if credit.casefold() == selected:
             return position
-    credits = track_artist.casefold()
-    for separator in (" & ", " feat. ", " featuring ", " ft. ", " with "):
-        credits = credits.replace(separator, "\0")
-    for position, credit in enumerate(
-        item.strip() for item in re.split(r"[\0;]", credits) if item.strip()
-    ):
-        if credit == selected:
-            return position
     return None
-
-
-def explicit_artist_credits(track_artist: str) -> tuple[str, ...]:
-    """Return authoritative multi-value Artist credits without guessing bands."""
-    return tuple(dict.fromkeys(
-        credit.strip()
-        for credit in re.split(r"[\0;]", str(track_artist or ""))
-        if credit.strip()
-    ))
 
 
 def projected_artist_id(name: str) -> str:
@@ -84,7 +93,10 @@ def projected_artist_id(name: str) -> str:
 
 
 def indexed_track_credit_values(
-    track_artist: str, title: str = "", path: str = ""
+    track_artist: str,
+    title: str = "",
+    path: str = "",
+    separator_regex: str = DEFAULT_ARTIST_SEPARATOR_REGEX,
 ) -> tuple[str, ...]:
     """Return explicit tags plus strict numbered-filename Artist credits.
 
@@ -99,7 +111,7 @@ def indexed_track_credit_values(
     # the human-readable filename credit as another Artist identity: a file
     # such as ``Rob Wasserman & Aaron Neville`` would otherwise manufacture a
     # third, combined Artist beside the two correctly tagged performers.
-    if len(explicit_artist_credits(tagged)) > 1:
+    if len(explicit_artist_credits(tagged, separator_regex)) > 1:
         return (tagged,)
 
     values = [tagged]
@@ -315,6 +327,7 @@ class Catalog:
     cache: Path | None = None
     temporary_cache: Path | None = None
     preview_cache: Path | None = None
+    artist_separator_regex: str = DEFAULT_ARTIST_SEPARATOR_REGEX
     artist_sources: tuple[str, ...] = (
         "fanarttv", "deezer", "lastfm", "discogs", "itunes", "navidrome"
     )
@@ -661,8 +674,7 @@ class Catalog:
                     groups.append(blank)
         return groups
 
-    @staticmethod
-    def _projected_track_artists(db) -> dict[str, dict[str, object]]:
+    def _projected_track_artists(self, db) -> dict[str, dict[str, object]]:
         """Project every real per-track credit from identified Albums.
 
         These are selectable Artist identities, not Album owners. The Album
@@ -688,8 +700,11 @@ class Catalog:
                     str(row["artist_name"] or ""),
                     str(row["title"] or ""),
                     str(row["path"] or ""),
+                    self.artist_separator_regex,
                 )
-                for credit in explicit_artist_credits(value)
+                for credit in explicit_artist_credits(
+                    value, self.artist_separator_regex
+                )
             ))
             if not credits:
                 continue
@@ -1095,12 +1110,15 @@ class Catalog:
         normalized_names = {normalized_artist_identity(name) for name in names}
         for row in matches:
             if not any(
-                artist_credit_position(credit, name) is not None
+                artist_credit_position(
+                    credit, name, self.artist_separator_regex
+                ) is not None
                 for name in names
                 for credit in indexed_track_credit_values(
                     str(row["artist_name"] or ""),
                     str(row["title"] or ""),
                     str(row["path"] or ""),
+                    self.artist_separator_regex,
                 )
             ):
                 continue
@@ -1650,12 +1668,15 @@ class Catalog:
             top_tracks = []
             for item in top_track_rows:
                 owned = str(item["artist_key"]) in alias_ids or any(
-                    artist_credit_position(credit, name) is not None
+                    artist_credit_position(
+                        credit, name, self.artist_separator_regex
+                    ) is not None
                     for name in artist_names
                     for credit in indexed_track_credit_values(
                         str(item["artist_name"] or ""),
                         str(item["title"] or ""),
                         str(item["path"] or ""),
+                        self.artist_separator_regex,
                     )
                 )
                 if owned and str(item["title"]) not in top_tracks:
@@ -1923,11 +1944,14 @@ class Catalog:
                 str(row["album_key"]) in appearance_ids
                 or str(row["artist_key"]) in alias_ids
                 or any(
-                    artist_credit_position(credit, name) is not None
+                    artist_credit_position(
+                        credit, name, self.artist_separator_regex
+                    ) is not None
                     for credit in indexed_track_credit_values(
                         str(row["artist_name"] or ""),
                         str(row["title"] or ""),
                         str(row["path"] or ""),
+                        self.artist_separator_regex,
                     )
                 )
             ):
@@ -1984,9 +2008,10 @@ class Catalog:
         appearance_paths = appearance.get("song_paths", {})
         for row in rows:
             credits = indexed_track_credit_values(
-                str(row["artist_name"] or "").replace("\0", ";"),
+                str(row["artist_name"] or ""),
                 str(row["title"] or ""),
                 str(row["path"] or ""),
+                self.artist_separator_regex,
             )
             row_path = str(row["path"]).replace("\\", "/").strip("/")
             expected_paths = [
@@ -1998,7 +2023,12 @@ class Catalog:
                 or expected.endswith("/" + row_path)
                 for expected in expected_paths if expected
             )
-            if not (any(artist_credit_position(credit, name) is not None for credit in credits)
+            if not (any(
+                    artist_credit_position(
+                        credit, name, self.artist_separator_regex
+                    ) is not None
+                    for credit in credits
+                )
                     or not credits and row["artist_key"] in alias_ids
                     or appearance_match):
                 continue

@@ -115,7 +115,9 @@ class CompJobScopeTests(unittest.TestCase):
 
             self.assertEqual(rows[0]["artist_name"], "A Great Big World; Christina Aguilera")
             self.assertEqual((reads, reuses), (1, 0))
-            read_tags.assert_called_once_with(path)
+            read_tags.assert_called_once_with(
+                path, media_tags.DEFAULT_ARTIST_SEPARATOR_REGEX
+            )
 
     def test_missing_empty_and_duplicate_track_selections_never_expand(self):
         for track_keys in (None, [], ["artist-track", "artist-track"]):
