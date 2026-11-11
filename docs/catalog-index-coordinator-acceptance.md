@@ -308,7 +308,9 @@ established Album/Track catalog.
 
 ## Requirement 5 — adaptive batching and instant startup
 
-Status: **IMPLEMENTED; final suite/CI checkpoint pending**.
+Status: **PASSED at `021a4b1`**. The final suite, runtime startup checks, and
+adaptive/fixed benchmark gates passed; GitHub CI is recorded on the PR after
+the branch push.
 
 Acceptance contract:
 
@@ -398,3 +400,34 @@ claimed NAS latency result. Production media was deliberately not accessed.
 Reproducible result JSON is retained outside the repository under
 `E:\apps\ChatGpt\SPLINED-local-test-library\state\pr170-req5-bench` and
 `...\pr170-req5-100k`.
+
+### Startup and runtime evidence
+
+- The standalone native startup probe loads `media_snapshot` from the
+  published SQLite catalog without constructing an index coordinator. The
+  established 216-Album/3,496-Track catalog loaded in **37.6 ms**. The installed
+  2.0.36 test build independently loaded the same catalog in **24 ms**.
+- The deliberately pathological 100,000-Track fixture, in which every
+  zero-byte file projects into the Fallback view, loaded its already-published
+  1,000-Album catalog in 3.763 seconds warm (4.448 seconds first run). It made no
+  inventory, calibration, refresh, or tag-read request. This is a worst-case UI
+  projection measurement rather than an ordinary startup target.
+- Restarting the existing WebGUI launcher, including stopping the old process,
+  starting Python, and polling HTTP readiness, took 4.938 seconds. The live
+  status endpoint returned PostgreSQL ready at 2.0.36. Direct read-only state
+  inspection then reported `catalog_state=ready`, no maintenance generation,
+  zero active jobs, and the published 216 Albums/3,496 Tracks. Startup did not
+  enqueue indexing or wait for calibration.
+
+### Final Requirement 5 regression evidence
+
+- Windows: 526 core tests and 112 UI tests passed; all four adaptive-policy
+  unit tests and the focused bounded-checkpoint/recovery tests passed.
+- WebGUI: 382 tests passed in the full suite. The one environment error was the
+  absence of Playwright's default Chrome binary; the exact browser acceptance
+  test passed separately against the installed Microsoft Edge executable.
+  All four PostgreSQL adaptive-policy tests and the focused recovery tests
+  passed.
+- Shared/config/release/architecture checks passed (202 core, 5 config, 10
+  release, and 14 architecture tests), together with `cargo fmt --check`,
+  JavaScript syntax checks, and `git diff --check`.
