@@ -886,7 +886,11 @@ class Catalog:
             if projection is None:
                 raise KeyError("Artist not found")
             selected = self._virtual_artist_row(projection)
-            candidates = [*candidates, selected]
+            # A projected track-credit Artist has no persisted owner row.  It
+            # must never merge into an Album owner merely because catalog
+            # metadata supplied a colliding MBID. Existing same-name Artists
+            # are not projected by artists().
+            return selected, [selected]
         identity = normalized_artist_identity(selected["artist_name"])
         selected_mbid = str(selected["musicbrainz_artistid"] or "").strip().casefold()
         selected_path = str(selected["primary_path"] or "").replace("\\", "/").rstrip("/")
