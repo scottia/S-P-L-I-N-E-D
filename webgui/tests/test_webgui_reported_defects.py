@@ -124,6 +124,8 @@ class ReportedDefectTests(unittest.TestCase):
         self.assertIn("font-size:15px", stylesheet)
         self.assertIn("metric-below-minimum", stylesheet)
         self.assertIn("settings.config.range", operations)
+        self.assertIn('document.addEventListener("visibilitychange"', operations)
+        self.assertIn("state.libraryChanges?.checking", operations)
         self.assertIn("metric: metadata", application)
         self.assertNotIn('"Artist " + state.artist.portrait_meta.width', application)
 
