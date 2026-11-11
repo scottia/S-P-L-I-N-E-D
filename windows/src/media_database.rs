@@ -4012,6 +4012,7 @@ fn rebuild_index_generation(
     let mut track_tag_reuses = 0_i64;
     let batch_size = config.scan.index_batch_size.clamp(1, 64);
     let mut staged_batch = Vec::with_capacity(batch_size);
+    let mut claimed_moved_keys = HashSet::<String>::new();
     let mut checkpoint_duration = Duration::ZERO;
     let mut checkpoint_commits = 0_u64;
 
@@ -4072,7 +4073,23 @@ fn rebuild_index_generation(
                 return Ok(());
             }
 
-            let prior = existing_album_at_path(connection, &canonical_path)?;
+            let prior_at_path = existing_album_at_path(connection, &canonical_path)?;
+            let moved_prior = if prior_at_path.is_none() {
+                existing_moved_album(
+                    connection,
+                    mapper,
+                    &canonical_path,
+                    &artwork_inventory_signature,
+                    album.audio_files.len() as i64,
+                    total_size,
+                    newest_mtime_ns,
+                    &mut claimed_moved_keys,
+                )?
+            } else {
+                None
+            };
+            let prior_from_move = moved_prior.is_some();
+            let prior = prior_at_path.or(moved_prior);
             let published_inventory_signature = connection
                 .query_row(
                     "SELECT inventory_signature FROM catalog_change_manifest
@@ -4161,7 +4178,9 @@ fn rebuild_index_generation(
                     tag_reads += 1;
                     (
                         read_album_index_tags(representative).unwrap_or_default(),
-                        None,
+                        prior_from_move
+                            .then(|| prior.as_ref().map(|value| value.album_key.clone()))
+                            .flatten(),
                         prior.clone(),
                     )
                 };
@@ -4182,16 +4201,20 @@ fn rebuild_index_generation(
                     value == &base_key || value.starts_with(&(base_key.clone() + ":copy:"))
                 })
                 .unwrap_or(base_key.clone());
-            let staged_path = connection
-                .query_row(
-                    "SELECT album_path FROM catalog_generation_albums
-                     WHERE generation_id=?1 AND scan_token=?2
-                       AND lower(album_key)=lower(?3) LIMIT 1",
-                    params![lease.generation_id, lease.scan_token, logical_key],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(db_error("check staged duplicate Album identity"))?;
+            let staged_path = staged_batch
+                .iter()
+                .find(|staged| staged.album_key.eq_ignore_ascii_case(&logical_key))
+                .map(|staged| staged.album_path.clone())
+                .or(connection
+                    .query_row(
+                        "SELECT album_path FROM catalog_generation_albums
+                             WHERE generation_id=?1 AND scan_token=?2
+                               AND lower(album_key)=lower(?3) LIMIT 1",
+                        params![lease.generation_id, lease.scan_token, logical_key],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()
+                    .map_err(db_error("check staged duplicate Album identity"))?);
             if staged_path
                 .as_ref()
                 .is_some_and(|path| !path.eq_ignore_ascii_case(&canonical_path))
@@ -4495,6 +4518,7 @@ fn publish_index_generation(
                  sum(CASE WHEN a.album_key IS NOT NULL AND s.disposition='changed' THEN 1 ELSE 0 END)
              FROM catalog_generation_albums s
              LEFT JOIN albums a ON lower(a.path)=lower(s.album_path)
+                 OR (s.album_key<>'' AND lower(a.album_key)=lower(s.album_key))
              WHERE s.generation_id=?1 AND s.scan_token=?2",
             params![lease.generation_id, lease.scan_token],
             |row| {
@@ -4505,18 +4529,38 @@ fn publish_index_generation(
             },
         )
         .map_err(db_error("classify catalog publication changes"))?;
-    let removed_count: i64 = transaction
+    let moved_count: i64 = transaction
         .query_row(
-            "SELECT removed_albums FROM catalog_generations WHERE generation_id=?1",
-            [&lease.generation_id],
+            "SELECT count(*) FROM catalog_generation_albums s
+             JOIN albums a ON s.album_key<>''
+                 AND lower(a.album_key)=lower(s.album_key)
+                 AND lower(a.path)<>lower(s.album_path)
+             WHERE s.generation_id=?1 AND s.scan_token=?2
+               AND s.disposition='changed'",
+            params![lease.generation_id, lease.scan_token],
             |row| row.get(0),
         )
-        .map_err(db_error("read catalog removal count"))?;
+        .map_err(db_error("count moved catalog Albums"))?;
+    let (removed_count, unchanged_count): (i64, i64) = transaction
+        .query_row(
+            "SELECT removed_albums,unchanged_albums FROM catalog_generations
+             WHERE generation_id=?1",
+            [&lease.generation_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(db_error("read catalog publication counts"))?;
 
     transaction
         .execute(
             "INSERT INTO retired_album_paths(album_key,album_path,reason,retired_at,splined_version)
-             SELECT a.album_key,a.path,'removed',?3,?4 FROM albums a
+             SELECT a.album_key,a.path,
+                    CASE WHEN EXISTS(
+                        SELECT 1 FROM catalog_generation_albums moved
+                        WHERE moved.generation_id=?1 AND moved.scan_token=?2
+                          AND moved.album_key<>''
+                          AND lower(moved.album_key)=lower(a.album_key)
+                    ) THEN 'moved' ELSE 'removed' END,
+                    ?3,?4 FROM albums a
              WHERE NOT EXISTS(
                  SELECT 1 FROM catalog_generation_albums s
                  WHERE s.generation_id=?1 AND s.scan_token=?2
@@ -4538,7 +4582,14 @@ fn publish_index_generation(
             "INSERT OR IGNORE INTO catalog_index_events(
                  event_id,generation_id,album_key,album_path,operation,inventory_signature,created_at
              )
-             SELECT lower(hex(randomblob(16))),?1,a.album_key,a.path,'remove','',?3
+             SELECT lower(hex(randomblob(16))),?1,a.album_key,a.path,
+                    CASE WHEN EXISTS(
+                        SELECT 1 FROM catalog_generation_albums moved
+                        WHERE moved.generation_id=?1 AND moved.scan_token=?2
+                          AND moved.album_key<>''
+                          AND lower(moved.album_key)=lower(a.album_key)
+                    ) THEN 'move' ELSE 'remove' END,
+                    '',?3
              FROM albums a WHERE NOT EXISTS(
                  SELECT 1 FROM catalog_generation_albums s
                  WHERE s.generation_id=?1 AND s.scan_token=?2
@@ -4755,7 +4806,9 @@ fn publish_index_generation(
         "added_albums": added_count,
         "changed_albums": added_count + updated_count,
         "updated_albums": updated_count,
+        "moved_albums": moved_count,
         "removed_albums": removed_count,
+        "unchanged_albums": unchanged_count,
         "album_tag_reads": tag_reads,
         "album_tag_reuses": tag_reuses,
         "track_tag_reads": track_tag_reads,
@@ -4825,6 +4878,7 @@ fn publish_index_generation(
         "count": 0,
         "added": 0,
         "changed": 0,
+        "moved": 0,
         "removed": 0,
         "examples": [],
     });
@@ -5870,6 +5924,61 @@ fn existing_album_by_key(
     query_existing_album(connection, "lower(albums.album_key)=lower(?1)", album_key)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn existing_moved_album(
+    connection: &Connection,
+    mapper: &PathMapper,
+    current_path: &str,
+    artwork_signature: &str,
+    track_count: i64,
+    total_size: i64,
+    newest_mtime_ns: i64,
+    claimed_keys: &mut HashSet<String>,
+) -> Result<Option<ExistingAlbum>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT manifest.album_key,manifest.album_path
+             FROM catalog_change_manifest manifest
+             WHERE manifest.artwork_signature=?1
+               AND manifest.track_count=?2 AND manifest.total_size=?3
+               AND manifest.newest_mtime_ns=?4
+               AND lower(manifest.album_path)<>lower(?5)
+             ORDER BY manifest.album_path COLLATE NOCASE",
+        )
+        .map_err(db_error("prepare moved Album identity lookup"))?;
+    let candidates = statement
+        .query_map(
+            params![
+                artwork_signature,
+                track_count,
+                total_size,
+                newest_mtime_ns,
+                current_path,
+            ],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .map_err(db_error("read moved Album identity candidates"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db_error("decode moved Album identity candidates"))?;
+    drop(statement);
+    for (album_key, album_path) in candidates {
+        let claim_key = casefold(&album_key);
+        if claimed_keys.contains(&claim_key) {
+            continue;
+        }
+        let local_path = mapper.to_local(&album_path)?;
+        if Path::new(&local_path).is_dir() {
+            continue;
+        }
+        let prior = existing_album_by_key(connection, &album_key)?;
+        if prior.is_some() {
+            claimed_keys.insert(claim_key);
+            return Ok(prior);
+        }
+    }
+    Ok(None)
+}
+
 fn existing_tracks_for_album(
     connection: &Connection,
     album_key: &str,
@@ -6446,6 +6555,45 @@ fn db_error(context: &'static str) -> impl FnOnce(rusqlite::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn id3_test_frame(id: &str, value: &str) -> Vec<u8> {
+        let mut payload = vec![3];
+        payload.extend_from_slice(value.as_bytes());
+        let size = payload.len() as u32;
+        let mut frame = Vec::new();
+        frame.extend_from_slice(id.as_bytes());
+        frame.extend_from_slice(&[
+            ((size >> 21) & 0x7f) as u8,
+            ((size >> 14) & 0x7f) as u8,
+            ((size >> 7) & 0x7f) as u8,
+            (size & 0x7f) as u8,
+        ]);
+        frame.extend_from_slice(&[0, 0]);
+        frame.extend_from_slice(&payload);
+        frame
+    }
+
+    fn write_index_test_track(path: &Path, title: &str, album: &str, album_mbid: &str) {
+        let frames = [
+            id3_test_frame("TIT2", title),
+            id3_test_frame("TPE1", "Incremental Artist"),
+            id3_test_frame("TALB", album),
+            id3_test_frame("TPE2", "Incremental Artist"),
+            id3_test_frame("TXXX", &format!("MUSICBRAINZ_ALBUMID\0{album_mbid}")),
+        ];
+        let body = frames.iter().flatten().copied().collect::<Vec<_>>();
+        let size = body.len() as u32;
+        let mut bytes = b"ID3\x04\x00\x00".to_vec();
+        bytes.extend_from_slice(&[
+            ((size >> 21) & 0x7f) as u8,
+            ((size >> 14) & 0x7f) as u8,
+            ((size >> 7) & 0x7f) as u8,
+            (size & 0x7f) as u8,
+        ]);
+        bytes.extend_from_slice(&body);
+        bytes.extend_from_slice(&[0xff, 0xfb, 0x90, 0x64]);
+        fs::write(path, bytes).unwrap();
+    }
 
     // Change detection is intentionally a background write in production;
     // tests invoke that probe explicitly before asserting the cached notice.
@@ -7529,6 +7677,234 @@ mod tests {
                 .unwrap(),
             2
         );
+    }
+
+    #[test]
+    fn incremental_generation_reconciles_multiple_changes_and_preserves_history() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("music");
+        let artist = library.join("Incremental Artist");
+        let fixtures = [
+            ("Keep", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"),
+            ("Changed", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2"),
+            ("Moved", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3"),
+            ("Removed", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4"),
+        ];
+        for (name, mbid) in fixtures {
+            let folder = artist.join(name);
+            fs::create_dir_all(&folder).unwrap();
+            write_index_test_track(&folder.join("01.mp3"), name, name, mbid);
+            fs::write(folder.join("cover.jpg"), format!("{name} cover")).unwrap();
+        }
+        let mut config = Config::default();
+        config.library.music_library = library.to_string_lossy().into_owned();
+        config.scan.cache_dir = temp.path().join("cache").to_string_lossy().into_owned();
+        config.scan.index_batch_size = 1;
+        assert_eq!(media_snapshot(&config, false).unwrap().albums.len(), 4);
+        let database = database_path(&config.scan.cache_dir);
+        {
+            let connection = Connection::open(&database).unwrap();
+            connection
+                .execute(
+                    "UPDATE albums SET updated_at='keep-album-sentinel' WHERE album_name='Keep'",
+                    [],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "UPDATE tracks SET updated_at='keep-track-sentinel' WHERE album_key=(SELECT album_key FROM albums WHERE album_name='Keep')",
+                    [],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "UPDATE albums SET status='processed',processed_at='2026-11-01T00:00:00Z',selected_source='musicbrainz' WHERE album_name IN ('Changed','Moved')",
+                    [],
+                )
+                .unwrap();
+        }
+
+        // Accumulate every supported physical delta before one explicit
+        // incremental publication. Cached UI reads must remain DB-only.
+        write_index_test_track(
+            &artist.join("Changed").join("01.mp3"),
+            "Changed title",
+            "Changed",
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2",
+        );
+        fs::write(artist.join("Changed").join("cover.jpg"), b"new cover bytes").unwrap();
+        fs::rename(artist.join("Moved"), artist.join("Moved Elsewhere")).unwrap();
+        fs::remove_dir_all(artist.join("Removed")).unwrap();
+        let added = artist.join("Added");
+        fs::create_dir_all(&added).unwrap();
+        write_index_test_track(
+            &added.join("01.mp3"),
+            "Added",
+            "Added",
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa5",
+        );
+        assert_eq!(super::find_media_index_changes(&config).unwrap().count, 0);
+        let changes = detect_media_index_changes(&config).unwrap();
+        assert_eq!(
+            (
+                changes.added,
+                changes.changed,
+                changes.moved,
+                changes.removed
+            ),
+            (1, 1, 1, 1)
+        );
+
+        let snapshot = media_snapshot_incremental(&config).unwrap();
+        assert_eq!(snapshot.albums.len(), 4);
+        let connection = Connection::open(&database).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT updated_at FROM albums WHERE album_name='Keep'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "keep-album-sentinel"
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT updated_at FROM tracks WHERE album_key=(SELECT album_key FROM albums WHERE album_name='Keep')",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "keep-track-sentinel"
+        );
+        for album in ["Changed", "Moved"] {
+            let (status, processed_at, source): (String, String, String) = connection
+                .query_row(
+                    "SELECT status,processed_at,selected_source FROM albums WHERE album_name=?1",
+                    [album],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+            assert_eq!(status, "processed");
+            assert_eq!(processed_at, "2026-11-01T00:00:00Z");
+            assert_eq!(source, "musicbrainz");
+        }
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT path FROM albums WHERE album_name='Moved'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            artist.join("Moved Elsewhere").to_string_lossy()
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM albums WHERE album_name='Removed'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        let details: Value = serde_json::from_str(
+            &connection
+                .query_row(
+                    "SELECT details_json FROM db_maintenance_state WHERE action_name='media-index-refresh'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(details["mode"], "incremental");
+        assert_eq!(details["changed_albums"], 3);
+        assert_eq!(details["moved_albums"], 1);
+        assert_eq!(details["removed_albums"], 1);
+        assert_eq!(details["unchanged_albums"], 1);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM catalog_index_events WHERE generation_id=(SELECT active_generation_id FROM catalog_index_state WHERE singleton=1) AND operation='move'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn incremental_move_preserves_duplicate_album_identity_and_history() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("music");
+        let artist = library.join("Duplicate Artist");
+        let original = artist.join("Twin Original");
+        let duplicate = artist.join("Twin Copy");
+        for folder in [&original, &duplicate] {
+            fs::create_dir_all(folder).unwrap();
+            write_index_test_track(
+                &folder.join("01.mp3"),
+                "Twin track",
+                "Twin Album",
+                "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            );
+            fs::write(folder.join("cover.jpg"), b"twin cover").unwrap();
+        }
+        let mut config = Config::default();
+        config.library.music_library = library.to_string_lossy().into_owned();
+        config.scan.cache_dir = temp.path().join("cache").to_string_lossy().into_owned();
+        assert_eq!(media_snapshot(&config, false).unwrap().albums.len(), 2);
+        let database = database_path(&config.scan.cache_dir);
+        let (duplicate_key, duplicate_path) = {
+            let connection = Connection::open(&database).unwrap();
+            let value: (String, String) = connection
+                .query_row(
+                    "SELECT album_key,path FROM albums WHERE album_key LIKE '%:copy:%'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "UPDATE albums SET status='processed',processed_at='2026-11-01T00:00:00Z',selected_source='discogs' WHERE album_key=?1",
+                    [&value.0],
+                )
+                .unwrap();
+            (value.0, PathBuf::from(value.1))
+        };
+
+        let moved = artist.join("Moved Twin Copy");
+        fs::rename(&duplicate_path, &moved).unwrap();
+        assert_eq!(detect_media_index_changes(&config).unwrap().moved, 1);
+        media_snapshot_incremental(&config).unwrap();
+        let connection = Connection::open(&database).unwrap();
+        let (key, status, processed_at, source): (String, String, String, String) = connection
+            .query_row(
+                "SELECT album_key,status,processed_at,selected_source FROM albums WHERE lower(path)=lower(?1)",
+                [moved.to_string_lossy().as_ref()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(key, duplicate_key);
+        assert_eq!(status, "processed");
+        assert_eq!(processed_at, "2026-11-01T00:00:00Z");
+        assert_eq!(source, "discogs");
+        let details: Value = serde_json::from_str(
+            &connection
+                .query_row(
+                    "SELECT details_json FROM db_maintenance_state WHERE action_name='media-index-refresh'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(details["moved_albums"], 1);
+        assert_eq!(details["removed_albums"], 0);
     }
 
     #[test]

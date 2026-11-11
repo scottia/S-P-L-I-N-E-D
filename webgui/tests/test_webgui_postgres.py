@@ -2674,6 +2674,164 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.assertEqual(timings["album_tag_reads"], 0)
         self.assertEqual(timings["track_tag_reads"], 0)
 
+    def test_incremental_generation_reconciles_multiple_changes_and_preserves_history(self):
+        artist_root = self.root / "music" / "Incremental Artist"
+
+        def add_album(name, release_id):
+            folder = artist_root / name
+            folder.mkdir(parents=True)
+            target = folder / "01.flac"
+            shutil.copy2(self.files[0], target)
+            audio = FLAC(target)
+            audio["title"] = name
+            audio["artist"] = "Incremental Artist"
+            audio["albumartist"] = "Incremental Artist"
+            audio["album"] = name
+            audio["musicbrainz_albumid"] = release_id
+            audio["musicbrainz_artistid"] = (
+                "77777777-7777-4777-8777-777777777777"
+            )
+            audio["musicbrainz_trackid"] = str(uuid4())
+            audio.save()
+            Image.new("RGB", (90, 90), "green").save(folder / "cover.jpg")
+            return folder, target
+
+        changed, changed_track = add_album(
+            "Changed", "88888888-8888-4888-8888-888888888881"
+        )
+        moved, _ = add_album(
+            "Moved", "88888888-8888-4888-8888-888888888882"
+        )
+        removed, _ = add_album(
+            "Removed", "88888888-8888-4888-8888-888888888883"
+        )
+        self.services.refresh_index(mode="full")
+        with closing(self.db.connect()) as db, db:
+            db.execute(
+                "UPDATE albums SET updated_at=?,status='processed',processed_at=?,"
+                "selected_source='musicbrainz' WHERE album_name='Test Album'",
+                ("keep-album-sentinel", "2026-11-01T00:00:00+00:00"),
+            )
+            db.execute(
+                "UPDATE tracks SET updated_at=? WHERE album_key=(SELECT album_key "
+                "FROM albums WHERE album_name='Test Album')",
+                ("keep-track-sentinel",),
+            )
+            db.execute(
+                "UPDATE albums SET status='processed',processed_at=?,"
+                "selected_source='musicbrainz' WHERE album_name IN ('Changed','Moved')",
+                ("2026-11-01T00:00:00+00:00",),
+            )
+
+        audio = FLAC(changed_track)
+        audio["title"] = "Changed title"
+        audio.save()
+        Image.new("RGB", (91, 91), "orange").save(changed / "cover.jpg")
+        moved_target = artist_root / "Moved Elsewhere"
+        moved.rename(moved_target)
+        shutil.rmtree(removed)
+        add_album("Added", "88888888-8888-4888-8888-888888888884")
+
+        self.assertEqual(self.services.index_changes(refresh=False)["count"], 0)
+        changes = self.services.detect_index_changes()
+        self.assertEqual(
+            (
+                changes["added"],
+                changes["changed"],
+                changes["moved"],
+                changes["removed"],
+            ),
+            (1, 1, 1, 1),
+        )
+        result = self.services.refresh_index(mode="incremental")
+        self.assertEqual(result["changed_albums"], 3)
+        self.assertEqual(result["unchanged_albums"], 1)
+        self.assertEqual(result["moved_albums"], 1)
+        self.assertEqual(result["removed_albums"], 1)
+
+        with closing(self.db.connect()) as db:
+            keep = db.execute(
+                "SELECT updated_at,status,processed_at,selected_source FROM albums "
+                "WHERE album_name='Test Album'"
+            ).fetchone()
+            self.assertEqual(keep["updated_at"], "keep-album-sentinel")
+            self.assertEqual(keep["status"], "processed")
+            self.assertEqual(keep["selected_source"], "musicbrainz")
+            self.assertEqual(
+                db.execute(
+                    "SELECT updated_at FROM tracks WHERE album_key=(SELECT album_key "
+                    "FROM albums WHERE album_name='Test Album')"
+                ).fetchone()[0],
+                "keep-track-sentinel",
+            )
+            for album in ("Changed", "Moved"):
+                row = db.execute(
+                    "SELECT status,processed_at,selected_source,path FROM albums "
+                    "WHERE album_name=?",
+                    (album,),
+                ).fetchone()
+                self.assertEqual(row["status"], "processed")
+                self.assertEqual(row["selected_source"], "musicbrainz")
+                self.assertEqual(row["processed_at"], "2026-11-01T00:00:00+00:00")
+            self.assertEqual(
+                db.execute(
+                    "SELECT path FROM albums WHERE album_name='Moved'"
+                ).fetchone()[0],
+                str(moved_target),
+            )
+            self.assertEqual(
+                db.execute(
+                    "SELECT count(*) FROM albums WHERE album_name='Removed'"
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                db.execute(
+                    "SELECT count(*) FROM catalog_index_events WHERE generation_id=? "
+                    "AND operation='move'",
+                    (result["generation_id"],),
+                ).fetchone()[0],
+                1,
+            )
+
+    def test_incremental_move_preserves_duplicate_album_identity_and_history(self):
+        original = self.root / "music" / "Test Artist" / "Test Album"
+        duplicate = self.root / "music" / "Test Artist" / "Test Album Copy"
+        duplicate.mkdir(parents=True)
+        for source in original.iterdir():
+            if source.is_file():
+                shutil.copy2(source, duplicate / source.name)
+        self.services.refresh_index(mode="full")
+        with closing(self.db.connect()) as db, db:
+            duplicate_row = db.execute(
+                "SELECT album_key FROM albums WHERE path=?", (str(duplicate),)
+            ).fetchone()
+            duplicate_key = str(duplicate_row["album_key"])
+            self.assertIn(":copy:", duplicate_key)
+            db.execute(
+                "UPDATE albums SET status='processed',processed_at=?,"
+                "selected_source='discogs' WHERE album_key=?",
+                ("2026-11-01T00:00:00+00:00", duplicate_key),
+            )
+
+        moved = duplicate.with_name("Moved Test Album Copy")
+        duplicate.rename(moved)
+        changes = self.services.detect_index_changes()
+        self.assertEqual(changes["moved"], 1)
+        result = self.services.refresh_index(mode="incremental")
+        self.assertEqual(result["moved_albums"], 1)
+        self.assertEqual(result["removed_albums"], 0)
+        with closing(self.db.connect()) as db:
+            row = db.execute(
+                "SELECT album_key,status,processed_at,selected_source FROM albums "
+                "WHERE path=?",
+                (str(moved),),
+            ).fetchone()
+            self.assertEqual(row["album_key"], duplicate_key)
+            self.assertEqual(row["status"], "processed")
+            self.assertEqual(row["processed_at"], "2026-11-01T00:00:00+00:00")
+            self.assertEqual(row["selected_source"], "discogs")
+
     def test_change_manifest_probe_detects_tags_artwork_moves_adds_and_removals(self):
         cached = self.services.index_changes(refresh=False)
         self.assertEqual(cached["count"], 0)

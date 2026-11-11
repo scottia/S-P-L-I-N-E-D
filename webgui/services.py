@@ -1193,8 +1193,11 @@ class Services:
         class ExistingAlbums:
             def __init__(self, column):
                 self.column = column
+                self.aliases = {}
 
             def get(self, value, default=None):
+                if value in self.aliases:
+                    return self.aliases[value]
                 return existing_album(self.column, value) or default
 
             def __contains__(self, value):
@@ -1202,6 +1205,42 @@ class Services:
 
         old_keys = ExistingAlbums("album_key")
         old_paths = ExistingAlbums("path")
+        claimed_moved_keys = set()
+
+        def existing_moved_album(path, facts):
+            """Match a new path to one missing published manifest row."""
+            with closing(r.database.connect()) as db:
+                candidates = list(
+                    db.raw.execute(
+                        "SELECT albums.*,artists.artist_name,artists.artist_sort,"
+                        "artists.musicbrainz_artistid,artists.primary_path "
+                        "FROM catalog_change_manifest manifest "
+                        "JOIN albums ON albums.album_key=manifest.album_key "
+                        "JOIN artists ON artists.artist_key=albums.artist_key "
+                        "WHERE manifest.inventory_signature=%s "
+                        "AND manifest.artwork_signature=%s "
+                        "AND manifest.track_count=%s AND manifest.total_size=%s "
+                        "AND manifest.newest_mtime_ns=%s "
+                        "AND manifest.album_path<>%s ORDER BY manifest.album_path",
+                        (
+                            facts["inventory_signature"],
+                            facts["artwork_signature"],
+                            facts["track_count"],
+                            facts["total_size"],
+                            facts["newest_mtime_ns"],
+                            path,
+                        ),
+                    )
+                )
+            for candidate in candidates:
+                key = str(candidate["album_key"])
+                if key in claimed_moved_keys:
+                    continue
+                if Path(str(candidate["path"])).is_dir():
+                    continue
+                claimed_moved_keys.add(key)
+                return dict(candidate)
+            return None
 
         class GenerationKeys:
             def __init__(self):
@@ -1220,7 +1259,11 @@ class Services:
                     return str(staged["album_path"])
                 if mode == "incremental":
                     prior = existing_album("album_key", key)
-                    if prior is not None:
+                    # A published identity at a path which no longer exists
+                    # is available for this generation to reuse as a move.
+                    # Still-present paths remain reserved so a second physical
+                    # copy receives its deterministic :copy: identity.
+                    if prior is not None and Path(str(prior["path"])).is_dir():
                         return str(prior["path"])
                 return default
 
@@ -1298,6 +1341,11 @@ class Services:
                 facts = _album_manifest_facts(album)
                 filesystem_metadata_seconds += time.perf_counter() - filesystem_started
                 facts["inventory_signature"] = str(album.inventory_fingerprint)
+                if prior_at_path is None:
+                    moved_prior = existing_moved_album(path, facts)
+                    if moved_prior is not None:
+                        old_paths.aliases[path] = moved_prior
+                        prior_at_path = moved_prior
                 if lease.resumed:
                     disposition = indexer.touch_completed(
                         r.database,
@@ -1499,6 +1547,7 @@ class Services:
             "changed_albums": changed_albums,
             "unchanged_albums": unchanged_albums,
             "removed_albums": publication["removed_albums"],
+            "moved_albums": publication["moved_albums"],
             "protected_albums": protected_albums,
             "deferred_albums": deferred_albums,
             "windows_managed_albums": len(managed_albums),
@@ -1532,6 +1581,7 @@ class Services:
         r = self.runtime
         touched_artists = set()
         removed = []
+        moved = []
         with closing(r.database.connect()) as db, db:
             db.raw.execute("SELECT pg_advisory_xact_lock(741520206)")
             owner = db.raw.execute(
@@ -1616,6 +1666,17 @@ class Services:
                         "SELECT album_key,artist_key FROM albums WHERE path=?",
                         (staged["album_path"],),
                     ).fetchone()
+                    previous_by_key = db.execute(
+                        "SELECT album_key,artist_key,path FROM albums "
+                        "WHERE album_key=?",
+                        (album_key,),
+                    ).fetchone()
+                    moved_from = (
+                        str(previous_by_key["path"])
+                        if previous_by_key is not None
+                        and str(previous_by_key["path"]) != str(staged["album_path"])
+                        else ""
+                    )
                     if (
                         previous_at_path is not None
                         and str(previous_at_path["album_key"]) != album_key
@@ -1665,16 +1726,26 @@ class Services:
                                 core.VERSION,
                             ),
                         )
+                    operation = "move" if moved_from else "upsert"
+                    if moved_from:
+                        moved.append(
+                            {
+                                "album_key": album_key,
+                                "from": moved_from,
+                                "to": str(staged["album_path"]),
+                            }
+                        )
                     db.raw.execute(
                         "INSERT INTO catalog_index_events("
                         "event_id,generation_id,album_key,album_path,operation,"
-                        "inventory_signature) VALUES(%s,%s,%s,%s,'upsert',%s) "
+                        "inventory_signature) VALUES(%s,%s,%s,%s,%s,%s) "
                         "ON CONFLICT(generation_id,album_path,operation) DO NOTHING",
                         (
                             str(uuid4()),
                             lease.generation_id,
                             album_key,
                             staged["album_path"],
+                            operation,
                             staged["inventory_signature"],
                         ),
                     )
@@ -1810,6 +1881,7 @@ class Services:
             publication_timings["artists"] = int(counts["artists"])
             publication_timings["albums"] = int(counts["albums"])
             publication_timings["tracks"] = int(counts["tracks"])
+            publication_timings["moved_albums"] = len(moved)
             published = db.raw.execute(
                 "UPDATE catalog_generations SET state='published',"
                 "phase='complete',removed_albums=%s,timings=%s,"
@@ -1838,6 +1910,7 @@ class Services:
                             "count": 0,
                             "added": 0,
                             "changed": 0,
+                            "moved": 0,
                             "removed": 0,
                             "examples": [],
                         }
@@ -1849,7 +1922,7 @@ class Services:
                 raise indexer.GenerationLeaseLost(
                     "Catalog generation could not atomically become active"
                 )
-        return {"removed_albums": len(removed)}
+        return {"removed_albums": len(removed), "moved_albums": len(moved)}
 
     def hydrate_tracks(
         self,

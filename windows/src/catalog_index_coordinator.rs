@@ -417,6 +417,10 @@ pub fn begin_publication(
                  SELECT 1 FROM catalog_generation_albums s
                  WHERE s.generation_id=?1 AND s.scan_token=?2
                    AND lower(s.album_path)=lower(a.path)
+             ) AND NOT EXISTS(
+                 SELECT 1 FROM catalog_generation_albums s
+                 WHERE s.generation_id=?1 AND s.scan_token=?2
+                   AND s.album_key<>'' AND lower(s.album_key)=lower(a.album_key)
              )",
             params![lease.generation_id, lease.scan_token],
             |row| row.get(0),
