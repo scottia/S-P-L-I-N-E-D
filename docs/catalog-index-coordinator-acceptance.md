@@ -274,3 +274,34 @@ Implementation and defect corrections:
 
 Checkpoint CI: [Validate supported runtimes run 42941326160](https://github.com/scottia/S-P-L-I-N-E-D/actions/runs/42941326160)
 passed WebGUI, native Rust, validation selection, and the Windows advisory job.
+
+### Windows SQLite schema v3 advancement
+
+Requirements 1–4 advance the native catalog from schema v2 to v3 so durable
+generation, checkpoint, manifest, and publication state can coexist with the
+established Album/Track catalog.
+
+- A Windows build opening schema v2 applies the additive coordinator tables,
+  records the existing catalog as the `legacy-pre-coordinator` published
+  generation, preserves all catalog and processing rows, and then advances
+  `PRAGMA user_version` to 3. PostgreSQL is not involved in this migration.
+- The saved inventory signature may still carry schema v2 immediately after
+  the database migration. Schema v3 now accepts that legacy signature during
+  normal read-only startup; it does not force Setup, reset the database, or
+  initiate a reindex. A later explicit index publication writes the current
+  signature.
+- Runtime history/source payloads share `splined.db`. Their compatibility layer
+  now reads and writes both the v2 bootstrap database and migrated v3 catalog
+  without changing a v3 `user_version`.
+- Schema v3 is a one-way catalog migration. A Microsoft Store upgrade preserves
+  the existing database, but manually downgrading to a v2-only executable
+  requires restoring a pre-upgrade SQLite snapshot.
+- Regression coverage loads a schema-v3 database with a legacy v2 inventory
+  signature through the normal read-only snapshot path, proves the Album row
+  timestamp is unchanged, and separately proves runtime payload round trips
+  without downgrading `user_version`.
+- Installed-PC validation used the existing
+  `E:\apps\SPLINED\test-state\sqlite\splined.db`: the corrected 2.0.36 quick
+  build loaded schema v3 and all 216 Albums in 24 ms, entered the workspace,
+  and performed no reset or reindex. The installed executable SHA-256 was
+  `9CF838D5BF80A44F2F689F1B465D194F9E3784030ADC8516D60DFF3670A1979C`.

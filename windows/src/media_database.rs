@@ -3903,7 +3903,11 @@ fn validate_signature(config: &Config, saved: Option<&Value>) -> Result<(), Stri
         ]
     };
     for field in fields {
-        let values_match = if *field == "artist_separator_regex" {
+        let values_match = if *field == "schema_version" {
+            saved.get(field).and_then(Value::as_i64).is_some_and(|version| {
+                version == SCHEMA_VERSION || version == LEGACY_SCHEMA_VERSION
+            })
+        } else if *field == "artist_separator_regex" {
             saved
                 .get(field)
                 .and_then(Value::as_str)
@@ -6824,6 +6828,72 @@ mod tests {
 
         config.scan.sqlite_shared = false;
         assert!(validate_signature(&config, Some(&python_signature)).is_err());
+    }
+
+    #[test]
+    fn migrated_catalog_accepts_legacy_inventory_signature() {
+        let config = Config::default();
+        let legacy_signature = json!({
+            "schema_version": LEGACY_SCHEMA_VERSION,
+            "library_root": config.library.music_library,
+            "ignored_subs": config.library.ignored_subs,
+            "cover_name": config.output.file_name,
+        });
+
+        validate_signature(&config, Some(&legacy_signature)).unwrap();
+
+        let incompatible = json!({
+            "schema_version": LEGACY_SCHEMA_VERSION - 1,
+            "library_root": config.library.music_library,
+            "ignored_subs": config.library.ignored_subs,
+            "cover_name": config.output.file_name,
+        });
+        assert!(validate_signature(&config, Some(&incompatible)).is_err());
+    }
+
+    #[test]
+    fn migrated_catalog_with_legacy_signature_loads_without_reindex() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("music");
+        let album = library.join("Artist").join("Album");
+        fs::create_dir_all(&album).unwrap();
+        File::create(album.join("01.mp3")).unwrap();
+        let mut config = Config::default();
+        config.library.music_library = library.to_string_lossy().into_owned();
+        config.scan.cache_dir = temp.path().join("cache").to_string_lossy().into_owned();
+
+        let baseline = media_snapshot(&config, false).unwrap();
+        assert_eq!(baseline.albums.len(), 1);
+        let db = database_path(&config.scan.cache_dir);
+        let connection = Connection::open(&db).unwrap();
+        let mut signature = read_signature(&connection).unwrap().unwrap();
+        signature["schema_version"] = json!(LEGACY_SCHEMA_VERSION);
+        connection
+            .execute(
+                "UPDATE picker_inventory SET signature_json=?1 WHERE inventory_key=?2",
+                params![signature.to_string(), INVENTORY_KEY],
+            )
+            .unwrap();
+        let album_updated_at: String = connection
+            .query_row("SELECT updated_at FROM albums", [], |row| row.get(0))
+            .unwrap();
+        drop(connection);
+
+        let reopened = media_snapshot(&config, false).unwrap();
+        assert_eq!(reopened.albums.len(), 1);
+        let connection = Connection::open(&db).unwrap();
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            SCHEMA_VERSION
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT updated_at FROM albums", [], |row| row.get::<_, String>(0))
+                .unwrap(),
+            album_updated_at
+        );
     }
 
     #[test]
