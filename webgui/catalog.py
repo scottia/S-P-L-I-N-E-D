@@ -36,6 +36,10 @@ from splined_media_database import aggregate_artist
 from interaction.artist_search import discover_artist_images, discover_artist_profile
 from webgui.database import Database
 from webgui import imaging
+from webgui.coordination import (
+    normalized_coordination_relative,
+    relative_album_path,
+)
 
 
 ASSETS = Path(__file__).with_name("static")
@@ -438,24 +442,107 @@ class Catalog:
             return indexed
         return None
 
-    @staticmethod
-    def _album_write_coordination(db, album_keys) -> dict[str, dict[str, object]]:
-        keys = [str(key) for key in album_keys if str(key).strip()]
-        if not keys:
+    def _album_write_coordination(self, db, albums) -> dict[str, dict[str, object]]:
+        """Project the newest write onto the current catalog Album identity.
+
+        A tag correction can legitimately change a MusicBrainz-backed Album
+        key in one client before the other client refreshes its catalog.  The
+        coordination event therefore carries both the canonical key and the
+        library-relative folder.  Prefer the newest matching event across
+        those two identities so the same physical Album does not lose its
+        opposing-writer presentation while catalogs converge.
+        """
+        targets = []
+        for album in albums:
+            if isinstance(album, str):
+                key, path = album, ""
+            else:
+                key = str(album["album_key"] or "")
+                path = str(album["path"] or "") if "path" in album.keys() else ""
+            if not key.strip():
+                continue
+            targets.append(
+                {
+                    "album_key": key,
+                    "relative_path": relative_album_path(path, self.music) if path else "",
+                }
+            )
+        if not targets:
             return {}
-        placeholders = ",".join("?" for _ in keys)
+        keys = list(dict.fromkeys(target["album_key"] for target in targets))
+        paths = list(
+            dict.fromkeys(
+                target["relative_path"]
+                for target in targets
+                if target["relative_path"]
+            )
+        )
+        clauses = ["album_key IN (" + ",".join("?" for _ in keys) + ")"]
+        params = list(keys)
+        if paths:
+            clauses.append("relative_path IN (" + ",".join("?" for _ in paths) + ")")
+            params.extend(paths)
         try:
             rows = db.execute(
-                "SELECT album_key,writer,operation,event_id,revision,completed_at "
+                "SELECT album_key,relative_path,writer,operation,event_id,"
+                "source_completed_ms,revision,completed_at "
                 "FROM album_artwork_write_coordination "
-                f"WHERE album_key IN ({placeholders})",
-                tuple(keys),
+                "WHERE " + " OR ".join(clauses),
+                tuple(params),
             ).fetchall()
         except Exception:
             # Small SQLite fixtures and pre-migration disposable schemas do
             # not carry the PostgreSQL coordination table.
             return {}
-        return {str(row["album_key"]): dict(row) for row in rows}
+        return self._project_album_write_coordination(rows, targets)
+
+    @staticmethod
+    def _project_album_write_coordination(rows, targets):
+        by_key: dict[str, tuple[tuple[int, str], dict[str, object]]] = {}
+        by_path: dict[str, tuple[tuple[int, str], dict[str, object]]] = {}
+        for raw in rows:
+            row = dict(raw)
+            rank = (
+                int(row.get("source_completed_ms") or 0),
+                str(row.get("event_id") or ""),
+            )
+            key = str(row.get("album_key") or "")
+            path = normalized_coordination_relative(row.get("relative_path"))
+            if key and (key not in by_key or rank > by_key[key][0]):
+                by_key[key] = (rank, row)
+            if path and (path not in by_path or rank > by_path[path][0]):
+                by_path[path] = (rank, row)
+        projected = {}
+        for target in targets:
+            candidates = []
+            if target["album_key"] in by_key:
+                candidates.append(by_key[target["album_key"]])
+            if target["relative_path"] in by_path:
+                candidates.append(by_path[target["relative_path"]])
+            if not candidates:
+                continue
+            _, selected = max(candidates, key=lambda item: item[0])
+            selected = dict(selected)
+            selected["source_album_key"] = selected["album_key"]
+            selected["album_key"] = target["album_key"]
+            projected[target["album_key"]] = selected
+        return projected
+
+    def album_write_coordination_rows(
+        self, coordination_rows
+    ) -> list[dict[str, object]]:
+        """Return coordination projected onto the published WebGUI catalog."""
+        with closing(self.connect()) as db:
+            albums = db.execute("SELECT album_key,path FROM albums").fetchall()
+        targets = [
+            {
+                "album_key": str(album["album_key"]),
+                "relative_path": relative_album_path(album["path"], self.music),
+            }
+            for album in albums
+        ]
+        rows = self._project_album_write_coordination(coordination_rows, targets)
+        return sorted(rows.values(), key=lambda row: int(row.get("revision") or 0))
 
     def allowed_image_path(self, source: Path) -> bool:
         return (
@@ -1601,9 +1688,7 @@ class Catalog:
                 "ORDER BY albums.album_name COLLATE NOCASE ",
                 ("%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%",) * 2,
             ).fetchall()
-            coordination = self._album_write_coordination(
-                db, (row["album_key"] for row in rows)
-            )
+            coordination = self._album_write_coordination(db, rows)
         items = []
         for row in rows:
             album_key = str(row["album_key"])
@@ -1712,9 +1797,7 @@ class Catalog:
                 if len(top_tracks) == 10:
                     break
             coordination = self._album_write_coordination(
-                db,
-                [row["album_key"] for row in primary_rows]
-                + [row["album_key"] for row in appearance_rows],
+                db, [*primary_rows, *appearance_rows]
             )
         featured_keys = set(appearance.get("featured_album_keys", set()))
         primary_keys = {str(row["album_key"]) for row in primary_rows}
@@ -1792,9 +1875,10 @@ class Catalog:
                 "SELECT title,path FROM tracks WHERE album_key=? ORDER BY path", (album_id,),
             ).fetchall()
             track_titles = [item["title"] for item in track_rows[:12]]
-            override = self._album_write_coordination(db, [album_id]).get(album_id, {})
         if row is None:
             raise KeyError("Album not found")
+        with closing(self.connect()) as db:
+            override = self._album_write_coordination(db, [row]).get(album_id, {})
         folder = Path(row["path"])
         if not inside(folder, self.music):
             raise KeyError("Album is outside the configured library")

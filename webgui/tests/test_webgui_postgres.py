@@ -613,6 +613,47 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             "windows",
         )
 
+    def test_album_write_coordination_projects_newer_relative_path_identity(self):
+        """A stale MBID must not hide a write to the same physical Album."""
+        stale_key = "mbid:00000000-0000-0000-0000-000000000001"
+        with closing(self.db.connect()) as db, db:
+            db.raw.execute(
+                "INSERT INTO album_artwork_write_coordination("
+                "album_identity,album_key,musicbrainz_albumid,relative_path,"
+                "writer,operation,event_id,source_completed_ms,completed_at) "
+                "VALUES(%s,%s,%s,%s,'webgui','embed-album','stale-webgui',10,now())",
+                (
+                    "key:" + self.row["album_key"],
+                    self.row["album_key"],
+                    self.row["musicbrainz_albumid"],
+                    "test artist/test album",
+                ),
+            )
+            db.raw.execute(
+                "INSERT INTO album_artwork_write_coordination("
+                "album_identity,album_key,musicbrainz_albumid,relative_path,"
+                "writer,operation,event_id,source_completed_ms,completed_at) "
+                "VALUES(%s,%s,%s,%s,'windows','write-cover','new-windows',20,now())",
+                (
+                    "key:" + stale_key,
+                    stale_key,
+                    stale_key.removeprefix("mbid:"),
+                    "test artist/test album",
+                ),
+            )
+
+        album = self.services.catalog.album(self.row["album_key"])
+        self.assertEqual(album["override_writer"], "windows")
+        self.assertEqual(album["override_operation"], "write-cover")
+        projected = {
+            row["album_key"]: row
+            for row in self.services.album_write_coordination()
+        }
+        self.assertEqual(projected[self.row["album_key"]]["writer"], "windows")
+        self.assertEqual(
+            projected[self.row["album_key"]]["source_album_key"], stale_key
+        )
+
     def test_album_write_coordination_outbox_recovers_without_duplicate_claim(self):
         with patch(
             "webgui.services.record_event",

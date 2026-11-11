@@ -135,6 +135,15 @@ async function checkLibraryChanges() {
     if (!document.hidden) void checkLibraryChanges().catch(() => {});
   }, 1000);
 }
+document.addEventListener("visibilitychange", () => {
+  // A probe can finish while the operator is using the native client. The
+  // hidden-tab timer deliberately avoids background polling, so explicitly
+  // resume it when the workspace becomes visible instead of leaving the
+  // last "Checking…" banner stranded indefinitely.
+  if (!document.hidden && state.libraryChanges?.checking) {
+    void checkLibraryChanges().catch(() => {});
+  }
+});
 async function requestLibraryChangeProbe() {
   const probe = await post("/api/library/check-changes");
   if (["queued", "running", "waiting"].includes(probe.state)) {

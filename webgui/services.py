@@ -332,7 +332,9 @@ class Services:
 
     def album_write_coordination(self) -> list[dict[str, object]]:
         self.flush_album_write_coordination()
-        return current_rows(self.runtime.database)
+        return self.catalog.album_write_coordination_rows(
+            current_rows(self.runtime.database)
+        )
 
     def _track_coordination_outbox(self) -> list[dict[str, object]]:
         path = getattr(
