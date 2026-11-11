@@ -90,6 +90,39 @@ static FULL_THUMBNAIL_REFRESH_ACTIVE: AtomicBool = AtomicBool::new(false);
 static FOCUSED_THUMBNAIL_REFRESH_REVISION: AtomicU64 = AtomicU64::new(0);
 static PREVIEW_RENDER_REVISION: AtomicU64 = AtomicU64::new(0);
 static NEW_MEDIA_CHECK_REVISION: AtomicU64 = AtomicU64::new(0);
+static CATALOG_INDEX_REFRESH_ACTIVE: AtomicBool = AtomicBool::new(false);
+static DEFERRED_THUMBNAIL_REQUESTS: OnceLock<Mutex<BTreeSet<(String, String)>>> = OnceLock::new();
+const NAVIDROME_ARTIST_DOWNLOAD_LIMIT: usize = 4;
+const NAVIDROME_ALBUM_DOWNLOAD_LIMIT: usize = 6;
+
+fn navidrome_thumbnail_cache_root(config: &Config) -> PathBuf {
+    Path::new(&config.scan.cache_dir).join("navidrome-thumbnails")
+}
+
+fn defer_thumbnail_requests_while_indexing(requests: &[(String, String)]) -> bool {
+    if !CATALOG_INDEX_REFRESH_ACTIVE.load(Ordering::SeqCst) {
+        return false;
+    }
+    DEFERRED_THUMBNAIL_REQUESTS
+        .get_or_init(|| Mutex::new(BTreeSet::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .extend(requests.iter().cloned());
+    true
+}
+
+fn take_deferred_thumbnail_requests() -> Vec<(String, String)> {
+    let Some(requests) = DEFERRED_THUMBNAIL_REQUESTS.get() else {
+        return Vec::new();
+    };
+    std::mem::take(
+        &mut *requests
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    )
+    .into_iter()
+    .collect()
+}
 
 fn should_show_media_index_notice(changes: &MediaIndexChanges) -> bool {
     changes.added > 0 || changes.moved > 0 || changes.removed > 0
@@ -1533,6 +1566,9 @@ fn refresh_navidrome_thumbnails(
     weak: slint::Weak<AppWindow>,
     focused_artist: Option<String>,
 ) {
+    if CATALOG_INDEX_REFRESH_ACTIVE.load(Ordering::SeqCst) {
+        return;
+    }
     let full_refresh = focused_artist.is_none();
     let request_revision = if full_refresh {
         0
@@ -1622,9 +1658,7 @@ fn refresh_navidrome_thumbnails(
                 &configured_shared_artist_art_dir(&config),
             );
             let banner = saved.banner.as_deref().and_then(|source| {
-                let cache = Path::new(&config.scan.temporary_cache_dir)
-                    .join("navidrome-thumbnails")
-                    .join("artist-banners");
+                let cache = navidrome_thumbnail_cache_root(&config).join("artist-banners");
                 cached_artist_banner_with_bottom_blur(source, &cache, artist)
                     .ok()
                     .or_else(|| Some(source.to_path_buf()))
@@ -1711,9 +1745,7 @@ fn refresh_navidrome_thumbnails(
             })
             .unwrap_or_default();
         let saved_banner = saved_package.banner.as_deref().map(|source| {
-            let cache = Path::new(&config.scan.temporary_cache_dir)
-                .join("navidrome-thumbnails")
-                .join("artist-banners");
+            let cache = navidrome_thumbnail_cache_root(&config).join("artist-banners");
             cached_artist_banner_with_bottom_blur(
                 source,
                 &cache,
@@ -1791,11 +1823,10 @@ fn refresh_navidrome_thumbnails(
             let credential = NavidromeCredential::load(&credential_path)?;
             let server_key = credential.server_url.trim().to_ascii_lowercase();
             let companion = NavidromeCompanion::new(credential)?;
-            // Navidrome artwork is loaded lazily for the focused artist and
-            // kept only for this run. The configured disposable cache is
-            // cleared normally; metadata authority remains in Navidrome.
-            let cache_root =
-                Path::new(&config.scan.temporary_cache_dir).join("navidrome-thumbnails");
+            // Navidrome artwork is loaded lazily and persisted across restarts.
+            // Individual writes invalidate only their affected derivative;
+            // catalog indexing never invalidates or downloads this cache.
+            let cache_root = navidrome_thumbnail_cache_root(&config);
             let artist_cache = cache_root.join("artists");
             let artist_banner_cache = cache_root.join("artist-banners");
             let similar_artist_cache = cache_root.join("similar-artists");
@@ -1907,7 +1938,7 @@ fn refresh_navidrome_thumbnails(
                                 (index, (artist.name, path))
                             }
                         })
-                        .buffer_unordered(4)
+                        .buffer_unordered(NAVIDROME_ARTIST_DOWNLOAD_LIMIT)
                         .collect::<Vec<_>>()
                         .await;
                         similar_artists.sort_by_key(|(index, _)| *index);
@@ -2180,7 +2211,7 @@ fn refresh_navidrome_thumbnails(
                                 .map(|path| (album_key, path))
                         }
                     })
-                    .buffer_unordered(6)
+                    .buffer_unordered(NAVIDROME_ALBUM_DOWNLOAD_LIMIT)
                     .filter_map(|value| async move { value })
                     .collect::<Vec<_>>()
                     .await;
@@ -2279,6 +2310,9 @@ fn refresh_visible_navidrome_thumbnails(
     weak: slint::Weak<AppWindow>,
     requests: Vec<(String, String)>,
 ) {
+    if defer_thumbnail_requests_while_indexing(&requests) {
+        return;
+    }
     let Some((config, artist_names, artist_targets, album_targets, hydration_request_keys)) =
         state.lock().ok().map(|mut app| {
             let mut artist_names = BTreeSet::new();
@@ -2417,8 +2451,7 @@ fn refresh_visible_navidrome_thumbnails(
                 let credential = NavidromeCredential::load(&credential_path)?;
                 let server_key = credential.server_url.trim().to_ascii_lowercase();
                 let companion = NavidromeCompanion::new(credential)?;
-                let cache_root =
-                    Path::new(&config.scan.temporary_cache_dir).join("navidrome-thumbnails");
+                let cache_root = navidrome_thumbnail_cache_root(&config);
                 let artist_cache = cache_root.join("artists");
                 let album_cache = cache_root.join("albums");
                 let runtime = tokio::runtime::Builder::new_current_thread()
@@ -2454,7 +2487,7 @@ fn refresh_visible_navidrome_thumbnails(
                                     (artist, path)
                                 }
                             })
-                            .buffer_unordered(4)
+                            .buffer_unordered(NAVIDROME_ARTIST_DOWNLOAD_LIMIT)
                             .collect::<Vec<_>>()
                             .await;
                         for (artist, path) in loaded {
@@ -2496,7 +2529,7 @@ fn refresh_visible_navidrome_thumbnails(
                                         .map(|path| (album_key, path))
                                 }
                             })
-                            .buffer_unordered(6)
+                            .buffer_unordered(NAVIDROME_ALBUM_DOWNLOAD_LIMIT)
                             .filter_map(|value| async move { value })
                             .collect::<Vec<_>>()
                             .await;
@@ -11648,9 +11681,7 @@ fn bind_callbacks(
                     } else {
                         None
                     };
-                    let cache = Path::new(&app.config.scan.temporary_cache_dir)
-                        .join("navidrome-thumbnails")
-                        .join("artist-banners");
+                    let cache = navidrome_thumbnail_cache_root(&app.config).join("artist-banners");
                     let zoom = app.artist_banner_zoom;
                     let horizontal = app.artist_banner_horizontal;
                     let vertical = app.artist_banner_vertical;
@@ -11840,9 +11871,8 @@ fn bind_callbacks(
                 inspect_image(Path::new(&selected))?;
                 let artist_target = focused_artist_art_target(&app, &artist)?;
                 let preserve_file = app.config.output.preserve_file;
-                let banner_cache = Path::new(&app.config.scan.temporary_cache_dir)
-                    .join("navidrome-thumbnails")
-                    .join("artist-banners");
+                let banner_cache =
+                    navidrome_thumbnail_cache_root(&app.config).join("artist-banners");
                 let refresh_fallback_banner = app.artist_overview_cache
                     .get(&artist.trim().to_ascii_lowercase())
                     .is_none_or(|entry| entry.banner_uses_artist_art || entry.banner_path.is_empty());
@@ -12198,6 +12228,7 @@ fn bind_callbacks(
             if let Some(ui) = weak.upgrade() {
                 ui.set_media_refresh_running(true);
             }
+            CATALOG_INDEX_REFRESH_ACTIVE.store(true, Ordering::SeqCst);
             refresh_weak(&weak, &state);
             let controller = Arc::clone(&controller);
             let state = Arc::clone(&state);
@@ -12205,10 +12236,15 @@ fn bind_callbacks(
             std::thread::spawn(move || {
                 let result = controller.refresh_library(rebuild);
                 let _ = slint::invoke_from_event_loop(move || {
+                    CATALOG_INDEX_REFRESH_ACTIVE.store(false, Ordering::SeqCst);
                     if let Ok(mut app) = state.lock() {
                         app.operation_busy = false;
                         match &result {
                             Ok(()) => {
+                                app.media_refresh_phase = "published".into();
+                                app.media_refresh_percent = 100;
+                                app.media_refresh_current_path.clear();
+                                app.media_refresh_cancel_requested = false;
                                 app.operation_status = if rebuild {
                                     "Full music library index rebuilt · no music files changed"
                                         .into()
@@ -12222,7 +12258,18 @@ fn bind_callbacks(
                                     "Incremental library reconciliation completed.".into()
                                 });
                             }
+                            Err(error) if error.to_ascii_lowercase().contains("cancelled") => {
+                                app.media_refresh_phase = "cancelled".into();
+                                app.media_refresh_current_path.clear();
+                                app.media_refresh_cancel_requested = false;
+                                app.operation_status = "Library index cancelled · the previously published catalog remains active".into();
+                                app.operation_tone = "orange".into();
+                                app.push_log("Catalog index cancelled; staged checkpoints remain recoverable and the published catalog was not changed.".into());
+                            }
                             Err(error) => {
+                                app.media_refresh_phase = "failed".into();
+                                app.media_refresh_current_path.clear();
+                                app.media_refresh_cancel_requested = false;
                                 app.operation_status = if rebuild {
                                     format!("Full Refresh DB failed · {error}")
                                 } else {
@@ -12241,8 +12288,28 @@ fn bind_callbacks(
                         }
                     }
                     refresh_weak(&weak, &state);
+                    let deferred = take_deferred_thumbnail_requests();
+                    if !deferred.is_empty() {
+                        refresh_visible_navidrome_thumbnails(&state, weak.clone(), deferred);
+                    }
+                    let focused_artist = state.lock().ok().and_then(|app| {
+                        overview_artist_name(&app).map(|artist| artist.to_string())
+                    });
+                    if focused_artist.is_some() {
+                        refresh_navidrome_thumbnails(&state, weak.clone(), focused_artist);
+                    }
                 });
             });
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        let weak = ui.as_weak();
+        let controller = Arc::clone(&controller);
+        ui.on_cancel_media_refresh(move || {
+            if controller.cancel_refresh() {
+                refresh_weak(&weak, &state);
+            }
         });
     }
     {
@@ -19870,6 +19937,13 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
     ui.set_artist_overview_loading(state.artist_overview_loading);
     ui.set_operation_status(SharedString::from(state.operation_status.clone()));
     ui.set_operation_tone(SharedString::from(state.operation_tone.clone()));
+    ui.set_media_refresh_phase(SharedString::from(state.media_refresh_phase.clone()));
+    ui.set_media_refresh_current_path(SharedString::from(state.media_refresh_current_path.clone()));
+    ui.set_media_refresh_completed(state.media_refresh_completed as i32);
+    ui.set_media_refresh_total(state.media_refresh_total as i32);
+    ui.set_media_refresh_percent(state.media_refresh_percent);
+    ui.set_media_refresh_errors(state.media_refresh_errors as i32);
+    ui.set_media_refresh_cancel_requested(state.media_refresh_cancel_requested);
     let intro_active = !state.disable_intro_message && !state.intro_dismissed;
     ui.set_intro_active(intro_active);
     ui.set_confirmation_messages_disabled(state.disable_confirmation_messages);
@@ -23069,10 +23143,11 @@ mod tests {
     }
 
     use super::{
-        AlbumEmbeddedCheck, AlbumWriteState, ArtistAlbumEmbedTarget, CachedPixels,
-        EMBEDDED_METADATA_CACHE, EMBEDDED_METADATA_ERRORS, EmbedQueueSource, EmbedQueueTarget,
-        MaximizeGuard, PREVIEW_CACHE_DIMENSION, ThumbnailAlbumTarget, UiCompilationReportRow,
-        UiMusicBrainzRow, WorkspaceLayout, add_embedded_thumbnail_decision,
+        AlbumEmbeddedCheck, AlbumWriteState, ArtistAlbumEmbedTarget, CATALOG_INDEX_REFRESH_ACTIVE,
+        CachedPixels, EMBEDDED_METADATA_CACHE, EMBEDDED_METADATA_ERRORS, EmbedQueueSource,
+        EmbedQueueTarget, MaximizeGuard, NAVIDROME_ALBUM_DOWNLOAD_LIMIT,
+        NAVIDROME_ARTIST_DOWNLOAD_LIMIT, PREVIEW_CACHE_DIMENSION, ThumbnailAlbumTarget,
+        UiCompilationReportRow, UiMusicBrainzRow, WorkspaceLayout, add_embedded_thumbnail_decision,
         add_uploaded_artist_artwork, album_embedded_check, album_embedded_check_cache,
         album_embedded_check_key, album_overview_queue_target, apply_album_coordination_states,
         apply_ui_preferences, artist_album_card_artwork_path, artist_album_card_display_title,
@@ -23089,31 +23164,60 @@ mod tests {
         compilation_report_track_status, compilation_thumb_repair_plan,
         completed_compilation_track_needs_attention, current_embedded_thumbnail_infos,
         current_local_album_artwork_file, decode_webp_animation,
-        disable_embedded_thumbnail_preview, edit_existing_cover, embedded_artwork_footer,
-        embedded_artwork_size_comparison, embedded_thumbnail_owner_key, embedded_thumbnail_ready,
-        ensure_webp_album_still, fallback_compilation_cover_suppressed,
-        format_existing_embedded_info, group_compilation_report_rows, include_artwork_source,
-        is_sqlite_backup_path, is_valid_mbid, layout_artist_biography, load_artist_art_candidates,
-        load_scaled_image, local_album_art_file, local_artist_art_candidates,
-        local_artist_art_file, local_artist_art_for_albums, logical_dimension,
-        match_artist_overview_album, merge_artist_art_candidates, model,
-        musicbrainz_existing_preview_path, musicbrainz_failed_url, musicbrainz_ui_rows_equal,
+        defer_thumbnail_requests_while_indexing, disable_embedded_thumbnail_preview,
+        edit_existing_cover, embedded_artwork_footer, embedded_artwork_size_comparison,
+        embedded_thumbnail_owner_key, embedded_thumbnail_ready, ensure_webp_album_still,
+        fallback_compilation_cover_suppressed, format_existing_embedded_info,
+        group_compilation_report_rows, include_artwork_source, is_sqlite_backup_path,
+        is_valid_mbid, layout_artist_biography, load_artist_art_candidates, load_scaled_image,
+        local_album_art_file, local_artist_art_candidates, local_artist_art_file,
+        local_artist_art_for_albums, logical_dimension, match_artist_overview_album,
+        merge_artist_art_candidates, model, musicbrainz_existing_preview_path,
+        musicbrainz_failed_url, musicbrainz_ui_rows_equal,
         musicbrainz_visible_deduplicated_results, navidrome_artist_for_lookup,
-        normalize_backup_schedule, normalize_status_bar_intensity, normalize_status_bar_position,
-        normalize_status_bar_size, overview_artist_name, plan_artist_album_embeds,
-        preload_scaled_image, preload_scaled_image_bytes, prepare_embedded_thumbnail_preview,
-        preserve_filter_state, preview_compilation_track, preview_image_source_paths,
-        preview_musicbrainz_cover, preview_musicbrainz_existing, preview_request_is_current,
-        primary_credit_biography_artist, queue_saved_album, raw_image_cache,
-        require_active_compilation_write_target, restore_request_from_args, safe_reset_config,
-        select_pending_artist_compilation_report_tracks, selected_artist_album_embed_sources,
-        selected_artwork_preview_type, selected_artwork_write_label,
-        snapshot_embed_queue_target_from_app, split_values, switch_artist_preview_focus,
-        synchronize_fallback_album, trim_large_raw_image_cache, update_artist_bulk_completion,
+        navidrome_thumbnail_cache_root, normalize_backup_schedule, normalize_status_bar_intensity,
+        normalize_status_bar_position, normalize_status_bar_size, overview_artist_name,
+        plan_artist_album_embeds, preload_scaled_image, preload_scaled_image_bytes,
+        prepare_embedded_thumbnail_preview, preserve_filter_state, preview_compilation_track,
+        preview_image_source_paths, preview_musicbrainz_cover, preview_musicbrainz_existing,
+        preview_request_is_current, primary_credit_biography_artist, queue_saved_album,
+        raw_image_cache, require_active_compilation_write_target, restore_request_from_args,
+        safe_reset_config, select_pending_artist_compilation_report_tracks,
+        selected_artist_album_embed_sources, selected_artwork_preview_type,
+        selected_artwork_write_label, snapshot_embed_queue_target_from_app, split_values,
+        switch_artist_preview_focus, synchronize_fallback_album, take_deferred_thumbnail_requests,
+        trim_large_raw_image_cache, update_artist_bulk_completion,
         update_artist_preview_activation, webp_animation_metadata, write_artist_art_file,
         write_artist_art_file_with_stem,
     };
     use serde_json::json;
+
+    #[test]
+    fn native_thumbnail_hydration_defers_during_index_and_uses_persistent_cache() {
+        CATALOG_INDEX_REFRESH_ACTIVE.store(false, Ordering::SeqCst);
+        let _ = take_deferred_thumbnail_requests();
+        let requests = vec![
+            ("Artist".to_string(), "artist".to_string()),
+            ("album-key".to_string(), "album".to_string()),
+        ];
+        assert!(!defer_thumbnail_requests_while_indexing(&requests));
+        CATALOG_INDEX_REFRESH_ACTIVE.store(true, Ordering::SeqCst);
+        assert!(defer_thumbnail_requests_while_indexing(&requests));
+        assert_eq!(take_deferred_thumbnail_requests(), requests);
+        CATALOG_INDEX_REFRESH_ACTIVE.store(false, Ordering::SeqCst);
+
+        let mut config = splined_core::config::Config::default();
+        config.scan.cache_dir = r"C:\persistent-cache".to_string();
+        config.scan.temporary_cache_dir = r"C:\temporary-cache".to_string();
+        let root = navidrome_thumbnail_cache_root(&config);
+        assert_eq!(
+            root,
+            std::path::Path::new(r"C:\persistent-cache\navidrome-thumbnails")
+        );
+        assert!(!root.starts_with(&config.scan.temporary_cache_dir));
+        assert_eq!(NAVIDROME_ARTIST_DOWNLOAD_LIMIT, 4);
+        assert_eq!(NAVIDROME_ALBUM_DOWNLOAD_LIMIT, 6);
+    }
 
     #[test]
     fn artist_separator_json_import_accepts_regex_and_literal_lists() {

@@ -1135,19 +1135,53 @@ async function pollJobs() {
   try { return await task; }
   finally { if (jobsPolling === task) jobsPolling = null; }
 }
+function activeIndexJob() {
+  return (state.jobs || []).find(job => job.kind === "index"
+    && ["queued", "running", "waiting"].includes(job.state)) || null;
+}
+function renderIndexProgress() {
+  const job = activeIndexJob();
+  const generation = state.indexStatus?.generation || null;
+  const generationActive = generation && ["building", "validating", "publishing"].includes(generation.state);
+  const active = Boolean(job || generationActive);
+  const button = $("indexStopProcess"), status = $("status");
+  button.hidden = !active;
+  if (!active) {
+    state.indexStopping = false;
+    if (!job) state.indexJobId = null;
+    status.classList?.remove?.("index-progress");
+    status.style?.removeProperty?.("--index-progress");
+    return;
+  }
+  if (job) state.indexJobId = job.id;
+  const progress = job?.progress || {};
+  const completed = Number(progress.completed ?? generation?.completed_albums ?? 0);
+  const total = Math.max(1, Number(progress.total || 0), Number(generation?.discovered_albums || 0));
+  const percentage = Math.max(0, Math.min(100,
+    Number(progress.percentage ?? (generation?.state === "published" ? 100 : Math.min(99, Math.floor(completed * 100 / total))))));
+  const phase = String(progress.phase || generation?.phase || job?.state || "indexing");
+  const message = String(progress.message || generation?.current_path || "Preparing catalog generation");
+  const errors = Number(progress.errors ?? generation?.error_count ?? 0);
+  button.textContent = state.indexStopping ? "STOPPING…" : "STOP INDEX";
+  button.disabled = state.indexStopping || !state.indexJobId;
+  setStatus(`PostgreSQL ${phase} · ${percentage}% · ${completed}/~${total} Albums · ${errors} errors · ${message}`, "busy");
+  status.classList?.add?.("index-progress");
+  status.style?.setProperty?.("--index-progress", `${percentage}%`);
+}
 async function performJobsPoll() {
   try {
     const priorJobs = new Map((state.jobs || []).map(job => [job.id, job]));
     const priorCompActive = [...priorJobs.values()].some(job => job.kind === "comp"
       && ["queued", "running", "waiting"].includes(job.state));
     const priorStaged = new Set(state.embedQueue.map(item => item.id));
-    const [jobs, queueControls, albumCoordination, compTrackCoordination] = await Promise.all([
+    const [jobs, queueControls, albumCoordination, compTrackCoordination, indexStatus] = await Promise.all([
       api("/api/jobs"),
       api("/api/jobs/control-state"),
       api("/api/coordination/album-overrides").catch(() => null),
       api("/api/coordination/comp-track-overrides").catch(() => null),
+      api("/api/library/index-status").catch(() => null),
     ]);
-    state.jobs = jobs; state.queueControls = queueControls; renderQueue();
+    state.jobs = jobs; state.queueControls = queueControls; state.indexStatus = indexStatus; renderQueue(); renderIndexProgress();
     const currentCompActive = jobs.some(job => job.kind === "comp"
       && ["queued", "running", "waiting"].includes(job.state));
     if (typeof renderCandidateLaunchControl === "function") renderCandidateLaunchControl();
@@ -2128,6 +2162,13 @@ $("applyLibraryChanges").addEventListener("click", () => runAction(async () => {
   $("applyLibraryChanges").hidden = true;
   const job = await post("/api/jobs", {kind: "index", payload: {mode: "incremental"}});
   await reviewJob(job.id);
+}));
+$("indexStopProcess").addEventListener("click", () => runAction(async () => {
+  if (!state.indexJobId || state.indexStopping) return;
+  state.indexStopping = true;
+  renderIndexProgress();
+  await post("/api/jobs/action", {action: "cancel", id: state.indexJobId});
+  await pollJobs();
 }));
 $("closeDialog").addEventListener("click", () => { state.reviewJobId = null; });
 $("workspaceDialog").addEventListener("cancel", () => { state.reviewJobId = null; });

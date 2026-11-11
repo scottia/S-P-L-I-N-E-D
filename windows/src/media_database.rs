@@ -54,7 +54,30 @@ const INVENTORY_KEY: &str = "splined-media-library";
 const TRACK_INVENTORY_PREFIX: &str = "tracks-v1:";
 const TRACK_CREDIT_INDEX_VERSION: i64 = 1;
 const CATALOG_INDEX_CANCELLED: &str = "Catalog index refresh cancelled by the operator.";
+const INDEX_METADATA_READERS: usize = 1;
+const INDEX_DATABASE_WRITERS: usize = 1;
+const INDEX_REMOTE_PROVIDER_REQUESTS: usize = 0;
 const SCHEMA: &str = include_str!("../../schema/media.sql");
+
+#[cfg(test)]
+thread_local! {
+    static PUBLICATION_TEST_INTERRUPTION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn interrupt_next_publication_for_test() {
+    PUBLICATION_TEST_INTERRUPTION.set(true);
+}
+
+#[cfg(test)]
+fn publication_test_interrupted() -> bool {
+    PUBLICATION_TEST_INTERRUPTION.replace(false)
+}
+
+#[cfg(not(test))]
+fn publication_test_interrupted() -> bool {
+    false
+}
 pub(crate) fn claim_shared_database(path: &Path) -> Result<fs::File, String> {
     let lock_path = path.with_file_name(format!(
         "{}.client-lock",
@@ -3905,9 +3928,12 @@ fn validate_signature(config: &Config, saved: Option<&Value>) -> Result<(), Stri
     };
     for field in fields {
         let values_match = if *field == "schema_version" {
-            saved.get(field).and_then(Value::as_i64).is_some_and(|version| {
-                version == SCHEMA_VERSION || version == LEGACY_SCHEMA_VERSION
-            })
+            saved
+                .get(field)
+                .and_then(Value::as_i64)
+                .is_some_and(|version| {
+                    version == SCHEMA_VERSION || version == LEGACY_SCHEMA_VERSION
+                })
         } else if *field == "artist_separator_regex" {
             saved
                 .get(field)
@@ -4151,12 +4177,9 @@ fn rebuild_index_generation(
                     review_payload_json: None,
                     error: String::new(),
                 });
-                staged_payload_bytes += checkpoint_payload_bytes(
-                    &staged_batch[staged_batch.len().saturating_sub(1)..],
-                );
-                if batch_controller
-                    .should_checkpoint(staged_batch.len(), staged_payload_bytes)
-                {
+                staged_payload_bytes +=
+                    checkpoint_payload_bytes(&staged_batch[staged_batch.len().saturating_sub(1)..]);
+                if batch_controller.should_checkpoint(staged_batch.len(), staged_payload_bytes) {
                     let payload_bytes = staged_payload_bytes;
                     let batch_tracks = staged_batch
                         .iter()
@@ -4479,9 +4502,8 @@ fn rebuild_index_generation(
                 review_payload_json,
                 error: String::new(),
             });
-            staged_payload_bytes += checkpoint_payload_bytes(
-                &staged_batch[staged_batch.len().saturating_sub(1)..],
-            );
+            staged_payload_bytes +=
+                checkpoint_payload_bytes(&staged_batch[staged_batch.len().saturating_sub(1)..]);
             if batch_controller.should_checkpoint(staged_batch.len(), staged_payload_bytes) {
                 let payload_bytes = staged_payload_bytes;
                 let batch_tracks = staged_batch
@@ -4890,6 +4912,12 @@ fn publish_index_generation(
         "checkpoint_commits": checkpoint_commits,
         "batch_size": adaptive_batching["initial_size"],
         "adaptive_batching": adaptive_batching,
+        "resource_budget": {
+            "metadata_readers": INDEX_METADATA_READERS,
+            "database_writers": INDEX_DATABASE_WRITERS,
+            "maximum_batch_albums": crate::index_batch_policy::MAX_BATCH_SIZE,
+            "remote_provider_requests": INDEX_REMOTE_PROVIDER_REQUESTS,
+        },
         "prepublication_seconds": prepublication_duration.as_secs_f64(),
         "track_credit_index_version": TRACK_CREDIT_INDEX_VERSION,
     });
@@ -4963,6 +4991,9 @@ fn publish_index_generation(
             params![lease.generation_id, no_changes.to_string(), now],
         )
         .map_err(db_error("atomically activate catalog generation"))?;
+    if publication_test_interrupted() {
+        return Err("Forced interruption before atomic catalog publication commit.".to_string());
+    }
     transaction
         .commit()
         .map_err(db_error("commit atomic catalog publication"))?;
@@ -6959,7 +6990,8 @@ mod tests {
         );
         assert_eq!(
             connection
-                .query_row("SELECT updated_at FROM albums", [], |row| row.get::<_, String>(0))
+                .query_row("SELECT updated_at FROM albums", [], |row| row
+                    .get::<_, String>(0))
                 .unwrap(),
             album_updated_at
         );
@@ -7419,6 +7451,10 @@ mod tests {
         assert_eq!(details["mode"], "incremental");
         assert_eq!(details["album_tag_reads"], 0);
         assert_eq!(details["track_tag_reads"], 0);
+        assert_eq!(details["resource_budget"]["metadata_readers"], 1);
+        assert_eq!(details["resource_budget"]["database_writers"], 1);
+        assert_eq!(details["resource_budget"]["maximum_batch_albums"], 64);
+        assert_eq!(details["resource_budget"]["remote_provider_requests"], 0);
     }
 
     #[test]
@@ -7605,6 +7641,93 @@ mod tests {
                 .unwrap(),
             40
         );
+    }
+
+    #[test]
+    fn sqlite_validation_and_publication_interruptions_preserve_atomic_catalog() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("music");
+        let baseline = library.join("Recovery Artist").join("Baseline");
+        fs::create_dir_all(&baseline).unwrap();
+        File::create(baseline.join("01.mp3")).unwrap();
+        let mut config = Config::default();
+        config.library.music_library = library.to_string_lossy().into_owned();
+        config.scan.cache_dir = temp.path().join("cache").to_string_lossy().into_owned();
+        config.scan.index_batch_size = 1;
+        media_snapshot(&config, false).unwrap();
+        let database = database_path(&config.scan.cache_dir);
+
+        let published_state = || {
+            let connection = Connection::open(&database).unwrap();
+            connection
+                .query_row(
+                    "SELECT active_generation_id,(SELECT count(*) FROM albums),\
+                     (SELECT count(DISTINCT path) FROM albums) \
+                     FROM catalog_index_state WHERE singleton=1",
+                    [],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ))
+                    },
+                )
+                .unwrap()
+        };
+        let initial = published_state();
+        assert_eq!((initial.1, initial.2), (1, 1));
+
+        let validation_album = library.join("Recovery Artist").join("Validation");
+        fs::create_dir_all(&validation_album).unwrap();
+        File::create(validation_album.join("01.mp3")).unwrap();
+        crate::catalog_index_coordinator::interrupt_next_validation_for_test();
+        let validation_error = media_snapshot(&config, true).unwrap_err();
+        assert!(validation_error.contains("Forced interruption"));
+        assert_eq!(published_state(), initial);
+
+        let connection = Connection::open(&database).unwrap();
+        let failed_validation: CatalogGenerationLease = connection
+            .query_row(
+                "SELECT generation_id,owner_token,mode \
+                 FROM catalog_generations WHERE state='failed' \
+                 ORDER BY created_at DESC LIMIT 1",
+                [],
+                |row| {
+                    Ok(CatalogGenerationLease {
+                        generation_id: row.get(0)?,
+                        owner_token: row.get(1)?,
+                        scan_token: String::new(),
+                        mode: row.get(2)?,
+                        resumed: false,
+                    })
+                },
+            )
+            .unwrap();
+        assert!(
+            assert_publication_lease(&connection, &failed_validation)
+                .unwrap_err()
+                .contains("stale worker")
+        );
+        drop(connection);
+
+        media_snapshot(&config, true).unwrap();
+        let validated = published_state();
+        assert_ne!(validated.0, initial.0);
+        assert_eq!((validated.1, validated.2), (2, 2));
+
+        let publication_album = library.join("Recovery Artist").join("Publication");
+        fs::create_dir_all(&publication_album).unwrap();
+        File::create(publication_album.join("01.mp3")).unwrap();
+        interrupt_next_publication_for_test();
+        let publication_error = media_snapshot(&config, true).unwrap_err();
+        assert!(publication_error.contains("Forced interruption"));
+        assert_eq!(published_state(), validated);
+
+        media_snapshot(&config, true).unwrap();
+        let recovered = published_state();
+        assert_ne!(recovered.0, validated.0);
+        assert_eq!((recovered.1, recovered.2), (3, 3));
     }
 
     #[test]

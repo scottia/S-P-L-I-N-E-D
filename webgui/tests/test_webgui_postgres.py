@@ -25,6 +25,7 @@ from uuid import uuid4
 
 import psycopg
 from psycopg import sql
+from psycopg_pool import PoolTimeout
 from fastapi.testclient import TestClient
 from PIL import Image
 import numpy as np
@@ -131,6 +132,66 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             "image": self.services.catalog.image(self.cover),
             "adjustments": {"Brightness": 40},
         }
+
+    def test_database_pool_bounds_concurrent_connections_without_eager_startup(self):
+        database = Database(self.url, pool_max_size=2, pool_timeout=1.0)
+        self.assertEqual(
+            database.pool_stats(),
+            {
+                "max_size": 2,
+                "pool_size": 0,
+                "pool_available": 0,
+                "requests_waiting": 0,
+            },
+        )
+        first = database.connect()
+        second = database.connect()
+        try:
+            started = time.perf_counter()
+            with self.assertRaises(PoolTimeout):
+                database.connect()
+            self.assertLess(time.perf_counter() - started, 2.0)
+            stats = database.pool_stats()
+            self.assertEqual(stats["max_size"], 2)
+            self.assertLessEqual(stats["pool_size"], 2)
+        finally:
+            first.close()
+            second.close()
+        indexing = database.connect()
+        try:
+            started = time.perf_counter()
+            with closing(database.connect()) as interactive:
+                self.assertEqual(interactive.execute("SELECT 1 AS ready").fetchone()["ready"], 1)
+            self.assertLess(
+                time.perf_counter() - started,
+                0.5,
+                "one long-lived indexing connection must leave capacity for status reads",
+            )
+        finally:
+            indexing.close()
+        database.close()
+
+    def test_catalog_refresh_performs_no_remote_provider_requests(self):
+        with patch.object(core.Http, "get") as get:
+            result = self.services.refresh_index()
+        get.assert_not_called()
+        with closing(self.db.connect()) as db:
+            timings = db.execute(
+                "SELECT timings FROM catalog_generations "
+                "WHERE generation_id=?",
+                (result["generation_id"],),
+            ).fetchone()["timings"]
+        self.assertEqual(timings["album_tag_reads"], 0)
+        self.assertEqual(
+            timings["resource_budget"],
+            {
+                "index_workers": 1,
+                "metadata_readers": 1,
+                "maximum_batch_albums": 64,
+                "postgresql_connections": 8,
+                "remote_provider_requests": 0,
+            },
+        )
 
     def test_musicbrainz_artwork_preview_imports_only_verified_release_art(self):
         rendered = BytesIO()
@@ -2982,6 +3043,151 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.assertEqual(generation["owner_token"], resumed.owner_token)
         self.assertEqual(maintenance, resumed.generation_id)
         coordinator.finish(self.db, resumed, "cancelled", "test cleanup")
+
+    def test_postgres_validation_and_publication_interruptions_preserve_atomic_catalog(self):
+        from webgui import index_coordinator as coordinator
+
+        def published_state():
+            with closing(self.db.connect()) as db:
+                row = db.execute(
+                    "SELECT active_generation_id,(SELECT count(*) FROM albums) AS albums,"
+                    "(SELECT count(DISTINCT path) FROM albums) AS paths "
+                    "FROM catalog_index_state WHERE singleton=TRUE"
+                ).fetchone()
+            return str(row["active_generation_id"]), int(row["albums"]), int(row["paths"])
+
+        def add_album(name):
+            album = self.root / "music" / "Recovery Artist" / name
+            album.mkdir(parents=True)
+            track = album / "01.flac"
+            shutil.copy2(self.files[0], track)
+            audio = FLAC(track)
+            audio["artist"] = "Recovery Artist"
+            audio["albumartist"] = "Recovery Artist"
+            audio["album"] = name
+            audio["musicbrainz_albumid"] = str(uuid4())
+            audio["musicbrainz_artistid"] = str(uuid4())
+            audio["musicbrainz_trackid"] = str(uuid4())
+            audio.save()
+
+        initial = published_state()
+        self.assertEqual(initial[1:], (1, 1))
+        add_album("Validation Interruption")
+
+        def interrupt_validation(phase):
+            if phase == "validated":
+                raise RuntimeError("forced validation interruption")
+
+        with (
+            patch.object(
+                self.services,
+                "_catalog_publication_checkpoint",
+                side_effect=interrupt_validation,
+            ),
+            self.assertRaisesRegex(RuntimeError, "forced validation interruption"),
+        ):
+            self.services.refresh_index(mode="full")
+        self.assertEqual(published_state(), initial)
+
+        with closing(self.db.connect()) as db:
+            failed = db.execute(
+                "SELECT generation_id,owner_token,mode,library_root,base_generation_id "
+                "FROM catalog_generations WHERE state='failed' "
+                "ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+        stale = coordinator.GenerationLease(
+            str(failed["generation_id"]),
+            str(failed["owner_token"]),
+            str(failed["mode"]),
+            str(failed["library_root"]),
+            str(failed["base_generation_id"]),
+        )
+        with self.assertRaises(coordinator.GenerationLeaseLost):
+            coordinator.heartbeat(
+                self.db, stale, phase="stale-validation-worker"
+            )
+
+        self.services.refresh_index(mode="full")
+        validated = published_state()
+        self.assertNotEqual(validated[0], initial[0])
+        self.assertEqual(validated[1:], (2, 2))
+
+        add_album("Publication Interruption")
+
+        def interrupt_publication(phase):
+            if phase == "before-commit":
+                raise RuntimeError("forced publication interruption")
+
+        with (
+            patch.object(
+                self.services,
+                "_catalog_publication_checkpoint",
+                side_effect=interrupt_publication,
+            ),
+            self.assertRaisesRegex(RuntimeError, "forced publication interruption"),
+        ):
+            self.services.refresh_index(mode="full")
+        self.assertEqual(published_state(), validated)
+
+        self.services.refresh_index(mode="full")
+        recovered = published_state()
+        self.assertNotEqual(recovered[0], validated[0])
+        self.assertEqual(recovered[1:], (3, 3))
+
+    def test_postgres_index_progress_and_cancellation_preserve_published_catalog(self):
+        for number in range(4):
+            album = self.root / "music" / "Progress Artist" / f"Album {number}"
+            album.mkdir(parents=True)
+            track = album / "01.flac"
+            shutil.copy2(self.files[0], track)
+            audio = FLAC(track)
+            audio["artist"] = "Progress Artist"
+            audio["albumartist"] = "Progress Artist"
+            audio["album"] = f"Album {number}"
+            audio["musicbrainz_albumid"] = str(uuid4())
+            audio["musicbrainz_artistid"] = str(uuid4())
+            audio["musicbrainz_trackid"] = str(uuid4())
+            audio.save()
+
+        progress = []
+        self.services.refresh_index(progress=progress.append, mode="full")
+        self.assertEqual(progress[0]["phase"], "starting")
+        self.assertTrue(any(item["phase"] == "indexing" for item in progress))
+        self.assertTrue(any(item["phase"] == "validating" for item in progress))
+        self.assertEqual(progress[-1]["phase"], "published")
+        self.assertEqual(progress[-1]["percentage"], 100)
+        self.assertEqual(progress[-1]["completed"], 5)
+
+        with closing(self.db.connect()) as db:
+            before = db.execute(
+                "SELECT active_generation_id,(SELECT count(*) FROM albums) AS albums "
+                "FROM catalog_index_state WHERE singleton=TRUE"
+            ).fetchone()
+        cancelled_album = self.root / "music" / "Progress Artist" / "Cancelled"
+        cancelled_album.mkdir(parents=True)
+        shutil.copy2(self.files[0], cancelled_album / "01.flac")
+        checks = {"count": 0}
+
+        def cancelled():
+            checks["count"] += 1
+            return checks["count"] >= 2
+
+        with self.assertRaises(core.InteractionCancelled):
+            self.services.refresh_index(cancelled=cancelled, mode="full")
+        with closing(self.db.connect()) as db:
+            after = db.execute(
+                "SELECT active_generation_id,maintenance_generation_id,catalog_state,"
+                "(SELECT count(*) FROM albums) AS albums "
+                "FROM catalog_index_state WHERE singleton=TRUE"
+            ).fetchone()
+            terminal = db.execute(
+                "SELECT state FROM catalog_generations ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()["state"]
+        self.assertEqual(after["active_generation_id"], before["active_generation_id"])
+        self.assertEqual(after["maintenance_generation_id"], "")
+        self.assertEqual(after["catalog_state"], "ready")
+        self.assertEqual(after["albums"], before["albums"])
+        self.assertEqual(terminal, "cancelled")
 
     def test_catalog_refresh_streams_bounded_batches_without_missing_records(self):
         from webgui import index_coordinator as coordinator

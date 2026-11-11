@@ -239,5 +239,8 @@ class Runtime:
             core._save_cache_state,
             core.compilation_prepare_embedded,
         ) = self._bindings
+        close_database = getattr(self.database, "close", None)
+        if callable(close_database):
+            close_database()
         core.runtime_log("info", "webgui.runtime stopped")
         core._close_runtime_log()

@@ -1,6 +1,6 @@
 fastapi==0.162.2
 uvicorn==0.54.0
-psycopg[binary]==3.3.8
+psycopg[binary,pool]==3.3.8
 requests==2.34.2
 Pillow==13.0.0
 mutagen==1.48.1

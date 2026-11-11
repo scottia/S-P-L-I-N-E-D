@@ -10,6 +10,26 @@ use serde_json::{Value, json};
 use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(test)]
+thread_local! {
+    static VALIDATION_TEST_INTERRUPTION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn interrupt_next_validation_for_test() {
+    VALIDATION_TEST_INTERRUPTION.set(true);
+}
+
+#[cfg(test)]
+fn validation_test_interrupted() -> bool {
+    VALIDATION_TEST_INTERRUPTION.replace(false)
+}
+
+#[cfg(not(test))]
+fn validation_test_interrupted() -> bool {
+    false
+}
+
 const LEASE_SECONDS: i64 = 60;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -410,6 +430,9 @@ pub fn begin_publication(
         return Err(format!(
             "Catalog generation validation failed: discovered={discovered}, completed={completed}, staged={staged}, errors={errors}."
         ));
+    }
+    if validation_test_interrupted() {
+        return Err("Forced interruption during catalog generation validation.".to_string());
     }
     let removed: i64 = transaction
         .query_row(

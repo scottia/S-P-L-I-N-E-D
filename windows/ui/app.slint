@@ -1624,6 +1624,13 @@ export component AppWindow inherits Window {
     in-out property <bool> new-media-warning-visible: false;
     in-out property <string> new-media-warning-text;
     in-out property <bool> media-refresh-running: false;
+    in property <string> media-refresh-phase;
+    in property <string> media-refresh-current-path;
+    in property <int> media-refresh-completed: 0;
+    in property <int> media-refresh-total: 0;
+    in property <int> media-refresh-percent: 0;
+    in property <int> media-refresh-errors: 0;
+    in property <bool> media-refresh-cancel-requested: false;
     in-out property <int> help-return-page: 0;
     in-out property <int> workspace-mode: 0;
     in property <[UiEmbedQueueRow]> embed-panel-jobs;
@@ -1815,7 +1822,7 @@ export component AppWindow inherits Window {
     callback load-artist-top-songs(); callback set-artist-overview-show-all(bool);
     callback compilation-track-activated(string, string, bool);
     callback compilation-album-launch(string, bool);
-    callback select-filtered(); callback select-none(); callback refresh-library(bool);
+    callback select-filtered(); callback select-none(); callback refresh-library(bool); callback cancel-media-refresh();
     callback set-scan-scope(bool); callback set-launch-mode(bool); callback launch(); callback stop();
     callback candidate-selected(int); callback candidate-action(string); callback candidate-source-filter(string);
     callback candidate-portrait-preview(int);
@@ -1901,6 +1908,7 @@ export component AppWindow inherits Window {
                 if root.operation-visible && root.status-bar-position == "Top": OperationStatusBanner { horizontal-stretch: 1; status: root.operation-status; tone: root.operation-tone; intensity: root.status-bar-intensity; bar-size: root.status-bar-size; header-aligned: true; active: root.operation-active; }
                 if !root.operation-visible || root.status-bar-position != "Top": Rectangle { horizontal-stretch: 1; background: transparent; }
                 if root.page-index == 1 || root.page-index == 2 || root.page-index == 4: HeaderAction { label: "⌂  Home"; width: 88px; enabled: !root.setup-required; clicked => { root.help-menu-visible = false; root.theme-menu-visible = false; root.page-index = 0; } }
+                if root.media-refresh-running: NeonAction { label: root.media-refresh-cancel-requested ? "STOPPING…" : "STOP INDEX"; width: 116px; height: 34px; tone: "red"; enabled: !root.media-refresh-cancel-requested; clicked => root.cancel-media-refresh(); }
                 HeaderAction { label: "🎬 Theme ▾"; width: 112px; emphasized: root.theme-menu-visible; clicked => { root.help-menu-visible = false; root.theme-menu-visible = !root.theme-menu-visible; } }
                 HeaderAction { label: "⚙  Settings"; width: 104px; emphasized: root.page-index == 1 || root.page-index == 2; enabled: !root.setup-required; clicked => {
                     root.help-menu-visible = false;
@@ -3174,7 +3182,16 @@ export component AppWindow inherits Window {
                                 PathSettingField { label: "Database Directory *"; value <=> root.settings-database-dir; hint: "Owns splined.db"; browse => root.browse-setting-directory("database"); }
                                 HorizontalLayout { height: 36px; spacing: 8px;
                                     Text { text: "Library Index"; color: AppTheme.foreground; font-size: 14px * AppTheme.font-scale; vertical-alignment: center; horizontal-stretch: 1; }
-                                    NeonAction { width: 128px; height: 32px; label: "Refresh DB"; tone: "yellow"; enabled: !root.media-refresh-running && !root.running && !root.operation-busy; clicked => root.refresh-library(true); }
+                                    NeonAction { width: 128px; height: 32px; label: root.media-refresh-running ? (root.media-refresh-cancel-requested ? "Stopping…" : "STOP INDEX") : "Refresh DB"; tone: root.media-refresh-running ? "red" : "yellow"; enabled: root.media-refresh-running ? !root.media-refresh-cancel-requested : (!root.running && !root.operation-busy); clicked => { if (root.media-refresh-running) { root.cancel-media-refresh(); } else { root.refresh-library(true); } } }
+                                }
+                                if root.media-refresh-running: Rectangle { height: 54px; border-radius: 5px; border-width: 1px; border-color: AppTheme.cyan; background: AppTheme.quiet-surface;
+                                    VerticalLayout { padding: 5px; spacing: 3px;
+                                        Text { text: root.media-refresh-phase + " · " + root.media-refresh-percent + "% · " + root.media-refresh-completed + "/~" + root.media-refresh-total + " Albums · " + root.media-refresh-errors + " errors"; color: AppTheme.cyan; font-size: 12px * AppTheme.font-scale; overflow: elide; }
+                                        Rectangle { height: 8px; border-radius: 4px; background: AppTheme.border;
+                                            Rectangle { x: 0px; y: 0px; height: parent.height; width: parent.width * root.media-refresh-percent / 100; border-radius: 4px; background: AppTheme.cyan; }
+                                        }
+                                        Text { text: root.media-refresh-current-path; color: AppTheme.secondary-foreground; font-size: 11px * AppTheme.font-scale; overflow: elide; }
+                                    }
                                 }
                                 SettingsHelpTip { summary: "What does Refresh DB do?"; detail: "Perform a deliberate full SQLite index rebuild. One representative track defines each normal Album; unchanged tag evidence is reused and full tags are read for changed COMP/Fallback tracks. The yellow Home notice offers a separate incremental update only when Album folders were added or removed. Neither action inspects embedded art or modifies music files. Another Windows client must close the shared database first."; }
                                 if !root.confirm-reset-database: NeonAction {

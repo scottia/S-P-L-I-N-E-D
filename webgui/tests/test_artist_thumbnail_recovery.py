@@ -130,6 +130,47 @@ class ArtistThumbnailRecoveryTests(unittest.TestCase):
         self.assertEqual(download.call_count, 2)
         self.assertEqual(self.catalog.portrait_cache["artist-1"], cached)
 
+    def test_active_index_defers_remote_thumbnail_then_reuses_persistent_cache(self) -> None:
+        self._save_credentials()
+        remote = {"id": "remote-artist", "name": "Test Artist", "coverArt": "cover-1"}
+        cached = self.root / "cache" / "navidrome-thumbnails" / "artists" / "cached.png"
+        cached.parent.mkdir(parents=True)
+        cached.write_bytes(_png())
+        with mock.patch.object(
+            self.catalog,
+            "_navidrome_artists_by_name",
+            return_value={"testartist": remote},
+        ) as directory, mock.patch.object(
+            self.catalog, "_cache_navidrome_thumbnail", return_value=cached
+        ) as download, mock.patch.object(
+            self.catalog, "index_maintenance_active", return_value=True
+        ):
+            with self.assertRaisesRegex(KeyError, "paused while indexing"):
+                self.catalog.artist_thumbnail("artist-1")
+        directory.assert_not_called()
+        download.assert_not_called()
+
+        with mock.patch.object(
+            self.catalog,
+            "_navidrome_artists_by_name",
+            return_value={"testartist": remote},
+        ), mock.patch.object(
+            self.catalog, "_cache_navidrome_thumbnail", return_value=cached
+        ) as download, mock.patch.object(
+            self.catalog, "index_maintenance_active", return_value=False
+        ):
+            self.assertEqual(self.catalog.artist_thumbnail("artist-1"), cached)
+            self.assertEqual(self.catalog.artist_thumbnail("artist-1"), cached)
+        self.assertEqual(download.call_count, 1)
+        slots = self.catalog.thumbnail_download_slots
+        self.assertTrue(slots.acquire(blocking=False))
+        self.assertTrue(slots.acquire(blocking=False))
+        self.assertTrue(slots.acquire(blocking=False))
+        self.assertFalse(slots.acquire(blocking=False))
+        slots.release()
+        slots.release()
+        slots.release()
+
     def test_missing_credentials_can_recover_without_restart(self) -> None:
         self.assertEqual(self.catalog._navidrome_artists_by_name(), {})
         self._save_credentials()

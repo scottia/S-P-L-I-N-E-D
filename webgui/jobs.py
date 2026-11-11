@@ -183,7 +183,14 @@ class JobQueue:
         self.wake.set()
         self.thread.join(timeout=15)
         if not self.thread.is_alive():
-            self.lease.close()
+            try:
+                self.lease.execute(
+                    "SELECT pg_advisory_unlock("
+                    "hashtextextended(current_schema() || ':splined-web-worker',0))"
+                )
+                self.lease.commit()
+            finally:
+                self.lease.close()
 
     def audit_job(
         self,

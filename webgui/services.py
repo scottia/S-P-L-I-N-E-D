@@ -966,12 +966,13 @@ class Services:
 
         with closing(r.database.connect()) as db:
             db.raw.execute(
-                "CREATE TEMP TABLE catalog_inventory_probe("
+                "CREATE TEMP TABLE IF NOT EXISTS catalog_inventory_probe("
                 "album_path TEXT PRIMARY KEY,inventory_signature TEXT NOT NULL,"
                 "artwork_signature TEXT NOT NULL,track_count BIGINT NOT NULL,"
                 "total_size BIGINT NOT NULL,newest_mtime_ns BIGINT NOT NULL) "
                 "ON COMMIT PRESERVE ROWS"
             )
+            db.raw.execute("TRUNCATE TABLE catalog_inventory_probe")
             db.commit()
 
             def flush_probe():
@@ -1310,6 +1311,30 @@ class Services:
         checkpoint_commits = 0
         cover_name = str(r.cfg.get("output", {}).get("file_name", "cover"))
 
+        def report_progress(phase, message="", *, published=False):
+            if not progress:
+                return
+            remaining_estimate = (
+                0 if phase in {"validating", "published"} else batch_controller.current_size
+            )
+            total = max(old_count, discovered + remaining_estimate, completed, 1)
+            percentage = 100 if published else min(99, int(completed * 100 / total))
+            progress(
+                {
+                    "phase": phase,
+                    "completed": completed,
+                    "total": total,
+                    "percentage": percentage,
+                    "discovered": discovered,
+                    "changed": changed_albums,
+                    "unchanged": unchanged_albums,
+                    "errors": 0,
+                    "message": message,
+                }
+            )
+
+        report_progress("starting", "Preparing the PostgreSQL catalog generation")
+
         def flush():
             nonlocal batch, batch_payload_bytes, batch_started
             nonlocal checkpoint_seconds, checkpoint_commits
@@ -1399,15 +1424,7 @@ class Services:
                         elif disposition == "deferred":
                             deferred_albums += 1
                         if progress:
-                            progress(
-                                {
-                                    "phase": "recovering",
-                                    "completed": completed,
-                                    "total": 0,
-                                    "discovered": discovered,
-                                    "message": album.path.name,
-                                }
-                            )
+                            report_progress("recovering", album.path.name)
                         continue
 
                 disposition = "changed"
@@ -1539,18 +1556,9 @@ class Services:
                     completed == 1
                     or completed % batch_controller.current_size == 0
                 ):
-                    progress(
-                        {
-                            "phase": "indexing",
-                            "completed": completed,
-                            "total": 0,
-                            "discovered": discovered,
-                            "changed": changed_albums,
-                            "unchanged": unchanged_albums,
-                            "message": album.path.name,
-                        }
-                    )
+                    report_progress("indexing", album.path.name)
             flush()
+            report_progress("validating", "Validating the staged generation")
             publication = self._publish_index_generation(
                 lease,
                 discovered=discovered,
@@ -1573,8 +1581,16 @@ class Services:
                     "checkpoint_commits": checkpoint_commits,
                     "batch_size": batch_controller.initial_size,
                     "adaptive_batching": batch_controller.summary(),
+                    "resource_budget": {
+                        "index_workers": 1,
+                        "metadata_readers": 1,
+                        "maximum_batch_albums": 64,
+                        "postgresql_connections": r.database.pool_stats()["max_size"],
+                        "remote_provider_requests": 0,
+                    },
                 },
             )
+            report_progress("published", "Published the validated generation", published=True)
         except core.InteractionCancelled:
             indexer.finish(r.database, lease, "cancelled", "Cancelled by operator")
             raise
@@ -1672,6 +1688,7 @@ class Services:
                 raise ValueError(
                     f"Catalog generation contains duplicate Album identity {duplicate['album_key']}"
                 )
+            self._catalog_publication_checkpoint("validated")
             publishing = db.raw.execute(
                 "UPDATE catalog_generations SET state='publishing',"
                 "phase='publishing',updated_at=now() WHERE generation_id=%s "
@@ -1967,7 +1984,11 @@ class Services:
                 raise indexer.GenerationLeaseLost(
                     "Catalog generation could not atomically become active"
                 )
+            self._catalog_publication_checkpoint("before-commit")
         return {"removed_albums": len(removed), "moved_albums": len(moved)}
+
+    def _catalog_publication_checkpoint(self, _phase):
+        """Failure-injection seam for atomic publication recovery tests."""
 
     def hydrate_tracks(
         self,

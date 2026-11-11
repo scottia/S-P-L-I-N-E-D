@@ -85,6 +85,7 @@ const state = {
   albumOverrides: new Map(), albumOverrideRevision: 0,
   compTrackOverrides: new Map(), compTrackOverrideRevision: 0,
   statusRevision: 0, statusType: "ready",
+  indexStatus: null, indexJobId: null, indexStopping: false,
 };
 function applyGraphicalEnhancement(value) {
   state.graphicalEnhancement = normalizeGraphicalEnhancement(value);

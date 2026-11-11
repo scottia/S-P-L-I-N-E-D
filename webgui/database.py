@@ -12,10 +12,17 @@ from pathlib import Path
 from urllib.parse import urlsplit
 import re
 import sqlite3
+import threading
 from typing import Any
 
 import psycopg
+from psycopg_pool import ConnectionPool
+from psycopg.pq import TransactionStatus
 from psycopg.rows import dict_row
+
+
+DEFAULT_POOL_MAX_SIZE = 8
+DEFAULT_POOL_TIMEOUT_SECONDS = 5.0
 
 
 class Row(dict):
@@ -71,8 +78,10 @@ def policy_sql(statement: str, params: Any = ()) -> tuple[str, Any]:
 
 
 class Connection:
-    def __init__(self, raw):
+    def __init__(self, raw, release=None):
         self.raw = raw
+        self._release = release
+        self._closed = False
 
     def execute(self, statement: str, params=()):
         if statement.strip().upper().startswith("PRAGMA"):
@@ -95,7 +104,18 @@ class Connection:
         self.raw.rollback()
 
     def close(self):
-        self.raw.close()
+        if self._closed:
+            return
+        self._closed = True
+        if self._release is None:
+            self.raw.close()
+        else:
+            if self.raw.info.transaction_status not in {
+                TransactionStatus.IDLE,
+                TransactionStatus.UNKNOWN,
+            }:
+                self.raw.rollback()
+            self._release(self.raw)
 
     def __enter__(self):
         return self
@@ -105,18 +125,81 @@ class Connection:
 
 
 class Database:
-    def __init__(self, url: str):
+    def __init__(
+        self,
+        url: str,
+        *,
+        pool_max_size: int = DEFAULT_POOL_MAX_SIZE,
+        pool_timeout: float = DEFAULT_POOL_TIMEOUT_SECONDS,
+    ):
         if not url.startswith(("postgresql://", "postgres://")):
             raise ValueError("SPLINED_DATABASE_URL must be a PostgreSQL connection URL")
+        if not 1 <= int(pool_max_size) <= 32:
+            raise ValueError("PostgreSQL pool_max_size must be from 1 through 32")
+        if float(pool_timeout) <= 0:
+            raise ValueError("PostgreSQL pool_timeout must be positive")
         self._url = url
+        self._pool_max_size = int(pool_max_size)
+        self._pool_timeout = float(pool_timeout)
+        self._pool = None
+        self._pool_lock = threading.Lock()
 
     def __repr__(self):
         return "PostgreSQL catalog"
 
     def connect(self):
+        pool = self._connection_pool()
+        raw = pool.getconn(timeout=self._pool_timeout)
+        # Callers may deliberately use autocommit for read-only lookup work.
+        # Never let that session mode leak through the pool into a later
+        # generation publication, which must be one atomic transaction.
+        if raw.info.transaction_status not in {
+            TransactionStatus.IDLE,
+            TransactionStatus.UNKNOWN,
+        }:
+            raw.rollback()
+        raw.autocommit = False
         return Connection(
-            psycopg.connect(self._url, row_factory=dict_row, connect_timeout=10)
+            raw,
+            release=pool.putconn,
         )
+
+    def _connection_pool(self):
+        if self._pool is not None:
+            return self._pool
+        with self._pool_lock:
+            if self._pool is None:
+                # min_size=0 keeps application startup independent of database
+                # connection establishment. The finite maximum reserves server
+                # capacity for interactive work while an index generation runs.
+                pool = ConnectionPool(
+                    conninfo=self._url,
+                    min_size=0,
+                    max_size=self._pool_max_size,
+                    timeout=self._pool_timeout,
+                    kwargs={"row_factory": dict_row, "connect_timeout": 10},
+                    open=False,
+                    name="splined-webgui",
+                )
+                pool.open(wait=False)
+                self._pool = pool
+        return self._pool
+
+    def pool_stats(self) -> dict[str, int]:
+        pool = self._pool
+        stats = pool.get_stats() if pool is not None else {}
+        return {
+            "max_size": self._pool_max_size,
+            "pool_size": int(stats.get("pool_size", 0)),
+            "pool_available": int(stats.get("pool_available", 0)),
+            "requests_waiting": int(stats.get("requests_waiting", 0)),
+        }
+
+    def close(self):
+        with self._pool_lock:
+            pool, self._pool = self._pool, None
+        if pool is not None:
+            pool.close()
 
     def target(self) -> str:
         """Return a credential-free database identity for destructive confirms."""

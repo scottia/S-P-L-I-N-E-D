@@ -4,14 +4,14 @@ use crate::application::{ApplicationState, RunPhase, ScanTarget};
 use crate::config::resolve_sources;
 use crate::gui_events::{self, ScanContext};
 use crate::media_database::{
-    DatabaseResetResult, MediaSnapshot, SCHEMA_VERSION, media_snapshot, media_snapshot_incremental,
-    reset_media_database,
+    DatabaseResetResult, MediaSnapshot, SCHEMA_VERSION, media_snapshot,
+    media_snapshot_with_progress, reset_media_database,
 };
 use crate::scan_runtime::run_scan_library_read_report;
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Condvar, Mutex, mpsc};
 
 pub type ProcessingDebugSink = Arc<dyn Fn(String) + Send + Sync + 'static>;
 
@@ -21,10 +21,77 @@ pub enum ControllerNotice {
     RunFinished,
 }
 
+#[derive(Debug, Default)]
+struct RefreshFlightState {
+    generation: u64,
+    active: bool,
+    result: Option<Result<(), String>>,
+}
+
+#[derive(Debug, Default)]
+struct RefreshFlight {
+    state: Mutex<RefreshFlightState>,
+    completed: Condvar,
+}
+
+enum RefreshClaim {
+    Leader(u64),
+    Attached(u64),
+}
+
+impl RefreshFlight {
+    fn claim(&self) -> RefreshClaim {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.active {
+            return RefreshClaim::Attached(state.generation);
+        }
+        state.generation = state.generation.saturating_add(1);
+        state.active = true;
+        state.result = None;
+        RefreshClaim::Leader(state.generation)
+    }
+
+    fn wait(&self, generation: u64) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while state.active && state.generation == generation {
+            state = self
+                .completed
+                .wait(state)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        if state.generation != generation {
+            return Err("The attached Refresh DB generation was superseded.".to_string());
+        }
+        state.result.clone().unwrap_or_else(|| {
+            Err("The attached Refresh DB generation ended without a result.".to_string())
+        })
+    }
+
+    fn finish(&self, generation: u64, result: Result<(), String>) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.active && state.generation == generation {
+            state.result = Some(result);
+            state.active = false;
+            self.completed.notify_all();
+        }
+    }
+}
+
 pub struct ScanController {
     state: Arc<Mutex<ApplicationState>>,
     running: Arc<AtomicBool>,
     refreshing: Arc<AtomicBool>,
+    refresh_cancelled: Arc<AtomicBool>,
+    refresh_flight: Arc<RefreshFlight>,
     musicbrainz_requested: Arc<AtomicBool>,
     notices: mpsc::Sender<ControllerNotice>,
     debug: Option<ProcessingDebugSink>,
@@ -163,6 +230,8 @@ impl ScanController {
                 state,
                 running: Arc::new(AtomicBool::new(false)),
                 refreshing: Arc::new(AtomicBool::new(false)),
+                refresh_cancelled: Arc::new(AtomicBool::new(false)),
+                refresh_flight: Arc::new(RefreshFlight::default()),
                 musicbrainz_requested: Arc::new(AtomicBool::new(false)),
                 notices,
                 debug,
@@ -173,6 +242,25 @@ impl ScanController {
 
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
+    }
+
+    pub fn is_refreshing(&self) -> bool {
+        self.refreshing.load(Ordering::SeqCst)
+    }
+
+    pub fn cancel_refresh(&self) -> bool {
+        if !self.is_refreshing() {
+            return false;
+        }
+        self.refresh_cancelled.store(true, Ordering::SeqCst);
+        if let Ok(mut app) = self.state.lock() {
+            app.media_refresh_cancel_requested = true;
+            app.operation_status =
+                "Stopping the active library index at its next checkpoint…".into();
+            app.operation_tone = "orange".into();
+        }
+        let _ = self.notices.send(ControllerNotice::StateChanged);
+        true
     }
 
     pub fn start(&self) -> Result<(), String> {
@@ -546,28 +634,81 @@ impl ScanController {
     }
 
     pub fn refresh_library(&self, full_refresh: bool) -> Result<(), String> {
+        let generation = match self.refresh_flight.claim() {
+            RefreshClaim::Attached(generation) => return self.refresh_flight.wait(generation),
+            RefreshClaim::Leader(generation) => generation,
+        };
+        self.refresh_cancelled.store(false, Ordering::SeqCst);
         if self
             .refreshing
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {
-            return Err("Refresh DB is already in progress.".to_string());
+            let result = Err("A database reset is already in progress.".to_string());
+            self.refresh_flight.finish(generation, result.clone());
+            return result;
         }
         let result = (|| {
             if self.is_running() {
                 return Err("The media library cannot be rebuilt during an active run.".to_string());
             }
-            let config = self
-                .state
-                .lock()
-                .map_err(|_| "The SPLINED application state is unavailable.".to_string())?
-                .config
-                .clone();
-            let snapshot = if full_refresh {
-                media_snapshot(&config, true)?
-            } else {
-                media_snapshot_incremental(&config)?
+            let (config, expected_albums) = {
+                let mut app = self
+                    .state
+                    .lock()
+                    .map_err(|_| "The SPLINED application state is unavailable.".to_string())?;
+                app.media_refresh_phase = "starting".into();
+                app.media_refresh_current_path.clear();
+                app.media_refresh_completed = 0;
+                app.media_refresh_total = app.library.albums.len() as i64;
+                app.media_refresh_percent = 0;
+                app.media_refresh_errors = 0;
+                app.media_refresh_cancel_requested = false;
+                (app.config.clone(), app.library.albums.len() as i64)
             };
+            let cancelled = Arc::clone(&self.refresh_cancelled);
+            let state = Arc::clone(&self.state);
+            let notices = self.notices.clone();
+            let progress_batch =
+                i64::try_from(config.scan.index_batch_size.clamp(1, 64)).unwrap_or(16);
+            let snapshot = media_snapshot_with_progress(&config, full_refresh, &mut |status| {
+                let remaining_estimate = if status.phase == "publishing" {
+                    0
+                } else {
+                    progress_batch
+                };
+                let total = expected_albums
+                    .max(status.discovered_albums.saturating_add(remaining_estimate))
+                    .max(status.completed_albums)
+                    .max(1);
+                let percent =
+                    ((status.completed_albums.saturating_mul(100) / total).clamp(0, 99)) as i32;
+                if let Ok(mut app) = state.lock() {
+                    app.media_refresh_phase = status.phase.clone();
+                    app.media_refresh_current_path = status.current_path.clone();
+                    app.media_refresh_completed = status.completed_albums;
+                    app.media_refresh_total = total;
+                    app.media_refresh_percent = percent;
+                    app.media_refresh_errors = status.error_count;
+                    app.operation_status = format!(
+                        "Index {} · {}% · {}/~{} Albums · {} changed · {} errors · {}",
+                        status.phase,
+                        percent,
+                        status.completed_albums,
+                        total,
+                        status.changed_albums,
+                        status.error_count,
+                        status.current_path
+                    );
+                    app.operation_tone = if status.error_count > 0 {
+                        "red".into()
+                    } else {
+                        "orange".into()
+                    };
+                }
+                let _ = notices.send(ControllerNotice::StateChanged);
+                !cancelled.load(Ordering::SeqCst)
+            })?;
             self.state
                 .lock()
                 .map_err(|_| "The SPLINED application state is unavailable.".to_string())?
@@ -577,6 +718,7 @@ impl ScanController {
             Ok(())
         })();
         self.refreshing.store(false, Ordering::SeqCst);
+        self.refresh_flight.finish(generation, result.clone());
         result
     }
 
@@ -852,7 +994,13 @@ mod tests {
     use super::*;
     use crate::application::{LaunchMode, ScanScope};
     use crate::config::Config;
-    use crate::media_database::{MediaAlbumSnapshot, MediaSnapshot, MediaTrackSnapshot};
+    use crate::media_database::{
+        MediaAlbumSnapshot, MediaSnapshot, MediaTrackSnapshot, database_path,
+    };
+    use rusqlite::Connection;
+    use std::fs::{self, File};
+    use std::sync::Barrier;
+    use std::time::Duration;
 
     fn state_without_selection() -> ApplicationState {
         let snapshot = MediaSnapshot {
@@ -904,6 +1052,43 @@ mod tests {
         let error = controller.start().unwrap_err();
         assert!(error.contains("Select at least one"));
         assert!(!controller.is_running());
+    }
+
+    #[test]
+    fn duplicate_refresh_claims_attach_to_the_active_generation_result() {
+        let flight = Arc::new(RefreshFlight::default());
+        let generation = match flight.claim() {
+            RefreshClaim::Leader(generation) => generation,
+            RefreshClaim::Attached(_) => panic!("the first refresh must own the generation"),
+        };
+        let barrier = Arc::new(Barrier::new(2));
+        let attached_flight = Arc::clone(&flight);
+        let attached_barrier = Arc::clone(&barrier);
+        let attached = std::thread::spawn(move || {
+            let attached_generation = match attached_flight.claim() {
+                RefreshClaim::Attached(generation) => generation,
+                RefreshClaim::Leader(_) => panic!("a duplicate refresh must not become a leader"),
+            };
+            attached_barrier.wait();
+            attached_flight.wait(attached_generation)
+        });
+        barrier.wait();
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(
+            !attached.is_finished(),
+            "the duplicate must wait for its generation"
+        );
+        flight.finish(generation, Ok(()));
+        assert_eq!(attached.join().unwrap(), Ok(()));
+
+        let next = match flight.claim() {
+            RefreshClaim::Leader(generation) => generation,
+            RefreshClaim::Attached(_) => panic!("a completed generation must release its lease"),
+        };
+        assert!(next > generation);
+        let expected = Err("forced generation failure".to_string());
+        flight.finish(next, expected.clone());
+        assert_eq!(flight.wait(next), expected);
     }
 
     #[test]
@@ -1087,6 +1272,93 @@ mod tests {
         let (controller, _notices) = ScanController::new(state);
         controller.stop();
         assert!(!controller.is_running());
+    }
+
+    #[test]
+    fn refresh_cancellation_is_separate_and_visible_to_the_index_callback() {
+        let state = Arc::new(Mutex::new(state_without_selection()));
+        let (controller, _notices) = ScanController::new(Arc::clone(&state));
+        assert!(!controller.cancel_refresh());
+        controller.refreshing.store(true, Ordering::SeqCst);
+        assert!(controller.cancel_refresh());
+        assert!(controller.refresh_cancelled.load(Ordering::SeqCst));
+        let app = state.lock().unwrap();
+        assert!(app.media_refresh_cancel_requested);
+        assert!(app.operation_status.contains("Stopping"));
+        drop(app);
+        controller.refreshing.store(false, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn windows_index_progress_cancellation_preserves_published_catalog() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("music");
+        let baseline = library.join("Progress Artist").join("Baseline");
+        fs::create_dir_all(&baseline).unwrap();
+        File::create(baseline.join("01.mp3")).unwrap();
+
+        let mut app = state_without_selection();
+        app.config.library.music_library = library.to_string_lossy().into_owned();
+        app.config.scan.cache_dir = temp.path().join("cache").to_string_lossy().into_owned();
+        app.config.scan.index_batch_size = 1;
+        let state = Arc::new(Mutex::new(app));
+        let (controller, _notices) = ScanController::new(Arc::clone(&state));
+        controller.refresh_library(true).unwrap();
+
+        let database = database_path(&state.lock().unwrap().config.scan.cache_dir);
+        let initial_generation: String = Connection::open(&database)
+            .unwrap()
+            .query_row(
+                "SELECT active_generation_id FROM catalog_index_state WHERE singleton=1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        for number in 0..300 {
+            let album = library
+                .join("Progress Artist")
+                .join(format!("Album {number:03}"));
+            fs::create_dir_all(&album).unwrap();
+            File::create(album.join("01.mp3")).unwrap();
+        }
+
+        let controller = Arc::new(controller);
+        let worker = Arc::clone(&controller);
+        let refresh = std::thread::spawn(move || worker.refresh_library(true));
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !controller.is_refreshing() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(controller.cancel_refresh());
+        let error = refresh.join().unwrap().unwrap_err();
+        assert!(error.to_ascii_lowercase().contains("cancelled"));
+
+        let connection = Connection::open(&database).unwrap();
+        let state_row: (String, String, String, i64) = connection
+            .query_row(
+                "SELECT active_generation_id,maintenance_generation_id,catalog_state,\
+                 (SELECT count(*) FROM albums) FROM catalog_index_state WHERE singleton=1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(state_row.0, initial_generation);
+        assert_eq!(state_row.1, "");
+        assert_eq!(state_row.2, "ready");
+        assert_eq!(state_row.3, 1);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT state FROM catalog_generations ORDER BY created_at DESC LIMIT 1",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "cancelled"
+        );
+        let app = state.lock().unwrap();
+        assert!(app.media_refresh_completed < app.media_refresh_total);
+        assert!(app.media_refresh_percent < 100);
     }
 
     #[test]
