@@ -54,6 +54,10 @@ fn default_index_batch_size() -> usize {
     16
 }
 
+fn default_index_batch_adaptive() -> bool {
+    true
+}
+
 fn default_artist_separator_profile() -> String {
     DEFAULT_ARTIST_SEPARATOR_PROFILE.to_string()
 }
@@ -111,6 +115,10 @@ pub struct ScanConfig {
     /// Maximum Album checkpoints committed in one bounded index transaction.
     #[serde(default = "default_index_batch_size")]
     pub index_batch_size: usize,
+    /// Adapt the bounded batch at durable checkpoints. Set false to use the
+    /// explicit `index_batch_size` unchanged for every checkpoint.
+    #[serde(default = "default_index_batch_adaptive")]
+    pub index_batch_adaptive: bool,
     /// Regex used only when a track/filename supplies one joined Artist value.
     /// Native multi-value ARTIST/TPE1 values are preserved without splitting.
     #[serde(default = "default_artist_separator_regex")]
@@ -383,6 +391,7 @@ impl Default for ScanConfig {
             log_dir: default_log_dir(),
             scan_library_dir: DEFAULT_SCAN_LIBRARY_DIR.to_string(),
             index_batch_size: default_index_batch_size(),
+            index_batch_adaptive: default_index_batch_adaptive(),
             artist_separator_regex: default_artist_separator_regex(),
             artist_separator_profile: default_artist_separator_profile(),
         }

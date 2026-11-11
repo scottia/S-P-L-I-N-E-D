@@ -49,6 +49,7 @@ from webgui.runtime import Runtime
 from webgui.tempfiles import discard_committed_conversion, mark_conversion_backup
 from webgui import imaging
 from webgui import index_coordinator as indexer
+from webgui import index_batch_policy
 from webgui.audit import (
     application_revision,
     normalize_severity,
@@ -1174,20 +1175,24 @@ class Services:
                 "Reset the PostgreSQL Database, then use Full Refresh Library Index."
             )
         windows_authority_configured = bool(managed_artists or managed_albums)
+        lookup_db = r.database.connect()
+        # A single autocommit lookup connection avoids opening hundreds of
+        # PostgreSQL sessions during an unchanged incremental generation. It
+        # does not hold a long read transaction or participate in publication.
+        lookup_db.raw.autocommit = True
 
         def existing_album(column, value):
             if not value:
                 return None
             if column not in {"album_key", "path"}:
                 raise ValueError("Unsupported catalog lookup")
-            with closing(r.database.connect()) as db:
-                row = db.execute(
-                    f"SELECT albums.*,artists.artist_name,artists.artist_sort,"
-                    f"artists.musicbrainz_artistid,artists.primary_path "
-                    f"FROM albums JOIN artists ON artists.artist_key=albums.artist_key "
-                    f"WHERE albums.{column}=? LIMIT 1",
-                    (value,),
-                ).fetchone()
+            row = lookup_db.execute(
+                f"SELECT albums.*,artists.artist_name,artists.artist_sort,"
+                f"artists.musicbrainz_artistid,artists.primary_path "
+                f"FROM albums JOIN artists ON artists.artist_key=albums.artist_key "
+                f"WHERE albums.{column}=? LIMIT 1",
+                (value,),
+            ).fetchone()
             return dict(row) if row is not None else None
 
         class ExistingAlbums:
@@ -1209,29 +1214,28 @@ class Services:
 
         def existing_moved_album(path, facts):
             """Match a new path to one missing published manifest row."""
-            with closing(r.database.connect()) as db:
-                candidates = list(
-                    db.raw.execute(
-                        "SELECT albums.*,artists.artist_name,artists.artist_sort,"
-                        "artists.musicbrainz_artistid,artists.primary_path "
-                        "FROM catalog_change_manifest manifest "
-                        "JOIN albums ON albums.album_key=manifest.album_key "
-                        "JOIN artists ON artists.artist_key=albums.artist_key "
-                        "WHERE manifest.inventory_signature=%s "
-                        "AND manifest.artwork_signature=%s "
-                        "AND manifest.track_count=%s AND manifest.total_size=%s "
-                        "AND manifest.newest_mtime_ns=%s "
-                        "AND manifest.album_path<>%s ORDER BY manifest.album_path",
-                        (
-                            facts["inventory_signature"],
-                            facts["artwork_signature"],
-                            facts["track_count"],
-                            facts["total_size"],
-                            facts["newest_mtime_ns"],
-                            path,
-                        ),
-                    )
+            candidates = list(
+                lookup_db.raw.execute(
+                    "SELECT albums.*,artists.artist_name,artists.artist_sort,"
+                    "artists.musicbrainz_artistid,artists.primary_path "
+                    "FROM catalog_change_manifest manifest "
+                    "JOIN albums ON albums.album_key=manifest.album_key "
+                    "JOIN artists ON artists.artist_key=albums.artist_key "
+                    "WHERE manifest.inventory_signature=%s "
+                    "AND manifest.artwork_signature=%s "
+                    "AND manifest.track_count=%s AND manifest.total_size=%s "
+                    "AND manifest.newest_mtime_ns=%s "
+                    "AND manifest.album_path<>%s ORDER BY manifest.album_path",
+                    (
+                        facts["inventory_signature"],
+                        facts["artwork_signature"],
+                        facts["track_count"],
+                        facts["total_size"],
+                        facts["newest_mtime_ns"],
+                        path,
+                    ),
                 )
+            )
             for candidate in candidates:
                 key = str(candidate["album_key"])
                 if key in claimed_moved_keys:
@@ -1249,12 +1253,11 @@ class Services:
             def get(self, key, default=None):
                 if key in self.pending:
                     return self.pending[key]
-                with closing(r.database.connect()) as db:
-                    staged = db.execute(
-                        "SELECT album_path FROM catalog_generation_albums "
-                        "WHERE generation_id=? AND scan_token=? AND album_key=? LIMIT 1",
-                        (lease.generation_id, lease.owner_token, key),
-                    ).fetchone()
+                staged = lookup_db.execute(
+                    "SELECT album_path FROM catalog_generation_albums "
+                    "WHERE generation_id=? AND scan_token=? AND album_key=? LIMIT 1",
+                    (lease.generation_id, lease.owner_token, key),
+                ).fetchone()
                 if staged is not None:
                     return str(staged["album_path"])
                 if mode == "incremental":
@@ -1271,11 +1274,24 @@ class Services:
                 self.pending[key] = path
 
         used = GenerationKeys()
-        batch_size = max(
-            1,
-            min(64, int(r.cfg.get("scan", {}).get("index_batch_size", 16))),
-        )
+        try:
+            batch_controller = (
+                index_batch_policy.AdaptiveBatchController.from_database(
+                    lookup_db,
+                    enabled=bool(
+                        r.cfg.get("scan", {}).get("index_batch_adaptive", True)
+                    ),
+                    configured_size=int(
+                        r.cfg.get("scan", {}).get("index_batch_size", 16)
+                    ),
+                )
+            )
+        except Exception:
+            lookup_db.close()
+            raise
         batch = []
+        batch_payload_bytes = 0
+        batch_started = time.perf_counter()
         discovered = 0
         completed = 0
         changed_albums = 0
@@ -1293,9 +1309,13 @@ class Services:
         cover_name = str(r.cfg.get("output", {}).get("file_name", "cover"))
 
         def flush():
-            nonlocal batch, checkpoint_seconds, checkpoint_commits
+            nonlocal batch, batch_payload_bytes, batch_started
+            nonlocal checkpoint_seconds, checkpoint_commits
             if not batch:
                 return
+            payload_bytes = batch_payload_bytes
+            batch_tracks = sum(int(row.get("track_count", 0)) for row in batch)
+            processing_seconds = time.perf_counter() - batch_started
             checkpoint_started = time.perf_counter()
             indexer.stage_batch(
                 r.database,
@@ -1307,10 +1327,23 @@ class Services:
                 unchanged=unchanged_albums,
                 current_path=str(batch[-1]["album_path"]),
             )
-            checkpoint_seconds += time.perf_counter() - checkpoint_started
+            checkpoint_elapsed = time.perf_counter() - checkpoint_started
+            checkpoint_seconds += checkpoint_elapsed
             checkpoint_commits += 1
+            batch_controller.observe_checkpoint(
+                albums=len(batch),
+                tracks=batch_tracks,
+                payload_bytes=payload_bytes,
+                processing_seconds=processing_seconds,
+                checkpoint_seconds=checkpoint_elapsed,
+                interactive_pressure=index_batch_policy.competing_interactive_activity(
+                    lookup_db
+                ),
+            )
             batch = []
+            batch_payload_bytes = 0
             used.pending.clear()
+            batch_started = time.perf_counter()
 
         try:
             iterator = core.iter_inventory(
@@ -1474,29 +1507,36 @@ class Services:
                         changed_albums += 1
 
                 completed += 1
-                batch.append(
-                    {
-                        "album_path": path,
-                        "album_key": str(
-                            (row or prior_at_path or {}).get("album_key", "")
-                        ),
-                        "artist_key": str(
-                            (row or prior_at_path or {}).get("artist_key", "")
-                        ),
-                        **facts,
-                        "tag_signature": str(
-                            (row or prior_at_path or {}).get("tag_signature", "")
-                        ),
-                        "disposition": disposition,
-                        "artist_payload": artist if disposition == "changed" else None,
-                        "album_payload": row if disposition == "changed" else None,
-                        "tracks_payload": records,
-                        "review_payload": review,
-                    }
+                checkpoint = {
+                    "album_path": path,
+                    "album_key": str(
+                        (row or prior_at_path or {}).get("album_key", "")
+                    ),
+                    "artist_key": str(
+                        (row or prior_at_path or {}).get("artist_key", "")
+                    ),
+                    **facts,
+                    "tag_signature": str(
+                        (row or prior_at_path or {}).get("tag_signature", "")
+                    ),
+                    "disposition": disposition,
+                    "artist_payload": artist if disposition == "changed" else None,
+                    "album_payload": row if disposition == "changed" else None,
+                    "tracks_payload": records,
+                    "review_payload": review,
+                }
+                batch.append(checkpoint)
+                batch_payload_bytes += index_batch_policy.checkpoint_payload_bytes(
+                    [checkpoint]
                 )
-                if len(batch) >= batch_size:
+                if batch_controller.should_checkpoint(
+                    len(batch), batch_payload_bytes
+                ):
                     flush()
-                if progress and (completed == 1 or completed % batch_size == 0):
+                if progress and (
+                    completed == 1
+                    or completed % batch_controller.current_size == 0
+                ):
                     progress(
                         {
                             "phase": "indexing",
@@ -1529,7 +1569,8 @@ class Services:
                     ),
                     "checkpoint_seconds": round(checkpoint_seconds, 3),
                     "checkpoint_commits": checkpoint_commits,
-                    "batch_size": batch_size,
+                    "batch_size": batch_controller.initial_size,
+                    "adaptive_batching": batch_controller.summary(),
                 },
             )
         except core.InteractionCancelled:
@@ -1538,6 +1579,8 @@ class Services:
         except Exception as error:
             indexer.finish(r.database, lease, "failed", str(error))
             raise
+        finally:
+            lookup_db.close()
 
         result = {
             "mode": lease.mode,

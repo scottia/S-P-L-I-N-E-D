@@ -85,16 +85,21 @@ fn main() -> Result<(), String> {
     let arguments = env::args().collect::<Vec<_>>();
     if arguments.len() != 4 {
         return Err(
-            "usage: catalog_index_benchmark <music-root> <disposable-cache> <batch-size>"
+            "usage: catalog_index_benchmark <music-root> <disposable-cache> <1-64|adaptive>"
                 .to_string(),
         );
     }
     let music = PathBuf::from(&arguments[1]);
     let cache = PathBuf::from(&arguments[2]);
-    let batch = arguments[3]
-        .parse::<usize>()
-        .map_err(|error| format!("invalid batch size: {error}"))?
-        .clamp(1, 64);
+    let adaptive = arguments[3].eq_ignore_ascii_case("adaptive");
+    let batch = if adaptive {
+        16
+    } else {
+        arguments[3]
+            .parse::<usize>()
+            .map_err(|error| format!("invalid batch size: {error}"))?
+            .clamp(1, 64)
+    };
     if !music.is_dir() {
         return Err(format!("music fixture does not exist: {}", music.display()));
     }
@@ -108,6 +113,7 @@ fn main() -> Result<(), String> {
     config.scan.temporary_cache_dir = cache.join("temporary").to_string_lossy().into_owned();
     config.scan.log_dir = cache.join("logs").to_string_lossy().into_owned();
     config.scan.index_batch_size = batch;
+    config.scan.index_batch_adaptive = adaptive;
     let (baseline_rss, _) = memory();
 
     let interrupt_started = Instant::now();
@@ -177,6 +183,7 @@ fn main() -> Result<(), String> {
         "{}",
         json!({
             "client": "windows-sqlite",
+            "batch_mode": if adaptive { "adaptive" } else { "fixed" },
             "batch_size": batch,
             "albums": snapshot.albums.len(),
             "tracks": snapshot.albums.iter().map(|album| album.track_count).sum::<i64>(),

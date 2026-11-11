@@ -2960,6 +2960,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             audio.save()
 
         self.runtime.cfg["scan"]["index_batch_size"] = 3
+        self.runtime.cfg["scan"]["index_batch_adaptive"] = False
         original_inventory = core.iter_inventory
         original_stage = coordinator.stage_batch
         source = {"yielded": 0, "exhausted": False}
@@ -3034,6 +3035,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             audio.save()
 
         self.runtime.cfg["scan"]["index_batch_size"] = 3
+        self.runtime.cfg["scan"]["index_batch_adaptive"] = False
         original_stage = coordinator.stage_batch
         interrupted = {"done": False, "generation": ""}
 

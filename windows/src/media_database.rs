@@ -12,6 +12,7 @@ use crate::catalog_index_coordinator::{
 use crate::config::{Config, resolve_sources};
 use crate::embedded_artwork::embedded_front_sha256s;
 use crate::history::{AlbumHistoryState, album_history_status, load_completion_history, unix_now};
+use crate::index_batch_policy::{AdaptiveBatchController, checkpoint_payload_bytes};
 use crate::inspect::inspect_image;
 use crate::override_coordination::{
     canonical_track_identity, ensure_sqlite_schema, queue_historical_windows_comp_track_write,
@@ -4014,8 +4015,14 @@ fn rebuild_index_generation(
     let mut tag_reuses = 0_i64;
     let mut track_tag_reads = 0_i64;
     let mut track_tag_reuses = 0_i64;
-    let batch_size = config.scan.index_batch_size.clamp(1, 64);
-    let mut staged_batch = Vec::with_capacity(batch_size);
+    let mut batch_controller = AdaptiveBatchController::from_database(
+        connection,
+        config.scan.index_batch_adaptive,
+        config.scan.index_batch_size,
+    )?;
+    let mut staged_batch = Vec::with_capacity(batch_controller.current_size());
+    let mut staged_payload_bytes = 0_u64;
+    let mut batch_started = Instant::now();
     let mut claimed_moved_keys = HashSet::<String>::new();
     let mut checkpoint_duration = Duration::ZERO;
     let mut checkpoint_commits = 0_u64;
@@ -4144,12 +4151,38 @@ fn rebuild_index_generation(
                     review_payload_json: None,
                     error: String::new(),
                 });
-                if staged_batch.len() >= batch_size {
+                staged_payload_bytes += checkpoint_payload_bytes(
+                    &staged_batch[staged_batch.len().saturating_sub(1)..],
+                );
+                if batch_controller
+                    .should_checkpoint(staged_batch.len(), staged_payload_bytes)
+                {
+                    let payload_bytes = staged_payload_bytes;
+                    let batch_tracks = staged_batch
+                        .iter()
+                        .map(|row| row.track_count.max(0) as u64)
+                        .sum();
+                    let processing_duration = batch_started.elapsed();
                     let checkpoint_started = Instant::now();
                     stage_albums(connection, lease, &staged_batch)?;
-                    checkpoint_duration += checkpoint_started.elapsed();
+                    let checkpoint_elapsed = checkpoint_started.elapsed();
+                    checkpoint_duration += checkpoint_elapsed;
                     checkpoint_commits += 1;
+                    // Native refresh excludes active scan/embedding work before
+                    // entry, so concurrent interactive pressure is false by
+                    // contract. The controller still models it for independent
+                    // policy tests and any future scheduler integration.
+                    batch_controller.observe_checkpoint(
+                        staged_batch.len(),
+                        batch_tracks,
+                        payload_bytes,
+                        processing_duration,
+                        checkpoint_elapsed,
+                        false,
+                    );
                     staged_batch.clear();
+                    staged_payload_bytes = 0;
+                    batch_started = Instant::now();
                 }
                 if !report_catalog_progress(connection, &mut progress)? {
                     return Err(CATALOG_INDEX_CANCELLED.to_string());
@@ -4446,12 +4479,32 @@ fn rebuild_index_generation(
                 review_payload_json,
                 error: String::new(),
             });
-            if staged_batch.len() >= batch_size {
+            staged_payload_bytes += checkpoint_payload_bytes(
+                &staged_batch[staged_batch.len().saturating_sub(1)..],
+            );
+            if batch_controller.should_checkpoint(staged_batch.len(), staged_payload_bytes) {
+                let payload_bytes = staged_payload_bytes;
+                let batch_tracks = staged_batch
+                    .iter()
+                    .map(|row| row.track_count.max(0) as u64)
+                    .sum();
+                let processing_duration = batch_started.elapsed();
                 let checkpoint_started = Instant::now();
                 stage_albums(connection, lease, &staged_batch)?;
-                checkpoint_duration += checkpoint_started.elapsed();
+                let checkpoint_elapsed = checkpoint_started.elapsed();
+                checkpoint_duration += checkpoint_elapsed;
                 checkpoint_commits += 1;
+                batch_controller.observe_checkpoint(
+                    staged_batch.len(),
+                    batch_tracks,
+                    payload_bytes,
+                    processing_duration,
+                    checkpoint_elapsed,
+                    false,
+                );
                 staged_batch.clear();
+                staged_payload_bytes = 0;
+                batch_started = Instant::now();
             }
             if !report_catalog_progress(connection, &mut progress)? {
                 return Err(CATALOG_INDEX_CANCELLED.to_string());
@@ -4462,10 +4515,25 @@ fn rebuild_index_generation(
     let walk_duration = walk_started.elapsed();
 
     if !staged_batch.is_empty() {
+        let payload_bytes = staged_payload_bytes;
+        let batch_tracks = staged_batch
+            .iter()
+            .map(|row| row.track_count.max(0) as u64)
+            .sum();
+        let processing_duration = batch_started.elapsed();
         let checkpoint_started = Instant::now();
         stage_albums(connection, lease, &staged_batch)?;
-        checkpoint_duration += checkpoint_started.elapsed();
+        let checkpoint_elapsed = checkpoint_started.elapsed();
+        checkpoint_duration += checkpoint_elapsed;
         checkpoint_commits += 1;
+        batch_controller.observe_checkpoint(
+            staged_batch.len(),
+            batch_tracks,
+            payload_bytes,
+            processing_duration,
+            checkpoint_elapsed,
+            false,
+        );
         staged_batch.clear();
         if !report_catalog_progress(connection, &mut progress)? {
             return Err(CATALOG_INDEX_CANCELLED.to_string());
@@ -4486,7 +4554,7 @@ fn rebuild_index_generation(
         walk_duration.saturating_sub(checkpoint_duration),
         checkpoint_duration,
         checkpoint_commits,
-        batch_size,
+        batch_controller.summary(),
         generation_started.elapsed(),
         &now,
     )
@@ -4506,7 +4574,7 @@ fn publish_index_generation(
     filesystem_metadata_duration: Duration,
     checkpoint_duration: Duration,
     checkpoint_commits: u64,
-    batch_size: usize,
+    adaptive_batching: Value,
     prepublication_duration: Duration,
     now: &str,
 ) -> Result<(), String> {
@@ -4820,7 +4888,8 @@ fn publish_index_generation(
         "filesystem_metadata_seconds": filesystem_metadata_duration.as_secs_f64(),
         "checkpoint_seconds": checkpoint_duration.as_secs_f64(),
         "checkpoint_commits": checkpoint_commits,
-        "batch_size": batch_size,
+        "batch_size": adaptive_batching["initial_size"],
+        "adaptive_batching": adaptive_batching,
         "prepublication_seconds": prepublication_duration.as_secs_f64(),
         "track_credit_index_version": TRACK_CREDIT_INDEX_VERSION,
     });

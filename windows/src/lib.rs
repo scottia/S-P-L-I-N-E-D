@@ -15,6 +15,7 @@ pub mod file_association;
 pub mod final_artwork;
 pub mod gui_events;
 pub mod history;
+pub mod index_batch_policy;
 pub mod inspect;
 pub mod local_artwork;
 pub mod media_database;

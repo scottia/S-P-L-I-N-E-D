@@ -74,7 +74,9 @@ def schema_url(base_url: str, schema: str) -> str:
     )
 
 
-def run(music: Path, batch_size: int, base_url: str) -> dict[str, object]:
+def run(
+    music: Path, batch_size: int, base_url: str, *, adaptive: bool = False
+) -> dict[str, object]:
     schema = "splined_pr170_benchmark_" + uuid4().hex
     with psycopg.connect(base_url, autocommit=True) as connection:
         connection.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
@@ -92,6 +94,7 @@ def run(music: Path, batch_size: int, base_url: str) -> dict[str, object]:
         config["library"]["music_library"] = str(music)
         config["scan"].update(
             index_batch_size=batch_size,
+            index_batch_adaptive=adaptive,
             cache_dir=str(root / "cache"),
             temporary_cache_dir=str(root / "temporary"),
             shared_artist_art_dir=str(root / "artist-art"),
@@ -164,6 +167,7 @@ def run(music: Path, batch_size: int, base_url: str) -> dict[str, object]:
         current_rss, peak_rss = memory()
         return {
             "client": "webgui-postgresql",
+            "batch_mode": "adaptive" if adaptive else "fixed",
             "batch_size": batch_size,
             "albums": full["albums"],
             "tracks": tracks,
@@ -197,14 +201,26 @@ def run(music: Path, batch_size: int, base_url: str) -> dict[str, object]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--music", type=Path, required=True)
-    parser.add_argument("--batch-size", type=int, choices=range(1, 65), required=True)
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--batch-size", type=int, choices=range(1, 65))
+    group.add_argument("--adaptive", action="store_true")
     args = parser.parse_args()
     base_url = os.environ.get("SPLINED_TEST_DATABASE_URL", "")
     if not base_url:
         raise SystemExit("SPLINED_TEST_DATABASE_URL is required")
     if not args.music.is_dir():
         raise SystemExit(f"Test media library does not exist: {args.music}")
-    print(json.dumps(run(args.music, args.batch_size, base_url), sort_keys=True))
+    print(
+        json.dumps(
+            run(
+                args.music,
+                args.batch_size or 16,
+                base_url,
+                adaptive=args.adaptive,
+            ),
+            sort_keys=True,
+        )
+    )
 
 
 if __name__ == "__main__":

@@ -305,3 +305,96 @@ established Album/Track catalog.
   build loaded schema v3 and all 216 Albums in 24 ms, entered the workspace,
   and performed no reset or reindex. The installed executable SHA-256 was
   `9CF838D5BF80A44F2F689F1B465D194F9E3784030ADC8516D60DFF3670A1979C`.
+
+## Requirement 5 — adaptive batching and instant startup
+
+Status: **IMPLEMENTED; final suite/CI checkpoint pending**.
+
+Acceptance contract:
+
+- Windows SQLite and WebGUI PostgreSQL make independent batch decisions from
+  their own published catalog statistics and measured checkpoint behavior.
+- The valid range remains 1–64 Albums. With no trustworthy history the first
+  batch is 16; `scan.index_batch_adaptive=false` preserves an explicit fixed
+  `scan.index_batch_size` override.
+- Adaptation occurs only after a durable checkpoint. It considers published
+  Artist/Album/Track counts, observed tracks and bytes per Album, processing
+  average, transaction latency, payload-memory pressure, and (where the
+  scheduler permits it) competing interactive work.
+- A small catalog does not recalibrate without measurable value. Growth begins
+  only after 512 published or observed Albums, requires two stable low-cost
+  checkpoints, and moves one bounded step at a time. Memory, transaction, or
+  interactive pressure may reduce the next batch immediately.
+- Normal startup constructs no batching controller, walks no filesystem, and
+  opens no tags. It displays the last published generation while indexing is
+  explicitly requested in the background.
+
+Implementation:
+
+- The native controller records SQLite workload, payload bytes, checkpoint and
+  processing time, decisions, and final size in the generation maintenance
+  details. Existing Windows scheduling rejects a refresh while artwork scan or
+  embedding work is active, so live interactive pressure is false under that
+  contract; the independent policy input and regression coverage remain ready
+  if that scheduler later permits overlap.
+- The WebGUI controller records the equivalent PostgreSQL measurements and
+  checks queued/running non-index jobs at each checkpoint. It can reduce the
+  next batch while operator work is waiting without blocking STOP/cancellation.
+- Historical measurements seed the next comparable generation only when the
+  published Album count remains within 0.5–2.0 of the prior catalog. Large
+  catalog changes therefore fall back to 16 rather than reusing stale tuning.
+- WebGUI unchanged indexing previously opened a new PostgreSQL connection for
+  each Album authority lookup. One generation-scoped autocommit lookup
+  connection now removes that connection churn without holding a read
+  transaction, changing publication ownership, or loading the catalog into
+  memory.
+
+### Measured small-catalog behavior
+
+Fixture: the established read-only 216-Album/3,496-Track test library. Every
+run was interrupted after its first durable 16-Album checkpoint, verified zero
+live Albums, recovered, published, and ran an unchanged incremental generation.
+
+| Client | Mode | Total interruption + recovery | Peak RSS growth | Checkpoints | Unchanged incremental |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Windows SQLite | fixed 16 | 5.060 s | 10.60 MiB | 13 | 1.186 s |
+| Windows SQLite | adaptive | 5.053 s | 10.70 MiB | 13 | 1.130 s |
+| WebGUI PostgreSQL | fixed 16 | 76.118 s | 146.94 MiB | 13 | 2.439 s |
+| WebGUI PostgreSQL | adaptive | 74.725 s | 145.75 MiB | 13 | 2.461 s |
+
+No adaptive decisions were made on the small catalog, by design. The WebGUI
+unchanged pass improved from the prior 19.546-second batch-16 measurement to
+2.439 seconds after removing per-Album connection setup. It still records zero
+Album and Track tag reads. Full-pass times are reported with filesystem-cache
+context and are not presented as a direct cold/warm percentage comparison.
+
+### Measured 100,000-Track uneven behavior
+
+Disposable local fixture: 1,000 Albums / 100,000 zero-byte `.mp3` files,
+distributed as 900 Albums × 20 Tracks, 90 × 200, and 10 × 6,400. This deliberately
+tests small, large, and sharply uneven per-Album workloads. Publication and
+recovery used disposable SQLite caches and PostgreSQL schemas; the approved
+test catalog and media library were not modified.
+
+| Client | Mode | Total interruption + recovery | Peak RSS growth | Checkpoint time / commits | Unchanged incremental |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Windows SQLite | fixed 16 | 64.401 s | 84.73 MiB | 0.981 s / 62 | 32.917 s |
+| Windows SQLite | adaptive | 63.825 s | 84.44 MiB | 0.946 s / 43 | 32.034 s |
+| WebGUI PostgreSQL | fixed 16 | 351.671 s | 118.21 MiB | 7.830 s / 62 | 14.623 s |
+| WebGUI PostgreSQL | adaptive | 320.969 s | 102.05 MiB | 5.386 s / 43 | 10.832 s |
+
+Windows gained 0.9% total and 2.7% unchanged time while cutting commits by 31%.
+WebGUI gained 8.7% total, 13.7% peak memory, 31% fewer commits, and 25.9%
+unchanged time. Both retained zero tag reads for the unchanged generation.
+Payload pressure caused the adaptive full runs to shrink before the remaining
+6,400-Track Albums; recorded peak staged payload fell from 27.51 MB to 17.20 MB
+in WebGUI and from 17.22 MB to 8.61 MB in Windows.
+
+The benchmark fixture is on the isolated local `E:` test volume, not the
+owner's production NAS. `filesystem_metadata_seconds` therefore records real
+local file-open/metadata time (Windows 55.02 s adaptive; WebGUI 90.54 s), not a
+claimed NAS latency result. Production media was deliberately not accessed.
+
+Reproducible result JSON is retained outside the repository under
+`E:\apps\ChatGpt\SPLINED-local-test-library\state\pr170-req5-bench` and
+`...\pr170-req5-100k`.
