@@ -380,6 +380,99 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             self.assertTrue(film_card["various_artists"])
             self.assertEqual(set(rob["top_tracks"]), {"Song", "Theme"})
 
+    def test_projected_featured_artist_does_not_merge_into_album_owner(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "index.sqlite"
+            credentials = root / "credentials"
+            credentials.mkdir()
+            here = root / "Alicia Keys" / "Here"
+            keys = root / "Alicia Keys" / "Keys"
+            for folder in (here, keys):
+                folder.mkdir(parents=True)
+                (folder / "song.mp3").touch()
+
+            alicia_mbid = "8ef1df30-ae4f-4dbd-9351-1a32b208a01e"
+            asap_mbid = "25b7b584-d952-4662-a8b9-dd8cdfbfeb64"
+            with closing(connect(database)) as db:
+                db.execute(
+                    "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,"
+                    "musicbrainz_artistid TEXT,primary_path TEXT,status TEXT)"
+                )
+                db.execute(
+                    "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,album_name TEXT,"
+                    "path TEXT,cover_path TEXT,track_count INTEGER,status TEXT,compilation INTEGER,"
+                    "musicbrainz_albumid TEXT,release_year TEXT,embedded_tracks INTEGER,webp_found INTEGER)"
+                )
+                db.execute(
+                    "CREATE TABLE tracks (track_key TEXT PRIMARY KEY,album_key TEXT,path TEXT,title TEXT,"
+                    "artist_name TEXT,musicbrainz_artistid TEXT)"
+                )
+                db.execute(
+                    "INSERT INTO artists VALUES (?,?,?,?,?)",
+                    (
+                        "alicia",
+                        "Alicia Keys",
+                        alicia_mbid,
+                        str(root / "Alicia Keys"),
+                        "processed",
+                    ),
+                )
+                db.executemany(
+                    "INSERT INTO albums VALUES (?,?,?,?,NULL,1,'processed',0,?,'2021',1,0)",
+                    [
+                        ("here", "alicia", "Here", str(here), "release-here"),
+                        ("keys", "alicia", "Keys", str(keys), "release-keys"),
+                    ],
+                )
+                db.executemany(
+                    "INSERT INTO tracks VALUES (?,?,?,?,?,?)",
+                    [
+                        (
+                            "here-track",
+                            "here",
+                            str(here / "song.mp3"),
+                            "Blended Family",
+                            "Alicia Keys\x1fA$AP Rocky",
+                            f"{alicia_mbid},{asap_mbid}",
+                        ),
+                        (
+                            "keys-track",
+                            "keys",
+                            str(keys / "song.mp3"),
+                            "Only You",
+                            "Alicia Keys",
+                            alicia_mbid,
+                        ),
+                    ],
+                )
+                db.commit()
+
+            app = PreviewApp(root, database, root, credentials, cache=root / "cache")
+            listed = app.artists("A$AP")
+            self.assertEqual(
+                [(item["name"], item["albums"]) for item in listed],
+                [("A$AP Rocky", 1)],
+            )
+
+            # The UI identity boundary is authoritative. Even a stale or
+            # colliding projection MBID must not alias this virtual Featured
+            # Artist into a persisted Album owner's full catalog.
+            with closing(app.connect()) as db:
+                projections = app._projected_track_artists(db)
+            projections[normalized_artist_identity("A$AP Rocky")][
+                "musicbrainz_artistid"
+            ] = alicia_mbid
+            with mock.patch.object(
+                app,
+                "_projected_track_artists",
+                return_value=projections,
+            ):
+                selected = app.artist(str(listed[0]["id"]))
+            self.assertEqual(selected["name"], "A$AP Rocky")
+            self.assertEqual([album["name"] for album in selected["albums"]], ["Here"])
+            self.assertTrue(selected["albums"][0]["featured"])
+
     def test_conflicting_musicbrainz_ids_merge_when_library_path_is_identical(self):
         rows = [
             {
