@@ -1735,6 +1735,57 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertEqual(client.get("/api/artists").status_code, 401)
         self.runtime = Runtime(self.config, self.db)
 
+    def test_library_changes_get_is_cached_and_probe_is_explicit(self):
+        self.runtime.close()  # The API owns its runtime for this test.
+        app = create_app(self.config, self.url, token="test-access", start_worker=False)
+        app.state.context.jobs = JobQueue(app.state.context.services)
+        app.state.context.jobs.close()
+        with TestClient(app) as client:
+            status = client.get("/api/status").json()
+            client.headers["X-SPLINED-CSRF"] = status["csrf"]
+            setup = client.post(
+                "/api/admin/setup",
+                json={
+                    "username": "manifest-admin",
+                    "password": "StrongPassword123",
+                    "confirmation": "StrongPassword123",
+                    "token": "test-access",
+                },
+            )
+            self.assertEqual(setup.status_code, 200, setup.text)
+
+            added = self.root / "music" / "Unprobed Artist" / "Unprobed Album"
+            added.mkdir(parents=True)
+            shutil.copy2(self.files[0], added / "01.flac")
+
+            cached = client.get("/api/library/changes")
+            self.assertEqual(cached.status_code, 200, cached.text)
+            self.assertEqual(cached.json()["count"], 0)
+            self.assertFalse(cached.json()["checking"])
+            with closing(self.db.connect()) as db:
+                self.assertEqual(
+                    db.execute(
+                        "SELECT count(*) FROM web_jobs WHERE kind='index-probe'"
+                    ).fetchone()[0],
+                    0,
+                )
+
+            requested = client.post("/api/library/check-changes", json={})
+            self.assertEqual(requested.status_code, 200, requested.text)
+            self.assertEqual(requested.json()["state"], "queued")
+            checking = client.get("/api/library/changes").json()
+            self.assertTrue(checking["checking"])
+            self.assertEqual(checking["probe_job_id"], requested.json()["id"])
+
+            refresh = client.post(
+                "/api/jobs",
+                json={"kind": "index", "payload": {"mode": "incremental"}},
+            )
+            self.assertEqual(refresh.status_code, 200, refresh.text)
+            self.assertNotEqual(refresh.json()["id"], requested.json()["id"])
+            self.assertFalse(refresh.json().get("already_queued", False))
+        self.runtime = Runtime(self.config, self.db)
+
     def test_audit_recovers_sanitized_local_fallback_in_order(self):
         with patch.object(
             self.runtime.database,
@@ -2622,6 +2673,56 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             ).fetchone()[0]
         self.assertEqual(timings["album_tag_reads"], 0)
         self.assertEqual(timings["track_tag_reads"], 0)
+
+    def test_change_manifest_probe_detects_tags_artwork_moves_adds_and_removals(self):
+        cached = self.services.index_changes(refresh=False)
+        self.assertEqual(cached["count"], 0)
+
+        audio = FLAC(self.files[0])
+        audio["title"] = "Manifest tag change"
+        audio.save()
+        self.assertEqual(
+            self.services.index_changes(refresh=False)["count"],
+            0,
+            "cached status must not inspect physical files",
+        )
+        changed_tags = self.services.detect_index_changes()
+        self.assertEqual(changed_tags["changed"], 1)
+        self.services.refresh_index(mode="incremental")
+
+        Image.new("RGB", (181, 181), "orange").save(self.cover)
+        changed_artwork = self.services.detect_index_changes()
+        self.assertEqual(changed_artwork["changed"], 1)
+        self.services.refresh_index(mode="incremental")
+
+        original = self.root / "music" / "Test Artist" / "Test Album"
+        moved = self.root / "music" / "Test Artist" / "Moved Album"
+        original.rename(moved)
+        moved_change = self.services.detect_index_changes()
+        self.assertEqual(moved_change["moved"], 1)
+        self.assertEqual(moved_change["added"], 0)
+        self.assertEqual(moved_change["removed"], 0)
+        self.services.refresh_index(mode="incremental")
+
+        added = self.root / "music" / "Other Artist" / "Added Album"
+        added.mkdir(parents=True)
+        added_track = added / "01.flac"
+        shutil.copy2(moved / "1.flac", added_track)
+        added_audio = FLAC(added_track)
+        added_audio["artist"] = "Other Artist"
+        added_audio["albumartist"] = "Other Artist"
+        added_audio["album"] = "Added Album"
+        added_audio["musicbrainz_albumid"] = str(uuid4())
+        added_audio["musicbrainz_artistid"] = str(uuid4())
+        added_audio["musicbrainz_trackid"] = str(uuid4())
+        added_audio.save()
+        added_change = self.services.detect_index_changes()
+        self.assertEqual(added_change["added"], 1)
+        self.services.refresh_index(mode="incremental")
+
+        shutil.rmtree(added)
+        removed_change = self.services.detect_index_changes()
+        self.assertEqual(removed_change["removed"], 1)
 
     def test_catalog_generation_terminal_states_are_durable_and_owner_scoped(self):
         from webgui import index_coordinator as coordinator

@@ -68,10 +68,10 @@ async function initialize() {
   // saved panel dimensions only after it has measurable width and height.
   requestAnimationFrame(() => { restoreLayout(); fitReviewToViewport(); });
   await loadLibrary(); await pollJobs();
-  // Discover physical library additions after the workspace is usable. This
+  // Discover physical library changes after the workspace is usable. This
   // remains a read-only check; the operator explicitly chooses whether to run
   // the incremental PostgreSQL refresh from the header notice.
-  void checkLibraryChanges().catch(error => {
+  void requestLibraryChangeProbe().catch(error => {
     auditEvent("library-change-check", "failed", {severity: "warning", error: error.message});
   });
 }
@@ -117,6 +117,7 @@ async function submitPasswordRecovery(payload) {
 }
 async function checkLibraryChanges() {
   const changes = await api("/api/library/changes");
+  const wasChecking = !!state.libraryChanges?.checking;
   state.libraryChanges = changes;
   const button = $("applyLibraryChanges");
   button.hidden = !changes.count;
@@ -124,8 +125,22 @@ async function checkLibraryChanges() {
     ? `Apply Library Changes (${changes.count})`
     : "Apply Library Changes";
   if (changes.count) {
-    setStatus(`Music library changes · ${changes.added} added · ${changes.changed} changed · ${changes.removed} removed`);
+    setStatus(`Music library changes · ${changes.added} added · ${changes.changed} changed · ${changes.moved || 0} moved · ${changes.removed} removed`);
+  } else if (changes.checking) {
+    setStatus("Checking the music library for changes…", "busy");
+  } else if (wasChecking) {
+    setStatus("Music library is up to date");
   }
+  if (changes.checking) setTimeout(() => {
+    if (!document.hidden) void checkLibraryChanges().catch(() => {});
+  }, 1000);
+}
+async function requestLibraryChangeProbe() {
+  const probe = await post("/api/library/check-changes");
+  if (["queued", "running", "waiting"].includes(probe.state)) {
+    setStatus("Checking the music library for changes…", "busy");
+  }
+  await checkLibraryChanges();
 }
 function componentPayload(kind, imageURL, extra = {}) {
   const target = kind === "cover" ? "album" : kind;

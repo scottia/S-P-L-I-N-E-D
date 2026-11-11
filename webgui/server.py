@@ -16,7 +16,7 @@ import threading
 import time
 import tomllib
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -801,7 +801,19 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
 
     @app.get("/api/library/changes")
     def library_changes():
-        return context.require().index_changes()
+        services = context.require()
+        result = services.index_changes(refresh=False)
+        probe = context.jobs.index_probe_state() if context.jobs else None
+        result["checking"] = probe is not None
+        result["probe_job_id"] = probe.get("id", "") if probe else ""
+        return result
+
+    @app.post("/api/library/check-changes")
+    def check_library_changes():
+        context.require()
+        if context.jobs is None:
+            raise HTTPException(503, "The background worker is unavailable")
+        return context.jobs.enqueue("index-probe", {})
 
     @app.get("/api/library/index-status")
     def library_index_status():

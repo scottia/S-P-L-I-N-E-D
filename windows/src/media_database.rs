@@ -94,6 +94,7 @@ pub struct MediaIndexChanges {
     pub count: usize,
     pub added: usize,
     pub changed: usize,
+    pub moved: usize,
     pub removed: usize,
     pub examples: Vec<String>,
 }
@@ -439,6 +440,7 @@ fn empty_media_index_changes() -> MediaIndexChanges {
         count: 0,
         added: 0,
         changed: 0,
+        moved: 0,
         removed: 0,
         examples: Vec::new(),
     }
@@ -456,15 +458,17 @@ fn parse_media_index_changes(value: &str) -> Result<MediaIndexChanges, String> {
     };
     let added = number("added");
     let changed = number("changed");
+    let moved = number("moved");
     let removed = number("removed");
     Ok(MediaIndexChanges {
         count: value
             .get("count")
             .and_then(Value::as_u64)
             .and_then(|value| usize::try_from(value).ok())
-            .unwrap_or(added + changed + removed),
+            .unwrap_or(added + changed + moved + removed),
         added,
         changed,
+        moved,
         removed,
         examples: value
             .get("examples")
@@ -541,7 +545,11 @@ pub fn detect_media_index_changes(config: &Config) -> Result<MediaIndexChanges, 
         .execute_batch(
             "DROP TABLE IF EXISTS temp.catalog_probe_paths;
              CREATE TEMP TABLE catalog_probe_paths(
-                 album_path TEXT PRIMARY KEY COLLATE NOCASE
+                 album_path TEXT PRIMARY KEY COLLATE NOCASE,
+                 track_count INTEGER NOT NULL,
+                 total_size INTEGER NOT NULL,
+                 newest_mtime_ns INTEGER NOT NULL,
+                 artwork_signature TEXT NOT NULL
              ) WITHOUT ROWID;",
         )
         .map_err(db_error("prepare bounded catalog change probe"))?;
@@ -569,9 +577,29 @@ pub fn detect_media_index_changes(config: &Config) -> Result<MediaIndexChanges, 
             .unwrap_or(0);
         let representative_mtime = metadata.as_ref().map(modified_ns).unwrap_or(0);
         let fingerprint = fallback_album_inventory_fingerprint(&album, &mapper)?;
+        let artwork_signature =
+            album_artwork_inventory_signature(&album.path, manifest_cover_name)?;
+        let (total_size, newest_mtime_ns) =
+            album
+                .audio_files
+                .iter()
+                .try_fold((0_i64, 0_i64), |(total, newest), path| {
+                    let metadata = fs::metadata(path).map_err(|error| {
+                        format!(
+                            "Unable to inspect indexed audio file {}: {error}",
+                            path.display()
+                        )
+                    })?;
+                    let size = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
+                    Ok::<_, String>((
+                        total.saturating_add(size),
+                        newest.max(modified_ns(&metadata)),
+                    ))
+                })?;
         let coordinator_signature = short_hash(&format!(
-            "{}\0{}\0{}\0{}",
+            "{}\0{}\0{}\0{}\0{}",
             fingerprint,
+            artwork_signature,
             casefold(manifest_cover_name),
             manifest_artist_separator,
             TRACK_CREDIT_INDEX_VERSION
@@ -648,8 +676,16 @@ pub fn detect_media_index_changes(config: &Config) -> Result<MediaIndexChanges, 
         }
         connection
             .execute(
-                "INSERT OR IGNORE INTO catalog_probe_paths(album_path) VALUES(?1)",
-                [&canonical],
+                "INSERT OR REPLACE INTO catalog_probe_paths(
+                     album_path,track_count,total_size,newest_mtime_ns,artwork_signature
+                 ) VALUES(?1,?2,?3,?4,?5)",
+                params![
+                    canonical,
+                    i64::try_from(album.audio_files.len()).unwrap_or(i64::MAX),
+                    total_size,
+                    newest_mtime_ns,
+                    artwork_signature,
+                ],
             )
             .map_err(db_error("checkpoint catalog probe path"))?;
         Ok(())
@@ -664,7 +700,7 @@ pub fn detect_media_index_changes(config: &Config) -> Result<MediaIndexChanges, 
     } else {
         "path"
     };
-    let removed: usize = connection
+    let raw_removed: usize = connection
         .query_row(
             &format!(
                 "SELECT count(*) FROM {source_table} source
@@ -677,6 +713,38 @@ pub fn detect_media_index_changes(config: &Config) -> Result<MediaIndexChanges, 
         .map_err(db_error("count removed Album manifests"))?
         .try_into()
         .unwrap_or(usize::MAX);
+    let moved: usize = if manifest_count > 0 {
+        connection
+            .query_row(
+                "WITH added AS (
+                     SELECT track_count,total_size,newest_mtime_ns,artwork_signature,
+                            count(*) AS n
+                     FROM catalog_probe_paths probe
+                     WHERE NOT EXISTS(SELECT 1 FROM catalog_change_manifest saved
+                         WHERE lower(saved.album_path)=lower(probe.album_path))
+                     GROUP BY track_count,total_size,newest_mtime_ns,artwork_signature
+                 ), removed AS (
+                     SELECT track_count,total_size,newest_mtime_ns,artwork_signature,
+                            count(*) AS n
+                     FROM catalog_change_manifest saved
+                     WHERE NOT EXISTS(SELECT 1 FROM catalog_probe_paths probe
+                         WHERE lower(probe.album_path)=lower(saved.album_path))
+                     GROUP BY track_count,total_size,newest_mtime_ns,artwork_signature
+                 )
+                 SELECT COALESCE(sum(min(added.n,removed.n)),0)
+                 FROM added JOIN removed
+                 USING(track_count,total_size,newest_mtime_ns,artwork_signature)",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(db_error("pair moved Album manifests"))?
+            .try_into()
+            .unwrap_or(usize::MAX)
+    } else {
+        0
+    };
+    added = added.saturating_sub(moved);
+    let removed = raw_removed.saturating_sub(moved);
     if examples.len() < 3 {
         let mut statement = connection
             .prepare(&format!(
@@ -696,9 +764,13 @@ pub fn detect_media_index_changes(config: &Config) -> Result<MediaIndexChanges, 
         }
     }
     let changes = MediaIndexChanges {
-        count: added.saturating_add(changed).saturating_add(removed),
+        count: added
+            .saturating_add(changed)
+            .saturating_add(moved)
+            .saturating_add(removed),
         added,
         changed,
+        moved,
         removed,
         examples,
     };
@@ -706,6 +778,7 @@ pub fn detect_media_index_changes(config: &Config) -> Result<MediaIndexChanges, 
         "count": changes.count,
         "added": changes.added,
         "changed": changes.changed,
+        "moved": changes.moved,
         "removed": changes.removed,
         "examples": changes.examples,
     });
@@ -2085,9 +2158,12 @@ fn refresh_owned_album_inventory_baseline(
         .and_then(|value| value.get("artist_separator_regex"))
         .and_then(Value::as_str)
         .unwrap_or(&config.scan.artist_separator_regex);
+    let artwork_inventory_signature =
+        album_artwork_inventory_signature(&album.path, published_cover_name)?;
     let coordinator_signature = short_hash(&format!(
-        "{}\0{}\0{}\0{}",
+        "{}\0{}\0{}\0{}\0{}",
         inventory_fingerprint,
+        artwork_inventory_signature,
         casefold(published_cover_name),
         published_artist_separator,
         TRACK_CREDIT_INDEX_VERSION
@@ -2128,11 +2204,12 @@ fn refresh_owned_album_inventory_baseline(
     )?;
     transaction
         .execute(
-            "UPDATE catalog_change_manifest SET inventory_signature=?1,track_count=?2,
-                 total_size=?3,newest_mtime_ns=?4,updated_at=?5
-             WHERE lower(album_path)=lower(?6) OR lower(album_key)=lower(?7)",
+            "UPDATE catalog_change_manifest SET inventory_signature=?1,artwork_signature=?2,
+                 track_count=?3,total_size=?4,newest_mtime_ns=?5,updated_at=?6
+             WHERE lower(album_path)=lower(?7) OR lower(album_key)=lower(?8)",
             params![
                 coordinator_signature,
+                artwork_inventory_signature,
                 album.audio_files.len() as i64,
                 total_size,
                 newest_mtime_ns,
@@ -3963,9 +4040,12 @@ fn rebuild_index_generation(
                 .unwrap_or(0);
             let mtime = metadata.as_ref().map(modified_ns).unwrap_or(0);
             let inventory_fingerprint = fallback_album_inventory_fingerprint(&album, mapper)?;
+            let artwork_inventory_signature =
+                album_artwork_inventory_signature(&album.path, &config.output.file_name)?;
             let inventory_signature = short_hash(&format!(
-                "{}\0{}\0{}\0{}",
+                "{}\0{}\0{}\0{}\0{}",
                 inventory_fingerprint,
+                artwork_inventory_signature,
                 casefold(&config.output.file_name),
                 config.scan.artist_separator_regex,
                 TRACK_CREDIT_INDEX_VERSION
@@ -3993,6 +4073,15 @@ fn rebuild_index_generation(
             }
 
             let prior = existing_album_at_path(connection, &canonical_path)?;
+            let published_inventory_signature = connection
+                .query_row(
+                    "SELECT inventory_signature FROM catalog_change_manifest
+                     WHERE lower(album_path)=lower(?1)",
+                    [&canonical_path],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(db_error("read published Album checkpoint signature"))?;
             let prior_fallback = prior
                 .as_ref()
                 .is_some_and(|value| value.album_mbid.trim().is_empty());
@@ -4001,6 +4090,9 @@ fn rebuild_index_generation(
                 && prior.as_ref().is_some_and(|value| {
                     value.track_count == album.audio_files.len() as i64
                         && representative_unchanged(value, &canonical_representative, size, mtime)
+                        && published_inventory_signature
+                            .as_ref()
+                            .is_none_or(|saved| saved == &inventory_signature)
                         && (value.inventory_fingerprint == inventory_fingerprint
                             || (!value.inventory_fingerprint.contains(':')
                                 && prior_fallback
@@ -4019,7 +4111,7 @@ fn rebuild_index_generation(
                     album_key: prior.album_key.clone(),
                     artist_key: prior.artist_key.clone(),
                     inventory_signature,
-                    artwork_signature: String::new(),
+                    artwork_signature: artwork_inventory_signature,
                     tag_signature: prior.tag_signature.clone(),
                     track_count: album.audio_files.len() as i64,
                     total_size,
@@ -4288,14 +4380,6 @@ fn rebuild_index_generation(
                     .map(|value| value.created_at.clone())
                     .unwrap_or_else(|| now.clone()),
             };
-            let artwork_signature = short_hash(&format!(
-                "{}\0{}\0{}\0{}\0{}",
-                row.cover_path,
-                row.cover_width.unwrap_or(0),
-                row.cover_height.unwrap_or(0),
-                row.local_art_json,
-                row.other_filenames_json
-            ));
             let review_payload_json = row.album_key.split_once(":copy:").map(|(base, _)| {
                 json!({
                     "base_key": base,
@@ -4308,7 +4392,7 @@ fn rebuild_index_generation(
                 album_key: logical_key,
                 artist_key,
                 inventory_signature,
-                artwork_signature,
+                artwork_signature: artwork_inventory_signature,
                 tag_signature,
                 track_count: album.audio_files.len() as i64,
                 total_size,
@@ -5846,6 +5930,56 @@ fn fallback_album_inventory_fingerprint(
     ))
 }
 
+fn album_artwork_inventory_signature(
+    directory: &Path,
+    configured_file_name: &str,
+) -> Result<String, String> {
+    let configured = casefold(if configured_file_name.trim().is_empty() {
+        "cover"
+    } else {
+        configured_file_name.trim()
+    });
+    let mut entries = fs::read_dir(directory)
+        .map_err(|error| {
+            format!(
+                "Unable to inspect Album artwork manifest {}: {error}",
+                directory.display()
+            )
+        })?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+            if !matches!(extension.as_str(), "jpg" | "jpeg" | "png" | "webp") {
+                return None;
+            }
+            let stem = casefold(path.file_stem()?.to_str()?);
+            (stem.starts_with("cover") || stem.starts_with(&configured)).then_some(path)
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|path| casefold(&path.to_string_lossy()));
+
+    let mut digest = Sha256::new();
+    for path in entries {
+        let metadata = fs::metadata(&path).map_err(|error| {
+            format!(
+                "Unable to inspect Album artwork file {}: {error}",
+                path.display()
+            )
+        })?;
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .map(casefold)
+            .unwrap_or_default();
+        digest.update(name.as_bytes());
+        digest.update([0]);
+        digest.update(metadata.len().to_le_bytes());
+        digest.update(modified_ns(&metadata).to_le_bytes());
+    }
+    Ok(format!("meta1:{}", hex_bytes(&digest.finalize())))
+}
+
 fn inspect_cover(
     album: &AlbumDirectory,
     cover_name: &str,
@@ -7209,6 +7343,55 @@ mod tests {
         );
         assert_eq!(detect_media_index_changes(&config).unwrap().added, 1);
         assert_eq!(super::find_media_index_changes(&config).unwrap().added, 1);
+    }
+
+    #[test]
+    fn manifest_probe_detects_modified_artwork_moved_added_and_removed_albums() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("music");
+        let original = library.join("Artist").join("Original");
+        fs::create_dir_all(&original).unwrap();
+        let track = original.join("01.mp3");
+        fs::write(&track, b"original track bytes").unwrap();
+        fs::write(original.join("cover.jpg"), b"original cover bytes").unwrap();
+        let mut config = Config::default();
+        config.library.music_library = library.to_string_lossy().into_owned();
+        config.scan.cache_dir = temp.path().join("cache").to_string_lossy().into_owned();
+        media_snapshot(&config, false).unwrap();
+
+        fs::write(&track, b"changed tag-sized track bytes").unwrap();
+        assert_eq!(
+            super::find_media_index_changes(&config).unwrap().count,
+            0,
+            "cached reads must not probe physical files"
+        );
+        let changed_track = detect_media_index_changes(&config).unwrap();
+        assert_eq!(changed_track.changed, 1);
+        media_snapshot_incremental(&config).unwrap();
+
+        fs::write(original.join("cover.jpg"), b"replacement cover bytes").unwrap();
+        let changed_artwork = detect_media_index_changes(&config).unwrap();
+        assert_eq!(changed_artwork.changed, 1);
+        media_snapshot_incremental(&config).unwrap();
+
+        let moved = library.join("Artist").join("Moved");
+        fs::rename(&original, &moved).unwrap();
+        let moved_change = detect_media_index_changes(&config).unwrap();
+        assert_eq!(moved_change.moved, 1);
+        assert_eq!(moved_change.added, 0);
+        assert_eq!(moved_change.removed, 0);
+        media_snapshot_incremental(&config).unwrap();
+
+        let added = library.join("Artist").join("Added");
+        fs::create_dir_all(&added).unwrap();
+        fs::write(added.join("01.mp3"), b"added track").unwrap();
+        let added_change = detect_media_index_changes(&config).unwrap();
+        assert_eq!(added_change.added, 1);
+        media_snapshot_incremental(&config).unwrap();
+
+        fs::remove_dir_all(&added).unwrap();
+        let removed_change = detect_media_index_changes(&config).unwrap();
+        assert_eq!(removed_change.removed, 1);
     }
 
     #[test]

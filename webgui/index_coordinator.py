@@ -334,6 +334,7 @@ def change_summary(database) -> dict[str, Any]:
             "count": 0,
             "added": 0,
             "changed": 0,
+            "moved": 0,
             "removed": 0,
             "examples": [],
             "catalog_state": "initializing",

@@ -261,6 +261,16 @@ class JobQueue:
                 "pause_all_albums": self.pause_all_albums,
             }
 
+    def index_probe_state(self):
+        """Return active manifest-probe state without starting filesystem work."""
+        with closing(self.db.connect()) as db:
+            row = db.execute(
+                "SELECT id,state FROM web_jobs WHERE kind='index-probe' "
+                "AND state IN ('queued','running','waiting') "
+                "ORDER BY created_at LIMIT 1"
+            ).fetchone()
+        return dict(row) if row is not None else None
+
     def cancel_requested(self, job_id):
         if self.stopped.is_set():
             return True
@@ -274,7 +284,7 @@ class JobQueue:
             return row["kind"] == "embed-album" and self.pause_all_albums
 
     def enqueue(self, kind, payload, *, staged=False):
-        if kind not in {"embed-album", "comp", "index", "scan"}:
+        if kind not in {"embed-album", "comp", "index", "index-probe", "scan"}:
             raise ValueError("Unknown work type")
         if not isinstance(payload, dict):
             raise ValueError("Invalid work request")
@@ -282,15 +292,18 @@ class JobQueue:
         payload.setdefault("library_root", str(self.services.runtime.music))
         job_id = uuid4().hex
         with closing(self.db.connect()) as db, db:
-            if kind == "index":
+            if kind in {"index", "index-probe"}:
                 db.raw.execute(
                     "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
                     ("index:catalog",),
                 )
+                active_kinds = ["index", "index-probe"] if kind == "index-probe" else ["index"]
                 active = db.raw.execute(
-                    "SELECT id,state,payload FROM web_jobs WHERE kind='index' "
+                    "SELECT id,state,payload,kind FROM web_jobs "
+                    "WHERE kind=ANY(%s) "
                     "AND state IN ('queued','running','waiting') "
-                    "ORDER BY created_at LIMIT 1"
+                    "ORDER BY created_at LIMIT 1",
+                    (active_kinds,),
                 ).fetchone()
                 if active:
                     correlation = payload.get("_audit", {})
@@ -300,6 +313,7 @@ class JobQueue:
                             "already_queued": True,
                             "requested_mode": payload.get("mode", "incremental"),
                             "active_mode": active["payload"].get("mode", "incremental"),
+                            "active_kind": active["kind"],
                         },
                         action_id=str(correlation.get("action_id") or ""),
                         trace_id=str(correlation.get("trace_id") or ""),
@@ -407,7 +421,13 @@ class JobQueue:
 
     def action(self, action, job_id=None, value=None, nonce=None, kind=None):
         kind = str(kind or "").strip()
-        if kind and kind not in {"embed-album", "comp", "index", "scan"}:
+        if kind and kind not in {
+            "embed-album",
+            "comp",
+            "index",
+            "index-probe",
+            "scan",
+        }:
             raise ValueError("Unknown work type")
         if action in {"pause-after", "resume-queue", "pause-all", "resume-all"}:
             if kind != "embed-album":
@@ -657,6 +677,10 @@ class JobQueue:
                                 adapter.progress,
                                 adapter.cancelled,
                                 str(payload.get("mode", "full")),
+                            )
+                        elif kind == "index-probe":
+                            result = self.services.detect_index_changes(
+                                adapter.progress, adapter.cancelled
                             )
                         elif kind == "comp":
                             result = self.services.run_comp(payload, adapter)

@@ -43,7 +43,7 @@ use splined_core::local_artwork::{
 use splined_core::media_database::{
     MediaAlbumSnapshot, MediaIndexChanges, MediaSnapshot, MediaTrackSnapshot,
     RuntimeArtworkMaterial, backfill_windows_comp_track_coordination,
-    clear_album_bypass_from_runtime, fallback_tracks_from_folder, find_media_index_changes,
+    clear_album_bypass_from_runtime, detect_media_index_changes, fallback_tracks_from_folder,
     indexed_artist_appearances, load_artist_art_profile, media_snapshot,
     persist_opposing_album_artwork, persist_opposing_compilation_artwork, record_album_outcome,
     record_album_outcome_from_runtime, save_artist_art_identity,
@@ -91,7 +91,7 @@ static PREVIEW_RENDER_REVISION: AtomicU64 = AtomicU64::new(0);
 static NEW_MEDIA_CHECK_REVISION: AtomicU64 = AtomicU64::new(0);
 
 fn should_show_media_index_notice(changes: &MediaIndexChanges) -> bool {
-    changes.added > 0 || changes.removed > 0
+    changes.added > 0 || changes.moved > 0 || changes.removed > 0
 }
 thread_local! {
     static EMBED_QUEUE_WINDOW: RefCell<Option<slint::Weak<EmbedQueueWindow>>> = const { RefCell::new(None) };
@@ -4239,7 +4239,7 @@ fn main() -> Result<(), slint::PlatformError> {
             let check_state = Arc::clone(&state);
             let check_revision = NEW_MEDIA_CHECK_REVISION.load(Ordering::SeqCst);
             std::thread::spawn(move || {
-                let result = find_media_index_changes(&check_config);
+                let result = detect_media_index_changes(&check_config);
                 let _ = slint::invoke_from_event_loop(move || {
                     if NEW_MEDIA_CHECK_REVISION.load(Ordering::SeqCst) != check_revision {
                         return;
@@ -4256,8 +4256,8 @@ fn main() -> Result<(), slint::PlatformError> {
                                 // Detailed counts remain diagnostic-only and are
                                 // intentionally omitted from the Home notice.
                                 app.push_log(format!(
-                                    "{message} added={} changed={} removed={}",
-                                    found.added, found.changed, found.removed,
+                                    "{message} added={} moved={} changed={} removed={}",
+                                    found.added, found.moved, found.changed, found.removed,
                                 ));
                             }
                         }
@@ -23035,17 +23035,19 @@ mod tests {
     fn media_index_notice_ignores_modified_files() {
         use splined_core::media_database::MediaIndexChanges;
 
-        let changes = |added, changed, removed| MediaIndexChanges {
-            count: added + changed + removed,
+        let changes = |added, changed, moved, removed| MediaIndexChanges {
+            count: added + changed + moved + removed,
             added,
             changed,
+            moved,
             removed,
             examples: Vec::new(),
         };
 
-        assert!(!super::should_show_media_index_notice(&changes(0, 4, 0)));
-        assert!(super::should_show_media_index_notice(&changes(1, 0, 0)));
-        assert!(super::should_show_media_index_notice(&changes(0, 0, 1)));
+        assert!(!super::should_show_media_index_notice(&changes(0, 4, 0, 0)));
+        assert!(super::should_show_media_index_notice(&changes(1, 0, 0, 0)));
+        assert!(super::should_show_media_index_notice(&changes(0, 0, 1, 0)));
+        assert!(super::should_show_media_index_notice(&changes(0, 0, 0, 1)));
     }
 
     use super::{
