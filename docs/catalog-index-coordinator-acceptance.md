@@ -162,3 +162,57 @@ Implementation and defect corrections:
 
 Checkpoint CI: [Validate supported runtimes run 42931286109](https://github.com/scottia/S-P-L-I-N-E-D/actions/runs/42931286109)
 passed WebGUI, native Rust, validation selection, and the Windows advisory job.
+
+## Requirement 3 — precomputed change manifest
+
+Status: **PASSED** at `95025eb`.
+
+Acceptance contract:
+
+- Read saved change status without walking the library, opening audio tags, or
+  inspecting artwork.
+- Run physical change detection only as an explicit background probe.
+- Detect Album additions, removals, moves, track/tag metadata changes, and
+  local `cover.*` changes from bounded metadata manifests.
+- Keep a real incremental index request distinct from an active probe job.
+- Preserve Windows-owned PostgreSQL Album boundaries and independent
+  SQLite/PostgreSQL manifests; no shared lock or generation is claimed.
+- Reuse the published catalog on an unchanged startup without reopening audio
+  tags.
+
+Implementation and defect corrections:
+
+- Windows stores track inventory plus local artwork size/mtime evidence in its
+  SQLite generation manifest. The startup probe runs off the Slint event loop,
+  publishes a cached summary for UI reads, and recognizes path moves without
+  converting them into separate additions and removals.
+- WebGUI `GET /api/library/changes` now reads only the saved PostgreSQL summary.
+  An explicit `POST /api/library/check-changes` queues the bounded metadata
+  probe, and browser polling reads its durable job state without scanning the
+  NAS on an API request thread.
+- An `index-probe` job can be deduplicated against other probes but cannot
+  absorb or replace a real `index` job.
+- Windows previously omitted local artwork metadata from its coordinator
+  signature, so replacing `cover.*` could remain classified as unchanged.
+  Artwork metadata now participates in both checkpoint validity and move
+  matching.
+
+### Acceptance evidence
+
+- Windows focused SQLite tests detect track/tag changes, artwork changes,
+  moves, additions, and removals; a cached status read remains unchanged until
+  the explicit probe runs.
+- WebGUI real-PostgreSQL tests detect the same five change classes in
+  disposable schemas on `127.0.0.1:55432`.
+- WebGUI API tests prove GET is cached, POST is explicit, probe status is
+  durable, and an incremental index queued during a probe receives a distinct
+  job ID.
+- Unchanged incremental tests record zero Album and Track tag reads in both
+  clients.
+- Windows full suites: **518 core tests** and **112 native UI tests** passed.
+- Shared Rust suite: **201 passed**.
+- WebGUI full suite: **377 passed** in 375.011 seconds, including the rendered
+  Edge workflow and real disposable PostgreSQL schemas.
+
+Checkpoint CI: [Validate supported runtimes run 42935945677](https://github.com/scottia/S-P-L-I-N-E-D/actions/runs/42935945677)
+passed WebGUI, native Rust, validation selection, and the Windows advisory job.
