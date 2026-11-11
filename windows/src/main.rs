@@ -45,8 +45,9 @@ use splined_core::media_database::{
     RuntimeArtworkMaterial, backfill_windows_comp_track_coordination,
     clear_album_bypass_from_runtime, detect_media_index_changes, fallback_tracks_from_folder,
     indexed_artist_appearances, load_artist_art_profile, media_snapshot,
-    persist_opposing_album_artwork, persist_opposing_compilation_artwork, record_album_outcome,
-    record_album_outcome_from_runtime, save_artist_art_identity,
+    pending_database_schema_upgrade, persist_opposing_album_artwork,
+    persist_opposing_compilation_artwork, record_album_outcome, record_album_outcome_from_runtime,
+    save_artist_art_identity, upgrade_database_schema,
 };
 use splined_core::musicbrainz::{ArtistLookup, ArtistSearchHit, MusicBrainzClient};
 use splined_core::override_coordination::{
@@ -3894,6 +3895,152 @@ fn start_album_coordination_worker(
     stop
 }
 
+fn run_database_upgrade_preparedness() -> Result<bool, slint::PlatformError> {
+    // Config/setup errors still belong to the normal Setup screen. This
+    // preflight handles only the supported one-way SQLite transition and never
+    // opens the PostgreSQL coordination credential.
+    if splined_core::portable::initialize_process_roots().is_err()
+        || splined_core::config_migration::migrate_config_if_needed().is_err()
+    {
+        return Ok(true);
+    }
+    let Ok(config) = splined_core::config::load_config() else {
+        return Ok(true);
+    };
+    if splined_core::settings::validate_operational_config(&config).is_err() {
+        return Ok(true);
+    }
+    let plan = match pending_database_schema_upgrade(&config) {
+        Ok(Some(plan)) => plan,
+        Ok(None) | Err(_) => return Ok(true),
+    };
+
+    let window = DatabaseUpgradeWindow::new()?;
+    window.set_source_schema(plan.from_version as i32);
+    window.set_target_schema(plan.to_version as i32);
+    window.set_database_path(plan.database_path.to_string_lossy().into_owned().into());
+    window.set_backup_directory(plan.backup_directory.to_string_lossy().into_owned().into());
+    window.set_catalog_summary(
+        format!(
+            "{:.2} MiB · {} Artists · {} Albums · {} Tracks · {} history records",
+            plan.database_size_bytes as f64 / 1_048_576.0,
+            plan.preserved.artists,
+            plan.preserved.albums,
+            plan.preserved.tracks,
+            plan.preserved.history,
+        )
+        .into(),
+    );
+    window.set_upgrade_message(
+        "Review the backup location and one-way downgrade warning. Choose Back Up & Upgrade when you are ready. SPLINED will not open the workspace until validation succeeds."
+            .into(),
+    );
+
+    let completed = Arc::new(AtomicBool::new(false));
+    let running = Arc::new(AtomicBool::new(false));
+    {
+        let weak = window.as_weak();
+        let config = config.clone();
+        let completed = Arc::clone(&completed);
+        let running = Arc::clone(&running);
+        window.on_start_upgrade(move || {
+            if running.swap(true, Ordering::SeqCst) {
+                return;
+            }
+            let Some(window) = weak.upgrade() else {
+                running.store(false, Ordering::SeqCst);
+                return;
+            };
+            window.set_upgrade_failed(false);
+            window.set_upgrade_running(true);
+            window.set_upgrade_message(
+                "Database conversion has begun. SPLINED is locked while it creates and verifies the backup, applies the additive schema, and validates preserved records. Do not close the application or disconnect this storage."
+                    .into(),
+            );
+            let weak = weak.clone();
+            let completed = Arc::clone(&completed);
+            let running = Arc::clone(&running);
+            let config = config.clone();
+            std::thread::spawn(move || {
+                let result = upgrade_database_schema(&config);
+                let _ = slint::invoke_from_event_loop(move || {
+                    running.store(false, Ordering::SeqCst);
+                    let Some(window) = weak.upgrade() else {
+                        return;
+                    };
+                    window.set_upgrade_running(false);
+                    match result {
+                        Ok(report) => {
+                            completed.store(true, Ordering::SeqCst);
+                            window.set_upgrade_complete(true);
+                            window.set_upgrade_failed(false);
+                            window.set_upgrade_message(
+                                format!(
+                                    "SQLite v{} → v{} validated. Preserved {} Albums and {} Tracks. Verified downgrade backup: {}. PostgreSQL was not accessed. Choose Open SPLINED to continue.",
+                                    report.from_version,
+                                    report.to_version,
+                                    report.preserved.albums,
+                                    report.preserved.tracks,
+                                    report.backup_path.display(),
+                                )
+                                .into(),
+                            );
+                        }
+                        Err(error) => {
+                            window.set_upgrade_complete(false);
+                            window.set_upgrade_failed(true);
+                            window.set_upgrade_message(
+                                format!(
+                                    "The conversion did not complete: {error} No catalog reset or PostgreSQL operation was requested. Review storage access, then retry or exit safely."
+                                )
+                                .into(),
+                            );
+                        }
+                    }
+                });
+            });
+        });
+    }
+    {
+        let weak = window.as_weak();
+        window.on_exit_upgrade(move || {
+            if let Some(window) = weak.upgrade()
+                && !window.get_upgrade_running()
+            {
+                let _ = window.hide();
+                let _ = slint::quit_event_loop();
+            }
+        });
+    }
+    {
+        let weak = window.as_weak();
+        let completed = Arc::clone(&completed);
+        window.on_open_splined(move || {
+            if completed.load(Ordering::SeqCst)
+                && let Some(window) = weak.upgrade()
+            {
+                let _ = window.hide();
+                let _ = slint::quit_event_loop();
+            }
+        });
+    }
+    {
+        let weak = window.as_weak();
+        window.window().on_close_requested(move || {
+            if weak
+                .upgrade()
+                .is_some_and(|window| window.get_upgrade_running())
+            {
+                slint::CloseRequestResponse::KeepWindowShown
+            } else {
+                slint::CloseRequestResponse::HideWindow
+            }
+        });
+    }
+    window.run()?;
+    Ok(completed.load(Ordering::SeqCst))
+}
+
 fn main() -> Result<(), slint::PlatformError> {
     // The software renderer is deliberately selected on Windows. It avoids
     // multi-window OpenGL context loss that previously produced white frames
@@ -3936,6 +4083,9 @@ fn main() -> Result<(), slint::PlatformError> {
         .and_then(|result| result.as_ref().ok())
         .or(staged_archive_config.as_ref())
         .is_some_and(|config| config.scan.sqlite_shared && !config.scan.windows_client_lock);
+    if !archive_setup_staged && !run_database_upgrade_preparedness()? {
+        return Ok(());
+    }
     let association_warning =
         splined_core::file_association::register_portable_backup_association().err();
     let state_load_started = Instant::now();

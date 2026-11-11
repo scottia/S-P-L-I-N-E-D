@@ -23,7 +23,7 @@ use crate::scan_tags::{AlbumIndexTags, read_album_index_tags, read_local_track_e
 use image::ImageFormat;
 use regex::Regex;
 use rusqlite::{
-    Connection, ErrorCode, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
+    Connection, ErrorCode, MAIN_DB, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
     named_params, params,
 };
 use serde::{Deserialize, Serialize};
@@ -1166,6 +1166,276 @@ pub struct DatabaseResetResult {
     pub removed_tracks: i64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DatabaseSchemaUpgradeCounts {
+    pub artists: i64,
+    pub albums: i64,
+    pub tracks: i64,
+    pub history: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DatabaseSchemaUpgradePlan {
+    pub database_path: PathBuf,
+    pub backup_directory: PathBuf,
+    pub from_version: i64,
+    pub to_version: i64,
+    pub database_size_bytes: u64,
+    pub preserved: DatabaseSchemaUpgradeCounts,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DatabaseSchemaUpgradeReport {
+    pub database_path: PathBuf,
+    pub backup_path: PathBuf,
+    pub from_version: i64,
+    pub to_version: i64,
+    pub preserved: DatabaseSchemaUpgradeCounts,
+    pub catalog_state: String,
+    pub published_generation: String,
+}
+
+/// Inspect the configured SQLite catalog without changing it. A supported
+/// one-way migration is presented to the operator before the normal workspace
+/// is created; unsupported versions continue through the existing Setup/error
+/// path without being modified.
+pub fn pending_database_schema_upgrade(
+    config: &Config,
+) -> Result<Option<DatabaseSchemaUpgradePlan>, String> {
+    let db_path = database_path(&config.scan.cache_dir);
+    let database_access = DatabasePathAccess::new(
+        &db_path,
+        config.scan.sqlite_shared,
+        config.scan.windows_client_lock,
+    )?;
+    if !database_access.path().is_file() {
+        return Ok(None);
+    }
+    let (connection, current) = open_database_read_only(database_access.path())?;
+    if current == SCHEMA_VERSION || current == 0 {
+        return Ok(None);
+    }
+    if current != LEGACY_SCHEMA_VERSION {
+        return Err(incompatible_schema(current));
+    }
+    let preserved = schema_upgrade_counts(&connection)?;
+    let database_size_bytes = fs::metadata(database_access.path())
+        .map_err(|error| {
+            format!(
+                "Unable to inspect SPLINED database {}: {error}",
+                database_access.path().display()
+            )
+        })?
+        .len();
+    let backup_directory = db_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("schema-upgrade-backups");
+    Ok(Some(DatabaseSchemaUpgradePlan {
+        database_path: db_path,
+        backup_directory,
+        from_version: current,
+        to_version: SCHEMA_VERSION,
+        database_size_bytes,
+        preserved,
+    }))
+}
+
+/// Create a verified pre-upgrade snapshot, acquire an exclusive SQLite write
+/// transaction, apply the additive schema, validate preserved records, and
+/// publish the legacy catalog marker. This function touches only the configured
+/// SQLite file; it has no PostgreSQL connection or coordination side effect.
+pub fn upgrade_database_schema(config: &Config) -> Result<DatabaseSchemaUpgradeReport, String> {
+    let configured_path = database_path(&config.scan.cache_dir);
+    let database_access = DatabasePathAccess::new(
+        &configured_path,
+        config.scan.sqlite_shared,
+        config.scan.windows_client_lock,
+    )?;
+    if !database_access.path().is_file() {
+        return Err(format!(
+            "The configured SPLINED database does not exist: {}",
+            configured_path.display()
+        ));
+    }
+    let mut connection = Connection::open(database_access.path()).map_err(|error| {
+        format!(
+            "Unable to open SPLINED database {} for schema upgrade: {error}",
+            database_access.path().display()
+        )
+    })?;
+    connection
+        .busy_timeout(Duration::from_secs(30))
+        .map_err(db_error("configure schema-upgrade timeout"))?;
+    let from_version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(db_error("read pre-upgrade SQLite schema version"))?;
+    if from_version == SCHEMA_VERSION {
+        return Err(format!(
+            "SPLINED database schema v{SCHEMA_VERSION} is already current; no conversion was performed."
+        ));
+    }
+    if from_version != LEGACY_SCHEMA_VERSION {
+        return Err(incompatible_schema(from_version));
+    }
+    let preserved = schema_upgrade_counts(&connection)?;
+    let backup_directory = configured_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("schema-upgrade-backups");
+    fs::create_dir_all(&backup_directory).map_err(|error| {
+        format!(
+            "Unable to create schema-upgrade backup directory {}: {error}",
+            backup_directory.display()
+        )
+    })?;
+    let timestamp = unix_now().max(0.0).round() as u64;
+    let backup_path = backup_directory.join(format!(
+        "splined-v{from_version}-before-v{}-{timestamp}-{}.sqlite",
+        SCHEMA_VERSION,
+        std::process::id()
+    ));
+    create_schema_upgrade_backup(&connection, &backup_path, from_version, preserved)?;
+
+    connection
+        .pragma_update(None, "foreign_keys", "ON")
+        .map_err(db_error("enable schema-upgrade foreign keys"))?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Exclusive)
+        .map_err(db_error("lock SQLite for schema upgrade"))?;
+    let locked_version: i64 = transaction
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(db_error("verify locked SQLite schema version"))?;
+    if locked_version != from_version {
+        return Err(format!(
+            "SPLINED database schema changed from v{from_version} to v{locked_version} before conversion; the verified backup was kept and the database was not modified."
+        ));
+    }
+    transaction
+        .execute_batch(SCHEMA)
+        .map_err(db_error("apply additive SQLite schema upgrade"))?;
+    initialize_catalog_coordinator(&transaction)?;
+    transaction
+        .pragma_update(None, "user_version", SCHEMA_VERSION)
+        .map_err(db_error("advance SQLite schema version"))?;
+    let after = schema_upgrade_counts(&transaction)?;
+    if after != preserved {
+        return Err(format!(
+            "SQLite schema validation found changed catalog records (before={preserved:?}, after={after:?}); the conversion was rolled back and the verified backup was kept."
+        ));
+    }
+    transaction
+        .commit()
+        .map_err(db_error("commit SQLite schema upgrade"))?;
+
+    let quick_check: String = connection
+        .query_row("PRAGMA quick_check", [], |row| row.get(0))
+        .map_err(db_error("validate upgraded SQLite database"))?;
+    if !quick_check.eq_ignore_ascii_case("ok") {
+        return Err(format!(
+            "The upgraded SQLite database failed quick_check: {quick_check}. Restore {} before using an older build.",
+            backup_path.display()
+        ));
+    }
+    let to_version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(db_error("verify upgraded SQLite schema version"))?;
+    if to_version != SCHEMA_VERSION {
+        return Err(format!(
+            "SQLite conversion finished at schema v{to_version}, expected v{SCHEMA_VERSION}."
+        ));
+    }
+    let (catalog_state, published_generation) = connection
+        .query_row(
+            "SELECT catalog_state,active_generation_id FROM catalog_index_state WHERE singleton=1",
+            [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .map_err(db_error("validate Catalog Index Coordinator migration"))?;
+    if preserved.albums > 0
+        && (catalog_state != "ready" || published_generation != "legacy-pre-coordinator")
+    {
+        return Err(format!(
+            "The catalog records were preserved, but coordinator publication validation failed (state={catalog_state}, generation={published_generation}). The pre-upgrade backup is {}.",
+            backup_path.display()
+        ));
+    }
+    Ok(DatabaseSchemaUpgradeReport {
+        database_path: configured_path,
+        backup_path,
+        from_version,
+        to_version,
+        preserved,
+        catalog_state,
+        published_generation,
+    })
+}
+
+fn schema_upgrade_counts(
+    connection: &Connection,
+) -> Result<DatabaseSchemaUpgradeCounts, String> {
+    let count = |table: &str| {
+        connection
+            .query_row(&format!("SELECT count(*) FROM \"{table}\""), [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map_err(db_error("count records for schema upgrade"))
+    };
+    Ok(DatabaseSchemaUpgradeCounts {
+        artists: count("artists")?,
+        albums: count("albums")?,
+        tracks: count("tracks")?,
+        history: count("cache_history")?,
+    })
+}
+
+fn create_schema_upgrade_backup(
+    source: &Connection,
+    backup_path: &Path,
+    expected_version: i64,
+    expected_counts: DatabaseSchemaUpgradeCounts,
+) -> Result<(), String> {
+    let result = (|| {
+        source
+            .backup(MAIN_DB, backup_path, None::<fn(rusqlite::backup::Progress)>)
+            .map_err(|error| format!("Unable to create pre-upgrade SQLite backup: {error}"))?;
+        let destination = Connection::open_with_flags(backup_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|error| {
+                format!(
+                    "Unable to reopen pre-upgrade SQLite backup {}: {error}",
+                    backup_path.display()
+                )
+            })?;
+        let quick_check: String = destination
+            .query_row("PRAGMA quick_check", [], |row| row.get(0))
+            .map_err(db_error("validate pre-upgrade SQLite backup"))?;
+        if !quick_check.eq_ignore_ascii_case("ok") {
+            return Err(format!(
+                "Pre-upgrade SQLite backup failed quick_check: {quick_check}"
+            ));
+        }
+        let version: i64 = destination
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .map_err(db_error("verify pre-upgrade SQLite backup version"))?;
+        if version != expected_version {
+            return Err(format!(
+                "Pre-upgrade backup schema is v{version}, expected v{expected_version}."
+            ));
+        }
+        let backup_counts = schema_upgrade_counts(&destination)?;
+        if backup_counts != expected_counts {
+            return Err(format!(
+                "Pre-upgrade backup record counts differ (source={expected_counts:?}, backup={backup_counts:?})."
+            ));
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(backup_path);
+    }
+    result
+}
+
 /// Empty only the accepted Windows application tables while retaining the
 /// SQLite schema, indexes, and user_version. New or reserved tables are never
 /// discovered and cleared implicitly; a future foreign-key dependency fails
@@ -1518,7 +1788,9 @@ fn media_snapshot_inner(
                 let mapper = PathMapper::new(canonical_root, local_root)?;
                 return load_snapshot(&connection, &db_path, &mapper);
             }
-        } else if current != 0 && current != LEGACY_SCHEMA_VERSION {
+        } else if current == LEGACY_SCHEMA_VERSION {
+            return Err(schema_upgrade_required(current));
+        } else if current != 0 {
             return Err(incompatible_schema(current));
         }
     }
@@ -3696,7 +3968,10 @@ fn open_database(path: &Path, shared: bool) -> Result<Connection, String> {
     let current: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(db_error("read SQLite schema version"))?;
-    if current != 0 && current != LEGACY_SCHEMA_VERSION && current != SCHEMA_VERSION {
+    if current == LEGACY_SCHEMA_VERSION {
+        return Err(schema_upgrade_required(current));
+    }
+    if current != 0 && current != SCHEMA_VERSION {
         return Err(incompatible_schema(current));
     }
     connection
@@ -3722,7 +3997,7 @@ fn open_database(path: &Path, shared: bool) -> Result<Connection, String> {
     connection
         .pragma_update(None, "synchronous", if shared { "FULL" } else { "NORMAL" })
         .map_err(db_error("configure SQLite synchronization"))?;
-    if current == 0 || current == LEGACY_SCHEMA_VERSION {
+    if current == 0 {
         connection
             .execute_batch(SCHEMA)
             .map_err(db_error("apply shared schema"))?;
@@ -3845,6 +4120,12 @@ fn recover_interrupted_transaction(path: &Path) -> Result<(), String> {
 fn incompatible_schema(current: i64) -> String {
     format!(
         "SPLINED database schema v{current} is incompatible with required v{SCHEMA_VERSION}; the database was not changed."
+    )
+}
+
+fn schema_upgrade_required(current: i64) -> String {
+    format!(
+        "SPLINED database schema v{current} requires the prepared one-way upgrade to v{SCHEMA_VERSION}; restart SPLINED and use the Back Up & Upgrade screen. The database was not changed."
     )
 }
 
@@ -6963,6 +7244,133 @@ mod tests {
                 .unwrap(),
             album_updated_at
         );
+    }
+
+    #[test]
+    fn prepared_v2_upgrade_requires_confirmation_and_preserves_catalog() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("music");
+        let album = library.join("Artist").join("Album");
+        fs::create_dir_all(&album).unwrap();
+        File::create(album.join("01.mp3")).unwrap();
+        let mut config = Config::default();
+        config.library.music_library = library.to_string_lossy().into_owned();
+        config.scan.cache_dir = temp.path().join("cache").to_string_lossy().into_owned();
+
+        let baseline = media_snapshot(&config, false).unwrap();
+        assert_eq!(baseline.albums.len(), 1);
+        let db = database_path(&config.scan.cache_dir);
+        let connection = Connection::open(&db).unwrap();
+        connection
+            .execute(
+                "INSERT INTO cache_history(cache_key,cache_type,album_key,action,payload_json,splined_version,event_at) VALUES('upgrade-test','album',NULL,'preserve','{}','2.0.35','2026-11-10T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        let mut signature = read_signature(&connection).unwrap().unwrap();
+        signature["schema_version"] = json!(LEGACY_SCHEMA_VERSION);
+        connection
+            .execute(
+                "UPDATE picker_inventory SET signature_json=?1 WHERE inventory_key=?2",
+                params![signature.to_string(), INVENTORY_KEY],
+            )
+            .unwrap();
+        connection
+            .execute_batch(
+                "DROP TABLE catalog_index_events;
+                 DROP TABLE catalog_generation_albums;
+                 DROP TABLE catalog_change_manifest;
+                 DROP TABLE catalog_index_state;
+                 DROP TABLE catalog_generations;",
+            )
+            .unwrap();
+        connection
+            .pragma_update(None, "user_version", LEGACY_SCHEMA_VERSION)
+            .unwrap();
+        drop(connection);
+
+        let error = media_snapshot(&config, false).unwrap_err();
+        assert!(error.contains("Back Up & Upgrade"));
+        let connection = Connection::open(&db).unwrap();
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            LEGACY_SCHEMA_VERSION
+        );
+        drop(connection);
+
+        let plan = pending_database_schema_upgrade(&config).unwrap().unwrap();
+        assert_eq!(plan.from_version, LEGACY_SCHEMA_VERSION);
+        assert_eq!(plan.to_version, SCHEMA_VERSION);
+        assert_eq!(plan.preserved.albums, 1);
+        assert_eq!(plan.preserved.tracks, 1);
+        assert!(plan.preserved.history >= 1);
+
+        let report = upgrade_database_schema(&config).unwrap();
+        assert_eq!(report.preserved, plan.preserved);
+        assert_eq!(report.catalog_state, "ready");
+        assert_eq!(report.published_generation, "legacy-pre-coordinator");
+        assert!(report.backup_path.is_file());
+        let backup = Connection::open_with_flags(
+            &report.backup_path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        assert_eq!(
+            backup
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            LEGACY_SCHEMA_VERSION
+        );
+        assert_eq!(schema_upgrade_counts(&backup).unwrap(), plan.preserved);
+        assert_eq!(
+            backup
+                .query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))
+                .unwrap(),
+            "ok"
+        );
+        drop(backup);
+
+        let reopened = media_snapshot(&config, false).unwrap();
+        assert_eq!(reopened.albums.len(), 1);
+        let connection = Connection::open(&db).unwrap();
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            SCHEMA_VERSION
+        );
+        assert_eq!(schema_upgrade_counts(&connection).unwrap(), plan.preserved);
+        assert_eq!(
+            read_signature(&connection).unwrap().unwrap()["schema_version"],
+            json!(LEGACY_SCHEMA_VERSION)
+        );
+    }
+
+    #[test]
+    fn unsupported_schema_is_not_prepared_or_modified() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = temp.path().join("cache");
+        fs::create_dir_all(&cache).unwrap();
+        let mut config = Config::default();
+        config.scan.cache_dir = cache.to_string_lossy().into_owned();
+        let db = database_path(&config.scan.cache_dir);
+        let connection = Connection::open(&db).unwrap();
+        connection.execute_batch(SCHEMA).unwrap();
+        connection.pragma_update(None, "user_version", 1).unwrap();
+        drop(connection);
+
+        assert!(pending_database_schema_upgrade(&config).is_err());
+        assert!(upgrade_database_schema(&config).is_err());
+        let connection = Connection::open(&db).unwrap();
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert!(!cache.join("schema-upgrade-backups").exists());
     }
 
     #[test]
