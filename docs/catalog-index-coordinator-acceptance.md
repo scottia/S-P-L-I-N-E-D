@@ -495,3 +495,176 @@ Reproducible result JSON is retained outside the repository under
 - Shared/config/release/architecture checks passed (202 core, 5 config, 10
   release, and 14 architecture tests), together with `cargo fmt --check`,
   JavaScript syntax checks, and `git diff --check`.
+
+## Requirements 6–11 source-and-evidence review — 2026-11-11
+
+This review is assessment-only. It changed no Windows, WebGUI, schema,
+coordination, indexing, or preparedness implementation. Requirements 1–5,
+SQLite schema v3, instant published-catalog startup, the separate database
+authority model, and PR #174's upgrade-preparedness boundary remain accepted.
+
+### Requirement 6 — generation-safe cleanup
+
+Status: **PASSED**.
+
+- Both clients write `last_seen_generation` to the durable Album manifest and
+  stage the complete Album/Track payload under a generation and owner token.
+- Unseen Albums, their Tracks, orphaned Artists, and retired manifest rows are
+  removed only inside the validated final publication transaction. Staging,
+  failure, cancellation, or worker loss cannot delete from the reader-facing
+  catalog.
+- Publication validates discovered/staged coverage, rejects error checkpoints
+  and duplicate Album identities, checks the current owner/lease, and changes
+  the active-generation marker in the same transaction as catalog mutation.
+- Current-head focused validation passed: Windows coordinator **7/7**,
+  `sqlite_refresh_recovers_committed_batch_without_partial_publication`, and
+  `incremental_generation_reconciles_multiple_changes_and_preserves_history`;
+  WebGUI/PostgreSQL terminal-state and durable-batch recovery tests **2/2**.
+  These tests retain the previous published catalog during interruption and
+  publish removals only after successful recovery/validation.
+
+### Requirement 7 — single active indexer
+
+Status: **INCOMPLETE**.
+
+Verified behavior:
+
+- SQLite uses an `IMMEDIATE` generation claim and a partial unique active-row
+  index; PostgreSQL uses an advisory transaction lock plus its equivalent
+  unique active-generation constraint.
+- Both reject a live competing owner, recover an expired matching generation,
+  and reject stale-owner terminal/publication changes.
+- WebGUI job enqueue returns the existing active index job for duplicate Full
+  Refresh/incremental requests, and explicit probe work remains distinct from
+  a real index job. The current-head focused cached/probe regression passed.
+
+Outstanding acceptance criterion:
+
+- Windows disables/ignores a second UI refresh and its controller returns
+  `Refresh DB is already in progress`; it does not attach a duplicate Full
+  Refresh caller to the running operation or return that operation's durable
+  identity/status. Therefore the required duplicate-request attachment
+  contract is not demonstrated for both clients.
+
+### Requirement 8 — resource isolation
+
+Status: **INCOMPLETE**.
+
+Verified behavior:
+
+- Requirements 1 and 5 already prove bounded streaming memory, sequential
+  Album metadata inspection, 1–64 Album checkpoint payloads, and short SQLite
+  and PostgreSQL staging transactions.
+- Indexing inventories local files/tags and local artwork headers; no indexing
+  path invokes an artwork provider search or remote artwork fallback.
+- Windows image inspection enforces a decoded-pixel ceiling, and the existing
+  thumbnail paths use bounded download fan-out outside catalog indexing.
+
+Missing evidence/limits:
+
+- WebGUI opens PostgreSQL connections directly rather than through a bounded
+  connection pool, so there is no demonstrated global database-connection
+  budget under simultaneous indexing, status polling, thumbnails, and
+  interactive work.
+- There is no cross-client contention acceptance test proving explicit limits
+  for metadata reads, artwork header/decoding work, provider requests,
+  database connections/writes, and memory while interactive application work
+  competes with an active generation.
+- The required negative test that local indexing performs zero remote-provider
+  requests is not present for both clients. Static call-path review supports
+  the behavior, but is not sufficient to close this acceptance requirement.
+
+### Requirement 9 — thumbnail backpressure
+
+Status: **INCOMPLETE**.
+
+Verified WebGUI behavior:
+
+- Artist list publication is database-first and returns without remote
+  thumbnail retrieval. Lazy per-Artist hydration uses a three-slot semaphore,
+  an 8 MiB response limit, atomic disk cache files, retry backoff, per-entry
+  invalidation, and immediate empty/placeholder portraits.
+- WebGUI suppresses Navidrome thumbnail directory work and rejects individual
+  remote hydration while `catalog_state` is `initializing` or `maintenance`.
+
+Outstanding Windows behavior/evidence:
+
+- Native lazy hydration is separate from indexing and bounds Navidrome fan-out
+  (four Artist and six Album downloads), but its caches are described and
+  configured as disposable/session cache rather than a demonstrated persistent
+  cache across restarts.
+- The native thumbnail callback does not check the catalog refresh state before
+  starting remote hydration, so network hydration is not demonstrably
+  restricted during active indexing.
+- No Windows/WebGUI active-index thumbnail load test records bounded downloads,
+  placeholder response time, resource use, cache reuse, and individual
+  invalidation together. The original validation requirement therefore remains
+  open.
+
+### Requirement 10 — nonblocking progress and status
+
+Status: **INCOMPLETE**.
+
+Verified WebGUI behavior:
+
+- The durable generation records state, phase, discovered/completed/changed/
+  unchanged/removed/error counts, current path, timings, and completion result.
+- `/api/library/index-status` bypasses the media-processing mutex, and queued
+  index progress is polled independently of the indexing worker. Job
+  cancellation changes durable job state and is observed by the worker.
+
+Outstanding criteria:
+
+- Windows contains `media_snapshot_with_progress` and durable
+  `CatalogIndexStatus`, but the installed refresh controller calls
+  `media_snapshot`/`media_snapshot_incremental` without that callback. The UI
+  consequently reports only start/completion/failure, not real-time phase,
+  percentage, Album counts, current path, or errors, and exposes no active
+  refresh cancellation control.
+- WebGUI progress reports a completed count while discovery is streaming, but
+  the total remains unknown (`0`) until enumeration ends; the UI therefore
+  cannot display the required real-time percentage. Full Refresh closes the
+  Settings dialog and has no persistent index-specific Stop/Cancel control.
+- No installed concurrent acceptance run demonstrates responsive Windows and
+  WebGUI status, cancellation, and coordination operations throughout a long
+  active generation.
+
+### Requirement 11 — Album-level coordination
+
+Status: **PASSED**.
+
+- Album write events are emitted only after verified write transactions and
+  use durable PostgreSQL/SQLite state plus retryable outboxes. A failed Album
+  write emits no ownership claim; outbox replay is idempotent.
+- Coordination is Album/track scoped and does not invoke Full Refresh or
+  full-catalog reconciliation after each write. COMP writes remain track
+  scoped and do not manufacture Album-write events.
+- Exact-key projection remains authoritative, with the documented normalized
+  relative-path fallback only for historical Album-key changes. Newest event
+  ordering, writer/override presentation, Windows-owned catalog fields, and
+  COMP authority remain unchanged.
+- Current-head focused validation passed **6/6** PostgreSQL coordination tests
+  (durable ordering/projection, historical-path projection, outbox recovery,
+  and failed-write isolation) plus the Windows historical-path projection
+  regression. Installed `American Pie 2` and `A$AP Rocky` evidence remains the
+  permanent cross-client regression gate above.
+
+### Review result and remaining work
+
+1. Implement and validate Windows duplicate-refresh attachment to the active
+   durable generation/job (Requirement 7).
+2. Establish and test explicit cross-client resource budgets, including a
+   bounded WebGUI PostgreSQL connection pool and zero-provider-call indexing
+   assertions (Requirement 8).
+3. Suspend/bound native remote thumbnail hydration during indexing, establish
+   restart-persistent cache behavior, and run the required active-index
+   thumbnail stress validation in both clients (Requirement 9).
+4. Wire native detailed progress/cancellation into Slint; add a persistent
+   WebGUI index Stop control and a determinate percentage strategy; then run
+   installed responsiveness/cancellation validation (Requirement 10).
+5. Complete the still-missing forced interruptions during validation and final
+   publication before checking the broader forced-failure acceptance gate.
+
+Current-head evidence also includes GitHub Actions run `42971064035`, which
+passed supported-runtime validation. PR #170 and PR #174 remain Draft and
+unmerged.
