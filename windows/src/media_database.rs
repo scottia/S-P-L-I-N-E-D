@@ -7169,6 +7169,14 @@ mod tests {
             )
             .unwrap();
         assert_eq!(active, generation);
+        let generation_state: String = connection
+            .query_row(
+                "SELECT state FROM catalog_generations WHERE generation_id=?1",
+                [&generation],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(generation_state, "published");
         assert_eq!(
             connection
                 .query_row("SELECT count(*) FROM albums", [], |row| row

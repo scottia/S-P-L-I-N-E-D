@@ -488,7 +488,7 @@ fn assert_lease(connection: &Connection, lease: &CatalogGenerationLease) -> Resu
 }
 
 pub fn mark_terminal(
-    connection: &Connection,
+    connection: &mut Connection,
     lease: &CatalogGenerationLease,
     state: &str,
     error: &str,
@@ -496,7 +496,10 @@ pub fn mark_terminal(
     if !matches!(state, "failed" | "cancelled") {
         return Err(format!("Unsupported terminal catalog state: {state}"));
     }
-    connection
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(sqlite_error("start terminal catalog generation update"))?;
+    let updated = transaction
         .execute(
             "UPDATE catalog_generations SET state=?1,phase=?1,error=?2,
                  updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
@@ -505,7 +508,13 @@ pub fn mark_terminal(
             params![state, error, lease.generation_id, lease.owner_token],
         )
         .map_err(sqlite_error("finish failed catalog generation"))?;
-    connection
+    if updated != 1 {
+        return Err(
+            "Catalog generation lease was lost before its terminal state could be recorded."
+                .to_string(),
+        );
+    }
+    let restored = transaction
         .execute(
             "UPDATE catalog_index_state SET maintenance_generation_id='',
                  catalog_state=CASE WHEN active_generation_id='' THEN 'failed' ELSE 'ready' END,
@@ -514,7 +523,14 @@ pub fn mark_terminal(
             [&lease.generation_id],
         )
         .map_err(sqlite_error("restore published catalog state"))?;
-    Ok(())
+    if restored != 1 {
+        return Err(
+            "Catalog generation is no longer the active maintenance generation.".to_string(),
+        );
+    }
+    transaction
+        .commit()
+        .map_err(sqlite_error("commit terminal catalog generation state"))
 }
 
 pub fn status(connection: &Connection) -> Result<CatalogIndexStatus, String> {
@@ -665,6 +681,30 @@ mod tests {
     }
 
     #[test]
+    fn stale_owner_cannot_cancel_a_resumed_generation() {
+        let mut connection = database();
+        let stale = claim_generation(&mut connection, "incremental", "C:/music").unwrap();
+        stage_album(&mut connection, &stale, &checkpoint("C:/music/one")).unwrap();
+        connection
+            .execute(
+                "UPDATE catalog_generations SET lease_expires_at='2000-01-01T00:00:00.000Z'
+                 WHERE generation_id=?1",
+                [&stale.generation_id],
+            )
+            .unwrap();
+        let resumed = claim_generation(&mut connection, "incremental", "C:/music").unwrap();
+
+        let error = mark_terminal(&mut connection, &stale, "cancelled", "stale cancellation")
+            .expect_err("the previous owner must not cancel recovered work");
+
+        assert!(error.contains("lease"));
+        let state = status(&connection).unwrap();
+        assert_eq!(state.maintenance_generation_id, resumed.generation_id);
+        assert_eq!(state.generation_state, "building");
+        assert!(reusable_checkpoint(&connection, &resumed, "C:/music/one", "inventory").unwrap());
+    }
+
+    #[test]
     fn failed_generation_preserves_published_catalog() {
         let mut connection = database();
         connection
@@ -692,7 +732,7 @@ mod tests {
             .unwrap();
         let lease = claim_generation(&mut connection, "full", "C:/music").unwrap();
         stage_album(&mut connection, &lease, &checkpoint("C:/music/Artist/New")).unwrap();
-        mark_terminal(&connection, &lease, "failed", "forced test failure").unwrap();
+        mark_terminal(&mut connection, &lease, "failed", "forced test failure").unwrap();
         assert_eq!(
             connection
                 .query_row("SELECT album_name FROM albums", [], |row| row
@@ -703,6 +743,73 @@ mod tests {
         let state = status(&connection).unwrap();
         assert_eq!(state.catalog_state, "ready");
         assert!(state.maintenance_generation_id.is_empty());
+        let terminal: (String, String, String) = connection
+            .query_row(
+                "SELECT state,phase,error FROM catalog_generations WHERE generation_id=?1",
+                [&lease.generation_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(terminal.0, "failed");
+        assert_eq!(terminal.1, "failed");
+        assert_eq!(terminal.2, "forced test failure");
+    }
+
+    #[test]
+    fn cancelled_and_failed_states_survive_database_reopen() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("catalog.db");
+        let mut recorded = Vec::new();
+        {
+            let mut connection = Connection::open(&path).unwrap();
+            connection
+                .execute_batch(include_str!("../../schema/media.sql"))
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO catalog_index_state(
+                         singleton,active_generation_id,catalog_state,updated_at
+                     ) VALUES(1,'published-generation','ready',
+                         strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+                    [],
+                )
+                .unwrap();
+            for terminal in ["cancelled", "failed"] {
+                let lease = claim_generation(&mut connection, "full", "C:/music").unwrap();
+                stage_album(
+                    &mut connection,
+                    &lease,
+                    &checkpoint(&format!("C:/music/{terminal}")),
+                )
+                .unwrap();
+                mark_terminal(
+                    &mut connection,
+                    &lease,
+                    terminal,
+                    &format!("forced {terminal}"),
+                )
+                .unwrap();
+                recorded.push((lease.generation_id, terminal.to_string()));
+            }
+        }
+
+        let connection = Connection::open(&path).unwrap();
+        for (generation_id, terminal) in recorded {
+            let row: (String, String, String) = connection
+                .query_row(
+                    "SELECT state,phase,error FROM catalog_generations WHERE generation_id=?1",
+                    [generation_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+            assert_eq!(row.0, terminal);
+            assert_eq!(row.1, terminal);
+            assert_eq!(row.2, format!("forced {terminal}"));
+        }
+        let state = status(&connection).unwrap();
+        assert_eq!(state.active_generation_id, "published-generation");
+        assert!(state.maintenance_generation_id.is_empty());
+        assert_eq!(state.catalog_state, "ready");
     }
 
     #[test]

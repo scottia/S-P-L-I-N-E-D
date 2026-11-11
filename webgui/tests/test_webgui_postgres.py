@@ -2623,6 +2623,66 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.assertEqual(timings["album_tag_reads"], 0)
         self.assertEqual(timings["track_tag_reads"], 0)
 
+    def test_catalog_generation_terminal_states_are_durable_and_owner_scoped(self):
+        from webgui import index_coordinator as coordinator
+
+        with closing(self.db.connect()) as db:
+            published = db.execute(
+                "SELECT active_generation_id FROM catalog_index_state "
+                "WHERE singleton=TRUE"
+            ).fetchone()["active_generation_id"]
+            self.assertEqual(
+                db.execute(
+                    "SELECT state FROM catalog_generations WHERE generation_id=?",
+                    (published,),
+                ).fetchone()["state"],
+                "published",
+            )
+
+        for terminal in ("cancelled", "failed"):
+            lease = coordinator.claim(self.db, "full", str(self.root / "music"))
+            coordinator.finish(self.db, lease, terminal, f"forced {terminal}")
+            restarted = Database(self.url)
+            with closing(restarted.connect()) as db:
+                row = db.execute(
+                    "SELECT state,phase,error FROM catalog_generations "
+                    "WHERE generation_id=?",
+                    (lease.generation_id,),
+                ).fetchone()
+                state = db.execute(
+                    "SELECT active_generation_id,maintenance_generation_id,catalog_state "
+                    "FROM catalog_index_state WHERE singleton=TRUE"
+                ).fetchone()
+            self.assertEqual(row["state"], terminal)
+            self.assertEqual(row["phase"], terminal)
+            self.assertEqual(row["error"], f"forced {terminal}")
+            self.assertEqual(state["active_generation_id"], published)
+            self.assertEqual(state["maintenance_generation_id"], "")
+            self.assertEqual(state["catalog_state"], "ready")
+
+        stale = coordinator.claim(self.db, "full", str(self.root / "music"))
+        with closing(self.db.connect()) as db, db:
+            db.raw.execute(
+                "UPDATE catalog_generations SET lease_expires_at=now()-interval '1 second' "
+                "WHERE generation_id=%s",
+                (stale.generation_id,),
+            )
+        resumed = coordinator.claim(self.db, "full", str(self.root / "music"))
+        coordinator.finish(self.db, stale, "cancelled", "stale cancellation")
+        with closing(self.db.connect()) as db:
+            generation = db.execute(
+                "SELECT state,owner_token FROM catalog_generations WHERE generation_id=?",
+                (resumed.generation_id,),
+            ).fetchone()
+            maintenance = db.execute(
+                "SELECT maintenance_generation_id FROM catalog_index_state "
+                "WHERE singleton=TRUE"
+            ).fetchone()["maintenance_generation_id"]
+        self.assertEqual(generation["state"], "building")
+        self.assertEqual(generation["owner_token"], resumed.owner_token)
+        self.assertEqual(maintenance, resumed.generation_id)
+        coordinator.finish(self.db, resumed, "cancelled", "test cleanup")
+
     def test_catalog_refresh_streams_bounded_batches_without_missing_records(self):
         from webgui import index_coordinator as coordinator
 
@@ -2742,15 +2802,41 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 ).fetchone()[0],
                 3,
             )
+            staged_paths = {
+                str(row["album_path"])
+                for row in db.execute(
+                    "SELECT album_path FROM catalog_generation_albums "
+                    "WHERE generation_id=?",
+                    (interrupted["generation"],),
+                )
+            }
             db.raw.execute(
                 "UPDATE catalog_generations SET lease_expires_at=now()-interval '1 second' "
                 "WHERE generation_id=%s",
                 (interrupted["generation"],),
             )
 
-        recovered = self.services.refresh_index(mode="full")
+        self.runtime.close()
+        self.db = Database(self.url)
+        self.runtime = Runtime(self.config, self.db)
+        self.services = Services(self.runtime)
+
+        from webgui import services as services_module
+
+        original_inspect = services_module.tags.inspect_album
+        inspected_after_restart = []
+
+        def observe_inspect(album, *args, **kwargs):
+            path = str(album.path)
+            self.assertNotIn(path, staged_paths)
+            inspected_after_restart.append(path)
+            return original_inspect(album, *args, **kwargs)
+
+        with patch.object(services_module.tags, "inspect_album", new=observe_inspect):
+            recovered = self.services.refresh_index(mode="full")
         self.assertTrue(recovered["resumed"])
         self.assertEqual(recovered["generation_id"], interrupted["generation"])
+        self.assertTrue(inspected_after_restart)
         with closing(self.db.connect()) as db:
             state = db.execute(
                 "SELECT active_generation_id,maintenance_generation_id,catalog_state "

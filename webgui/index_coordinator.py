@@ -372,10 +372,11 @@ def finish(database, lease: GenerationLease, state: str, error: str = ""):
         raise ValueError("Invalid terminal generation state")
     with closing(database.connect()) as db, db:
         updated = db.raw.execute(
-            "UPDATE catalog_generations SET state=%s,error=%s,updated_at=now() "
+            "UPDATE catalog_generations SET state=%s,phase=%s,current_path='',"
+            "error=%s,updated_at=now() "
             "WHERE generation_id=%s AND owner_token=%s "
             "AND state IN ('building','validating','publishing')",
-            (state, error[:2000], lease.generation_id, lease.owner_token),
+            (state, state, error[:2000], lease.generation_id, lease.owner_token),
         ).rowcount
         if updated:
             db.raw.execute(

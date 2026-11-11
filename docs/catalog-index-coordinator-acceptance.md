@@ -113,3 +113,52 @@ Checkpoint CI: [Validate supported runtimes run 42927892519](https://github.com/
 passed WebGUI, native Rust, validation selection, and the Windows advisory job.
 Installed Windows/WebGUI progress and cancellation behavior belongs to
 Requirement 10 and is not claimed here.
+
+## Requirement 2 — persistent index generations
+
+Status: **IN PROGRESS — local acceptance passed; checkpoint CI pending**.
+
+Acceptance contract:
+
+- Persist building progress and completed Album checkpoints outside process
+  memory.
+- Persist published, cancelled, and failed generation outcomes.
+- Preserve the last published catalog when maintenance is cancelled or fails.
+- Recover an expired building generation with a new owner and reuse valid
+  completed checkpoints after the database/runtime is reopened.
+- Reject terminal-state changes from a stale generation owner.
+
+Implementation and defect corrections:
+
+- Windows records its terminal generation transition and maintenance-marker
+  restoration in one short SQLite `IMMEDIATE` transaction. Previously, an old
+  owner could fail the generation-row update but still clear the recovered
+  worker's maintenance marker in a second unguarded write.
+- WebGUI records terminal `phase` and clears `current_path` with the terminal
+  PostgreSQL state. Previously, a cancelled or failed generation retained the
+  misleading `enumerating` phase even though its durable state was terminal.
+- SQLite and PostgreSQL continue to use independent generation IDs, ownership
+  tokens, leases, and recovery state. No shared cross-database lock or
+  authoritative generation is claimed.
+
+### Local acceptance evidence
+
+- Windows Catalog Index Coordinator focused tests: **7 passed**, including
+  durable cancelled/failed state after closing and reopening a file-backed
+  SQLite database, stale-owner rejection, and published-catalog preservation.
+- Windows crash/recovery integration: first committed batch remained staged
+  with no live catalog, the SQLite connection was reopened, the same generation
+  resumed, and its final state was `published`.
+- WebGUI real-PostgreSQL focused tests: durable published/cancelled/failed
+  history, stale-owner isolation, and crash/restart recovery passed in
+  disposable schemas on `127.0.0.1:55432`.
+- The WebGUI recovery test closes and recreates `Database`, `Runtime`, and
+  `Services`; previously completed Album paths are asserted not to enter tag
+  inspection after restart.
+- Windows full Rust suite: **517 passed**.
+- Shared Rust suite: **201 passed**.
+- WebGUI full suite: **375 passed** in 379.179 seconds, including the rendered
+  Edge browser workflow.
+
+Remaining gate before marking Requirement 2 passed: the checkpoint commit and
+its GitHub Actions run must be green.
