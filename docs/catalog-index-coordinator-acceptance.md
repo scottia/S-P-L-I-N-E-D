@@ -15,6 +15,70 @@ Status: **PASSED** at `a2f3d4f`.
   handling, deferred Album discovery, and unchanged row preservation.
 - WebGUI: 369 tests passed at the Gate 0 checkpoint.
 
+## Cross-client regression gate — identity history and projected Artists
+
+Status: **PASSED** at `9461c1f` (Album coordination projection) and `d6608f5`
+(projected Artist isolation).
+
+This gate is mandatory for subsequent PR #170 checkpoints because coordinator
+publication and incremental indexing can change a client's current Album key
+without changing the physical Album or its already durable artwork-write
+history.
+
+### Coordination identity-history contract
+
+- Coordination history is provenance, not a duplicate Album catalog. Multiple
+  historical keys may refer to one stable library-relative path after an MBID
+  correction or independently timed client refresh.
+- Each active catalog must still contain only one current row for that physical
+  Album. Historical coordination rows are retained and replayed idempotently.
+- Windows and WebGUI both project the newest event matching either the current
+  exact key or normalized relative path onto the current catalog row. Ordering
+  is `(source_completed_ms, event_id)`; display names never participate.
+- The source client remains normal and the opposing client renders OVERRIDE.
+  Projection changes presentation only and cannot create, merge, delete or
+  re-key an Album.
+- Artist projection remains narrower than Album coordination. A track-credit
+  Artist receives only Albums containing that credit and cannot alias into an
+  Album owner's complete catalog through a colliding MBID.
+
+### Permanent fixtures and automated evidence
+
+- `American Pie 2`: SQLite and PostgreSQL retain one current Album each at the
+  same `[Soundtracks]/American Pie 2` path while intentionally carrying
+  different MBIDs. The older Windows event and newer WebGUI event remain in
+  both coordination stores. Windows projects the newer WebGUI write and shows
+  OVERRIDE; WebGUI remains the local writer.
+- `A$AP Rocky`: both clients show exactly one featured Album, Alicia Keys'
+  `Here`; no other Alicia Keys Album is associated with the projected Artist.
+- Windows focused regression:
+  `catalog_projection_prefers_newer_same_path_event_after_album_key_changes`.
+- WebGUI real-PostgreSQL regression:
+  `test_album_write_coordination_projects_newer_relative_path_identity`.
+- WebGUI Artist-projection regression:
+  `test_projected_featured_artist_does_not_merge_into_album_owner`.
+
+### Installed retest — 2026-11-11
+
+- Windows 2.0.36 test build from the PR #174 integration head rendered
+  `American Pie 2` with the OVERRIDE banner/red frame and counted four opposing
+  overrides in the 3 Doors Down overview. Selecting `A$AP Rocky` displayed only
+  `Here` (one Album).
+- WebGUI at `http://127.0.0.1:8080` kept `American Pie 2` as the local writer
+  and loaded `A$AP Rocky · 1 albums`; the only card and file-list child was the
+  featured `Here` release.
+- Read-only database inspection found one active Album row per catalog, no
+  duplicate physical path, and the ordered older-Windows/newer-WebGUI identity
+  history in both coordination stores. No reset or reindex was performed.
+- The three focused tests above passed against the installed source and the
+  established local PostgreSQL service. The Windows full suite immediately
+  preceding this retest passed 527 core plus 112 application tests.
+
+Future test builds that change indexing, publication, identity normalization,
+reconciliation or coordination must repeat this gate and record the installed
+revision and active database targets. It cannot be waived by a green general CI
+run.
+
 ## Requirement 1 — streaming inventory and bounded batches
 
 Status: **PASSED** at `0be0654`.
