@@ -1254,6 +1254,11 @@ async function performJobsPoll() {
           if (nextComp?.state === "waiting") await renderJob(nextComp);
         } else if (job.state === "failed") {
           setStatus(job.error || "Queued artwork failed", "error");
+        } else if (job.state === "cancelled") {
+          if (job.kind === "index") {
+            const mode = job.payload?.mode === "incremental" ? "incremental" : "full";
+            setStatus(`PostgreSQL ${mode} refresh cancelled · published catalog preserved`, "ready");
+          } else setStatus("Queued artwork cancelled", "ready");
         }
       }
     }

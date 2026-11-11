@@ -1113,6 +1113,33 @@ test("PostgreSQL refresh completion reloads the library and reports exact projec
   ]);
 });
 
+test("PostgreSQL refresh cancellation reports preserved published catalog", async () => {
+  const job = {id: "index-1", kind: "index", state: "running", payload: {mode: "full"}, progress: {}};
+  const state = {
+    server: {authenticated: true, setup_required: false}, embedQueue: [],
+    jobs: [job], reviewJobId: job.id, reviewJobState: "running", libraryMode: "artists",
+  };
+  const statuses = [];
+  const context = load(pollJobsFunction, {
+    state,
+    api: async path => path === "/api/jobs" ? [{...job, state: "cancelled"}]
+      : path === "/api/library/index-status" ? {generation: null}
+      : {pause_after_album: false, pause_all_albums: false},
+    renderQueue() {}, refreshCompletedAlbum: async () => {}, refreshQueuedAlbumAfterSave: async () => {},
+    renderHero() {}, renderReview() {}, renderJob: async () => {}, loadLibrary: async () => {},
+    setStatus: (...values) => { statuses.push(values); },
+    applyAlbumCoordination() { return []; }, applyCompTrackCoordination() { return []; },
+    $: () => ({open: false, value: "", hidden: false, style: {}, classList: {remove() {}, add() {}}}),
+  });
+
+  await context.pollJobs();
+
+  assert.deepEqual(statuses.at(-1), [
+    "PostgreSQL full refresh cancelled · published catalog preserved",
+    "ready",
+  ]);
+});
+
 test("PostgreSQL full refresh announces work before closing Settings", () => {
   assert.match(operationsSource, /PostgreSQL full refresh started · scanning the music library/);
   assert.match(operationsSource, /setStatus\("PostgreSQL full refresh started[^\n]+"busy"\);\s*\$\("workspaceDialog"\)\.close\(\)/);
