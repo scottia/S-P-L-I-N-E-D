@@ -216,3 +216,61 @@ Implementation and defect corrections:
 
 Checkpoint CI: [Validate supported runtimes run 42935945677](https://github.com/scottia/S-P-L-I-N-E-D/actions/runs/42935945677)
 passed WebGUI, native Rust, validation selection, and the Windows advisory job.
+
+## Requirement 4 — incremental-first indexing
+
+Status: **PASSED** at `278cdde`.
+
+Acceptance contract:
+
+- A first explicit index creates the baseline; subsequent startup status reads
+  use saved state and do not silently run a Full Refresh.
+- One explicit incremental generation reconciles the current filesystem after
+  any combination of added, changed, moved, and removed Albums.
+- Unchanged Album/Track rows retain their timestamps and processing history.
+- Moved Albums retain their exact identity, including deterministic `:copy:`
+  identities for duplicate releases, plus processing history and authority.
+- Full Refresh remains an explicit audit/rebuild operation.
+- Windows SQLite and WebGUI PostgreSQL satisfy this contract independently;
+  no shared generation or cross-database index lock is claimed.
+
+Implementation and defect corrections:
+
+- Windows now recognizes a staged Album with the same logical key as a move,
+  rather than counting and auditing it as a removal. Publication records a
+  durable `move` event and reports separate moved, removed, and unchanged
+  counts.
+- Windows duplicate identity allocation now consults both the current bounded
+  in-memory batch and already committed SQLite staging rows. Previously, two
+  duplicate releases encountered before the batch checkpoint could receive the
+  same base key and fail atomic publication.
+- Windows move matching reuses the missing manifest identity whose artwork,
+  Track count, total size, and newest timestamp match the new path. Exact
+  `:copy:` history survives a move instead of being reassigned by scan order.
+- WebGUI no longer reserves a missing old path as a live duplicate. It aliases
+  the matching manifest identity to the new path, preserves its PostgreSQL
+  history, and emits a durable move event during atomic publication.
+
+### Acceptance evidence
+
+- A single incremental generation was exercised with one addition, one tag and
+  artwork change, one move, and one removal accumulated between launches in
+  both clients. Both published the current four-Album result and reported
+  `added=1`, `changed=1`, `moved=1`, and `removed=1` at detection.
+- Separate duplicate-release move tests prove that a `:copy:` Album key and its
+  processed timestamp/source survive the path change in file-backed SQLite and
+  real disposable PostgreSQL schemas.
+- Unchanged Album and Track timestamp sentinels remain byte-for-byte unchanged;
+  processed state, timestamps, and selected source remain intact for changed
+  and moved Albums.
+- Cached startup reads perform no filesystem detection. The established
+  216-Album/3,496-Track benchmark records zero Album and Track tag reads on an
+  unchanged incremental pass for batch sizes 1, 16, and 64 in both clients.
+- Windows full suites: **520 core tests**, **112 native UI tests**, and **201
+  shared tests** passed.
+- WebGUI full suite: **379 passed** in 433.356 seconds against a real disposable
+  PostgreSQL database and the installed Edge browser.
+- `git diff --check` and `cargo fmt --all -- --check` passed.
+
+Checkpoint CI: [Validate supported runtimes run 42941326160](https://github.com/scottia/S-P-L-I-N-E-D/actions/runs/42941326160)
+passed WebGUI, native Rust, validation selection, and the Windows advisory job.
