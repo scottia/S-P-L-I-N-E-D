@@ -52,7 +52,8 @@ use splined_core::media_database::{
 use splined_core::musicbrainz::{ArtistLookup, ArtistSearchHit, MusicBrainzClient};
 use splined_core::override_coordination::{
     AlbumWriteState, TrackWriteState, connect_pool, coordination_database_url,
-    effective_track_write_states, effective_write_states, synchronize, synchronize_tracks,
+    effective_track_write_states, effective_write_states_for_catalog, synchronize,
+    synchronize_tracks,
 };
 use splined_core::range::Range;
 use splined_core::safe_write::{
@@ -3705,13 +3706,19 @@ fn start_album_coordination_worker(
     state: Arc<Mutex<ApplicationState>>,
 ) -> Arc<AtomicBool> {
     let stop = Arc::new(AtomicBool::new(false));
-    let Some((database, database_url, mut known_states, mut known_track_states)) =
+    let Some((database, database_url, coordination_root, mut known_states, mut known_track_states)) =
         state.lock().ok().and_then(|mut app| {
             let database = splined_core::media_database::database_path(&app.config.scan.cache_dir);
+            let coordination_root = if app.library.local_root.trim().is_empty() {
+                app.config.library.music_library.clone()
+            } else {
+                app.library.local_root.clone()
+            };
             let mut known_states = HashMap::new();
             let mut known_track_states = HashMap::new();
             if database.is_file()
-                && let Ok(states) = effective_write_states(&database)
+                && let Ok(states) =
+                    effective_write_states_for_catalog(&database, &coordination_root)
             {
                 let (_, invalidated) =
                     apply_album_coordination_states(&mut app, &states, &mut known_states);
@@ -3734,7 +3741,13 @@ fn start_album_coordination_worker(
                             "Unable to rebuild historical COMP coordination notifications: {error}"
                         )),
                     }
-                    Some((database, url, known_states, known_track_states))
+                    Some((
+                        database,
+                        url,
+                        coordination_root,
+                        known_states,
+                        known_track_states,
+                    ))
                 }
                 Ok(None) => None,
                 Err(error) => {
@@ -3760,7 +3773,9 @@ fn start_album_coordination_worker(
             let mut pool = None;
             let mut connection_warning = false;
             while !worker_stop.load(Ordering::Relaxed) {
-                if let Ok(states) = effective_write_states(&database) {
+                if let Ok(states) =
+                    effective_write_states_for_catalog(&database, &coordination_root)
+                {
                     let (changed, invalidated) = worker_state
                         .lock()
                         .map(|mut app| {
@@ -3821,7 +3836,10 @@ fn start_album_coordination_worker(
                     let album_synchronization = synchronize(connected, &database).await;
                     let track_synchronization = synchronize_tracks(connected, &database).await;
                     if album_synchronization.is_ok() {
-                        let (changed, invalidated) = effective_write_states(&database)
+                        let (changed, invalidated) = effective_write_states_for_catalog(
+                            &database,
+                            &coordination_root,
+                        )
                             .ok()
                             .and_then(|states| {
                                 worker_state.lock().ok().map(|mut app| {
