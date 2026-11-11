@@ -389,12 +389,10 @@ def source_policy(cfg: dict[str, Any], source: str) -> dict[str, Any]:
             raw.get("enabled", source_key != "amazon"),
             f"[source_policies.{source_key}].enabled",
         ),
-        "include_in_artist_art_search": _bool_value(
-            raw.get(
-                "include_in_artist_art_search",
-                source_key
-                in {"deezer", "itunes", "fanarttv", "lastfm", "discogs", "navidrome"},
-            ),
+        "include_in_artist_art_search": source_key
+        in {"deezer", "itunes", "fanarttv", "lastfm", "discogs", "navidrome"}
+        and _bool_value(
+            raw.get("include_in_artist_art_search", True),
             f"[source_policies.{source_key}].include_in_artist_art_search",
         ),
         "source_override": _bool_value(

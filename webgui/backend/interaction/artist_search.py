@@ -176,7 +176,11 @@ def _fanart_references(artist_mbid: str, credential_dir: Path, http: requests.Se
     if not isinstance(payload, dict):
         raise ValueError("Fanart.tv returned an invalid Artist Art response")
     result: list[tuple[str, str]] = []
-    for key, label, limit in (("artistbackground", "Fanart banner", 2), ("artistthumb", "Fanart portrait", 3)):
+    # Keep the browser and native clients on the same bounded Fanart result
+    # contract. Windows reserves two backgrounds and retains up to ten
+    # portraits; the former WebGUI limit of three portraits made identical
+    # provider selections return fewer usable Artist Art candidates.
+    for key, label, limit in (("artistbackground", "Fanart banner", 2), ("artistthumb", "Fanart portrait", 10)):
         values = payload.get(key, [])
         if isinstance(values, list):
             result.extend((label, str(item.get("url", ""))) for item in values[:limit] if isinstance(item, dict))

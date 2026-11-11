@@ -58,6 +58,7 @@ async function initialize() {
   if (status.setup_required) { await openSettings(); setStatus("Complete library and database setup in Settings"); return; }
   const settings = await api("/api/settings");
   applyGraphicalEnhancement(settings.config.webgui_ui?.enhancement);
+  applyStatusBarPreferences(settings.config.webgui_ui?.status_bar);
   state.artworkRange = {...state.artworkRange, ...(settings.config.range || {})};
   state.sourceOrder = [...(settings.config.sources?.cover_sources || [])];
   state.sourcePolicies = {...(settings.config.source_policies || {})};
@@ -1648,24 +1649,32 @@ function renderSourceOrderSettings(host, draft, selectedProvider, selectProvider
   const artistOnly = Array.from(ARTIST_IMAGE_SOURCES).filter(key =>
     !configured.includes(key)
     && (draft.source_policies?.[key]?.include_in_artist_art_search ?? true));
-  const ordered = ["local", ...configured.filter(key => key !== "local"), ...artistOnly];
+  const ordered = ["samples", "local", ...configured.filter(key => key !== "local"), ...artistOnly];
   const strip = node("div", "settings-source-strip");
   for (const key of ordered) {
-    const info = sourceInfo.get(key) || {label: key, icon: key}, configuredIndex = configured.indexOf(key);
+    const info = key === "samples" ? {label: "Samples", icon: "⊘"} : (sourceInfo.get(key) || {label: key, icon: key}), configuredIndex = configured.indexOf(key);
     const card = node("div", "settings-source-card" + (selectedProvider === key ? " active" : "") + (excluded.has(key) ? " excluded" : ""));
     const choose = node("button", "source-card-main"); choose.type = "button";
-    const albumEnabled = key === "local" || !excluded.has(key) && draft.source_policies?.[key]?.enabled !== false;
+    const albumEnabled = key === "local" || key !== "samples" && !excluded.has(key) && draft.source_policies?.[key]?.enabled !== false;
     const configuredArtist = key === "local" || ARTIST_IMAGE_SOURCES.has(key) && (draft.source_policies?.[key]?.include_in_artist_art_search ?? true);
-    const mode = configuredArtist && albumEnabled ? "Artist / Album" : configuredArtist ? "Artist-Only" : albumEnabled ? "Album-Only" : "Excluded";
-    choose.append(info.icon === "⊘" ? node("span", "source-symbol", "⊘") : image("/assets/source-icons/" + info.icon + ".svg", "", ""), node("strong", "", info.label));
-    if (configuredArtist) choose.append(node("small", "", `🔍 ${state.sourceCounts.artist?.[key] || 0} Artist`));
-    if (albumEnabled) choose.append(node("small", "", `🔍 ${state.sourceCounts.cover?.[key] || 0} Cover`));
-    choose.append(node("small", "", mode));
-    choose.disabled = key === "local";
-    if (key !== "local") choose.addEventListener("click", () => { selectProvider(key); rerender(); });
+    const mode = configuredArtist && albumEnabled ? "Artist / Album" : configuredArtist ? "Artist-Only" : albumEnabled ? "Album-Only" : "Deactivated";
+    const modeClass = configuredArtist && albumEnabled ? "artist-album" : configuredArtist ? "artist-only" : albumEnabled ? "album-only" : "deactivated";
+    const top = node("span", "settings-source-top");
+    top.append(info.icon === "⊘" ? node("span", "source-symbol", "⊘") : image("/assets/source-icons/" + info.icon + ".svg", "", ""), node("strong", "", info.label));
+    const counts = node("span", "settings-source-counts");
+    counts.append(node("span", "settings-search-glyph", "🔍"));
+    const rows = node("span", "settings-source-count-rows");
+    rows.append(node("small", configuredArtist ? "" : "inactive", `${state.sourceCounts.artist?.[key] || 0} Artist`));
+    rows.append(node("small", albumEnabled ? "" : "inactive", `${state.sourceCounts.cover?.[key] || 0} Cover`));
+    counts.append(rows);
+    const status = node("span", `settings-source-mode mode-${modeClass}`);
+    status.append(node("span", "source-status-radio"), node("span", "", mode));
+    choose.append(top, counts, status);
+    choose.disabled = key === "local" || key === "samples";
+    if (key !== "local" && key !== "samples") choose.addEventListener("click", () => { selectProvider(key); rerender(); });
     const moves = node("div", "source-move-buttons");
     for (const [label, delta] of [["‹", -1], ["›", 1]]) {
-      const move = node("button", "", label); move.type = "button"; move.disabled = configuredIndex < 0 || configuredIndex + delta < 0 || configuredIndex + delta >= configured.length;
+      const move = node("button", "", label); move.type = "button"; move.disabled = key === "samples" || key === "local" || configuredIndex < 0 || configuredIndex + delta < 0 || configuredIndex + delta >= configured.length;
       move.addEventListener("click", () => { const next = configuredIndex + delta; [configured[configuredIndex], configured[next]] = [configured[next], configured[configuredIndex]]; setSettingValue(draft, "sources.cover_sources", configured); rerender(); }); moves.append(move);
     }
     card.append(choose, moves); strip.append(card);
@@ -1702,61 +1711,6 @@ function downloadJsonFile(name, value) {
   const blob = new Blob([JSON.stringify(value, null, 2) + "\n"], {type: "application/json"});
   const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = name; link.click(); URL.revokeObjectURL(link.href);
 }
-  function renderReconciliationConflicts(host) {
-    const disclosure = node("details", "conflict-browser");
-    disclosure.append(node("summary", "", "Reconciliation Conflicts"));
-    const body = node("section", "conflict-browser-body");
-    body.append(node("p", "settings-subcopy", "Review unresolved Windows SNAP associations by root Artist, Album class, entity, path, MBID, and field. This report is read-only."));
-    const controls = node("div", "conflict-controls"), run = node("select"), table = node("select"), reason = node("select"), albumClass = node("select"), search = node("input"), refresh = node("button", "operation-button", "Refresh");
-    search.placeholder = "Search Artist, Album, path, MBID, reason"; refresh.type = "button";
-    controls.append(run, table, reason, albumClass, search, refresh);
-    const downloads = node("div", "conflict-downloads"), html = node("a", "operation-button", "Download conflicts.html"), json = node("a", "operation-button", "Download conflicts.json");
-    html.download = "splined-conflicts.html"; json.download = "splined-conflicts.json"; downloads.append(html, json);
-    const summary = node("p", "runtime-summary", "Open to load reconciliation conflicts."), roots = node("div", "conflict-roots"), entries = node("div", "conflict-entries"), pages = node("div", "conflict-pages"), previous = node("button", "operation-button", "Previous"), next = node("button", "operation-button", "Next"), page = node("span", "", "");
-    previous.type = next.type = "button"; pages.append(previous, page, next); body.append(controls, downloads, summary, roots, entries, pages); disclosure.append(body); host.append(disclosure);
-    let loaded = false, offset = 0; const pageSize = 100;
-    const populate = (select, first, values, chosen) => {
-      clear(select); const blank = node("option", "", first); blank.value = ""; select.append(blank);
-      for (const value of values || []) { const option = node("option", "", value); option.value = value; select.append(option); }
-      select.value = chosen || "";
-    };
-    const exportLinks = () => {
-      const params = new URLSearchParams(); if (run.value) params.set("run_id", run.value);
-      html.href = "/api/reconciliation/conflicts/export?format=html&" + params;
-      json.href = "/api/reconciliation/conflicts/export?format=json&" + params;
-    };
-    const valueText = value => value == null ? "—" : typeof value === "object" ? JSON.stringify(value) : String(value);
-    const renderItem = item => {
-      const entry = node("details", "conflict-entry"), title = node("summary");
-      title.append(node("strong", "", item.root_label || item.root_key), node("span", "", `${item.entity_table} · ${item.album_class} · ${item.reason}`)); entry.append(title);
-      const meta = node("p", "conflict-meta", `${item.entity_key} · root ${item.root_key}${item.evidence ? " · evidence " + item.evidence : ""}`), comparison = node("div", "conflict-comparison");
-      comparison.append(node("b", "", "Field"), node("b", "", "Windows SNAP"), node("b", "", "PostgreSQL"));
-      for (const change of item.changes || []) comparison.append(node("span", "", change.field), node("span", "", valueText(change.windows)), node("span", "", valueText(change.postgresql)));
-      entry.append(meta, comparison); return entry;
-    };
-    async function load(reset = false) {
-      if (reset) offset = 0;
-      summary.textContent = "Loading reconciliation conflicts…"; clear(entries); clear(roots);
-      const params = new URLSearchParams({offset: String(offset), limit: String(pageSize)});
-      if (run.value) params.set("run_id", run.value); if (table.value) params.set("entity_table", table.value); if (reason.value) params.set("reason", reason.value); if (albumClass.value) params.set("album_class", albumClass.value); if (search.value.trim()) params.set("query", search.value.trim());
-      try {
-        const result = await api("/api/reconciliation/conflicts?" + params), selectedRun = run.value;
-        if (!run.options.length) {
-          const noRun = node("option", "", result.runs?.length ? "Latest conflict run" : "No conflict runs"); noRun.value = ""; run.append(noRun);
-          for (const item of result.runs || []) { const option = node("option", "", `${item.run_id.slice(0, 12)} · ${item.conflicts} conflicts · ${new Date(item.started_at).toLocaleString()}`); option.value = item.run_id; run.append(option); }
-        }
-        populate(table, "All entities", result.facets?.tables, table.value); populate(reason, "All root causes", result.facets?.reasons, reason.value); populate(albumClass, "All Album classes", result.facets?.album_classes, albumClass.value); if (selectedRun) run.value = selectedRun;
-        summary.textContent = result.run ? `${result.total} matching · ${result.summary.total} total conflicts · run ${result.run.run_id}` : "No reconciliation conflicts have been recorded.";
-        for (const root of (result.roots || []).slice(0, 12)) roots.append(node("span", "", `${root.label} · ${root.count}`));
-        for (const item of result.items || []) entries.append(renderItem(item));
-        if (!result.items?.length) entries.append(node("p", "settings-subcopy", "No conflicts match these filters."));
-        previous.disabled = offset <= 0; next.disabled = offset + pageSize >= result.total; page.textContent = result.total ? `${offset + 1}–${Math.min(offset + pageSize, result.total)} of ${result.total}` : "0 entries"; exportLinks();
-      } catch (error) { summary.textContent = error.message; summary.classList.add("operation-error"); }
-    }
-    disclosure.addEventListener("toggle", () => { if (disclosure.open && !loaded) { loaded = true; void load(); } });
-    refresh.addEventListener("click", () => void load(true)); run.addEventListener("change", () => void load(true)); table.addEventListener("change", () => void load(true)); reason.addEventListener("change", () => void load(true)); albumClass.addEventListener("change", () => void load(true)); search.addEventListener("keydown", event => { if (event.key === "Enter") void load(true); });
-    previous.addEventListener("click", () => { offset = Math.max(0, offset - pageSize); void load(); }); next.addEventListener("click", () => { offset += pageSize; void load(); }); exportLinks();
-  }
   async function renderSqliteReconciliation(host) {
   const section = node("section", "sqlite-reconciliation");
   section.append(node("h5", "", "SQLite Reconciliation"), node("p", "settings-subcopy", "Compare an authorized read-only SQLite snapshot with this PostgreSQL catalog. Differences remain reviewable in salite_diff; conflicts are never auto-applied."));
@@ -1893,7 +1847,19 @@ function renderRuntimeSettings(host, section, draft, bindings, saved, advanced) 
     const target = descriptor.path === "scan.log_dir" || descriptor.path === "verbosity" || descriptor.path.startsWith("logging.") ? logging : processing;
     settingsInput(target, descriptor, descriptor.path, draft, bindings, saved);
   }
-  const scope = node("div", "runtime-summary"); scope.append(node("span", "", "Scope  SELECTED / QUEUED"), node("span", "", `Mode  ${(settingValue(draft, "mode", "read") || "read").toUpperCase()}`)); processing.append(scope);
+  const scope = node("div", "runtime-summary"); scope.append(node("span", "runtime-scope", "Scope  SELECTED / QUEUED"), node("span", "", `Mode  ${(settingValue(draft, "mode", "read") || "read").toUpperCase()}`)); processing.append(scope);
+  processing.append(node("h4", "status-bar-heading", "Status Bar"));
+  settingsHelp(processing, "How does the status bar show activity?", "Active work uses the theme activity treatment. Ready, success, and error states retain their semantic colors. Position and size change only the status presentation, never artwork or processing.");
+  const statusBar = normalizeStatusBar(settingValue(draft, "webgui_ui.status_bar", state.statusBar));
+  const statusControls = node("div", "status-bar-controls");
+  for (const [label, key, choices] of [["Intensity", "intensity", ["Aggressive", "Full", "Mild", "Off"]], ["Position", "position", ["Top", "Middle", "Bottom"]], ["Size", "size", ["Small", "Medium", "Large"]]]) {
+    const row = node("label", "status-bar-control"); row.append(node("span", "", label)); const select = node("select");
+    for (const choice of choices) { const option = node("option", "", choice); option.value = choice; select.append(option); }
+    select.value = statusBar[key];
+    select.addEventListener("change", () => { statusBar[key] = select.value; setSettingValue(draft, "webgui_ui.status_bar", {...statusBar}); applyStatusBarPreferences(statusBar); });
+    row.append(select); statusControls.append(row);
+  }
+  processing.append(statusControls);
   const logHeading = node("div", "diagnostic-heading"); logHeading.append(node("strong", "", "WebGUI Events · Audit")); const refresh = node("button", "operation-button", "Refresh"); refresh.type = "button"; logHeading.append(refresh); logging.append(logHeading);
   const auditFilters = node("div", "audit-filters");
   const severity = node("select"), allSeverity = node("option", "", "All severities"); allSeverity.value = ""; severity.append(allSeverity);
@@ -1904,15 +1870,22 @@ function renderRuntimeSettings(host, section, draft, bindings, saved, advanced) 
   const until = node("input"); until.type = "datetime-local"; until.setAttribute("aria-label", "Audit end time");
   const download = node("a", "operation-button", "Download audit.json"); download.download = "audit.json";
   auditFilters.append(severity, action, correlation, since, until, download); logging.append(auditFilters);
-  const events = node("pre", "diagnostic-events audit-events", "Loading events…"); logging.append(events);
+  const events = node("div", "diagnostic-events audit-events", "Loading events…"); events.tabIndex = 0; logging.append(events);
   const query = () => new URLSearchParams(Object.fromEntries(Object.entries({severity: severity.value, action: action.value.trim(), correlation: correlation.value.trim(), since: since.value, until: until.value}).filter(([, value]) => value)));
   async function load() {
-    try { const rows = await api("/api/diagnostics?" + query()); events.textContent = rows.length ? rows.map(row => `${String(row.sequence).padStart(8, "0")}  ${row.created_at}  ${row.severity.toUpperCase()}  ${row.action}  ${row.subject}${row.application_version ? "  v=" + row.application_version : ""}${row.application_revision ? "  rev=" + row.application_revision.slice(0, 12) : ""}${row.session_id ? "  session=" + row.session_id.slice(0, 12) : ""}${row.job_id ? "  job=" + row.job_id : ""}${row.trace_id ? "  trace=" + row.trace_id : ""}${row.state_from || row.state_to ? `  ${row.state_from || "—"}→${row.state_to || "—"}` : ""}${row.recovered_from_fallback ? "  RECOVERED" : ""}${row.error ? "  ERROR=" + row.error : ""}${row.details && Object.keys(row.details).length ? "  " + JSON.stringify(row.details) : ""}`).join("\n") : "No recorded Audit events match these filters."; }
-    catch (error) { events.textContent = error.message; }
+    try {
+      const rows = await api("/api/diagnostics?" + query()); clear(events);
+      if (!rows.length) { events.textContent = "No recorded Audit events match these filters."; return; }
+      for (const row of rows) {
+        const line = `${String(row.sequence).padStart(8, "0")}  ${row.created_at}  ${row.severity.toUpperCase()}  ${row.action}  ${row.subject}${row.application_version ? "  v=" + row.application_version : ""}${row.application_revision ? "  rev=" + row.application_revision.slice(0, 12) : ""}${row.session_id ? "  session=" + row.session_id.slice(0, 12) : ""}${row.job_id ? "  job=" + row.job_id : ""}${row.trace_id ? "  trace=" + row.trace_id : ""}${row.state_from || row.state_to ? `  ${row.state_from || "—"}→${row.state_to || "—"}` : ""}${row.recovered_from_fallback ? "  RECOVERED" : ""}${row.error ? "  ERROR=" + row.error : ""}${row.details && Object.keys(row.details).length ? "  " + JSON.stringify(row.details) : ""}`;
+        events.append(node("div", `audit-event-line severity-${String(row.severity || "info").toLowerCase()}`, line));
+      }
+    } catch (error) { events.textContent = error.message; }
   }
   const updateDownload = () => download.href = "/api/audit/export?" + query();
   for (const input of [severity, action, correlation, since, until]) input.addEventListener("change", updateDownload);
-    refresh.addEventListener("click", load); updateDownload(); void load(); renderReconciliationConflicts(logging); layout.append(processing, logging); host.append(layout);
+  action.addEventListener("input", () => { updateDownload(); window.clearTimeout(action._auditTimer); action._auditTimer = window.setTimeout(load, 180); });
+    refresh.addEventListener("click", load); updateDownload(); void load(); layout.append(processing, logging); host.append(layout);
 }
 async function openSettings() {
   state.reviewJobId = null;
@@ -2020,14 +1993,29 @@ async function openSettings() {
       for (const name of contract.providers) { const option = node("option", "", name); option.value = name; select.append(option); }
       select.value = sourceProvider; select.addEventListener("change", () => { applySettingsInputs(draft, bindings); sourceProvider = select.value; renderSection(active, true); }); picker.append(select); fields.append(picker);
       const artistSetting = `source_policies.${sourceProvider}.include_in_artist_art_search`;
-      if (settingValue(draft, artistSetting) === undefined)
-        setSettingValue(draft, artistSetting, ARTIST_IMAGE_SOURCES.has(sourceProvider));
-      for (const descriptor of section.repeater.fields) settingsInput(fields, descriptor, section.repeater.path + "." + sourceProvider + "." + descriptor.path, draft, bindings, saved);
+      const artistCapable = ARTIST_IMAGE_SOURCES.has(sourceProvider);
+      if (settingValue(draft, artistSetting) === undefined || !artistCapable)
+        setSettingValue(draft, artistSetting, artistCapable && Boolean(settingValue(draft, artistSetting, true)));
+      for (const descriptor of section.repeater.fields) {
+        const path = section.repeater.path + "." + sourceProvider + "." + descriptor.path;
+        const input = settingsInput(fields, descriptor, path, draft, bindings, saved);
+        if (descriptor.path === "include_in_artist_art_search" && !artistCapable && input) {
+          input.checked = false;
+          input.disabled = true;
+          input.closest(".setting-field")?.classList.add("disqualified-setting");
+          input.closest(".setting-field")?.append(node("strong", "source-disqualified", "Disqualified · Album-Only source"));
+        }
+      }
     }
     if (section.id === "sources") {
-      settingsHelp(fields, "What does source policy change?", "This policy applies only to the selected provider. Optional dimensions remain unset until you type a value or use the number arrows; a blank field does not impose a limit.");
       const update = node("button", "operation-button full-action", "Update Selected Source Policy"); update.type = "button";
-      update.addEventListener("click", () => runAction(() => saveCurrentSection(section, `${sourceProvider} source policy updated`))); fields.append(update);
+      update.addEventListener("click", () => {
+        applySettingsInputs(draft, bindings, false);
+        setStatus(`${sourceProvider} source policy updated in the Settings draft · Save Artwork Sources to apply`);
+        renderSection(active, true);
+      });
+      fields.append(update);
+      settingsHelp(fields, "What does source policy change?", "Update keeps the selected provider policy in the unsaved Settings draft so you can edit another provider. Save Artwork Sources validates and persists the complete source order and all provider policies. Album-only providers cannot be enabled for Artist Art search. Optional dimensions remain unset until you type a value or use the number arrows; a blank field does not impose a limit.");
     }
     if (!["enhancement", "sources", "runtime"].includes(section.id)) addSpecialSection(section, fields);
   }

@@ -269,6 +269,7 @@ pub struct OutputConfig {
 #[serde(default)]
 pub struct LoggingConfig {
     pub retention_days: u32,
+    pub database_audit: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -454,7 +455,10 @@ impl Default for OutputConfig {
 
 impl Default for LoggingConfig {
     fn default() -> Self {
-        Self { retention_days: 14 }
+        Self {
+            retention_days: 14,
+            database_audit: false,
+        }
     }
 }
 

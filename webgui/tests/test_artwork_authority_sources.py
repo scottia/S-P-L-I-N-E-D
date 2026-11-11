@@ -150,6 +150,20 @@ class ArtworkAuthoritySourceTests(unittest.TestCase):
             "LowerRange",
         )
 
+    def test_album_only_provider_cannot_enable_artist_art_search(self) -> None:
+        draft = PolicyDraft.from_config(
+            {
+                "source_policies": {
+                    "musicbrainz": {"include_in_artist_art_search": True},
+                    "coverartarchive": {"include_in_artist_art_search": True},
+                }
+            }
+        )
+        self.assertFalse(draft.policies["musicbrainz"]["include_in_artist_art_search"])
+        self.assertFalse(
+            draft.policies["coverartarchive"]["include_in_artist_art_search"]
+        )
+
     def test_musicbrainz_matches_sort_and_mark_cached_release_state(self) -> None:
         current = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
         visited = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"

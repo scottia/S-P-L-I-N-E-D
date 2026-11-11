@@ -85,6 +85,7 @@ const state = {
   albumOverrides: new Map(), albumOverrideRevision: 0,
   compTrackOverrides: new Map(), compTrackOverrideRevision: 0,
   statusRevision: 0, statusType: "ready",
+  statusBar: {intensity: "Full", position: "Top", size: "Small"},
   indexStatus: null, indexJobId: null, indexStopping: false,
 };
 function applyGraphicalEnhancement(value) {
@@ -150,6 +151,19 @@ function setStatus(message, type = "ready") {
   $("statusText").textContent = message;
   $("status").className = "status" + (type === "ready" ? "" : " " + type);
   return state.statusRevision;
+}
+function normalizeStatusBar(value = {}) {
+  const intensity = ["Aggressive", "Full", "Mild", "Off"].includes(value.intensity) ? value.intensity : "Full";
+  const position = ["Top", "Middle", "Bottom"].includes(value.position) ? value.position : "Top";
+  const size = ["Small", "Medium", "Large"].includes(value.size) ? value.size : "Small";
+  return {intensity, position, size};
+}
+function applyStatusBarPreferences(value = state.statusBar) {
+  state.statusBar = normalizeStatusBar(value);
+  const status = $("status");
+  status.dataset.intensity = state.statusBar.intensity.toLowerCase();
+  status.dataset.position = state.statusBar.position.toLowerCase();
+  status.dataset.size = state.statusBar.size.toLowerCase();
 }
 function setErrorStatus(error) {
   const requestRevision = Number(error?.statusRevision);
@@ -328,6 +342,7 @@ const MEDIA_STATUS_COLORS = {all: "#eef8ff", unprocessed: "#eef8ff", incomplete:
 const MEDIA_STATUS_COLORS_LIGHT = {all: "#304b5b", unprocessed: "#304b5b", incomplete: "#12659a", processed: "#99600b", bypassed: "#b72e40", partial: "#8036a8", artistComplete: "#176a3e", artistBypass: "#185aab"};
 function mediaStatusColor(key) { return MEDIA_STATUS_COLORS[key] || MEDIA_STATUS_COLORS.unprocessed; }
 function applyStatusPalette(element, key) {
+  element.dataset.mediaStatus = key;
   element.style.setProperty("--status-color", mediaStatusColor(key));
   element.style.setProperty("--status-color-light", MEDIA_STATUS_COLORS_LIGHT[key] || MEDIA_STATUS_COLORS_LIGHT.unprocessed);
 }

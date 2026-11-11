@@ -89,6 +89,29 @@ class _ProfileHttp:
         raise AssertionError(f"Unexpected request: {url}")
 
 
+class _ManyFanartHttp:
+    def __init__(self):
+        self.headers = {}
+
+    def get(self, url, **_kwargs):
+        if url.startswith("https://webservice.fanart.tv/"):
+            return _Response(
+                {
+                    "artistbackground": [
+                        {"url": f"https://assets.fanart.tv/background-{index}.png"}
+                        for index in range(4)
+                    ],
+                    "artistthumb": [
+                        {"url": f"https://assets.fanart.tv/portrait-{index}.png"}
+                        for index in range(12)
+                    ],
+                }
+            )
+        if url.startswith("https://assets.fanart.tv/"):
+            return _Response(content=_png("purple"))
+        raise AssertionError(f"Unexpected request: {url}")
+
+
 class _AdditionalProviderHttp:
     def __init__(self):
         self.headers = {}
@@ -134,6 +157,25 @@ class ArtistSearchTests(unittest.TestCase):
             self.assertNotIn("wrong.jpg", [url for url, _ in http.calls])
             self.assertEqual(http.calls[0][1]["headers"]["api-key"], "fixture-key")
             self.assertTrue(all(Image.open(BytesIO(data)).format == "PNG" for _, data in found))
+
+    def test_fanart_candidate_limit_matches_windows(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            credentials = Path(temporary)
+            (credentials / "fanarttv.json").write_text(
+                json.dumps({"api_key": "fixture-key"}), encoding="utf-8"
+            )
+            found, warnings = discover_artist_images(
+                "3 Doors Down",
+                "03cd9e6d-0a23-4c52-876f-0e909c84c653",
+                credentials,
+                http=_ManyFanartHttp(),
+                enabled=("fanarttv",),
+            )
+            self.assertEqual(
+                [label for label, _ in found],
+                ["Fanart banner"] * 2 + ["Fanart portrait"] * 10,
+            )
+            self.assertEqual(warnings, [])
 
     def test_search_without_credentials_still_uses_deezer(self):
         with tempfile.TemporaryDirectory() as temporary:

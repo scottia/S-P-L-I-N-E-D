@@ -10,6 +10,7 @@ use crate::catalog_index_coordinator::{
     status as catalog_index_status, touch_reusable_checkpoint,
 };
 use crate::config::{Config, resolve_sources};
+use crate::database_audit;
 use crate::embedded_artwork::embedded_front_sha256s;
 use crate::history::{AlbumHistoryState, album_history_status, load_completion_history, unix_now};
 use crate::index_batch_policy::{AdaptiveBatchController, checkpoint_payload_bytes};
@@ -3707,12 +3708,13 @@ fn open_database(path: &Path, shared: bool) -> Result<Connection, String> {
             )
         })?;
     }
-    let connection = Connection::open(path).map_err(|error| {
+    let mut connection = Connection::open(path).map_err(|error| {
         format!(
             "Unable to open SPLINED database {}: {error}",
             path.display()
         )
     })?;
+    database_audit::attach(&mut connection);
     connection
         .busy_timeout(Duration::from_secs(30))
         .map_err(db_error("configure SQLite busy timeout"))?;
@@ -3830,12 +3832,15 @@ fn open_database_read_only(path: &Path) -> Result<(Connection, i64), String> {
 }
 
 fn open_read_only_connection(path: &Path) -> Result<Connection, String> {
-    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|error| {
-        format!(
-            "Unable to open existing SPLINED database read-only {}: {error}",
-            path.display()
-        )
-    })
+    let mut connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| {
+            format!(
+                "Unable to open existing SPLINED database read-only {}: {error}",
+                path.display()
+            )
+        })?;
+    database_audit::attach(&mut connection);
+    Ok(connection)
 }
 
 fn sqlite_read_only_error(error: &rusqlite::Error) -> bool {

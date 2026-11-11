@@ -713,6 +713,63 @@ fn diagnostic_log_view(state: &ApplicationState, level: &str, backup_directory: 
     }
 }
 
+fn windows_event_severity(line: &str) -> &'static str {
+    let lower = line.to_ascii_lowercase();
+    if lower.contains("critical") || lower.contains("fatal") {
+        "Critical"
+    } else if lower.contains("error") || lower.contains("failed") {
+        "Error"
+    } else if lower.contains("warning") || lower.contains("warn:") {
+        "Warning"
+    } else if lower.contains("debug") {
+        "Debug"
+    } else if lower.contains("verbose") || lower.contains("trace") {
+        "Verbose"
+    } else {
+        "Info"
+    }
+}
+
+fn windows_event_matches(line: &str, severity: &str, query: &str) -> bool {
+    (severity == "All severities" || windows_event_severity(line) == severity)
+        && (query.trim().is_empty()
+            || line
+                .to_ascii_lowercase()
+                .contains(&query.trim().to_ascii_lowercase()))
+}
+
+fn filtered_windows_event_rows(
+    state: &ApplicationState,
+    severity: &str,
+    query: &str,
+) -> Vec<UiWindowsEventRow> {
+    let rows = state
+        .log
+        .iter()
+        .filter(|line| windows_event_matches(line, severity, query))
+        .rev()
+        .take(400)
+        .map(|line| {
+            let severity = windows_event_severity(line);
+            UiWindowsEventRow {
+                severity: severity.into(),
+                text: format!("{:<8}  {line}", severity.to_uppercase()).into(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>();
+    if rows.is_empty() {
+        vec![UiWindowsEventRow {
+            severity: "Info".into(),
+            text: "No Windows events match these case-insensitive filters.".into(),
+        }]
+    } else {
+        rows
+    }
+}
+
 #[derive(Clone)]
 struct ThumbnailAlbumTarget {
     album_key: String,
@@ -2685,6 +2742,7 @@ struct ArtistArtWriteRequest {
     rendered_portrait: Option<Vec<u8>>,
 }
 
+#[cfg(test)]
 fn artist_art_targets_for_albums<'a>(
     albums: impl IntoIterator<Item = (&'a str, &'a str, &'a str, &'a str)>,
     artist: &str,
@@ -7632,6 +7690,10 @@ fn load_application_state() -> (ApplicationState, bool, Option<String>) {
             return (state, true, first_error);
         }
     };
+    splined_core::database_audit::configure(
+        config.logging.database_audit,
+        Path::new(&config.scan.log_dir),
+    );
     record_startup_timing(format!(
         "startup-config elapsed_ms={}",
         config_started.elapsed().as_millis()
@@ -14481,6 +14543,22 @@ fn bind_service_callbacks(
     {
         let weak = ui.as_weak();
         let state = Arc::clone(&state);
+        ui.on_refresh_windows_events(move |severity, query| {
+            if let (Some(ui), Ok(app)) = (weak.upgrade(), state.lock()) {
+                let rows = filtered_windows_event_rows(&app, severity.as_str(), query.as_str());
+                let text = rows
+                    .iter()
+                    .map(|row| row.text.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                ui.set_settings_windows_events(model(rows));
+                ui.set_settings_windows_events_text(text.into());
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
         let settings_draft = Arc::clone(&settings_draft);
         ui.on_load_source_policy(move |source| {
             let result = settings_draft
@@ -15967,6 +16045,7 @@ fn set_settings_ui(ui: &AppWindow, config: &Config) {
     ui.set_settings_history_enabled(config.history.enabled);
     ui.set_settings_history_retention(config.history.retention_days.to_string().into());
     ui.set_settings_log_retention(config.logging.retention_days.to_string().into());
+    ui.set_settings_database_audit(config.logging.database_audit);
     ui.set_settings_ai_enabled(config.aisplined.enabled);
     ui.set_settings_ai_endpoint(config.aisplined.endpoint.clone().into());
     ui.set_settings_ai_minimum(config.aisplined.minimum_short_side.to_string().into());
@@ -16015,7 +16094,9 @@ fn set_source_policy_ui(ui: &AppWindow, config: &Config, source: &str) {
             .iter()
             .any(|candidate| candidate.eq_ignore_ascii_case(&source));
     ui.set_settings_policy_enabled(policy.enabled && available);
-    ui.set_settings_policy_artist_enabled(policy.includes_artist_art(&source));
+    let artist_capable = is_artist_art_source(&source);
+    ui.set_settings_policy_artist_capable(artist_capable);
+    ui.set_settings_policy_artist_enabled(artist_capable && policy.includes_artist_art(&source));
     ui.set_settings_policy_strict(policy.strict_override);
     ui.set_settings_policy_override(policy.source_override);
     ui.set_settings_policy_minimum_range(minimum_range_label(policy.minimum_range_type).into());
@@ -16117,6 +16198,7 @@ fn apply_settings_ui(ui: &AppWindow, config: &mut Config) -> Result<(), String> 
         parse_setting(&ui.get_settings_history_retention(), "History retention")?;
     config.logging.retention_days =
         parse_setting(&ui.get_settings_log_retention(), "Log retention")?;
+    config.logging.database_audit = ui.get_settings_database_audit();
     config.aisplined.enabled = ui.get_settings_ai_enabled();
     config.aisplined.endpoint = ui.get_settings_ai_endpoint().trim().to_string();
     config.aisplined.minimum_short_side = parse_setting(
@@ -16247,7 +16329,12 @@ fn apply_settings_section_ui(
                 parse_setting(&ui.get_settings_history_retention(), "History retention")?;
             config.logging.retention_days =
                 parse_setting(&ui.get_settings_log_retention(), "Log retention")?;
+            config.logging.database_audit = ui.get_settings_database_audit();
             config.scan.log_dir = ui.get_settings_log_dir().trim().to_string();
+            splined_core::database_audit::configure(
+                config.logging.database_audit,
+                Path::new(&config.scan.log_dir),
+            );
         }
         "Connections" => {
             config.aisplined.enabled = ui.get_settings_ai_enabled();
@@ -16313,7 +16400,9 @@ fn update_source_policy_from_ui(ui: &AppWindow, config: &mut Config) -> Result<(
     }
     let policy = SourcePolicyConfig {
         enabled: ui.get_settings_policy_enabled(),
-        include_in_artist_art_search: Some(ui.get_settings_policy_artist_enabled()),
+        include_in_artist_art_search: Some(
+            is_artist_art_source(&source) && ui.get_settings_policy_artist_enabled(),
+        ),
         strict_override: ui.get_settings_policy_strict(),
         source_override: ui.get_settings_policy_override(),
         minimum_range_type: parse_minimum_range(ui.get_settings_policy_minimum_range().as_str())?,
@@ -23140,6 +23229,35 @@ mod tests {
         assert!(super::should_show_media_index_notice(&changes(1, 0, 0, 0)));
         assert!(super::should_show_media_index_notice(&changes(0, 0, 1, 0)));
         assert!(super::should_show_media_index_notice(&changes(0, 0, 0, 1)));
+    }
+
+    #[test]
+    fn windows_event_severity_is_case_insensitive() {
+        assert_eq!(
+            super::windows_event_severity("ERROR failed to write"),
+            "Error"
+        );
+        assert_eq!(super::windows_event_severity("warning: retry"), "Warning");
+        assert_eq!(super::windows_event_severity("ordinary status"), "Info");
+        assert!(super::windows_event_matches(
+            "INFO Artist Search Completed",
+            "Info",
+            "artist search"
+        ));
+        assert!(!super::windows_event_matches(
+            "WARNING Artist Search Retried",
+            "Error",
+            "artist"
+        ));
+    }
+
+    #[test]
+    fn album_only_sources_are_disqualified_from_artist_art() {
+        assert!(!super::is_artist_art_source("musicbrainz"));
+        assert!(!super::is_artist_art_source("coverartarchive"));
+        assert!(!super::is_artist_art_source("amazon"));
+        assert!(super::is_artist_art_source("fanarttv"));
+        assert!(super::is_artist_art_source("deezer"));
     }
 
     use super::{

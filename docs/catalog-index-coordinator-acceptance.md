@@ -671,12 +671,66 @@ Status: **PASSED**.
   regression. Installed `American Pie 2` and `A$AP Rocky` evidence remains the
   permanent cross-client regression gate above.
 
+### Supplemental source, logging and theme parity corrections
+
+- WebGUI Fanart Artist Art discovery now retains the same bounded set as the
+  native client: two backgrounds and up to ten portraits. The former WebGUI
+  three-portrait cap caused the Accept test case to return fewer candidates
+  with otherwise identical providers and Candidate Filters.
+- Settings source cards now share the Candidate Findings contract: Samples and
+  Local Files remain visible, one large search glyph owns separate Artist and
+  Cover rows, source names remain readable, and Deezer uses the same generic
+  card layout. Album-only providers remain visible but their Artist Art option
+  is disabled and labelled `Disqualified` in both clients. Persistence also
+  clamps invalid imported or historical Artist Art flags instead of trusting
+  the disabled control alone.
+- WebGUI Processing & Logs gained the shared Status Bar controls. Audit action
+  filtering is case-insensitive across the complete readable event, not only
+  the action column; events are selectable and severity-coloured. The obsolete
+  Reconciliation Conflicts Settings surface was removed. Windows gained the
+  corresponding Database Audit toggle and filterable, copyable Windows Events
+  view; SQLite audit records statement class and table only and never writes
+  SQL values.
+- `Update Selected Source Policy` remains because it transfers the selected
+  provider editor into the unsaved Settings draft; the section-level Save then
+  validates and persists the complete source order and provider set. Both
+  clients now place this control directly above its explanatory help.
+- Native artwork surfaces no longer inherit theme opacity. Windows Chalk now
+  uses the WebGUI Chalk palette, Dark remains the explicit WebGUI Dark palette,
+  System delegates surfaces and accent to the active Windows palette, and Light
+  uses readable grey library text for unprocessed rows. Library list text in
+  both clients is theme-owned while semantic state colours remain authoritative.
+- The legacy `artist_art_targets_for_albums` name is intentionally retained as
+  a test-only wrapper (`#[cfg(test)]`). Production uses the projection-aware
+  `artist_art_targets_for_albums_with_projection` path introduced with credited
+  Artist indexing. The wrapper keeps regression coverage for artist-scoped
+  Soundtrack/Various Artist filenames and COMP fallback exclusion without
+  compiling unused compatibility code into the release executable. History for
+  future diagnosis: commit `0a22077` introduced the original helper on
+  2026-10-27; commit `b68a841` added the projection-aware production path on
+  2026-11-09 and left the original name as a compatibility seam for those
+  focused tests. It is not a second Artist Art implementation or runtime path.
+
+Focused validation: **41/41 WebGUI source/audit/render tests**, **392/392 full
+WebGUI tests (78 environment-dependent skips)**, **532/532 Windows core tests**,
+**115/115 Windows application tests**, JavaScript syntax, Slint/Rust compilation,
+and `git diff --check` passed.
+
+Installed validation: the restarted WebGUI visibly presents Samples and Local
+Files, the shared large-search/two-row provider cards, Album-only provider
+states, and the generic Artist-only Deezer card. The installed native build
+visibly presented undimmed Selected Artwork under Chalk, the matching source
+cards (including Samples, the shared search glyph/rows and generic Deezer), and
+the expanded Processing & Logs layout with Database Audit Log plus filterable,
+copyable Windows Events. The source editor visibly retained the two-stage
+Update Selected Source Policy/section Save workflow and its explanatory help.
+
 ### Final regression evidence and installed revisions
 
-- Windows: **531 core + 113 application tests passed**; the full Rust workspace,
+- Windows: **532 core + 115 application tests passed**; the full Rust workspace,
   focused duplicate-flight, resource, thumbnail, progress/cancellation,
   forced-interruption and identity-history tests passed.
-- WebGUI: **390 passed, 64 skipped** in the full suite. Browser behavior is
+- WebGUI: **392 passed, 78 skipped** in the full suite. Browser behavior is
   **87/87 passed** after the cancellation-status correction. The focused real
   PostgreSQL pool, no-provider, thumbnail, progress/cancellation, forced
   interruption, `American Pie 2` and `A$AP Rocky` regressions passed.
@@ -685,7 +739,7 @@ Status: **PASSED**.
   final-head CI is recorded on PR #170 after the documentation commit.
 - Installed Windows 2.0.36 executable:
   `E:\apps\SPLINED\splined.exe`, SHA-256
-  `F8D821CB9BB658273B24064B4E06AAB331631D6F7ABEDA84B26960A79DF788E6`.
+  `B8A1A60559CD8C74DD0A52F97BAC87EB0B8326292797ECD63086EB7520BF209B`.
   The installed WebGUI runs current PR source at 2.0.36 against the established
   PostgreSQL service. Credentialed startup was restored after localhost-only UI
   validation (`auth_required=true`, `database_ready=true`).

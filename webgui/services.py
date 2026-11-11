@@ -770,8 +770,14 @@ class Services:
             clauses.append("severity=?")
             values.append(normalize_severity(severity))
         if action:
-            clauses.append("action ILIKE ?")
-            values.append("%" + sanitize_text(action, limit=100) + "%")
+            # "Action contains" searches the readable event, not only its
+            # action column. ILIKE keeps all text matching case-insensitive.
+            clauses.append(
+                "(action ILIKE ? OR subject ILIKE ? OR CAST(details AS TEXT) ILIKE ? "
+                "OR error ILIKE ? OR action_id ILIKE ? OR trace_id ILIKE ? OR job_id ILIKE ?)"
+            )
+            value = "%" + sanitize_text(action, limit=100) + "%"
+            values.extend((value, value, value, value, value, value, value))
         if correlation:
             clauses.append("(trace_id=? OR job_id=? OR action_id=?)")
             value = sanitize_text(correlation, limit=100)

@@ -19,29 +19,33 @@ export struct UiExistingArtworkRow { index: int, title: string, detail: string, 
 export struct UiAdjustmentRow { name: string, value: int, minimum: int, maximum: int, unit: string, primary: bool }
 export struct UiCandidateFilterRow { dimension: string, key: string, label: string, count: int, state: string }
 export struct UiStatusFilterRow { key: string, label: string, count: int, enabled: bool, semantic-color: color }
+export struct UiWindowsEventRow { severity: string, text: string }
 
 export global AppTheme {
     in-out property <string> appearance: "System";
     in-out property <float> font-scale: 1.0;
     out property <bool> chalk: root.appearance == "Chalk";
-    out property <bool> light: root.appearance == "Light" || (root.appearance == "System" && Palette.background == #fafafa);
-    out property <color> window-background: root.chalk ? #18191b : (root.light ? #aebfca : #030d20);
-    out property <color> panel-background: root.chalk ? #222326 : (root.light ? #c4d2db : #030d20);
-    out property <color> header-background: root.chalk ? #222326 : (root.light ? #9fb2bf : #030d20);
-    out property <color> foreground: root.chalk ? #e8e4d8 : (root.light ? #10283a : #eef8ff);
-    out property <color> secondary-foreground: root.chalk ? #a59d91 : (root.light ? #36576a : #9fc1d5);
-    out property <color> border: root.chalk ? #6b716e : (root.light ? #58798e : #16477e);
-    out property <color> card: root.chalk ? #292b2d : (root.light ? #b9cbd6 : #071a31);
-    out property <color> card-hover: root.chalk ? #353b3d : (root.light ? #a4bfcd : #0c2c52);
-    out property <color> selected-surface: root.chalk ? #3b4546 : (root.light ? #9bb8c9 : #173e78);
-    out property <color> recessed-surface: root.chalk ? #1b1d1f : (root.light ? #aabfcb : #07182d);
-    out property <color> quiet-surface: root.chalk ? #25282a : (root.light ? #c0d0d9 : #06172d);
-    out property <color> image-surface: root.chalk ? #101112 : (root.light ? #273846 : #020913);
-    out property <color> cyan: root.chalk ? #70a4aa : (root.light ? #075d73 : #21d8ff);
+    out property <bool> system: root.appearance == "System";
+    out property <bool> light: root.appearance == "Light";
+    // System delegates surfaces, foreground and accent to the active Windows
+    // palette. Dark and Chalk remain explicit cross-client SPLINED themes.
+    out property <color> window-background: root.system ? Palette.background : (root.chalk ? #241d27 : (root.light ? #ecebea : #030d20));
+    out property <color> panel-background: root.system ? Palette.control-background : (root.chalk ? #302c34 : (root.light ? #f8f7f4 : #071a31));
+    out property <color> header-background: root.system ? Palette.background : (root.chalk ? #302c34 : (root.light ? #f1f0ed : #030d20));
+    out property <color> foreground: root.system ? Palette.foreground : (root.chalk ? #f7edf5 : (root.light ? #18252d : #eef8ff));
+    out property <color> secondary-foreground: root.system ? Palette.foreground : (root.chalk ? #d6c7d3 : (root.light ? #52616a : #9fc1d5));
+    out property <color> border: root.system ? Palette.border : (root.chalk ? #75637b : (root.light ? #b9bfc2 : #16477e));
+    out property <color> card: root.system ? Palette.control-background : (root.chalk ? #3e3540 : (root.light ? #f1f0ed : #071a31));
+    out property <color> card-hover: root.system ? Palette.accent-background : (root.chalk ? #4a3e4c : (root.light ? #e1e8e8 : #0c2c52));
+    out property <color> selected-surface: root.system ? Palette.accent-background : (root.chalk ? #55445b : (root.light ? #d9e8e8 : #173e78));
+    out property <color> recessed-surface: root.system ? Palette.background : (root.chalk ? #241d27 : (root.light ? #ecebea : #07182d));
+    out property <color> quiet-surface: root.system ? Palette.control-background : (root.chalk ? #302c34 : (root.light ? #f8f7f4 : #06172d));
+    out property <color> image-surface: #020913;
+    out property <color> cyan: root.system ? Palette.accent-background : (root.chalk ? #a4dce1 : (root.light ? #007c94 : #21d8ff));
     out property <color> blue: root.light ? #285fba : #3478ff;
     out property <color> violet: root.chalk ? #9179a1 : (root.light ? #6443a3 : #7c4dff);
-    out property <color> magenta: root.chalk ? #a47491 : (root.light ? #87206c : #ef38c7);
-    out property <color> green: root.chalk ? #90b189 : (root.light ? #0d6146 : #32dda0);
+    out property <color> magenta: root.chalk ? #ed9ccb : (root.light ? #a12475 : #ef38c7);
+    out property <color> green: root.chalk ? #a3ddb1 : (root.light ? #227a56 : #32dda0);
     out property <color> yellow: root.chalk ? #caa55b : (root.light ? #6f5108 : #f4cc4d);
     out property <color> orange: root.chalk ? #bd8158 : (root.light ? #9b4c12 : #ff9738);
     out property <color> danger: root.chalk ? #ae5b4d : (root.light ? #9b2637 : #ff5268);
@@ -53,7 +57,7 @@ component Panel inherits Rectangle {
 component Heading inherits Text { color: AppTheme.foreground; font-size: 19px * AppTheme.font-scale; font-weight: 700; vertical-alignment: center; }
 component Label inherits Text { color: AppTheme.secondary-foreground; font-size: 14px * AppTheme.font-scale; vertical-alignment: center; }
 component NeonPanel inherits Rectangle {
-    background: AppTheme.chalk ? @linear-gradient(135deg, #2a2c2e, #1e2022) : (AppTheme.light ? @linear-gradient(135deg, #cbd8e0, #b8cad5) : @linear-gradient(135deg, #06182d, #030d20));
+    background: AppTheme.system ? AppTheme.panel-background : (AppTheme.chalk ? @linear-gradient(135deg, #3e3540, #302c34) : (AppTheme.light ? @linear-gradient(135deg, #f8f7f4, #ecebea) : @linear-gradient(135deg, #06182d, #030d20)));
     border-width: 0px;
     border-radius: 9px;
     clip: true;
@@ -80,7 +84,31 @@ component NeonAction inherits Rectangle {
         root.tone == "yellow" ? AppTheme.yellow :
         root.tone == "cyan" || root.emphasized ? AppTheme.cyan :
         root.tone == "magenta" ? AppTheme.magenta : AppTheme.border;
-    background: AppTheme.chalk ? (!root.enabled ? #2b2d2f : (action.pressed ? #4b5354 : (action.has-hover ? #41494a : (root.danger || root.tone == "red" ? #543638 : (root.tone == "orange" ? #594733 : (root.tone == "yellow" ? #595039 : (root.tone == "purple" || root.tone == "embed" ? #463a50 : #303638))))))) : (!root.enabled ? (AppTheme.light ? #b7c6cf : #0b192a) : (action.pressed ? (AppTheme.light ? #91b3c4 : #142f58) : (action.has-hover ? (AppTheme.light ? #adc6d3 : #183a68) : (root.tone == "embed" ? #6730a4 : (root.tone == "purple" ? (AppTheme.light ? #c3b4d7 : #211444) : (root.danger || root.tone == "red" ? @linear-gradient(90deg, #a40d2b, #e32937) : (root.tone == "orange" ? @linear-gradient(90deg, #8d3b08, #d96b13) : (root.tone == "yellow" ? @linear-gradient(90deg, #7b5e05, #b98b0b) : (root.tone == "cyan" ? (AppTheme.light ? #b1d2d9 : #082b46) : (root.tone == "magenta" ? (AppTheme.light ? #d5b8ce : #28174f) : (root.emphasized ? @linear-gradient(90deg, #163d72, #2a245d) : (AppTheme.light ? #b9cad4 : #091c35))))))))))));
+    background:
+        AppTheme.system ?
+            (!root.enabled ? AppTheme.card :
+             action.pressed ? AppTheme.selected-surface :
+             action.has-hover ? AppTheme.card-hover : AppTheme.card) :
+        AppTheme.chalk ?
+            (!root.enabled ? #3e3540 :
+             action.pressed ? #655369 :
+             action.has-hover ? #55445b :
+             root.danger || root.tone == "red" ? #543638 :
+             root.tone == "orange" ? #594733 :
+             root.tone == "yellow" ? #595039 :
+             root.tone == "purple" || root.tone == "embed" ? #463a50 : #3e3540) :
+        !root.enabled ? (AppTheme.light ? #e5e4e0 : #0b192a) :
+        action.pressed ? (AppTheme.light ? #d0dfe0 : #142f58) :
+        action.has-hover ? (AppTheme.light ? #e1e8e8 : #183a68) :
+        root.tone == "embed" ? #6730a4 :
+        root.tone == "purple" ? (AppTheme.light ? #c3b4d7 : #211444) :
+        root.danger || root.tone == "red" ? @linear-gradient(90deg, #a40d2b, #e32937) :
+        root.tone == "orange" ? @linear-gradient(90deg, #8d3b08, #d96b13) :
+        root.tone == "yellow" ? @linear-gradient(90deg, #7b5e05, #b98b0b) :
+        root.tone == "cyan" ? (AppTheme.light ? #d9e8e8 : #082b46) :
+        root.tone == "magenta" ? (AppTheme.light ? #ead8e4 : #28174f) :
+        root.emphasized ? @linear-gradient(90deg, #163d72, #2a245d) :
+        (AppTheme.light ? #f1f0ed : #091c35);
     Text {
         x: 5px;
         width: parent.width - 10px;
@@ -354,7 +382,7 @@ component LibraryItem inherits Rectangle {
             Image { source: root.item.artwork; width: parent.width; height: parent.height; image-fit: cover; visible: root.item.has-artwork; }
         }
         VerticalLayout { spacing: 2px; alignment: center;
-            Text { text: root.item.primary; color: root.item.status-color; font-size: 16px * AppTheme.font-scale; font-weight: !root.status-only-album-selection && (root.item.selected || root.item.expanded) ? 700 : 600; overflow: elide; }
+            Text { text: root.item.primary; color: root.item.status == "Unprocessed" || root.item.status == "All" ? (AppTheme.light ? AppTheme.secondary-foreground : AppTheme.foreground) : root.item.status-color; font-size: 16px * AppTheme.font-scale; font-weight: !root.status-only-album-selection && (root.item.selected || root.item.expanded) ? 700 : 600; overflow: elide; }
             if root.item.secondary != "": Text { text: root.item.secondary; color: root.item.kind == "artist" ? AppTheme.magenta : AppTheme.secondary-foreground; font-size: 15px * AppTheme.font-scale; overflow: elide; }
         }
         if root.item.kind == "artist" || root.item.kind == "fallback-album": Rectangle {
@@ -1199,8 +1227,9 @@ component PathSettingField {
 component SettingToggle {
     in property <string> label;
     in-out property <bool> value;
+    in property <bool> enabled: true;
     height: 28px;
-    RadioToggle { label: root.label; checked <=> root.value; }
+    RadioToggle { label: root.label; checked <=> root.value; enabled: root.enabled; }
 }
 
 component SettingsHelpTip inherits Rectangle {
@@ -1709,6 +1738,11 @@ export component AppWindow inherits Window {
     in-out property <bool> settings-history-enabled: true;
     in-out property <string> settings-history-retention: "14";
     in-out property <string> settings-log-retention: "14";
+    in-out property <bool> settings-database-audit: false;
+    in-out property <string> settings-event-severity: "All severities";
+    in-out property <string> settings-event-action;
+    in property <[UiWindowsEventRow]> settings-windows-events;
+    in property <string> settings-windows-events-text: "Press Refresh to view case-insensitive Windows event results.";
     in property <string> diagnostic-log-detail;
     in property <bool> settings-section-dirty: false;
     in-out property <bool> settings-ai-enabled: false;
@@ -1721,6 +1755,7 @@ export component AppWindow inherits Window {
     in-out property <string> settings-policy-source: "deezer";
     in-out property <bool> settings-policy-enabled: true;
     in-out property <bool> settings-policy-artist-enabled: false;
+    in-out property <bool> settings-policy-artist-capable: false;
     in-out property <bool> settings-policy-strict: false;
     in-out property <bool> settings-policy-override: false;
     in-out property <string> settings-policy-minimum-range: "LowerRange";
@@ -1865,6 +1900,7 @@ export component AppWindow inherits Window {
     callback completion-acknowledged(); callback apply-selected-sample();
     callback load-settings(); callback save-settings(); callback save-interface-settings(); callback save-backup-preferences(); callback reset-advanced-settings(); callback reset-database(); callback save-setup();
     callback load-source-policy(string); callback update-source-policy(); callback load-credential(string);
+    callback refresh-windows-events(string, string);
     callback save-credential(string, string, string, string, string, string, string);
     callback test-credential(string, string, string, string, string, string, string);
     callback backup-action(string, string, string, bool, bool, bool, bool, bool); callback check-update();
@@ -2264,14 +2300,14 @@ export component AppWindow inherits Window {
                                                 property <bool> biography-overflows: root.artist-overview-biography != "" && self.biography-lines.length > 5;
                                                 property <int> biography-toggle-line: root.artist-biography-expanded ? min(9, self.biography-lines.length - 1) : min(4, self.biography-lines.length - 1);
                                                 vertical-stretch: 1; horizontal-stretch: 1; max-width: 10000px; clip: true; border-radius: 8px; background: AppTheme.quiet-surface; border-color: AppTheme.border; border-width: 1px;
-                                                Image { source: root.artist-overview-banner; visible: root.overview-mode != "Fallback"; width: parent.width; height: parent.height; image-fit: cover; opacity: root.artist-banner-preview-active ? 0.18 : 1.0; }
+                                                Image { source: root.artist-overview-banner; visible: root.overview-mode != "Fallback" && !root.artist-banner-preview-active; width: parent.width; height: parent.height; image-fit: cover; }
                                                 if root.artist-banner-preview-active: Image {
                                                     source: root.artist-banner-preview;
                                                     width: parent.width * (root.artist-banner-preview-rendered ? 1.0 : root.artist-banner-zoom);
                                                     height: parent.height * (root.artist-banner-preview-rendered ? 1.0 : root.artist-banner-zoom);
                                                     x: (parent.width - self.width) / 2 + parent.width * (root.artist-banner-preview-rendered ? 0.0 : root.artist-banner-horizontal);
                                                     y: (parent.height - self.height) / 2 + parent.height * (root.artist-banner-preview-rendered ? 0.0 : root.artist-banner-vertical);
-                                                    image-fit: contain; opacity: 0.66;
+                                                    image-fit: contain;
                                                 }
                                                 Image { source: @image-url("../gui/splined-watermark.png"); visible: root.overview-mode == "Fallback"; width: min(parent.width * 0.7, 640px); height: min(parent.height * 0.7, 480px); x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; image-fit: contain; opacity: 0.16; }
                                                 // Slint uses #RRGGBBAA. Keep the banner neutral: the
@@ -2727,7 +2763,7 @@ export component AppWindow inherits Window {
                                                 Heading { text: "Enhancement Preview"; font-size: 15px * AppTheme.font-scale; horizontal-stretch: 1; }
                                             }                                            if root.artist-artwork-mode: Rectangle { vertical-stretch: 1; background: transparent;
                                                     Rectangle { x: 0px; y: 0px; width: (parent.width - 6px) / 2; height: (parent.height - 6px) / 2; background: AppTheme.image-surface; border-width: 1px; border-color: AppTheme.border; border-radius: 7px; clip: true;
-                                                        Image { source: root.artist-overview-banner; width: parent.width; height: parent.height; image-fit: cover; opacity: 0.55; }
+                                                        Image { source: root.artist-overview-banner; width: parent.width; height: parent.height; image-fit: cover; }
                                                         Rectangle { width: min(96px, parent.width / 3); height: self.width; x: 12px; y: 40px; border-radius: self.width / 2; border-width: 2px; border-color: AppTheme.green; background: AppTheme.image-surface; clip: true;
                                                             Image { source: root.artist-overview-artwork; width: parent.width; height: parent.height; image-fit: cover; }
                                                         }
@@ -3313,7 +3349,7 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
-                    NeonPanel { horizontal-stretch: 1;
+                    NeonPanel { horizontal-stretch: 2;
                         VerticalLayout { padding: 10px; spacing: 7px;
                             Heading { text: "Logging"; height: 32px; color: AppTheme.violet; }
                             PathSettingField { label: "Log Directory *"; value <=> root.settings-log-dir; hint: "Persistent diagnostics"; browse => root.browse-setting-directory("logs"); }
@@ -3326,14 +3362,35 @@ export component AppWindow inherits Window {
                                 LineEdit { width: 142px; text <=> root.settings-log-retention; placeholder-text: "14"; }
                             }
                             SettingsHelpTip { summary: "What does each log level show?"; detail: "None disables file diagnostics after restart. Current is the in-memory run log and clears on exit. Verbose adds run decisions. Debugger includes technical debug and trace events. Error shows failures and the newest Diagnostic Summary JSON if one exists. File logging changes take effect on the next app launch."; }
-                            Text { text: root.settings-verbosity == "None" ? "File Diagnostics Disabled After Restart" : (root.settings-verbosity == "Current" ? "Current Run Log · Cleared When SPLINED Exits" : (root.settings-verbosity == "Error" ? "Errors And Diagnostic Summary" : (root.settings-verbosity == "Verbose" ? "Verbose Run Details" : "Debugger Events"))); color: AppTheme.cyan; font-size: 14px * AppTheme.font-scale; font-weight: 700; height: 22px; }
+                            SettingToggle { label: "Database Audit Log"; value <=> root.settings-database-audit; }
+                            Text { text: "Windows Events · Audit"; color: AppTheme.cyan; font-size: 14px * AppTheme.font-scale; font-weight: 700; height: 22px; }
+                            HorizontalLayout { height: 38px; spacing: 7px;
+                                ComboBox { width: 160px; model: ["All severities", "Critical", "Error", "Warning", "Info", "Debug", "Verbose"]; current-value <=> root.settings-event-severity; }
+                                LineEdit { horizontal-stretch: 1; text <=> root.settings-event-action; placeholder-text: "Action contains · any event text"; }
+                                NeonAction { width: 82px; label: "Refresh"; tone: "cyan"; clicked => root.refresh-windows-events(root.settings-event-severity, root.settings-event-action); }
+                            }
+                            Rectangle { vertical-stretch: 1; min-height: 150px; background: AppTheme.recessed-surface; border-width: 1px; border-color: AppTheme.border; border-radius: 5px; clip: true;
+                                ScrollView { width: parent.width; height: parent.height;
+                                    VerticalLayout { padding: 5px; spacing: 2px;
+                                        for event in root.settings-windows-events: Rectangle { height: 34px; border-width: 0px;
+                                            background: AppTheme.card;
+                                            Rectangle { x: 0px; width: 3px; height: parent.height; background: event.severity == "Critical" || event.severity == "Error" ? AppTheme.danger : (event.severity == "Warning" ? AppTheme.yellow : (event.severity == "Info" ? AppTheme.cyan : (event.severity == "Debug" ? AppTheme.green : AppTheme.violet))); }
+                                            Text { x: 7px; width: parent.width - 11px; height: parent.height; text: event.text; color: event.severity == "Critical" || event.severity == "Error" ? AppTheme.danger : (event.severity == "Warning" ? AppTheme.yellow : (event.severity == "Info" ? AppTheme.cyan : (event.severity == "Debug" ? AppTheme.green : AppTheme.violet))); font-size: 11px * AppTheme.font-scale; vertical-alignment: center; overflow: elide; }
+                                        }
+                                    }
+                                }
+                            }
+                            Text { text: "Copyable event text"; color: AppTheme.secondary-foreground; font-size: 11px * AppTheme.font-scale; height: 18px; }
                             TextEdit {
+                                height: 105px;
                                 vertical-stretch: 1;
                                 read-only: true;
                                 wrap: TextWrap.word-wrap;
-                                font-size: 14px * AppTheme.font-scale;
-                                text: root.settings-verbosity == "None" ? "No diagnostic file will be created after SPLINED restarts. Operational status remains available in the application." : (root.settings-verbosity == "Current" ? root.log-text : root.diagnostic-log-detail);
+                                font-size: 12px * AppTheme.font-scale;
+                                text: root.settings-windows-events-text;
                             }
+                            Text { text: root.settings-verbosity == "None" ? "File diagnostics disabled after restart" : "Diagnostic file view · " + root.settings-verbosity; color: AppTheme.secondary-foreground; font-size: 12px * AppTheme.font-scale; height: 20px; }
+                            TextEdit { height: 120px; read-only: true; wrap: TextWrap.word-wrap; font-size: 12px * AppTheme.font-scale; text: root.settings-verbosity == "None" ? "No diagnostic file will be created after SPLINED restarts. Operational status remains available in the application." : (root.settings-verbosity == "Current" ? root.log-text : root.diagnostic-log-detail); }
                         }
                     }
                 }
@@ -3581,7 +3638,8 @@ export component AppWindow inherits Window {
                                     ComboBox { horizontal-stretch: 1; model: ["deezer", "itunes", "fanarttv", "lastfm", "musicbrainz", "coverartarchive", "discogs", "amazon", "navidrome"]; current-value <=> root.settings-policy-source; selected(value) => root.load-source-policy(value); }
                                 }
                                 SettingToggle { label: "Include In Artwork Search"; value <=> root.settings-policy-enabled; }
-                                SettingToggle { label: "Include in Artist Art Search"; value <=> root.settings-policy-artist-enabled; }
+                                SettingToggle { label: "Include in Artist Art Search"; value <=> root.settings-policy-artist-enabled; enabled: root.settings-policy-artist-capable; }
+                                if !root.settings-policy-artist-capable: Text { text: "Disqualified · Album-Only source"; color: AppTheme.danger; font-size: 13px * AppTheme.font-scale; font-weight: 800; height: 24px; }
                                 SettingToggle { label: "Strict Range Override"; value <=> root.settings-policy-strict; }
                                 SettingToggle { label: "Custom Source Policy"; value <=> root.settings-policy-override; }
                                 HorizontalLayout { height: 36px; spacing: 8px;
@@ -3594,8 +3652,8 @@ export component AppWindow inherits Window {
                                 SettingField { label: "Maximum Short Side"; value <=> root.settings-policy-maximum-short; hint: "Optional"; }
                                 SettingField { label: "Minimum Width"; value <=> root.settings-policy-minimum-width; hint: "Optional"; }
                                 SettingField { label: "Minimum Height"; value <=> root.settings-policy-minimum-height; hint: "Optional"; }
-                                SettingsHelpTip { summary: "What does source policy change?"; detail: "These limits filter that provider's artwork candidates by size and image role. Update selected source changes the Settings draft; Save Artwork Sources commits it. Candidate filtering in the main workspace only hides or shows already-found results."; }
                                 Button { text: "Update Selected Source Policy"; height: 36px; clicked => root.update-source-policy(); }
+                                SettingsHelpTip { summary: "What does source policy change?"; detail: "These limits filter that provider's artwork candidates by size and image role. Update selected source changes the Settings draft; Save Artwork Sources commits it. Album-only providers are visibly disqualified from Artist Art search. Candidate filtering in the main workspace only hides or shows already-found results."; }
                                 }
                                 if root.settings-section == "Connections": VerticalLayout { spacing: 6px;
                                 SettingsHelpTip { summary: "Does Test enable artwork search?"; detail: "No. Test checks the provider connection (Navidrome uses a live OpenSubsonic ping). Credentials are stored in separate provider JSON files. To include a connected service in candidate search, also enable it and save Artwork Sources."; }
