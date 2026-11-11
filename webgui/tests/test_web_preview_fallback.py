@@ -94,6 +94,8 @@ class BrowserFallbackTests(unittest.TestCase):
         self.assertIn('key === "samples"', operations)
         self.assertIn('"settings-search-glyph", "🔍"', operations)
         self.assertIn('"status-bar-controls"', operations)
+        self.assertIn('"runtime-expand-toggle"', operations)
+        self.assertIn('layout.classList.toggle("logging-expanded", expanded)', operations)
         self.assertIn('"Disqualified · Album-Only source"', operations)
         self.assertIn('"Update Selected Source Policy"', operations)
         self.assertIn("source policy updated in the Settings draft", operations)
@@ -115,6 +117,17 @@ class BrowserFallbackTests(unittest.TestCase):
         self.assertIn('"Overridden by opposing application"', application)
         self.assertIn("renderedPreview", application)
         self.assertIn("compReportLoading", application)
+
+        contract = (Path(__file__).parents[2] / "schema" / "settings-ui.json").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('"label": "Include in Album Art Search"', contract)
+        self.assertNotIn('"label": "Include In Artwork Search"', contract)
+        self.assertIn('[["default", "Default"], ["dark", "Dark"]', application)
+
+        stylesheet = (static / "app.css").read_text(encoding="utf-8")
+        self.assertIn("html[data-theme=default]", stylesheet)
+        self.assertIn(".runtime-settings-layout.logging-expanded", stylesheet)
         enter_artist_art = application.split("function enterArtistArt", 1)[1].split(
             "function showDialog", 1
         )[0]

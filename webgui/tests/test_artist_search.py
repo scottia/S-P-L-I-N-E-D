@@ -45,8 +45,8 @@ class _Http:
                               "artistthumb": [{"url": "https://assets.fanart.tv/portrait.png"}]})
         if url == "https://api.deezer.com/search/artist":
             return _Response({"data": [
-                {"name": "3 Doors Down", "picture_xl": "https://e-cdns-images.dzcdn.net/deezer.jpg"},
-                {"name": "Another Artist", "picture_xl": "https://e-cdns-images.dzcdn.net/wrong.jpg"},
+                {"id": 1, "name": "3 Doors Down", "picture_xl": "https://e-cdns-images.dzcdn.net/deezer.jpg"},
+                {"id": 2, "name": "Another Artist", "picture_xl": "https://e-cdns-images.dzcdn.net/wrong.jpg"},
             ]})
         if url == "https://itunes.apple.com/search":
             return _Response({"results": [{
@@ -125,10 +125,44 @@ class _AdditionalProviderHttp:
             ]}})
         if url == "https://api.discogs.com/database/search":
             return _Response({"results": [
-                {"title": "3 Doors Down", "cover_image": "https://i.discogs.com/artist.jpg"},
-                {"title": "Wrong Artist", "cover_image": "https://i.discogs.com/wrong.jpg"},
+                {"id": 42, "title": "3 Doors Down", "cover_image": "https://i.discogs.com/artist.jpg"},
+                {"id": 99, "title": "Wrong Artist", "cover_image": "https://i.discogs.com/wrong.jpg"},
+            ]})
+        if url == "https://api.discogs.com/artists/42":
+            return _Response({"name": "3 Doors Down", "images": [
+                {"id": 7, "type": "primary", "uri": "https://i.discogs.com/artist.jpg"},
             ]})
         if url.endswith("artist.png") or url.endswith("artist.jpg"):
+            return _Response(content=_png("purple"))
+        raise AssertionError(f"Unexpected request: {url}")
+
+
+class _ParityLimitHttp:
+    def __init__(self):
+        self.headers = {}
+
+    def get(self, url, **_kwargs):
+        if url.startswith("https://webservice.fanart.tv/"):
+            return _Response({
+                "artistbackground": [
+                    {"url": f"https://assets.fanart.tv/background-{index}.png"}
+                    for index in range(4)
+                ],
+                "artistthumb": [
+                    {"url": f"https://assets.fanart.tv/portrait-{index}.png"}
+                    for index in range(12)
+                ],
+            })
+        if url == "https://api.deezer.com/search/artist":
+            return _Response({"data": [
+                {
+                    "id": index + 1,
+                    "name": "3 Doors Down",
+                    "picture_xl": f"https://e-cdns-images.dzcdn.net/deezer-{index}.jpg",
+                }
+                for index in range(7)
+            ]})
+        if url.startswith("https://assets.fanart.tv/") or url.startswith("https://e-cdns-images.dzcdn.net/"):
             return _Response(content=_png("purple"))
         raise AssertionError(f"Unexpected request: {url}")
 
@@ -174,6 +208,26 @@ class ArtistSearchTests(unittest.TestCase):
             self.assertEqual(
                 [label for label, _ in found],
                 ["Fanart banner"] * 2 + ["Fanart portrait"] * 10,
+            )
+            self.assertEqual(warnings, [])
+
+    def test_provider_bounds_match_windows_without_a_global_candidate_truncation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            credentials = Path(temporary)
+            (credentials / "fanarttv.json").write_text(
+                json.dumps({"api_key": "fixture-key"}), encoding="utf-8"
+            )
+            found, warnings = discover_artist_images(
+                "3 Doors Down",
+                "03cd9e6d-0a23-4c52-876f-0e909c84c653",
+                credentials,
+                http=_ParityLimitHttp(),
+                enabled=("fanarttv", "deezer"),
+            )
+            self.assertEqual(len(found), 17)
+            self.assertEqual(
+                [label for label, _ in found],
+                ["Fanart banner"] * 2 + ["Fanart portrait"] * 10 + ["Deezer portrait"] * 5,
             )
             self.assertEqual(warnings, [])
 

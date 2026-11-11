@@ -250,7 +250,7 @@ impl Default for UiPreferences {
     fn default() -> Self {
         Self {
             workspace_layout_revision: CURRENT_WORKSPACE_LAYOUT_REVISION,
-            appearance: "System".to_string(),
+            appearance: "Default".to_string(),
             status_bar_intensity: "Full".to_string(),
             status_bar_position: "Top".to_string(),
             status_bar_size: "Small".to_string(),
@@ -759,10 +759,11 @@ fn shrink_pair_to_total(
 
 pub fn normalize_appearance(value: &str) -> String {
     match value.trim().to_ascii_lowercase().as_str() {
+        "default" | "system" => "Default",
         "light" => "Light",
         "dark" => "Dark",
         "chalk" => "Chalk",
-        _ => "System",
+        _ => "Default",
     }
     .to_string()
 }
@@ -1104,7 +1105,7 @@ window_height = 700
             restored.candidate_filter_height,
             defaults.candidate_filter_height
         );
-        assert_eq!(restored.appearance, "System");
+        assert_eq!(restored.appearance, "Default");
         assert!(!restored.media_filter_locked);
         assert!(!restored.candidate_filter_locked);
         assert!(!restored.animate_webp_preview);
@@ -1483,6 +1484,7 @@ window_height = 1977
         assert!(layout.maximized);
         assert_eq!(normalize_appearance("light"), "Light");
         assert_eq!(normalize_appearance("chalk"), "Chalk");
-        assert_eq!(normalize_appearance("anything else"), "System");
+        assert_eq!(normalize_appearance("system"), "Default");
+        assert_eq!(normalize_appearance("anything else"), "Default");
     }
 }

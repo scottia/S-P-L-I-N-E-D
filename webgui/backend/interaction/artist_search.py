@@ -197,12 +197,23 @@ def _deezer_references(artist: str, http: requests.Session) -> list[tuple[str, s
     values = payload.get("data", []) if isinstance(payload, dict) else []
     if not isinstance(values, list):
         return []
-    return [
-        ("Deezer portrait", str(item.get("picture_xl", "")))
-        for item in values if isinstance(item, dict)
-        and _same_artist(str(item.get("name", "")), artist)
-        and item.get("picture_xl")
-    ][:3]
+    references: list[tuple[str, str]] = []
+    seen_ids: set[int] = set()
+    for item in values:
+        if not isinstance(item, dict) or not _same_artist(str(item.get("name", "")), artist):
+            continue
+        try:
+            artist_id = int(item.get("id") or 0)
+        except (TypeError, ValueError):
+            continue
+        url = str(item.get("picture_xl") or "").strip()
+        if artist_id <= 0 or artist_id in seen_ids or not url.startswith("https://"):
+            continue
+        seen_ids.add(artist_id)
+        references.append(("Deezer portrait", url))
+        if len(references) == 5:
+            break
+    return references
 
 
 def _lastfm_references(
@@ -223,7 +234,10 @@ def _lastfm_references(
         "format": "json",
         "autocorrect": "1",
     }
-    parameters["mbid" if artist_mbid.strip() else "artist"] = artist_mbid.strip() or artist
+    # Windows uses the selected Artist identity here. Using an MBID only in the
+    # browser could select a different Last.fm response and made identical
+    # source policies yield different candidate sets.
+    parameters["artist"] = artist
     response = http.get(LASTFM_API, params=parameters, timeout=15)
     response.raise_for_status()
     payload = response.json()
@@ -233,15 +247,19 @@ def _lastfm_references(
     images = found.get("image") or []
     if isinstance(images, dict):
         images = [images]
-    ranked = {"mega": 0, "extralarge": 1, "large": 2, "medium": 3, "small": 4}
-    values = sorted(
-        (
-            (ranked.get(str(item.get("size") or "").casefold(), 99), str(item.get("#text") or ""))
-            for item in images if isinstance(item, dict) and item.get("#text")
-        ),
-        key=lambda item: item[0],
-    )
-    return [("Last.fm portrait", url) for _, url in values[:2]]
+    values: list[str] = []
+    seen: set[str] = set()
+    for item in images:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("#text") or "").strip()
+        if not url or "2a96cbd8b46e442fc41c2b86b821562f" in url or url in seen:
+            continue
+        seen.add(url)
+        values.append(url)
+        if len(values) == 8:
+            break
+    return [("Last.fm portrait", url) for url in values]
 
 
 def _discogs_references(
@@ -258,7 +276,7 @@ def _discogs_references(
         return []
     response = http.get(
         DISCOGS_API,
-        params={"q": artist, "type": "artist", "per_page": "10"},
+        params={"q": artist, "type": "artist", "per_page": "15"},
         headers={"Authorization": f"Discogs token={token}"},
         timeout=15,
     )
@@ -267,14 +285,44 @@ def _discogs_references(
     values = payload.get("results", []) if isinstance(payload, dict) else []
     if not isinstance(values, list):
         return []
-    references = []
-    for item in values:
-        if not isinstance(item, dict) or not _same_artist(str(item.get("title") or ""), artist):
+    references: list[tuple[str, str]] = []
+    seen_ids: set[int] = set()
+    exact = [
+        item for item in values
+        if isinstance(item, dict)
+        and _same_artist(str(item.get("title") or ""), artist)
+        and int(item.get("id") or 0) > 0
+    ][:5]
+    for item in exact:
+        try:
+            artist_id = int(item.get("id") or 0)
+        except (TypeError, ValueError):
             continue
-        url = str(item.get("cover_image") or item.get("thumb") or "")
-        if url:
-            references.append(("Discogs portrait", url))
-    return references[:3]
+        if artist_id <= 0 or artist_id in seen_ids:
+            continue
+        seen_ids.add(artist_id)
+        detail = http.get(
+            f"https://api.discogs.com/artists/{artist_id}",
+            headers={"Authorization": f"Discogs token={token}"},
+            timeout=15,
+        )
+        if detail.status_code != 200:
+            continue
+        found = detail.json()
+        if not isinstance(found, dict) or not _same_artist(str(found.get("name") or ""), artist):
+            continue
+        images = found.get("images") or []
+        if not isinstance(images, list):
+            continue
+        images = sorted(
+            (image for image in images if isinstance(image, dict)),
+            key=lambda image: str(image.get("type") or "").casefold() != "primary",
+        )
+        for image in images[:4]:
+            url = str(image.get("uri") or image.get("resource_url") or "").strip()
+            if url and not url.casefold().endswith("/images/spacer.gif"):
+                references.append(("Discogs portrait", url))
+    return references
 
 
 def _itunes_artist_artwork_url(html: str) -> str:
@@ -342,7 +390,7 @@ def discover_artist_images(
     *, http: requests.Session | None = None,
     enabled=("fanarttv", "deezer", "lastfm", "discogs", "itunes"),
 ) -> tuple[list[tuple[str, bytes]], list[str]]:
-    """Download a bounded set of verified images; caller owns their preview life."""
+    """Download provider-bounded verified images; caller owns their preview life."""
     session = http or requests.Session()
     session.headers.update({"User-Agent": core.USER_AGENT})
     references: list[tuple[str, str]] = []
@@ -364,8 +412,6 @@ def discover_artist_images(
     candidates: list[tuple[str, bytes]] = []
     seen: set[str] = set()
     for label, url in references:
-        if len(candidates) >= 16:
-            break
         if not _allowed_image_url(url) or url in seen:
             continue
         seen.add(url)

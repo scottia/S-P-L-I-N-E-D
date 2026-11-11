@@ -2883,7 +2883,7 @@ impl ApplicationState {
             wheel_brightness_percent: 100,
             banner_theme_baseline_styles: default_banner_theme_styles(),
             album_frame_theme_baseline_styles: default_album_frame_theme_styles(),
-            appearance_mode: "System".to_string(),
+            appearance_mode: "Default".to_string(),
             enhancement_settings_dirty: false,
             media_selector_expanded: true,
             candidate_filter_expanded: true,

@@ -22,33 +22,36 @@ export struct UiStatusFilterRow { key: string, label: string, count: int, enable
 export struct UiWindowsEventRow { severity: string, text: string }
 
 export global AppTheme {
-    in-out property <string> appearance: "System";
+    in-out property <string> appearance: "Default";
     in-out property <float> font-scale: 1.0;
     out property <bool> chalk: root.appearance == "Chalk";
-    out property <bool> system: root.appearance == "System";
+    // "System" remains accepted only as a saved-preference migration alias.
+    out property <bool> system: root.appearance == "Default" || root.appearance == "System";
     out property <bool> light: root.appearance == "Light";
-    // System delegates surfaces, foreground and accent to the active Windows
-    // palette. Dark and Chalk remain explicit cross-client SPLINED themes.
-    out property <color> window-background: root.system ? Palette.background : (root.chalk ? #241d27 : (root.light ? #ecebea : #030d20));
-    out property <color> panel-background: root.system ? Palette.control-background : (root.chalk ? #302c34 : (root.light ? #f8f7f4 : #071a31));
-    out property <color> header-background: root.system ? Palette.background : (root.chalk ? #302c34 : (root.light ? #f1f0ed : #030d20));
-    out property <color> foreground: root.system ? Palette.foreground : (root.chalk ? #f7edf5 : (root.light ? #18252d : #eef8ff));
-    out property <color> secondary-foreground: root.system ? Palette.foreground : (root.chalk ? #d6c7d3 : (root.light ? #52616a : #9fc1d5));
-    out property <color> border: root.system ? Palette.border : (root.chalk ? #75637b : (root.light ? #b9bfc2 : #16477e));
-    out property <color> card: root.system ? Palette.control-background : (root.chalk ? #3e3540 : (root.light ? #f1f0ed : #071a31));
-    out property <color> card-hover: root.system ? Palette.accent-background : (root.chalk ? #4a3e4c : (root.light ? #e1e8e8 : #0c2c52));
-    out property <color> selected-surface: root.system ? Palette.accent-background : (root.chalk ? #55445b : (root.light ? #d9e8e8 : #173e78));
-    out property <color> recessed-surface: root.system ? Palette.background : (root.chalk ? #241d27 : (root.light ? #ecebea : #07182d));
-    out property <color> quiet-surface: root.system ? Palette.control-background : (root.chalk ? #302c34 : (root.light ? #f8f7f4 : #06172d));
+    // Default uses SPLINED's logo palette instead of inheriting one Windows
+    // accent for every control. Dark intentionally matches the WebGUI Dark
+    // palette; neither theme is applied to image pixels.
+    out property <color> window-background: root.system ? #111719 : (root.chalk ? #241d27 : (root.light ? #ecebea : #18191b));
+    out property <color> panel-background: root.system ? #1b2326 : (root.chalk ? #302c34 : (root.light ? #f8f7f4 : #252729));
+    out property <color> header-background: root.system ? #121b1e : (root.chalk ? #302c34 : (root.light ? #f1f0ed : #18191b));
+    out property <color> foreground: root.system ? #f2f4f3 : (root.chalk ? #f7edf5 : (root.light ? #18252d : #f2f3f4));
+    out property <color> secondary-foreground: root.system ? #afbdba : (root.chalk ? #d6c7d3 : (root.light ? #52616a : #b7c0c5));
+    out property <color> border: root.system ? #2f8ca0 : (root.chalk ? #75637b : (root.light ? #b9bfc2 : #4a5055));
+    out property <color> card: root.system ? #252e31 : (root.chalk ? #3e3540 : (root.light ? #f1f0ed : #292c2e));
+    out property <color> card-hover: root.system ? #314044 : (root.chalk ? #4a3e4c : (root.light ? #e1e8e8 : #34383a));
+    out property <color> selected-surface: root.system ? #244752 : (root.chalk ? #55445b : (root.light ? #d9e8e8 : #34464a));
+    out property <color> recessed-surface: root.system ? #0d1315 : (root.chalk ? #241d27 : (root.light ? #ecebea : #18191b));
+    out property <color> quiet-surface: root.system ? #172124 : (root.chalk ? #302c34 : (root.light ? #f8f7f4 : #202325));
     out property <color> image-surface: #020913;
-    out property <color> cyan: root.system ? Palette.accent-background : (root.chalk ? #a4dce1 : (root.light ? #007c94 : #21d8ff));
-    out property <color> blue: root.light ? #285fba : #3478ff;
-    out property <color> violet: root.chalk ? #9179a1 : (root.light ? #6443a3 : #7c4dff);
-    out property <color> magenta: root.chalk ? #ed9ccb : (root.light ? #a12475 : #ef38c7);
-    out property <color> green: root.chalk ? #a3ddb1 : (root.light ? #227a56 : #32dda0);
-    out property <color> yellow: root.chalk ? #caa55b : (root.light ? #6f5108 : #f4cc4d);
-    out property <color> orange: root.chalk ? #bd8158 : (root.light ? #9b4c12 : #ff9738);
-    out property <color> danger: root.chalk ? #ae5b4d : (root.light ? #9b2637 : #ff5268);
+    out property <color> cyan: root.system ? #27c8df : (root.chalk ? #a4dce1 : (root.light ? #007c94 : #79d0de));
+    out property <color> blue: root.system ? #428be8 : (root.light ? #285fba : #3288e8);
+    out property <color> violet: root.system ? #6d7fda : (root.chalk ? #9179a1 : (root.light ? #6443a3 : #9a72d2));
+    // Default deliberately maps the historical magenta semantic slot to logo gold.
+    out property <color> magenta: root.system ? #e7a13f : (root.chalk ? #ed9ccb : (root.light ? #a12475 : #d58ab4));
+    out property <color> green: root.system ? #45c486 : (root.chalk ? #a3ddb1 : (root.light ? #227a56 : #84c99c));
+    out property <color> yellow: root.system ? #e7c64b : (root.chalk ? #caa55b : (root.light ? #6f5108 : #e8c068));
+    out property <color> orange: root.system ? #ed843c : (root.chalk ? #bd8158 : (root.light ? #9b4c12 : #d78a4d));
+    out property <color> danger: root.system ? #dd5555 : (root.chalk ? #ae5b4d : (root.light ? #9b2637 : #d97482));
 }
 
 component Panel inherits Rectangle {
@@ -57,7 +60,7 @@ component Panel inherits Rectangle {
 component Heading inherits Text { color: AppTheme.foreground; font-size: 19px * AppTheme.font-scale; font-weight: 700; vertical-alignment: center; }
 component Label inherits Text { color: AppTheme.secondary-foreground; font-size: 14px * AppTheme.font-scale; vertical-alignment: center; }
 component NeonPanel inherits Rectangle {
-    background: AppTheme.system ? AppTheme.panel-background : (AppTheme.chalk ? @linear-gradient(135deg, #3e3540, #302c34) : (AppTheme.light ? @linear-gradient(135deg, #f8f7f4, #ecebea) : @linear-gradient(135deg, #06182d, #030d20)));
+    background: AppTheme.system ? AppTheme.panel-background : (AppTheme.chalk ? @linear-gradient(135deg, #3e3540, #302c34) : (AppTheme.light ? @linear-gradient(135deg, #f8f7f4, #ecebea) : @linear-gradient(135deg, #292c2e, #18191b)));
     border-width: 0px;
     border-radius: 9px;
     clip: true;
@@ -80,7 +83,7 @@ component NeonAction inherits Rectangle {
         root.tone == "active" ? AppTheme.green :
         root.tone == "purple" || root.tone == "embed" ? AppTheme.violet :
         root.danger || root.tone == "red" ? AppTheme.danger :
-        root.tone == "orange" ? #ff9738 :
+        root.tone == "orange" ? AppTheme.orange :
         root.tone == "yellow" ? AppTheme.yellow :
         root.tone == "cyan" || root.emphasized ? AppTheme.cyan :
         root.tone == "magenta" ? AppTheme.magenta : AppTheme.border;
@@ -97,18 +100,18 @@ component NeonAction inherits Rectangle {
              root.tone == "orange" ? #594733 :
              root.tone == "yellow" ? #595039 :
              root.tone == "purple" || root.tone == "embed" ? #463a50 : #3e3540) :
-        !root.enabled ? (AppTheme.light ? #e5e4e0 : #0b192a) :
-        action.pressed ? (AppTheme.light ? #d0dfe0 : #142f58) :
-        action.has-hover ? (AppTheme.light ? #e1e8e8 : #183a68) :
-        root.tone == "embed" ? #6730a4 :
-        root.tone == "purple" ? (AppTheme.light ? #c3b4d7 : #211444) :
+        !root.enabled ? (AppTheme.light ? #e5e4e0 : #242729) :
+        action.pressed ? (AppTheme.light ? #d0dfe0 : #3b4a4e) :
+        action.has-hover ? (AppTheme.light ? #e1e8e8 : #343b3e) :
+        root.tone == "embed" ? #514069 :
+        root.tone == "purple" ? (AppTheme.light ? #c3b4d7 : #342d40) :
         root.danger || root.tone == "red" ? @linear-gradient(90deg, #a40d2b, #e32937) :
         root.tone == "orange" ? @linear-gradient(90deg, #8d3b08, #d96b13) :
         root.tone == "yellow" ? @linear-gradient(90deg, #7b5e05, #b98b0b) :
-        root.tone == "cyan" ? (AppTheme.light ? #d9e8e8 : #082b46) :
-        root.tone == "magenta" ? (AppTheme.light ? #ead8e4 : #28174f) :
-        root.emphasized ? @linear-gradient(90deg, #163d72, #2a245d) :
-        (AppTheme.light ? #f1f0ed : #091c35);
+        root.tone == "cyan" ? (AppTheme.light ? #d9e8e8 : #26373a) :
+        root.tone == "magenta" ? (AppTheme.light ? #ead8e4 : #3d2f38) :
+        root.emphasized ? @linear-gradient(90deg, #294046, #353449) :
+        (AppTheme.light ? #f1f0ed : #292c2e);
     Text {
         x: 5px;
         width: parent.width - 10px;
@@ -130,7 +133,7 @@ component LaunchAction inherits Rectangle {
     height: 27px;
     border-radius: 6px;
     clip: true;
-    background: root.enabled ? @linear-gradient(90deg, #1bb8e0, #d335b5, #e7ad32, #37ce82) : AppTheme.border;
+    background: root.enabled ? (AppTheme.system ? @linear-gradient(90deg, #1bb8e0, #3478ff, #e7ad32, #37ce82) : @linear-gradient(90deg, #1bb8e0, #d335b5, #e7ad32, #37ce82)) : AppTheme.border;
     Rectangle {
         x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
         border-radius: 5px;
@@ -1286,10 +1289,10 @@ export component EmbedQueueWindow inherits Window {
     preferred-width: 780px; preferred-height: 620px;
     min-width: 600px; min-height: 420px;
     background: AppTheme.window-background;
-    in property <string> appearance-mode: "System";
+    in property <string> appearance-mode: "Default";
     changed appearance-mode => {
         AppTheme.appearance = root.appearance-mode;
-        if (root.appearance-mode == "System") { Palette.color-scheme = ColorScheme.unknown; }
+        if (root.appearance-mode == "Default" || root.appearance-mode == "System") { Palette.color-scheme = ColorScheme.dark; }
         if (root.appearance-mode == "Light") { Palette.color-scheme = ColorScheme.light; }
         if (root.appearance-mode == "Dark" || root.appearance-mode == "Chalk") { Palette.color-scheme = ColorScheme.dark; }
     }
@@ -1604,7 +1607,7 @@ export component AppWindow inherits Window {
     in-out property <bool> candidate-filter-locked: false;
     in-out property <bool> artwork-editing-expanded: true;
     in-out property <bool> show-artwork: true;
-    in-out property <string> appearance-mode: "System";
+    in-out property <string> appearance-mode: "Default";
     in-out property <bool> theme-menu-visible: false;
     in-out property <bool> help-menu-visible: false;
     in-out property <string> status-bar-intensity: "Full";
@@ -1751,6 +1754,7 @@ export component AppWindow inherits Window {
     in-out property <bool> settings-ai-allow-below: false;
     in-out property <string> settings-section: "Library";
     in-out property <bool> settings-advanced-visible: false;
+    in-out property <bool> settings-logging-expanded: false;
     in-out property <bool> settings-enhancement-changed: false;
     in-out property <string> settings-policy-source: "deezer";
     in-out property <bool> settings-policy-enabled: true;
@@ -1910,7 +1914,7 @@ export component AppWindow inherits Window {
 
     changed appearance-mode => {
         AppTheme.appearance = root.appearance-mode;
-        if (root.appearance-mode == "System") { Palette.color-scheme = ColorScheme.unknown; }
+        if (root.appearance-mode == "Default" || root.appearance-mode == "System") { Palette.color-scheme = ColorScheme.dark; }
         if (root.appearance-mode == "Light") { Palette.color-scheme = ColorScheme.light; }
         if (root.appearance-mode == "Dark" || root.appearance-mode == "Chalk") { Palette.color-scheme = ColorScheme.dark; }
     }
@@ -3288,7 +3292,7 @@ export component AppWindow inherits Window {
                     }
                 }
                 if root.settings-section == "Runtime": HorizontalLayout { spacing: 7px; horizontal-stretch: 1;
-                    NeonPanel { horizontal-stretch: 1;
+                    if !root.settings-logging-expanded: NeonPanel { horizontal-stretch: 1;
                         VerticalLayout { padding: 10px; spacing: 7px;
                             HorizontalLayout { height: 32px; spacing: 8px;
                                 Heading { text: "Processing"; color: AppTheme.cyan; horizontal-stretch: 1; }
@@ -3320,27 +3324,27 @@ export component AppWindow inherits Window {
                                         NeonAction { label: "Mode  " + root.launch-mode-label; enabled: !root.running; clicked => root.set-launch-mode(root.launch-mode-label == "READ"); }
                                     }
                                     Text { text: "Run " + root.run-completed + " / " + root.run-total + " Completed  ·  " + root.run-failed + " Failed"; color: root.run-failed > 0 ? AppTheme.danger : AppTheme.green; height: 24px; }
+                                    Heading { text: "Status Bar"; height: 29px; color: AppTheme.cyan; }
+                                    SettingsHelpTip { summary: "How does the status bar show activity?"; detail: "Active work fills the bar with the theme's yellow activity color and a moving highlight. Ready, success and error messages return to their semantic theme color. The status text has no separate background, so the themed bar remains visible through it. Mild and Off reduce or hide the activity treatment."; }
+                                    HorizontalLayout { height: 38px; spacing: 8px;
+                                        Label { text: "Intensity"; width: 208px; }
+                                        ComboBox { horizontal-stretch: 1; model: ["Aggressive", "Full", "Mild", "Off"]; current-value <=> root.settings-status-bar-intensity; }
+                                    }
+                                    HorizontalLayout { height: 38px; spacing: 8px;
+                                        Label { text: "Position"; width: 208px; }
+                                        ComboBox { horizontal-stretch: 1; model: ["Top", "Middle", "Bottom"]; current-value <=> root.settings-status-bar-position; }
+                                    }
+                                    HorizontalLayout { height: 38px; spacing: 8px;
+                                        Label { text: "Size"; width: 208px; }
+                                        ComboBox { horizontal-stretch: 1; model: ["Small", "Medium", "Large"]; current-value <=> root.settings-status-bar-size; }
+                                    }
+                                    OperationStatusBanner { horizontal-stretch: 1; status: "Working · Artwork Search Status Preview"; tone: "cyan"; intensity: root.settings-status-bar-intensity; bar-size: root.settings-status-bar-size; middle-position: root.settings-status-bar-position == "Middle"; header-aligned: root.settings-status-bar-position == "Top"; active: true; }
                                     if root.settings-advanced-visible: VerticalLayout { spacing: 6px;
                                         Heading { text: "Database Access"; height: 29px; color: AppTheme.cyan; }
                                         SettingToggle { label: "Shared/Network SQLite"; value <=> root.settings-sqlite-shared; }
                                         RadioToggle { label: "Use extra .client-lock for shared SQLite"; checked <=> root.settings-windows-client-lock; enabled: root.settings-sqlite-shared; height: 30px; }
                                         SettingsHelpTip { summary: "What must I check before sharing SQLite?"; detail: "Advanced: every client must point to the same database on a share with reliable cross-host locking. Shared mode uses SQLite rollback journaling and a 30-second busy timeout. The extra .client-lock is recommended only when every client participates and can acquire it; otherwise coordinate writes yourself. Read the Shared DB Guide before enabling."; }
                                         NeonAction { label: "Shared DB Guide ↗"; clicked => root.open-about-link("shared-db"); }
-                                        Heading { text: "Status Bar"; height: 29px; color: AppTheme.cyan; }
-                                        SettingsHelpTip { summary: "How does the status bar show activity?"; detail: "Active work fills the bar with the theme's yellow activity color and a moving highlight. Ready, success and error messages return to their semantic theme color. The status text has no separate background, so the themed bar remains visible through it. Mild and Off reduce or hide the activity treatment."; }
-                                        HorizontalLayout { height: 38px; spacing: 8px;
-                                            Label { text: "Intensity"; width: 208px; }
-                                            ComboBox { horizontal-stretch: 1; model: ["Aggressive", "Full", "Mild", "Off"]; current-value <=> root.settings-status-bar-intensity; }
-                                        }
-                                        HorizontalLayout { height: 38px; spacing: 8px;
-                                            Label { text: "Position"; width: 208px; }
-                                            ComboBox { horizontal-stretch: 1; model: ["Top", "Middle", "Bottom"]; current-value <=> root.settings-status-bar-position; }
-                                        }
-                                        HorizontalLayout { height: 38px; spacing: 8px;
-                                            Label { text: "Size"; width: 208px; }
-                                            ComboBox { horizontal-stretch: 1; model: ["Small", "Medium", "Large"]; current-value <=> root.settings-status-bar-size; }
-                                        }
-                                        OperationStatusBanner { horizontal-stretch: 1; status: "Working · Artwork Search Status Preview"; tone: "cyan"; intensity: root.settings-status-bar-intensity; bar-size: root.settings-status-bar-size; middle-position: root.settings-status-bar-position == "Middle"; header-aligned: root.settings-status-bar-position == "Top"; active: true; }
                                         Heading { text: "Reset Operational Settings"; height: 29px; color: AppTheme.danger; }
                                         SettingsHelpTip { summary: "What would Reset / Validate / Save change?"; detail: "This restores output, enhancement, source, scan, logging and history settings to safe defaults. Processing Mode becomes READ. It preserves the database, music, credentials, interface preferences and backup schedules. A timestamped config backup is made first."; }
                                         NeonAction { width: 220px; label: "Reset / Validate / Save"; danger: true; enabled: !root.running; clicked => { root.reset-settings-preview-visible = true; root.reset-settings-confirm-visible = false; root.reset-settings-confirmation-text = ""; } }
@@ -3351,7 +3355,10 @@ export component AppWindow inherits Window {
                     }
                     NeonPanel { horizontal-stretch: 2;
                         VerticalLayout { padding: 10px; spacing: 7px;
-                            Heading { text: "Logging"; height: 32px; color: AppTheme.violet; }
+                            HorizontalLayout { height: 32px; spacing: 8px;
+                                Heading { text: "Logging"; color: AppTheme.violet; horizontal-stretch: 1; }
+                                NeonAction { width: 38px; height: 30px; label: root.settings-logging-expanded ? "−" : "+"; tone: "cyan"; clicked => { root.settings-logging-expanded = !root.settings-logging-expanded; } }
+                            }
                             PathSettingField { label: "Log Directory *"; value <=> root.settings-log-dir; hint: "Persistent diagnostics"; browse => root.browse-setting-directory("logs"); }
                             HorizontalLayout { height: 25px; spacing: 8px;
                                 Label { text: "Diagnostic Log Level"; horizontal-stretch: 1; }
@@ -3637,7 +3644,7 @@ export component AppWindow inherits Window {
                                     Label { text: "Artwork Provider"; width: 220px; }
                                     ComboBox { horizontal-stretch: 1; model: ["deezer", "itunes", "fanarttv", "lastfm", "musicbrainz", "coverartarchive", "discogs", "amazon", "navidrome"]; current-value <=> root.settings-policy-source; selected(value) => root.load-source-policy(value); }
                                 }
-                                SettingToggle { label: "Include In Artwork Search"; value <=> root.settings-policy-enabled; }
+                                SettingToggle { label: "Include in Album Art Search"; value <=> root.settings-policy-enabled; }
                                 SettingToggle { label: "Include in Artist Art Search"; value <=> root.settings-policy-artist-enabled; enabled: root.settings-policy-artist-capable; }
                                 if !root.settings-policy-artist-capable: Text { text: "Disqualified · Album-Only source"; color: AppTheme.danger; font-size: 13px * AppTheme.font-scale; font-weight: 800; height: 24px; }
                                 SettingToggle { label: "Strict Range Override"; value <=> root.settings-policy-strict; }
@@ -3920,7 +3927,7 @@ export component AppWindow inherits Window {
     if root.theme-menu-visible: Rectangle {
         width: 156px; height: 174px; x: root.width - 340px; y: 56px; border-radius: 7px; border-width: 1px; border-color: AppTheme.cyan; background: AppTheme.panel-background;
         VerticalLayout { padding: 5px; spacing: 3px;
-            for choice in ["System", "Dark", "Light", "Chalk"]: NeonAction {
+            for choice in ["Default", "Dark", "Light", "Chalk"]: NeonAction {
                 height: 37px; label: choice; tone: root.appearance-mode == choice ? "active" : "cyan";
                 clicked => { root.set-appearance(choice); root.theme-menu-visible = false; }
             }

@@ -1840,7 +1840,20 @@ function renderBackupSettings(host, saved, contract, onRestored, advanced = fals
 function renderRuntimeSettings(host, section, draft, bindings, saved, advanced) {
   const layout = node("div", "runtime-settings-layout"), processing = node("section", "runtime-column"), logging = node("section", "runtime-column");
   processing.append(node("h4", "", "Processing")); settingsHelp(processing, "When can SPLINED change files?", "Only Live Write permits explicit WRITE and EMBED actions. Read mode keeps searching and previewing available without changing media files.");
-  logging.append(node("h4", "", "Logging"));
+  const loggingHeading = node("div", "runtime-column-heading");
+  loggingHeading.append(node("h4", "", "Logging"));
+  const loggingExpand = node("button", "runtime-expand-toggle", "+");
+  loggingExpand.type = "button";
+  const setLoggingExpanded = expanded => {
+    layout.classList.toggle("logging-expanded", expanded);
+    loggingExpand.textContent = expanded ? "−" : "+";
+    loggingExpand.title = expanded ? "Compress Logging" : "Expand Logging";
+    loggingExpand.setAttribute("aria-label", loggingExpand.title);
+    loggingExpand.setAttribute("aria-expanded", String(expanded));
+  };
+  loggingExpand.addEventListener("click", () => setLoggingExpanded(!layout.classList.contains("logging-expanded")));
+  setLoggingExpanded(false);
+  loggingHeading.append(loggingExpand); logging.append(loggingHeading);
   for (const descriptor of section.fields || []) {
     if (descriptor.runtimes && !descriptor.runtimes.includes("webgui") || descriptor.advanced && !advanced) continue;
     if (["scan.sqlite_shared", "scan.windows_client_lock"].includes(descriptor.path)) continue;

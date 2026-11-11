@@ -93,7 +93,7 @@
         "path": "source_policies",
         "label": "Selected Source Quality Policy",
         "fields": [
-          {"path": "enabled", "label": "Include In Artwork Search", "type": "boolean"},
+          {"path": "enabled", "label": "Include in Album Art Search", "type": "boolean"},
           {"path": "include_in_artist_art_search", "label": "Include in Artist Art Search", "type": "boolean"},
           {"path": "strict_override", "label": "Strict Range Override", "type": "boolean"},
           {"path": "source_override", "label": "Custom Source Policy", "type": "boolean"},

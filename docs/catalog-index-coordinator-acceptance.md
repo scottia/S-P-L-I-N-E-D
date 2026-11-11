@@ -673,33 +673,52 @@ Status: **PASSED**.
 
 ### Supplemental source, logging and theme parity corrections
 
-- WebGUI Fanart Artist Art discovery now retains the same bounded set as the
-  native client: two backgrounds and up to ten portraits. The former WebGUI
-  three-portrait cap caused the Accept test case to return fewer candidates
-  with otherwise identical providers and Candidate Filters.
+- WebGUI Artist Art discovery now follows the native provider contract rather
+  than a second, smaller set of limits: Fanart keeps two backgrounds and up to
+  ten portraits, Deezer keeps five exact Artist identities, Last.fm keeps up to
+  eight non-placeholder images, Discogs inspects five exact Artist identities
+  and retains up to four Artist images from each, and iTunes keeps three exact
+  Artist profiles. The browser-only global 16-candidate cutoff was removed;
+  each provider remains independently bounded. A live Accept query against the
+  established test credentials returned the same 14 remote results permitted
+  by Windows (Fanart 5, Discogs 4, iTunes 3 and Deezer 2, zero provider
+  warnings). Adding the two local files and one Navidrome portrait restores the
+  expected 17-card result. Album search retains the already shared provider
+  request bounds and Candidate Filter policy evidence; Artist Art is never
+  mixed into Album candidates or vice versa.
 - Settings source cards now share the Candidate Findings contract: Samples and
   Local Files remain visible, one large search glyph owns separate Artist and
   Cover rows, source names remain readable, and Deezer uses the same generic
   card layout. Album-only providers remain visible but their Artist Art option
   is disabled and labelled `Disqualified` in both clients. Persistence also
   clamps invalid imported or historical Artist Art flags instead of trusting
-  the disabled control alone.
-- WebGUI Processing & Logs gained the shared Status Bar controls. Audit action
+  the disabled control alone. The two independent controls are now named
+  `Include in Album Art Search` and `Include in Artist Art Search`; the former
+  is no longer ambiguous with the latter.
+- WebGUI Processing & Logs gained the shared Status Bar controls, and both
+  clients now expose them without requiring Advanced mode. Audit action
   filtering is case-insensitive across the complete readable event, not only
   the action column; events are selectable and severity-coloured. The obsolete
   Reconciliation Conflicts Settings surface was removed. Windows gained the
   corresponding Database Audit toggle and filterable, copyable Windows Events
   view; SQLite audit records statement class and table only and never writes
-  SQL values.
+  SQL values. Each Logging heading now has a `+` control that expands Logging
+  over the Processing column and a `−` control that restores the two-column
+  layout.
 - `Update Selected Source Policy` remains because it transfers the selected
   provider editor into the unsaved Settings draft; the section-level Save then
   validates and persists the complete source order and provider set. Both
   clients now place this control directly above its explanatory help.
-- Native artwork surfaces no longer inherit theme opacity. Windows Chalk now
-  uses the WebGUI Chalk palette, Dark remains the explicit WebGUI Dark palette,
-  System delegates surfaces and accent to the active Windows palette, and Light
-  uses readable grey library text for unprocessed rows. Library list text in
-  both clients is theme-owned while semantic state colours remain authoritative.
+- Native artwork surfaces no longer inherit theme opacity. Windows Chalk uses
+  the WebGUI Chalk palette and Light uses readable grey library text for
+  unprocessed rows. The former Windows `System` choice is now `Default` (saved
+  `System` preferences migrate to it); Default uses the cyan, blue, violet,
+  gold, green, yellow, orange and red SPLINED-logo family for controls and
+  frames without pink or magenta UI accents, and WebGUI exposes the same
+  Default choice. Windows Dark now uses the exact WebGUI Dark charcoal surface,
+  line, selected-state and semantic palette instead of the former blue theme.
+  Library list text in both clients is theme-owned while semantic state colours
+  remain authoritative.
 - The legacy `artist_art_targets_for_albums` name is intentionally retained as
   a test-only wrapper (`#[cfg(test)]`). Production uses the projection-aware
   `artist_art_targets_for_albums_with_projection` path introduced with credited
@@ -711,26 +730,29 @@ Status: **PASSED**.
   2026-11-09 and left the original name as a compatibility seam for those
   focused tests. It is not a second Artist Art implementation or runtime path.
 
-Focused validation: **41/41 WebGUI source/audit/render tests**, **392/392 full
+Focused validation: **41/41 WebGUI source/audit/render tests**, **393/393 full
 WebGUI tests (78 environment-dependent skips)**, **532/532 Windows core tests**,
 **115/115 Windows application tests**, JavaScript syntax, Slint/Rust compilation,
 and `git diff --check` passed.
 
-Installed validation: the restarted WebGUI visibly presents Samples and Local
-Files, the shared large-search/two-row provider cards, Album-only provider
-states, and the generic Artist-only Deezer card. The installed native build
-visibly presented undimmed Selected Artwork under Chalk, the matching source
-cards (including Samples, the shared search glyph/rows and generic Deezer), and
-the expanded Processing & Logs layout with Database Audit Log plus filterable,
-copyable Windows Events. The source editor visibly retained the two-stage
-Update Selected Source Policy/section Save workflow and its explanatory help.
+Installed validation: WebGUI 2.0.36 was restarted against the established test
+PostgreSQL service and reports `database_ready=true`; its live-served assets
+contain Default, the standard-access Status Bar, and Logging expand/compress.
+The updated native 2.0.36 executable was installed and started from
+`E:\apps\SPLINED\splined.exe` with SHA-256
+`0FCE276B79A105790A8322C23557EFCB813D9DF90DE2AFBB4887B42DB2987456`.
+The PC session allowed accessibility inspection but rejected cursor input and
+monitor capture, so new installed-client interaction/screenshots for the theme
+menu and `+`/`−` controls were not claimed. Earlier installed evidence for the
+source-card, artwork-opacity, audit and two-stage source-policy corrections
+remains valid; current-head source contracts and complete automated suites pass.
 
 ### Final regression evidence and installed revisions
 
 - Windows: **532 core + 115 application tests passed**; the full Rust workspace,
   focused duplicate-flight, resource, thumbnail, progress/cancellation,
   forced-interruption and identity-history tests passed.
-- WebGUI: **392 passed, 78 skipped** in the full suite. Browser behavior is
+- WebGUI: **393 passed, 78 skipped** in the full suite. Browser behavior is
   **87/87 passed** after the cancellation-status correction. The focused real
   PostgreSQL pool, no-provider, thumbnail, progress/cancellation, forced
   interruption, `American Pie 2` and `A$AP Rocky` regressions passed.
@@ -739,7 +761,7 @@ Update Selected Source Policy/section Save workflow and its explanatory help.
   final-head CI is recorded on PR #170 after the documentation commit.
 - Installed Windows 2.0.36 executable:
   `E:\apps\SPLINED\splined.exe`, SHA-256
-  `B8A1A60559CD8C74DD0A52F97BAC87EB0B8326292797ECD63086EB7520BF209B`.
+  `0FCE276B79A105790A8322C23557EFCB813D9DF90DE2AFBB4887B42DB2987456`.
   The installed WebGUI runs current PR source at 2.0.36 against the established
   PostgreSQL service. Credentialed startup was restored after localhost-only UI
   validation (`auth_required=true`, `database_ready=true`).

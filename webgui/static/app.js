@@ -70,7 +70,7 @@ const state = {
   mediaSelected: new Set(), candidateFilters: new Map(), mediaFilterLocked: false, candidateFilterLocked: false,
   sourceDiagnostics: [],
   fx: {artist: {}, banner: {}, album: {}, comp: {}, current: {}, package: {}}, fit: {artist: {zoom: 1, x: 0, y: 0}, banner: {zoom: 1, x: 0, y: 0}},
-  theme: "dark", compare: new Set(), graphicalEnhancement: normalizeGraphicalEnhancement(),
+  theme: "default", compare: new Set(), graphicalEnhancement: normalizeGraphicalEnhancement(),
   artworkRange: {min: 1200, ideal: 1800, max: 2400, ladder: 3600},
   embedQueue: [], queueControls: {pause_after_album: false, pause_all_albums: false}, queuedDecision: null, reviewJobState: "", listRequest: 0, selectionRequest: 0, searchRequest: 0,
   jobs: [], launchActive: false, launchStopping: false, launchAbort: null,
@@ -2673,7 +2673,7 @@ $("compReportButton").addEventListener("click", () => {
 $("themeButton").addEventListener("click", () => {
   showDialog("Theme", ["Choose the Windows inspired workspace palette. Your choice is kept in this browser."]);
   const options = node("div", "theme-options");
-  for (const [key, label] of [["dark", "Dark"], ["chalk", "Chalk"], ["light", "Light"]]) {
+  for (const [key, label] of [["default", "Default"], ["dark", "Dark"], ["chalk", "Chalk"], ["light", "Light"]]) {
     const button = node("button", "minor-button" + (state.theme === key ? " active" : ""), label); button.type = "button";
     button.addEventListener("click", () => { state.theme = key; document.documentElement.dataset.theme = key; try { localStorage.setItem("splined.browser-preview.theme", key); } catch {} $("workspaceDialog").close(); setStatus(label + " theme selected"); }); options.append(button);
   }
@@ -2824,4 +2824,5 @@ for (const id of ["selectedFrame", "artistPane", "bannerPane"]) {
   for (const end of ["pointerup", "pointercancel", "lostpointercapture"]) host.addEventListener(end, () => { drag = null; });
 }
 for (const id of SCROLL_SURFACES) $(id).addEventListener("scroll", () => rememberScroll(id), {passive: true});
-try { const theme = localStorage.getItem("splined.browser-preview.theme"); if (["dark", "chalk", "light"].includes(theme)) { state.theme = theme; document.documentElement.dataset.theme = theme; } } catch {}
+document.documentElement.dataset.theme = state.theme;
+try { const theme = localStorage.getItem("splined.browser-preview.theme"); if (["default", "dark", "chalk", "light"].includes(theme)) { state.theme = theme; document.documentElement.dataset.theme = theme; } } catch {}
