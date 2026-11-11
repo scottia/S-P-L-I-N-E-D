@@ -17,7 +17,7 @@ Status: **PASSED** at `a2f3d4f`.
 
 ## Requirement 1 — streaming inventory and bounded batches
 
-Status: **IN PROGRESS — local acceptance passed; checkpoint CI pending**.
+Status: **PASSED** at `0be0654`.
 
 Acceptance contract:
 
@@ -109,6 +109,7 @@ Reproducible harnesses:
 - `windows/examples/catalog_index_benchmark.rs`
 - `debug/catalog-index-postgres-benchmark.py`
 
-Remaining gate before marking Requirement 1 passed: the checkpoint commit and
-its GitHub Actions run must be green. Installed Windows/WebGUI progress and
-cancellation behavior belongs to Requirement 10 and is not claimed here.
+Checkpoint CI: [Validate supported runtimes run 42927892519](https://github.com/scottia/S-P-L-I-N-E-D/actions/runs/42927892519)
+passed WebGUI, native Rust, validation selection, and the Windows advisory job.
+Installed Windows/WebGUI progress and cancellation behavior belongs to
+Requirement 10 and is not claimed here.
