@@ -116,7 +116,7 @@ Requirement 10 and is not claimed here.
 
 ## Requirement 2 — persistent index generations
 
-Status: **IN PROGRESS — local acceptance passed; checkpoint CI pending**.
+Status: **PASSED** at `e13301b`.
 
 Acceptance contract:
 
@@ -160,5 +160,5 @@ Implementation and defect corrections:
 - WebGUI full suite: **375 passed** in 379.179 seconds, including the rendered
   Edge browser workflow.
 
-Remaining gate before marking Requirement 2 passed: the checkpoint commit and
-its GitHub Actions run must be green.
+Checkpoint CI: [Validate supported runtimes run 42931286109](https://github.com/scottia/S-P-L-I-N-E-D/actions/runs/42931286109)
+passed WebGUI, native Rust, validation selection, and the Windows advisory job.
