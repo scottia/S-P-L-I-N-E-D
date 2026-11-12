@@ -138,7 +138,9 @@ pub struct UiPreferences {
     pub status_bar_intensity: String,
     pub status_bar_position: String,
     pub status_bar_size: String,
-    /// Additional application typography scaling layered on top of Windows DPI.
+    /// Proportional SPLINED interface scaling layered on top of native
+    /// Windows PerMonitorV2 DPI.  The serialized field name is retained for
+    /// backward compatibility with existing ui.toml files.
     pub display_scale_percent: u16,
     pub workspace_mode: u8,
     pub library_view: String,

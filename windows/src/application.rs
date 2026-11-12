@@ -484,6 +484,47 @@ impl LibraryState {
         }
     }
 
+    /// Project the latest opposing-client write into the Artist aggregate.
+    /// The Album card remains grey/overridden in the presentation layer, but
+    /// a verified opposing write represents completed work and must not turn
+    /// an otherwise complete Artist purple or white.
+    pub fn artist_state_with_overrides(
+        &self,
+        artist: &str,
+        completed_overrides: &HashSet<String>,
+    ) -> ArtistState {
+        let indices = self.artist_album_indices(&self.artist_indices(artist));
+        let values = indices
+            .iter()
+            .map(|index| &self.albums[*index])
+            .collect::<Vec<_>>();
+        let overridden = |album: &AlbumEntry| {
+            completed_overrides.contains(&album.snapshot.album_key.to_ascii_lowercase())
+        };
+        if values
+            .iter()
+            .any(|album| !overridden(album) && album.state == AlbumState::Bypassed)
+        {
+            ArtistState::ContainsBypass
+        } else if values.is_empty()
+            || values
+                .iter()
+                .all(|album| !overridden(album) && album.state == AlbumState::New)
+        {
+            ArtistState::Unprocessed
+        } else if values.iter().all(|album| {
+            overridden(album)
+                || matches!(
+                    album.state,
+                    AlbumState::Processed | AlbumState::TimeoutActive
+                )
+        }) {
+            ArtistState::Complete
+        } else {
+            ArtistState::Partial
+        }
+    }
+
     fn artists(&self) -> BTreeMap<String, Vec<usize>> {
         let mut values = BTreeMap::<String, Vec<usize>>::new();
         for (index, album) in self.albums.iter().enumerate() {
@@ -5149,6 +5190,23 @@ mod tests {
         assert_eq!(
             LibraryState::artist_state(artists["Gamma"].iter().map(|index| &state.albums[*index])),
             ArtistState::ContainsBypass
+        );
+    }
+
+    #[test]
+    fn opposing_overrides_count_as_complete_in_artist_aggregate() {
+        // Artist aggregates intentionally exclude unidentified COMP fallback
+        // folders, so exercise the same MBID-backed Album projection used by
+        // the live Artist list.
+        let state = artist_library();
+        let completed_overrides = HashSet::from(["a".to_string()]);
+        assert_eq!(
+            state.artist_state_with_overrides("Alpha", &completed_overrides),
+            ArtistState::Complete
+        );
+        assert_eq!(
+            state.artist_state_with_overrides("Gamma", &HashSet::from(["d".to_string()])),
+            ArtistState::Complete
         );
     }
 

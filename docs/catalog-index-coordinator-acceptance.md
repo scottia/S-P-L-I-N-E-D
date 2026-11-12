@@ -962,9 +962,62 @@ above the surface wash and `filter: none` on Selected Artwork. Selecting Light
 repainted the full workspace and reported the exact Windows primary/secondary
 grey values above, with the active controls and body using the primary grey.
 The Windows Slint source accepts the same shared texture plus native Rectangle
-drop shadows and passed `cargo check`. At the owner's request, the new native
-executable was not installed yet; that build and installed visual comparison
-are deferred so they can be combined with the next two Windows corrections.
+drop shadows and passed `cargo check`. Its native installation evidence is
+recorded with the Windows UI scale and biography follow-up below.
+
+### Windows UI scale and biography typography follow-up
+
+- Windows retains native PerMonitorV2 awareness and Slint logical-pixel window
+  geometry. The existing persisted `display_scale_percent` preference remains
+  backward-compatible in `ui.toml`, but now drives a proportional application
+  UI scale for typography, icons, hit targets, controls, rows, cards,
+  thumbnails, spacing, padding and pane constraints. It does not set
+  `SLINT_SCALE_FACTOR`, override Windows DPI, stretch the rendered window or
+  resize the native window bounds. Responsive narrow-window reflow remains an
+  independent multiplier.
+- Biography layout no longer estimates text width from character counts or
+  uses Slint `HorizontalLayout` with `space-between`. Windows now composes the
+  paragraph with DirectWrite's measured Segoe UI glyph advances and justified
+  paragraph alignment. An embedded English (US) Knuth-Liang dictionary inserts
+  discretionary soft-hyphen opportunities only in the transient layout copy;
+  the stored biography is unchanged. DirectWrite leaves the final paragraph
+  line natural rather than justified.
+- Collapsed biographies expose five composed text lines and expanded
+  biographies expose at most ten. `(…more)` and `(less…)` are final inline text
+  runs on the last visible Biography row, matching WebGUI presentation. The
+  complete Biography paragraph is the one click surface; there is no separate
+  control row or fragile suffix-only hit target. The reserved inline lane keeps
+  the suffix from changing paragraph justification or clipping the last word.
+- Native Biography copy uses the same bright white treatment as WebGUI in
+  non-Light themes; Light keeps the accepted dark-grey text for contrast. This
+  paragraph, UI-scale and expansion-control correction is Windows-only.
+- Focused contracts verify proportional 80/90/100/110/125 percent choices,
+  native window bounds, responsive paragraph reflow, bounded justified gaps,
+  source-text preservation and the single clickable paragraph with an inline
+  expansion suffix. The full Windows workspace passed **534 core + 121
+  application tests** at this source revision. The test PC's active monitor
+  reports 96 DPI (100 percent); installed
+  80/100/125 percent application-scale validation is recorded below after the
+  local native installation. Live Windows-DPI 125/150 percent evidence remains
+  distinct from deterministic geometry/reflow coverage and is not claimed
+  unless an appropriate test monitor/session is available.
+
+### Opposing override Artist aggregation follow-up
+
+- An opposing-client verified Album write continues to render that Album card
+  grey/overridden. For the containing Artist aggregate only, that verified
+  override now contributes completed work. Therefore an Artist whose Albums are
+  local green completions and/or opposing grey overrides renders **green Artist
+  Complete**, never purple partial and never white unprocessed.
+- Windows applies the projection from the newest WebGUI coordination writer;
+  WebGUI applies the equivalent projection from the newest Windows writer.
+  Neither client rewrites the Album's stored catalog status, coordination
+  history, database schema or opposing-card presentation.
+- Focused regressions cover an incomplete Album completed by the opposing
+  client, a local green plus opposing grey Artist, and an overridden local
+  bypass. Full validation passed **534/534 Windows core**, **121/121 Windows
+  application**, and **402/402 WebGUI tests** with **78 environment-dependent
+  skips**.
 
 ### Final regression evidence and installed revisions
 

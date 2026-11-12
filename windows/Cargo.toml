@@ -24,6 +24,7 @@ crossterm = "0.29.0"
 futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 hmac = "0.13.0"
+hyphenation = { version = "0.8.4", features = ["embed_en-us"] }
 lofty = "0.25.1"
 rand = "0.10.2"
 regex = "1.12.3"
@@ -47,6 +48,6 @@ url = "2.5.8"
 slint-build = { version = "=1.18.1", default-features = false, features = ["compat-1-18"] }
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62.2", features = ["Foundation", "Foundation_Collections", "Services_Store", "Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.62.2", features = ["Foundation", "Foundation_Collections", "Services_Store", "Win32_Foundation", "Win32_Graphics_DirectWrite", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_NetworkManagement_WNet", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 windows-registry = "0.100.0"

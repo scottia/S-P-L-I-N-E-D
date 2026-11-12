@@ -1,5 +1,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod biography_layout;
+
 use futures_util::{StreamExt, stream};
 use image::AnimationDecoder;
 use sha2::{Digest, Sha256};
@@ -788,103 +790,36 @@ struct SavedArtistPackage {
     banner: Option<PathBuf>,
 }
 
-const BIOGRAPHY_SPACE_EM: f32 = 0.28;
-
-fn biography_character_width_em(character: char) -> f32 {
-    match character {
-        'i' | 'l' | 'j' | 'I' | '!' | '|' => 0.26,
-        'f' | 'r' | 't' | '(' | ')' | '[' | ']' => 0.36,
-        'm' | 'w' => 0.78,
-        'M' | 'W' => 0.88,
-        'A'..='Z' => 0.64,
-        '0'..='9' => 0.55,
-        '.' | ',' | ':' | ';' | '\'' | '’' | '"' => 0.27,
-        '-' | '–' | '—' | '/' | '\\' => 0.40,
-        character if character.is_ascii_lowercase() => 0.51,
-        character if character.is_whitespace() => BIOGRAPHY_SPACE_EM,
-        _ => 0.58,
-    }
-}
-
-fn biography_word_width_em(word: &str) -> f32 {
-    word.chars().map(biography_character_width_em).sum()
-}
-
-/// Produce line/word models for the CSS `text-align: justify` shape that Slint
-/// 1.18's Text element cannot render natively. The UI gives each complete line
-/// a `space-between` layout and leaves the final line naturally left aligned.
+/// Compose the native biography paragraph with DirectWrite metrics.  Slint
+/// receives fixed word positions rather than approximating glyph widths or
+/// stretching a `space-between` row.
 fn layout_artist_biography(
     biography: &str,
     width_px: f32,
     font_scale: f32,
 ) -> Vec<UiBiographyLine> {
-    let width_px = width_px.max(80.0);
-    let font_px = 15.0 * font_scale.clamp(0.5, 3.0);
-    // Leave a small safety margin for renderer/font-metric differences so a
-    // justified line never wraps into an accidental sixth collapsed line.
-    let target_width_em = (width_px / font_px * 0.90).max(8.0);
-    let paragraphs = biography.split('\n').map(str::trim).collect::<Vec<_>>();
-    let mut rendered = Vec::new();
-
-    for paragraph in paragraphs {
-        if paragraph.is_empty() {
-            if rendered
-                .last()
-                .is_some_and(|line: &UiBiographyLine| line.words.row_count() > 0)
-            {
-                rendered.push(UiBiographyLine {
-                    words: model(Vec::<SharedString>::new()),
-                    justified: false,
-                });
-            }
-            continue;
-        }
-
-        let mut lines: Vec<Vec<&str>> = Vec::new();
-        let mut current = Vec::new();
-        let mut current_width = 0.0;
-        for word in paragraph.split_whitespace() {
-            let word_width = biography_word_width_em(word);
-            let proposed = if current.is_empty() {
-                word_width
-            } else {
-                current_width + BIOGRAPHY_SPACE_EM + word_width
-            };
-            if !current.is_empty() && proposed > target_width_em {
-                lines.push(std::mem::take(&mut current));
-                current_width = word_width;
-                current.push(word);
-            } else {
-                current.push(word);
-                current_width = proposed;
-            }
-        }
-        if !current.is_empty() {
-            lines.push(current);
-        }
-
-        let last_line = lines.len().saturating_sub(1);
-        for (line_index, words) in lines.into_iter().enumerate() {
-            let natural_width = words
-                .iter()
-                .map(|word| biography_word_width_em(word))
-                .sum::<f32>()
-                + BIOGRAPHY_SPACE_EM * words.len().saturating_sub(1) as f32;
-            // A very long following word can leave the preceding line sparse.
-            // Stretching that row across the full overview produces the large,
-            // erratic gaps reported on narrow displays. Keep genuinely full
-            // rows justified and render sparse rows with normal word spacing.
-            let justified = line_index != last_line
-                && words.len() > 1
-                && natural_width >= target_width_em * 0.72;
-            rendered.push(UiBiographyLine {
-                words: model(words.into_iter().map(SharedString::from).collect()),
-                justified,
-            });
-        }
-    }
-
-    rendered
+    biography_layout::compose(
+        biography,
+        width_px.max(80.0),
+        15.0 * font_scale.clamp(0.5, 3.0),
+    )
+    .unwrap_or_default()
+    .into_iter()
+    .map(|line| UiBiographyLine {
+        words: model(
+            line.words
+                .into_iter()
+                .map(|word| UiBiographyWord {
+                    text: word.text.into(),
+                    x: word.x,
+                    width: word.width,
+                })
+                .collect(),
+        ),
+        justified: line.justified,
+        extent: line.extent,
+    })
+    .collect()
 }
 
 fn bind_biography_text_callbacks(ui: &AppWindow) {
@@ -20188,8 +20123,23 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
 
 fn library_ui_model_from_rows(
     state: &ApplicationState,
-    rows: Vec<splined_core::application::LibraryRow>,
+    mut rows: Vec<splined_core::application::LibraryRow>,
 ) -> ModelRc<UiLibraryRow> {
+    let completed_overrides = state
+        .album_override_writers
+        .iter()
+        .filter(|(_, writer)| writer.eq_ignore_ascii_case("webgui"))
+        .map(|(album_key, _)| album_key.to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+    if !completed_overrides.is_empty() {
+        for row in rows.iter_mut().filter(|row| row.kind == "artist") {
+            row.status = state
+                .library
+                .artist_state_with_overrides(&row.primary, &completed_overrides)
+                .label()
+                .to_string();
+        }
+    }
     Rc::new(LibraryUiModel {
         rows,
         preview_size: 64,
@@ -25344,14 +25294,25 @@ mod tests {
         assert!(lines[..lines.len() - 1].iter().all(|line| line.justified));
         assert!(!lines.last().unwrap().justified);
 
-        let normalized = lines
+        let words = lines
             .iter()
             .flat_map(|line| {
                 (0..line.words.row_count()).filter_map(|index| line.words.row_data(index))
             })
-            .map(|word| word.to_string())
-            .collect::<Vec<_>>()
-            .join(" ");
+            .map(|word| word.text.to_string())
+            .collect::<Vec<_>>();
+        let mut normalized = String::new();
+        for word in words {
+            if normalized.ends_with('-') {
+                normalized.pop();
+                normalized.push_str(&word);
+            } else {
+                if !normalized.is_empty() {
+                    normalized.push(' ');
+                }
+                normalized.push_str(&word);
+            }
+        }
         assert_eq!(normalized, biography);
     }
 
@@ -25361,6 +25322,37 @@ mod tests {
         let narrow = layout_artist_biography(biography, 360.0, 1.0);
         let wide = layout_artist_biography(biography, 760.0, 1.0);
         assert!(narrow.len() > wide.len());
+    }
+
+    #[test]
+    fn windows_ui_scale_is_proportional_and_keeps_native_window_geometry() {
+        let source = include_str!("../ui/app.slint");
+        assert!(source.contains("in-out property <float> ui-scale: 1.0"));
+        assert!(source.contains("Label { text: \"UI Scale\""));
+        assert!(source.contains("height: (38px * AppTheme.ui-scale)"));
+        assert!(
+            source.contains("height: root.item.kind == \"artist\" ? (74px * AppTheme.ui-scale)")
+        );
+        assert!(source.contains("width: (165px * AppTheme.ui-scale)"));
+        assert!(source.contains("preferred-width: 1680px; preferred-height: 945px;"));
+        assert!(!source.contains("SLINT_SCALE_FACTOR"));
+        for choice in ["80%", "90%", "100%", "110%", "125%"] {
+            assert!(source.contains(choice));
+        }
+    }
+
+    #[test]
+    fn windows_biography_expansion_is_a_single_clickable_paragraph() {
+        let source = include_str!("../ui/app.slint");
+        assert!(source.contains("index < (root.artist-biography-expanded ? 10 : 5)"));
+        assert!(
+            source.contains("height: self.visible ? overview-panel.biography-line-height : 0px")
+        );
+        assert!(source.contains("biography-toggle-reserve"));
+        assert!(source.contains("index == overview-panel.biography-toggle-line-index"));
+        assert!(source.contains("x: min(line.extent * 1px"));
+        assert!(source.contains("width: biography-copy.width; height: biography-copy.height"));
+        assert!(!source.contains("+ (overview-panel.biography-overflows ? 1 : 0)"));
     }
 
     #[test]

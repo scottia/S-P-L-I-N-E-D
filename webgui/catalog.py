@@ -1533,10 +1533,12 @@ class Catalog:
                     "WHERE COALESCE(compilation,0)=0 "
                     "OR TRIM(COALESCE(musicbrainz_albumid,''))<>''"
                 ).fetchall()
+                coordination = self._album_write_coordination(db, status_rows)
                 projected_statuses = True
             except sqlite3.OperationalError:
                 # Reduced read-only fixtures can predate Album status fields.
                 status_rows = []
+                coordination = {}
                 projected_statuses = False
         existing_identities = {
             normalized_artist_identity(row["artist_name"]) for row in rows
@@ -1549,10 +1551,17 @@ class Catalog:
         statuses_by_artist: dict[str, list] = {}
         owned_album_keys: dict[str, set[str]] = {}
         for row in status_rows:
-            statuses_by_artist.setdefault(str(row["artist_key"]), []).append(row)
-            owned_album_keys.setdefault(str(row["artist_key"]), set()).add(
-                str(row["album_key"])
+            album_key = str(row["album_key"])
+            effective_status = (
+                "processed"
+                if str(coordination.get(album_key, {}).get("writer", "")).casefold()
+                == "windows"
+                else str(row["status"] or "unprocessed")
             )
+            statuses_by_artist.setdefault(str(row["artist_key"]), []).append(
+                {"album_key": album_key, "status": effective_status}
+            )
+            owned_album_keys.setdefault(str(row["artist_key"]), set()).add(album_key)
         result = []
         for group in self._artist_groups(rows):
             canonical = self._canonical_artist_row(group)
@@ -1577,8 +1586,15 @@ class Catalog:
             ]
             if appearance:
                 status_group.extend(
-                    {"status": status}
-                    for status in appearance.get("statuses", {}).values()
+                    {
+                        "status": (
+                            "processed"
+                            if str(coordination.get(album_key, {}).get("writer", "")).casefold()
+                            == "windows"
+                            else status
+                        )
+                    }
+                    for album_key, status in appearance.get("statuses", {}).items()
                 )
             # Initial catalog loading is PostgreSQL-only. Local/Navidrome
             # artwork is hydrated by the dedicated lazy endpoint so hundreds

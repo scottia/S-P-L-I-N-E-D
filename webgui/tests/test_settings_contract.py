@@ -210,7 +210,7 @@ class SettingsContractTests(unittest.TestCase):
             '"BelowMinimum"',
         ):
             self.assertIn(key, main)
-        self.assertIn("height: 520px", slint)
+        self.assertIn("height: (520px * AppTheme.ui-scale)", slint)
 
     def test_windows_selected_album_shows_processing_and_embedding_facts(self) -> None:
         main = (REPOSITORY / "windows/src/main.rs").read_text(encoding="utf-8")

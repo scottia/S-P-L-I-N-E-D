@@ -107,6 +107,46 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             "mbid:aerosmith",
         )
 
+    def test_opposing_override_counts_as_complete_in_artist_aggregate(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "index.sqlite"
+            with closing(connect(database)) as db:
+                db.execute(
+                    "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,"
+                    "musicbrainz_artistid TEXT,primary_path TEXT,status TEXT)"
+                )
+                db.execute(
+                    "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,"
+                    "status TEXT,compilation INTEGER,musicbrainz_albumid TEXT)"
+                )
+                db.execute(
+                    "CREATE TABLE album_artwork_write_coordination (album_key TEXT,"
+                    "relative_path TEXT,writer TEXT,operation TEXT,event_id TEXT,"
+                    "source_completed_ms INTEGER,revision INTEGER,completed_at TEXT)"
+                )
+                db.execute(
+                    "INSERT INTO artists VALUES ('band','Band','',?,'partial')",
+                    (str(root / "Band"),),
+                )
+                db.executemany(
+                    "INSERT INTO albums VALUES (?,?,?,?,?)",
+                    [
+                        ("local-green", "band", "processed", 0, "release-green"),
+                        ("windows-grey", "band", "incomplete", 0, "release-grey"),
+                    ],
+                )
+                db.execute(
+                    "INSERT INTO album_artwork_write_coordination VALUES "
+                    "('windows-grey','','windows','write-cover','event-1',100,1,'now')"
+                )
+                db.commit()
+
+            app = PreviewApp(root, database, root, root)
+            listed = app.artists("")[0]
+            self.assertEqual(listed["status"], "complete")
+            self.assertEqual(listed["albums"], 2)
+
     def test_compilation_owned_by_artist_key_is_not_a_primary_artist_album(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
