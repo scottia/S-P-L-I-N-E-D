@@ -73,6 +73,27 @@ class PreviewCacheTests(unittest.TestCase):
             self.assertNotIn("private filesystem path", str(caught.exception))
             self.assertFalse(list((root / "temporary/web-images").glob(".prepared-*")))
 
+    def test_large_validated_webp_is_not_blocked_by_upload_sized_preview_limit(self):
+        class OpenedWebP:
+            format = "WEBP"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog = Catalog(root, root / "unused.sqlite", root, root,
+                              cache=root / "cache", temporary_cache=root / "temporary")
+            pixels = bytes(25 * 1024 * 1024 + 1)
+            with patch("webgui.catalog.Image.open", return_value=OpenedWebP()):
+                handle = catalog.image(pixels)
+            self.assertIsNotNone(handle)
+            self.assertEqual(catalog.image_source(handle).suffix, ".webp")
+            self.assertEqual(catalog.image_source(handle).stat().st_size, len(pixels))
+
 
 if __name__ == "__main__":
     unittest.main()

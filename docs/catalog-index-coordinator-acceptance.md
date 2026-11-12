@@ -917,6 +917,42 @@ captures plus accessibility-state inspection. Earlier installed evidence for
 the source-card, artwork-opacity, audit and two-stage source-policy corrections
 remains valid; current-head source contracts and complete automated suites pass.
 
+### Local WebP, status, theme and Artist Overview follow-up
+
+- Album-folder inspection now starts with every local `cover.*` source visible,
+  including animated WebP below the configured quality range. Candidate Filter
+  remains available immediately afterward to include or disregard the source by
+  policy. This is a display/discovery correction only: the configured preferred
+  embedded-thumbnail size remains **1200 x 1200** and is not weakened.
+- Valid local WebP is decoded before the prepared-preview size guard is applied.
+  The AC/DC fixture's `cover.webp` is a verified 1080 x 1080, 480-frame animated
+  source larger than 25 MB; it now remains selectable and is described as
+  `Animated WebP` with its frame count. The independent browser-upload limit is
+  unchanged. The Selected Artwork embedded-art ribbon uses the accepted blue
+  status treatment.
+- Completed ready/save/write notices now dismiss after a bounded interval while
+  busy and error states remain visible. Small, medium and large status modes grow
+  from the header center and the header actions remain right-aligned.
+- Light theme uses a transparent logo surface and readable grey text. Chalk is a
+  flat dark-navy chalkboard treatment with restrained colored outlines and no
+  neon/glow. The texture is limited to application chrome; neither WebGUI nor
+  native artwork pixels are filtered or dimmed.
+- Artist Overview owns its vertical scroll. The five footer actions (`Show All`,
+  `Refresh Artist Info`, `MusicBrainz Artist`, `COMP Report`, and
+  `EMBED All Albums`) are a normal final content row with `position: relative`;
+  they are not fixed, sticky, or a nested scroll surface. Live computer-use
+  validation scrolled AC/DC from the portrait through the Album grid to the
+  footer at `scrollTop == maxScroll`. Switching to Artists Art Enhancements and
+  returning to Find & Match Artwork cleared the saved overview scroll before
+  render, returned to `scrollTop == 0`, preserved AC/DC, and did not compress or
+  lock the Artist artwork. The browser regression prevents the earlier
+  post-render scroll-memory race from returning the footer to the bottom.
+
+Follow-up validation: **401/401 WebGUI tests passed (78 environment-dependent
+skips)** and **97/97 browser behavior tests passed**. JavaScript syntax and the
+live-served asset check passed. Final native compilation and repository hygiene
+results are recorded below with the final follow-up commit.
+
 ### Final regression evidence and installed revisions
 
 - Windows: **533 core + 116 application tests passed**; the full Rust workspace,

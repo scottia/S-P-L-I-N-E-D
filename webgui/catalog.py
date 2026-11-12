@@ -198,11 +198,16 @@ def relative_coordination_path(path: Path, root: Path) -> str:
 def image_metadata(path: Path) -> dict[str, object]:
     with Image.open(path) as image:
         width, height = image.size
+        image_format = str(image.format or path.suffix.removeprefix(".")).upper()
+        frames = int(getattr(image, "n_frames", 1) or 1)
     return {
         "name": path.name,
         "width": width,
         "height": height,
         "bytes": path.stat().st_size,
+        "format": image_format,
+        "frames": frames,
+        "animated": image_format == "WEBP" and frames > 1,
     }
 
 
@@ -602,9 +607,15 @@ class Catalog:
             # Candidate originals must outlive repeated enhancement renders.
             # Keep generated pixels on disk, independent from the small legacy
             # fixture cache; staged jobs hold their own verified snapshot.
-            if len(source)>25*1024*1024: raise ValueError('Prepared artwork exceeds the 25 MB image limit')
             with Image.open(BytesIO(source)) as opened:
-                suffix={"JPEG":".jpg","PNG":".png","WEBP":".webp"}.get(opened.format)
+                image_format = str(opened.format or "").upper()
+                # Animated local WebP sources commonly exceed the upload-sized
+                # 25 MB guard. They are already validated library artwork and
+                # must remain previewable; the upload endpoint keeps its own
+                # independent 25 MB boundary for untrusted browser uploads.
+                if len(source) > 25 * 1024 * 1024 and image_format != "WEBP":
+                    raise ValueError('Prepared artwork exceeds the 25 MB image limit')
+                suffix={"JPEG":".jpg","PNG":".png","WEBP":".webp"}.get(image_format)
                 if not suffix: raise ValueError('Unsupported artwork image format')
             directory=self.preview_cache or preview_cache/'web-images'
             path=directory/(sha256(source).hexdigest()+suffix)

@@ -99,7 +99,7 @@ function albumBannerStyle(kind) {
   return state.graphicalEnhancement.banner_styles[kind] || state.graphicalEnhancement.banner_styles.artist;
 }
 const scrollPositions = new Map(), scrollSurfaceKeys = new Map(), restoringScroll = new Set();
-const SCROLL_SURFACES = ["artistList", "overviewContent", "albumGrid", "findView"];
+const SCROLL_SURFACES = ["artistList", "hero", "albumGrid", "findView"];
 function rememberScroll(id) {
   const element = $(id), key = scrollSurfaceKeys.get(id);
   if (!key || restoringScroll.has(id) || !element.getClientRects().length) return;
@@ -145,12 +145,26 @@ const SOURCES = [
   ["Deezer", "deezer", "deezer"],
 ];
 
+let statusDismissTimer = null;
 function setStatus(message, type = "ready") {
   state.statusRevision = Number(state.statusRevision || 0) + 1;
   state.statusType = type;
+  const revision = state.statusRevision;
+  const status = $("status");
+  if (statusDismissTimer !== null) clearTimeout(statusDismissTimer);
+  statusDismissTimer = null;
+  status.hidden = false;
   $("statusText").textContent = message;
-  $("status").className = "status" + (type === "ready" ? "" : " " + type);
-  return state.statusRevision;
+  status.className = "status" + (type === "ready" ? "" : " " + type);
+  // Busy work and failures remain visible until the operator or a successful
+  // result supersedes them. Completed/ready notices are transient so a save,
+  // write, refresh, or selection cannot leave a permanent banner in the
+  // application header.
+  if (type === "ready") statusDismissTimer = setTimeout(() => {
+    statusDismissTimer = null;
+    if (state.statusRevision === revision && state.statusType === "ready") status.hidden = true;
+  }, 4200);
+  return revision;
 }
 function normalizeStatusBar(value = {}) {
   const intensity = ["Aggressive", "Full", "Mild", "Off"].includes(value.intensity) ? value.intensity : "Full";
@@ -418,8 +432,8 @@ function candidateMatches(candidate, dimension, key) {
   return false;
 }
 function candidateFilterKey(dimension, key) { return dimension + ":" + key; }
-function resetCandidateFilters() {
-  if (state.candidateFilterLocked) return;
+function resetCandidateFilters(force = false) {
+  if (state.candidateFilterLocked && !force) return;
   state.candidateFilters.clear();
   for (const [dimension, rows] of [["type", CANDIDATE_TYPES], ["policy", [["Acceptable"], ["Strict"]]], ["range", CANDIDATE_RANGES]]) {
     for (const [key] of rows) if (state.candidates.some(candidate => candidateMatches(candidate, dimension, key))) state.candidateFilters.set(candidateFilterKey(dimension, key), "included");
@@ -1902,7 +1916,10 @@ function renderCandidates() {
       else state.compare.add(candidate.image);
       renderCandidates();
     });
-    line.append(action); card.append(line, node("small", "", candidate.width + " × " + candidate.height)); grid.append(card);
+    line.append(action);
+    const dimensions = candidate.width + " × " + candidate.height;
+    const animation = candidate.animated ? ` · Animated WebP · ${candidate.frames} frames` : "";
+    card.append(line, node("small", candidate.animated ? "candidate-animation" : "", dimensions + animation)); grid.append(card);
   }
 }
 function selectCandidate(candidate, target) {
@@ -2421,7 +2438,14 @@ async function chooseAlbum(id) {
     state.album = album; state.editorMode = fallback ? "fallback" : "album"; state.workspace = "find";
     state.fallbackTracks = tracks;
     markSelectedAlbum(album);
-    state.candidates = fallback ? [] : album.candidates || []; resetCandidateFilters();
+    state.candidates = fallback ? [] : album.candidates || [];
+    // An Album click is an explicit request to inspect that folder's artwork.
+    // Start the new Album with its complete cover.* inventory visible, even if
+    // a locked filter from the prior Album rejected a lower-resolution source.
+    // The operator can immediately narrow this new inventory again with
+    // Candidate Filter. This changes display only: range classification and
+    // the configured preferred embedded-thumbnail size remain authoritative.
+    resetCandidateFilters(!fallback);
     if (!fallback) updateSourceCounts("cover", state.candidates);
     renderAll();
     auditEvent("selection-change", fallback ? "comp-album" : "album", {scope: {artist_id: state.artist?.id || album.artist_id, album_id: album.id}, details: {library_mode: state.libraryMode}});
@@ -2580,7 +2604,36 @@ for (const [buttonId, mode] of [["artistsTab", "artists"], ["albumsTab", "albums
   $(buttonId).addEventListener("click", () => changeLibraryMode(mode));
 }
 for (const [buttonId, name] of [["findTab", "find"], ["enhanceTab", "enhance"], ["embedTab", "embed"]]) {
-  $(buttonId).addEventListener("click", () => { state.workspace = name; renderWorkspace(); if (name === "embed") renderQueue(); setStatus(name === "embed" ? "Persistent embedding queue" : name === "enhance" ? "Artwork enhancements" : "Find & Match Artwork ready"); });
+  $(buttonId).addEventListener("click", () => {
+    const changed = state.workspace !== name;
+    const resetOverviewScroll = changed && name === "find";
+    if (resetOverviewScroll) {
+      // Suppress renderWorkspace's scroll-memory pass before it can capture
+      // and restore the old bottom position from the prior Find visit.
+      restoringScroll.add("hero");
+      scrollPositions.delete(scrollSurfaceKeys.get("hero"));
+      $("hero").scrollTop = 0;
+    }
+    state.workspace = name;
+    renderWorkspace();
+    // The overview footer is ordinary scrollable content. When the operator
+    // returns from another workspace, start the Artist Overview at its top
+    // instead of restoring a stale bottom position that makes the footer look
+    // pinned or leaves the portrait compressed against the panel edge.
+    if (resetOverviewScroll) requestAnimationFrame(() => {
+      const hero = $("hero");
+      if (hero) {
+        hero.scrollTop = 0;
+        scrollPositions.delete(scrollSurfaceKeys.get("hero"));
+        requestAnimationFrame(() => {
+          hero.scrollTop = 0;
+          restoringScroll.delete("hero");
+        });
+      }
+    });
+    if (name === "embed") renderQueue();
+    setStatus(name === "embed" ? "Persistent embedding queue" : name === "enhance" ? "Artwork enhancements" : "Find & Match Artwork ready");
+  });
 }
 $("searchButton").addEventListener("click", () => runAction(activateCandidateWork));
 $("artistArtEntry").addEventListener("click", () => {

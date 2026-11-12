@@ -381,6 +381,10 @@ test("COMP artwork source labels map to the Windows source counters", () => {
 
 test("Chalk theme reaches library and action surfaces through palette variables", () => {
   assert.match(cssSource, /html\[data-theme=chalk\]\{[^}]*--violet:[^;}]+;[^}]*--yellow:[^;}]+;[^}]*--danger:/);
+  assert.match(cssSource, /html\[data-theme=chalk\]\{--window:#071925;--panel:#0b2230/);
+  assert.match(cssSource, /html\[data-theme=chalk\] body\{[^}]*url\('\/assets\/chalk-texture\.svg'\)/);
+  assert.match(cssSource, /html\[data-theme=chalk\] :is\([^}]*url\('\/assets\/chalk-texture\.svg'\)/);
+  assert.match(cssSource, /html\[data-theme=chalk\] \.source-card,[^}]*\{box-shadow:none\}/);
   assert.match(cssSource, /\.library-list\{background:var\(--panel\)\}/);
   assert.match(cssSource, /\.header-actions button,[^{]*\{border-color:var\(--line\);background:var\(--card\);color:var\(--text\)\}/);
   assert.match(cssSource, /\.workspace-dialog,\.embed-summary\{background:var\(--panel\);color:var\(--text\)\}/);
@@ -971,7 +975,8 @@ test("COMP summary and TRACK FILE columns reserve Album title space", () => {
   assert.match(appSource, /node\("span", "comp-count-override", `\$\{overridden\} overridden`\)/);
   assert.match(cssSource, /\.fallback-report-album\{[^}]*grid-template-columns:22px minmax\(0,1fr\) clamp\(170px,38%,310px\)/);
   assert.match(cssSource, /\.fallback-report-album-counts\{text-align:right\}/);
-  assert.match(cssSource, /html\[data-theme=chalk\] \.fallback-report,html\[data-theme=light\] \.fallback-report\{background:#381821c9\}/);
+  assert.match(cssSource, /html\[data-theme=chalk\] \.fallback-report\{background:#081d29e8\}/);
+  assert.match(cssSource, /html\[data-theme=light\] \.fallback-report\{background:#381821c9\}/);
 });
 
 test("all WebGUI MusicBrainz entry contexts use the canonical results workspace", () => {
@@ -2703,4 +2708,87 @@ test("selecting a different Artist Art candidate clears its prior crop", () => {
   const source = between(appSource, "function selectCandidate", "function packageFrame");
   assert.match(source, /state\.fx\.banner = \{\}; state\.fit\.banner = \{zoom: 1, x: 0, y: 0\}/);
   assert.match(source, /state\.fx\.artist = \{\}; state\.fit\.artist = \{zoom: 1, x: 0, y: 0\}/);
+});
+
+test("Album inspection begins with all local cover files and keeps filters operational", () => {
+  const candidateFunctions = sourceKeyFunction + "\n" + between(
+    appSource,
+    "function candidateKind",
+    "function candidateSelectionKey",
+  ) + "\n" + between(
+    appSource,
+    "const CANDIDATE_TYPES",
+    "function candidateRange",
+  ) + "\n" + between(
+    appSource,
+    "function candidateRange",
+    "function activeFxTarget",
+  );
+  const state = {
+    editorMode: "album",
+    activeSource: "",
+    artworkRange: {min: 1200, ideal: 1800, max: 2400, ladder: 3600},
+    candidateFilters: new Map([["range:BelowMinimum", "disregarded"], ["policy:Acceptable", "disregarded"]]),
+    candidateFilterLocked: true,
+    candidates: [],
+  };
+  const context = load(candidateFunctions, {state});
+  const webp = {name: "cover.webp", source: "Album folder", kind: "cover", width: 1080, height: 1080};
+  state.candidates = [webp];
+  context.resetCandidateFilters(true);
+  assert.equal(state.candidateFilters.get("range:BelowMinimum"), "included");
+  assert.equal(context.candidateVisible(webp), true);
+  state.candidateFilters.set("range:BelowMinimum", "disregarded");
+  assert.equal(context.candidateVisible(webp), false);
+  assert.equal(state.artworkRange.min, 1200);
+  assert.match(appSource, /Animated WebP/);
+  assert.match(appSource, /resetCandidateFilters\(!fallback\)/);
+});
+
+test("completed status notices dismiss while busy and error states remain", () => {
+  const source = between(appSource, "let statusDismissTimer", "function normalizeStatusBar");
+  const elements = {status: {hidden: true, className: ""}, statusText: {textContent: ""}};
+  const state = {statusRevision: 0, statusType: "ready"};
+  let timer = null;
+  const context = load(source, {
+    state,
+    $: id => elements[id],
+    setTimeout: callback => { timer = callback; return 1; },
+    clearTimeout: () => { timer = null; },
+  });
+  context.setStatus("Cover written");
+  assert.equal(elements.status.hidden, false);
+  assert.equal(typeof timer, "function");
+  timer();
+  timer = null;
+  assert.equal(elements.status.hidden, true);
+  context.setStatus("Writing cover", "busy");
+  assert.equal(elements.status.hidden, false);
+  assert.equal(timer, null);
+  context.setStatus("Write failed", "error");
+  assert.equal(elements.status.hidden, false);
+  assert.equal(timer, null);
+});
+
+test("WebGUI status sizing grows from header center and artwork footer is blue", () => {
+  assert.match(cssSource, /\.status\[data-size=small\]\{height:28px/);
+  assert.match(cssSource, /\.status\[data-size\]\{align-self:center\}/);
+  assert.match(cssSource, /\.status\[data-position=top\] \.status-progress\{top:2px;bottom:auto\}/);
+  assert.match(cssSource, /\.embedded-ribbon\{[^}]*background:#071d3ee8;color:#72d8ff;border:1px solid #286fa0/);
+  assert.match(cssSource, /html\[data-theme=light\] \.brand\{background:transparent/);
+  assert.match(cssSource, /html\[data-theme=light\]\{[^}]*--text:#3c474c;--muted:#687278/);
+  assert.match(cssSource, /\.header-actions\{display:flex;align-items:center;justify-self:end;margin-left:auto/);
+});
+
+test("Artist Overview actions use a stable non-sticky footer row", () => {
+  assert.match(cssSource, /\.overview-content\{[^}]*display:grid;grid-template-rows:auto auto auto minmax\(min-content,1fr\) auto;[^}]*min-height:100%/);
+  assert.match(cssSource, /\.overview-content>\.overview-actions\{[^}]*align-self:end/);
+  assert.match(cssSource, /\.overview-section>\.hero\{[^}]*overflow-y:auto;overflow-x:hidden/);
+  assert.doesNotMatch(cssSource, /\.overview-content\{[^}]*overflow:auto/);
+  assert.doesNotMatch(cssSource, /\.overview-content>\.overview-actions\{[^}]*position:sticky/);
+  assert.match(appSource, /SCROLL_SURFACES = \["artistList", "hero", "albumGrid", "findView"\]/);
+  assert.match(appSource, /resetOverviewScroll = changed && name === "find"/);
+  assert.match(appSource, /scrollPositions\.delete\(scrollSurfaceKeys\.get\("hero"\)\)/);
+  assert.match(appSource, /restoringScroll\.add\("hero"\)[\s\S]*renderWorkspace\(\)/);
+  assert.match(appSource, /hero\.scrollTop = 0/);
 });
