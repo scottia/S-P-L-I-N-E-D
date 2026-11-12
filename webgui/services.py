@@ -73,6 +73,13 @@ LOGGER = logging.getLogger("uvicorn.error")
 
 NAME_INVENTORY_PREFIX = "names-v1:"
 TRACK_INVENTORY_PREFIX = "tracks-v1:"
+# Increment when a corrected tag projection requires one deliberate Full
+# Refresh to reopen Windows-managed tracks whose size/mtime did not change.
+# Version 3 republishes positional Artist-credit MBIDs without the historical
+# lexical sort and decodes ID3v2.3 slash-packed multi-value TPE1 frames using
+# their ordered MBID cardinality. Both corrections preserve the Windows
+# projection instead of manufacturing combined Featured Artist identities.
+MANAGED_TRACK_CREDIT_REFRESH_VERSION = 3
 
 
 @contextmanager
@@ -1167,7 +1174,10 @@ class Services:
         managed_credit_refresh = int(
             separator_details.get("managed_track_credit_refresh", 0) or 0
         )
-        force_track_credit_read = mode == "full" and managed_credit_refresh < 1
+        force_track_credit_read = (
+            mode == "full"
+            and managed_credit_refresh < MANAGED_TRACK_CREDIT_REFRESH_VERSION
+        )
         if indexed_separator and indexed_separator != separator_regex:
             raise ValueError(
                 "Artist separator settings changed. Reset the PostgreSQL Database, "
@@ -1932,7 +1942,9 @@ class Services:
                             "artist_separator_regex": separator_regex,
                             "artist_separator_profile": separator_profile,
                             "managed_track_credit_refresh": (
-                                1 if lease.mode == "full" else managed_credit_refresh
+                                MANAGED_TRACK_CREDIT_REFRESH_VERSION
+                                if lease.mode == "full"
+                                else managed_credit_refresh
                             ),
                         },
                         sort_keys=True,
@@ -2631,9 +2643,10 @@ class Services:
             path = write_image(
                 target,
                 body,
-                preserve_file=bool(
-                    self.runtime.cfg.get("output", {}).get("preserve_file", True)
-                ),
+                # Artist Art is one shared, identity-scoped package. Unlike an
+                # Album cover candidate, the last verified Artist Art save
+                # must immediately become canonical for both clients.
+                preserve_file=False,
             )
             written.append(path.name)
         self.audit("write-artist-art", artist_id, {"files": written})

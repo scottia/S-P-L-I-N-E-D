@@ -1917,8 +1917,14 @@ function selectCandidate(candidate, target) {
     return;
   }
   if (state.editorMode === "album") state.selectedCover = candidate;
-  else if (target === "banner") { state.selectedBanner = candidate; state.radioCurrent = false; state.radioBanner = true; }
-  else { state.selectedPortrait = candidate; state.radioCurrent = false; state.radioArtist = true; }
+  else if (target === "banner") {
+    state.selectedBanner = candidate; state.radioCurrent = false; state.radioBanner = true;
+    state.fx.banner = {}; state.fit.banner = {zoom: 1, x: 0, y: 0};
+  }
+  else {
+    state.selectedPortrait = candidate; state.radioCurrent = false; state.radioArtist = true;
+    state.fx.artist = {}; state.fit.artist = {zoom: 1, x: 0, y: 0};
+  }
   renderCandidates(); renderPanes(); renderReview(); renderEnhancementMenus(); setStatus(candidate.name + " selected for " + (target === "banner" ? "banner" : "artist") + " preview");
 }
 

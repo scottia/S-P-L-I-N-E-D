@@ -1643,18 +1643,31 @@ class Catalog:
     def artist_thumbnail_path(self, artist) -> Path | None:
         artist_id = str(artist["artist_key"])
         raw_id = str(artist["musicbrainz_artistid"] or "").strip()
+        name_identity = (
+            "name-"
+            + sha256(str(artist["artist_name"]).strip().casefold().encode("utf-8"))
+            .digest()[:16]
+            .hex()
+        )
         try:
             identity = "mbid-" + str(UUID(raw_id))
         except ValueError:
-            digest = sha256(str(artist["artist_name"]).strip().casefold().encode("utf-8"))
-            identity = "name-" + digest.digest()[:16].hex()
+            identity = name_identity
         managed = ArtistArtTarget(self.artist_art, "artist-" + identity, True)
-        primary_path = str(artist["primary_path"] or "").strip()
-        targets = (
-            (ArtistArtTarget(Path(primary_path), "artist"), managed)
-            if primary_path
-            else (managed,)
+        # A projected/featured Artist is written to the stable name-scoped
+        # shared package because it has no owned Album directory.  Its ordered
+        # track credit can still supply a valid MBID, so thumbnail discovery
+        # must also inspect that canonical name target before falling back to a
+        # cached provider portrait.  Prefer an existing MBID package when both
+        # exist so owned Artists keep their stronger identity authority.
+        managed_name = ArtistArtTarget(
+            self.artist_art, "artist-" + name_identity, True
         )
+        primary_path = str(artist["primary_path"] or "").strip()
+        targets = [ArtistArtTarget(Path(primary_path), "artist")] if primary_path else []
+        targets.append(managed)
+        if managed_name != managed:
+            targets.append(managed_name)
         portrait = saved_package(targets).portrait
         # Re-resolve local Artist Art before consulting the session cache. A
         # Windows write or external artist.* creation must replace an older

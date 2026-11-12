@@ -3664,6 +3664,31 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertEqual(authority_counts["albums"], 1)
             self.assertEqual(authority_counts["tracks"], len(indexed_tracks))
 
+            # Model a catalog published before the current managed-credit
+            # pass. Version 3 must reopen otherwise unchanged Windows-managed
+            # tracks once so positional MBID and ID3v2.3 TPE1 corrections are
+            # applied.
+            with closing(self.db.connect()) as db:
+                db.execute(
+                    "UPDATE db_maintenance_state SET details_json=? "
+                    "WHERE action_name=?",
+                    (
+                        json.dumps(
+                            {
+                                "artist_separator_regex": self.cfg["scan"][
+                                    "artist_separator_regex"
+                                ],
+                                "artist_separator_profile": self.cfg["scan"][
+                                    "artist_separator_profile"
+                                ],
+                                "managed_track_credit_refresh": 2,
+                            },
+                            sort_keys=True,
+                        ),
+                        "artist-credit-separator",
+                    ),
+                )
+
             # Force physical tag and file metadata changes that a normal Full
             # Refresh would otherwise project over reconciled PostgreSQL rows.
             for number, path in enumerate(self.files, 1):
@@ -3756,6 +3781,16 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             )
             self.assertEqual(
                 after_refresh["album"]["embedded_validation_status"], "verified"
+            )
+            with closing(self.db.connect()) as db:
+                marker = db.execute(
+                    "SELECT details_json FROM db_maintenance_state "
+                    "WHERE action_name=?",
+                    ("artist-credit-separator",),
+                ).fetchone()
+            self.assertEqual(
+                json.loads(marker["details_json"])["managed_track_credit_refresh"],
+                3,
             )
 
             repeated = reconciler.compare(

@@ -2291,7 +2291,34 @@ async function repairFallback() {
   setStatus(`COMP repair complete · ${repaired} green${failed ? ` · ${failed} failed · ${failures.join("; ")}` : ""}`, failed ? "error" : "ready");
 }
 const quickPreview=applyPreviewEffects;
-let previewTimer,previewGeneration=0;
+let previewTimer,previewGeneration=0,previewController=null,artistPreviewSignature="";
+function artistPreviewSnapshot() {
+  const portrait=state.selectedPortrait?.image||state.artist?.portrait||"";
+  const banner=state.selectedBanner?.image||state.artist?.banner||"";
+  const current=!!state.radioCurrent;
+  const component=(kind,source)=>({
+    kind,source,
+    adjustments:current ? state.fx.current||{} : state.fx[kind]||{},
+    package_adjustments:!current&&state.themedPackaging ? state.fx.package||{} : {},
+    fit:current ? {zoom:1,x:0,y:0} : state.fit[kind]||{zoom:1,x:0,y:0},
+  });
+  return {portrait,banner,current,components:[component("artist",portrait),component("banner",banner)]};
+}
+function artistComponentEdited(component) {
+  const values=[...Object.values(component.adjustments||{}),...Object.values(component.package_adjustments||{})];
+  const fit=component.fit||{};
+  return values.some(value=>Number(value||0)!==0)
+    || Number(fit.zoom??1)!==1 || Number(fit.x||0)!==0 || Number(fit.y||0)!==0;
+}
+function restoreArtistPreviewSource(selector,source) {
+  const element=document.querySelector(selector);
+  if (element&&source&&element.getAttribute("src")!==source) element.src=source;
+}
+function clearArtistPreviewStyle(selector) {
+  const element=document.querySelector(selector);
+  if (!element) return;
+  element.style.filter="none";element.style.transform="none";
+}
 applyPreviewEffects=function () {
   clearTimeout(previewTimer);const generation=++previewGeneration;
   if (activeCompPrepared()) {
@@ -2300,19 +2327,56 @@ applyPreviewEffects=function () {
     }
     return;
   }
-  // A completed server preview already contains the prior adjustments.  A
-  // new wheel/drag/slider gesture must start from the explicitly selected
-  // source, otherwise the immediate CSS preview briefly applies the full
-  // adjustment stack a second time before the debounced render arrives.  That
-  // cumulative flash was the visible Artist Art jitter/crop regression.
+  // A completed server preview already contains the prior adjustments. A new
+  // gesture starts from the explicit source, and the prior network generation
+  // is aborted. This prevents late renders from repainting an older crop after
+  // the operator has moved or zoomed the banner.
   if (state.editorMode==='artist' && !state.compReportVisible) {
-    const portrait=state.selectedPortrait?.image||state.artist?.portrait;
-    const banner=state.selectedBanner?.image||state.artist?.banner;
-    const restore=(selector,source)=>{const element=document.querySelector(selector);if(element&&source&&element.getAttribute('src')!==source)element.src=source;};
-    restore('#artistPane img',portrait);restore('#bannerPane img',banner);
-    if (state.radioCurrent || state.radioArtist&&state.radioBanner) {
-      restore('#selectedFrame .portrait-art',portrait);restore('#selectedFrame .banner-art',banner);
-    } else restore('#selectedFrame .selected-image',state.radioBanner?banner:portrait);
+    const snapshot=artistPreviewSnapshot();
+    const signature=JSON.stringify(snapshot);
+    const selectors={artist:['#artistPane img'],banner:['#bannerPane img']};
+    if (snapshot.current || state.radioArtist&&state.radioBanner) {
+      selectors.artist.push('#selectedFrame .portrait-art');selectors.banner.push('#selectedFrame .banner-art');
+    } else selectors[state.radioBanner?'banner':'artist'].push('#selectedFrame .selected-image');
+    if (signature===artistPreviewSignature) {
+      for (const component of snapshot.components) {
+        if (!artistComponentEdited(component) || state.renderedPreview[component.kind])
+          for (const selector of selectors[component.kind]) clearArtistPreviewStyle(selector);
+      }
+      return;
+    }
+    artistPreviewSignature=signature;
+    if (previewController) {previewController.abort();previewController=null;}
+    for (const component of snapshot.components) {
+      state.renderedPreview[component.kind]=null;
+      for (const selector of selectors[component.kind]) restoreArtistPreviewSource(selector,component.source);
+    }
+    quickPreview();
+    const edited=snapshot.components.filter(component=>component.source&&artistComponentEdited(component));
+    if (!edited.length || !state.server?.authenticated) return;
+    previewTimer=setTimeout(async()=>{
+      const controller=new AbortController();previewController=controller;
+      try {
+        const rendered=await Promise.all(edited.map(async component=>[
+          component.kind,
+          await post('/api/preview/render',componentPayload(component.kind,component.source,{
+            adjustments:component.adjustments,package_adjustments:component.package_adjustments,fit:component.fit,
+          }),{signal:controller.signal}),
+        ]));
+        if (generation!==previewGeneration || signature!==artistPreviewSignature) return;
+        for (const [kind,result] of rendered) state.renderedPreview[kind]=result;
+        renderPanes();renderReview();
+        for (const component of snapshot.components) {
+          if (state.renderedPreview[component.kind])
+            for (const selector of selectors[component.kind]) clearArtistPreviewStyle(selector);
+        }
+      } catch(error) {
+        if (error?.name!=='AbortError') setErrorStatus(error);
+      } finally {
+        if (previewController===controller) previewController=null;
+      }
+    },220);
+    return;
   }
   quickPreview();
   if (!state.server?.authenticated) return;
@@ -2345,13 +2409,6 @@ applyPreviewEffects=function () {
       const source=editableArtworkSource();
       add('#selectedFrame .selected-image','cover',source,{upscale:!!state.upscalePreview});
       add('#albumPane img','cover',source,{upscale:!!state.upscalePreview});
-    } else if (state.editorMode==='artist' && !state.compReportVisible) {
-      const portrait=state.selectedPortrait?.image||state.artist?.portrait,banner=state.selectedBanner?.image||state.artist?.banner;
-      add('#artistPane img','artist',portrait);add('#bannerPane img','banner',banner);
-      if (!state.radioCurrent) {
-        if (state.radioArtist && state.radioBanner) {add('#selectedFrame .portrait-art','artist',portrait);add('#selectedFrame .banner-art','banner',banner);}
-        else add('#selectedFrame .selected-image',state.radioBanner?'banner':'artist',state.radioBanner?banner:portrait);
-      }
     }
     await Promise.all(requests);
   }),220);

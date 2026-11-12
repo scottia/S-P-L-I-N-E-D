@@ -6,6 +6,7 @@ from contextlib import closing
 from io import BytesIO
 import json
 from pathlib import Path
+from hashlib import sha256
 import sqlite3
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -107,6 +108,21 @@ class ArtistThumbnailRecoveryTests(unittest.TestCase):
 
         self.assertEqual(self.catalog.artist_thumbnail("artist-1"), portrait)
         self.assertEqual(self.catalog.portrait_cache["artist-1"], portrait)
+
+    def test_projected_artist_mbid_still_finds_name_scoped_shared_art(self) -> None:
+        artist_name = "Rob Wasserman"
+        identity = sha256(artist_name.casefold().encode("utf-8")).digest()[:16].hex()
+        portrait = self.root / "artist-art" / f"artist-name-{identity}.png"
+        portrait.parent.mkdir(parents=True)
+        portrait.write_bytes(_png())
+        projected = {
+            "artist_key": "credit:rob-wasserman",
+            "artist_name": artist_name,
+            "musicbrainz_artistid": "e0bba708-bdd3-478d-84ea-c706413bedab",
+            "primary_path": "",
+        }
+
+        self.assertEqual(self.catalog.artist_thumbnail_path(projected), portrait)
 
     def test_empty_remote_thumbnail_is_bounded_then_can_recover(self) -> None:
         self._save_credentials()

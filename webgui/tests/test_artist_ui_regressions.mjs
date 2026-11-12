@@ -2691,9 +2691,16 @@ test("About and Help use the native information contract and repository guide", 
 });
 
 test("Artist enhancement rerenders restart from the explicit source", () => {
-  assert.match(operationsSource, /cumulative flash was the visible Artist Art jitter\/crop regression/);
-  assert.match(operationsSource, /restore\('#artistPane img',portrait\)/);
-  assert.match(operationsSource, /restore\('#bannerPane img',banner\)/);
-  assert.match(operationsSource, /generation!==previewGeneration/);
+  assert.match(operationsSource, /previewController\.abort\(\)/);
+  assert.match(operationsSource, /artistPreviewSignature/);
+  assert.match(operationsSource, /restoreArtistPreviewSource\(selector,component\.source\)/);
+  assert.match(operationsSource, /Promise\.all\(edited\.map/);
+  assert.match(operationsSource, /generation!==previewGeneration \|\| signature!==artistPreviewSignature/);
   assert.match(cssSource, /package-banner,.selected-package img\.banner-art\{object-fit:contain/);
+});
+
+test("selecting a different Artist Art candidate clears its prior crop", () => {
+  const source = between(appSource, "function selectCandidate", "function packageFrame");
+  assert.match(source, /state\.fx\.banner = \{\}; state\.fit\.banner = \{zoom: 1, x: 0, y: 0\}/);
+  assert.match(source, /state\.fx\.artist = \{\}; state\.fit\.artist = \{zoom: 1, x: 0, y: 0\}/);
 });

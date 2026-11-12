@@ -856,14 +856,52 @@ failure and successfully inspected both installed applications on 2026-11-11:
   busy state. A live reload returned to the normal green workspace status;
   the focused browser regression covers the backgrounded completion path.
 
+### Artist Art regression follow-up after biography styling
+
+- The owner reported that Rob Wasserman Artist Art search, fitment and overwrite
+  had worked before the later bright-white biography treatment. Commit history
+  confirms that the bright-white/five-line change modified only biography CSS
+  and truncation. It did not change Artist Art provider identity, preview state
+  or storage. The nearby regressions had three independent causes: stale
+  PostgreSQL multi-credit projection, late asynchronous preview responses, and
+  WebGUI Artist Art writes inheriting numbered-file preservation.
+- The ID3v2.3 tag reader exposed a slash-packed TPE1 value even when the file
+  contained ordered per-Artist MusicBrainz IDs. The corrected parser uses that
+  ordered MBID cardinality to separate the credit while preserving literal
+  names such as `AC/DC`. A one-time managed-credit publication marker advances
+  so Full Refresh republishes existing rows. The installed test refresh
+  published all 216 Albums and restored **164 Artists**, including exactly one
+  `Rob Wasserman` projection with one `Gold` appearance.
+- A projected Artist can own a valid track-credit MBID without owning an Album
+  directory. Its shared Artist Art is therefore written to the stable
+  name-scoped package. Thumbnail discovery previously tried only the MBID stem
+  and could show a cached Navidrome portrait while the same overview already
+  found the name-scoped banner and local candidates. Discovery now prefers an
+  existing MBID package but also recognizes the canonical name-scoped package
+  before provider cache. The live Rob endpoint consequently resolves both
+  `artist-name-4491d596cbaf4d98cccb4e2f4f3a192b.png` and
+  `banner-name-4491d596cbaf4d98cccb4e2f4f3a192b.png`.
+- The post-refresh live provider request returned five online candidates
+  (Deezer 1, Discogs 2, iTunes 1, Navidrome 1) with no warnings; together with
+  the two verified local files the workspace contract is **7 candidates** and
+  contains no Aaron Neville Artist Art result. Generation/signature guards and
+  request cancellation prevent a late render from repainting an earlier crop.
+  WebGUI and Windows writes replace the same canonical shared package, remove
+  numbered siblings, and make the last verified client save authoritative.
+- The Windows computer-use helper later failed to capture the active monitor
+  (`IGraphicsCaptureItemInterop.CreateForMonitor`, `0x80070057`) after one
+  documented recovery attempt. API, catalog, provider and file evidence above
+  is complete; a new current-head installed visual capture remains pending and
+  is not represented as passed by this follow-up.
+
 Codex did not initiate an artwork or destructive database write during this
 computer-use validation. The owner explicitly performed the Rob Wasserman
 WRITE Artist Art acceptance step described above against the established test
 fixture; its resulting files and post-write UI state were inspected read-only.
 
-Focused validation: **41/41 WebGUI source/audit/render tests**, **395/395 full
+Focused validation: **57/57 WebGUI Artist Art/identity tests**, **399/399 full
 WebGUI tests (78 environment-dependent skips)**, **533/533 Windows core tests**,
-**115/115 Windows application tests**, **92/92 browser behavior tests**, Python
+**116/116 Windows application tests**, **93/93 browser behavior tests**, Python
 compilation, JavaScript syntax, Slint/Rust compilation, and `git diff --check`
 passed.
 
@@ -872,8 +910,8 @@ PostgreSQL service and reports `database_ready=true`; its live-served assets
 contain Default, the standard-access Status Bar, and Logging expand/compress.
 The updated native 2.0.36 executable was installed and started from
 `E:\apps\SPLINED\splined.exe` with SHA-256
-`32AC151044F0425DBB7DAA1C8649FD5CEA06218B28C1EF54FF5BF7C12ABFA954`
-from functional commit `53c874a`.
+`30EA6B99AB2D4881D9EAF1A146628037743A8C077D8062491CEB4F06452672B8`
+from the final pre-commit PR #170 working tree.
 The successful computer-use session supplied current native and browser visual
 captures plus accessibility-state inspection. Earlier installed evidence for
 the source-card, artwork-opacity, audit and two-stage source-policy corrections
@@ -881,11 +919,11 @@ remains valid; current-head source contracts and complete automated suites pass.
 
 ### Final regression evidence and installed revisions
 
-- Windows: **533 core + 115 application tests passed**; the full Rust workspace,
+- Windows: **533 core + 116 application tests passed**; the full Rust workspace,
   focused duplicate-flight, resource, thumbnail, progress/cancellation,
   forced-interruption and identity-history tests passed.
-- WebGUI: **395 passed, 78 skipped** in the full suite. Browser behavior is
-  **92/92 passed** after the Artist workspace and status-lifecycle corrections. The focused real
+- WebGUI: **399 passed, 78 skipped** in the full suite. Browser behavior is
+  **93/93 passed** after the Artist workspace and status-lifecycle corrections. The focused real
   PostgreSQL pool, no-provider, thumbnail, progress/cancellation, forced
   interruption, `American Pie 2` and `A$AP Rocky` regressions passed.
 - Formatting, Python compilation, JavaScript syntax and `git diff --check`
@@ -893,8 +931,8 @@ remains valid; current-head source contracts and complete automated suites pass.
   final-head CI is recorded on PR #170 after the documentation commit.
 - Installed Windows 2.0.36 executable:
   `E:\apps\SPLINED\splined.exe`, SHA-256
-  `32AC151044F0425DBB7DAA1C8649FD5CEA06218B28C1EF54FF5BF7C12ABFA954`
-  from functional commit `53c874a`.
+  `30EA6B99AB2D4881D9EAF1A146628037743A8C077D8062491CEB4F06452672B8`
+  from the final pre-commit PR #170 working tree.
   The installed WebGUI runs current PR source at 2.0.36 against the established
   PostgreSQL service. Credentialed startup was restored after localhost-only UI
   validation (`auth_required=true`, `database_ready=true`).

@@ -11740,8 +11740,10 @@ fn bind_callbacks(
                     .ok_or_else(|| {
                         "This artist has no eligible album for a saved banner.".to_string()
                     })?;
-                    let target = newest_local_artwork_file(&directory, &[&stem], false)
-                        .unwrap_or_else(|| directory.join(format!("{stem}.png")));
+                    // Artist Art is one shared identity package. Publish the
+                    // canonical banner.* path so the last verified Windows or
+                    // WebGUI save becomes authoritative for both clients.
+                    let target = directory.join(format!("{stem}.png"));
                     let mut config = app.config.clone();
                     let adjustments = if app.artist_preview_focus == "banner" {
                         &app.adjustments
@@ -11771,6 +11773,8 @@ fn bind_callbacks(
                     Ok((
                         artist,
                         source,
+                        directory,
+                        stem,
                         target,
                         cache,
                         config.output,
@@ -11784,6 +11788,8 @@ fn bind_callbacks(
             let (
                 artist,
                 source,
+                directory,
+                stem,
                 target,
                 cache,
                 output,
@@ -11856,6 +11862,13 @@ fn bind_callbacks(
                     replace_binary_file(&target, &bytes, "approved artist banner", |staged| {
                         inspect_image(staged).map(|_| ())
                     })?;
+                    let cleanup_warnings = remove_superseded_artist_art(&directory, &stem, &target);
+                    if !cleanup_warnings.is_empty() {
+                        return Err(format!(
+                            "Artist Banner saved, but older banner files could not be removed: {}",
+                            cleanup_warnings.join("; ")
+                        ));
+                    }
                     cached_artist_banner_with_bottom_blur(&target, &cache, &artist)
                 })();
                 if let Some(log) = action_log.as_ref() {
@@ -11945,7 +11958,10 @@ fn bind_callbacks(
                 }
                 inspect_image(Path::new(&selected))?;
                 let artist_target = focused_artist_art_target(&app, &artist)?;
-                let preserve_file = app.config.output.preserve_file;
+                // Album-cover preservation does not create numbered Artist
+                // Art siblings. The canonical artist.* is intentionally
+                // replaced after validation so the other client sees it.
+                let preserve_file = false;
                 let banner_cache =
                     navidrome_thumbnail_cache_root(&app.config).join("artist-banners");
                 let refresh_fallback_banner = app.artist_overview_cache
@@ -25494,6 +25510,32 @@ mod tests {
         let (same_numbered, unchanged, _) = write_artist_art_file(artist, &input, true).unwrap();
         assert_eq!(same_numbered, numbered);
         assert!(unchanged);
+    }
+
+    #[test]
+    fn shared_artist_art_publication_replaces_numbered_siblings() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let artist = directory.path();
+        let stale = artist.join("artist-(2).png");
+        image::RgbaImage::from_pixel(24, 24, image::Rgba([210, 40, 90, 255]))
+            .save_with_format(&stale, image::ImageFormat::Png)
+            .unwrap();
+        let mut source = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            24,
+            24,
+            image::Rgba([20, 220, 100, 255]),
+        ))
+        .write_to(&mut source, image::ImageFormat::Png)
+        .unwrap();
+
+        let (target, unchanged, warnings) =
+            write_artist_art_file(artist, source.get_ref(), false).unwrap();
+
+        assert_eq!(target, artist.join("artist.png"));
+        assert!(!unchanged);
+        assert!(warnings.is_empty());
+        assert!(!stale.exists());
     }
 
     #[test]
