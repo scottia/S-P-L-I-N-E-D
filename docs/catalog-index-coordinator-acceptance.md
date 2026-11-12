@@ -779,8 +779,9 @@ Status: **PASSED**.
   returned. Windows retains the already-correct selected-identity sequence.
 - Windows biography justification now leaves a sparse line natural when the
   following long word would otherwise create visually extreme spacing. Dense
-  non-final lines remain fully justified and the final line remains natural,
-  matching the browser presentation more closely.
+  non-final lines remain fully justified and the final line remains natural.
+  Both clients use bright white non-Light copy, collapse at five complete
+  lines, and reserve inline room for an unobscured `more` control.
 
 ### Computer-use installed-client validation
 
@@ -795,6 +796,10 @@ failure and successfully inspected both installed applications on 2026-11-11:
   candidate cards rather than Setup or a launcher window. This is installed-
   client evidence for the compact responsive layout; it does not replace the
   separate owner-visible Requirement 10 progress/STOP/cancel/relaunch gate.
+- A clean 1920 by 1032 native capture verified that the rebuilt biography is
+  bright white, fully justified, exactly five collapsed lines and retains the
+  inline `more` action. The signed-in browser independently rendered the same
+  five-line contract with the control visible.
 - After the owner signed in, the installed WebGUI was captured in the live
   3 Doors Down workspace. Similar Artists rendered as round portraits for
   Creed, Nickelback, Staind, Shinedown, Daughtry, Hinder and Seether. The
@@ -810,20 +815,46 @@ failure and successfully inspected both installed applications on 2026-11-11:
   rather than being cropped to the preview viewport. A live Accept capture
   exposed **17 candidates** from Local Files 2, Navidrome 1, iTunes 3,
   Fanart.tv 5, Discogs 4 and Deezer 2.
+- The Rob Wasserman package was then exercised through the actual browser
+  fitment and write path. Explicit zoom changed only the working preview,
+  Reset Fitment restored the complete source at `1.00x`, and Upscale Preview
+  retained that fit. The owner then changed zoom, repositioned the banner and
+  completed WRITE Artist Art: WebGUI reloaded the round `384 x 384` portrait
+  and contained `4096 x 1755` banner from the two identity-scoped files written
+  at the same time, and the Artist Overview matched the approved composition.
+  The saved package did not revert to the earlier preview and did not write
+  into the Aaron Neville Album folder.
 - Entering `Rob` in Artist Search and selecting Rob Wasserman preserved the
   filter value and projected only Rob Wasserman and the Gold Album. The local
   portrait and banner candidates both displayed Rob Wasserman; Aaron Neville
-  did not appear in the selected Artist Art identity. A new online provider
-  launch was not counted as passed because the installed client correctly
-  rejected the request when Gold was already marked complete and no unfinished
-  eligible Album existed.
+  did not appear in the selected Artist Art identity. The initial refusal to
+  launch a completed Gold Album was a defect, not an accepted limitation:
+  the Artist-wide launch paths in both clients conflated default unfinished
+  selection with explicit operator reprocessing. Explicit All/Filtered
+  selection now queues every selected identified Album regardless of green,
+  bypassed or timeout status; automatic initial selection still prioritizes
+  unfinished work. Live WebGUI validation opened the completed `Gold` Album's
+  provider results, kept STOP PROCESS available and restored LAUNCH after the
+  operator stopped the review. Live Windows validation showed
+  `Processing Aaron Neville — Gold`, changed LAUNCH to STOP PROCESS, and
+  restored LAUNCH after cancellation. No artwork was written by either
+  reprocessing validation.
+- The continuously displayed WebGUI `Checking the music library for changes…`
+  state was also reproduced. PostgreSQL showed that its probe had completed in
+  about 1.3 seconds, but the browser had cancelled its only completion poll
+  while backgrounded. Completion polling now survives background visibility,
+  has a single bounded timer and reports failures instead of preserving stale
+  busy state. A live reload returned to the normal green workspace status;
+  the focused browser regression covers the backgrounded completion path.
 
-No artwork write, database mutation or destructive operation was performed by
-this computer-use validation.
+Codex did not initiate an artwork or destructive database write during this
+computer-use validation. The owner explicitly performed the Rob Wasserman
+WRITE Artist Art acceptance step described above against the established test
+fixture; its resulting files and post-write UI state were inspected read-only.
 
 Focused validation: **41/41 WebGUI source/audit/render tests**, **395/395 full
-WebGUI tests (78 environment-dependent skips)**, **532/532 Windows core tests**,
-**115/115 Windows application tests**, **90/90 browser behavior tests**, Python
+WebGUI tests (78 environment-dependent skips)**, **533/533 Windows core tests**,
+**115/115 Windows application tests**, **92/92 browser behavior tests**, Python
 compilation, JavaScript syntax, Slint/Rust compilation, and `git diff --check`
 passed.
 
@@ -832,8 +863,8 @@ PostgreSQL service and reports `database_ready=true`; its live-served assets
 contain Default, the standard-access Status Bar, and Logging expand/compress.
 The updated native 2.0.36 executable was installed and started from
 `E:\apps\SPLINED\splined.exe` with SHA-256
-`B35481EE932D505A5BFD65EF77DBA9F82B7E460A71DF18D282B3466CE6BA0114`
-from functional commit `721df41`.
+`32AC151044F0425DBB7DAA1C8649FD5CEA06218B28C1EF54FF5BF7C12ABFA954`
+from functional commit `53c874a`.
 The successful computer-use session supplied current native and browser visual
 captures plus accessibility-state inspection. Earlier installed evidence for
 the source-card, artwork-opacity, audit and two-stage source-policy corrections
@@ -841,11 +872,11 @@ remains valid; current-head source contracts and complete automated suites pass.
 
 ### Final regression evidence and installed revisions
 
-- Windows: **532 core + 115 application tests passed**; the full Rust workspace,
+- Windows: **533 core + 115 application tests passed**; the full Rust workspace,
   focused duplicate-flight, resource, thumbnail, progress/cancellation,
   forced-interruption and identity-history tests passed.
 - WebGUI: **395 passed, 78 skipped** in the full suite. Browser behavior is
-  **90/90 passed** after the Artist workspace corrections. The focused real
+  **92/92 passed** after the Artist workspace and status-lifecycle corrections. The focused real
   PostgreSQL pool, no-provider, thumbnail, progress/cancellation, forced
   interruption, `American Pie 2` and `A$AP Rocky` regressions passed.
 - Formatting, Python compilation, JavaScript syntax and `git diff --check`
@@ -853,8 +884,8 @@ remains valid; current-head source contracts and complete automated suites pass.
   final-head CI is recorded on PR #170 after the documentation commit.
 - Installed Windows 2.0.36 executable:
   `E:\apps\SPLINED\splined.exe`, SHA-256
-  `B35481EE932D505A5BFD65EF77DBA9F82B7E460A71DF18D282B3466CE6BA0114`
-  from functional commit `721df41`.
+  `32AC151044F0425DBB7DAA1C8649FD5CEA06218B28C1EF54FF5BF7C12ABFA954`
+  from functional commit `53c874a`.
   The installed WebGUI runs current PR source at 2.0.36 against the established
   PostgreSQL service. Credentialed startup was restored after localhost-only UI
   validation (`auth_required=true`, `database_ready=true`).
