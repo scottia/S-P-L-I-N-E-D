@@ -1075,6 +1075,59 @@ class Catalog:
         path = directory / ("web-v1-" + identity + ".png")
         return path if path.is_file() else None
 
+    @staticmethod
+    def _navidrome_similar_thumbnail_url(remote_artist: dict[str, object]) -> str:
+        """Return a lazy, authenticated local URL for a Similar Artist image.
+
+        Artist metadata must remain usable before provider artwork finishes.
+        The browser therefore requests each visible portrait independently;
+        the endpoint below validates and caches it through the configured
+        Navidrome connection without exposing provider credentials.
+        """
+        artist_id = str(remote_artist.get("id") or "").strip()
+        name = str(remote_artist.get("name") or "").strip()
+        cover_art = str(remote_artist.get("coverArt") or "").strip()
+        if not artist_id or not name or not cover_art:
+            return ""
+        return (
+            "/api/artist/similar-thumbnail?provider_id=" + quote(artist_id, safe="")
+            + "&name=" + quote(name, safe="")
+            + "&cover_art=" + quote(cover_art, safe="")
+        )
+
+    def similar_artist_thumbnail(
+        self, provider_id: str, name: str, cover_art: str
+    ) -> Path:
+        """Resolve one provider-authorized Similar Artist portrait lazily."""
+        provider_id = str(provider_id or "").strip()
+        name = str(name or "").strip()
+        cover_art = str(cover_art or "").strip()
+        if (
+            not provider_id or not name or not cover_art
+            or len(provider_id) > 256 or len(name) > 512 or len(cover_art) > 512
+            or any(value in cover_art for value in ("/", "\\", ".."))
+        ):
+            raise FileNotFoundError("Similar Artist artwork is unavailable")
+        remote_artist = {"id": provider_id, "name": name, "coverArt": cover_art}
+        cached = self._navidrome_similar_thumbnail_path(remote_artist)
+        if cached is not None:
+            return cached
+        credential_path = self.credentials / "navidrome.json"
+        if not credential_path.is_file():
+            raise FileNotFoundError("Navidrome credentials are unavailable")
+        credential = json.loads(credential_path.read_text(encoding="utf-8"))
+        # Similar Artist portraits are independently lazy-loaded by the
+        # browser. Share the same bounded provider-download allowance as the
+        # main Artist thumbnails so opening an overview cannot create an
+        # unbounded burst of Navidrome requests.
+        with self.thumbnail_download_slots:
+            cached = self._navidrome_similar_thumbnail_path(remote_artist)
+            if cached is None:
+                cached = self._cache_navidrome_similar_thumbnail(remote_artist, credential)
+        if cached is None:
+            raise FileNotFoundError("Similar Artist artwork is unavailable")
+        return cached
+
     def _navidrome_artists_by_name(self) -> dict[str, dict[str, object]]:
         """Load Navidrome's artist directory with bounded, recoverable retries."""
         credential_path = self.credentials / "navidrome.json"
@@ -2400,6 +2453,26 @@ class Catalog:
                     info = call("getArtistInfo2", {"id": str(match["id"])}).get("artistInfo2", {})
                     biography = re.sub(r"<[^>]+>", " ", str(info.get("biography") or ""))
                     result["biography"] = " ".join(unescape(biography).split())
+                    # Navidrome/OpenSubsonic exposes the selected Artist's
+                    # indexed genres with getArtist. Fetching this bounded
+                    # object avoids the old twenty-page song traversal merely
+                    # to populate the overview heading.
+                    try:
+                        artist_detail = call("getArtist", {"id": str(match["id"])}).get("artist", {})
+                    except (OSError, ValueError, KeyError, TypeError, requests.RequestException):
+                        artist_detail = {}
+                    genres: set[str] = set()
+                    if isinstance(artist_detail, dict):
+                        genre = str(artist_detail.get("genre") or "").strip()
+                        if genre:
+                            genres.add(genre)
+                        for value in artist_detail.get("genres") or []:
+                            if isinstance(value, dict):
+                                value = value.get("name")
+                            value = str(value or "").strip()
+                            if value:
+                                genres.add(value)
+                    result["genres"] = sorted(genres)
                     similar = info.get("similarArtist", [])
                     if isinstance(similar, dict):
                         similar = [similar]
@@ -2422,16 +2495,12 @@ class Catalog:
                             # authorized cached provider image when one exists;
                             # the browser supplies an initial-letter fallback.
                             portrait = self._navidrome_similar_thumbnail_path(item)
-                            if portrait is None and refresh:
-                                try:
-                                    portrait = self._cache_navidrome_similar_thumbnail(item, credential)
-                                except (OSError, ValueError, KeyError, TypeError, requests.RequestException):
-                                    portrait = None
+                        portrait_url = self.image(portrait) if portrait is not None else self._navidrome_similar_thumbnail_url(item)
                         projected.append(
                             {
                                 "name": name,
                                 "local_id": str(local["artist_key"]) if local is not None else "",
-                                "image": self.image(portrait) if portrait is not None else "",
+                                "image": portrait_url,
                                 "provider_id": str(item.get("id") or ""),
                             }
                         )
@@ -2474,19 +2543,26 @@ class Catalog:
                 result.update(profile)
                 result.pop("reason", None)
                 self._save_artist_profile(artist_id, profile)
-        with self.lock:
-            self.metadata_cache[artist_id] = result
-        # Album appearances are refreshed by the explicit Refresh Artist Info
-        # path.  Normal Artist selection returns biography/similarity without
-        # waiting for a second provider catalog traversal.
-        if refresh:
+        # Navidrome's lightweight getArtist response does not consistently
+        # include the per-track genres exposed by search3.  Match the native
+        # Windows Artist Overview contract by resolving the selected Artist's
+        # bounded appearance catalog once on a metadata-cache miss.  This also
+        # keeps Featured roles tied to the exact selected Artist identity; the
+        # cached result prevents repeat traversal during ordinary rerenders.
+        if not result.get("genres") and credential_path.is_file():
             try:
-                self.refresh_artist_appearances(artist_id)
+                appearance = self.refresh_artist_appearances(artist_id)
+                result["genres"] = list(appearance.get("genres", []))
             except (OSError, ValueError, KeyError, TypeError, requests.RequestException):
                 pass
+        with self.lock:
+            self.metadata_cache[artist_id] = result
+        projected_artist = self.artist(artist_id)
+        if result.get("genres"):
+            projected_artist["genres"] = sorted(set(projected_artist.get("genres", [])) | set(result["genres"]))
         return {
             **result,
-            "artist": self.artist(artist_id),
+            "artist": projected_artist,
             "comp_albums": self.artist_comp_albums(artist_id),
         }
 

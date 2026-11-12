@@ -2286,6 +2286,20 @@ applyPreviewEffects=function () {
     }
     return;
   }
+  // A completed server preview already contains the prior adjustments.  A
+  // new wheel/drag/slider gesture must start from the explicitly selected
+  // source, otherwise the immediate CSS preview briefly applies the full
+  // adjustment stack a second time before the debounced render arrives.  That
+  // cumulative flash was the visible Artist Art jitter/crop regression.
+  if (state.editorMode==='artist' && !state.compReportVisible) {
+    const portrait=state.selectedPortrait?.image||state.artist?.portrait;
+    const banner=state.selectedBanner?.image||state.artist?.banner;
+    const restore=(selector,source)=>{const element=document.querySelector(selector);if(element&&source&&element.getAttribute('src')!==source)element.src=source;};
+    restore('#artistPane img',portrait);restore('#bannerPane img',banner);
+    if (state.radioCurrent || state.radioArtist&&state.radioBanner) {
+      restore('#selectedFrame .portrait-art',portrait);restore('#selectedFrame .banner-art',banner);
+    } else restore('#selectedFrame .selected-image',state.radioBanner?banner:portrait);
+  }
   quickPreview();
   if (!state.server?.authenticated) return;
   previewTimer=setTimeout(()=>runAction(async()=>{

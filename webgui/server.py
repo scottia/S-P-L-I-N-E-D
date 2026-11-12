@@ -843,6 +843,15 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
             headers={"Cache-Control": "private, max-age=300"},
         )
 
+    @app.get("/api/artist/similar-thumbnail")
+    def similar_artist_thumbnail(provider_id: str, name: str, cover_art: str):
+        return FileResponse(
+            context.require().catalog.similar_artist_thumbnail(
+                provider_id, name, cover_art
+            ),
+            headers={"Cache-Control": "private, max-age=86400"},
+        )
+
     @app.get("/api/artist/metadata")
     def artist_metadata(id: str, refresh: bool = False):
         services = context.require()

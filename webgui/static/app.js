@@ -80,7 +80,7 @@ const state = {
   sourceOrder: [],
   sourcePolicies: {}, artistSourceEnabled: [],
   sourceCounts: {artist: {}, cover: {}},
-  libraryLoading: false, artistMetadataRequest: 0,
+  libraryLoading: false, artistMetadataRequest: 0, artistQuery: "",
   activeActionId: "", artistInfoExpanded: false,
   albumOverrides: new Map(), albumOverrideRevision: 0,
   compTrackOverrides: new Map(), compTrackOverrideRevision: 0,
@@ -566,7 +566,9 @@ function renderLibraryContents() {
       if (!matchesByArtist.has(album.artist_id)) matchesByArtist.set(album.artist_id, []);
       matchesByArtist.get(album.artist_id).push(album);
     }
+    const artistQuery = String(state.artistQuery || $("artistSearch").value || "").trim().toLocaleLowerCase();
     const visibleArtists = state.artists.filter(artist => mediaMatches(artist)
+      && (!artistQuery || String(artist.name || "").toLocaleLowerCase().includes(artistQuery))
       && (!albumQuery || matchesByArtist.has(artist.id)));
     $("artistCount").textContent = state.albumLibraryLoading ? "loading" : visibleArtists.length + " shown";
     for (const artist of visibleArtists) {
@@ -999,6 +1001,7 @@ function renderHeroContents() {
     if (!name) continue;
     const card = node("button", "similar-card"); card.type = "button";
     const avatar = item.image ? image(item.image, "similar-avatar", name + " artist image") : node("span", "similar-avatar", name.slice(0, 1).toUpperCase());
+    if (item.image) avatar.addEventListener("error", () => avatar.replaceWith(node("span", "similar-avatar", name.slice(0, 1).toUpperCase())), {once: true});
     card.append(avatar, node("span", "similar-name", name), node("span", "similar-status", "●"));
     const local = item.local_id ? state.artists.find(artistItem => artistItem.id === item.local_id)
       : state.artists.find(artistItem => artistItem.name.toLocaleLowerCase() === name.toLocaleLowerCase());
@@ -2254,6 +2257,7 @@ function renderAll() {
 
 async function loadLibrary(query = "") {
   const request = ++state.listRequest;
+  if (state.libraryMode === "artists") state.artistQuery = String(query || "");
   state.libraryLoading = true;
   try {
     if (state.libraryMode === "artists") state.artists = await api("/api/artists?q=" + encodeURIComponent(query));
@@ -2485,7 +2489,10 @@ function showDialog(title, lines) {
   $("workspaceDialog").showModal();
 }
 
-$("artistSearch").addEventListener("input", event => { if (state.libraryMode === "artists") loadLibrary(event.target.value); });
+$("artistSearch").addEventListener("input", event => {
+  state.artistQuery = event.target.value;
+  if (state.libraryMode === "artists") loadLibrary(event.target.value);
+});
 $("biographyToggle").addEventListener("click", () => {
   state.biographyExpanded = !state.biographyExpanded;
   updateBiographyToggle();
@@ -2682,23 +2689,37 @@ $("themeButton").addEventListener("click", () => {
 $("settingsButton").addEventListener("click", () => runAction(openSettings));
 $("aboutButton").addEventListener("click", () => runAction(async () => {
   const storage = await api("/api/storage");
-  showDialog("About S.P.L.I.N.E.D.", []);
+  showDialog("ⓘ About S.P.L.I.N.E.D", []);
   const body = $("dialogBody"), card = node("section", "about-card");
-  card.append(node("h3", "", "S.P.L.I.N.E.D."), node("p", "about-tagline", "Searchable · Focused · Linked · Identified · Normalized · Enriched · Defined"));
+  const brand = document.querySelector(".brand")?.cloneNode(true);
+  if (brand) { brand.removeAttribute("aria-label"); brand.classList.add("about-brand"); card.append(brand); }
+  card.append(
+    node("h3", "about-heading", "Cross-platform media artwork and library tooling"),
+    node("p", "about-description", "S.P.L.I.N.E.D searches, compares, enhances, and curates artwork for your music library. Review candidate covers, confirm releases with MusicBrainz, and save approved artwork according to your configured policies."),
+  );
   const facts = node("dl", "about-facts");
-  for (const [label, value] of [["Version", state.server?.version || storage.version || "Unknown"], ["Revision", (state.server?.revision || storage.revision || "Unknown").slice(0, 12)], ["Runtime", "WebGUI / PostgreSQL"], ["Mode", String(state.server?.mode || storage.mode || "read").toUpperCase()], ["Catalog", storage.database || "PostgreSQL"]]) {
+  const revision = (state.server?.revision || storage.revision || "Unknown").slice(0, 12);
+  for (const [label, value] of [["Version", (state.server?.version || storage.version || "Unknown") + " · " + revision], ["License", "GNU GPL v3.0"], ["Built With", "Python · FastAPI · PostgreSQL"], ["Project", "scottia / S-P-L-I-N-E-D"]]) {
     facts.append(node("dt", "", label), node("dd", "", value));
   }
+  card.append(facts,
+    node("p", "about-architecture", "Architecture: Python manages WebGUI state, PostgreSQL, artwork providers, MusicBrainz, candidate decisions, editing, and scans. HTML, CSS, and JavaScript present the browser interface."),
+    node("h4", "about-updates-heading", "Updates"),
+    node("p", "about-updates", "WebGUI deployments update with the installed SPLINED service. Windows Store-installed clients use Microsoft Store updates."),
+  );
+  const checkUpdates = node("a", "guide-link about-update-check", "Check for Updates");
+  checkUpdates.href = "https://github.com/scottia/S-P-L-I-N-E-D/releases/latest";
+  checkUpdates.target = "_blank"; checkUpdates.rel = "noopener";
+  card.append(checkUpdates, node("p", "about-update-state", "Ready"));
   const links = node("div", "about-links");
-  for (const [label, href] of [["Source Code on GitHub ↗", "https://github.com/scottia/S-P-L-I-N-E-D"], ["Release Notes ↗", "https://github.com/scottia/S-P-L-I-N-E-D/releases"]]) {
+  for (const [label, href] of [["Microsoft Store ↗", "https://apps.microsoft.com/detail/9p8g4gmbbvbs?hl=en-US&gl=US"], ["Source Code on GitHub ↗", "https://github.com/scottia/S-P-L-I-N-E-D"], ["Release Notes ↗", "https://github.com/scottia/S-P-L-I-N-E-D/releases/latest"]]) {
     const link = node("a", "guide-link", label); link.href = href; link.target = "_blank"; link.rel = "noopener"; links.append(link);
   }
-  card.append(facts, links); body.append(card);
+  card.append(links, node("p", "about-external-note", "External links open in a new browser window. The Microsoft Store link opens the SPLINED listing; it does not install anything automatically."));
+  body.append(card);
 }));
 $("helpButton").addEventListener("click", () => {
-  showDialog("SPLINED WebGUI", ["Use Settings to configure your library, PostgreSQL catalog, artwork policy, and provider credentials. Refresh the library index after adding music.", "LAUNCH searches the selected albums, or the current artist when no albums are selected. Review queued decisions in the browser. Artist Art opens portrait and banner search. WRITE saves prepared artwork; EMBED Batch saves the cover and stages track embedding without changing your current view.", "Live Write enables music and tag changes. Read mode supports searching and previewing. The queue and completion ledger persist in PostgreSQL."]);
-  const link=node("a","guide-link","Open WebGUI guide");link.href="/guide";link.target="_blank";link.rel="noopener";$("dialogBody").append(link);
-  const icon=node("a","guide-link","Save SPLINED dashboard icon");icon.href="/assets/splined-dashboard-icon.png";icon.download="splined-dashboard-icon.png";$("dialogBody").append(icon);
+  window.open("https://github.com/scottia/S-P-L-I-N-E-D/blob/main/docs/browser-workspace-guide.md", "_blank", "noopener");
 });
 $("closeDialog").addEventListener("click", () => $("workspaceDialog").close());
 

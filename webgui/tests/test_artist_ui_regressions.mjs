@@ -2618,3 +2618,31 @@ test("Fallback file-list tracks use the same COMP status palette as report track
   assert.match(cssSource, /\.fallback-library-track\.pending\{color:var\(--blue\)!important\}/);
   assert.doesNotMatch(cssSource, /\.fallback-library-track\{[^}]*color:var\(--green\)!important/);
 });
+
+test("Artist filtering survives overview selection and rerender", () => {
+  assert.match(appSource, /artistMetadataRequest: 0, artistQuery: ""/);
+  assert.match(appSource, /state\.artistQuery = event\.target\.value/);
+  assert.match(appSource, /String\(state\.artistQuery \|\| \$\("artistSearch"\)\.value \|\| ""\)/);
+  assert.match(appSource, /String\(artist\.name \|\| ""\)\.toLocaleLowerCase\(\)\.includes\(artistQuery\)/);
+  const chooseArtistSource = between(appSource, "async function chooseArtist", "async function chooseAlbum");
+  assert.doesNotMatch(chooseArtistSource, /artistSearch[^\n]*value\s*=\s*""/);
+});
+
+test("About and Help use the native information contract and repository guide", () => {
+  assert.match(appSource, /Cross-platform media artwork and library tooling/);
+  assert.match(appSource, /Python · FastAPI · PostgreSQL/);
+  assert.match(appSource, /Check for Updates/);
+  assert.match(appSource, /Microsoft Store ↗/);
+  assert.match(appSource, /docs\/browser-workspace-guide\.md/);
+  const helpSource = between(appSource, "\$(\"helpButton\")", "\$(\"closeDialog\")");
+  assert.match(helpSource, /window\.open/);
+  assert.doesNotMatch(helpSource, /showDialog/);
+});
+
+test("Artist enhancement rerenders restart from the explicit source", () => {
+  assert.match(operationsSource, /cumulative flash was the visible Artist Art jitter\/crop regression/);
+  assert.match(operationsSource, /restore\('#artistPane img',portrait\)/);
+  assert.match(operationsSource, /restore\('#bannerPane img',banner\)/);
+  assert.match(operationsSource, /generation!==previewGeneration/);
+  assert.match(cssSource, /package-banner,.selected-package img\.banner-art\{object-fit:contain/);
+});

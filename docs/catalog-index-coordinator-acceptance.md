@@ -730,10 +730,70 @@ Status: **PASSED**.
   2026-11-09 and left the original name as a compatibility seam for those
   focused tests. It is not a second Artist Art implementation or runtime path.
 
-Focused validation: **41/41 WebGUI source/audit/render tests**, **393/393 full
+### Artist workspace, local-art and responsive-layout correction evidence
+
+- The reported Accept Artist Art count difference was traced with verbose logs
+  rather than normalized by another result cap. Both installed clients now
+  resolve the same provider-authorized inventory: Fanart 5, Discogs 4, iTunes
+  3 and Deezer 2, plus two local files and one Navidrome portrait (**17**
+  candidates total). The earlier 14-card browser capture was stale UI state;
+  the current browser accessibility tree, provider response and Candidate
+  Filter inventory all agree. No Artist candidates are added to Album search.
+- WebGUI About now uses the native About information hierarchy while reporting
+  the WebGUI/Python/PostgreSQL runtime truth. Help opens the repository browser
+  workspace guide in a new tab and no longer opens a redundant definition
+  dialog.
+- Windows pane minima and typography now have an explicit compact layout for
+  1280 logical pixels and below. The compact layout keeps a 420-pixel center
+  workspace with temporary 220-pixel library and 230-pixel artwork minima;
+  remembered desktop widths remain unchanged. The installed executable was
+  resized to 1024 by 768 and its log reported a responsive 1008 by 729 Slint
+  content surface without startup or repaint failure.
+- WebGUI Similar Artists now use authenticated lazy portrait URLs backed by a
+  bounded downloader and persistent cache. All four live Accept Similar Artist
+  portraits resolved through the test service. Artist detail is tried first
+  for genres; when Navidrome supplies none, the exact selected-Artist
+  appearance projection supplies the library genres. Accept consequently
+  resolves its eleven expected genres without associating another Artist.
+- A library-collapsed CSS selector was unintentionally broad enough to hide
+  every nested panel heading. It is now scoped to the library heading only, so
+  `Selected Artwork`, its left status marker, right state badge and Windows-
+  parity actions remain visible at compact widths.
+- Artist Art enhancement rerenders now restart from the explicitly selected
+  portrait/banner source before applying the current adjustment stack. This
+  removes cumulative transforms and stale-preview jitter. Neutral banner
+  framing uses contain geometry, preserving the complete source at the largest
+  available target fit; an explicit operator zoom remains the only path that
+  may crop. Async generation guards still reject late preview results.
+- Existing local `artist.*` and `banner.*` discovery was re-audited in both
+  clients. WebGUI resolves local Artist Art before provider cache and its saved
+  package independently resolves portrait and banner. Windows already lazily
+  hydrates the same local paths. Native library thumbnails already use a round
+  frame; this behavior was preserved rather than duplicated with another
+  thumbnail implementation.
+- WebGUI now owns the typed Artist query as workspace state. Selecting an Artist
+  no longer clears or loses the active filter during rerender. The Rob
+  Wasserman regression was checked against the live PostgreSQL projection:
+  search remains bound to Rob's exact name and MBID, with `Gold` as a featured
+  appearance owned by Aaron Neville; no Aaron Neville Artist Art result was
+  returned. Windows retains the already-correct selected-identity sequence.
+- Windows biography justification now leaves a sparse line natural when the
+  following long word would otherwise create visually extreme spacing. Dense
+  non-final lines remain fully justified and the final line remains natural,
+  matching the browser presentation more closely.
+
+Runtime limitation: the PC session exposed application windows and logs but
+rejected monitor capture and cursor injection (`CreateForMonitor` and
+`GetCursorPos` access failures). Installed-client screenshots are therefore not
+claimed for these corrections. Browser accessibility, live HTTP behavior,
+installed native resize/startup logs and the automated render/state contracts
+are the recorded evidence.
+
+Focused validation: **41/41 WebGUI source/audit/render tests**, **395/395 full
 WebGUI tests (78 environment-dependent skips)**, **532/532 Windows core tests**,
-**115/115 Windows application tests**, JavaScript syntax, Slint/Rust compilation,
-and `git diff --check` passed.
+**115/115 Windows application tests**, **90/90 browser behavior tests**, Python
+compilation, JavaScript syntax, Slint/Rust compilation, and `git diff --check`
+passed.
 
 Installed validation: WebGUI 2.0.36 was restarted against the established test
 PostgreSQL service and reports `database_ready=true`; its live-served assets
@@ -752,8 +812,8 @@ remains valid; current-head source contracts and complete automated suites pass.
 - Windows: **532 core + 115 application tests passed**; the full Rust workspace,
   focused duplicate-flight, resource, thumbnail, progress/cancellation,
   forced-interruption and identity-history tests passed.
-- WebGUI: **393 passed, 78 skipped** in the full suite. Browser behavior is
-  **87/87 passed** after the cancellation-status correction. The focused real
+- WebGUI: **395 passed, 78 skipped** in the full suite. Browser behavior is
+  **90/90 passed** after the Artist workspace corrections. The focused real
   PostgreSQL pool, no-provider, thumbnail, progress/cancellation, forced
   interruption, `American Pie 2` and `A$AP Rocky` regressions passed.
 - Formatting, Python compilation, JavaScript syntax and `git diff --check`

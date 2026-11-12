@@ -14,6 +14,7 @@ import unittest
 
 from webgui.services import Services
 from webgui.catalog import Catalog
+from webgui.imaging import framed
 from PIL import Image
 
 
@@ -74,7 +75,12 @@ class ReportedDefectTests(unittest.TestCase):
                 if "search3" in url:
                     return Response({"searchResult3": {"artist": [{"id": "remote-selected", "name": "Selected Artist"}]}})
                 if "getArtistInfo2" in url:
-                    return Response({"artistInfo2": {"biography": "Provider biography", "similarArtist": [{"id": "remote-similar", "name": "Real Similar"}]}})
+                    return Response({"artistInfo2": {"biography": "Provider biography", "similarArtist": [
+                        {"id": "remote-similar", "name": "Real Similar"},
+                        {"id": "remote-only", "name": "Remote Only", "coverArt": "cover-1"},
+                    ]}})
+                if "getArtist.view" in url:
+                    return Response({"artist": {"genre": "Alternative", "genres": [{"name": "Rock"}]}})
                 return Response({"topSongs": {"song": []}})
 
             catalog = Catalog.__new__(Catalog)
@@ -104,13 +110,97 @@ class ReportedDefectTests(unittest.TestCase):
             self.assertEqual(result["source"], "Navidrome")
             self.assertEqual(
                 result["similar"],
-                [{"name": "Real Similar", "local_id": "similar", "image": "/api/image/similar", "provider_id": "remote-similar"}],
+                [
+                    {"name": "Real Similar", "local_id": "similar", "image": "/api/image/similar", "provider_id": "remote-similar"},
+                    {
+                        "name": "Remote Only",
+                        "local_id": "",
+                        "image": "/api/artist/similar-thumbnail?provider_id=remote-only&name=Remote%20Only&cover_art=cover-1",
+                        "provider_id": "remote-only",
+                    },
+                ],
             )
             self.assertEqual(
                 [url.rsplit("/", 1)[-1] for url in requests_seen],
-                ["search3.view", "getArtistInfo2.view"],
+                ["search3.view", "getArtistInfo2.view", "getArtist.view"],
                 "Artist Overview must not wait for top-song or Similar Artist image requests",
             )
+            self.assertEqual(result["artist"]["genres"], ["Alternative", "Rock"])
+
+    def test_artist_metadata_uses_identity_bound_library_genres_when_artist_detail_has_none(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            credentials = root / "credentials"
+            credentials.mkdir()
+            (credentials / "navidrome.json").write_text(
+                '{"server_url":"https://navidrome.invalid","auth_method":"api_key","api_key":"secret"}',
+                encoding="utf-8",
+            )
+            database = root / "catalog.sqlite"
+            with closing(sqlite3.connect(database)) as db:
+                db.execute(
+                    "CREATE TABLE artists (artist_key TEXT,artist_name TEXT,musicbrainz_artistid TEXT,primary_path TEXT)"
+                )
+                db.execute("INSERT INTO artists VALUES (?,?,?,?)", ("selected", "Selected Artist", "", str(root)))
+                db.commit()
+
+            class Response:
+                status_code = 200
+
+                def __init__(self, payload):
+                    self.payload = payload
+
+                def json(self):
+                    return {"subsonic-response": {"status": "ok", **self.payload}}
+
+            def response(url, **_kwargs):
+                if "search3" in url:
+                    return Response({"searchResult3": {"artist": [{"id": "remote-selected", "name": "Selected Artist"}]}})
+                if "getArtistInfo2" in url:
+                    return Response({"artistInfo2": {"biography": "Provider biography", "similarArtist": []}})
+                if "getArtist.view" in url:
+                    return Response({"artist": {}})
+                raise AssertionError(url)
+
+            catalog = Catalog.__new__(Catalog)
+            catalog.credentials = credentials
+            catalog.metadata_cache = {}
+            catalog.appearance_cache = {}
+            catalog.lock = Lock()
+            catalog.artist = lambda _artist_id: {"id": "selected", "name": "Selected Artist", "mbid": "", "top_tracks": [], "genres": []}
+            catalog.artist_comp_albums = lambda _artist_id: []
+            catalog.refresh_artist_appearances = lambda _artist_id: {"genres": ["Blues", "Soul"]}
+            catalog._stored_artist_profile = lambda _artist_id: None
+            catalog._save_artist_profile = lambda *_args: None
+            catalog.connect = lambda: sqlite3.connect(database)
+            original_connect = catalog.connect
+
+            def connect():
+                value = original_connect()
+                value.row_factory = sqlite3.Row
+                return value
+
+            catalog.connect = connect
+            catalog.artist_thumbnail_path = lambda _row: None
+            catalog.image = lambda _path: None
+
+            with patch("webgui.catalog.requests.get", side_effect=response):
+                result = catalog.artist_metadata("selected")
+
+            self.assertEqual(result["artist"]["genres"], ["Blues", "Soul"])
+
+    def test_neutral_banner_fit_preserves_the_complete_source(self):
+        source = Image.new("RGBA", (600, 600), "red")
+        source.paste(Image.new("RGBA", (300, 600), "blue"), (300, 0))
+
+        banner = framed(source, "banner")
+
+        self.assertEqual(banner.size, (600, 257))
+        self.assertEqual(banner.getpixel((0, 128))[3], 0)
+        self.assertEqual(banner.getpixel((171, 128))[3], 0)
+        self.assertEqual(banner.getpixel((172, 128))[:3], (255, 0, 0))
+        self.assertEqual(banner.getpixel((428, 128))[:3], (0, 0, 255))
+        self.assertEqual(banner.getpixel((599, 128))[3], 0)
 
     def test_webgui_formatting_uses_visible_settings_and_configured_artwork_range(self):
         repository = Path(__file__).parents[2]

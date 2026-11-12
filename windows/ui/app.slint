@@ -1378,6 +1378,10 @@ export component AppWindow inherits Window {
     max-width: 10000px; max-height: 10000px;
     default-font-size: 16px * AppTheme.font-scale;
     background: AppTheme.window-background;
+    // Per-monitor DPI is still controlled by display-scale-percent. This
+    // additional factor is a temporary responsive treatment for narrow
+    // windows/tablets and does not rewrite the user's saved preference.
+    out property <float> responsive-font-factor: root.width / 1px <= 1050 ? 0.82 : (root.width / 1px <= 1280 ? 0.90 : 1.0);
     in property <[UiLibraryRow]> library-rows;
     in property <int> library-shown-count;
     in property <[UiArtistAlbumRow]> artist-overview-albums;
@@ -1833,7 +1837,10 @@ export component AppWindow inherits Window {
     callback transient-region-toggled();
     callback pane-resized(string, float); callback set-appearance(string);
     callback window-resized(float, float);
-    changed width => root.window-resized(root.width / 1px, root.height / 1px);
+    changed width => {
+        AppTheme.font-scale = root.display-scale-percent / 100.0 * root.responsive-font-factor;
+        root.window-resized(root.width / 1px, root.height / 1px);
+    }
     changed height => {
         root.viewport-height = root.height / 1px;
         root.window-resized(root.width / 1px, root.height / 1px);
@@ -1919,7 +1926,7 @@ export component AppWindow inherits Window {
         if (root.appearance-mode == "Dark" || root.appearance-mode == "Chalk") { Palette.color-scheme = ColorScheme.dark; }
     }
     changed display-scale-percent => {
-        AppTheme.font-scale = root.display-scale-percent / 100.0;
+        AppTheme.font-scale = root.display-scale-percent / 100.0 * root.responsive-font-factor;
     }
     changed artist-overview-name => { root.artist-biography-expanded = false; root.artist-edit-visible = false; }
     property <bool> operation-active: root.operation-busy || root.artist-overview-loading || root.running || root.awaiting-candidate || root.awaiting-musicbrainz || root.artist-overview-compilation-index >= 0;
@@ -2073,8 +2080,8 @@ export component AppWindow inherits Window {
                     visible: root.media-selector-expanded;
                     width: root.media-selector-expanded ? 6px : 0px;
                     position: root.media-pane-width;
-                    minimum: 270;
-                    maximum: max(270, root.width / 1px - root.artwork-pane-width - 600);
+                    minimum: root.width / 1px <= 1280 ? 220 : 270;
+                    maximum: max(self.minimum, root.width / 1px - root.artwork-pane-width - (root.width / 1px <= 1280 ? 420 : 600));
                     resized(value) => {
                         root.media-pane-width = value;
                         root.pane-resized("media", value);
@@ -2923,8 +2930,8 @@ export component AppWindow inherits Window {
 
                         ColumnSplitter {
                             visible: root.show-artwork && root.workspace-mode != 3; width: self.visible ? 6px : 0px; reverse: true;
-                            position: root.artwork-pane-width; minimum: 280;
-                            maximum: max(280, root.width / 1px - root.media-pane-width - 600);
+                            position: root.artwork-pane-width; minimum: root.width / 1px <= 1280 ? 230 : 280;
+                            maximum: max(self.minimum, root.width / 1px - root.media-pane-width - (root.width / 1px <= 1280 ? 420 : 600));
                             resized(value) => {
                                 root.artwork-pane-width = value;
                                 root.pane-resized("artwork", value);

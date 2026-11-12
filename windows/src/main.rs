@@ -865,7 +865,18 @@ fn layout_artist_biography(
 
         let last_line = lines.len().saturating_sub(1);
         for (line_index, words) in lines.into_iter().enumerate() {
-            let justified = line_index != last_line && words.len() > 1;
+            let natural_width = words
+                .iter()
+                .map(|word| biography_word_width_em(word))
+                .sum::<f32>()
+                + BIOGRAPHY_SPACE_EM * words.len().saturating_sub(1) as f32;
+            // A very long following word can leave the preceding line sparse.
+            // Stretching that row across the full overview produces the large,
+            // erratic gaps reported on narrow displays. Keep genuinely full
+            // rows justified and render sparse rows with normal word spacing.
+            let justified = line_index != last_line
+                && words.len() > 1
+                && natural_width >= target_width_em * 0.72;
             rendered.push(UiBiographyLine {
                 words: model(words.into_iter().map(SharedString::from).collect()),
                 justified,
