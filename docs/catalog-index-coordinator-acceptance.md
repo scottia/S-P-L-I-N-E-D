@@ -800,7 +800,8 @@ PostgreSQL service and reports `database_ready=true`; its live-served assets
 contain Default, the standard-access Status Bar, and Logging expand/compress.
 The updated native 2.0.36 executable was installed and started from
 `E:\apps\SPLINED\splined.exe` with SHA-256
-`0FCE276B79A105790A8322C23557EFCB813D9DF90DE2AFBB4887B42DB2987456`.
+`B35481EE932D505A5BFD65EF77DBA9F82B7E460A71DF18D282B3466CE6BA0114`
+from functional commit `721df41`.
 The PC session allowed accessibility inspection but rejected cursor input and
 monitor capture, so new installed-client interaction/screenshots for the theme
 menu and `+`/`−` controls were not claimed. Earlier installed evidence for the
@@ -821,7 +822,8 @@ remains valid; current-head source contracts and complete automated suites pass.
   final-head CI is recorded on PR #170 after the documentation commit.
 - Installed Windows 2.0.36 executable:
   `E:\apps\SPLINED\splined.exe`, SHA-256
-  `0FCE276B79A105790A8322C23557EFCB813D9DF90DE2AFBB4887B42DB2987456`.
+  `B35481EE932D505A5BFD65EF77DBA9F82B7E460A71DF18D282B3466CE6BA0114`
+  from functional commit `721df41`.
   The installed WebGUI runs current PR source at 2.0.36 against the established
   PostgreSQL service. Credentialed startup was restored after localhost-only UI
   validation (`auth_required=true`, `database_ready=true`).
