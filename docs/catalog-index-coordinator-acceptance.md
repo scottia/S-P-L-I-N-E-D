@@ -933,10 +933,13 @@ remains valid; current-head source contracts and complete automated suites pass.
 - Completed ready/save/write notices now dismiss after a bounded interval while
   busy and error states remain visible. Small, medium and large status modes grow
   from the header center and the header actions remain right-aligned.
-- Light theme uses a transparent logo surface and readable grey text. Chalk is a
-  flat dark-navy chalkboard treatment with restrained colored outlines and no
-  neon/glow. The texture is limited to application chrome; neither WebGUI nor
-  native artwork pixels are filtered or dimmed.
+- Light theme uses a transparent logo surface and the same native grey text
+  values in both clients (`#18252d` primary and `#52616a` secondary). Chalk is
+  a ghosted graphite/plum treatment rather than the earlier flat navy surface:
+  both clients use the same deterministic smoky chalk SVG, muted pastel
+  outlines and low-opacity panel shadows without neon. The texture and shadows
+  are limited to application chrome; neither WebGUI nor native artwork pixels
+  are filtered, recolored or dimmed.
 - Artist Overview owns its vertical scroll. The five footer actions (`Show All`,
   `Refresh Artist Info`, `MusicBrainz Artist`, `COMP Report`, and
   `EMBED All Albums`) are a normal final content row with `position: relative`;
@@ -952,6 +955,16 @@ Follow-up validation: **401/401 WebGUI tests passed (78 environment-dependent
 skips)** and **97/97 browser behavior tests passed**. JavaScript syntax and the
 live-served asset check passed. Final native compilation and repository hygiene
 results are recorded below with the final follow-up commit.
+
+Live computer-use theme validation selected Chalk and confirmed the served
+graphite/plum palette (`#17131b`, `#25202a`, `#302a35`), the shared ghost texture
+above the surface wash and `filter: none` on Selected Artwork. Selecting Light
+repainted the full workspace and reported the exact Windows primary/secondary
+grey values above, with the active controls and body using the primary grey.
+The Windows Slint source accepts the same shared texture plus native Rectangle
+drop shadows and passed `cargo check`. At the owner's request, the new native
+executable was not installed yet; that build and installed visual comparison
+are deferred so they can be combined with the next two Windows corrections.
 
 ### Final regression evidence and installed revisions
 

@@ -31,41 +31,43 @@ export global AppTheme {
     // Default uses SPLINED's logo palette instead of inheriting one Windows
     // accent for every control. Dark intentionally matches the WebGUI Dark
     // palette; neither theme is applied to image pixels.
-    out property <color> window-background: root.system ? #111719 : (root.chalk ? #071925 : (root.light ? #ecebea : #18191b));
-    out property <color> panel-background: root.system ? #1b2326 : (root.chalk ? #0b2230 : (root.light ? #f8f7f4 : #252729));
-    out property <color> header-background: root.system ? #121b1e : (root.chalk ? #0b2230 : (root.light ? #f1f0ed : #18191b));
+    out property <color> window-background: root.system ? #111719 : (root.chalk ? #17131b : (root.light ? #ecebea : #18191b));
+    out property <color> panel-background: root.system ? #1b2326 : (root.chalk ? #25202a : (root.light ? #f8f7f4 : #252729));
+    out property <color> header-background: root.system ? #121b1e : (root.chalk ? #211b25 : (root.light ? #f1f0ed : #18191b));
     out property <color> foreground: root.light ? #18252d : #ffffff;
-    out property <color> secondary-foreground: root.system ? #afbdba : (root.chalk ? #c5d9dc : (root.light ? #52616a : #b7c0c5));
-    out property <color> border: root.system ? #2f8ca0 : (root.chalk ? #6db7c3 : (root.light ? #b9bfc2 : #4a5055));
-    out property <color> card: root.system ? #252e31 : (root.chalk ? #102b38 : (root.light ? #f1f0ed : #292c2e));
-    out property <color> card-hover: root.system ? #314044 : (root.chalk ? #173b48 : (root.light ? #e1e8e8 : #34383a));
-    out property <color> selected-surface: root.system ? #244752 : (root.chalk ? #1a4451 : (root.light ? #d9e8e8 : #34464a));
-    out property <color> recessed-surface: root.system ? #0d1315 : (root.chalk ? #061824 : (root.light ? #ecebea : #18191b));
-    out property <color> quiet-surface: root.system ? #172124 : (root.chalk ? #0d2834 : (root.light ? #f8f7f4 : #202325));
+    out property <color> secondary-foreground: root.system ? #afbdba : (root.chalk ? #cbc2ce : (root.light ? #52616a : #b7c0c5));
+    out property <color> border: root.system ? #2f8ca0 : (root.chalk ? #817488 : (root.light ? #b9bfc2 : #4a5055));
+    out property <color> card: root.system ? #252e31 : (root.chalk ? #302a35 : (root.light ? #f1f0ed : #292c2e));
+    out property <color> card-hover: root.system ? #314044 : (root.chalk ? #3c3442 : (root.light ? #e1e8e8 : #34383a));
+    out property <color> selected-surface: root.system ? #244752 : (root.chalk ? #493e50 : (root.light ? #d9e8e8 : #34464a));
+    out property <color> recessed-surface: root.system ? #0d1315 : (root.chalk ? #151118 : (root.light ? #ecebea : #18191b));
+    out property <color> quiet-surface: root.system ? #172124 : (root.chalk ? #211b25 : (root.light ? #f8f7f4 : #202325));
     out property <color> image-surface: #020913;
-    out property <color> cyan: root.system ? #27c8df : (root.chalk ? #8ed4db : (root.light ? #007c94 : #79d0de));
+    out property <color> cyan: root.system ? #27c8df : (root.chalk ? #9fcbd1 : (root.light ? #007c94 : #79d0de));
     out property <color> blue: root.system ? #428be8 : (root.light ? #285fba : #3288e8);
-    out property <color> violet: root.system ? #6d7fda : (root.chalk ? #a795bd : (root.light ? #6443a3 : #9a72d2));
+    out property <color> violet: root.system ? #6d7fda : (root.chalk ? #b4a2c4 : (root.light ? #6443a3 : #9a72d2));
     // Default deliberately maps the historical magenta semantic slot to logo gold.
-    out property <color> magenta: root.system ? #e7a13f : (root.chalk ? #d991b8 : (root.light ? #a12475 : #d58ab4));
-    out property <color> green: root.system ? #45c486 : (root.chalk ? #93c9a3 : (root.light ? #227a56 : #84c99c));
-    out property <color> yellow: root.system ? #e7c64b : (root.chalk ? #d3b65d : (root.light ? #6f5108 : #e8c068));
-    out property <color> orange: root.system ? #ed843c : (root.chalk ? #c68b61 : (root.light ? #9b4c12 : #d78a4d));
-    out property <color> danger: root.system ? #dd5555 : (root.chalk ? #c46e68 : (root.light ? #9b2637 : #d97482));
+    out property <color> magenta: root.system ? #e7a13f : (root.chalk ? #d5a2be : (root.light ? #a12475 : #d58ab4));
+    out property <color> green: root.system ? #45c486 : (root.chalk ? #a6cdb0 : (root.light ? #227a56 : #84c99c));
+    out property <color> yellow: root.system ? #e7c64b : (root.chalk ? #d5c27c : (root.light ? #6f5108 : #e8c068));
+    out property <color> orange: root.system ? #ed843c : (root.chalk ? #c99b77 : (root.light ? #9b4c12 : #d78a4d));
+    out property <color> danger: root.system ? #dd5555 : (root.chalk ? #d28a83 : (root.light ? #9b2637 : #d97482));
 }
 
 component Panel inherits Rectangle {
     background: AppTheme.panel-background; border-color: AppTheme.border; border-width: 1px; border-radius: 9px; clip: true;
-    if AppTheme.chalk: Image { source: @image-url("../gui/chalk-texture.svg"); width: parent.width; height: parent.height; image-fit: cover; opacity: 0.18; }
+    drop-shadow-color: AppTheme.chalk ? #c8b6ce24 : transparent; drop-shadow-blur: AppTheme.chalk ? 10px : 0px; drop-shadow-spread: AppTheme.chalk ? 1px : 0px;
+    if AppTheme.chalk: Image { source: @image-url("../gui/chalk-texture.svg"); width: parent.width; height: parent.height; image-fit: cover; opacity: 0.44; }
 }
 component Heading inherits Text { color: AppTheme.foreground; font-size: 19px * AppTheme.font-scale; font-weight: 800; vertical-alignment: center; }
 component Label inherits Text { color: AppTheme.secondary-foreground; font-size: 14px * AppTheme.font-scale; font-weight: 600; vertical-alignment: center; }
 component NeonPanel inherits Rectangle {
-    background: AppTheme.system ? AppTheme.panel-background : (AppTheme.chalk ? @linear-gradient(135deg, #102b38, #071925) : (AppTheme.light ? @linear-gradient(135deg, #f8f7f4, #ecebea) : @linear-gradient(135deg, #292c2e, #18191b)));
+    background: AppTheme.system ? AppTheme.panel-background : (AppTheme.chalk ? @linear-gradient(135deg, #302936, #17131b) : (AppTheme.light ? @linear-gradient(135deg, #f8f7f4, #ecebea) : @linear-gradient(135deg, #292c2e, #18191b)));
     border-width: 0px;
     border-radius: 9px;
     clip: true;
-    if AppTheme.chalk: Image { source: @image-url("../gui/chalk-texture.svg"); width: parent.width; height: parent.height; image-fit: cover; opacity: 0.20; }
+    drop-shadow-color: AppTheme.chalk ? #c8b6ce20 : transparent; drop-shadow-blur: AppTheme.chalk ? 12px : 0px; drop-shadow-spread: AppTheme.chalk ? 1px : 0px;
+    if AppTheme.chalk: Image { source: @image-url("../gui/chalk-texture.svg"); width: parent.width; height: parent.height; image-fit: cover; opacity: 0.48; }
 }
 component NeonAction inherits Rectangle {
     in property <string> label;
@@ -89,19 +91,22 @@ component NeonAction inherits Rectangle {
         root.tone == "yellow" ? AppTheme.yellow :
         root.tone == "cyan" || root.emphasized ? AppTheme.cyan :
         root.tone == "magenta" ? AppTheme.magenta : AppTheme.border;
+    drop-shadow-color: AppTheme.chalk ? #d8c8da20 : transparent;
+    drop-shadow-blur: AppTheme.chalk ? 5px : 0px;
+    drop-shadow-spread: AppTheme.chalk ? 0.5px : 0px;
     background:
         AppTheme.system ?
             (!root.enabled ? AppTheme.card :
              action.pressed ? AppTheme.selected-surface :
              action.has-hover ? AppTheme.card-hover : AppTheme.card) :
         AppTheme.chalk ?
-            (!root.enabled ? #102b38 :
-             action.pressed ? #1d4b58 :
-             action.has-hover ? #173b48 :
-             root.danger || root.tone == "red" ? #412b31 :
-             root.tone == "orange" ? #40352c :
-             root.tone == "yellow" ? #433e2a :
-             root.tone == "purple" || root.tone == "embed" ? #322f42 : #102b38) :
+            (!root.enabled ? #302a35 :
+             action.pressed ? #514455 :
+             action.has-hover ? #403744 :
+             root.danger || root.tone == "red" ? #493034 :
+             root.tone == "orange" ? #4a3b32 :
+             root.tone == "yellow" ? #4b4530 :
+             root.tone == "purple" || root.tone == "embed" ? #46394f : #302a35) :
         !root.enabled ? (AppTheme.light ? #e5e4e0 : #242729) :
         action.pressed ? (AppTheme.light ? #d0dfe0 : #3b4a4e) :
         action.has-hover ? (AppTheme.light ? #e1e8e8 : #343b3e) :

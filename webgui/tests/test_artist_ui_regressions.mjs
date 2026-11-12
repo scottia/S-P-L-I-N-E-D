@@ -381,10 +381,10 @@ test("COMP artwork source labels map to the Windows source counters", () => {
 
 test("Chalk theme reaches library and action surfaces through palette variables", () => {
   assert.match(cssSource, /html\[data-theme=chalk\]\{[^}]*--violet:[^;}]+;[^}]*--yellow:[^;}]+;[^}]*--danger:/);
-  assert.match(cssSource, /html\[data-theme=chalk\]\{--window:#071925;--panel:#0b2230/);
+  assert.match(cssSource, /html\[data-theme=chalk\]\{--window:#17131b;--panel:#25202a;--card:#302a35/);
   assert.match(cssSource, /html\[data-theme=chalk\] body\{[^}]*url\('\/assets\/chalk-texture\.svg'\)/);
   assert.match(cssSource, /html\[data-theme=chalk\] :is\([^}]*url\('\/assets\/chalk-texture\.svg'\)/);
-  assert.match(cssSource, /html\[data-theme=chalk\] \.source-card,[^}]*\{box-shadow:none\}/);
+  assert.match(cssSource, /html\[data-theme=chalk\] :is\(\.source-card,[^}]*\{box-shadow:inset/);
   assert.match(cssSource, /\.library-list\{background:var\(--panel\)\}/);
   assert.match(cssSource, /\.header-actions button,[^{]*\{border-color:var\(--line\);background:var\(--card\);color:var\(--text\)\}/);
   assert.match(cssSource, /\.workspace-dialog,\.embed-summary\{background:var\(--panel\);color:var\(--text\)\}/);
@@ -2776,7 +2776,7 @@ test("WebGUI status sizing grows from header center and artwork footer is blue",
   assert.match(cssSource, /\.status\[data-position=top\] \.status-progress\{top:2px;bottom:auto\}/);
   assert.match(cssSource, /\.embedded-ribbon\{[^}]*background:#071d3ee8;color:#72d8ff;border:1px solid #286fa0/);
   assert.match(cssSource, /html\[data-theme=light\] \.brand\{background:transparent/);
-  assert.match(cssSource, /html\[data-theme=light\]\{[^}]*--text:#3c474c;--muted:#687278/);
+  assert.match(cssSource, /html\[data-theme=light\]\{[^}]*--text:#18252d;--muted:#52616a/);
   assert.match(cssSource, /\.header-actions\{display:flex;align-items:center;justify-self:end;margin-left:auto/);
 });
 
