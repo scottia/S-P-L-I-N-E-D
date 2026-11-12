@@ -20132,12 +20132,21 @@ fn library_ui_model_from_rows(
         .map(|(album_key, _)| album_key.to_ascii_lowercase())
         .collect::<HashSet<_>>();
     if !completed_overrides.is_empty() {
-        for row in rows.iter_mut().filter(|row| row.kind == "artist") {
-            row.status = state
-                .library
-                .artist_state_with_overrides(&row.primary, &completed_overrides)
-                .label()
-                .to_string();
+        for row in &mut rows {
+            if row.kind == "artist" {
+                row.status = state
+                    .library
+                    .artist_state_with_overrides(&row.primary, &completed_overrides)
+                    .label()
+                    .to_string();
+            } else if matches!(row.kind.as_str(), "album" | "album-child")
+                && completed_overrides.contains(&row.key.to_ascii_lowercase())
+            {
+                // Grey is the established opposing-client visual. The same
+                // Album is counted in the red Bypassed action bucket below,
+                // without presenting a successful override as an error.
+                row.status = "Overridden".to_string();
+            }
         }
     }
     Rc::new(LibraryUiModel {
@@ -20977,17 +20986,16 @@ fn artist_overview_legend_counts(
         };
         counts.shown += 1;
         if album.overridden {
+            // The card stays grey/OVERRIDE, but the opposing client's
+            // verified write is completed work for the Artist aggregate.
             counts.overridden += 1;
-        }
-        if album.validating {
+            counts.completed += 1;
+        } else if album.validating {
             counts.validating += 1;
         } else if album.fully_complete {
             counts.completed += 1;
-            if !album.overridden {
-                counts.green_frames += 1;
-            }
+            counts.green_frames += 1;
         } else if album.check_embedded
-            && !album.overridden
             && (album.processed || (album.fallback && album.fallback_complete))
         {
             if album.fallback && album.fallback_complete {
@@ -21138,6 +21146,7 @@ fn artist_overview_is_fully_complete(
 
 fn library_status_color(status: &str) -> Color {
     match status.trim().to_ascii_lowercase().as_str() {
+        "overridden" => Color::from_rgb_u8(169, 176, 184),
         "processed" => status_filter_color(StatusFilter::Processed),
         "bypassed" => status_filter_color(StatusFilter::Bypassed),
         "partial / error" | "partial / timeout" => {
@@ -21219,6 +21228,12 @@ fn completed_compilation_track_needs_attention(
 }
 
 fn status_filter_ui_rows(state: &ApplicationState) -> Vec<UiStatusFilterRow> {
+    let completed_overrides = state
+        .album_override_writers
+        .iter()
+        .filter(|(_, writer)| writer.eq_ignore_ascii_case("webgui"))
+        .map(|(album_key, _)| album_key.to_ascii_lowercase())
+        .collect::<HashSet<_>>();
     [
         StatusFilter::All,
         StatusFilter::Unprocessed,
@@ -21233,7 +21248,10 @@ fn status_filter_ui_rows(state: &ApplicationState) -> Vec<UiStatusFilterRow> {
     .map(|filter| UiStatusFilterRow {
         key: SharedString::from(filter.label()),
         label: SharedString::from(state.library.status_label(filter)),
-        count: state.library.focused_status_count(filter) as i32,
+        count: state
+            .library
+            .focused_status_count_with_overrides(filter, &completed_overrides)
+            as i32,
         enabled: state.library.status_filter_enabled(filter),
         semantic_color: status_filter_color(filter),
     })
@@ -24737,7 +24755,27 @@ mod tests {
         assert_eq!(overridden.banner_display, "O\nV\nE\nR\nR\nI\nD\nE");
         let counts = artist_overview_legend_counts(&overridden_model, &[]);
         assert_eq!(counts.overridden, 1);
+        assert_eq!(counts.completed, 1);
+        assert_eq!(counts.in_process, 0);
         assert_eq!(counts.artist, 0);
+        let library_model = super::library_ui_model_from_rows(&app, app.library.rows());
+        let child = (0..library_model.row_count())
+            .filter_map(|index| library_model.row_data(index))
+            .find(|row| row.kind == "album-child")
+            .expect("expanded Artist exposes its Album row");
+        assert_eq!(child.status, "Overridden");
+        assert_eq!(child.status_color, Color::from_rgb_u8(169, 176, 184));
+        let filters = super::status_filter_ui_rows(&app);
+        let count = |label: &str| {
+            filters
+                .iter()
+                .find(|row| row.label == label)
+                .map(|row| row.count)
+                .unwrap_or_default()
+        };
+        assert_eq!(count("Bypassed"), 1);
+        assert_eq!(count("Partial / Error"), 0);
+        assert_eq!(count("Artist Complete"), 1);
         assert!(!(0..overridden.bullets.row_count()).any(|index| {
             overridden.bullets.row_data(index).is_some_and(|bullet| {
                 bullet.tip == "Missing Album Art"
@@ -25348,11 +25386,10 @@ mod tests {
         assert!(
             source.contains("height: self.visible ? overview-panel.biography-line-height : 0px")
         );
-        assert!(source.contains("biography-toggle-reserve"));
-        assert!(source.contains("index == overview-panel.biography-toggle-line-index"));
-        assert!(source.contains("x: min(line.extent * 1px"));
         assert!(source.contains("width: biography-copy.width; height: biography-copy.height"));
-        assert!(!source.contains("+ (overview-panel.biography-overflows ? 1 : 0)"));
+        assert!(!source.contains("biography-toggle-reserve"));
+        assert!(!source.contains("biography-toggle-line-index"));
+        assert!(!source.contains("root.artist-biography-expanded ? \"(less…)\""));
     }
 
     #[test]

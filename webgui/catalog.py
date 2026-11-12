@@ -1950,7 +1950,17 @@ class Catalog:
         return {
             "id": artist["artist_key"], "name": artist["artist_name"],
             "mbid": artist["musicbrainz_artistid"] or "",
-            "status": self._aggregate_album_status(rows), "albums": albums,
+            "status": self._aggregate_album_status([
+                {
+                    "status": (
+                        "processed"
+                        if str(coordination.get(str(row["album_key"]), {}).get("writer", "")).casefold()
+                        == "windows"
+                        else row["status"]
+                    )
+                }
+                for row in rows
+            ]), "albums": albums,
             "top_tracks": top_tracks,
             "genres": list(appearance.get("genres", [])),
             "roles": list(appearance.get("roles", [])),

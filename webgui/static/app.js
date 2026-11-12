@@ -352,8 +352,8 @@ function candidateSelectionKey(candidate) {
   return [queueValue, candidate.image || "", candidate.source || "", candidate.name || candidate.title || ""].join("\u001f");
 }
 const MEDIA_STATUSES = [["unprocessed", "Unprocessed"], ["incomplete", "Incomplete"], ["processed", "Processed"], ["bypassed", "Bypassed"], ["partial", "Partial / Error"], ["artistComplete", "Artist Complete"], ["artistBypass", "Artist Bypass"]];
-const MEDIA_STATUS_COLORS = {all: "#eef8ff", unprocessed: "#eef8ff", incomplete: "#50b9ff", processed: "#efa54e", bypassed: "#ff5c66", partial: "#b55ce4", artistComplete: "#4cd989", artistBypass: "#4099ff"};
-const MEDIA_STATUS_COLORS_LIGHT = {all: "#304b5b", unprocessed: "#304b5b", incomplete: "#12659a", processed: "#99600b", bypassed: "#b72e40", partial: "#8036a8", artistComplete: "#176a3e", artistBypass: "#185aab"};
+const MEDIA_STATUS_COLORS = {all: "#eef8ff", unprocessed: "#eef8ff", incomplete: "#50b9ff", processed: "#efa54e", bypassed: "#ff5c66", partial: "#b55ce4", artistComplete: "#4cd989", artistBypass: "#4099ff", override: "#a9b0b8"};
+const MEDIA_STATUS_COLORS_LIGHT = {all: "#304b5b", unprocessed: "#304b5b", incomplete: "#12659a", processed: "#99600b", bypassed: "#b72e40", partial: "#8036a8", artistComplete: "#176a3e", artistBypass: "#185aab", override: "#6b737b"};
 function mediaStatusColor(key) { return MEDIA_STATUS_COLORS[key] || MEDIA_STATUS_COLORS.unprocessed; }
 function applyStatusPalette(element, key) {
   element.dataset.mediaStatus = key;
@@ -362,12 +362,18 @@ function applyStatusPalette(element, key) {
 }
 const CANDIDATE_TYPES = [["Recommended", "Recommended"], ["Upscalable", "Upscalable"], ["Rejected", "Rejected"], ["Local", "Local"], ["Samples", "Samples"], ["FrontCover", "Front Cover"], ["BackCover", "Back Cover"], ["ArtistImage", "Artist Image"], ["MediaBooklet", "Media / Booklet"], ["Other", "Other"]];
 const CANDIDATE_RANGES = [["Ideal", "Ideal"], ["UpperRange", "Upper range"], ["Ladder", "Ladder"], ["AboveLadder", "Above ladder"], ["LowerRange", "Lower range"], ["BelowMinimum", "Below minimum"]];
-function mediaStatusKey(item) {
+function rawMediaStatusKey(item) {
   const raw = String(item.status || "unprocessed").toLowerCase();
   if (raw === "complete") return "artistComplete";
   if (raw.includes("bypass")) return raw.includes("artist") ? "artistBypass" : "bypassed";
   if (raw.includes("partial") || raw.includes("error") || raw.includes("timeout")) return "partial";
   return MEDIA_STATUSES.some(([key]) => key === raw) ? raw : "unprocessed";
+}
+function opposingAlbumOverride(item) {
+  return String(item?.album_mbid || "").trim() && albumOverride(item)?.writer === "windows";
+}
+function mediaStatusKey(item) {
+  return opposingAlbumOverride(item) ? "bypassed" : rawMediaStatusKey(item);
 }
 function mediaMatches(item) { return state.mediaStatuses.has(mediaStatusKey(item)); }
 function selectedMedia(item) { return state.mediaSelected.has(item.id); }
@@ -641,6 +647,10 @@ function renderMediaStatusChips() {
     : state.artist && selectedMedia(state.artist) ? [state.artist] : [];
   const counts = new Map();
   for (const item of items) { const key = mediaStatusKey(item); counts.set(key, (counts.get(key) || 0) + 1); }
+  if (state.artist && selectedMedia(state.artist)) {
+    const overrideCount = (state.artist.albums || []).filter(opposingAlbumOverride).length;
+    if (overrideCount) counts.set("bypassed", (counts.get("bypassed") || 0) + overrideCount);
+  }
   $("mediaStatusTitle").textContent = state.libraryMode === "fallback" ? "Fallback State" : focusedAlbum || state.libraryMode === "albums" ? "Album State" : "Artist State";
   const host = $("mediaStatusChips"); clear(host);
   for (const [key, label] of [["all", "All"], ...MEDIA_STATUSES]) {
@@ -672,7 +682,9 @@ function renderCandidateTypeChips() {
 function albumRow(album, child) {
   const button = node("button", "library-row album-row" + (child ? " album-child" : "")); button.type = "button";
   const orbit = node("span", "status-orbit" + (selectedMedia(album) ? " selected" : ""), selectedMedia(album) ? "●" : "○"); button.append(orbit);
-  applyStatusPalette(button, mediaStatusKey(album));
+  const overridden = opposingAlbumOverride(album);
+  applyStatusPalette(button, overridden ? "override" : mediaStatusKey(album));
+  button.classList.toggle("opposing-override", overridden);
   button.append(albumArtworkNode(album, "library-thumb", ""));
   const copy = node("span", "row-copy"); copy.append(node("strong", "", album.name), node("small", "", child ? album.tracks + " tracks" : album.artist_name)); button.append(copy);
   button.addEventListener("click", () => chooseAlbum(album.id)); return button;
@@ -720,7 +732,7 @@ function compareCompReportGroups(left, right) {
 }
 function albumOverride(album) {
   if (!album?.id) return null;
-  return state.albumOverrides.get(String(album.id)) || (album.override_writer ? {
+  return state.albumOverrides?.get?.(String(album.id)) || (album.override_writer ? {
     album_key: album.id,
     writer: album.override_writer,
     operation: album.override_operation || "",
@@ -783,7 +795,7 @@ function compTrackOverride(track) {
   return event;
 }
 function albumCardState(album, artist) {
-  const status = mediaStatusKey(album);
+  const status = rawMediaStatusKey(album);
   const fallback = !String(album.album_mbid || "").trim();
   const overridden = !fallback && albumOverride(album)?.writer === "windows";
   // A successful opposing write proves that an otherwise-unprocessed local
@@ -823,7 +835,10 @@ function albumCardState(album, artist) {
 }
 function renderAlbumCountSummary(albums, artist = state.artist) {
   const host = $("albumCount"); clear(host);
-  const completed = albums.filter(album => albumCardState(album, artist).fullyComplete).length;
+  const completed = albums.filter(album => {
+    const card = albumCardState(album, artist);
+    return card.fullyComplete || card.overridden;
+  }).length;
   const validating = albums.filter(album => albumCardState(album, artist).validating).length;
   const inProcess = albums.length - completed - validating;
   const overridden = albums.filter(album => albumCardState(album, artist).overridden).length;

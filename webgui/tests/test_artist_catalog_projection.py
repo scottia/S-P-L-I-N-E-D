@@ -111,14 +111,25 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             database = root / "index.sqlite"
+            band = root / "Band"
+            local_green = band / "Local Green"
+            windows_grey = band / "Windows Grey"
+            local_green.mkdir(parents=True)
+            windows_grey.mkdir(parents=True)
             with closing(connect(database)) as db:
                 db.execute(
                     "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,"
                     "musicbrainz_artistid TEXT,primary_path TEXT,status TEXT)"
                 )
                 db.execute(
-                    "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,"
-                    "status TEXT,compilation INTEGER,musicbrainz_albumid TEXT)"
+                    "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,album_name TEXT,"
+                    "path TEXT,cover_path TEXT,track_count INTEGER,status TEXT,compilation INTEGER,"
+                    "musicbrainz_albumid TEXT,release_year TEXT,embedded_tracks INTEGER,"
+                    "embedded_validation_status TEXT,webp_found INTEGER)"
+                )
+                db.execute(
+                    "CREATE TABLE tracks (track_key TEXT PRIMARY KEY,album_key TEXT,path TEXT,"
+                    "title TEXT,artist_name TEXT)"
                 )
                 db.execute(
                     "CREATE TABLE album_artwork_write_coordination (album_key TEXT,"
@@ -130,10 +141,17 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                     (str(root / "Band"),),
                 )
                 db.executemany(
-                    "INSERT INTO albums VALUES (?,?,?,?,?)",
+                    "INSERT INTO albums VALUES (?,?,?,?,NULL,1,?,?,?,'2024',1,'verified',0)",
                     [
-                        ("local-green", "band", "processed", 0, "release-green"),
-                        ("windows-grey", "band", "incomplete", 0, "release-grey"),
+                        ("local-green", "band", "Local Green", str(local_green), "processed", 0, "release-green"),
+                        ("windows-grey", "band", "Windows Grey", str(windows_grey), "incomplete", 0, "release-grey"),
+                    ],
+                )
+                db.executemany(
+                    "INSERT INTO tracks VALUES (?,?,?,?,?)",
+                    [
+                        ("track-green", "local-green", str(local_green / "one.mp3"), "One", "Band"),
+                        ("track-grey", "windows-grey", str(windows_grey / "two.mp3"), "Two", "Band"),
                     ],
                 )
                 db.execute(
@@ -146,6 +164,12 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             listed = app.artists("")[0]
             self.assertEqual(listed["status"], "complete")
             self.assertEqual(listed["albums"], 2)
+            detail = app.artist("band")
+            self.assertEqual(detail["status"], "complete")
+            self.assertEqual(
+                next(item for item in detail["albums"] if item["id"] == "windows-grey")["override_writer"],
+                "windows",
+            )
 
     def test_compilation_owned_by_artist_key_is_not_a_primary_artist_album(self):
         with TemporaryDirectory() as directory:

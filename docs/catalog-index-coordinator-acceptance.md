@@ -983,18 +983,17 @@ recorded with the Windows UI scale and biography follow-up below.
   the stored biography is unchanged. DirectWrite leaves the final paragraph
   line natural rather than justified.
 - Collapsed biographies expose five composed text lines and expanded
-  biographies expose at most ten. `(…more)` and `(less…)` are final inline text
-  runs on the last visible Biography row, matching WebGUI presentation. The
-  complete Biography paragraph is the one click surface; there is no separate
-  control row or fragile suffix-only hit target. The reserved inline lane keeps
-  the suffix from changing paragraph justification or clipping the last word.
+  biographies expose at most ten. The complete Biography paragraph is the one
+  click surface; there is no `(…more)` / `(less…)` text, separate control row,
+  control object, or fragile suffix-only hit target. Removing the suffix also
+  gives measured Biography text the full available paragraph width.
 - Native Biography copy uses the same bright white treatment as WebGUI in
   non-Light themes; Light keeps the accepted dark-grey text for contrast. This
   paragraph, UI-scale and expansion-control correction is Windows-only.
 - Focused contracts verify proportional 80/90/100/110/125 percent choices,
   native window bounds, responsive paragraph reflow, bounded justified gaps,
-  source-text preservation and the single clickable paragraph with an inline
-  expansion suffix. The full Windows workspace passed **534 core + 121
+  source-text preservation and the single clickable paragraph without a
+  visible expansion suffix. The full Windows workspace passed **535 core + 121
   application tests** at this source revision. The test PC's active monitor
   reports 96 DPI (100 percent); installed
   80/100/125 percent application-scale validation is recorded below after the
@@ -1005,17 +1004,24 @@ recorded with the Windows UI scale and biography follow-up below.
 ### Opposing override Artist aggregation follow-up
 
 - An opposing-client verified Album write continues to render that Album card
-  grey/overridden. For the containing Artist aggregate only, that verified
-  override now contributes completed work. Therefore an Artist whose Albums are
-  local green completions and/or opposing grey overrides renders **green Artist
-  Complete**, never purple partial and never white unprocessed.
+  grey/overridden. The expanded Artist/Album file-list row uses the same grey
+  override treatment rather than the red error color. In the existing Artist
+  State controls, each verified override is included in the red **Bypassed**
+  count; no additional override filter or competing status category was added.
+  For the containing Artist aggregate and overview Completed total, that
+  verified override contributes completed work. Therefore an Artist whose
+  Albums are local green completions and/or opposing grey overrides renders
+  **green Artist Complete**, never a false purple partial or white unprocessed
+  state. Genuine partial/error and orange-purple embedded-thumbnail states are
+  unchanged.
 - Windows applies the projection from the newest WebGUI coordination writer;
   WebGUI applies the equivalent projection from the newest Windows writer.
   Neither client rewrites the Album's stored catalog status, coordination
   history, database schema or opposing-card presentation.
 - Focused regressions cover an incomplete Album completed by the opposing
-  client, a local green plus opposing grey Artist, and an overridden local
-  bypass. Full validation passed **534/534 Windows core**, **121/121 Windows
+  client, a local green plus opposing grey Artist, grey Album rows, red
+  Bypassed counts, accurate overview Completed/in-Process totals, and an
+  overridden local bypass. Full validation passed **535/535 Windows core**, **121/121 Windows
   application**, and **402/402 WebGUI tests** with **78 environment-dependent
   skips**.
 

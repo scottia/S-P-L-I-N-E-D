@@ -80,6 +80,26 @@ const graphicalEnhancementFunctions = between(
   "const GRAPHICAL_ENHANCEMENT_DEFAULTS",
   "const state =",
 );
+const mediaStatusFunctions = between(
+  appSource,
+  "const MEDIA_STATUSES",
+  "function validMusicBrainzId",
+);
+
+test("opposing Album overrides use Bypassed filtering without losing the grey row visual", () => {
+  const album = {id: "album-1", album_mbid: "release-1", status: "partial"};
+  const state = {albumOverrides: new Map([["album-1", {writer: "windows"}]])};
+  const context = load(mediaStatusFunctions, {
+    state,
+    albumOverride: item => state.albumOverrides.get(item.id),
+  });
+
+  assert.equal(context.rawMediaStatusKey(album), "partial");
+  assert.equal(context.mediaStatusKey(album), "bypassed");
+  assert.equal(context.mediaStatusColor("override"), "#a9b0b8");
+  assert.match(appSource, /applyStatusPalette\(button, overridden \? "override" : mediaStatusKey\(album\)\)/);
+  assert.match(appSource, /counts\.set\("bypassed", \(counts\.get\("bypassed"\) \|\| 0\) \+ overrideCount\)/);
+});
 const albumBannerFunctions = between(
   appSource,
   "function albumBannerKind",
@@ -2265,21 +2285,22 @@ test("Artist Albums row reports shown, Completed, and in Process with status col
   }}};
   const context = load(albumSummaryFunctions, {
     state, $: () => host, clear: item => item.replaceChildren(), node,
-    mediaStatusKey: album => album.status,
+    rawMediaStatusKey: album => album.status,
     mediaStatusColor: status => status,
   });
   const artist = {portrait: "artist.jpg"};
   context.renderAlbumCountSummary([
     {album_mbid: "release-1", status: "processed", cover_found: true, cover: "cover.jpg", tracks: 2, embedded: 2, embedded_validation: "verified"},
     {album_mbid: "release-2", status: "incomplete", cover_found: true, cover: "cover.jpg", tracks: 2, embedded: 0},
+    {id: "release-3", album_mbid: "release-3", status: "incomplete", cover_found: true, cover: "cover.jpg", tracks: 2, embedded: 0, override_writer: "windows"},
   ], artist);
 
   assert.deepEqual(children.map(item => item.text), [
-    "2 shown", "/", "1 Completed", "/", "1 in Process", "/", "Overridden", "0",
+    "3 shown", "/", "2 Completed", "/", "1 in Process", "/", "Overridden", "1",
   ]);
   assert.equal(styles["--album-complete-color"], "theme-complete");
   assert.equal(styles["--album-process-color"], "theme-process");
-  assert.equal(host["aria-label"], "2 Albums shown, 1 Completed, 1 in Process, 0 overridden by Windows");
+  assert.equal(host["aria-label"], "3 Albums shown, 2 Completed, 1 in Process, 1 overridden by Windows");
 });
 
 test("Album cards keep unknown validation separate from confirmed missing thumbnails", () => {
@@ -2288,7 +2309,7 @@ test("Album cards keep unknown validation separate from confirmed missing thumbn
     thumbnail: {color: "theme-thumbnail"},
   }}};
   const context = load(albumSummaryFunctions, {
-    state, mediaStatusKey: album => album.status,
+    state, rawMediaStatusKey: album => album.status,
     mediaStatusColor: status => status,
   });
   const artist = {portrait: "artist.jpg"};

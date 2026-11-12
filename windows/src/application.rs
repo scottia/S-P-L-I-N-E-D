@@ -1320,6 +1320,81 @@ impl LibraryState {
         0
     }
 
+    /// Project verified opposing-client Album writes into the focused status
+    /// panel without rewriting the local SQLite catalog status. Opposing
+    /// Albums are grouped with the existing Bypassed action bucket, while the
+    /// Artist aggregate treats them as completed work.
+    pub fn focused_status_count_with_overrides(
+        &self,
+        value: StatusFilter,
+        completed_overrides: &HashSet<String>,
+    ) -> usize {
+        if completed_overrides.is_empty() || self.show_tracks {
+            return self.focused_status_count(value);
+        }
+        if let Some(album_key) = self.focused_album_key.as_deref() {
+            if completed_overrides.contains(&album_key.to_ascii_lowercase()) {
+                return usize::from(matches!(value, StatusFilter::All | StatusFilter::Bypassed));
+            }
+            return self.focused_status_count(value);
+        }
+        if self.view != LibraryView::Artists {
+            return self.focused_status_count(value);
+        }
+        let Some(artist) = self.focused_artist.as_deref() else {
+            return 0;
+        };
+        let indices = self.artist_album_indices(&self.artist_indices(artist));
+        if indices.is_empty() {
+            return 0;
+        }
+        let overridden = |index: &&usize| {
+            completed_overrides
+                .contains(&self.albums[**index].snapshot.album_key.to_ascii_lowercase())
+        };
+        let override_count = indices.iter().filter(overridden).count();
+        let local = indices
+            .iter()
+            .filter(|index| !overridden(index))
+            .map(|index| &self.albums[*index])
+            .collect::<Vec<_>>();
+        let aggregate = self.artist_state_with_overrides(artist, completed_overrides);
+        match value {
+            StatusFilter::All => 1,
+            StatusFilter::Unprocessed => {
+                usize::from(local.iter().any(|album| album.state == AlbumState::New))
+            }
+            StatusFilter::Incomplete => usize::from(
+                local
+                    .iter()
+                    .any(|album| album.state == AlbumState::Incomplete),
+            ),
+            StatusFilter::Processed => usize::from(
+                local
+                    .iter()
+                    .any(|album| album.state == AlbumState::Processed),
+            ),
+            StatusFilter::Bypassed => {
+                override_count
+                    + usize::from(
+                        local
+                            .iter()
+                            .any(|album| album.state == AlbumState::Bypassed),
+                    )
+            }
+            StatusFilter::PartialTimeout => usize::from(
+                aggregate == ArtistState::Partial
+                    || local
+                        .iter()
+                        .any(|album| album.state == AlbumState::TimeoutActive),
+            ),
+            StatusFilter::ArtistComplete => usize::from(aggregate == ArtistState::Complete),
+            StatusFilter::ArtistContainsBypass => {
+                usize::from(aggregate == ArtistState::ContainsBypass)
+            }
+        }
+    }
+
     pub fn state_scope_label(&self) -> &'static str {
         if self.show_tracks {
             "Fallback"
@@ -5940,6 +6015,34 @@ mod tests {
         assert_eq!(state.focused_status_count(StatusFilter::All), 1);
         assert_eq!(state.focused_status_count(StatusFilter::Processed), 1);
         assert_eq!(state.focused_status_count(StatusFilter::Unprocessed), 0);
+    }
+
+    #[test]
+    fn focused_artist_counts_group_overrides_as_bypassed_and_complete() {
+        let mut state = artist_library();
+        state.focused_artist = Some("Alpha".to_string());
+        let overrides = HashSet::from(["a".to_string()]);
+
+        assert_eq!(
+            state.focused_status_count_with_overrides(StatusFilter::All, &overrides),
+            1
+        );
+        assert_eq!(
+            state.focused_status_count_with_overrides(StatusFilter::Bypassed, &overrides),
+            1
+        );
+        assert_eq!(
+            state.focused_status_count_with_overrides(StatusFilter::PartialTimeout, &overrides),
+            0
+        );
+        assert_eq!(
+            state.focused_status_count_with_overrides(StatusFilter::ArtistComplete, &overrides),
+            1
+        );
+        assert_eq!(
+            state.focused_status_count_with_overrides(StatusFilter::Processed, &overrides),
+            1
+        );
     }
 
     #[test]

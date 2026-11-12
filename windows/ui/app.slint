@@ -2328,18 +2328,13 @@ export component AppWindow inherits Window {
                                                 property <length> biography-lane-width: max((80px * AppTheme.ui-scale), artist-scroll.visible-width - (artist-scroll.visible-width < (760px * AppTheme.ui-scale) ? (120px * AppTheme.ui-scale) : (170px * AppTheme.ui-scale)) - (52px * AppTheme.ui-scale));
                                                 property <length> biography-block-width: min(self.biography-lane-width, max((280px * AppTheme.ui-scale), self.biography-lane-width * 0.90));
                                                 property <float> biography-width-px: max((80px * AppTheme.ui-scale), self.biography-block-width) / 1px;
-                                                // Compose once at the full width to determine whether expansion is
-                                                // required. Long biographies reserve an intrinsic control lane in
-                                                // every measured row so the final visible row can carry (...more)
-                                                // or (less...) without changing justification or clipping a word.
+                                                // Compose once at the full width. The Biography itself is the
+                                                // expansion control; no visible suffix or separate control object
+                                                // consumes paragraph width.
                                                 property <[UiBiographyLine]> biography-full-lines: root.layout-artist-biography(self.biography-source, self.biography-width-px, AppTheme.ui-scale * AppTheme.font-scale);
                                                 property <bool> biography-overflows: root.artist-overview-biography != "" && self.biography-full-lines.length > 5;
-                                                property <length> biography-toggle-reserve: max((78px * AppTheme.ui-scale), (58px * AppTheme.ui-scale));
-                                                property <[UiBiographyLine]> biography-lines: self.biography-overflows
-                                                    ? root.layout-artist-biography(self.biography-source, max(80, self.biography-width-px - self.biography-toggle-reserve / 1px), AppTheme.ui-scale * AppTheme.font-scale)
-                                                    : self.biography-full-lines;
+                                                property <[UiBiographyLine]> biography-lines: self.biography-full-lines;
                                                 property <int> biography-visible-line-count: min(root.artist-biography-expanded ? 10 : 5, max(1, self.biography-lines.length));
-                                                property <int> biography-toggle-line-index: self.biography-visible-line-count - 1;
                                                 vertical-stretch: 1; horizontal-stretch: 1; max-width: (10000px * AppTheme.ui-scale); clip: true; border-radius: (8px * AppTheme.ui-scale); background: AppTheme.quiet-surface; border-color: AppTheme.border; border-width: (1px * AppTheme.ui-scale);
                                                 Image { source: root.artist-overview-banner; visible: root.overview-mode != "Fallback" && !root.artist-banner-preview-active; width: parent.width; height: parent.height; image-fit: cover; }
                                                 if root.artist-banner-preview-active: Image {
@@ -2446,20 +2441,10 @@ export component AppWindow inherits Window {
                                                                             font-weight: 600;
                                                                             vertical-alignment: center;
                                                                         }
-                                                                        if overview-panel.biography-overflows && index == overview-panel.biography-toggle-line-index: biography-toggle := Text {
-                                                                            // The suffix is a final paragraph run, not a button or a
-                                                                            // separate row. Keep it directly after the measured copy.
-                                                                            x: min(line.extent * 1px + (6px * AppTheme.ui-scale), parent.width - self.width);
-                                                                            width: max(self.preferred-width, overview-panel.biography-toggle-reserve); height: parent.height;
-                                                                            text: root.artist-biography-expanded ? "(less…)" : "(…more)";
-                                                                            color: AppTheme.cyan; font-family: "Segoe UI"; font-size: overview-panel.biography-font-size;
-                                                                            font-weight: 700; vertical-alignment: center; horizontal-alignment: right;
-                                                                        }
                                                                     }
                                                                 }
-                                                                // Slint has no rich-text link range. Make the composed paragraph
-                                                                // itself the interaction surface so the inline suffix has no
-                                                                // independent control object or fragile hit box.
+                                                                // The composed paragraph is the only expansion surface. This
+                                                                // avoids a suffix control, extra row, or fragile inline hit box.
                                                                 TouchArea {
                                                                     visible: !root.artist-summary-visible && overview-panel.biography-overflows;
                                                                     width: biography-copy.width; height: biography-copy.height;
