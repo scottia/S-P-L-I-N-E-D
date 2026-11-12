@@ -771,6 +771,15 @@ Status: **PASSED**.
   hydrates the same local paths. Native library thumbnails already use a round
   frame; this behavior was preserved rather than duplicated with another
   thumbnail implementation.
+- Final installed comparison exposed test-configuration drift rather than a
+  discovery defect: WebGUI used
+  `SPLINED-local-test-library/state/artist-art`, while the native test client
+  still used its older `SPLINED/test-state/artist_art` directory. Both roots
+  contained different files for Rob Wasserman's same identity hash. The native
+  test configuration now points to the established shared WebGUI directory;
+  after restart and Artist reselection Windows loaded the same saved black-and-
+  white portrait and banner visible in WebGUI. This is a test-installation
+  correction only and does not change production defaults or database state.
 - WebGUI now owns the typed Artist query as workspace state. Selecting an Artist
   no longer clears or loses the active filter during rerender. The Rob
   Wasserman regression was checked against the live PostgreSQL projection:
