@@ -911,7 +911,7 @@ contain Default, the standard-access Status Bar, and Logging expand/compress.
 The updated native 2.0.36 executable was installed and started from
 `E:\apps\SPLINED\splined.exe` with SHA-256
 `30EA6B99AB2D4881D9EAF1A146628037743A8C077D8062491CEB4F06452672B8`
-from the final pre-commit PR #170 working tree.
+from functional commit `197ced1`.
 The successful computer-use session supplied current native and browser visual
 captures plus accessibility-state inspection. Earlier installed evidence for
 the source-card, artwork-opacity, audit and two-stage source-policy corrections
@@ -932,7 +932,7 @@ remains valid; current-head source contracts and complete automated suites pass.
 - Installed Windows 2.0.36 executable:
   `E:\apps\SPLINED\splined.exe`, SHA-256
   `30EA6B99AB2D4881D9EAF1A146628037743A8C077D8062491CEB4F06452672B8`
-  from the final pre-commit PR #170 working tree.
+  from functional commit `197ced1`.
   The installed WebGUI runs current PR source at 2.0.36 against the established
   PostgreSQL service. Credentialed startup was restored after localhost-only UI
   validation (`auth_required=true`, `database_ready=true`).
