@@ -819,7 +819,7 @@ fn layout_artist_biography(
     font_scale: f32,
 ) -> Vec<UiBiographyLine> {
     let width_px = width_px.max(80.0);
-    let font_px = 18.0 * font_scale.clamp(0.5, 3.0);
+    let font_px = 15.0 * font_scale.clamp(0.5, 3.0);
     // Leave a small safety margin for renderer/font-metric differences so a
     // justified line never wraps into an accidental sixth collapsed line.
     let target_width_em = (width_px / font_px * 0.90).max(8.0);
@@ -10489,6 +10489,7 @@ fn bind_callbacks(
                     .as_deref()
                     .is_some_and(|prior| prior.eq_ignore_ascii_case(artist))
             {
+                app.artist_bulk_reprocess_requested = false;
                 clear_staged_candidate_review(&mut app);
                 app.musicbrainz_cover_preview_path.clear();
                 app.hovered_musicbrainz_result = None;
@@ -10546,6 +10547,7 @@ fn bind_callbacks(
                 if result == SelectionResult::NotFound {
                     false
                 } else {
+                    app.artist_bulk_reprocess_requested = false;
                     app.artist_artwork_draft_path.clear();
                     app.artist_artwork_mode = false;
                     app.artist_overview_show_all = false;
@@ -12242,6 +12244,13 @@ fn bind_callbacks(
                         app.scan_scope = ScanScope::Selected;
                     }
                     app.library.select_all_for_review();
+                    if app.library.view == LibraryView::Artists
+                        && app.library.artist_run_scope_active
+                        && app.library.focused_album_key.is_none()
+                    {
+                        app.artist_bulk_reprocess_requested = true;
+                        app.select_artist_appearances_for_run();
+                    }
                 });
             record_action_result(&state, result);
             refresh_weak(&weak, &state);
@@ -12254,7 +12263,17 @@ fn bind_callbacks(
             let result = state
                 .lock()
                 .map_err(|_| "The SPLINED application state is unavailable.".to_string())
-                .and_then(|mut app| app.library.select_filtered_for_review().map(|_| ()));
+                .and_then(|mut app| {
+                    app.library.select_filtered_for_review()?;
+                    if app.library.view == LibraryView::Artists
+                        && app.library.artist_run_scope_active
+                        && app.library.focused_album_key.is_none()
+                    {
+                        app.artist_bulk_reprocess_requested = true;
+                        app.select_artist_appearances_for_run();
+                    }
+                    Ok(())
+                });
             record_action_result(&state, result);
             refresh_weak(&weak, &state);
         });
@@ -24192,6 +24211,13 @@ mod tests {
                 .contains("album-one")
         );
         assert!(shared.lock().unwrap().launch_targets().is_empty());
+
+        {
+            let mut app = shared.lock().unwrap();
+            app.artist_bulk_reprocess_requested = true;
+            assert_eq!(app.launch_targets().len(), 1);
+            app.artist_bulk_reprocess_requested = false;
+        }
 
         album_embedded_check_cache().lock().unwrap().insert(
             key.clone(),

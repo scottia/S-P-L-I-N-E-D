@@ -366,6 +366,12 @@ function artistAlbumEligible(album) {
     && Number(album.tracks || 0) > 0 && Number(album.embedded || 0) >= Number(album.tracks || 0);
   return validMusicBrainzId(album.album_mbid) && !["bypassed", "timeout"].includes(status) && !complete;
 }
+function artistAlbumReprocessable(album) {
+  // Status controls the default Artist selection, not whether an explicit
+  // selection may be reviewed again.  A user-selected identified Album stays
+  // actionable when it is complete, bypassed, timed out, or overridden.
+  return validMusicBrainzId(album?.album_mbid);
+}
 function albumEmbeddingEligible(album) {
   return validMusicBrainzId(album?.album_mbid) && Number(album?.tracks || 0) > 0;
 }
@@ -884,14 +890,19 @@ function updateBiographyToggle() {
   if (!biography.clientWidth) return;
   const lineHeight = parseFloat(getComputedStyle(biography).lineHeight);
   const maximumHeight = lineHeight * 5 + 1;
+  biography.classList.remove("collapsed", "expanded");
   text.textContent = state.biographyText;
   toggle.hidden = true;
-  const overflows = biography.getBoundingClientRect().height > maximumHeight;
+  const overflows = biography.scrollHeight > maximumHeight;
   toggle.hidden = !overflows;
   toggle.textContent = state.biographyExpanded ? "(less…)" : "(…more)";
   toggle.setAttribute("aria-expanded", String(state.biographyExpanded));
   if (!overflows) return;
-  if (state.biographyExpanded) { text.textContent += " "; return; }
+  if (state.biographyExpanded) {
+    biography.classList.add("expanded");
+    text.textContent += " ";
+    return;
+  }
 
   // Fit the inline link with the text, including its width, within five lines.
   // Whole-word prefixes preserve readable endings and never cover biography text.
@@ -901,10 +912,11 @@ function updateBiographyToggle() {
   while (low < high) {
     const middle = Math.ceil((low + high) / 2);
     text.textContent = prefix(middle) + " ";
-    if (biography.getBoundingClientRect().height <= maximumHeight) low = middle;
+    if (biography.scrollHeight <= maximumHeight) low = middle;
     else high = middle - 1;
   }
   text.textContent = prefix(low) + " ";
+  biography.classList.add("collapsed");
 }
 function renderArtistBiography(artist, metadata) {
   const artistId = artist?.id || null;

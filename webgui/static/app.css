@@ -322,6 +322,8 @@ body.authenticated .auth-screen{display:none}body.auth-pending>.app-header,body.
 /* Artist copy follows the Windows overview: readable, justified, and capped
    by the existing inline five-line …more/less control. */
 .hero-copy .artist-biography{max-width:none;font-size:15px;line-height:1.42;text-align:justify;text-justify:inter-word;hyphens:auto}
+html:not([data-theme=light]) .hero-copy .artist-biography{color:#fff;font-weight:600}
+.hero-copy .artist-biography.collapsed{max-height:7.1em;overflow:hidden}
 .artist-biography-block{max-width:100%}
 .similar-unavailable.loading{border-left-color:var(--cyan);color:var(--cyan)}
 

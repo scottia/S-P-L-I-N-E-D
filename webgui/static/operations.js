@@ -72,9 +72,7 @@ async function initialize() {
   // Discover physical library changes after the workspace is usable. This
   // remains a read-only check; the operator explicitly chooses whether to run
   // the incremental PostgreSQL refresh from the header notice.
-  void requestLibraryChangeProbe().catch(error => {
-    auditEvent("library-change-check", "failed", {severity: "warning", error: error.message});
-  });
+  void requestLibraryChangeProbe().catch(libraryChangeProbeFailed);
 }
 function showAuthentication(status) {
   document.body.className = "auth-required";
@@ -116,6 +114,24 @@ async function submitPasswordRecovery(payload) {
     $("authError").textContent = error.message;
   }
 }
+let libraryChangePollTimer = null;
+function libraryChangeProbeFailed(error) {
+  libraryChangePollTimer = null;
+  state.libraryChanges = {...(state.libraryChanges || {}), checking: false};
+  setStatus("Unable to check the music library for changes", "error");
+  auditEvent("library-change-check", "failed", {severity: "warning", error: error.message});
+}
+function scheduleLibraryChangePoll() {
+  if (libraryChangePollTimer !== null) return;
+  // A completed probe must clear the busy banner even when the browser was
+  // backgrounded during the first one-second interval. Browser visibility may
+  // throttle this timer, but it must never cancel the only completion poll.
+  libraryChangePollTimer = setTimeout(async () => {
+    libraryChangePollTimer = null;
+    if (!state.libraryChanges?.checking) return;
+    try { await checkLibraryChanges(); } catch (error) { libraryChangeProbeFailed(error); }
+  }, 1000);
+}
 async function checkLibraryChanges() {
   const changes = await api("/api/library/changes");
   const wasChecking = !!state.libraryChanges?.checking;
@@ -132,17 +148,15 @@ async function checkLibraryChanges() {
   } else if (wasChecking) {
     setStatus("Music library is up to date");
   }
-  if (changes.checking) setTimeout(() => {
-    if (!document.hidden) void checkLibraryChanges().catch(() => {});
-  }, 1000);
+  if (changes.checking) scheduleLibraryChangePoll();
 }
 document.addEventListener("visibilitychange", () => {
-  // A probe can finish while the operator is using the native client. The
-  // hidden-tab timer deliberately avoids background polling, so explicitly
-  // resume it when the workspace becomes visible instead of leaving the
-  // last "Checking…" banner stranded indefinitely.
+  // Refresh immediately when returning to the workspace while retaining the
+  // background completion poll as the authoritative busy-state cleanup.
   if (!document.hidden && state.libraryChanges?.checking) {
-    void checkLibraryChanges().catch(() => {});
+    if (libraryChangePollTimer !== null) clearTimeout(libraryChangePollTimer);
+    libraryChangePollTimer = null;
+    void checkLibraryChanges().catch(libraryChangeProbeFailed);
   }
 });
 async function requestLibraryChangeProbe() {
@@ -422,8 +436,8 @@ function skipAlbumSearch() {
 }
 async function launchArtist() {
   if (!state.artist) return;
-  const ids = [...state.mediaSelected].filter(id => state.artist.albums.some(album => album.id === id && artistAlbumEligible(album)));
-  if (!ids.length) throw new Error("Select at least one unfinished, eligible Album for this Artist");
+  const ids = [...state.mediaSelected].filter(id => state.artist.albums.some(album => album.id === id && artistAlbumReprocessable(album)));
+  if (!ids.length) throw new Error("Select at least one identified Album for this Artist");
   setStatus(`Opening Album review · ${ids.length} selected`, "busy");
   const result = await post("/api/jobs", {kind: "scan", payload: {artist_id: state.artist.id, album_ids: ids}});
   if (result.already_queued) setStatus("Resuming the active Album review before starting another batch", "busy");

@@ -34,7 +34,7 @@ export global AppTheme {
     out property <color> window-background: root.system ? #111719 : (root.chalk ? #241d27 : (root.light ? #ecebea : #18191b));
     out property <color> panel-background: root.system ? #1b2326 : (root.chalk ? #302c34 : (root.light ? #f8f7f4 : #252729));
     out property <color> header-background: root.system ? #121b1e : (root.chalk ? #302c34 : (root.light ? #f1f0ed : #18191b));
-    out property <color> foreground: root.system ? #f2f4f3 : (root.chalk ? #f7edf5 : (root.light ? #18252d : #f2f3f4));
+    out property <color> foreground: root.light ? #18252d : #ffffff;
     out property <color> secondary-foreground: root.system ? #afbdba : (root.chalk ? #d6c7d3 : (root.light ? #52616a : #b7c0c5));
     out property <color> border: root.system ? #2f8ca0 : (root.chalk ? #75637b : (root.light ? #b9bfc2 : #4a5055));
     out property <color> card: root.system ? #252e31 : (root.chalk ? #3e3540 : (root.light ? #f1f0ed : #292c2e));
@@ -57,8 +57,8 @@ export global AppTheme {
 component Panel inherits Rectangle {
     background: AppTheme.panel-background; border-color: AppTheme.border; border-width: 1px; border-radius: 9px; clip: true;
 }
-component Heading inherits Text { color: AppTheme.foreground; font-size: 19px * AppTheme.font-scale; font-weight: 700; vertical-alignment: center; }
-component Label inherits Text { color: AppTheme.secondary-foreground; font-size: 14px * AppTheme.font-scale; vertical-alignment: center; }
+component Heading inherits Text { color: AppTheme.foreground; font-size: 19px * AppTheme.font-scale; font-weight: 800; vertical-alignment: center; }
+component Label inherits Text { color: AppTheme.secondary-foreground; font-size: 14px * AppTheme.font-scale; font-weight: 600; vertical-alignment: center; }
 component NeonPanel inherits Rectangle {
     background: AppTheme.system ? AppTheme.panel-background : (AppTheme.chalk ? @linear-gradient(135deg, #3e3540, #302c34) : (AppTheme.light ? @linear-gradient(135deg, #f8f7f4, #ecebea) : @linear-gradient(135deg, #292c2e, #18191b)));
     border-width: 0px;
@@ -120,7 +120,7 @@ component NeonAction inherits Rectangle {
         color: !root.enabled ? #61788b : (root.tone == "embed" ? #ffffff : (root.tone == "purple" ? AppTheme.violet : ((root.danger || root.tone == "red" || root.tone == "orange" || root.tone == "yellow" || root.emphasized) ? #ffffff : (root.tone == "active" ? AppTheme.green : (root.tone == "inactive" ? AppTheme.danger : (root.tone == "cyan" ? AppTheme.cyan : (root.tone == "magenta" ? AppTheme.magenta : AppTheme.foreground)))))));
         horizontal-alignment: center;
         vertical-alignment: center;
-        font-weight: root.emphasized ? 700 : 500;
+        font-weight: 700;
         font-size: root.label-font-size; overflow: elide;
     }
     action := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => root.clicked(); scroll-event(event) => { if (root.horizontal-wheel) { root.wheel-scrolled(event.delta-y); accept } else { reject } } }
@@ -193,7 +193,7 @@ component RadioToggle inherits Rectangle {
     border-radius: 5px;
     HorizontalLayout { spacing: 8px; padding-left: 4px; padding-right: 5px;
         Text { text: root.checked ? "●" : "○"; color: root.checked ? AppTheme.green : AppTheme.danger; width: 34px; font-size: 30px * AppTheme.font-scale; vertical-alignment: center; horizontal-alignment: center; }
-        Text { text: root.label; color: root.label-color; font-size: 15px * AppTheme.font-scale; font-italic: root.label-italic; vertical-alignment: center; overflow: elide; }
+        Text { text: root.label; color: root.label-color; font-size: 15px * AppTheme.font-scale; font-weight: 600; font-italic: root.label-italic; vertical-alignment: center; overflow: elide; }
     }
     radio-touch := TouchArea {
         enabled: root.enabled;
@@ -272,7 +272,7 @@ component ModeTab inherits Rectangle {
     background: !root.enabled ? AppTheme.quiet-surface : (root.selected ? (AppTheme.chalk ? AppTheme.selected-surface : (AppTheme.light ? AppTheme.selected-surface : @linear-gradient(90deg, #163b6a, #222c65))) : (mode-touch.has-hover ? AppTheme.card-hover : transparent));
     HorizontalLayout { padding-left: 14px; padding-right: 14px; spacing: 9px;
         Text { text: root.icon-text; width: 28px; color: root.selected ? AppTheme.foreground : AppTheme.secondary-foreground; font-size: 21px * AppTheme.font-scale; vertical-alignment: center; horizontal-alignment: center; }
-        Text { text: root.label; horizontal-stretch: 1; horizontal-alignment: left; color: !root.enabled ? AppTheme.secondary-foreground : AppTheme.foreground; font-size: 15px * AppTheme.font-scale; font-weight: root.selected ? 700 : 500; vertical-alignment: center; }
+        Text { text: root.label; horizontal-stretch: 1; horizontal-alignment: left; color: !root.enabled ? AppTheme.secondary-foreground : AppTheme.foreground; font-size: 15px * AppTheme.font-scale; font-weight: 700; vertical-alignment: center; }
     }
     mode-touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => root.activated(); }
 }
@@ -327,7 +327,9 @@ component WorkspaceButton inherits Rectangle {
     Text {
         text: root.label;
         color: !root.enabled ? AppTheme.secondary-foreground : (root.queued ? AppTheme.violet : AppTheme.foreground);
-        font-size: 15px * AppTheme.font-scale;
+        // Keep the three workspace labels readable on compact tablet-sized
+        // windows without deriving text metrics from the Window's layout.
+        font-size: 13px * AppTheme.font-scale;
         font-weight: 700;
         horizontal-alignment: center;
         vertical-alignment: center;
@@ -386,7 +388,7 @@ component LibraryItem inherits Rectangle {
         }
         VerticalLayout { spacing: 2px; alignment: center;
             Text { text: root.item.primary; color: root.item.status == "Unprocessed" || root.item.status == "All" ? (AppTheme.light ? AppTheme.secondary-foreground : AppTheme.foreground) : root.item.status-color; font-size: 16px * AppTheme.font-scale; font-weight: !root.status-only-album-selection && (root.item.selected || root.item.expanded) ? 700 : 600; overflow: elide; }
-            if root.item.secondary != "": Text { text: root.item.secondary; color: root.item.kind == "artist" ? AppTheme.magenta : AppTheme.secondary-foreground; font-size: 15px * AppTheme.font-scale; overflow: elide; }
+            if root.item.secondary != "": Text { text: root.item.secondary; color: root.item.kind == "artist" ? AppTheme.magenta : AppTheme.secondary-foreground; font-size: 15px * AppTheme.font-scale; font-weight: 600; overflow: elide; }
         }
         if root.item.kind == "artist" || root.item.kind == "fallback-album": Rectangle {
             width: 38px; background: transparent;
@@ -516,7 +518,7 @@ component CandidateFilterBody inherits Rectangle {
                         row: i / 2; col: mod(i, 2); height: 34px; background: AppTheme.card; border-radius: 4px;
                         HorizontalLayout { padding-left: 4px; padding-right: 4px; spacing: 4px;
                             Text { text: filter.state == "Included" ? "●" : "○"; color: filter.state == "Included" ? AppTheme.green : AppTheme.danger; width: 29px; vertical-alignment: center; horizontal-alignment: center; font-size: 25px * AppTheme.font-scale; }
-                            Text { text: filter.label; color: filter.state == "Disregarded" ? #b47a88 : (filter.label == "Rejected" ? AppTheme.danger : (filter.label == "Back Cover" || filter.label == "Upscalable" ? #ff9738 : AppTheme.green)); font-size: 14px * AppTheme.font-scale; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                            Text { text: filter.label; color: filter.state == "Disregarded" ? #b47a88 : (filter.label == "Rejected" ? AppTheme.danger : (filter.label == "Back Cover" || filter.label == "Upscalable" ? #ff9738 : AppTheme.green)); font-size: 14px * AppTheme.font-scale; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
                             Text { text: filter.count; color: AppTheme.secondary-foreground; font-size: 14px * AppTheme.font-scale; vertical-alignment: center; }
                         }
                         TouchArea { enabled: !root.locked; mouse-cursor: pointer; clicked => root.cycle(filter.dimension, filter.key); }
@@ -528,7 +530,7 @@ component CandidateFilterBody inherits Rectangle {
                         row: 0; col: i; height: 34px; background: AppTheme.card; border-radius: 4px;
                         HorizontalLayout { padding-left: 4px; padding-right: 4px; spacing: 4px;
                             Text { text: filter.state == "Included" ? "●" : "○"; color: filter.state == "Included" ? AppTheme.green : AppTheme.danger; width: 29px; vertical-alignment: center; horizontal-alignment: center; font-size: 25px * AppTheme.font-scale; }
-                            Text { text: filter.label; color: filter.state == "Disregarded" ? #b47a88 : (filter.label == "Rejected" ? AppTheme.danger : (filter.label == "Recommended" ? AppTheme.green : AppTheme.yellow)); font-size: 14px * AppTheme.font-scale; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                            Text { text: filter.label; color: filter.state == "Disregarded" ? #b47a88 : (filter.label == "Rejected" ? AppTheme.danger : (filter.label == "Recommended" ? AppTheme.green : AppTheme.yellow)); font-size: 14px * AppTheme.font-scale; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
                             Text { text: filter.count; color: AppTheme.secondary-foreground; font-size: 14px * AppTheme.font-scale; vertical-alignment: center; }
                         }
                         TouchArea { enabled: !root.locked; mouse-cursor: pointer; clicked => root.cycle(filter.dimension, filter.key); }
@@ -540,7 +542,7 @@ component CandidateFilterBody inherits Rectangle {
                         row: i / 2; col: mod(i, 2); height: 34px; background: AppTheme.card; border-radius: 4px;
                         HorizontalLayout { padding-left: 4px; padding-right: 4px; spacing: 4px;
                             Text { text: filter.state == "Included" ? "●" : "○"; color: filter.state == "Included" ? AppTheme.green : AppTheme.danger; width: 29px; vertical-alignment: center; horizontal-alignment: center; font-size: 25px * AppTheme.font-scale; }
-                            Text { text: filter.label; color: filter.state == "Disregarded" ? #b47a88 : (filter.label == "Below Minimum" || filter.label == "Above Ladder" ? AppTheme.danger : (filter.label == "Lower Range" || filter.label == "Upper Range" ? #ff9738 : AppTheme.green)); font-size: 14px * AppTheme.font-scale; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                            Text { text: filter.label; color: filter.state == "Disregarded" ? #b47a88 : (filter.label == "Below Minimum" || filter.label == "Above Ladder" ? AppTheme.danger : (filter.label == "Lower Range" || filter.label == "Upper Range" ? #ff9738 : AppTheme.green)); font-size: 14px * AppTheme.font-scale; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
                             Text { text: filter.count; color: AppTheme.secondary-foreground; font-size: 14px * AppTheme.font-scale; vertical-alignment: center; }
                         }
                         TouchArea { enabled: !root.locked; mouse-cursor: pointer; clicked => root.cycle(filter.dimension, filter.key); }
@@ -833,15 +835,15 @@ component SourceCard inherits Rectangle {
         HorizontalLayout { height: 38px; spacing: 5px; alignment: center;
             Image { source: @image-url("../gui/source-icons/search.svg"); width: 29px; height: 29px; image-fit: contain; }
             VerticalLayout { width: 70px; spacing: 0px;
-                Text { text: root.source-row.artist-count + " Artist"; color: AppTheme.secondary-foreground; opacity: root.source-row.artist-enabled ? 1 : 0.48; font-size: 13px * AppTheme.font-scale; vertical-alignment: center; }
-                Text { text: root.source-row.cover-count + " Cover"; color: AppTheme.secondary-foreground; opacity: root.source-row.enabled ? 1 : 0.48; font-size: 13px * AppTheme.font-scale; vertical-alignment: center; }
+                Text { text: root.source-row.artist-count + " Artist"; color: AppTheme.secondary-foreground; opacity: root.source-row.artist-enabled ? 1 : 0.48; font-size: 13px * AppTheme.font-scale; font-weight: 600; vertical-alignment: center; }
+                Text { text: root.source-row.cover-count + " Cover"; color: AppTheme.secondary-foreground; opacity: root.source-row.enabled ? 1 : 0.48; font-size: 13px * AppTheme.font-scale; font-weight: 600; vertical-alignment: center; }
             }
         }
         HorizontalLayout { height: 18px; spacing: 3px; alignment: center;
             Rectangle { width: 14px; height: 14px; border-radius: 7px; border-width: 2px; border-color: root.mode-color; background: transparent;
                 Rectangle { x: 4px; y: 4px; width: 6px; height: 6px; border-radius: 3px; background: root.mode-color; }
             }
-            Text { text: root.source-row.mode; color: root.mode-color; font-size: 13px * AppTheme.font-scale; vertical-alignment: center; overflow: elide; }
+            Text { text: root.source-row.mode; color: root.mode-color; font-size: 13px * AppTheme.font-scale; font-weight: 700; vertical-alignment: center; overflow: elide; }
         }
             }
         }
@@ -2297,16 +2299,20 @@ export component AppWindow inherits Window {
                                                 // Slint's single-line preferred height is taller than the
                                                 // rendered wrapped-line advance on Windows. Use the observed
                                                 // text advance so collapsed mode contains exactly five rows.
-                                                property <length> biography-line-height: 26px * AppTheme.font-scale;
+                                                property <length> biography-font-size: 15px * AppTheme.font-scale;
+                                                property <length> biography-line-height: 22px * AppTheme.font-scale;
                                                 property <length> biography-collapsed-height: self.biography-line-height * 5;
                                                 property <string> biography-source: root.artist-overview-biography == "" ? (root.artist-overview-navidrome-linked ? "Navidrome has not returned an artist biography for this artist." : "No matching Navidrome artist was found; check the Artist lookup name or ID.") : root.artist-overview-biography;
                                                 // Keep the biography as a left-anchored floating block beside the
                                                 // portrait. It must not stretch all the way to the overview's right
                                                 // edge, where space-between turns normal word gaps into wide bands.
                                                 // The unused tail remains flexible as the overview is resized.
-                                                property <length> biography-lane-width: max(80px, artist-scroll.visible-width - (artist-scroll.visible-width < 520px ? 120px : 170px) - 52px);
+                                                property <length> biography-lane-width: max(80px, artist-scroll.visible-width - (artist-scroll.visible-width < 760px ? 120px : 170px) - 52px);
                                                 property <length> biography-block-width: min(self.biography-lane-width, max(280px, self.biography-lane-width * 0.90));
-                                                property <float> biography-width-px: self.biography-block-width / 1px;
+                                                // Reserve room for the inline more/less control before Rust
+                                                // computes word boundaries. Without this allowance the fifth
+                                                // justified row can push the control outside a compact pane.
+                                                property <float> biography-width-px: max(80px, self.biography-block-width - 62px) / 1px;
                                                 property <[UiBiographyLine]> biography-lines: root.layout-artist-biography(self.biography-source, self.biography-width-px, AppTheme.font-scale);
                                                 property <bool> biography-overflows: root.artist-overview-biography != "" && self.biography-lines.length > 5;
                                                 property <int> biography-toggle-line: root.artist-biography-expanded ? min(9, self.biography-lines.length - 1) : min(4, self.biography-lines.length - 1);
@@ -2324,7 +2330,7 @@ export component AppWindow inherits Window {
                                                 // Slint uses #RRGGBBAA. Keep the banner neutral: the
                                                 // final byte is opacity and the RGB channels are equal.
                                                 Rectangle { width: parent.width; height: parent.height; background: AppTheme.chalk ? @linear-gradient(180deg, #30303070 0%, #242424b8 64%, #181818e0 100%) : (AppTheme.light ? @linear-gradient(180deg, #f4f4f466 0%, #edededa8 64%, #e6e6e6d8 100%) : @linear-gradient(180deg, #14141470 0%, #101010b8 64%, #0b0b0be0 100%)); }
-                                                biography-link-measure := Text { visible: false; text: root.artist-biography-expanded ? "(less…)" : "(…more)"; font-size: 18px * AppTheme.font-scale; }
+                                                biography-link-measure := Text { visible: false; text: root.artist-biography-expanded ? "(less…)" : "(…more)"; font-size: overview-panel.biography-font-size; }
                                                 artist-scroll := ScrollView {
                                                     content-y <=> root.overview-scroll-y;
                                                     content-width: self.visible-width;
@@ -2356,7 +2362,7 @@ export component AppWindow inherits Window {
                                                         Text { text: root.fallback-overview-help-expanded ? "(less…)" : "(…more)"; color: AppTheme.cyan; font-size: 14px * AppTheme.font-scale; font-weight: 800; horizontal-alignment: right; height: 20px; TouchArea { mouse-cursor: pointer; clicked => { root.fallback-overview-help-expanded = !root.fallback-overview-help-expanded; } } }
                                                     }
                                                     if root.overview-mode != "Fallback": artist-header := HorizontalLayout {
-                                                        property <length> thumbnail-size: artist-scroll.visible-width < 520px ? 120px : 170px;
+                                                        property <length> thumbnail-size: artist-scroll.visible-width < 760px ? 120px : 170px;
                                                         // WebGUI pins the portrait to the left edge; it is not
                                                         // centered inside a widened identity column.
                                                         property <length> thumbnail-x: 8px;
@@ -2412,13 +2418,14 @@ export component AppWindow inherits Window {
                                                                         spacing: line.justified && !self.carries-toggle ? 0px : 5px * AppTheme.font-scale;
                                                                         for word in line.words: Text {
                                                                             text: word;
-                                                                            color: root.artist-overview-biography == "" ? AppTheme.secondary-foreground : AppTheme.foreground;
-                                                                            font-size: 18px * AppTheme.font-scale;
+                                                                            color: root.artist-overview-biography == "" ? AppTheme.secondary-foreground : (AppTheme.light ? #28323a : #ffffff);
+                                                                            font-size: overview-panel.biography-font-size;
+                                                                            font-weight: 600;
                                                                             vertical-alignment: center;
                                                                         }
                                                                         if self.carries-toggle: Rectangle {
                                                                             width: biography-link-measure.preferred-width + 4px; height: overview-panel.biography-line-height; background: transparent;
-                                                                            Text { width: parent.width; height: parent.height; text: biography-link-measure.text; color: AppTheme.cyan; font-size: 18px * AppTheme.font-scale; vertical-alignment: center; }
+                                                                            Text { width: parent.width; height: parent.height; text: biography-link-measure.text; color: AppTheme.cyan; font-size: overview-panel.biography-font-size; vertical-alignment: center; }
                                                                             TouchArea { mouse-cursor: pointer; clicked => { root.artist-biography-expanded = !root.artist-biography-expanded; } }
                                                                         }
                                                                     }
@@ -3883,7 +3890,7 @@ export component AppWindow inherits Window {
                     VerticalLayout { padding: 16px; spacing: 7px;
                         BrandMark { width: 360px; height: 54px; }
                         Text { text: "Cross-platform media artwork and library tooling"; color: AppTheme.foreground; font-size: 19px * AppTheme.font-scale; font-weight: 700; height: 28px; }
-                        Text { text: "S.P.L.I.N.E.D searches, compares, enhances, and curates artwork for your music library. Review candidate covers, confirm releases with MusicBrainz, and save approved artwork according to your configured policies."; color: AppTheme.secondary-foreground; font-size: 15px * AppTheme.font-scale; wrap: word-wrap; height: 42px; }
+                        Text { text: "S.P.L.I.N.E.D searches, compares, enhances, and curates artwork for your music library. Review candidate covers, confirm releases with MusicBrainz, and save approved artwork according to your configured policies."; color: AppTheme.secondary-foreground; font-size: 15px * AppTheme.font-scale; font-weight: 600; wrap: word-wrap; height: 42px; }
                         Rectangle { height: 1px; background: AppTheme.border; }
                         HorizontalLayout { height: 24px; spacing: 14px;
                             Label { text: "Version"; width: 112px; }
@@ -3901,7 +3908,7 @@ export component AppWindow inherits Window {
                             Label { text: "Project"; width: 112px; }
                             Text { text: "scottia / S-P-L-I-N-E-D"; color: AppTheme.foreground; font-size: 15px * AppTheme.font-scale; }
                         }
-                        Text { text: "Architecture: Rust manages library state, SQLite, artwork providers, MusicBrainz, candidate decisions, editing, and scans. Slint presents the Windows interface."; color: AppTheme.secondary-foreground; font-size: 14px * AppTheme.font-scale; wrap: word-wrap; height: 36px; }
+                        Text { text: "Architecture: Rust manages library state, SQLite, artwork providers, MusicBrainz, candidate decisions, editing, and scans. Slint presents the Windows interface."; color: AppTheme.secondary-foreground; font-size: 14px * AppTheme.font-scale; font-weight: 600; wrap: word-wrap; height: 36px; }
                         Text { text: "Updates"; color: AppTheme.violet; font-size: 18px * AppTheme.font-scale; font-weight: 700; height: 26px; }
                         Text { text: "Portable builds check stable GitHub releases. Store-installed builds use Microsoft Store updates."; color: AppTheme.secondary-foreground; font-size: 14px * AppTheme.font-scale; wrap: word-wrap; height: 26px; }
                         HorizontalLayout { height: 36px; spacing: 8px;

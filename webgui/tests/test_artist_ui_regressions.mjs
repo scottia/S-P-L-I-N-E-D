@@ -8,6 +8,13 @@ const operationsSource = readFileSync(new URL("../static/operations.js", import.
 const indexSource = readFileSync(new URL("../static/index.html", import.meta.url), "utf8");
 const cssSource = readFileSync(new URL("../static/app.css", import.meta.url), "utf8");
 
+test("WebGUI biography uses bright copy and a complete five-line collapsed guard", () => {
+  assert.match(cssSource, /html:not\(\[data-theme=light\]\) \.hero-copy \.artist-biography\{color:#fff;font-weight:600\}/);
+  assert.match(cssSource, /\.hero-copy \.artist-biography\.collapsed\{max-height:7\.1em;overflow:hidden\}/);
+  assert.match(appSource, /biography\.scrollHeight > maximumHeight/);
+  assert.match(appSource, /biography\.classList\.add\("collapsed"\)/);
+});
+
 function between(source, start, end) {
   const first = source.indexOf(start);
   const last = source.indexOf(end, first + start.length);
@@ -21,6 +28,47 @@ function load(source, values) {
   vm.runInContext(source, context);
   return context;
 }
+
+const libraryChangeFunctions = between(
+  operationsSource,
+  "let libraryChangePollTimer",
+  "function componentPayload",
+);
+
+test("library change completion clears a busy status after backgrounding", async () => {
+  const responses = [
+    {count: 0, added: 0, changed: 0, moved: 0, removed: 0, checking: true},
+    {count: 0, added: 0, changed: 0, moved: 0, removed: 0, checking: false},
+  ];
+  const statuses = [];
+  const button = {};
+  let scheduled = null;
+  const context = load(libraryChangeFunctions, {
+    state: {},
+    api: async () => responses.shift(),
+    post: async () => ({state: "queued"}),
+    $: id => {
+      assert.equal(id, "applyLibraryChanges");
+      return button;
+    },
+    setStatus: (message, type = "ready") => statuses.push({message, type}),
+    auditEvent: () => {},
+    setTimeout: callback => {
+      scheduled = callback;
+      return 1;
+    },
+    clearTimeout: () => {},
+    document: {hidden: true, addEventListener: () => {}},
+  });
+
+  await context.checkLibraryChanges();
+  assert.equal(statuses.at(-1).message, "Checking the music library for changes…");
+  assert.equal(typeof scheduled, "function");
+  await scheduled();
+  assert.equal(statuses.at(-1).message, "Music library is up to date");
+  assert.equal(context.state.libraryChanges.checking, false);
+  assert.equal(button.hidden, true);
+});
 
 const contextFunctions = between(
   appSource,
@@ -1788,8 +1836,12 @@ test("Album embedding eligibility requires a UUID but permits identified compila
   const valid = {album_mbid: "33333333-3333-4333-8333-333333333333", compilation: true, tracks: 2, status: "incomplete"};
   assert.equal(context.albumEmbeddingEligible(valid), true);
   assert.equal(context.artistAlbumEligible(valid), true);
+  assert.equal(context.artistAlbumReprocessable({...valid, status: "processed", cover_found: true, embedded: 2}), true);
+  assert.equal(context.artistAlbumReprocessable({...valid, status: "bypassed"}), true);
+  assert.equal(context.artistAlbumReprocessable({...valid, status: "timeout"}), true);
   assert.equal(context.albumEmbeddingEligible({...valid, album_mbid: "release-not-a-uuid"}), false);
   assert.equal(context.artistAlbumEligible({...valid, album_mbid: "release-not-a-uuid"}), false);
+  assert.equal(context.artistAlbumReprocessable({...valid, album_mbid: "release-not-a-uuid"}), false);
   assert.equal(context.albumEmbeddingEligible({...valid, album_mbid: ""}), false);
 });
 
@@ -1826,7 +1878,7 @@ test("lazy thumbnail hydration updates matching artists and rerenders", async ()
   assert.equal(renders, 1);
 });
 
-test("Artist LAUNCH submits every selected eligible release and preserves selection", async () => {
+test("Artist LAUNCH reprocesses every explicitly selected identified release and preserves selection", async () => {
   const calls = [];
   const selected = new Set(["artist-1", "own", "featured", "complete", "bypassed", "timeout", "comp"]);
   const context = load(launchArtistFunction, {
@@ -1844,8 +1896,7 @@ test("Artist LAUNCH submits every selected eligible release and preserves select
     post: async (path, payload) => { calls.push([path, payload]); return {id: "job-1"}; },
     reviewJob: async () => {},
     setStatus: () => {},
-    artistAlbumEligible: album => !!album.album_mbid && !["bypassed", "timeout"].includes(album.status)
-      && !(album.status === "processed" && album.cover_found && album.embedded >= album.tracks),
+    artistAlbumReprocessable: album => !!album.album_mbid,
   });
 
   await context.launchArtist();
@@ -1854,7 +1905,7 @@ test("Artist LAUNCH submits every selected eligible release and preserves select
   assert.equal(calls[0][0], "/api/jobs");
   assert.equal(calls[0][1].kind, "scan");
   assert.equal(calls[0][1].payload.artist_id, "artist-1");
-  assert.deepEqual([...calls[0][1].payload.album_ids], ["own", "featured"]);
+  assert.deepEqual([...calls[0][1].payload.album_ids], ["own", "featured", "complete", "bypassed", "timeout"]);
   assert.deepEqual([...selected], ["artist-1", "own", "featured", "complete", "bypassed", "timeout", "comp"]);
 });
 
