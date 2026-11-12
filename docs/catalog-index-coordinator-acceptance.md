@@ -782,12 +782,44 @@ Status: **PASSED**.
   non-final lines remain fully justified and the final line remains natural,
   matching the browser presentation more closely.
 
-Runtime limitation: the PC session exposed application windows and logs but
-rejected monitor capture and cursor injection (`CreateForMonitor` and
-`GetCursorPos` access failures). Installed-client screenshots are therefore not
-claimed for these corrections. Browser accessibility, live HTTP behavior,
-installed native resize/startup logs and the automated render/state contracts
-are the recorded evidence.
+### Computer-use installed-client validation
+
+The Windows computer-use runtime was reinitialized after the earlier capture
+failure and successfully inspected both installed applications on 2026-11-11:
+
+- The installed native executable rendered a 1009 by 761 compact workspace.
+  The capture retained the Media Library tabs and filters, Candidate Findings
+  source cards, center overview, Selected Artwork heading with `Current`, and
+  the Candidate Artwork dock at the same time. A second foreground capture
+  showed the live 3 Doors Down overview, portrait, biography, Album status and
+  candidate cards rather than Setup or a launcher window. This is installed-
+  client evidence for the compact responsive layout; it does not replace the
+  separate owner-visible Requirement 10 progress/STOP/cancel/relaunch gate.
+- After the owner signed in, the installed WebGUI was captured in the live
+  3 Doors Down workspace. Similar Artists rendered as round portraits for
+  Creed, Nickelback, Staind, Shinedown, Daughtry, Hinder and Seether. The
+  Artist & Featured Artist Top Genres row rendered its returned genres, while
+  Selected Artwork retained its heading, marker, `Current` status and actions.
+- The live About dialog matched the native information-card structure and
+  reported version `2.0.36` at head `b626a2cfe7c1`, GNU GPL v3.0,
+  Python/FastAPI/PostgreSQL, project and architecture details, update state and
+  the external Microsoft Store, source and release-note links. Help opened the
+  repository `docs/browser-workspace-guide.md` in a separate browser tab.
+- The live Artist Art Enhancements workspace rendered Current Package, Artist
+  Image and Artist Banner together; the full-width banner remained contained
+  rather than being cropped to the preview viewport. A live Accept capture
+  exposed **17 candidates** from Local Files 2, Navidrome 1, iTunes 3,
+  Fanart.tv 5, Discogs 4 and Deezer 2.
+- Entering `Rob` in Artist Search and selecting Rob Wasserman preserved the
+  filter value and projected only Rob Wasserman and the Gold Album. The local
+  portrait and banner candidates both displayed Rob Wasserman; Aaron Neville
+  did not appear in the selected Artist Art identity. A new online provider
+  launch was not counted as passed because the installed client correctly
+  rejected the request when Gold was already marked complete and no unfinished
+  eligible Album existed.
+
+No artwork write, database mutation or destructive operation was performed by
+this computer-use validation.
 
 Focused validation: **41/41 WebGUI source/audit/render tests**, **395/395 full
 WebGUI tests (78 environment-dependent skips)**, **532/532 Windows core tests**,
@@ -802,10 +834,9 @@ The updated native 2.0.36 executable was installed and started from
 `E:\apps\SPLINED\splined.exe` with SHA-256
 `B35481EE932D505A5BFD65EF77DBA9F82B7E460A71DF18D282B3466CE6BA0114`
 from functional commit `721df41`.
-The PC session allowed accessibility inspection but rejected cursor input and
-monitor capture, so new installed-client interaction/screenshots for the theme
-menu and `+`/`−` controls were not claimed. Earlier installed evidence for the
-source-card, artwork-opacity, audit and two-stage source-policy corrections
+The successful computer-use session supplied current native and browser visual
+captures plus accessibility-state inspection. Earlier installed evidence for
+the source-card, artwork-opacity, audit and two-stage source-policy corrections
 remains valid; current-head source contracts and complete automated suites pass.
 
 ### Final regression evidence and installed revisions
