@@ -56,6 +56,10 @@ diagnostic reports.
 
 ## Maintainer procedures and architecture
 
+- [PR #180–182 v3.0.1 acceptance and promotion record](pr-180-182-acceptance.md)
+  — accepted catalog recovery, NAS reader tuning, large-Album deferral,
+  restart-stable WebGUI sessions and artwork, COMP single-flight behavior, and
+  full-library live evidence for promotion from `dev` to `main`.
 - [PR #168 acceptance and promotion record](pr-168-acceptance.md) — accepted
   catalog projection, COMP/Fallback, Artist Art, MusicBrainz, embedding, and
   disposable-state scope for promotion through `dev` to `main`.
