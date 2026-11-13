@@ -5344,9 +5344,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     # Authentication becomes visible before the asynchronous
                     # library/bootstrap render completes.  Wait for that load
                     # so its default workspace render cannot race this click.
-                    expect(page.locator("#statusText")).to_contain_text(
-                        "Loaded", timeout=15000
-                    )
+                    expect(
+                        page.locator("#artistList button", has_text="Test Artist")
+                    ).to_be_visible(timeout=15000)
                     page.locator("#embedTab").click()
                     expect(page.locator("#embedView")).to_be_visible()
                     expect(page.locator(".queue-card", has_text="Test Album")).to_be_visible()
