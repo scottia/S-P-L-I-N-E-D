@@ -96,6 +96,25 @@ class ArtistArtStorageTests(unittest.TestCase):
             self.assertTrue(new.exists())
             self.assertFalse(old.exists())
 
+    def test_last_artist_art_save_replaces_the_canonical_package(self) -> None:
+        with TemporaryDirectory() as temporary:
+            target = artist_targets(
+                [ArtistAlbum("Air", Path(temporary) / "Air" / "Album", ALBUM_ID, ARTIST_ID)],
+                "Air", Path(temporary) / "artist-art",
+            )[0]
+            first = write_image(target, prepare_portrait(image_bytes("red"), 64))
+            stale = target.directory / "artist-(2).png"
+            stale.write_bytes(prepare_portrait(image_bytes("green"), 64))
+
+            second = write_image(target, prepare_portrait(image_bytes("blue"), 64))
+
+            self.assertEqual(first, second)
+            self.assertFalse(stale.exists())
+            self.assertEqual(saved_package([target]).portrait, second)
+            with Image.open(second) as image:
+                center = image.getpixel((32, 32))
+                self.assertGreater(center[2], center[0])
+
     def test_webgui_writes_the_adjusted_banner_preview_pixels(self) -> None:
         with TemporaryDirectory() as temporary:
             target = artist_targets(

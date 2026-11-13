@@ -86,8 +86,7 @@ impl Default for SourcePolicyConfig {
 
 impl SourcePolicyConfig {
     pub fn includes_artist_art(&self, source: &str) -> bool {
-        self.include_in_artist_art_search
-            .unwrap_or_else(|| default_artist_art_search(source))
+        default_artist_art_search(source) && self.include_in_artist_art_search.unwrap_or(true)
     }
 
     pub fn validate(&self) -> Result<(), String> {

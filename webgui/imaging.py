@@ -100,7 +100,15 @@ def framed(image, kind, fit=None):
         raise ValueError("Fitment is outside its allowed range")
     width = min(image.width, 4096) if kind == "banner" else min(image.size)
     height = round(width * 600 / 1400) if kind == "banner" else width
-    scale = max(width / image.width, height / image.height) * zoom
+    # Portraits intentionally fill their square frame. Banners are different:
+    # at neutral fitment the complete source must remain visible regardless of
+    # the current browser panel aspect ratio. An explicit zoom above 1 may
+    # still crop/pan the banner as an operator choice.
+    scale = (
+        max(width / image.width, height / image.height)
+        if kind == "artist"
+        else min(width / image.width, height / image.height)
+    ) * zoom
     if round(image.width * scale) * round(image.height * scale) > 64 * 1024 * 1024:
         raise ValueError("Fitment exceeds the pixel limit")
     rendered = image.resize(

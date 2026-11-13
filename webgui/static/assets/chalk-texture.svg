@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900">
+  <defs>
+    <radialGradient id="plum" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#c6a8bd" stop-opacity=".22"/>
+      <stop offset=".42" stop-color="#947589" stop-opacity=".10"/>
+      <stop offset="1" stop-color="#5d4859" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="slate" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#b2bec5" stop-opacity=".16"/>
+      <stop offset=".48" stop-color="#7f8992" stop-opacity=".07"/>
+      <stop offset="1" stop-color="#4f5660" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="rose" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#bd8fa2" stop-opacity=".14"/>
+      <stop offset=".5" stop-color="#8f697b" stop-opacity=".06"/>
+      <stop offset="1" stop-color="#5a414e" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="dust" width="76" height="61" patternUnits="userSpaceOnUse">
+      <circle cx="8" cy="14" r=".8" fill="#f1eaf0" opacity=".12"/>
+      <circle cx="49" cy="7" r=".55" fill="#d9ced7" opacity=".09"/>
+      <circle cx="31" cy="42" r=".7" fill="#eee6ec" opacity=".08"/>
+      <circle cx="69" cy="52" r=".45" fill="#cfc4cc" opacity=".11"/>
+      <path d="M3 34l18-2M43 24l25-3M13 57l29-4" fill="none" stroke="#eee6ec" stroke-width=".65" stroke-linecap="round" opacity=".055"/>
+    </pattern>
+  </defs>
+  <rect x="-180" y="-170" width="820" height="620" fill="url(#slate)"/>
+  <rect x="420" y="-120" width="900" height="690" fill="url(#plum)"/>
+  <rect x="1010" y="70" width="620" height="610" fill="url(#slate)"/>
+  <rect x="-120" y="390" width="930" height="700" fill="url(#plum)"/>
+  <rect x="650" y="410" width="920" height="660" fill="url(#rose)"/>
+  <rect width="1440" height="900" fill="url(#dust)"/>
+</svg>

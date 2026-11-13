@@ -8,6 +8,13 @@ const operationsSource = readFileSync(new URL("../static/operations.js", import.
 const indexSource = readFileSync(new URL("../static/index.html", import.meta.url), "utf8");
 const cssSource = readFileSync(new URL("../static/app.css", import.meta.url), "utf8");
 
+test("WebGUI biography uses bright copy and a complete five-line collapsed guard", () => {
+  assert.match(cssSource, /html:not\(\[data-theme=light\]\) \.hero-copy \.artist-biography\{color:#fff;font-weight:600\}/);
+  assert.match(cssSource, /\.hero-copy \.artist-biography\.collapsed\{max-height:7\.1em;overflow:hidden\}/);
+  assert.match(appSource, /biography\.scrollHeight > maximumHeight/);
+  assert.match(appSource, /biography\.classList\.add\("collapsed"\)/);
+});
+
 function between(source, start, end) {
   const first = source.indexOf(start);
   const last = source.indexOf(end, first + start.length);
@@ -22,6 +29,47 @@ function load(source, values) {
   return context;
 }
 
+const libraryChangeFunctions = between(
+  operationsSource,
+  "let libraryChangePollTimer",
+  "function componentPayload",
+);
+
+test("library change completion clears a busy status after backgrounding", async () => {
+  const responses = [
+    {count: 0, added: 0, changed: 0, moved: 0, removed: 0, checking: true},
+    {count: 0, added: 0, changed: 0, moved: 0, removed: 0, checking: false},
+  ];
+  const statuses = [];
+  const button = {};
+  let scheduled = null;
+  const context = load(libraryChangeFunctions, {
+    state: {},
+    api: async () => responses.shift(),
+    post: async () => ({state: "queued"}),
+    $: id => {
+      assert.equal(id, "applyLibraryChanges");
+      return button;
+    },
+    setStatus: (message, type = "ready") => statuses.push({message, type}),
+    auditEvent: () => {},
+    setTimeout: callback => {
+      scheduled = callback;
+      return 1;
+    },
+    clearTimeout: () => {},
+    document: {hidden: true, addEventListener: () => {}},
+  });
+
+  await context.checkLibraryChanges();
+  assert.equal(statuses.at(-1).message, "Checking the music library for changes…");
+  assert.equal(typeof scheduled, "function");
+  await scheduled();
+  assert.equal(statuses.at(-1).message, "Music library is up to date");
+  assert.equal(context.state.libraryChanges.checking, false);
+  assert.equal(button.hidden, true);
+});
+
 const contextFunctions = between(
   appSource,
   "function albumInCurrentArtistContext",
@@ -32,6 +80,56 @@ const graphicalEnhancementFunctions = between(
   "const GRAPHICAL_ENHANCEMENT_DEFAULTS",
   "const state =",
 );
+const mediaStatusFunctions = between(
+  appSource,
+  "const MEDIA_STATUSES",
+  "function validMusicBrainzId",
+);
+
+test("opposing Album overrides use their own dark-grey filter and never inflate Bypassed", () => {
+  const album = {id: "album-1", album_mbid: "release-1", status: "partial"};
+  const state = {albumOverrides: new Map([["album-1", {writer: "windows"}]])};
+  const context = load(mediaStatusFunctions, {
+    state,
+    albumOverride: item => state.albumOverrides.get(item.id),
+  });
+
+  assert.equal(context.rawMediaStatusKey(album), "partial");
+  assert.equal(context.mediaStatusKey(album), "overridden");
+  assert.equal(context.mediaStatusColor("override"), "#6b737b");
+  assert.match(appSource, /applyStatusPalette\(button, overridden \? "override" : mediaStatusKey\(album\)\)/);
+  assert.doesNotMatch(appSource, /counts\.set\("bypassed", \(counts\.get\("bypassed"\) \|\| 0\) \+ overrideCount\)/);
+});
+
+test("Artist State exposes six filters plus an Unprocessed heading and Album total", () => {
+  const context = load(mediaStatusFunctions, {state: {}, albumOverride: () => null});
+  assert.match(appSource, /const MEDIA_STATUSES = \[\["incomplete", "Incomplete"\], \["processed", "Processed"\], \["bypassed", "Bypassed"\], \["partial", "Embedding Review"\], \["overridden", "Overridden"\], \["albumsComplete", "Albums Complete"\]\]/);
+  assert.match(appSource, /const ALL_MEDIA_STATUS_KEYS = \["unprocessed", \.\.\.MEDIA_STATUSES\.map/);
+  assert.match(appSource, /document\.createTextNode\("Artist State \("\)/);
+  assert.match(appSource, /node\("span", "media-unprocessed-count", String\(unprocessed\)\)/);
+  assert.match(appSource, /document\.createTextNode\("\) > Unprocessed"\)/);
+  assert.match(appSource, /node\("span", "artist-album-total-label", "Artists Album Count"\)/);
+  assert.match(appSource, /node\("span", "artist-album-total-count", String\(items\.length\)\)/);
+  assert.equal(context.rawMediaStatusKey({status: "artistBypass"}), "bypassed");
+  assert.equal(context.rawMediaStatusKey({status: "complete"}), "albumsComplete");
+  assert.doesNotMatch(appSource, /\["all", "All"\], \.\.\.MEDIA_STATUSES/);
+  assert.doesNotMatch(appSource, /\["artistBypass", "Artist Bypass"\]/);
+  assert.equal(context.mediaStatusColor("unprocessed"), "#eef8ff");
+  assert.equal(context.mediaStatusColor("incomplete"), "#ff5268");
+  assert.match(appSource, /const incomplete = fallback \? album\.fallback_complete === false\s+: status === "incomplete" \|\| status === "partial";/);
+  assert.doesNotMatch(appSource, /status === "partial" \|\| \(!overridden && status === "unprocessed"\)/);
+  assert.match(appSource, /: processed \|\| validating \? "processed" : incomplete \|\| missingCover \? "incomplete" : "unprocessed";/);
+});
+
+test("Album Status Key separates animated WebP from mutually exclusive status dots", () => {
+  const keySource = between(appSource, "function renderAlbumStatusKey", "function updateBiographyToggle");
+  assert.match(keySource, /\["Status dots", \[/);
+  assert.doesNotMatch(keySource, /\[\["●", "#3478ff"\], \["Blue", "#3478ff"\]\]/);
+  assert.match(keySource, /\{heading: "MISC STATUS"\}/);
+  assert.match(keySource, /\[\["● Animated", "#3478ff"\]\], detail: "cover\.webp present: review the still cover"/);
+  assert.match(keySource, /\[\["Yellow", "#f4cc4d"\]\], detail: "BYPASSED albums with custom art"/);
+  assert.doesNotMatch(keySource, /Yellow · BYPASSED/);
+});
 const albumBannerFunctions = between(
   appSource,
   "function albumBannerKind",
@@ -333,6 +431,10 @@ test("COMP artwork source labels map to the Windows source counters", () => {
 
 test("Chalk theme reaches library and action surfaces through palette variables", () => {
   assert.match(cssSource, /html\[data-theme=chalk\]\{[^}]*--violet:[^;}]+;[^}]*--yellow:[^;}]+;[^}]*--danger:/);
+  assert.match(cssSource, /html\[data-theme=chalk\]\{--window:#17131b;--panel:#25202a;--card:#302a35/);
+  assert.match(cssSource, /html\[data-theme=chalk\] body\{[^}]*url\('\/assets\/chalk-texture\.svg'\)/);
+  assert.match(cssSource, /html\[data-theme=chalk\] :is\([^}]*url\('\/assets\/chalk-texture\.svg'\)/);
+  assert.match(cssSource, /html\[data-theme=chalk\] :is\(\.source-card,[^}]*\{box-shadow:inset/);
   assert.match(cssSource, /\.library-list\{background:var\(--panel\)\}/);
   assert.match(cssSource, /\.header-actions button,[^{]*\{border-color:var\(--line\);background:var\(--card\);color:var\(--text\)\}/);
   assert.match(cssSource, /\.workspace-dialog,\.embed-summary\{background:var\(--panel\);color:var\(--text\)\}/);
@@ -923,7 +1025,8 @@ test("COMP summary and TRACK FILE columns reserve Album title space", () => {
   assert.match(appSource, /node\("span", "comp-count-override", `\$\{overridden\} overridden`\)/);
   assert.match(cssSource, /\.fallback-report-album\{[^}]*grid-template-columns:22px minmax\(0,1fr\) clamp\(170px,38%,310px\)/);
   assert.match(cssSource, /\.fallback-report-album-counts\{text-align:right\}/);
-  assert.match(cssSource, /html\[data-theme=chalk\] \.fallback-report,html\[data-theme=light\] \.fallback-report\{background:#381821c9\}/);
+  assert.match(cssSource, /html\[data-theme=chalk\] \.fallback-report\{background:#081d29e8\}/);
+  assert.match(cssSource, /html\[data-theme=light\] \.fallback-report\{background:#381821c9\}/);
 });
 
 test("all WebGUI MusicBrainz entry contexts use the canonical results workspace", () => {
@@ -1109,6 +1212,33 @@ test("PostgreSQL refresh completion reloads the library and reports exact projec
   assert.deepEqual(loaded, ["adam"]);
   assert.deepEqual(statuses.at(-1), [
     "PostgreSQL full refresh complete · 51 Artists · 210 Albums · 6 Fallback · elapsed 4m 47s · 4 changed · 1 removed",
+    "ready",
+  ]);
+});
+
+test("PostgreSQL refresh cancellation reports preserved published catalog", async () => {
+  const job = {id: "index-1", kind: "index", state: "running", payload: {mode: "full"}, progress: {}};
+  const state = {
+    server: {authenticated: true, setup_required: false}, embedQueue: [],
+    jobs: [job], reviewJobId: job.id, reviewJobState: "running", libraryMode: "artists",
+  };
+  const statuses = [];
+  const context = load(pollJobsFunction, {
+    state,
+    api: async path => path === "/api/jobs" ? [{...job, state: "cancelled"}]
+      : path === "/api/library/index-status" ? {generation: null}
+      : {pause_after_album: false, pause_all_albums: false},
+    renderQueue() {}, refreshCompletedAlbum: async () => {}, refreshQueuedAlbumAfterSave: async () => {},
+    renderHero() {}, renderReview() {}, renderJob: async () => {}, loadLibrary: async () => {},
+    setStatus: (...values) => { statuses.push(values); },
+    applyAlbumCoordination() { return []; }, applyCompTrackCoordination() { return []; },
+    $: () => ({open: false, value: "", hidden: false, style: {}, classList: {remove() {}, add() {}}}),
+  });
+
+  await context.pollJobs();
+
+  assert.deepEqual(statuses.at(-1), [
+    "PostgreSQL full refresh cancelled · published catalog preserved",
     "ready",
   ]);
 });
@@ -1761,8 +1891,12 @@ test("Album embedding eligibility requires a UUID but permits identified compila
   const valid = {album_mbid: "33333333-3333-4333-8333-333333333333", compilation: true, tracks: 2, status: "incomplete"};
   assert.equal(context.albumEmbeddingEligible(valid), true);
   assert.equal(context.artistAlbumEligible(valid), true);
+  assert.equal(context.artistAlbumReprocessable({...valid, status: "processed", cover_found: true, embedded: 2}), true);
+  assert.equal(context.artistAlbumReprocessable({...valid, status: "bypassed"}), true);
+  assert.equal(context.artistAlbumReprocessable({...valid, status: "timeout"}), true);
   assert.equal(context.albumEmbeddingEligible({...valid, album_mbid: "release-not-a-uuid"}), false);
   assert.equal(context.artistAlbumEligible({...valid, album_mbid: "release-not-a-uuid"}), false);
+  assert.equal(context.artistAlbumReprocessable({...valid, album_mbid: "release-not-a-uuid"}), false);
   assert.equal(context.albumEmbeddingEligible({...valid, album_mbid: ""}), false);
 });
 
@@ -1799,7 +1933,7 @@ test("lazy thumbnail hydration updates matching artists and rerenders", async ()
   assert.equal(renders, 1);
 });
 
-test("Artist LAUNCH submits every selected eligible release and preserves selection", async () => {
+test("Artist LAUNCH reprocesses every explicitly selected identified release and preserves selection", async () => {
   const calls = [];
   const selected = new Set(["artist-1", "own", "featured", "complete", "bypassed", "timeout", "comp"]);
   const context = load(launchArtistFunction, {
@@ -1817,8 +1951,7 @@ test("Artist LAUNCH submits every selected eligible release and preserves select
     post: async (path, payload) => { calls.push([path, payload]); return {id: "job-1"}; },
     reviewJob: async () => {},
     setStatus: () => {},
-    artistAlbumEligible: album => !!album.album_mbid && !["bypassed", "timeout"].includes(album.status)
-      && !(album.status === "processed" && album.cover_found && album.embedded >= album.tracks),
+    artistAlbumReprocessable: album => !!album.album_mbid,
   });
 
   await context.launchArtist();
@@ -1827,7 +1960,7 @@ test("Artist LAUNCH submits every selected eligible release and preserves select
   assert.equal(calls[0][0], "/api/jobs");
   assert.equal(calls[0][1].kind, "scan");
   assert.equal(calls[0][1].payload.artist_id, "artist-1");
-  assert.deepEqual([...calls[0][1].payload.album_ids], ["own", "featured"]);
+  assert.deepEqual([...calls[0][1].payload.album_ids], ["own", "featured", "complete", "bypassed", "timeout"]);
   assert.deepEqual([...selected], ["artist-1", "own", "featured", "complete", "bypassed", "timeout", "comp"]);
 });
 
@@ -2182,21 +2315,22 @@ test("Artist Albums row reports shown, Completed, and in Process with status col
   }}};
   const context = load(albumSummaryFunctions, {
     state, $: () => host, clear: item => item.replaceChildren(), node,
-    mediaStatusKey: album => album.status,
+    rawMediaStatusKey: album => album.status,
     mediaStatusColor: status => status,
   });
   const artist = {portrait: "artist.jpg"};
   context.renderAlbumCountSummary([
     {album_mbid: "release-1", status: "processed", cover_found: true, cover: "cover.jpg", tracks: 2, embedded: 2, embedded_validation: "verified"},
     {album_mbid: "release-2", status: "incomplete", cover_found: true, cover: "cover.jpg", tracks: 2, embedded: 0},
+    {id: "release-3", album_mbid: "release-3", status: "incomplete", cover_found: true, cover: "cover.jpg", tracks: 2, embedded: 0, override_writer: "windows"},
   ], artist);
 
   assert.deepEqual(children.map(item => item.text), [
-    "2 shown", "/", "1 Completed", "/", "1 in Process", "/", "Overridden", "0",
+    "3 shown", "/", "1 Completed", "/", "1 in Process", "/", "1 Overridden",
   ]);
   assert.equal(styles["--album-complete-color"], "theme-complete");
   assert.equal(styles["--album-process-color"], "theme-process");
-  assert.equal(host["aria-label"], "2 Albums shown, 1 Completed, 1 in Process, 0 overridden by Windows");
+  assert.equal(host["aria-label"], "3 Albums shown, 1 Completed, 1 in Process, 1 overridden by Windows");
 });
 
 test("Album cards keep unknown validation separate from confirmed missing thumbnails", () => {
@@ -2205,7 +2339,7 @@ test("Album cards keep unknown validation separate from confirmed missing thumbn
     thumbnail: {color: "theme-thumbnail"},
   }}};
   const context = load(albumSummaryFunctions, {
-    state, mediaStatusKey: album => album.status,
+    state, rawMediaStatusKey: album => album.status,
     mediaStatusColor: status => status,
   });
   const artist = {portrait: "artist.jpg"};
@@ -2239,6 +2373,10 @@ test("Album cards keep unknown validation separate from confirmed missing thumbn
     const complete = context.albumCardState({...base, embedded: 2, embedded_validation: "verified"}, artist);
     assert.equal(complete.fullyComplete, true, `${type.name} verified complete is green`);
     assert.equal(complete.dots.some(([color]) => color === "#32dda0"), true);
+
+    const staleUnprocessed = context.albumCardState({...base, status: "unprocessed", embedded: 2, embedded_validation: "verified"}, artist);
+    assert.equal(staleUnprocessed.fullyComplete, true, `${type.name} verified material outranks stale unprocessed status`);
+    assert.equal(staleUnprocessed.stateKey, "albumsComplete");
   }
 
   const fallback = context.albumCardState({
@@ -2554,7 +2692,8 @@ test("Album search and Album overview use the global single-Album contract", () 
   assert.match(appSource, /const matchesByArtist = new Map\(\)/);
   assert.match(appSource, /matchesByArtist\.has\(artist\.id\)/);
   assert.match(appSource, /matchingIds\.has\(item\.id\)/);
-  assert.match(appSource, /const presentedAlbums = singleAlbumOverviewActive\(\)/);
+  assert.match(appSource, /const presentedAlbums = honorSingleAlbum && singleAlbumOverviewActive\(\)/);
+  assert.match(appSource, /const albums = artistOverviewAlbums\(artist\)/);
   assert.match(appSource, /allAlbums\.find\(album => album\.id === state\.album\.id\)/);
 });
 
@@ -2590,4 +2729,122 @@ test("Fallback file-list tracks use the same COMP status palette as report track
   assert.match(appSource, /renderLibrary\(\); renderHero\(\);/);
   assert.match(cssSource, /\.fallback-library-track\.pending\{color:var\(--blue\)!important\}/);
   assert.doesNotMatch(cssSource, /\.fallback-library-track\{[^}]*color:var\(--green\)!important/);
+});
+
+test("Artist filtering survives overview selection and rerender", () => {
+  assert.match(appSource, /artistMetadataRequest: 0, artistQuery: ""/);
+  assert.match(appSource, /state\.artistQuery = event\.target\.value/);
+  assert.match(appSource, /String\(state\.artistQuery \|\| \$\("artistSearch"\)\.value \|\| ""\)/);
+  assert.match(appSource, /String\(artist\.name \|\| ""\)\.toLocaleLowerCase\(\)\.includes\(artistQuery\)/);
+  const chooseArtistSource = between(appSource, "async function chooseArtist", "async function chooseAlbum");
+  assert.doesNotMatch(chooseArtistSource, /artistSearch[^\n]*value\s*=\s*""/);
+});
+
+test("About and Help use the native information contract and repository guide", () => {
+  assert.match(appSource, /Cross-platform media artwork and library tooling/);
+  assert.match(appSource, /Python · FastAPI · PostgreSQL/);
+  assert.match(appSource, /Check for Updates/);
+  assert.match(appSource, /Microsoft Store ↗/);
+  assert.match(appSource, /docs\/browser-workspace-guide\.md/);
+  const helpSource = between(appSource, "\$(\"helpButton\")", "\$(\"closeDialog\")");
+  assert.match(helpSource, /window\.open/);
+  assert.doesNotMatch(helpSource, /showDialog/);
+});
+
+test("Artist enhancement rerenders restart from the explicit source", () => {
+  assert.match(operationsSource, /previewController\.abort\(\)/);
+  assert.match(operationsSource, /artistPreviewSignature/);
+  assert.match(operationsSource, /restoreArtistPreviewSource\(selector,component\.source\)/);
+  assert.match(operationsSource, /Promise\.all\(edited\.map/);
+  assert.match(operationsSource, /generation!==previewGeneration \|\| signature!==artistPreviewSignature/);
+  assert.match(cssSource, /package-banner,.selected-package img\.banner-art\{object-fit:contain/);
+});
+
+test("selecting a different Artist Art candidate clears its prior crop", () => {
+  const source = between(appSource, "function selectCandidate", "function packageFrame");
+  assert.match(source, /state\.fx\.banner = \{\}; state\.fit\.banner = \{zoom: 1, x: 0, y: 0\}/);
+  assert.match(source, /state\.fx\.artist = \{\}; state\.fit\.artist = \{zoom: 1, x: 0, y: 0\}/);
+});
+
+test("Album inspection begins with all local cover files and keeps filters operational", () => {
+  const candidateFunctions = sourceKeyFunction + "\n" + between(
+    appSource,
+    "function candidateKind",
+    "function candidateSelectionKey",
+  ) + "\n" + between(
+    appSource,
+    "const CANDIDATE_TYPES",
+    "function candidateRange",
+  ) + "\n" + between(
+    appSource,
+    "function candidateRange",
+    "function activeFxTarget",
+  );
+  const state = {
+    editorMode: "album",
+    activeSource: "",
+    artworkRange: {min: 1200, ideal: 1800, max: 2400, ladder: 3600},
+    candidateFilters: new Map([["range:BelowMinimum", "disregarded"], ["policy:Acceptable", "disregarded"]]),
+    candidateFilterLocked: true,
+    candidates: [],
+  };
+  const context = load(candidateFunctions, {state});
+  const webp = {name: "cover.webp", source: "Album folder", kind: "cover", width: 1080, height: 1080};
+  state.candidates = [webp];
+  context.resetCandidateFilters(true);
+  assert.equal(state.candidateFilters.get("range:BelowMinimum"), "included");
+  assert.equal(context.candidateVisible(webp), true);
+  state.candidateFilters.set("range:BelowMinimum", "disregarded");
+  assert.equal(context.candidateVisible(webp), false);
+  assert.equal(state.artworkRange.min, 1200);
+  assert.match(appSource, /Animated WebP/);
+  assert.match(appSource, /resetCandidateFilters\(!fallback\)/);
+});
+
+test("completed status notices dismiss while busy and error states remain", () => {
+  const source = between(appSource, "let statusDismissTimer", "function normalizeStatusBar");
+  const elements = {status: {hidden: true, className: ""}, statusText: {textContent: ""}};
+  const state = {statusRevision: 0, statusType: "ready"};
+  let timer = null;
+  const context = load(source, {
+    state,
+    $: id => elements[id],
+    setTimeout: callback => { timer = callback; return 1; },
+    clearTimeout: () => { timer = null; },
+  });
+  context.setStatus("Cover written");
+  assert.equal(elements.status.hidden, false);
+  assert.equal(typeof timer, "function");
+  timer();
+  timer = null;
+  assert.equal(elements.status.hidden, true);
+  context.setStatus("Writing cover", "busy");
+  assert.equal(elements.status.hidden, false);
+  assert.equal(timer, null);
+  context.setStatus("Write failed", "error");
+  assert.equal(elements.status.hidden, false);
+  assert.equal(timer, null);
+});
+
+test("WebGUI status sizing grows from header center and artwork footer is blue", () => {
+  assert.match(cssSource, /\.status\[data-size=small\]\{height:28px/);
+  assert.match(cssSource, /\.status\[data-size\]\{align-self:center\}/);
+  assert.match(cssSource, /\.status\[data-position=top\] \.status-progress\{top:2px;bottom:auto\}/);
+  assert.match(cssSource, /\.embedded-ribbon\{[^}]*background:#071d3ee8;color:#72d8ff;border:1px solid #286fa0/);
+  assert.match(cssSource, /html\[data-theme=light\] \.brand\{background:transparent/);
+  assert.match(cssSource, /html\[data-theme=light\]\{[^}]*--text:#18252d;--muted:#52616a/);
+  assert.match(cssSource, /\.header-actions\{display:flex;align-items:center;justify-self:end;margin-left:auto/);
+});
+
+test("Artist Overview actions use a stable non-sticky footer row", () => {
+  assert.match(cssSource, /\.overview-content\{[^}]*display:grid;grid-template-rows:auto auto auto minmax\(min-content,1fr\) auto;[^}]*min-height:100%/);
+  assert.match(cssSource, /\.overview-content>\.overview-actions\{[^}]*align-self:end/);
+  assert.match(cssSource, /\.overview-section>\.hero\{[^}]*overflow-y:auto;overflow-x:hidden/);
+  assert.doesNotMatch(cssSource, /\.overview-content\{[^}]*overflow:auto/);
+  assert.doesNotMatch(cssSource, /\.overview-content>\.overview-actions\{[^}]*position:sticky/);
+  assert.match(appSource, /SCROLL_SURFACES = \["artistList", "hero", "albumGrid", "findView"\]/);
+  assert.match(appSource, /resetOverviewScroll = changed && name === "find"/);
+  assert.match(appSource, /scrollPositions\.delete\(scrollSurfaceKeys\.get\("hero"\)\)/);
+  assert.match(appSource, /restoringScroll\.add\("hero"\)[\s\S]*renderWorkspace\(\)/);
+  assert.match(appSource, /hero\.scrollTop = 0/);
 });

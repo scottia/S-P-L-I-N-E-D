@@ -10,7 +10,7 @@ import unittest
 from PIL import Image
 
 import splined as core
-from webgui.catalog import Catalog
+from webgui.catalog import Catalog, image_metadata
 from webgui.services import Services
 
 ISOLATED_FIXTURE_ROOT = Path("E:/") if Path("E:/").is_dir() else None
@@ -23,6 +23,28 @@ def image_bytes(fmt: str, color: str) -> bytes:
 
 
 class CanonicalCoverOverwriteTests(unittest.TestCase):
+    def test_animated_webp_metadata_is_available_to_candidate_artwork(self) -> None:
+        with TemporaryDirectory(dir=ISOLATED_FIXTURE_ROOT) as directory:
+            source = Path(directory) / "cover.webp"
+            frames = [
+                Image.new("RGB", (48, 32), "blue"),
+                Image.new("RGB", (48, 32), "green"),
+            ]
+            frames[0].save(
+                source,
+                format="WEBP",
+                save_all=True,
+                append_images=frames[1:],
+                duration=100,
+                loop=0,
+            )
+
+            metadata = image_metadata(source)
+
+            self.assertEqual(metadata["format"], "WEBP")
+            self.assertEqual(metadata["frames"], 2)
+            self.assertTrue(metadata["animated"])
+
     def test_required_cross_format_and_same_format_replacements(self) -> None:
         cases = (
             ("cover.jpg", "JPEG", "cover.png", "PNG", ["cover.png"]),

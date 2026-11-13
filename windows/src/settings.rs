@@ -138,7 +138,9 @@ pub struct UiPreferences {
     pub status_bar_intensity: String,
     pub status_bar_position: String,
     pub status_bar_size: String,
-    /// Additional application typography scaling layered on top of Windows DPI.
+    /// Proportional SPLINED interface scaling layered on top of native
+    /// Windows PerMonitorV2 DPI.  The serialized field name is retained for
+    /// backward compatibility with existing ui.toml files.
     pub display_scale_percent: u16,
     pub workspace_mode: u8,
     pub library_view: String,
@@ -250,7 +252,7 @@ impl Default for UiPreferences {
     fn default() -> Self {
         Self {
             workspace_layout_revision: CURRENT_WORKSPACE_LAYOUT_REVISION,
-            appearance: "System".to_string(),
+            appearance: "Default".to_string(),
             status_bar_intensity: "Full".to_string(),
             status_bar_position: "Top".to_string(),
             status_bar_size: "Small".to_string(),
@@ -486,6 +488,10 @@ pub const MEDIA_PANE_COLLAPSED: u32 = 0;
 pub const ARTWORK_PANE_MIN: u32 = 280;
 pub const ARTWORK_PANE_MAX: u32 = 1600;
 pub const CENTER_PANE_MIN: u32 = 300;
+pub const COMPACT_LAYOUT_MAX_WIDTH: u32 = 1280;
+pub const COMPACT_MEDIA_PANE_MIN: u32 = 220;
+pub const COMPACT_ARTWORK_PANE_MIN: u32 = 230;
+pub const COMPACT_CENTER_PANE_MIN: u32 = 420;
 pub const CANDIDATE_FILTER_MIN: u32 = 230;
 pub const CANDIDATE_FILTER_COLLAPSED: u32 = 185;
 pub const CANDIDATE_RESULTS_MIN: u32 = 140;
@@ -493,6 +499,18 @@ pub const ACTIVITY_PANE_MIN: u32 = 150;
 pub const SPLITTER_HIT_AREA: u32 = 12;
 pub const MAIN_WORKSPACE_MIN_HEIGHT: u32 =
     CANDIDATE_FILTER_MIN + SPLITTER_HIT_AREA + CANDIDATE_RESULTS_MIN;
+
+fn workspace_horizontal_minima(window_width: u32) -> (u32, u32, u32) {
+    if window_width <= COMPACT_LAYOUT_MAX_WIDTH {
+        (
+            COMPACT_MEDIA_PANE_MIN,
+            COMPACT_ARTWORK_PANE_MIN,
+            COMPACT_CENTER_PANE_MIN,
+        )
+    } else {
+        (MEDIA_PANE_MIN, ARTWORK_PANE_MIN, CENTER_PANE_MIN)
+    }
+}
 
 /// Rust-owned workspace geometry. Slint renders and drags the dividers, but
 /// every value stored in `ui.toml` passes through these bounds first.
@@ -555,16 +573,17 @@ impl WorkspaceLayout {
             .candidate_filter_expanded_height
             .max(CANDIDATE_FILTER_MIN);
 
+        let (media_floor, artwork_floor, center_floor) = workspace_horizontal_minima(window_width);
         let horizontal_chrome = 38;
         let available_width = window_width.saturating_sub(horizontal_chrome);
         let media_min = if media_expanded {
-            MEDIA_PANE_MIN
+            media_floor
         } else {
             MEDIA_PANE_COLLAPSED
         };
-        let artwork_min = if artwork_visible { ARTWORK_PANE_MIN } else { 0 };
+        let artwork_min = if artwork_visible { artwork_floor } else { 0 };
         let maximum_side_total = available_width
-            .saturating_sub(CENTER_PANE_MIN)
+            .saturating_sub(center_floor)
             .max(media_min.saturating_add(artwork_min));
 
         let mut media = if media_expanded {
@@ -613,19 +632,20 @@ impl WorkspaceLayout {
     pub fn resize_region(&mut self, region: &str, requested: u32, bounds: WorkspaceBounds) {
         let window_width = bounds.window_width.max(MIN_WINDOW_WIDTH);
         let window_height = bounds.window_height.max(MIN_WINDOW_HEIGHT);
+        let (media_floor, artwork_floor, center_floor) = workspace_horizontal_minima(window_width);
         let available_width = window_width.saturating_sub(38);
         let media_min = if bounds.media_expanded {
-            MEDIA_PANE_MIN
+            media_floor
         } else {
             MEDIA_PANE_COLLAPSED
         };
         let artwork_min = if bounds.artwork_visible {
-            ARTWORK_PANE_MIN
+            artwork_floor
         } else {
             0
         };
         let maximum_side_total = available_width
-            .saturating_sub(CENTER_PANE_MIN)
+            .saturating_sub(center_floor)
             .max(media_min.saturating_add(artwork_min));
         let available_height = window_height.saturating_sub(91);
 
@@ -633,8 +653,8 @@ impl WorkspaceLayout {
             "media" if bounds.media_expanded => {
                 let maximum = maximum_side_total
                     .saturating_sub(self.artwork_pane_width)
-                    .clamp(MEDIA_PANE_MIN, MEDIA_PANE_MAX);
-                let value = requested.clamp(MEDIA_PANE_MIN, maximum);
+                    .clamp(media_floor, MEDIA_PANE_MAX);
+                let value = requested.clamp(media_floor, maximum);
                 self.media_pane_width = value;
                 self.media_pane_expanded_width = value;
             }
@@ -642,8 +662,8 @@ impl WorkspaceLayout {
             "artwork" if bounds.artwork_visible => {
                 let maximum = maximum_side_total
                     .saturating_sub(self.media_pane_width)
-                    .clamp(ARTWORK_PANE_MIN, ARTWORK_PANE_MAX);
-                let value = requested.clamp(ARTWORK_PANE_MIN, maximum);
+                    .clamp(artwork_floor, ARTWORK_PANE_MAX);
+                let value = requested.clamp(artwork_floor, maximum);
                 self.artwork_pane_width = value;
                 self.artwork_pane_expanded_width = value;
             }
@@ -759,10 +779,11 @@ fn shrink_pair_to_total(
 
 pub fn normalize_appearance(value: &str) -> String {
     match value.trim().to_ascii_lowercase().as_str() {
+        "default" | "system" => "Default",
         "light" => "Light",
         "dark" => "Dark",
         "chalk" => "Chalk",
-        _ => "System",
+        _ => "Default",
     }
     .to_string()
 }
@@ -1104,7 +1125,7 @@ window_height = 700
             restored.candidate_filter_height,
             defaults.candidate_filter_height
         );
-        assert_eq!(restored.appearance, "System");
+        assert_eq!(restored.appearance, "Default");
         assert!(!restored.media_filter_locked);
         assert!(!restored.candidate_filter_locked);
         assert!(!restored.animate_webp_preview);
@@ -1255,9 +1276,10 @@ window_height = 1977
         };
         let mut layout = WorkspaceLayout::from_preferences(&preferences);
         layout.clamp_for_window(960, 640, true, true, true);
-        assert!(layout.media_pane_width >= MEDIA_PANE_MIN);
-        assert!(layout.artwork_pane_width >= ARTWORK_PANE_MIN);
-        assert!(layout.media_pane_width + layout.artwork_pane_width <= 960 - 38 - CENTER_PANE_MIN);
+        let (media_floor, artwork_floor, center_floor) = workspace_horizontal_minima(960);
+        assert!(layout.media_pane_width >= media_floor);
+        assert!(layout.artwork_pane_width >= artwork_floor);
+        assert!(layout.media_pane_width + layout.artwork_pane_width <= 960 - 38 - center_floor);
         assert!(layout.activity_pane_height >= ACTIVITY_PANE_MIN);
         assert!(layout.candidate_filter_height >= CANDIDATE_FILTER_MIN);
         let usable_height = 640 - 91;
@@ -1298,14 +1320,12 @@ window_height = 1977
             main.clamp_for_window(width, height, true, true, true);
 
             let available_width = width.saturating_sub(38);
-            assert!(main.media_pane_width >= MEDIA_PANE_MIN, "{width}x{height}");
-            assert!(
-                main.artwork_pane_width >= ARTWORK_PANE_MIN,
-                "{width}x{height}"
-            );
+            let (media_floor, artwork_floor, center_floor) = workspace_horizontal_minima(width);
+            assert!(main.media_pane_width >= media_floor, "{width}x{height}");
+            assert!(main.artwork_pane_width >= artwork_floor, "{width}x{height}");
             assert!(
                 main.media_pane_width + main.artwork_pane_width
-                    <= available_width.saturating_sub(CENTER_PANE_MIN),
+                    <= available_width.saturating_sub(center_floor),
                 "{width}x{height}"
             );
 
@@ -1483,6 +1503,7 @@ window_height = 1977
         assert!(layout.maximized);
         assert_eq!(normalize_appearance("light"), "Light");
         assert_eq!(normalize_appearance("chalk"), "Chalk");
-        assert_eq!(normalize_appearance("anything else"), "System");
+        assert_eq!(normalize_appearance("system"), "Default");
+        assert_eq!(normalize_appearance("anything else"), "Default");
     }
 }

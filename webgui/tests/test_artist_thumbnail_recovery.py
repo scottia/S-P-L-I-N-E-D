@@ -6,6 +6,7 @@ from contextlib import closing
 from io import BytesIO
 import json
 from pathlib import Path
+from hashlib import sha256
 import sqlite3
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -108,6 +109,21 @@ class ArtistThumbnailRecoveryTests(unittest.TestCase):
         self.assertEqual(self.catalog.artist_thumbnail("artist-1"), portrait)
         self.assertEqual(self.catalog.portrait_cache["artist-1"], portrait)
 
+    def test_projected_artist_mbid_still_finds_name_scoped_shared_art(self) -> None:
+        artist_name = "Rob Wasserman"
+        identity = sha256(artist_name.casefold().encode("utf-8")).digest()[:16].hex()
+        portrait = self.root / "artist-art" / f"artist-name-{identity}.png"
+        portrait.parent.mkdir(parents=True)
+        portrait.write_bytes(_png())
+        projected = {
+            "artist_key": "credit:rob-wasserman",
+            "artist_name": artist_name,
+            "musicbrainz_artistid": "e0bba708-bdd3-478d-84ea-c706413bedab",
+            "primary_path": "",
+        }
+
+        self.assertEqual(self.catalog.artist_thumbnail_path(projected), portrait)
+
     def test_empty_remote_thumbnail_is_bounded_then_can_recover(self) -> None:
         self._save_credentials()
         remote = {"id": "remote-artist", "name": "Test Artist", "coverArt": "cover-1"}
@@ -129,6 +145,47 @@ class ArtistThumbnailRecoveryTests(unittest.TestCase):
             self.assertEqual(self.catalog.artist_thumbnail("artist-1"), cached)
         self.assertEqual(download.call_count, 2)
         self.assertEqual(self.catalog.portrait_cache["artist-1"], cached)
+
+    def test_active_index_defers_remote_thumbnail_then_reuses_persistent_cache(self) -> None:
+        self._save_credentials()
+        remote = {"id": "remote-artist", "name": "Test Artist", "coverArt": "cover-1"}
+        cached = self.root / "cache" / "navidrome-thumbnails" / "artists" / "cached.png"
+        cached.parent.mkdir(parents=True)
+        cached.write_bytes(_png())
+        with mock.patch.object(
+            self.catalog,
+            "_navidrome_artists_by_name",
+            return_value={"testartist": remote},
+        ) as directory, mock.patch.object(
+            self.catalog, "_cache_navidrome_thumbnail", return_value=cached
+        ) as download, mock.patch.object(
+            self.catalog, "index_maintenance_active", return_value=True
+        ):
+            with self.assertRaisesRegex(KeyError, "paused while indexing"):
+                self.catalog.artist_thumbnail("artist-1")
+        directory.assert_not_called()
+        download.assert_not_called()
+
+        with mock.patch.object(
+            self.catalog,
+            "_navidrome_artists_by_name",
+            return_value={"testartist": remote},
+        ), mock.patch.object(
+            self.catalog, "_cache_navidrome_thumbnail", return_value=cached
+        ) as download, mock.patch.object(
+            self.catalog, "index_maintenance_active", return_value=False
+        ):
+            self.assertEqual(self.catalog.artist_thumbnail("artist-1"), cached)
+            self.assertEqual(self.catalog.artist_thumbnail("artist-1"), cached)
+        self.assertEqual(download.call_count, 1)
+        slots = self.catalog.thumbnail_download_slots
+        self.assertTrue(slots.acquire(blocking=False))
+        self.assertTrue(slots.acquire(blocking=False))
+        self.assertTrue(slots.acquire(blocking=False))
+        self.assertFalse(slots.acquire(blocking=False))
+        slots.release()
+        slots.release()
+        slots.release()
 
     def test_missing_credentials_can_recover_without_restart(self) -> None:
         self.assertEqual(self.catalog._navidrome_artists_by_name(), {})

@@ -289,13 +289,11 @@ def index_is_usable(
 def aggregate_artist(statuses: list[str]) -> str:
     if "bypassed" in statuses:
         return "contains-bypass"
-    if "incomplete" in statuses:
+    if any(status in {"incomplete", "timeout", "partial", "error"} for status in statuses):
         return "partial"
-    if statuses and all(
-        status in {"processed", "timeout"} for status in statuses
-    ):
+    if statuses and all(status == "processed" for status in statuses):
         return "complete"
-    if any(status in {"processed", "timeout"} for status in statuses):
+    if "processed" in statuses:
         return "partial"
     return "unprocessed"
 

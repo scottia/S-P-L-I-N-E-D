@@ -21,6 +21,7 @@ retained as historical evidence, not current operating instructions.
 | Repair a compilation track | [COMP and fallback albums](#comp-and-fallback-albums) |
 | Configure providers or behavior | [Settings and providers](#settings-and-providers) |
 | Back up, restore, or update | [Backup, restore, and updates](#backup-restore-and-updates) |
+| Prepare a database schema update | [Database upgrade preparedness](windows-schema-upgrade-preparedness.md) |
 | Diagnose a problem | [Diagnostics and troubleshooting](#diagnostics-and-troubleshooting) |
 
 Start with a backed-up library and **READ** mode. Read mode can create normal
@@ -40,6 +41,13 @@ Windows has two supported distribution channels:
 The Store and Portable channels use the same x64 Rust/Slint application. The
 Store installation directory is read-only; Portable keeps its state with the
 extracted application.
+
+When an update requires a supported SQLite schema change, SPLINED pauses before
+the workspace and presents the source/target versions, catalog counts, backup
+location, one-way downgrade warning, and **Back Up & Upgrade** confirmation.
+The conversion preserves the published Windows catalog and does not access the
+separate PostgreSQL database. See
+[Windows SQLite schema upgrade preparedness](windows-schema-upgrade-preparedness.md).
 
 ### First setup
 

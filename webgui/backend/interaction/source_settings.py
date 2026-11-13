@@ -64,9 +64,8 @@ def _policy_defaults(raw: dict[str, Any], source: str = "") -> dict[str, Any]:
         # v5 files predate this provider, so saving Source Priority must not
         # silently add Store traffic to every album scan.
         "enabled": bool(raw.get("enabled", source != "amazon")),
-        "include_in_artist_art_search": bool(
-            raw.get("include_in_artist_art_search", source in ARTIST_IMAGE_SOURCES)
-        ),
+        "include_in_artist_art_search": source in ARTIST_IMAGE_SOURCES
+        and bool(raw.get("include_in_artist_art_search", True)),
         "strict_override": bool(raw.get("strict_override", source == "amazon")),
         "source_override": bool(raw.get("source_override", False)),
         "minimum_range_type": str(raw.get("minimum_range_type", "LowerRange")),
@@ -262,7 +261,11 @@ def persist_policy_draft(
             "allow_below_minimum_fallback",
             "primary_image_only",
         ):
-            table[key] = values[key]
+            table[key] = (
+                bool(values[key]) and source in ARTIST_IMAGE_SOURCES
+                if key == "include_in_artist_art_search"
+                else values[key]
+            )
         for key in OPTIONAL_DIMENSIONS:
             value = values.get(key)
             if value is None:

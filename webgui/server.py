@@ -16,7 +16,7 @@ import threading
 import time
 import tomllib
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -30,6 +30,7 @@ from webgui.credentials import Credentials
 from webgui.auth import AdminAuth
 from webgui.audit import sanitize, sanitize_text, utc_now
 from webgui.reconciliation import SQLiteReconciler
+from webgui import index_coordinator as indexer
 
 
 SETTINGS_UI = Path(__file__).resolve().parents[1] / "schema/settings-ui.json"
@@ -800,7 +801,25 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
 
     @app.get("/api/library/changes")
     def library_changes():
-        return context.require().index_changes()
+        services = context.require()
+        result = services.index_changes(refresh=False)
+        probe = context.jobs.index_probe_state() if context.jobs else None
+        result["checking"] = probe is not None
+        result["probe_job_id"] = probe.get("id", "") if probe else ""
+        return result
+
+    @app.post("/api/library/check-changes")
+    def check_library_changes():
+        context.require()
+        if context.jobs is None:
+            raise HTTPException(503, "The background worker is unavailable")
+        return context.jobs.enqueue("index-probe", {})
+
+    @app.get("/api/library/index-status")
+    def library_index_status():
+        # Bypass the media-processing mutex so progress remains responsive.
+        services = context.require()
+        return indexer.status(services.runtime.database)
 
     @app.get("/api/artist")
     def artist(id: str):
@@ -822,6 +841,15 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
         return FileResponse(
             context.require().catalog.artist_thumbnail(id),
             headers={"Cache-Control": "private, max-age=300"},
+        )
+
+    @app.get("/api/artist/similar-thumbnail")
+    def similar_artist_thumbnail(provider_id: str, name: str, cover_art: str):
+        return FileResponse(
+            context.require().catalog.similar_artist_thumbnail(
+                provider_id, name, cover_art
+            ),
+            headers={"Cache-Control": "private, max-age=86400"},
         )
 
     @app.get("/api/artist/metadata")

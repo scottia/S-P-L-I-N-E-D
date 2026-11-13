@@ -39,6 +39,21 @@ class ArtistSeparatorContractTests(unittest.TestCase):
             f"Rob Wasserman{ARTIST_CREDIT_SEPARATOR}Aaron Neville",
         )
 
+    def test_id3v23_slash_multivalue_uses_ordered_mbid_cardinality(self):
+        rob = "77b5f0ca-5c13-4348-8d4d-d6b15440e3ec"
+        aaron = "2f53411b-ec29-4979-aa46-62786a2bb377"
+        self.assertEqual(
+            normalize_artist_credit_text(
+                "Rob Wasserman/Aaron Neville",
+                artist_mbids=f"{rob}; {aaron}",
+            ),
+            f"Rob Wasserman{ARTIST_CREDIT_SEPARATOR}Aaron Neville",
+        )
+        self.assertEqual(
+            normalize_artist_credit_text("AC/DC", artist_mbids=rob),
+            "AC/DC",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -24,12 +24,13 @@ crossterm = "0.29.0"
 futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 hmac = "0.13.0"
+hyphenation = { version = "0.8.4", features = ["embed_en-us"] }
 lofty = "0.25.1"
 rand = "0.10.2"
 regex = "1.12.3"
 pbkdf2 = "0.13.0"
 reqwest = { version = "0.13.5", features = ["form", "json", "multipart", "query", "rustls"] }
-rusqlite = { version = "0.41.1", features = ["backup", "bundled"] }
+rusqlite = { version = "0.41.1", features = ["backup", "bundled", "trace"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"
@@ -47,6 +48,6 @@ url = "2.5.8"
 slint-build = { version = "=1.18.1", default-features = false, features = ["compat-1-18"] }
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62.2", features = ["Foundation", "Foundation_Collections", "Services_Store", "Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.62.2", features = ["Foundation", "Foundation_Collections", "Services_Store", "Win32_Foundation", "Win32_Graphics_DirectWrite", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_NetworkManagement_WNet", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 windows-registry = "0.100.0"

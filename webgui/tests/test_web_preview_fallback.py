@@ -89,9 +89,19 @@ class BrowserFallbackTests(unittest.TestCase):
         self.assertIn('$("embedBatchButton").textContent = "EMBED Batch"', operations)
         self.assertNotIn('textContent = compContext ? "EMBED Thumbs"', operations)
         self.assertIn('job.kind === "embed-album"', operations)
-        self.assertIn("renderReconciliationConflicts(logging)", operations)
-        self.assertIn("/api/reconciliation/conflicts?", operations)
-        self.assertIn("Download conflicts.html", operations)
+        self.assertNotIn("renderReconciliationConflicts", operations)
+        self.assertNotIn("Reconciliation Conflicts", operations)
+        self.assertIn('key === "samples"', operations)
+        self.assertIn('"settings-search-glyph", "🔍"', operations)
+        self.assertIn('"status-bar-controls"', operations)
+        self.assertIn('"runtime-expand-toggle"', operations)
+        self.assertIn('layout.classList.toggle("logging-expanded", expanded)', operations)
+        self.assertIn('"Disqualified · Album-Only source"', operations)
+        self.assertIn('"Update Selected Source Policy"', operations)
+        self.assertIn("source policy updated in the Settings draft", operations)
+        self.assertIn("Save Artwork Sources to apply", operations)
+        self.assertIn("`audit-event-line severity-${", operations)
+        self.assertIn("element.dataset.mediaStatus = key", application)
         self.assertIn('kind === "musicbrainz-results"', operations)
         self.assertIn('"__manual_candidates__"', application)
         self.assertIn('"Advanced IDs / Apply IDs"', application)
@@ -107,6 +117,17 @@ class BrowserFallbackTests(unittest.TestCase):
         self.assertIn('"Overridden by opposing application"', application)
         self.assertIn("renderedPreview", application)
         self.assertIn("compReportLoading", application)
+
+        contract = (Path(__file__).parents[2] / "schema" / "settings-ui.json").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('"label": "Include in Album Art Search"', contract)
+        self.assertNotIn('"label": "Include In Artwork Search"', contract)
+        self.assertIn('[["default", "Default"], ["dark", "Dark"]', application)
+
+        stylesheet = (static / "app.css").read_text(encoding="utf-8")
+        self.assertIn("html[data-theme=default]", stylesheet)
+        self.assertIn(".runtime-settings-layout.logging-expanded", stylesheet)
         enter_artist_art = application.split("function enterArtistArt", 1)[1].split(
             "function showDialog", 1
         )[0]

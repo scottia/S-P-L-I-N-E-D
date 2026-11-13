@@ -28,6 +28,9 @@ The current guides have distinct ownership:
   native filters, selection scope, counts, status meaning, and accessibility.
 - [Microsoft Store channel](windows-store.md) — installed Windows identity,
   Store-managed updates, and the separation from portable releases.
+- [Windows SQLite schema upgrade preparedness](windows-schema-upgrade-preparedness.md)
+  — operator confirmation, verified pre-upgrade backup, exclusive migration,
+  one-way downgrade recovery, and the PostgreSQL boundary.
 
 ## Authoritative technical references
 
