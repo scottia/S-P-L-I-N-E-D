@@ -1103,7 +1103,9 @@ recorded with the Windows UI scale and biography follow-up below.
   prohibition. Local reruns pass 202 Rust library tests, 5 public-config tests,
   10 release-automation tests, 14 Windows architecture tests, 403 WebGUI tests
   with 78 skips, and 100 browser behavior tests. Final-head CI remains the
-  completion gate and is linked on PR #170.
+  completion gate. Corrective head `9fae5a1` passed all supported-runtime jobs
+  in [Action #260](https://github.com/scottia/S-P-L-I-N-E-D/actions/runs/43357100481):
+  validation selection, native Ubuntu, Windows advisory, and WebGUI.
 - Installed Windows 2.0.36 executable:
   `E:\apps\SPLINED\splined.exe`, SHA-256
   `4A7FC81BF27F66BC5B57B7079DD3D09E4532249B0DC6E02D40C4397323B1DDD5`
@@ -1151,7 +1153,6 @@ recorded with the Windows UI scale and biography follow-up below.
 11. Requirement 11 — Album-level coordination: **PASSED**.
 12. Mandatory validation/publication interruption recovery: **PASSED**.
 
-All implementation, focused regression, full local-suite and installed-client
-gates are complete. Final-head supported-runtime CI is the remaining publication
-check and is recorded on PR #170 after this acceptance update. PR #170 and PR
-#174 remain Draft and unmerged pending owner acceptance.
+All implementation, focused regression, full local-suite, installed-client and
+final-head supported-runtime CI gates are complete. PR #170 and PR #174 remain
+Draft and unmerged pending owner acceptance.
