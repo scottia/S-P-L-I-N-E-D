@@ -58,6 +58,7 @@ async function initialize() {
   if (status.setup_required) { await openSettings(); setStatus("Complete library and database setup in Settings"); return; }
   const settings = await api("/api/settings");
   applyGraphicalEnhancement(settings.config.webgui_ui?.enhancement);
+  applyStatusBarPreferences(settings.config.webgui_ui?.status_bar);
   state.artworkRange = {...state.artworkRange, ...(settings.config.range || {})};
   state.sourceOrder = [...(settings.config.sources?.cover_sources || [])];
   state.sourcePolicies = {...(settings.config.source_policies || {})};
@@ -68,12 +69,10 @@ async function initialize() {
   // saved panel dimensions only after it has measurable width and height.
   requestAnimationFrame(() => { restoreLayout(); fitReviewToViewport(); });
   await loadLibrary(); await pollJobs();
-  // Discover physical library additions after the workspace is usable. This
+  // Discover physical library changes after the workspace is usable. This
   // remains a read-only check; the operator explicitly chooses whether to run
   // the incremental PostgreSQL refresh from the header notice.
-  void checkLibraryChanges().catch(error => {
-    auditEvent("library-change-check", "failed", {severity: "warning", error: error.message});
-  });
+  void requestLibraryChangeProbe().catch(libraryChangeProbeFailed);
 }
 function showAuthentication(status) {
   document.body.className = "auth-required";
@@ -115,8 +114,27 @@ async function submitPasswordRecovery(payload) {
     $("authError").textContent = error.message;
   }
 }
+let libraryChangePollTimer = null;
+function libraryChangeProbeFailed(error) {
+  libraryChangePollTimer = null;
+  state.libraryChanges = {...(state.libraryChanges || {}), checking: false};
+  setStatus("Unable to check the music library for changes", "error");
+  auditEvent("library-change-check", "failed", {severity: "warning", error: error.message});
+}
+function scheduleLibraryChangePoll() {
+  if (libraryChangePollTimer !== null) return;
+  // A completed probe must clear the busy banner even when the browser was
+  // backgrounded during the first one-second interval. Browser visibility may
+  // throttle this timer, but it must never cancel the only completion poll.
+  libraryChangePollTimer = setTimeout(async () => {
+    libraryChangePollTimer = null;
+    if (!state.libraryChanges?.checking) return;
+    try { await checkLibraryChanges(); } catch (error) { libraryChangeProbeFailed(error); }
+  }, 1000);
+}
 async function checkLibraryChanges() {
   const changes = await api("/api/library/changes");
+  const wasChecking = !!state.libraryChanges?.checking;
   state.libraryChanges = changes;
   const button = $("applyLibraryChanges");
   button.hidden = !changes.count;
@@ -124,8 +142,29 @@ async function checkLibraryChanges() {
     ? `Apply Library Changes (${changes.count})`
     : "Apply Library Changes";
   if (changes.count) {
-    setStatus(`Music library changes · ${changes.added} added · ${changes.changed} changed · ${changes.removed} removed`);
+    setStatus(`Music library changes · ${changes.added} added · ${changes.changed} changed · ${changes.moved || 0} moved · ${changes.removed} removed`);
+  } else if (changes.checking) {
+    setStatus("Checking the music library for changes…", "busy");
+  } else if (wasChecking) {
+    setStatus("Music library is up to date");
   }
+  if (changes.checking) scheduleLibraryChangePoll();
+}
+document.addEventListener("visibilitychange", () => {
+  // Refresh immediately when returning to the workspace while retaining the
+  // background completion poll as the authoritative busy-state cleanup.
+  if (!document.hidden && state.libraryChanges?.checking) {
+    if (libraryChangePollTimer !== null) clearTimeout(libraryChangePollTimer);
+    libraryChangePollTimer = null;
+    void checkLibraryChanges().catch(libraryChangeProbeFailed);
+  }
+});
+async function requestLibraryChangeProbe() {
+  const probe = await post("/api/library/check-changes");
+  if (["queued", "running", "waiting"].includes(probe.state)) {
+    setStatus("Checking the music library for changes…", "busy");
+  }
+  await checkLibraryChanges();
 }
 function componentPayload(kind, imageURL, extra = {}) {
   const target = kind === "cover" ? "album" : kind;
@@ -397,8 +436,8 @@ function skipAlbumSearch() {
 }
 async function launchArtist() {
   if (!state.artist) return;
-  const ids = [...state.mediaSelected].filter(id => state.artist.albums.some(album => album.id === id && artistAlbumEligible(album)));
-  if (!ids.length) throw new Error("Select at least one unfinished, eligible Album for this Artist");
+  const ids = [...state.mediaSelected].filter(id => state.artist.albums.some(album => album.id === id && artistAlbumReprocessable(album)));
+  if (!ids.length) throw new Error("Select at least one identified Album for this Artist");
   setStatus(`Opening Album review · ${ids.length} selected`, "busy");
   const result = await post("/api/jobs", {kind: "scan", payload: {artist_id: state.artist.id, album_ids: ids}});
   if (result.already_queued) setStatus("Resuming the active Album review before starting another batch", "busy");
@@ -1111,19 +1150,53 @@ async function pollJobs() {
   try { return await task; }
   finally { if (jobsPolling === task) jobsPolling = null; }
 }
+function activeIndexJob() {
+  return (state.jobs || []).find(job => job.kind === "index"
+    && ["queued", "running", "waiting"].includes(job.state)) || null;
+}
+function renderIndexProgress() {
+  const job = activeIndexJob();
+  const generation = state.indexStatus?.generation || null;
+  const generationActive = generation && ["building", "validating", "publishing"].includes(generation.state);
+  const active = Boolean(job || generationActive);
+  const button = $("indexStopProcess"), status = $("status");
+  button.hidden = !active;
+  if (!active) {
+    state.indexStopping = false;
+    if (!job) state.indexJobId = null;
+    status.classList?.remove?.("index-progress");
+    status.style?.removeProperty?.("--index-progress");
+    return;
+  }
+  if (job) state.indexJobId = job.id;
+  const progress = job?.progress || {};
+  const completed = Number(progress.completed ?? generation?.completed_albums ?? 0);
+  const total = Math.max(1, Number(progress.total || 0), Number(generation?.discovered_albums || 0));
+  const percentage = Math.max(0, Math.min(100,
+    Number(progress.percentage ?? (generation?.state === "published" ? 100 : Math.min(99, Math.floor(completed * 100 / total))))));
+  const phase = String(progress.phase || generation?.phase || job?.state || "indexing");
+  const message = String(progress.message || generation?.current_path || "Preparing catalog generation");
+  const errors = Number(progress.errors ?? generation?.error_count ?? 0);
+  button.textContent = state.indexStopping ? "STOPPING…" : "STOP INDEX";
+  button.disabled = state.indexStopping || !state.indexJobId;
+  setStatus(`PostgreSQL ${phase} · ${percentage}% · ${completed}/~${total} Albums · ${errors} errors · ${message}`, "busy");
+  status.classList?.add?.("index-progress");
+  status.style?.setProperty?.("--index-progress", `${percentage}%`);
+}
 async function performJobsPoll() {
   try {
     const priorJobs = new Map((state.jobs || []).map(job => [job.id, job]));
     const priorCompActive = [...priorJobs.values()].some(job => job.kind === "comp"
       && ["queued", "running", "waiting"].includes(job.state));
     const priorStaged = new Set(state.embedQueue.map(item => item.id));
-    const [jobs, queueControls, albumCoordination, compTrackCoordination] = await Promise.all([
+    const [jobs, queueControls, albumCoordination, compTrackCoordination, indexStatus] = await Promise.all([
       api("/api/jobs"),
       api("/api/jobs/control-state"),
       api("/api/coordination/album-overrides").catch(() => null),
       api("/api/coordination/comp-track-overrides").catch(() => null),
+      api("/api/library/index-status").catch(() => null),
     ]);
-    state.jobs = jobs; state.queueControls = queueControls; renderQueue();
+    state.jobs = jobs; state.queueControls = queueControls; state.indexStatus = indexStatus; renderQueue(); renderIndexProgress();
     const currentCompActive = jobs.some(job => job.kind === "comp"
       && ["queued", "running", "waiting"].includes(job.state));
     if (typeof renderCandidateLaunchControl === "function") renderCandidateLaunchControl();
@@ -1196,6 +1269,11 @@ async function performJobsPoll() {
           if (nextComp?.state === "waiting") await renderJob(nextComp);
         } else if (job.state === "failed") {
           setStatus(job.error || "Queued artwork failed", "error");
+        } else if (job.state === "cancelled") {
+          if (job.kind === "index") {
+            const mode = job.payload?.mode === "incremental" ? "incremental" : "full";
+            setStatus(`PostgreSQL ${mode} refresh cancelled · published catalog preserved`, "ready");
+          } else setStatus("Queued artwork cancelled", "ready");
         }
       }
     }
@@ -1585,24 +1663,32 @@ function renderSourceOrderSettings(host, draft, selectedProvider, selectProvider
   const artistOnly = Array.from(ARTIST_IMAGE_SOURCES).filter(key =>
     !configured.includes(key)
     && (draft.source_policies?.[key]?.include_in_artist_art_search ?? true));
-  const ordered = ["local", ...configured.filter(key => key !== "local"), ...artistOnly];
+  const ordered = ["samples", "local", ...configured.filter(key => key !== "local"), ...artistOnly];
   const strip = node("div", "settings-source-strip");
   for (const key of ordered) {
-    const info = sourceInfo.get(key) || {label: key, icon: key}, configuredIndex = configured.indexOf(key);
+    const info = key === "samples" ? {label: "Samples", icon: "⊘"} : (sourceInfo.get(key) || {label: key, icon: key}), configuredIndex = configured.indexOf(key);
     const card = node("div", "settings-source-card" + (selectedProvider === key ? " active" : "") + (excluded.has(key) ? " excluded" : ""));
     const choose = node("button", "source-card-main"); choose.type = "button";
-    const albumEnabled = key === "local" || !excluded.has(key) && draft.source_policies?.[key]?.enabled !== false;
+    const albumEnabled = key === "local" || key !== "samples" && !excluded.has(key) && draft.source_policies?.[key]?.enabled !== false;
     const configuredArtist = key === "local" || ARTIST_IMAGE_SOURCES.has(key) && (draft.source_policies?.[key]?.include_in_artist_art_search ?? true);
-    const mode = configuredArtist && albumEnabled ? "Artist / Album" : configuredArtist ? "Artist-Only" : albumEnabled ? "Album-Only" : "Excluded";
-    choose.append(info.icon === "⊘" ? node("span", "source-symbol", "⊘") : image("/assets/source-icons/" + info.icon + ".svg", "", ""), node("strong", "", info.label));
-    if (configuredArtist) choose.append(node("small", "", `🔍 ${state.sourceCounts.artist?.[key] || 0} Artist`));
-    if (albumEnabled) choose.append(node("small", "", `🔍 ${state.sourceCounts.cover?.[key] || 0} Cover`));
-    choose.append(node("small", "", mode));
-    choose.disabled = key === "local";
-    if (key !== "local") choose.addEventListener("click", () => { selectProvider(key); rerender(); });
+    const mode = configuredArtist && albumEnabled ? "Artist / Album" : configuredArtist ? "Artist-Only" : albumEnabled ? "Album-Only" : "Deactivated";
+    const modeClass = configuredArtist && albumEnabled ? "artist-album" : configuredArtist ? "artist-only" : albumEnabled ? "album-only" : "deactivated";
+    const top = node("span", "settings-source-top");
+    top.append(info.icon === "⊘" ? node("span", "source-symbol", "⊘") : image("/assets/source-icons/" + info.icon + ".svg", "", ""), node("strong", "", info.label));
+    const counts = node("span", "settings-source-counts");
+    counts.append(node("span", "settings-search-glyph", "🔍"));
+    const rows = node("span", "settings-source-count-rows");
+    rows.append(node("small", configuredArtist ? "" : "inactive", `${state.sourceCounts.artist?.[key] || 0} Artist`));
+    rows.append(node("small", albumEnabled ? "" : "inactive", `${state.sourceCounts.cover?.[key] || 0} Cover`));
+    counts.append(rows);
+    const status = node("span", `settings-source-mode mode-${modeClass}`);
+    status.append(node("span", "source-status-radio"), node("span", "", mode));
+    choose.append(top, counts, status);
+    choose.disabled = key === "local" || key === "samples";
+    if (key !== "local" && key !== "samples") choose.addEventListener("click", () => { selectProvider(key); rerender(); });
     const moves = node("div", "source-move-buttons");
     for (const [label, delta] of [["‹", -1], ["›", 1]]) {
-      const move = node("button", "", label); move.type = "button"; move.disabled = configuredIndex < 0 || configuredIndex + delta < 0 || configuredIndex + delta >= configured.length;
+      const move = node("button", "", label); move.type = "button"; move.disabled = key === "samples" || key === "local" || configuredIndex < 0 || configuredIndex + delta < 0 || configuredIndex + delta >= configured.length;
       move.addEventListener("click", () => { const next = configuredIndex + delta; [configured[configuredIndex], configured[next]] = [configured[next], configured[configuredIndex]]; setSettingValue(draft, "sources.cover_sources", configured); rerender(); }); moves.append(move);
     }
     card.append(choose, moves); strip.append(card);
@@ -1639,61 +1725,6 @@ function downloadJsonFile(name, value) {
   const blob = new Blob([JSON.stringify(value, null, 2) + "\n"], {type: "application/json"});
   const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = name; link.click(); URL.revokeObjectURL(link.href);
 }
-  function renderReconciliationConflicts(host) {
-    const disclosure = node("details", "conflict-browser");
-    disclosure.append(node("summary", "", "Reconciliation Conflicts"));
-    const body = node("section", "conflict-browser-body");
-    body.append(node("p", "settings-subcopy", "Review unresolved Windows SNAP associations by root Artist, Album class, entity, path, MBID, and field. This report is read-only."));
-    const controls = node("div", "conflict-controls"), run = node("select"), table = node("select"), reason = node("select"), albumClass = node("select"), search = node("input"), refresh = node("button", "operation-button", "Refresh");
-    search.placeholder = "Search Artist, Album, path, MBID, reason"; refresh.type = "button";
-    controls.append(run, table, reason, albumClass, search, refresh);
-    const downloads = node("div", "conflict-downloads"), html = node("a", "operation-button", "Download conflicts.html"), json = node("a", "operation-button", "Download conflicts.json");
-    html.download = "splined-conflicts.html"; json.download = "splined-conflicts.json"; downloads.append(html, json);
-    const summary = node("p", "runtime-summary", "Open to load reconciliation conflicts."), roots = node("div", "conflict-roots"), entries = node("div", "conflict-entries"), pages = node("div", "conflict-pages"), previous = node("button", "operation-button", "Previous"), next = node("button", "operation-button", "Next"), page = node("span", "", "");
-    previous.type = next.type = "button"; pages.append(previous, page, next); body.append(controls, downloads, summary, roots, entries, pages); disclosure.append(body); host.append(disclosure);
-    let loaded = false, offset = 0; const pageSize = 100;
-    const populate = (select, first, values, chosen) => {
-      clear(select); const blank = node("option", "", first); blank.value = ""; select.append(blank);
-      for (const value of values || []) { const option = node("option", "", value); option.value = value; select.append(option); }
-      select.value = chosen || "";
-    };
-    const exportLinks = () => {
-      const params = new URLSearchParams(); if (run.value) params.set("run_id", run.value);
-      html.href = "/api/reconciliation/conflicts/export?format=html&" + params;
-      json.href = "/api/reconciliation/conflicts/export?format=json&" + params;
-    };
-    const valueText = value => value == null ? "—" : typeof value === "object" ? JSON.stringify(value) : String(value);
-    const renderItem = item => {
-      const entry = node("details", "conflict-entry"), title = node("summary");
-      title.append(node("strong", "", item.root_label || item.root_key), node("span", "", `${item.entity_table} · ${item.album_class} · ${item.reason}`)); entry.append(title);
-      const meta = node("p", "conflict-meta", `${item.entity_key} · root ${item.root_key}${item.evidence ? " · evidence " + item.evidence : ""}`), comparison = node("div", "conflict-comparison");
-      comparison.append(node("b", "", "Field"), node("b", "", "Windows SNAP"), node("b", "", "PostgreSQL"));
-      for (const change of item.changes || []) comparison.append(node("span", "", change.field), node("span", "", valueText(change.windows)), node("span", "", valueText(change.postgresql)));
-      entry.append(meta, comparison); return entry;
-    };
-    async function load(reset = false) {
-      if (reset) offset = 0;
-      summary.textContent = "Loading reconciliation conflicts…"; clear(entries); clear(roots);
-      const params = new URLSearchParams({offset: String(offset), limit: String(pageSize)});
-      if (run.value) params.set("run_id", run.value); if (table.value) params.set("entity_table", table.value); if (reason.value) params.set("reason", reason.value); if (albumClass.value) params.set("album_class", albumClass.value); if (search.value.trim()) params.set("query", search.value.trim());
-      try {
-        const result = await api("/api/reconciliation/conflicts?" + params), selectedRun = run.value;
-        if (!run.options.length) {
-          const noRun = node("option", "", result.runs?.length ? "Latest conflict run" : "No conflict runs"); noRun.value = ""; run.append(noRun);
-          for (const item of result.runs || []) { const option = node("option", "", `${item.run_id.slice(0, 12)} · ${item.conflicts} conflicts · ${new Date(item.started_at).toLocaleString()}`); option.value = item.run_id; run.append(option); }
-        }
-        populate(table, "All entities", result.facets?.tables, table.value); populate(reason, "All root causes", result.facets?.reasons, reason.value); populate(albumClass, "All Album classes", result.facets?.album_classes, albumClass.value); if (selectedRun) run.value = selectedRun;
-        summary.textContent = result.run ? `${result.total} matching · ${result.summary.total} total conflicts · run ${result.run.run_id}` : "No reconciliation conflicts have been recorded.";
-        for (const root of (result.roots || []).slice(0, 12)) roots.append(node("span", "", `${root.label} · ${root.count}`));
-        for (const item of result.items || []) entries.append(renderItem(item));
-        if (!result.items?.length) entries.append(node("p", "settings-subcopy", "No conflicts match these filters."));
-        previous.disabled = offset <= 0; next.disabled = offset + pageSize >= result.total; page.textContent = result.total ? `${offset + 1}–${Math.min(offset + pageSize, result.total)} of ${result.total}` : "0 entries"; exportLinks();
-      } catch (error) { summary.textContent = error.message; summary.classList.add("operation-error"); }
-    }
-    disclosure.addEventListener("toggle", () => { if (disclosure.open && !loaded) { loaded = true; void load(); } });
-    refresh.addEventListener("click", () => void load(true)); run.addEventListener("change", () => void load(true)); table.addEventListener("change", () => void load(true)); reason.addEventListener("change", () => void load(true)); albumClass.addEventListener("change", () => void load(true)); search.addEventListener("keydown", event => { if (event.key === "Enter") void load(true); });
-    previous.addEventListener("click", () => { offset = Math.max(0, offset - pageSize); void load(); }); next.addEventListener("click", () => { offset += pageSize; void load(); }); exportLinks();
-  }
   async function renderSqliteReconciliation(host) {
   const section = node("section", "sqlite-reconciliation");
   section.append(node("h5", "", "SQLite Reconciliation"), node("p", "settings-subcopy", "Compare an authorized read-only SQLite snapshot with this PostgreSQL catalog. Differences remain reviewable in salite_diff; conflicts are never auto-applied."));
@@ -1823,14 +1854,39 @@ function renderBackupSettings(host, saved, contract, onRestored, advanced = fals
 function renderRuntimeSettings(host, section, draft, bindings, saved, advanced) {
   const layout = node("div", "runtime-settings-layout"), processing = node("section", "runtime-column"), logging = node("section", "runtime-column");
   processing.append(node("h4", "", "Processing")); settingsHelp(processing, "When can SPLINED change files?", "Only Live Write permits explicit WRITE and EMBED actions. Read mode keeps searching and previewing available without changing media files.");
-  logging.append(node("h4", "", "Logging"));
+  const loggingHeading = node("div", "runtime-column-heading");
+  loggingHeading.append(node("h4", "", "Logging"));
+  const loggingExpand = node("button", "runtime-expand-toggle", "+");
+  loggingExpand.type = "button";
+  const setLoggingExpanded = expanded => {
+    layout.classList.toggle("logging-expanded", expanded);
+    loggingExpand.textContent = expanded ? "−" : "+";
+    loggingExpand.title = expanded ? "Compress Logging" : "Expand Logging";
+    loggingExpand.setAttribute("aria-label", loggingExpand.title);
+    loggingExpand.setAttribute("aria-expanded", String(expanded));
+  };
+  loggingExpand.addEventListener("click", () => setLoggingExpanded(!layout.classList.contains("logging-expanded")));
+  setLoggingExpanded(false);
+  loggingHeading.append(loggingExpand); logging.append(loggingHeading);
   for (const descriptor of section.fields || []) {
     if (descriptor.runtimes && !descriptor.runtimes.includes("webgui") || descriptor.advanced && !advanced) continue;
     if (["scan.sqlite_shared", "scan.windows_client_lock"].includes(descriptor.path)) continue;
     const target = descriptor.path === "scan.log_dir" || descriptor.path === "verbosity" || descriptor.path.startsWith("logging.") ? logging : processing;
     settingsInput(target, descriptor, descriptor.path, draft, bindings, saved);
   }
-  const scope = node("div", "runtime-summary"); scope.append(node("span", "", "Scope  SELECTED / QUEUED"), node("span", "", `Mode  ${(settingValue(draft, "mode", "read") || "read").toUpperCase()}`)); processing.append(scope);
+  const scope = node("div", "runtime-summary"); scope.append(node("span", "runtime-scope", "Scope  SELECTED / QUEUED"), node("span", "", `Mode  ${(settingValue(draft, "mode", "read") || "read").toUpperCase()}`)); processing.append(scope);
+  processing.append(node("h4", "status-bar-heading", "Status Bar"));
+  settingsHelp(processing, "How does the status bar show activity?", "Active work uses the theme activity treatment. Ready, success, and error states retain their semantic colors. Position and size change only the status presentation, never artwork or processing.");
+  const statusBar = normalizeStatusBar(settingValue(draft, "webgui_ui.status_bar", state.statusBar));
+  const statusControls = node("div", "status-bar-controls");
+  for (const [label, key, choices] of [["Intensity", "intensity", ["Aggressive", "Full", "Mild", "Off"]], ["Position", "position", ["Top", "Middle", "Bottom"]], ["Size", "size", ["Small", "Medium", "Large"]]]) {
+    const row = node("label", "status-bar-control"); row.append(node("span", "", label)); const select = node("select");
+    for (const choice of choices) { const option = node("option", "", choice); option.value = choice; select.append(option); }
+    select.value = statusBar[key];
+    select.addEventListener("change", () => { statusBar[key] = select.value; setSettingValue(draft, "webgui_ui.status_bar", {...statusBar}); applyStatusBarPreferences(statusBar); });
+    row.append(select); statusControls.append(row);
+  }
+  processing.append(statusControls);
   const logHeading = node("div", "diagnostic-heading"); logHeading.append(node("strong", "", "WebGUI Events · Audit")); const refresh = node("button", "operation-button", "Refresh"); refresh.type = "button"; logHeading.append(refresh); logging.append(logHeading);
   const auditFilters = node("div", "audit-filters");
   const severity = node("select"), allSeverity = node("option", "", "All severities"); allSeverity.value = ""; severity.append(allSeverity);
@@ -1841,15 +1897,22 @@ function renderRuntimeSettings(host, section, draft, bindings, saved, advanced) 
   const until = node("input"); until.type = "datetime-local"; until.setAttribute("aria-label", "Audit end time");
   const download = node("a", "operation-button", "Download audit.json"); download.download = "audit.json";
   auditFilters.append(severity, action, correlation, since, until, download); logging.append(auditFilters);
-  const events = node("pre", "diagnostic-events audit-events", "Loading events…"); logging.append(events);
+  const events = node("div", "diagnostic-events audit-events", "Loading events…"); events.tabIndex = 0; logging.append(events);
   const query = () => new URLSearchParams(Object.fromEntries(Object.entries({severity: severity.value, action: action.value.trim(), correlation: correlation.value.trim(), since: since.value, until: until.value}).filter(([, value]) => value)));
   async function load() {
-    try { const rows = await api("/api/diagnostics?" + query()); events.textContent = rows.length ? rows.map(row => `${String(row.sequence).padStart(8, "0")}  ${row.created_at}  ${row.severity.toUpperCase()}  ${row.action}  ${row.subject}${row.application_version ? "  v=" + row.application_version : ""}${row.application_revision ? "  rev=" + row.application_revision.slice(0, 12) : ""}${row.session_id ? "  session=" + row.session_id.slice(0, 12) : ""}${row.job_id ? "  job=" + row.job_id : ""}${row.trace_id ? "  trace=" + row.trace_id : ""}${row.state_from || row.state_to ? `  ${row.state_from || "—"}→${row.state_to || "—"}` : ""}${row.recovered_from_fallback ? "  RECOVERED" : ""}${row.error ? "  ERROR=" + row.error : ""}${row.details && Object.keys(row.details).length ? "  " + JSON.stringify(row.details) : ""}`).join("\n") : "No recorded Audit events match these filters."; }
-    catch (error) { events.textContent = error.message; }
+    try {
+      const rows = await api("/api/diagnostics?" + query()); clear(events);
+      if (!rows.length) { events.textContent = "No recorded Audit events match these filters."; return; }
+      for (const row of rows) {
+        const line = `${String(row.sequence).padStart(8, "0")}  ${row.created_at}  ${row.severity.toUpperCase()}  ${row.action}  ${row.subject}${row.application_version ? "  v=" + row.application_version : ""}${row.application_revision ? "  rev=" + row.application_revision.slice(0, 12) : ""}${row.session_id ? "  session=" + row.session_id.slice(0, 12) : ""}${row.job_id ? "  job=" + row.job_id : ""}${row.trace_id ? "  trace=" + row.trace_id : ""}${row.state_from || row.state_to ? `  ${row.state_from || "—"}→${row.state_to || "—"}` : ""}${row.recovered_from_fallback ? "  RECOVERED" : ""}${row.error ? "  ERROR=" + row.error : ""}${row.details && Object.keys(row.details).length ? "  " + JSON.stringify(row.details) : ""}`;
+        events.append(node("div", `audit-event-line severity-${String(row.severity || "info").toLowerCase()}`, line));
+      }
+    } catch (error) { events.textContent = error.message; }
   }
   const updateDownload = () => download.href = "/api/audit/export?" + query();
   for (const input of [severity, action, correlation, since, until]) input.addEventListener("change", updateDownload);
-    refresh.addEventListener("click", load); updateDownload(); void load(); renderReconciliationConflicts(logging); layout.append(processing, logging); host.append(layout);
+  action.addEventListener("input", () => { updateDownload(); window.clearTimeout(action._auditTimer); action._auditTimer = window.setTimeout(load, 180); });
+    refresh.addEventListener("click", load); updateDownload(); void load(); layout.append(processing, logging); host.append(layout);
 }
 async function openSettings() {
   state.reviewJobId = null;
@@ -1921,7 +1984,7 @@ async function openSettings() {
     if (section.id === "runtime") renderRuntimeSettings(fields, section, draft, bindings, saved, advanced);
     else {
       let displayedGroup = "";
-      const groupFor = path => section.id === "library" ? (["library.music_library", "scan.scan_mode", "scan.scan_library_dir"].includes(path) ? "Library And Application Paths" : path.startsWith("scan.artist_separator_") ? "Library Index" : path === "database.url" ? "Database" : "Persistent Folders")
+      const groupFor = path => section.id === "library" ? (["library.music_library", "scan.scan_mode", "scan.scan_library_dir"].includes(path) ? "Library And Application Paths" : path.startsWith("scan.artist_separator_") || path === "scan.index_batch_size" || path === "scan.index_batch_adaptive" ? "Library Index" : path === "database.url" ? "Database" : "Persistent Folders")
         : section.id === "artwork" ? (path.startsWith("output.") ? "Output Files" : path === "scan.shared_artist_art_dir" ? "V/A / OST Artist Images Directory" : "Sample Images")
         : section.id === "enhancement" ? "Resolution Range" : "";
       for (const descriptor of section.fields || []) {
@@ -1957,14 +2020,29 @@ async function openSettings() {
       for (const name of contract.providers) { const option = node("option", "", name); option.value = name; select.append(option); }
       select.value = sourceProvider; select.addEventListener("change", () => { applySettingsInputs(draft, bindings); sourceProvider = select.value; renderSection(active, true); }); picker.append(select); fields.append(picker);
       const artistSetting = `source_policies.${sourceProvider}.include_in_artist_art_search`;
-      if (settingValue(draft, artistSetting) === undefined)
-        setSettingValue(draft, artistSetting, ARTIST_IMAGE_SOURCES.has(sourceProvider));
-      for (const descriptor of section.repeater.fields) settingsInput(fields, descriptor, section.repeater.path + "." + sourceProvider + "." + descriptor.path, draft, bindings, saved);
+      const artistCapable = ARTIST_IMAGE_SOURCES.has(sourceProvider);
+      if (settingValue(draft, artistSetting) === undefined || !artistCapable)
+        setSettingValue(draft, artistSetting, artistCapable && Boolean(settingValue(draft, artistSetting, true)));
+      for (const descriptor of section.repeater.fields) {
+        const path = section.repeater.path + "." + sourceProvider + "." + descriptor.path;
+        const input = settingsInput(fields, descriptor, path, draft, bindings, saved);
+        if (descriptor.path === "include_in_artist_art_search" && !artistCapable && input) {
+          input.checked = false;
+          input.disabled = true;
+          input.closest(".setting-field")?.classList.add("disqualified-setting");
+          input.closest(".setting-field")?.append(node("strong", "source-disqualified", "Disqualified · Album-Only source"));
+        }
+      }
     }
     if (section.id === "sources") {
-      settingsHelp(fields, "What does source policy change?", "This policy applies only to the selected provider. Optional dimensions remain unset until you type a value or use the number arrows; a blank field does not impose a limit.");
       const update = node("button", "operation-button full-action", "Update Selected Source Policy"); update.type = "button";
-      update.addEventListener("click", () => runAction(() => saveCurrentSection(section, `${sourceProvider} source policy updated`))); fields.append(update);
+      update.addEventListener("click", () => {
+        applySettingsInputs(draft, bindings, false);
+        setStatus(`${sourceProvider} source policy updated in the Settings draft · Save Artwork Sources to apply`);
+        renderSection(active, true);
+      });
+      fields.append(update);
+      settingsHelp(fields, "What does source policy change?", "Update keeps the selected provider policy in the unsaved Settings draft so you can edit another provider. Save Artwork Sources validates and persists the complete source order and all provider policies. Album-only providers cannot be enabled for Artist Art search. Optional dimensions remain unset until you type a value or use the number arrows; a blank field does not impose a limit.");
     }
     if (!["enhancement", "sources", "runtime"].includes(section.id)) addSpecialSection(section, fields);
   }
@@ -2105,6 +2183,13 @@ $("applyLibraryChanges").addEventListener("click", () => runAction(async () => {
   const job = await post("/api/jobs", {kind: "index", payload: {mode: "incremental"}});
   await reviewJob(job.id);
 }));
+$("indexStopProcess").addEventListener("click", () => runAction(async () => {
+  if (!state.indexJobId || state.indexStopping) return;
+  state.indexStopping = true;
+  renderIndexProgress();
+  await post("/api/jobs/action", {action: "cancel", id: state.indexJobId});
+  await pollJobs();
+}));
 $("closeDialog").addEventListener("click", () => { state.reviewJobId = null; });
 $("workspaceDialog").addEventListener("cancel", () => { state.reviewJobId = null; });
 $("musicbrainzButton").addEventListener("click", () => runAction(chooseMusicBrainz));
@@ -2206,13 +2291,91 @@ async function repairFallback() {
   setStatus(`COMP repair complete · ${repaired} green${failed ? ` · ${failed} failed · ${failures.join("; ")}` : ""}`, failed ? "error" : "ready");
 }
 const quickPreview=applyPreviewEffects;
-let previewTimer,previewGeneration=0;
+let previewTimer,previewGeneration=0,previewController=null,artistPreviewSignature="";
+function artistPreviewSnapshot() {
+  const portrait=state.selectedPortrait?.image||state.artist?.portrait||"";
+  const banner=state.selectedBanner?.image||state.artist?.banner||"";
+  const current=!!state.radioCurrent;
+  const component=(kind,source)=>({
+    kind,source,
+    adjustments:current ? state.fx.current||{} : state.fx[kind]||{},
+    package_adjustments:!current&&state.themedPackaging ? state.fx.package||{} : {},
+    fit:current ? {zoom:1,x:0,y:0} : state.fit[kind]||{zoom:1,x:0,y:0},
+  });
+  return {portrait,banner,current,components:[component("artist",portrait),component("banner",banner)]};
+}
+function artistComponentEdited(component) {
+  const values=[...Object.values(component.adjustments||{}),...Object.values(component.package_adjustments||{})];
+  const fit=component.fit||{};
+  return values.some(value=>Number(value||0)!==0)
+    || Number(fit.zoom??1)!==1 || Number(fit.x||0)!==0 || Number(fit.y||0)!==0;
+}
+function restoreArtistPreviewSource(selector,source) {
+  const element=document.querySelector(selector);
+  if (element&&source&&element.getAttribute("src")!==source) element.src=source;
+}
+function clearArtistPreviewStyle(selector) {
+  const element=document.querySelector(selector);
+  if (!element) return;
+  element.style.filter="none";element.style.transform="none";
+}
 applyPreviewEffects=function () {
   clearTimeout(previewTimer);const generation=++previewGeneration;
   if (activeCompPrepared()) {
     for (const element of document.querySelectorAll('#selectedFrame .selected-image,#albumPane img')) {
       element.style.filter='none';element.style.transform='none';
     }
+    return;
+  }
+  // A completed server preview already contains the prior adjustments. A new
+  // gesture starts from the explicit source, and the prior network generation
+  // is aborted. This prevents late renders from repainting an older crop after
+  // the operator has moved or zoomed the banner.
+  if (state.editorMode==='artist' && !state.compReportVisible) {
+    const snapshot=artistPreviewSnapshot();
+    const signature=JSON.stringify(snapshot);
+    const selectors={artist:['#artistPane img'],banner:['#bannerPane img']};
+    if (snapshot.current || state.radioArtist&&state.radioBanner) {
+      selectors.artist.push('#selectedFrame .portrait-art');selectors.banner.push('#selectedFrame .banner-art');
+    } else selectors[state.radioBanner?'banner':'artist'].push('#selectedFrame .selected-image');
+    if (signature===artistPreviewSignature) {
+      for (const component of snapshot.components) {
+        if (!artistComponentEdited(component) || state.renderedPreview[component.kind])
+          for (const selector of selectors[component.kind]) clearArtistPreviewStyle(selector);
+      }
+      return;
+    }
+    artistPreviewSignature=signature;
+    if (previewController) {previewController.abort();previewController=null;}
+    for (const component of snapshot.components) {
+      state.renderedPreview[component.kind]=null;
+      for (const selector of selectors[component.kind]) restoreArtistPreviewSource(selector,component.source);
+    }
+    quickPreview();
+    const edited=snapshot.components.filter(component=>component.source&&artistComponentEdited(component));
+    if (!edited.length || !state.server?.authenticated) return;
+    previewTimer=setTimeout(async()=>{
+      const controller=new AbortController();previewController=controller;
+      try {
+        const rendered=await Promise.all(edited.map(async component=>[
+          component.kind,
+          await post('/api/preview/render',componentPayload(component.kind,component.source,{
+            adjustments:component.adjustments,package_adjustments:component.package_adjustments,fit:component.fit,
+          }),{signal:controller.signal}),
+        ]));
+        if (generation!==previewGeneration || signature!==artistPreviewSignature) return;
+        for (const [kind,result] of rendered) state.renderedPreview[kind]=result;
+        renderPanes();renderReview();
+        for (const component of snapshot.components) {
+          if (state.renderedPreview[component.kind])
+            for (const selector of selectors[component.kind]) clearArtistPreviewStyle(selector);
+        }
+      } catch(error) {
+        if (error?.name!=='AbortError') setErrorStatus(error);
+      } finally {
+        if (previewController===controller) previewController=null;
+      }
+    },220);
     return;
   }
   quickPreview();
@@ -2246,13 +2409,6 @@ applyPreviewEffects=function () {
       const source=editableArtworkSource();
       add('#selectedFrame .selected-image','cover',source,{upscale:!!state.upscalePreview});
       add('#albumPane img','cover',source,{upscale:!!state.upscalePreview});
-    } else if (state.editorMode==='artist' && !state.compReportVisible) {
-      const portrait=state.selectedPortrait?.image||state.artist?.portrait,banner=state.selectedBanner?.image||state.artist?.banner;
-      add('#artistPane img','artist',portrait);add('#bannerPane img','banner',banner);
-      if (!state.radioCurrent) {
-        if (state.radioArtist && state.radioBanner) {add('#selectedFrame .portrait-art','artist',portrait);add('#selectedFrame .banner-art','banner',banner);}
-        else add('#selectedFrame .selected-image',state.radioBanner?'banner':'artist',state.radioBanner?banner:portrait);
-      }
     }
     await Promise.all(requests);
   }),220);

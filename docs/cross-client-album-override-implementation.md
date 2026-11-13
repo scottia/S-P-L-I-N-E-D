@@ -53,6 +53,72 @@ override for managed launches and tests. WebGUI uses its existing PostgreSQL
 connection. LISTEN/NOTIFY is not required: both clients poll the durable row at
 a short interval, so service and client restarts recover from stored state.
 
+## Coordination identity history and catalog projection
+
+The coordination table is an append-and-converge provenance surface, not a
+second Album catalog. A physical Album can legitimately have more than one
+historical coordination identity when its MusicBrainz Album ID is corrected,
+one client refreshes before the other, or the independently indexed SQLite and
+PostgreSQL catalogs temporarily disagree about the MBID. Those rows are not
+duplicate Albums and must not be deleted merely to make the current keys match.
+
+The current catalog row and the coordination history therefore have different
+identity rules:
+
+- Each client keeps exactly one current Album row for one physical Album path.
+- A coordination event retains the Album key/MBID known by its writer at the
+  time of the verified write, plus the normalized library-relative path.
+- Presentation first considers the current exact Album key and then the stable
+  normalized relative path. It selects the newest event across both matches by
+  `(source_completed_ms, event_id)` and projects that event onto the current
+  catalog key.
+- The writer keeps its normal full-color card. The opposing client shows the
+  projected OVERRIDE state even when the event's historical Album key differs
+  from its current catalog key.
+- Album display name, Artist name, release title and scan order are never
+  coordination identity evidence. A relative-path match is accepted only
+  inside the configured canonical library root.
+- A newer exact-key event still wins over an older path-only event; an older
+  delayed event cannot regain ownership. Replay remains idempotent.
+- Index refresh, migration and test-build installation must preserve historical
+  events. They may normalize an unambiguous stored identity, but must not merge
+  ambiguous paths, rewrite source media, or manufacture a catalog Album.
+
+`American Pie 2` is the permanent regression fixture for this boundary. In the
+isolated test catalog, SQLite and PostgreSQL intentionally identify the same
+`[Soundtracks]/American Pie 2` folder with different historical MBIDs. Both
+coordination stores retain the older Windows event and newer WebGUI event. The
+WebGUI card remains locally owned, while Windows must project the newer WebGUI
+event by relative path and render its opposing-client OVERRIDE state. The
+automated guards are
+`catalog_projection_prefers_newer_same_path_event_after_album_key_changes`
+(Windows) and
+`test_album_write_coordination_projects_newer_relative_path_identity`
+(WebGUI/PostgreSQL).
+
+This path fallback does not relax Artist/Album association. A projected track
+credit remains scoped to the Album containing that credit; it must not inherit
+every Album owned by another Artist because of a stale or colliding MBID.
+`A$AP Rocky` is the permanent projection fixture: the Artist must show only the
+featured appearance on Alicia Keys' `Here`, never Alicia Keys' other Albums.
+`test_projected_featured_artist_does_not_merge_into_album_owner` guards that
+boundary, and both installed clients must report one `Here` Album during live
+acceptance.
+
+Every future local test build that changes indexing, identity normalization,
+catalog publication, reconciliation or coordination must run all three focused
+tests and repeat these read-only/live checks before promotion:
+
+1. Confirm one current `American Pie 2` Album row in each active catalog and no
+   duplicate physical paths.
+2. Confirm both historical coordination identities remain durable and ordered.
+3. Confirm the writer is normal and the opposing client is OVERRIDE after
+   restart, without a reset or reindex.
+4. Confirm `A$AP Rocky` resolves to exactly one featured `Here` Album in both
+   clients and does not expose the Alicia Keys catalog.
+5. Record the installed revision, database targets and pass/fail evidence in
+   the active PR. Green unit tests alone do not replace the installed UI check.
+
 ## Track-scoped COMP coordination
 
 PostgreSQL migration 020 adds `comp_track_write_coordination`; migrations

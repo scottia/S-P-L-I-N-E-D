@@ -183,8 +183,16 @@ def _musicbrainz_recording_ufid(parsed: Any) -> str:
 
 
 def _mbids(value: Any) -> list[str]:
-    return sorted(
-        {match.group(0).casefold() for match in _MBID_PATTERN.finditer(str(value or ""))}
+    # Artist-credit MBIDs are positional: the first identifier belongs to the
+    # first TPE1/ARTIST credit, the second identifier to the second credit, and
+    # so on.  Sorting here silently paired featured Artists with the wrong
+    # identity (for example Rob Wasserman received Aaron Neville's MBID).  Keep
+    # first-seen tag order while still discarding exact duplicates.
+    return list(
+        dict.fromkeys(
+            match.group(0).casefold()
+            for match in _MBID_PATTERN.finditer(str(value or ""))
+        )
     )
 
 
@@ -245,6 +253,7 @@ DEFAULT_ARTIST_SEPARATOR_REGEX = r"(?i)(?: / | feat\. | feat | ft\. | ft |; )"
 def normalize_artist_credit_text(
     value: str,
     separator_regex: str = DEFAULT_ARTIST_SEPARATOR_REGEX,
+    artist_mbids: str = "",
 ) -> str:
     """Return canonical NUL-separated credits for one indexed Artist value.
 
@@ -260,6 +269,17 @@ def normalize_artist_credit_text(
         return ARTIST_CREDIT_SEPARATOR.join(dict.fromkeys(explicit))
     if not explicit:
         return ""
+    # ID3v2.3 stores a real multi-value TPE1 frame as one slash-delimited
+    # string. A bare slash cannot be a global Artist separator because it is
+    # also meaningful inside names such as AC/DC. Ordered MusicBrainz Artist
+    # IDs provide unambiguous cardinality: split only when the slash values
+    # and IDs have the same count. Windows/Lofty already decodes this form as
+    # a native multi-value sequence, so PostgreSQL now projects it identically.
+    slash_parts = tuple(
+        part.strip() for part in explicit[0].split("/") if part.strip()
+    )
+    if len(slash_parts) > 1 and len(_mbids(artist_mbids)) == len(slash_parts):
+        return ARTIST_CREDIT_SEPARATOR.join(dict.fromkeys(slash_parts))
     try:
         parts = re.split(separator_regex, explicit[0])
     except re.error as exc:
@@ -324,19 +344,20 @@ def read_track_identity_tags(
                 raw = False
         recording_mbid = _musicbrainz_recording_ufid(raw) if raw else ""
 
+    artist_mbids = values(
+        "musicbrainz_artistid",
+        "musicbrainz artist id",
+    )
     return {
         "title": value("title"),
         # TPE1/ARTIST is explicitly multi-value. Keeping only its first value
         # hides Featured performers from the Artist catalog even though tools
         # such as Mp3tag and Navidrome correctly expose every credit.
         "artist": normalize_artist_credit_text(
-            values("artist"), artist_separator_regex
+            values("artist"), artist_separator_regex, artist_mbids
         ),
         "recording_mbid": recording_mbid,
-        "artist_mbid": values(
-            "musicbrainz_artistid",
-            "musicbrainz artist id",
-        ),
+        "artist_mbid": artist_mbids,
     }
 
 

@@ -119,6 +119,32 @@ class CompJobScopeTests(unittest.TestCase):
                 path, media_tags.DEFAULT_ARTIST_SEPARATOR_REGEX
             )
 
+    def test_track_artist_mbids_preserve_credit_order(self):
+        rob = "77b5f0ca-5c13-4348-8d4d-d6b15440e3ec"
+        aaron = "2f53411b-ec29-4979-aa46-62786a2bb377"
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "Stardust.mp3"
+            path.write_bytes(b"fixture")
+            with patch.object(
+                media_tags,
+                "read_track_identity_tags",
+                return_value={
+                    "title": "Stardust",
+                    "artist": "Rob Wasserman; Aaron Neville",
+                    "recording_mbid": "",
+                    "artist_mbid": f"{rob}; {aaron}; {rob}",
+                },
+            ):
+                rows, reads, reuses = media_tags.inspect_album_tracks(
+                    SimpleNamespace(audio_files=[path]),
+                    "gold",
+                    {},
+                    force_read=True,
+                )
+
+            self.assertEqual(rows[0]["musicbrainz_artistid"], f"{rob},{aaron}")
+            self.assertEqual((reads, reuses), (1, 0))
+
     def test_missing_empty_and_duplicate_track_selections_never_expand(self):
         for track_keys in (None, [], ["artist-track", "artist-track"]):
             with self.subTest(track_keys=track_keys):

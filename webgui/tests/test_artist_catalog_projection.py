@@ -19,10 +19,25 @@ from webgui.catalog import (
     embedded_album_artwork_summary,
     normalized_artist_identity,
 )
-from splined_media_database import update_artist_aggregate
+from splined_media_database import aggregate_artist, update_artist_aggregate
 
 
 class ArtistCatalogProjectionTests(unittest.TestCase):
+    def test_verified_album_material_overrides_stale_unprocessed_status(self):
+        stale = {
+            "status": "unprocessed",
+            "cover_found": 1,
+            "track_count": 10,
+            "embedded_tracks": 10,
+            "embedded_validation_status": "verified",
+        }
+        self.assertEqual(PreviewApp._effective_album_status(stale), "processed")
+        self.assertEqual(aggregate_artist(["processed"] * 5), "complete")
+
+        review = {**stale, "status": "timeout"}
+        self.assertEqual(PreviewApp._effective_album_status(review), "timeout")
+        self.assertEqual(aggregate_artist(["processed", "timeout"]), "partial")
+
     def test_album_embedded_summary_matches_native_footer_semantics(self):
         first = BytesIO()
         second = BytesIO()
@@ -106,6 +121,70 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             PreviewApp._canonical_artist_row(rows)["artist_key"],
             "mbid:aerosmith",
         )
+
+    def test_opposing_override_counts_as_complete_in_artist_aggregate(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "index.sqlite"
+            band = root / "Band"
+            local_green = band / "Local Green"
+            windows_grey = band / "Windows Grey"
+            local_green.mkdir(parents=True)
+            windows_grey.mkdir(parents=True)
+            with closing(connect(database)) as db:
+                db.execute(
+                    "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,"
+                    "musicbrainz_artistid TEXT,primary_path TEXT,status TEXT)"
+                )
+                db.execute(
+                    "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,album_name TEXT,"
+                    "path TEXT,cover_path TEXT,track_count INTEGER,status TEXT,compilation INTEGER,"
+                    "musicbrainz_albumid TEXT,release_year TEXT,embedded_tracks INTEGER,"
+                    "embedded_validation_status TEXT,webp_found INTEGER)"
+                )
+                db.execute(
+                    "CREATE TABLE tracks (track_key TEXT PRIMARY KEY,album_key TEXT,path TEXT,"
+                    "title TEXT,artist_name TEXT)"
+                )
+                db.execute(
+                    "CREATE TABLE album_artwork_write_coordination (album_key TEXT,"
+                    "relative_path TEXT,writer TEXT,operation TEXT,event_id TEXT,"
+                    "source_completed_ms INTEGER,revision INTEGER,completed_at TEXT)"
+                )
+                db.execute(
+                    "INSERT INTO artists VALUES ('band','Band','',?,'partial')",
+                    (str(root / "Band"),),
+                )
+                db.executemany(
+                    "INSERT INTO albums VALUES (?,?,?,?,NULL,1,?,?,?,'2024',1,'verified',0)",
+                    [
+                        ("local-green", "band", "Local Green", str(local_green), "processed", 0, "release-green"),
+                        ("windows-grey", "band", "Windows Grey", str(windows_grey), "incomplete", 0, "release-grey"),
+                    ],
+                )
+                db.executemany(
+                    "INSERT INTO tracks VALUES (?,?,?,?,?)",
+                    [
+                        ("track-green", "local-green", str(local_green / "one.mp3"), "One", "Band"),
+                        ("track-grey", "windows-grey", str(windows_grey / "two.mp3"), "Two", "Band"),
+                    ],
+                )
+                db.execute(
+                    "INSERT INTO album_artwork_write_coordination VALUES "
+                    "('windows-grey','','windows','write-cover','event-1',100,1,'now')"
+                )
+                db.commit()
+
+            app = PreviewApp(root, database, root, root)
+            listed = app.artists("")[0]
+            self.assertEqual(listed["status"], "complete")
+            self.assertEqual(listed["albums"], 2)
+            detail = app.artist("band")
+            self.assertEqual(detail["status"], "complete")
+            self.assertEqual(
+                next(item for item in detail["albums"] if item["id"] == "windows-grey")["override_writer"],
+                "windows",
+            )
 
     def test_compilation_owned_by_artist_key_is_not_a_primary_artist_album(self):
         with TemporaryDirectory() as directory:
@@ -379,6 +458,99 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             self.assertFalse(film_card["featured"])
             self.assertTrue(film_card["various_artists"])
             self.assertEqual(set(rob["top_tracks"]), {"Song", "Theme"})
+
+    def test_projected_featured_artist_does_not_merge_into_album_owner(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "index.sqlite"
+            credentials = root / "credentials"
+            credentials.mkdir()
+            here = root / "Alicia Keys" / "Here"
+            keys = root / "Alicia Keys" / "Keys"
+            for folder in (here, keys):
+                folder.mkdir(parents=True)
+                (folder / "song.mp3").touch()
+
+            alicia_mbid = "8ef1df30-ae4f-4dbd-9351-1a32b208a01e"
+            asap_mbid = "25b7b584-d952-4662-a8b9-dd8cdfbfeb64"
+            with closing(connect(database)) as db:
+                db.execute(
+                    "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,"
+                    "musicbrainz_artistid TEXT,primary_path TEXT,status TEXT)"
+                )
+                db.execute(
+                    "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,album_name TEXT,"
+                    "path TEXT,cover_path TEXT,track_count INTEGER,status TEXT,compilation INTEGER,"
+                    "musicbrainz_albumid TEXT,release_year TEXT,embedded_tracks INTEGER,webp_found INTEGER)"
+                )
+                db.execute(
+                    "CREATE TABLE tracks (track_key TEXT PRIMARY KEY,album_key TEXT,path TEXT,title TEXT,"
+                    "artist_name TEXT,musicbrainz_artistid TEXT)"
+                )
+                db.execute(
+                    "INSERT INTO artists VALUES (?,?,?,?,?)",
+                    (
+                        "alicia",
+                        "Alicia Keys",
+                        alicia_mbid,
+                        str(root / "Alicia Keys"),
+                        "processed",
+                    ),
+                )
+                db.executemany(
+                    "INSERT INTO albums VALUES (?,?,?,?,NULL,1,'processed',0,?,'2021',1,0)",
+                    [
+                        ("here", "alicia", "Here", str(here), "release-here"),
+                        ("keys", "alicia", "Keys", str(keys), "release-keys"),
+                    ],
+                )
+                db.executemany(
+                    "INSERT INTO tracks VALUES (?,?,?,?,?,?)",
+                    [
+                        (
+                            "here-track",
+                            "here",
+                            str(here / "song.mp3"),
+                            "Blended Family",
+                            "Alicia Keys\x1fA$AP Rocky",
+                            f"{alicia_mbid},{asap_mbid}",
+                        ),
+                        (
+                            "keys-track",
+                            "keys",
+                            str(keys / "song.mp3"),
+                            "Only You",
+                            "Alicia Keys",
+                            alicia_mbid,
+                        ),
+                    ],
+                )
+                db.commit()
+
+            app = PreviewApp(root, database, root, credentials, cache=root / "cache")
+            listed = app.artists("A$AP")
+            self.assertEqual(
+                [(item["name"], item["albums"]) for item in listed],
+                [("A$AP Rocky", 1)],
+            )
+
+            # The UI identity boundary is authoritative. Even a stale or
+            # colliding projection MBID must not alias this virtual Featured
+            # Artist into a persisted Album owner's full catalog.
+            with closing(app.connect()) as db:
+                projections = app._projected_track_artists(db)
+            projections[normalized_artist_identity("A$AP Rocky")][
+                "musicbrainz_artistid"
+            ] = alicia_mbid
+            with mock.patch.object(
+                app,
+                "_projected_track_artists",
+                return_value=projections,
+            ):
+                selected = app.artist(str(listed[0]["id"]))
+            self.assertEqual(selected["name"], "A$AP Rocky")
+            self.assertEqual([album["name"] for album in selected["albums"]], ["Here"])
+            self.assertTrue(selected["albums"][0]["featured"])
 
     def test_conflicting_musicbrainz_ids_merge_when_library_path_is_identical(self):
         rows = [

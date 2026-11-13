@@ -19,7 +19,7 @@ import secrets
 import tempfile
 import time
 import sqlite3
-from threading import Lock
+from threading import BoundedSemaphore, Lock
 from urllib.parse import quote, urlsplit
 from uuid import UUID
 import unicodedata
@@ -36,6 +36,10 @@ from splined_media_database import aggregate_artist
 from interaction.artist_search import discover_artist_images, discover_artist_profile
 from webgui.database import Database
 from webgui import imaging
+from webgui.coordination import (
+    normalized_coordination_relative,
+    relative_album_path,
+)
 
 
 ASSETS = Path(__file__).with_name("static")
@@ -194,11 +198,16 @@ def relative_coordination_path(path: Path, root: Path) -> str:
 def image_metadata(path: Path) -> dict[str, object]:
     with Image.open(path) as image:
         width, height = image.size
+        image_format = str(image.format or path.suffix.removeprefix(".")).upper()
+        frames = int(getattr(image, "n_frames", 1) or 1)
     return {
         "name": path.name,
         "width": width,
         "height": height,
         "bytes": path.stat().st_size,
+        "format": image_format,
+        "frames": frames,
+        "animated": image_format == "WEBP" and frames > 1,
     }
 
 
@@ -348,6 +357,9 @@ class Catalog:
     navidrome_directory_failures: int = 0
     navidrome_directory_loading: bool = False
     lock: Lock = field(default_factory=Lock)
+    thumbnail_download_slots: BoundedSemaphore = field(
+        default_factory=lambda: BoundedSemaphore(3), repr=False
+    )
     image_key: bytes = field(default_factory=lambda: secrets.token_bytes(32),repr=False)
 
     @staticmethod
@@ -435,24 +447,107 @@ class Catalog:
             return indexed
         return None
 
-    @staticmethod
-    def _album_write_coordination(db, album_keys) -> dict[str, dict[str, object]]:
-        keys = [str(key) for key in album_keys if str(key).strip()]
-        if not keys:
+    def _album_write_coordination(self, db, albums) -> dict[str, dict[str, object]]:
+        """Project the newest write onto the current catalog Album identity.
+
+        A tag correction can legitimately change a MusicBrainz-backed Album
+        key in one client before the other client refreshes its catalog.  The
+        coordination event therefore carries both the canonical key and the
+        library-relative folder.  Prefer the newest matching event across
+        those two identities so the same physical Album does not lose its
+        opposing-writer presentation while catalogs converge.
+        """
+        targets = []
+        for album in albums:
+            if isinstance(album, str):
+                key, path = album, ""
+            else:
+                key = str(album["album_key"] or "")
+                path = str(album["path"] or "") if "path" in album.keys() else ""
+            if not key.strip():
+                continue
+            targets.append(
+                {
+                    "album_key": key,
+                    "relative_path": relative_album_path(path, self.music) if path else "",
+                }
+            )
+        if not targets:
             return {}
-        placeholders = ",".join("?" for _ in keys)
+        keys = list(dict.fromkeys(target["album_key"] for target in targets))
+        paths = list(
+            dict.fromkeys(
+                target["relative_path"]
+                for target in targets
+                if target["relative_path"]
+            )
+        )
+        clauses = ["album_key IN (" + ",".join("?" for _ in keys) + ")"]
+        params = list(keys)
+        if paths:
+            clauses.append("relative_path IN (" + ",".join("?" for _ in paths) + ")")
+            params.extend(paths)
         try:
             rows = db.execute(
-                "SELECT album_key,writer,operation,event_id,revision,completed_at "
+                "SELECT album_key,relative_path,writer,operation,event_id,"
+                "source_completed_ms,revision,completed_at "
                 "FROM album_artwork_write_coordination "
-                f"WHERE album_key IN ({placeholders})",
-                tuple(keys),
+                "WHERE " + " OR ".join(clauses),
+                tuple(params),
             ).fetchall()
         except Exception:
             # Small SQLite fixtures and pre-migration disposable schemas do
             # not carry the PostgreSQL coordination table.
             return {}
-        return {str(row["album_key"]): dict(row) for row in rows}
+        return self._project_album_write_coordination(rows, targets)
+
+    @staticmethod
+    def _project_album_write_coordination(rows, targets):
+        by_key: dict[str, tuple[tuple[int, str], dict[str, object]]] = {}
+        by_path: dict[str, tuple[tuple[int, str], dict[str, object]]] = {}
+        for raw in rows:
+            row = dict(raw)
+            rank = (
+                int(row.get("source_completed_ms") or 0),
+                str(row.get("event_id") or ""),
+            )
+            key = str(row.get("album_key") or "")
+            path = normalized_coordination_relative(row.get("relative_path"))
+            if key and (key not in by_key or rank > by_key[key][0]):
+                by_key[key] = (rank, row)
+            if path and (path not in by_path or rank > by_path[path][0]):
+                by_path[path] = (rank, row)
+        projected = {}
+        for target in targets:
+            candidates = []
+            if target["album_key"] in by_key:
+                candidates.append(by_key[target["album_key"]])
+            if target["relative_path"] in by_path:
+                candidates.append(by_path[target["relative_path"]])
+            if not candidates:
+                continue
+            _, selected = max(candidates, key=lambda item: item[0])
+            selected = dict(selected)
+            selected["source_album_key"] = selected["album_key"]
+            selected["album_key"] = target["album_key"]
+            projected[target["album_key"]] = selected
+        return projected
+
+    def album_write_coordination_rows(
+        self, coordination_rows
+    ) -> list[dict[str, object]]:
+        """Return coordination projected onto the published WebGUI catalog."""
+        with closing(self.connect()) as db:
+            albums = db.execute("SELECT album_key,path FROM albums").fetchall()
+        targets = [
+            {
+                "album_key": str(album["album_key"]),
+                "relative_path": relative_album_path(album["path"], self.music),
+            }
+            for album in albums
+        ]
+        rows = self._project_album_write_coordination(coordination_rows, targets)
+        return sorted(rows.values(), key=lambda row: int(row.get("revision") or 0))
 
     def allowed_image_path(self, source: Path) -> bool:
         return (
@@ -512,9 +607,15 @@ class Catalog:
             # Candidate originals must outlive repeated enhancement renders.
             # Keep generated pixels on disk, independent from the small legacy
             # fixture cache; staged jobs hold their own verified snapshot.
-            if len(source)>25*1024*1024: raise ValueError('Prepared artwork exceeds the 25 MB image limit')
             with Image.open(BytesIO(source)) as opened:
-                suffix={"JPEG":".jpg","PNG":".png","WEBP":".webp"}.get(opened.format)
+                image_format = str(opened.format or "").upper()
+                # Animated local WebP sources commonly exceed the upload-sized
+                # 25 MB guard. They are already validated library artwork and
+                # must remain previewable; the upload endpoint keeps its own
+                # independent 25 MB boundary for untrusted browser uploads.
+                if len(source) > 25 * 1024 * 1024 and image_format != "WEBP":
+                    raise ValueError('Prepared artwork exceeds the 25 MB image limit')
+                suffix={"JPEG":".jpg","PNG":".png","WEBP":".webp"}.get(image_format)
                 if not suffix: raise ValueError('Unsupported artwork image format')
             directory=self.preview_cache or preview_cache/'web-images'
             path=directory/(sha256(source).hexdigest()+suffix)
@@ -621,6 +722,39 @@ class Catalog:
         return aggregate_artist(
             [str(row["status"] or "unprocessed").casefold() for row in rows]
         )
+
+    @staticmethod
+    def _effective_album_status(row, coordination: dict[str, object] | None = None) -> str:
+        """Classify current Album authority without trusting a stale status column.
+
+        An opposing Windows write is completed authority. For a local WebGUI
+        Album, a present cover plus a verified full embedded-track count is
+        equally authoritative even when an older refresh left ``status`` as
+        ``unprocessed``. Explicit bypass/review states remain actionable and
+        are never hidden by the materialized completion evidence.
+        """
+        keys = set(row.keys())
+        status = str(row["status"] or "unprocessed").casefold() if "status" in keys else "unprocessed"
+        if str((coordination or {}).get("writer", "")).casefold() == "windows":
+            return "processed"
+        if status in {"bypassed", "timeout", "partial", "error"}:
+            return status
+        if {
+            "cover_found",
+            "track_count",
+            "embedded_tracks",
+            "embedded_validation_status",
+        }.issubset(keys):
+            track_count = int(row["track_count"] or 0)
+            if (
+                bool(row["cover_found"])
+                and track_count > 0
+                and str(row["embedded_validation_status"] or "").casefold()
+                == "verified"
+                and int(row["embedded_tracks"] or 0) >= track_count
+            ):
+                return "processed"
+        return status
 
     @staticmethod
     def _aggregate_stored_artist_status(rows) -> str:
@@ -796,7 +930,11 @@ class Catalog:
             if projection is None:
                 raise KeyError("Artist not found")
             selected = self._virtual_artist_row(projection)
-            candidates = [*candidates, selected]
+            # A projected track-credit Artist has no persisted owner row.  It
+            # must never merge into an Album owner merely because catalog
+            # metadata supplied a colliding MBID. Existing same-name Artists
+            # are not projected by artists().
+            return selected, [selected]
         identity = normalized_artist_identity(selected["artist_name"])
         selected_mbid = str(selected["musicbrainz_artistid"] or "").strip().casefold()
         selected_path = str(selected["primary_path"] or "").replace("\\", "/").rstrip("/")
@@ -899,31 +1037,34 @@ class Catalog:
         if not cover_id or directory is None:
             return None
         base = str(credential.get("server_url") or "").rstrip("/")
-        response = requests.get(
-            base + "/rest/getCoverArt.view",
-            params={**self._navidrome_auth_query(credential), "id": cover_id, "size": str(size)},
-            timeout=20,
-            allow_redirects=False,
-        )
-        response.raise_for_status()
-        if len(response.content) > 8 * 1024 * 1024:
-            raise ValueError("Navidrome artist thumbnail exceeds 8 MB")
-        with Image.open(BytesIO(response.content)) as opened:
-            opened.verify()
-        directory = directory / "artists"
-        directory.mkdir(parents=True, exist_ok=True)
-        identity = sha256(str(artist["artist_key"]).encode("utf-8")).hexdigest()[:32]
-        path = directory / (variant + "-" + identity + ".png")
-        descriptor, temporary = tempfile.mkstemp(prefix=".navidrome-", suffix=".png", dir=directory)
-        try:
-            os.close(descriptor)
+        with self.thumbnail_download_slots:
+            cached = self._navidrome_thumbnail_path(artist, variant)
+            if cached is not None:
+                return cached
+            response = requests.get(
+                base + "/rest/getCoverArt.view",
+                params={**self._navidrome_auth_query(credential), "id": cover_id, "size": str(size)},
+                timeout=20,
+                allow_redirects=False,
+            )
+            response.raise_for_status()
+            if len(response.content) > 8 * 1024 * 1024:
+                raise ValueError("Navidrome artist thumbnail exceeds 8 MB")
             with Image.open(BytesIO(response.content)) as opened:
-                opened.convert("RGBA").save(temporary, format="PNG", optimize=True)
-            os.replace(temporary, path)
-        finally:
-            Path(temporary).unlink(missing_ok=True)
-        for row_id in list(self.portrait_cache):
-            self.portrait_cache.pop(row_id, None)
+                opened.verify()
+            directory = directory / "artists"
+            directory.mkdir(parents=True, exist_ok=True)
+            identity = sha256(str(artist["artist_key"]).encode("utf-8")).hexdigest()[:32]
+            path = directory / (variant + "-" + identity + ".png")
+            descriptor, temporary = tempfile.mkstemp(prefix=".navidrome-", suffix=".png", dir=directory)
+            try:
+                os.close(descriptor)
+                with Image.open(BytesIO(response.content)) as opened:
+                    opened.convert("RGBA").save(temporary, format="PNG", optimize=True)
+                os.replace(temporary, path)
+            finally:
+                Path(temporary).unlink(missing_ok=True)
+        self.portrait_cache.pop(str(artist["artist_key"]), None)
         return path
 
     def _cache_navidrome_similar_thumbnail(
@@ -977,6 +1118,59 @@ class Catalog:
         ).hexdigest()[:32]
         path = directory / ("web-v1-" + identity + ".png")
         return path if path.is_file() else None
+
+    @staticmethod
+    def _navidrome_similar_thumbnail_url(remote_artist: dict[str, object]) -> str:
+        """Return a lazy, authenticated local URL for a Similar Artist image.
+
+        Artist metadata must remain usable before provider artwork finishes.
+        The browser therefore requests each visible portrait independently;
+        the endpoint below validates and caches it through the configured
+        Navidrome connection without exposing provider credentials.
+        """
+        artist_id = str(remote_artist.get("id") or "").strip()
+        name = str(remote_artist.get("name") or "").strip()
+        cover_art = str(remote_artist.get("coverArt") or "").strip()
+        if not artist_id or not name or not cover_art:
+            return ""
+        return (
+            "/api/artist/similar-thumbnail?provider_id=" + quote(artist_id, safe="")
+            + "&name=" + quote(name, safe="")
+            + "&cover_art=" + quote(cover_art, safe="")
+        )
+
+    def similar_artist_thumbnail(
+        self, provider_id: str, name: str, cover_art: str
+    ) -> Path:
+        """Resolve one provider-authorized Similar Artist portrait lazily."""
+        provider_id = str(provider_id or "").strip()
+        name = str(name or "").strip()
+        cover_art = str(cover_art or "").strip()
+        if (
+            not provider_id or not name or not cover_art
+            or len(provider_id) > 256 or len(name) > 512 or len(cover_art) > 512
+            or any(value in cover_art for value in ("/", "\\", ".."))
+        ):
+            raise FileNotFoundError("Similar Artist artwork is unavailable")
+        remote_artist = {"id": provider_id, "name": name, "coverArt": cover_art}
+        cached = self._navidrome_similar_thumbnail_path(remote_artist)
+        if cached is not None:
+            return cached
+        credential_path = self.credentials / "navidrome.json"
+        if not credential_path.is_file():
+            raise FileNotFoundError("Navidrome credentials are unavailable")
+        credential = json.loads(credential_path.read_text(encoding="utf-8"))
+        # Similar Artist portraits are independently lazy-loaded by the
+        # browser. Share the same bounded provider-download allowance as the
+        # main Artist thumbnails so opening an overview cannot create an
+        # unbounded burst of Navidrome requests.
+        with self.thumbnail_download_slots:
+            cached = self._navidrome_similar_thumbnail_path(remote_artist)
+            if cached is None:
+                cached = self._cache_navidrome_similar_thumbnail(remote_artist, credential)
+        if cached is None:
+            raise FileNotFoundError("Similar Artist artwork is unavailable")
+        return cached
 
     def _navidrome_artists_by_name(self) -> dict[str, dict[str, object]]:
         """Load Navidrome's artist directory with bounded, recoverable retries."""
@@ -1368,14 +1562,16 @@ class Catalog:
             projected = self._projected_track_artists(db)
             try:
                 status_rows = db.execute(
-                    "SELECT album_key,artist_key,status FROM albums "
+                    "SELECT * FROM albums "
                     "WHERE COALESCE(compilation,0)=0 "
                     "OR TRIM(COALESCE(musicbrainz_albumid,''))<>''"
                 ).fetchall()
+                coordination = self._album_write_coordination(db, status_rows)
                 projected_statuses = True
             except sqlite3.OperationalError:
                 # Reduced read-only fixtures can predate Album status fields.
                 status_rows = []
+                coordination = {}
                 projected_statuses = False
         existing_identities = {
             normalized_artist_identity(row["artist_name"]) for row in rows
@@ -1388,10 +1584,14 @@ class Catalog:
         statuses_by_artist: dict[str, list] = {}
         owned_album_keys: dict[str, set[str]] = {}
         for row in status_rows:
-            statuses_by_artist.setdefault(str(row["artist_key"]), []).append(row)
-            owned_album_keys.setdefault(str(row["artist_key"]), set()).add(
-                str(row["album_key"])
+            album_key = str(row["album_key"])
+            effective_status = self._effective_album_status(
+                row, coordination.get(album_key, {})
             )
+            statuses_by_artist.setdefault(str(row["artist_key"]), []).append(
+                {"album_key": album_key, "status": effective_status}
+            )
+            owned_album_keys.setdefault(str(row["artist_key"]), set()).add(album_key)
         result = []
         for group in self._artist_groups(rows):
             canonical = self._canonical_artist_row(group)
@@ -1416,8 +1616,15 @@ class Catalog:
             ]
             if appearance:
                 status_group.extend(
-                    {"status": status}
-                    for status in appearance.get("statuses", {}).values()
+                    {
+                        "status": (
+                            "processed"
+                            if str(coordination.get(album_key, {}).get("writer", "")).casefold()
+                            == "windows"
+                            else status
+                        )
+                    }
+                    for album_key, status in appearance.get("statuses", {}).items()
                 )
             # Initial catalog loading is PostgreSQL-only. Local/Navidrome
             # artwork is hydrated by the dedicated lazy endpoint so hundreds
@@ -1446,6 +1653,7 @@ class Catalog:
 
     def artist_thumbnails(self) -> list[dict[str, str]]:
         """Return local thumbnails immediately and Navidrome fallbacks lazily."""
+        maintenance_active = self.index_maintenance_active()
         with closing(self.connect()) as db:
             rows = db.execute(
                 "SELECT artists.artist_key, artists.artist_name, artists.musicbrainz_artistid, "
@@ -1465,7 +1673,7 @@ class Catalog:
             for identity, value in projected.items()
             if identity not in existing_identities
         )]
-        remote_artists = self._navidrome_artists_by_name()
+        remote_artists = {} if maintenance_active else self._navidrome_artists_by_name()
         result = []
         for group in self._artist_groups(rows):
             canonical = self._canonical_artist_row(group)
@@ -1492,18 +1700,31 @@ class Catalog:
     def artist_thumbnail_path(self, artist) -> Path | None:
         artist_id = str(artist["artist_key"])
         raw_id = str(artist["musicbrainz_artistid"] or "").strip()
+        name_identity = (
+            "name-"
+            + sha256(str(artist["artist_name"]).strip().casefold().encode("utf-8"))
+            .digest()[:16]
+            .hex()
+        )
         try:
             identity = "mbid-" + str(UUID(raw_id))
         except ValueError:
-            digest = sha256(str(artist["artist_name"]).strip().casefold().encode("utf-8"))
-            identity = "name-" + digest.digest()[:16].hex()
+            identity = name_identity
         managed = ArtistArtTarget(self.artist_art, "artist-" + identity, True)
-        primary_path = str(artist["primary_path"] or "").strip()
-        targets = (
-            (ArtistArtTarget(Path(primary_path), "artist"), managed)
-            if primary_path
-            else (managed,)
+        # A projected/featured Artist is written to the stable name-scoped
+        # shared package because it has no owned Album directory.  Its ordered
+        # track credit can still supply a valid MBID, so thumbnail discovery
+        # must also inspect that canonical name target before falling back to a
+        # cached provider portrait.  Prefer an existing MBID package when both
+        # exist so owned Artists keep their stronger identity authority.
+        managed_name = ArtistArtTarget(
+            self.artist_art, "artist-" + name_identity, True
         )
+        primary_path = str(artist["primary_path"] or "").strip()
+        targets = [ArtistArtTarget(Path(primary_path), "artist")] if primary_path else []
+        targets.append(managed)
+        if managed_name != managed:
+            targets.append(managed_name)
         portrait = saved_package(targets).portrait
         # Re-resolve local Artist Art before consulting the session cache. A
         # Windows write or external artist.* creation must replace an older
@@ -1532,6 +1753,8 @@ class Catalog:
             artist, _aliases = self._artist_identity_rows(db, artist_id)
         portrait = self.artist_thumbnail_path(artist)
         if portrait is None:
+            if self.index_maintenance_active():
+                raise KeyError("Artist thumbnail hydration is paused while indexing")
             now = time.monotonic()
             with self.lock:
                 if now < self.portrait_retry_at.get(str(artist["artist_key"]), 0.0):
@@ -1562,6 +1785,19 @@ class Catalog:
             raise KeyError("Saved Artist Art is unavailable")
         return portrait
 
+    def index_maintenance_active(self) -> bool:
+        try:
+            with closing(self.connect()) as db:
+                row = db.execute(
+                    "SELECT catalog_state FROM catalog_index_state WHERE singleton=TRUE"
+                ).fetchone()
+            return row is not None and str(row["catalog_state"]) in {
+                "initializing",
+                "maintenance",
+            }
+        except Exception:
+            return False
+
     def albums(self, query: str, fallback_only: bool = False) -> list[dict[str, object]]:
         identity_clause = (
             "TRIM(COALESCE(albums.musicbrainz_albumid,''))=''"
@@ -1579,9 +1815,7 @@ class Catalog:
                 "ORDER BY albums.album_name COLLATE NOCASE ",
                 ("%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%",) * 2,
             ).fetchall()
-            coordination = self._album_write_coordination(
-                db, (row["album_key"] for row in rows)
-            )
+            coordination = self._album_write_coordination(db, rows)
         items = []
         for row in rows:
             album_key = str(row["album_key"])
@@ -1690,9 +1924,7 @@ class Catalog:
                 if len(top_tracks) == 10:
                     break
             coordination = self._album_write_coordination(
-                db,
-                [row["album_key"] for row in primary_rows]
-                + [row["album_key"] for row in appearance_rows],
+                db, [*primary_rows, *appearance_rows]
             )
         featured_keys = set(appearance.get("featured_album_keys", set()))
         primary_keys = {str(row["album_key"]) for row in primary_rows}
@@ -1748,7 +1980,14 @@ class Catalog:
         return {
             "id": artist["artist_key"], "name": artist["artist_name"],
             "mbid": artist["musicbrainz_artistid"] or "",
-            "status": self._aggregate_album_status(rows), "albums": albums,
+            "status": self._aggregate_album_status([
+                {
+                    "status": self._effective_album_status(
+                        row, coordination.get(str(row["album_key"]), {})
+                    )
+                }
+                for row in rows
+            ]), "albums": albums,
             "top_tracks": top_tracks,
             "genres": list(appearance.get("genres", [])),
             "roles": list(appearance.get("roles", [])),
@@ -1770,9 +2009,10 @@ class Catalog:
                 "SELECT title,path FROM tracks WHERE album_key=? ORDER BY path", (album_id,),
             ).fetchall()
             track_titles = [item["title"] for item in track_rows[:12]]
-            override = self._album_write_coordination(db, [album_id]).get(album_id, {})
         if row is None:
             raise KeyError("Album not found")
+        with closing(self.connect()) as db:
+            override = self._album_write_coordination(db, [row]).get(album_id, {})
         folder = Path(row["path"])
         if not inside(folder, self.music):
             raise KeyError("Album is outside the configured library")
@@ -2290,6 +2530,26 @@ class Catalog:
                     info = call("getArtistInfo2", {"id": str(match["id"])}).get("artistInfo2", {})
                     biography = re.sub(r"<[^>]+>", " ", str(info.get("biography") or ""))
                     result["biography"] = " ".join(unescape(biography).split())
+                    # Navidrome/OpenSubsonic exposes the selected Artist's
+                    # indexed genres with getArtist. Fetching this bounded
+                    # object avoids the old twenty-page song traversal merely
+                    # to populate the overview heading.
+                    try:
+                        artist_detail = call("getArtist", {"id": str(match["id"])}).get("artist", {})
+                    except (OSError, ValueError, KeyError, TypeError, requests.RequestException):
+                        artist_detail = {}
+                    genres: set[str] = set()
+                    if isinstance(artist_detail, dict):
+                        genre = str(artist_detail.get("genre") or "").strip()
+                        if genre:
+                            genres.add(genre)
+                        for value in artist_detail.get("genres") or []:
+                            if isinstance(value, dict):
+                                value = value.get("name")
+                            value = str(value or "").strip()
+                            if value:
+                                genres.add(value)
+                    result["genres"] = sorted(genres)
                     similar = info.get("similarArtist", [])
                     if isinstance(similar, dict):
                         similar = [similar]
@@ -2312,16 +2572,12 @@ class Catalog:
                             # authorized cached provider image when one exists;
                             # the browser supplies an initial-letter fallback.
                             portrait = self._navidrome_similar_thumbnail_path(item)
-                            if portrait is None and refresh:
-                                try:
-                                    portrait = self._cache_navidrome_similar_thumbnail(item, credential)
-                                except (OSError, ValueError, KeyError, TypeError, requests.RequestException):
-                                    portrait = None
+                        portrait_url = self.image(portrait) if portrait is not None else self._navidrome_similar_thumbnail_url(item)
                         projected.append(
                             {
                                 "name": name,
                                 "local_id": str(local["artist_key"]) if local is not None else "",
-                                "image": self.image(portrait) if portrait is not None else "",
+                                "image": portrait_url,
                                 "provider_id": str(item.get("id") or ""),
                             }
                         )
@@ -2364,19 +2620,26 @@ class Catalog:
                 result.update(profile)
                 result.pop("reason", None)
                 self._save_artist_profile(artist_id, profile)
-        with self.lock:
-            self.metadata_cache[artist_id] = result
-        # Album appearances are refreshed by the explicit Refresh Artist Info
-        # path.  Normal Artist selection returns biography/similarity without
-        # waiting for a second provider catalog traversal.
-        if refresh:
+        # Navidrome's lightweight getArtist response does not consistently
+        # include the per-track genres exposed by search3.  Match the native
+        # Windows Artist Overview contract by resolving the selected Artist's
+        # bounded appearance catalog once on a metadata-cache miss.  This also
+        # keeps Featured roles tied to the exact selected Artist identity; the
+        # cached result prevents repeat traversal during ordinary rerenders.
+        if not result.get("genres") and credential_path.is_file():
             try:
-                self.refresh_artist_appearances(artist_id)
+                appearance = self.refresh_artist_appearances(artist_id)
+                result["genres"] = list(appearance.get("genres", []))
             except (OSError, ValueError, KeyError, TypeError, requests.RequestException):
                 pass
+        with self.lock:
+            self.metadata_cache[artist_id] = result
+        projected_artist = self.artist(artist_id)
+        if result.get("genres"):
+            projected_artist["genres"] = sorted(set(projected_artist.get("genres", [])) | set(result["genres"]))
         return {
             **result,
-            "artist": self.artist(artist_id),
+            "artist": projected_artist,
             "comp_albums": self.artist_comp_albums(artist_id),
         }
 

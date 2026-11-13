@@ -606,6 +606,30 @@ fn newer_track(left: &TrackCoordinationEvent, right: &TrackCoordinationEvent) ->
         > (right.source_completed_ms, right.event_id.as_str())
 }
 
+fn effective_album_events(connection: &Connection) -> Result<Vec<CoordinationEvent>, String> {
+    let mut current = HashMap::<String, CoordinationEvent>::new();
+    for event in read_events(connection, "album_artwork_write_state")?
+        .into_iter()
+        .chain(read_events(connection, "album_artwork_write_outbox")?)
+    {
+        let replace = current
+            .get(&event.album_identity)
+            .is_none_or(|prior| newer(&event, prior));
+        if replace {
+            current.insert(event.album_identity.clone(), event);
+        }
+    }
+    Ok(current.into_values().collect())
+}
+
+fn album_write_state(event: &CoordinationEvent) -> AlbumWriteState {
+    AlbumWriteState {
+        writer: event.writer.clone(),
+        event_id: event.event_id.clone(),
+        revision: event.revision,
+    }
+}
+
 pub fn effective_write_states(
     database_path: &Path,
 ) -> Result<HashMap<String, AlbumWriteState>, String> {
@@ -615,31 +639,62 @@ pub fn effective_write_states(
         .busy_timeout(Duration::from_secs(10))
         .map_err(|error| format!("Unable to configure Album coordination state: {error}"))?;
     ensure_sqlite_schema(&connection)?;
-    let mut current = HashMap::<String, CoordinationEvent>::new();
-    for event in read_events(&connection, "album_artwork_write_state")?
+    Ok(effective_album_events(&connection)?
         .into_iter()
-        .chain(read_events(&connection, "album_artwork_write_outbox")?)
-    {
-        let replace = current
-            .get(&event.album_identity)
-            .is_none_or(|prior| newer(&event, prior));
-        if replace {
-            current.insert(event.album_identity.clone(), event);
-        }
-    }
-    Ok(current
-        .into_values()
         .map(|event| {
             (
                 normalize_coordination_value(&event.album_key),
-                AlbumWriteState {
-                    writer: event.writer,
-                    event_id: event.event_id,
-                    revision: event.revision,
-                },
+                album_write_state(&event),
             )
         })
         .collect())
+}
+
+/// Project the newest durable write onto the Album identities in this SQLite
+/// catalog. A tag correction can change an Album MBID in one client before the
+/// other refreshes. The normalized library-relative path remains stable and is
+/// therefore the secondary identity shared with WebGUI.
+pub fn effective_write_states_for_catalog(
+    database_path: &Path,
+    canonical_root: &str,
+) -> Result<HashMap<String, AlbumWriteState>, String> {
+    let connection = Connection::open(database_path)
+        .map_err(|error| format!("Unable to open Album coordination state: {error}"))?;
+    connection
+        .busy_timeout(Duration::from_secs(10))
+        .map_err(|error| format!("Unable to configure Album coordination state: {error}"))?;
+    ensure_sqlite_schema(&connection)?;
+    let events = effective_album_events(&connection)?;
+    let mut statement = connection
+        .prepare("SELECT album_key,path FROM albums")
+        .map_err(|error| format!("Unable to prepare Album coordination projection: {error}"))?;
+    let albums = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| format!("Unable to query Album coordination projection: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Unable to collect Album coordination projection: {error}"))?;
+    let mut projected = HashMap::new();
+    for (album_key, album_path) in albums {
+        let album_key = normalize_coordination_value(&album_key);
+        let album_relative_path = relative_path(canonical_root, &album_path);
+        let selected = events
+            .iter()
+            .filter(|event| {
+                normalize_coordination_value(&event.album_key) == album_key
+                    || (!album_relative_path.is_empty()
+                        && normalize_relative_path(&event.relative_path) == album_relative_path)
+            })
+            .max_by(|left, right| {
+                (left.source_completed_ms, left.event_id.as_str())
+                    .cmp(&(right.source_completed_ms, right.event_id.as_str()))
+            });
+        if let Some(event) = selected {
+            projected.insert(album_key, album_write_state(event));
+        }
+    }
+    Ok(projected)
 }
 
 pub fn effective_writers(database_path: &Path) -> Result<HashMap<String, String>, String> {
@@ -1075,6 +1130,64 @@ mod tests {
                 .unwrap(),
             "mbid:album"
         );
+    }
+
+    #[test]
+    fn catalog_projection_prefers_newer_same_path_event_after_album_key_changes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("splined.db");
+        let connection = Connection::open(&path).unwrap();
+        ensure_sqlite_schema(&connection).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE albums(album_key TEXT PRIMARY KEY,path TEXT NOT NULL);\
+                 INSERT INTO albums VALUES(\
+                    'mbid:sqlite-current',\
+                    'E:/music/[Soundtracks]/American Pie 2');",
+            )
+            .unwrap();
+        for (identity, key, writer, event, completed, revision) in [
+            (
+                "key:mbid:sqlite-current",
+                "mbid:sqlite-current",
+                "windows",
+                "windows-older",
+                100_i64,
+                1_i64,
+            ),
+            (
+                "key:mbid:postgres-current",
+                "mbid:postgres-current",
+                "webgui",
+                "webgui-newer",
+                200_i64,
+                2_i64,
+            ),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO album_artwork_write_state VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    params![
+                        identity,
+                        key,
+                        key.trim_start_matches("mbid:"),
+                        "[soundtracks]/american pie 2",
+                        writer,
+                        "write-cover",
+                        event,
+                        completed,
+                        revision,
+                        "2026-11-10T00:00:00Z",
+                        "2026-11-10T00:00:00Z"
+                    ],
+                )
+                .unwrap();
+        }
+
+        let projected = effective_write_states_for_catalog(&path, "E:/music").unwrap();
+        let current = projected.get("mbid:sqlite-current").unwrap();
+        assert_eq!(current.writer, "webgui");
+        assert_eq!(current.event_id, "webgui-newer");
     }
 
     #[test]

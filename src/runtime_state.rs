@@ -7,7 +7,12 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const DB_NAME: &str = "splined.db";
-const SCHEMA_VERSION: i64 = 2;
+// Runtime payloads live in the same SQLite database as the native media
+// catalog. Schema v3 added Catalog Index Coordinator tables without changing
+// cache_entries, so runtime state must remain compatible with both the v2
+// bootstrap database and the migrated v3 catalog.
+const BOOTSTRAP_SCHEMA_VERSION: i64 = 2;
+const CATALOG_SCHEMA_VERSION: i64 = 3;
 const SCHEMA: &str = include_str!("../schema/media.sql");
 
 pub fn database_path(config: &Config) -> PathBuf {
@@ -30,7 +35,7 @@ pub fn read_payload(config: &Config, cache_key: &str) -> Result<Option<String>, 
     let current: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(db_error("read SQLite schema version"))?;
-    if current != SCHEMA_VERSION {
+    if !supported_schema(current) {
         return Err(incompatible_schema(current));
     }
     connection
@@ -87,7 +92,7 @@ fn open_writable(path: &Path, shared: bool) -> Result<Connection, String> {
     let current: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(db_error("read SQLite schema version"))?;
-    if current != 0 && current != SCHEMA_VERSION {
+    if current != 0 && !supported_schema(current) {
         return Err(incompatible_schema(current));
     }
     connection
@@ -104,7 +109,7 @@ fn open_writable(path: &Path, shared: bool) -> Result<Connection, String> {
             .execute_batch(SCHEMA)
             .map_err(db_error("apply shared schema"))?;
         connection
-            .pragma_update(None, "user_version", SCHEMA_VERSION)
+            .pragma_update(None, "user_version", BOOTSTRAP_SCHEMA_VERSION)
             .map_err(db_error("set SQLite schema version"))?;
     }
     Ok(connection)
@@ -118,8 +123,12 @@ fn configure_timeout(connection: &Connection) -> Result<(), String> {
 
 fn incompatible_schema(current: i64) -> String {
     format!(
-        "SPLINED database schema v{current} is incompatible with required v{SCHEMA_VERSION}; the database was not changed."
+        "SPLINED database schema v{current} is incompatible with supported v{BOOTSTRAP_SCHEMA_VERSION} or v{CATALOG_SCHEMA_VERSION}; the database was not changed."
     )
+}
+
+fn supported_schema(current: i64) -> bool {
+    matches!(current, BOOTSTRAP_SCHEMA_VERSION | CATALOG_SCHEMA_VERSION)
 }
 
 fn db_error(context: &'static str) -> impl FnOnce(rusqlite::Error) -> String {
@@ -149,5 +158,33 @@ mod tests {
             Some(r#"{"version":1}"#.to_string())
         );
         assert!(!temp.path().join("_history").exists());
+    }
+
+    #[test]
+    fn runtime_state_accepts_migrated_catalog_schema() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.scan.cache_dir = temp.path().join("cache").to_string_lossy().into_owned();
+
+        write_payload(&config, "state", "runtime", r#"{"version":1}"#).unwrap();
+        let path = database_path(&config);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .pragma_update(None, "user_version", CATALOG_SCHEMA_VERSION)
+            .unwrap();
+        drop(connection);
+
+        assert_eq!(
+            read_payload(&config, "state").unwrap(),
+            Some(r#"{"version":1}"#.to_string())
+        );
+        write_payload(&config, "state", "runtime", r#"{"version":2}"#).unwrap();
+        let connection = Connection::open(&path).unwrap();
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            CATALOG_SCHEMA_VERSION
+        );
     }
 }

@@ -18,6 +18,32 @@ pub fn inventory_album_directories(
     root: &Path,
     ignored_subs: &[String],
 ) -> Result<ScanInventory, String> {
+    let mut albums = Vec::new();
+    let ignored_directories = walk_album_directories(root, ignored_subs, |album| {
+        albums.push(album);
+        Ok(())
+    })?;
+    Ok(ScanInventory {
+        root: root.to_path_buf(),
+        albums,
+        ignored_directories,
+    })
+}
+
+/// Visit one Album directory at a time in deterministic path order.
+///
+/// Unlike [`inventory_album_directories`], this does not retain the complete
+/// library inventory.  The coordinator can inspect and checkpoint an Album,
+/// release its paths, and then continue to the next directory.  Memory is
+/// therefore bounded by one directory plus the traversal stack.
+pub fn walk_album_directories<F>(
+    root: &Path,
+    ignored_subs: &[String],
+    mut on_album: F,
+) -> Result<Vec<PathBuf>, String>
+where
+    F: FnMut(AlbumDirectory) -> Result<(), String>,
+{
     if !root.exists() {
         return Err(format!(
             "SPLINED scan directory does not exist: {}",
@@ -32,24 +58,16 @@ pub fn inventory_album_directories(
         ));
     }
 
-    let mut albums = Vec::new();
     let mut ignored_directories = Vec::new();
-    visit_directory(
+    visit_directory_streaming(
         root,
         ignored_subs,
         true,
-        &mut albums,
         &mut ignored_directories,
+        &mut on_album,
     )?;
-
-    albums.sort_by(|left, right| left.path.cmp(&right.path));
     ignored_directories.sort();
-
-    Ok(ScanInventory {
-        root: root.to_path_buf(),
-        albums,
-        ignored_directories,
-    })
+    Ok(ignored_directories)
 }
 
 /// Discover Album folders for the startup new-media notice without retaining
@@ -125,13 +143,16 @@ fn visit_audio_directories(
     Ok(())
 }
 
-fn visit_directory(
+fn visit_directory_streaming<F>(
     directory: &Path,
     ignored_subs: &[String],
     is_root: bool,
-    albums: &mut Vec<AlbumDirectory>,
     ignored_directories: &mut Vec<PathBuf>,
-) -> Result<(), String> {
+    on_album: &mut F,
+) -> Result<(), String>
+where
+    F: FnMut(AlbumDirectory) -> Result<(), String>,
+{
     if !is_root
         && directory
             .file_name()
@@ -183,14 +204,14 @@ fn visit_directory(
     child_directories.sort();
 
     if !audio_files.is_empty() {
-        albums.push(AlbumDirectory {
+        on_album(AlbumDirectory {
             path: directory.to_path_buf(),
             audio_files,
-        });
+        })?;
     }
 
     for child in child_directories {
-        visit_directory(&child, ignored_subs, false, albums, ignored_directories)?;
+        visit_directory_streaming(&child, ignored_subs, false, ignored_directories, on_album)?;
     }
 
     Ok(())
@@ -320,5 +341,54 @@ mod tests {
             inventory.albums[0].audio_files,
             vec![album.join("01 - Song.mp3")]
         );
+    }
+
+    #[test]
+    fn streaming_walk_calls_back_before_the_remaining_tree_is_visited() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let first = temp.path().join("A Artist").join("A Album");
+        let later = temp.path().join("Z Artist").join("Z Album");
+        fs::create_dir_all(&first).expect("first Album");
+        fs::create_dir_all(&later).expect("later Album");
+        File::create(first.join("01.mp3")).expect("first track");
+        File::create(later.join("01.mp3")).expect("later track");
+        let mut visited = Vec::new();
+
+        let error = walk_album_directories(temp.path(), &[], |album| {
+            visited.push(album.path);
+            Err("stop after first streamed Album".to_string())
+        })
+        .expect_err("callback stops traversal");
+
+        assert_eq!(error, "stop after first streamed Album");
+        assert_eq!(visited, vec![first]);
+    }
+
+    #[test]
+    fn streaming_walk_discovers_each_large_fixture_album_once() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let mut expected = Vec::new();
+        for artist in 0..20 {
+            for album in 0..25 {
+                let path = temp
+                    .path()
+                    .join(format!("Artist {artist:03}"))
+                    .join(format!("Album {album:03}"));
+                fs::create_dir_all(&path).expect("Album directory");
+                File::create(path.join("01.mp3")).expect("track");
+                expected.push(path);
+            }
+        }
+        let mut actual = Vec::new();
+        walk_album_directories(temp.path(), &[], |album| {
+            actual.push(album.path);
+            Ok(())
+        })
+        .expect("streaming walk");
+
+        expected.sort();
+        actual.sort();
+        actual.dedup();
+        assert_eq!(actual, expected);
     }
 }

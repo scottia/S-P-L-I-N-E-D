@@ -136,6 +136,14 @@ class JobQueue:
             self.lease.close()
             raise ValueError("Another WebGUI worker already owns this catalog")
         with closing(self.db.connect()) as db, db:
+            # Owning the process-wide worker lock proves the prior WebGUI
+            # worker is gone; expire its generation lease for checkpointed
+            # recovery instead of failing or duplicating the index.
+            db.raw.execute(
+                "UPDATE catalog_generations SET lease_expires_at=now(),"
+                "phase='recovering',updated_at=now() WHERE backend='postgresql' "
+                "AND state IN ('building','validating','publishing')"
+            )
             # COMP review is interactive, track-scoped browser work rather
             # than a durable embedding queue.  Never resume or retain it
             # across a server lifecycle: authority/candidate state must be
@@ -153,8 +161,13 @@ class JobQueue:
             # next explicit LAUNCH and hide the current review prompt.
             db.execute(
                 "UPDATE web_jobs SET state='paused',decision=NULL,error='Interrupted by server restart',updated_at=now() "
-                "WHERE kind<>'comp' AND (state IN ('running','waiting') "
+                "WHERE kind NOT IN ('comp','index') AND (state IN ('running','waiting') "
                 "OR (kind='scan' AND state='queued'))"
+            )
+            db.execute(
+                "UPDATE web_jobs SET state='queued',decision=NULL,"
+                "error='Recovering interrupted catalog generation',updated_at=now() "
+                "WHERE kind='index' AND state IN ('running','waiting')"
             )
         for row in comp_rows:
             prepared = row["progress"].get("prepared_comp", {})
@@ -170,7 +183,14 @@ class JobQueue:
         self.wake.set()
         self.thread.join(timeout=15)
         if not self.thread.is_alive():
-            self.lease.close()
+            try:
+                self.lease.execute(
+                    "SELECT pg_advisory_unlock("
+                    "hashtextextended(current_schema() || ':splined-web-worker',0))"
+                )
+                self.lease.commit()
+            finally:
+                self.lease.close()
 
     def audit_job(
         self,
@@ -248,6 +268,16 @@ class JobQueue:
                 "pause_all_albums": self.pause_all_albums,
             }
 
+    def index_probe_state(self):
+        """Return active manifest-probe state without starting filesystem work."""
+        with closing(self.db.connect()) as db:
+            row = db.execute(
+                "SELECT id,state FROM web_jobs WHERE kind='index-probe' "
+                "AND state IN ('queued','running','waiting') "
+                "ORDER BY created_at LIMIT 1"
+            ).fetchone()
+        return dict(row) if row is not None else None
+
     def cancel_requested(self, job_id):
         if self.stopped.is_set():
             return True
@@ -261,7 +291,7 @@ class JobQueue:
             return row["kind"] == "embed-album" and self.pause_all_albums
 
     def enqueue(self, kind, payload, *, staged=False):
-        if kind not in {"embed-album", "comp", "index", "scan"}:
+        if kind not in {"embed-album", "comp", "index", "index-probe", "scan"}:
             raise ValueError("Unknown work type")
         if not isinstance(payload, dict):
             raise ValueError("Invalid work request")
@@ -269,6 +299,38 @@ class JobQueue:
         payload.setdefault("library_root", str(self.services.runtime.music))
         job_id = uuid4().hex
         with closing(self.db.connect()) as db, db:
+            if kind in {"index", "index-probe"}:
+                db.raw.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
+                    ("index:catalog",),
+                )
+                active_kinds = ["index", "index-probe"] if kind == "index-probe" else ["index"]
+                active = db.raw.execute(
+                    "SELECT id,state,payload,kind FROM web_jobs "
+                    "WHERE kind=ANY(%s) "
+                    "AND state IN ('queued','running','waiting') "
+                    "ORDER BY created_at LIMIT 1",
+                    (active_kinds,),
+                ).fetchone()
+                if active:
+                    correlation = payload.get("_audit", {})
+                    self.services.audit(
+                        "job-deduplicated", kind,
+                        {
+                            "already_queued": True,
+                            "requested_mode": payload.get("mode", "incremental"),
+                            "active_mode": active["payload"].get("mode", "incremental"),
+                            "active_kind": active["kind"],
+                        },
+                        action_id=str(correlation.get("action_id") or ""),
+                        trace_id=str(correlation.get("trace_id") or ""),
+                        job_id=active["id"], stage="queue", request_status="existing",
+                    )
+                    return {
+                        "id": active["id"],
+                        "already_queued": True,
+                        "state": active["state"],
+                    }
             if kind == "scan":
                 # Browser scans are interactive and the single worker cannot
                 # advance a second scan while the current one is waiting for a
@@ -366,7 +428,13 @@ class JobQueue:
 
     def action(self, action, job_id=None, value=None, nonce=None, kind=None):
         kind = str(kind or "").strip()
-        if kind and kind not in {"embed-album", "comp", "index", "scan"}:
+        if kind and kind not in {
+            "embed-album",
+            "comp",
+            "index",
+            "index-probe",
+            "scan",
+        }:
             raise ValueError("Unknown work type")
         if action in {"pause-after", "resume-queue", "pause-all", "resume-all"}:
             if kind != "embed-album":
@@ -616,6 +684,10 @@ class JobQueue:
                                 adapter.progress,
                                 adapter.cancelled,
                                 str(payload.get("mode", "full")),
+                            )
+                        elif kind == "index-probe":
+                            result = self.services.detect_index_changes(
+                                adapter.progress, adapter.cancelled
                             )
                         elif kind == "comp":
                             result = self.services.run_comp(payload, adapter)
