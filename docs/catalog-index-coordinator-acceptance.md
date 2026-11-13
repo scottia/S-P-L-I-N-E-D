@@ -596,7 +596,8 @@ Status: **PASSED** at `ad4fe29`.
 
 ### Requirement 10 — nonblocking progress and status
 
-Status: **INCOMPLETE — installed Windows visual gate only**.
+Status: **PASSED**. Automated coverage is backed by installed Windows and
+WebGUI cancellation/relaunch evidence.
 
 Implemented and automated:
 
@@ -623,15 +624,26 @@ Implemented and automated:
   fixture, a normal publication restored `164 Artists · 210 Albums · 6
   Fallback` in two seconds. No original media was modified.
 
-Outstanding proof:
+Installed Windows validation — 2026-11-12:
 
-- The exact 2.0.36 Windows binary is installed and running, and automated
-  controller/Slint contract coverage passes, but the current RDP session exposes
-  only the native window chrome: monitor capture fails and the Slint content is
-  absent from the accessibility tree. Therefore a trustworthy installed-client
-  visual proof of live percentage/current path plus STOP/cancel/relaunch could
-  not be recorded. Per the acceptance rule, R10 remains incomplete rather than
-  substituting source assertions or unit tests for that live gate.
+- The installed 2.0.36 client performed a deliberate full refresh against
+  `E:\apps\ChatGpt\SPLINED-local-test-library\music`. The fixed header and
+  Library & Files pane both displayed STOP INDEX while the generation was
+  active.
+- Live status exposed phase, percentage, discovery-aware Album totals, changed
+  count, error count and current path. Recorded samples included `staging · 37%
+  · 80/~216 Albums · 80 changed · 0 errors` at `Aerosmith\Permanent Vacation`
+  and `staging · 93% · 216/~232 Albums · 0 errors` at
+  `a-ha\Memorial Beach`.
+- STOP INDEX immediately entered `Stopping the active library index at its next
+  checkpoint...`; after the checkpoint the progress controls disappeared and
+  the same control returned to enabled Refresh DB without an application
+  restart.
+- Immediate relaunch reached `staging · 51% · 112/~216 Albums · 112 changed ·
+  0 errors` at `Alan Jackson\Precious Memories`, advanced through the remaining
+  Albums, completed, and returned to enabled Refresh DB. The published catalog
+  remained available throughout. No database reset, artwork write or media-file
+  modification was used for this gate.
 
 ### Mandatory validation/publication interruption recovery
 
@@ -1083,6 +1095,15 @@ recorded with the Windows UI scale and biography follow-up below.
 - Formatting, Python compilation, JavaScript syntax and `git diff --check`
   passed. The assessment-head supported-runtime CI was green before work began;
   final-head CI is recorded on PR #170 after the documentation commit.
+- Supported-runtime Action #259 failed only in the native Ubuntu job; its
+  Windows advisory and complete WebGUI jobs passed. The three native failures
+  were stale source-contract assertions for accepted proportional UI scaling
+  and one test-only contiguous `SLINT_SCALE_FACTOR` literal. The contracts now
+  follow the current scaled Slint implementation without weakening the runtime
+  prohibition. Local reruns pass 202 Rust library tests, 5 public-config tests,
+  10 release-automation tests, 14 Windows architecture tests, 403 WebGUI tests
+  with 78 skips, and 100 browser behavior tests. Final-head CI remains the
+  completion gate and is linked on PR #170.
 - Installed Windows 2.0.36 executable:
   `E:\apps\SPLINED\splined.exe`, SHA-256
   `4A7FC81BF27F66BC5B57B7079DD3D09E4532249B0DC6E02D40C4397323B1DDD5`
@@ -1114,14 +1135,23 @@ recorded with the Windows UI scale and biography follow-up below.
   connection isolation remain deferred to PR #174 exactly as approved. No PR
   #174 UI or migration-policy implementation was changed here.
 
-### Review result and remaining work
+### Final 12-item acceptance checklist
 
-1. Record one owner-visible installed Windows run showing live phase/percentage,
-   Album counts/current path, responsive fixed STOP INDEX, successful cancel and
-   immediate relaunch. No implementation defect is presently reproduced; this
-   is the sole unproven R10 acceptance gate.
+1. Requirement 1 — streaming inventory and bounded batches: **PASSED**.
+2. Requirement 2 — persistent index generations: **PASSED**.
+3. Requirement 3 — precomputed change manifest: **PASSED**.
+4. Requirement 4 — incremental-first indexing: **PASSED**.
+5. Requirement 5 — adaptive batching and instant startup: **PASSED**.
+6. Requirement 6 — generation-safe cleanup: **PASSED**.
+7. Requirement 7 — single active indexer/duplicate attachment: **PASSED**.
+8. Requirement 8 — measured resource isolation: **PASSED**.
+9. Requirement 9 — thumbnail backpressure and persistent cache: **PASSED**.
+10. Requirement 10 — nonblocking progress, STOP, cancellation and relaunch:
+    **PASSED**.
+11. Requirement 11 — Album-level coordination: **PASSED**.
+12. Mandatory validation/publication interruption recovery: **PASSED**.
 
-Requirements 7–9 and the mandatory interruption-recovery gate are complete.
-Requirement 10 remains explicitly incomplete for the installed Windows visual
-evidence above. Requirements 1–6 and 11 remain accepted. PR #170 and PR #174
-remain Draft and unmerged.
+All implementation, focused regression, full local-suite and installed-client
+gates are complete. Final-head supported-runtime CI is the remaining publication
+check and is recorded on PR #170 after this acceptance update. PR #170 and PR
+#174 remain Draft and unmerged pending owner acceptance.

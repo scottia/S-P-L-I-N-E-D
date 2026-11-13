@@ -140,9 +140,9 @@ fn slint_windows_restore_natively_and_share_live_media_models() {
     assert!(!main.contains("SLINT_SCALE_FACTOR"));
     assert!(manifest.contains("PerMonitorV2"));
     assert!(media_pane.contains(
-        "if root.expanded: VerticalLayout {\n            spacing: 7px;\n            vertical-stretch: 1;"
+        "if root.expanded: VerticalLayout {\n            spacing: (7px * AppTheme.ui-scale);\n            vertical-stretch: 1;"
     ));
-    assert!(media_pane.contains("min-height: 180px;"));
+    assert!(media_pane.contains("min-height: (180px * AppTheme.ui-scale);"));
     for proof in [
         "artist_click_kept_view",
         "artist_inline_album_rows",
@@ -168,30 +168,34 @@ fn artist_overview_keeps_native_parity_controls_and_album_row_navigation() {
     assert!(ui.contains("callback browse-artist-artwork(); callback upload-artist-artwork();"));
     assert!(ui.contains("label: \"Upload Art\""));
     assert!(ui.contains("clicked => root.upload-artist-artwork();"));
-    assert!(ui.contains("thumbnail-size: artist-scroll.visible-width < 520px ? 120px : 170px"));
-    assert!(ui.contains("thumbnail-x: 8px"));
-    assert!(ui.contains("thumbnail-column-width: self.thumbnail-size + 16px"));
-    assert!(ui.contains("thumbnail-x + artist-header.thumbnail-size + 3px"));
+    assert!(ui.contains("thumbnail-size: artist-scroll.visible-width < (760px * AppTheme.ui-scale) ? (120px * AppTheme.ui-scale) : (170px * AppTheme.ui-scale)"));
+    assert!(ui.contains("thumbnail-x: (8px * AppTheme.ui-scale)"));
+    assert!(
+        ui.contains("thumbnail-column-width: self.thumbnail-size + (16px * AppTheme.ui-scale)")
+    );
+    assert!(ui.contains("thumbnail-x + artist-header.thumbnail-size + (3px * AppTheme.ui-scale)"));
     assert!(ui.contains("root.artist-overview-name; color: AppTheme.yellow"));
-    assert!(ui.contains("padding-top: root.artist-edit-available ? 0px : 16px"));
-    assert!(ui.contains("width: 72px; height: 76px; background: transparent; opacity: 1"));
+    assert!(ui.contains("padding-top: root.artist-edit-available ? (0px * AppTheme.ui-scale) : (16px * AppTheme.ui-scale)"));
+    assert!(ui.contains("width: (72px * AppTheme.ui-scale); height: (76px * AppTheme.ui-scale); background: transparent; opacity: 1"));
     assert!(ui.contains("font-scale: 1.0"));
     assert!(ui.contains("display-scale-percent: 100"));
     assert!(ui.contains("width: parent.width; height: parent.height"));
-    assert!(ui.contains("min(520px, max(340px, artist-scroll.visible-width * 0.5))"));
+    assert!(ui.contains("min((520px * AppTheme.ui-scale), max((340px * AppTheme.ui-scale), artist-scroll.visible-width * 0.5))"));
     assert!(ui.contains("It must never resize or remove the overview below it"));
     assert!(ui.contains("clicked => root.open-artist-musicbrainz()"));
     assert!(ui.contains("root.selected-album-name != \"\""));
-    assert!(ui.contains("Rectangle { x: 51px; y: 43px; width: 12px; height: 12px"));
+    assert!(ui.contains("Rectangle { x: (51px * AppTheme.ui-scale); y: (43px * AppTheme.ui-scale); width: (12px * AppTheme.ui-scale); height: (12px * AppTheme.ui-scale)"));
     assert!(!ui.contains("if root.overview-mode == \"Album\": Heading"));
     assert!(ui.contains("if root.artist-summary-visible: Rectangle"));
-    assert!(ui.contains("min(10, max(5, overview-panel.biography-lines.length))"));
+    assert!(ui.contains("biography-visible-line-count: min(root.artist-biography-expanded ? 10 : 5, max(1, self.biography-lines.length))"));
     assert!(ui.contains("biography-block-width: min(self.biography-lane-width"));
-    assert!(
-        ui.contains("alignment: line.justified && !self.carries-toggle ? space-between : start")
-    );
-    assert!(ui.contains("index == overview-panel.biography-toggle-line"));
-    assert!(ui.contains("immediately after the copy instead of pinning it"));
+    assert!(ui.contains("for word in line.words: Text"));
+    assert!(ui.contains("The composed paragraph is the only expansion surface"));
+    assert!(ui.contains(
+        "clicked => { root.artist-biography-expanded = !root.artist-biography-expanded; }"
+    ));
+    assert!(!ui.contains("biography-toggle-line"));
+    assert!(!ui.contains("carries-toggle"));
     assert!(ui.contains("index < (root.artist-biography-expanded ? 10 : 5)"));
     assert!(ui.contains("🎵 Artist & Featured Artist Top Genres"));
     assert!(ui.contains("TouchArea { enabled: similar.available"));
@@ -222,12 +226,19 @@ fn comp_report_keeps_visible_group_controls_and_track_scoped_coordination() {
     let ui = source("windows/ui/app.slint");
     let main = source("windows/src/main.rs");
     assert!(ui.contains("track.album-header ? (track.expanded ? \"−\" : \"+\")"));
-    assert!(ui.contains("border-width: track.album-header ? 1px : 0px"));
-    assert!(ui.contains("max(170px, min(310px, parent.width * 0.38))"));
+    assert!(ui.contains("border-width: (1px * AppTheme.ui-scale)"));
+    assert!(ui.contains(
+        "border-width: track.album-header ? (1px * AppTheme.ui-scale) : (0px * AppTheme.ui-scale)"
+    ));
+    assert!(ui.contains(
+        "max((170px * AppTheme.ui-scale), min((310px * AppTheme.ui-scale), parent.width * 0.38))"
+    ));
     assert!(!ui.contains("text: \"TRACK FILE\"; width: 310px"));
     assert!(ui.contains("background: #381821c9"));
     assert!(ui.contains("track.album-header ? #398efa"));
-    assert!(ui.contains("track.album-header ? 25px : 24px"));
+    assert!(ui.contains(
+        "height: track.album-header ? (25px * AppTheme.ui-scale) : (24px * AppTheme.ui-scale)"
+    ));
     assert!(ui.contains("root.compilation-report-override-count + \" overridden\""));
     assert!(ui.contains("root.compilation-report-visible ? \"LAUNCH COMP\" : \"LAUNCH\""));
     assert!(ui.contains("root.running ? \"STOP PROCESS\""));
@@ -238,11 +249,11 @@ fn comp_report_keeps_visible_group_controls_and_track_scoped_coordination() {
     assert!(main.contains(".select_compilation_track(album_key, track_path, include_bypassed)"));
     let summary = ui
         .split(
-            "if root.overview-mode == \"Artist\" || root.overview-mode == \"Fallback\": HorizontalLayout { height: 18px; spacing: 12px;",
+            "if root.overview-mode == \"Artist\" || root.overview-mode == \"Fallback\": HorizontalLayout { height: (18px * AppTheme.ui-scale); spacing: (12px * AppTheme.ui-scale);",
         )
         .nth(1)
         .unwrap()
-        .split("HorizontalLayout { height: 18px; spacing: 8px;")
+        .split("HorizontalLayout { height: (18px * AppTheme.ui-scale); spacing: (8px * AppTheme.ui-scale);")
         .next()
         .unwrap();
     assert!(summary.find("Albums").unwrap() < summary.find("horizontal-stretch: 1").unwrap());

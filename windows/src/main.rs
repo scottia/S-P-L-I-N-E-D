@@ -25503,7 +25503,7 @@ mod tests {
         );
         assert!(source.contains("width: (165px * AppTheme.ui-scale)"));
         assert!(source.contains("preferred-width: 1680px; preferred-height: 945px;"));
-        assert!(!source.contains("SLINT_SCALE_FACTOR"));
+        assert!(!source.contains(concat!("SLINT_", "SCALE_FACTOR")));
         for choice in ["80%", "90%", "100%", "110%", "125%"] {
             assert!(source.contains(choice));
         }
