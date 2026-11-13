@@ -50,16 +50,25 @@ Setup displays the real error instead of silently continuing with defaults.
 1. In Setup, choose the Music Library.
 2. Choose the SQLite/database directory; it owns `splined.db` and should be a
    persistent `_db` location separate from the disposable `_cache` directory.
+   Setup reports the resolved database path, whether the file is new or
+   existing, its size, and whether Windows identifies the storage as local or
+   network-backed.
 3. Enable **Shared/network SQLite** only after reading the
    [shared-database guide](splined-media-database.md#before-enabling-shared-mode)
    and confirming every client uses the same physical database and reliable
    cross-host locks. Leave it disabled for an independent Windows database.
    The extra Windows `.client-lock` is optional and off by default; enable it
    when every client can acquire it, and never refresh from two clients at once.
+   Setup blocks a mapped-drive or UNC database path while Shared mode is off;
+   this prevents an accidental network build in local WAL mode. A prominent
+   warning remains when Shared mode is on but the optional extra lock is off.
 4. Choose separate temporary cache, log, and credential directories.
 5. Review ignored subdirectories, then select **Save & Open Settings**. The
-   button shows progress while the initial library is loaded; any error stays
-   visible on Setup so paths can be corrected and retried.
+   conversion-style status panel shows the current indexing/publication phase,
+   estimated Album progress, current path, and error count while the initial
+   library is loaded. Any failure remains in the red alert area so paths can be
+   corrected and retried. The Setup screen retains direct links to this Windows
+   guide and the shared-database guide.
 6. Use structured Settings for scan behavior, source order/policies, artwork
    ranges, output, square/upscale, adjustments, and retention options.
 7. Add provider JSON in Credentials and complete authorization where required.

@@ -5,7 +5,7 @@
 //! LocalState directory. Configuration/setup code creates `data` and the
 //! operator-selected runtime directories only after an explicit save.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 static APP_ROOT_OVERRIDE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
@@ -111,6 +111,20 @@ pub fn app_layout() -> Result<AppLayout, String> {
     state_root().map(AppLayout::from_root)
 }
 
+/// Format an internal Windows path for editable UI and operator-facing text.
+/// `canonicalize` may add the Win32 extended-length prefix; it is useful for
+/// filesystem calls but needlessly alarming in Setup and Settings.
+pub fn display_path(path: &Path) -> String {
+    let value = path.to_string_lossy();
+    if let Some(remainder) = value.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{remainder}")
+    } else if let Some(remainder) = value.strip_prefix(r"\\?\") {
+        remainder.to_string()
+    } else {
+        value.into_owned()
+    }
+}
+
 /// Selects the correct state root without creating it. A packaged MSIX process
 /// uses its user-specific LocalState SPLINED root; a portable process uses the
 /// directory containing `splined.exe`.
@@ -214,5 +228,18 @@ mod tests {
             portable_root_from_executable(&direct).unwrap(),
             PathBuf::from("portable-root")
         );
+    }
+
+    #[test]
+    fn display_paths_hide_internal_windows_extended_prefixes() {
+        assert_eq!(
+            display_path(Path::new(r"\\?\E:\apps\SPLINED\_db")),
+            r"E:\apps\SPLINED\_db"
+        );
+        assert_eq!(
+            display_path(Path::new(r"\\?\UNC\server\music\_db")),
+            r"\\server\music\_db"
+        );
+        assert_eq!(display_path(Path::new(r"N:\music\_db")), r"N:\music\_db");
     }
 }

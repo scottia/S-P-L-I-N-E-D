@@ -1751,11 +1751,27 @@ fn normalized_network_unc(path: &Path) -> Option<String> {
 }
 
 pub fn media_snapshot(config: &Config, refresh: bool) -> Result<MediaSnapshot, String> {
-    media_snapshot_inner(config, refresh, false, None)
+    media_snapshot_inner(config, refresh, false, false, None)
+}
+
+/// Load the configured catalog while completing first-run Setup. Setup is an
+/// explicit publication boundary: when a shared database has no usable
+/// inventory yet, this client may create its first index using shared SQLite
+/// settings. Normal startup still requires Refresh DB for that operation and
+/// therefore remains read-only for an established shared configuration.
+pub fn media_snapshot_for_setup(config: &Config) -> Result<MediaSnapshot, String> {
+    media_snapshot_inner(config, false, false, true, None)
+}
+
+pub fn media_snapshot_for_setup_with_progress(
+    config: &Config,
+    progress: &mut dyn FnMut(CatalogIndexStatus) -> bool,
+) -> Result<MediaSnapshot, String> {
+    media_snapshot_inner(config, false, false, true, Some(progress))
 }
 
 pub fn media_snapshot_incremental(config: &Config) -> Result<MediaSnapshot, String> {
-    media_snapshot_inner(config, true, true, None)
+    media_snapshot_inner(config, true, true, false, None)
 }
 
 pub fn media_snapshot_with_progress(
@@ -1763,13 +1779,14 @@ pub fn media_snapshot_with_progress(
     full_refresh: bool,
     progress: &mut dyn FnMut(CatalogIndexStatus) -> bool,
 ) -> Result<MediaSnapshot, String> {
-    media_snapshot_inner(config, true, !full_refresh, Some(progress))
+    media_snapshot_inner(config, true, !full_refresh, false, Some(progress))
 }
 
 fn media_snapshot_inner(
     config: &Config,
     refresh: bool,
     incremental: bool,
+    publish_missing_shared_inventory: bool,
     progress: Option<&mut dyn FnMut(CatalogIndexStatus) -> bool>,
 ) -> Result<MediaSnapshot, String> {
     let local_root = config.library.music_library.trim();
@@ -1819,7 +1836,7 @@ fn media_snapshot_inner(
         }
     }
 
-    if config.scan.sqlite_shared && !refresh {
+    if config.scan.sqlite_shared && !refresh && !publish_missing_shared_inventory {
         return Err(
             "The shared SPLINED database has no usable inventory. Use Refresh DB to build it from this client's library view."
                 .to_string(),
@@ -4849,6 +4866,9 @@ fn rebuild_index_generation(
     }
 
     begin_publication(connection, lease)?;
+    if !report_catalog_progress(connection, &mut progress)? {
+        return Err(CATALOG_INDEX_CANCELLED.to_string());
+    }
     publish_index_generation(
         connection,
         config,
@@ -7432,6 +7452,52 @@ mod tests {
         let _held = claim_shared_database(&db).unwrap();
         assert!(DatabasePathAccess::new(&db, true, true).is_err());
         assert!(DatabasePathAccess::new(&db, true, false).is_ok());
+    }
+
+    #[test]
+    fn setup_publishes_only_a_missing_shared_inventory_in_delete_journal_mode() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("music");
+        let original = library.join("Artist").join("Album");
+        fs::create_dir_all(&original).unwrap();
+        File::create(original.join("01.mp3")).unwrap();
+        let mut config = Config::default();
+        config.library.music_library = library.to_string_lossy().into_owned();
+        config.scan.cache_dir = temp.path().join("cache").to_string_lossy().into_owned();
+        config.scan.sqlite_shared = true;
+        let db = database_path(&config.scan.cache_dir);
+
+        // This is the state Setup can encounter after schema preparation: the
+        // database is current, but no client has published its inventory.
+        drop(open_database(&db, true).unwrap());
+        let startup_error = media_snapshot(&config, false).unwrap_err();
+        assert!(startup_error.contains("Use Refresh DB"));
+
+        let mut progress = Vec::new();
+        let published = media_snapshot_for_setup_with_progress(&config, &mut |status| {
+            progress.push(status);
+            true
+        })
+        .unwrap();
+        assert_eq!(published.albums.len(), 1);
+        assert!(!progress.is_empty());
+        assert!(progress.iter().any(|status| status.completed_albums > 0));
+        assert!(progress.iter().any(|status| status.phase == "publishing"));
+        let connection = Connection::open(&db).unwrap();
+        let journal: String = connection
+            .pragma_query_value(None, "journal_mode", |row| row.get(0))
+            .unwrap();
+        assert_eq!(journal.to_ascii_lowercase(), "delete");
+        drop(connection);
+
+        // Re-entering Setup with a usable shared catalog must remain a warm
+        // read; publishing a newly added folder still requires an explicit
+        // Apply Library Changes or Refresh DB action.
+        let added = library.join("Artist").join("Second Album");
+        fs::create_dir_all(&added).unwrap();
+        File::create(added.join("01.mp3")).unwrap();
+        let warm = media_snapshot_for_setup(&config).unwrap();
+        assert_eq!(warm.albums.len(), 1);
     }
 
     #[test]

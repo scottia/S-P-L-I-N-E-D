@@ -16,6 +16,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $true
+$policyPath = Join-Path $PSScriptRoot "StoreHighlightsPolicy.ps1"
+if (-not (Test-Path -LiteralPath $policyPath -PathType Leaf)) {
+    throw "Microsoft Store Highlights policy is missing: $policyPath"
+}
+. $policyPath
 
 if ($Version -notmatch '^\d+\.\d+\.\d+$') {
     throw "Version must be an existing numeric release tag."
@@ -61,10 +66,9 @@ foreach ($output in @($contextPath, $highlightsPath)) {
     }
 }
 
-$highlights = (Get-Content -Raw -LiteralPath $highlightsPath).Trim()
-if ($highlights.Length -gt 1500) {
-    throw "Store Highlights are $($highlights.Length) characters; Microsoft Store What's new is limited to 1500. Refine customer-facing commit messages instead of silently truncating release history."
-}
+$renderedHighlights = (Get-Content -Raw -LiteralPath $highlightsPath).Trim()
+$boundedHighlights = ConvertTo-BoundedStoreHighlights -Highlights $renderedHighlights -Version $Version
+$highlights = $boundedHighlights.Highlights
 Set-Content -Encoding utf8 -LiteralPath $highlightsPath -Value $highlights
 
 $context = Get-Content -Raw -LiteralPath $contextPath | ConvertFrom-Json
@@ -87,7 +91,13 @@ $audit = [ordered]@{
     range = $baseline.range
     release_note_engine = "git-cliff 2.14.2"
     classification = "cliff.toml"
+    highlights_source_characters = $boundedHighlights.SourceCharacters
     highlights_characters = $highlights.Length
+    highlights_compacted = $boundedHighlights.Compacted
+    highlights_candidate_bullets = $boundedHighlights.CandidateBullets
+    highlights_emitted_bullets = $boundedHighlights.EmittedBullets
+    highlights_omitted_bullets = $boundedHighlights.OmittedBullets
+    highlights_details_url = $boundedHighlights.DetailsUrl
     highlights_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $highlightsPath).Hash.ToLowerInvariant()
     generated_at_utc = [DateTime]::UtcNow.ToString("o")
 }
@@ -101,4 +111,9 @@ if (-not [String]::IsNullOrWhiteSpace($env:GITHUB_OUTPUT)) {
     "audit_path=$auditPath" | Add-Content -Encoding utf8 $env:GITHUB_OUTPUT
 }
 
-Write-Output "Generated cumulative Microsoft Store Highlights for $($baseline.range) ($($highlights.Length)/1500 characters)."
+if ($boundedHighlights.Compacted) {
+    Write-Output "Generated cumulative Microsoft Store Highlights for $($baseline.range): compacted $($boundedHighlights.SourceCharacters) source characters and $($boundedHighlights.CandidateBullets) bullets to $($highlights.Length)/1500 characters, retaining $($boundedHighlights.EmittedBullets) complete bullets plus the full-release link."
+}
+else {
+    Write-Output "Generated cumulative Microsoft Store Highlights for $($baseline.range) ($($highlights.Length)/1500 characters)."
+}

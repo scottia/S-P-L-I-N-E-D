@@ -45,11 +45,11 @@ use splined_core::local_artwork::{
 use splined_core::media_database::{
     MediaAlbumSnapshot, MediaIndexChanges, MediaSnapshot, MediaTrackSnapshot,
     RuntimeArtworkMaterial, backfill_windows_comp_track_coordination,
-    clear_album_bypass_from_runtime, detect_media_index_changes, fallback_tracks_from_folder,
-    indexed_artist_appearances, load_artist_art_profile, media_snapshot,
-    pending_database_schema_upgrade, persist_opposing_album_artwork,
-    persist_opposing_compilation_artwork, record_album_outcome, record_album_outcome_from_runtime,
-    save_artist_art_identity, upgrade_database_schema,
+    clear_album_bypass_from_runtime, database_path, detect_media_index_changes,
+    fallback_tracks_from_folder, indexed_artist_appearances, load_artist_art_profile,
+    media_snapshot, media_snapshot_for_setup_with_progress, pending_database_schema_upgrade,
+    persist_opposing_album_artwork, persist_opposing_compilation_artwork, record_album_outcome,
+    record_album_outcome_from_runtime, save_artist_art_identity, upgrade_database_schema,
 };
 use splined_core::musicbrainz::{ArtistLookup, ArtistSearchHit, MusicBrainzClient};
 use splined_core::override_coordination::{
@@ -59,7 +59,8 @@ use splined_core::override_coordination::{
 };
 use splined_core::range::Range;
 use splined_core::safe_write::{
-    cleanup_stale_audio_stages, replace_binary_file, take_credential_protection_warning,
+    cleanup_stale_audio_stages, is_remote_path, replace_binary_file,
+    take_credential_protection_warning,
 };
 use splined_core::scan_controller::{ControllerNotice, ProcessingDebugSink, ScanController};
 use splined_core::scan_tags::read_local_track_evidence;
@@ -7195,6 +7196,69 @@ fn human_file_size(bytes: u64) -> String {
     }
 }
 
+fn resolved_setup_directory(value: &str) -> PathBuf {
+    let path = PathBuf::from(value.trim());
+    if path.is_absolute() {
+        path
+    } else {
+        splined_core::portable::app_layout()
+            .map(|layout| layout.root.join(&path))
+            .unwrap_or(path)
+    }
+}
+
+fn preview_setup_database_path_ui(ui: &AppWindow, value: &str) {
+    let value = value.trim();
+    if value.is_empty() {
+        ui.set_setup_database_network_path(false);
+        ui.set_setup_database_summary(
+            "Choose the directory that owns splined.db; Setup will report whether it is new or existing."
+                .into(),
+        );
+        return;
+    }
+    let directory = resolved_setup_directory(value);
+    let network = is_remote_path(&directory);
+    let database = database_path(&directory);
+    let database_display = splined_core::portable::display_path(&database);
+    ui.set_setup_database_network_path(network);
+    ui.set_setup_database_summary(
+        format!(
+            "{} SQLite target · {} · Existing-file details are checked when Setup starts.",
+            if network { "Network" } else { "Local" },
+            database_display
+        )
+        .into(),
+    );
+}
+
+fn inspect_setup_database_path_ui(ui: &AppWindow, value: &str) {
+    let value = value.trim();
+    if value.is_empty() {
+        preview_setup_database_path_ui(ui, value);
+        return;
+    }
+    let directory = resolved_setup_directory(value);
+    let network = is_remote_path(&directory);
+    let database = database_path(&directory);
+    let database_display = splined_core::portable::display_path(&database);
+    let summary = match fs::metadata(&database) {
+        Ok(metadata) if metadata.is_file() => format!(
+            "Existing {} database · {} · {}",
+            if network { "network" } else { "local" },
+            human_file_size(metadata.len()),
+            database_display
+        ),
+        _ => format!(
+            "New {} database will be created · {}",
+            if network { "network" } else { "local" },
+            database_display
+        ),
+    };
+    ui.set_setup_database_network_path(network);
+    ui.set_setup_database_summary(summary.into());
+}
+
 fn max_files_display(value: &str) -> String {
     backup_file_limit(value)
         .map(|limit| limit.to_string())
@@ -7770,27 +7834,20 @@ fn load_application_state() -> (ApplicationState, bool, Option<String>) {
             setup.library.music_library.clear();
             setup.scan.scan_library_dir.clear();
             if let Ok(layout) = splined_core::portable::app_layout() {
-                setup.scan.cache_dir = layout.root.join("_db").to_string_lossy().into_owned();
-                setup.scan.shared_artist_art_dir = layout
-                    .root
-                    .join("_cache")
-                    .join("artist-art")
-                    .to_string_lossy()
-                    .into_owned();
+                setup.scan.cache_dir =
+                    splined_core::portable::display_path(&layout.root.join("_db"));
+                setup.scan.shared_artist_art_dir = splined_core::portable::display_path(
+                    &layout.root.join("_cache").join("artist-art"),
+                );
                 setup.scan.temporary_cache_dir =
-                    layout.root.join("_cache").to_string_lossy().into_owned();
-                setup.scan.log_dir = layout.root.join("_logs").to_string_lossy().into_owned();
-                setup.credentials.credential_dir = layout
-                    .root
-                    .join("credentials")
-                    .to_string_lossy()
-                    .into_owned();
-                setup.samples.sample_dir = layout
-                    .root
-                    .join("_cache")
-                    .join("samples")
-                    .to_string_lossy()
-                    .into_owned();
+                    splined_core::portable::display_path(&layout.root.join("_cache"));
+                setup.scan.log_dir =
+                    splined_core::portable::display_path(&layout.root.join("_logs"));
+                setup.credentials.credential_dir =
+                    splined_core::portable::display_path(&layout.root.join("credentials"));
+                setup.samples.sample_dir = splined_core::portable::display_path(
+                    &layout.root.join("_cache").join("samples"),
+                );
             }
             let snapshot = empty_snapshot(&setup);
             let mut state = ApplicationState::new(setup, snapshot)
@@ -14405,6 +14462,14 @@ fn bind_callbacks(
     }
     {
         let weak = ui.as_weak();
+        ui.on_setup_database_path_edited(move |path| {
+            if let Some(ui) = weak.upgrade() {
+                preview_setup_database_path_ui(&ui, path.as_str());
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
         ui.on_browse_setting_directory(move |target| {
             let target = target.to_string();
             let current = weak
@@ -14441,7 +14506,10 @@ fn bind_callbacks(
                     match target.as_str() {
                         "music" => ui.set_settings_music_library(path.into()),
                         "scan" => ui.set_settings_scan_library(path.into()),
-                        "database" => ui.set_settings_database_dir(path.into()),
+                        "database" => {
+                            ui.set_settings_database_dir(path.clone().into());
+                            inspect_setup_database_path_ui(&ui, &path);
+                        }
                         "artist-art" => ui.set_settings_shared_artist_art_dir(path.into()),
                         "temporary" => ui.set_settings_temporary_cache_dir(path.into()),
                         "logs" => ui.set_settings_log_dir(path.into()),
@@ -15070,6 +15138,16 @@ fn bind_service_callbacks(
             }
             let password = ui.get_backup_password().to_string();
             ui.set_setup_saving(true);
+            ui.set_setup_progress_failed(false);
+            ui.set_setup_progress_phase("Reading Settings Archive".into());
+            ui.set_setup_progress_detail(
+                "Validating the .spl archive and loading its Config v5 paths for review.".into(),
+            );
+            ui.set_setup_progress_current_path(path.to_string_lossy().into_owned().into());
+            ui.set_setup_progress_completed(0);
+            ui.set_setup_progress_total(0);
+            ui.set_setup_progress_percent(0);
+            ui.set_setup_progress_errors(0);
             ui.set_setup_loaded_archive_path(SharedString::default());
             ui.set_setup_message("Reading Settings Archive…".into());
             let weak = weak.clone();
@@ -15082,6 +15160,11 @@ fn bind_service_callbacks(
                         ui.set_setup_saving(false);
                         match result {
                             Ok(config) => {
+                                ui.set_setup_progress_phase("Settings Archive loaded".into());
+                                ui.set_setup_progress_detail(
+                                    "Review every path and shared-database choice before saving."
+                                        .into(),
+                                );
                                 if let Ok(mut draft) = settings_draft.lock() {
                                     *draft = config.clone();
                                 }
@@ -15096,6 +15179,11 @@ fn bind_service_callbacks(
                                 }
                             }
                             Err(error) => {
+                                ui.set_setup_progress_failed(true);
+                                ui.set_setup_progress_phase(
+                                    "Settings Archive could not be loaded".into(),
+                                );
+                                ui.set_setup_progress_detail(error.clone().into());
                                 ui.set_setup_message("Settings Archive could not be loaded. Check the file and password, or enter paths below.".into());
                                 record_action_result(&state, Err(error));
                             }
@@ -15131,20 +15219,120 @@ fn bind_service_callbacks(
             let config = match prepared {
                 Ok(prepared) => prepared,
                 Err(error) => {
+                    ui.set_setup_progress_failed(true);
+                    ui.set_setup_progress_phase("Setup needs attention".into());
+                    ui.set_setup_progress_detail(error.clone().into());
+                    inspect_setup_database_path_ui(
+                        &ui,
+                        ui.get_settings_database_dir().as_str(),
+                    );
                     record_action_result(&state, Err(error));
                     refresh_weak(&weak, &state);
                     return;
                 }
             };
+            inspect_setup_database_path_ui(&ui, &config.scan.cache_dir);
             ui.set_setup_saving(true);
-            ui.set_setup_message("Saving settings and loading the music library… This may take a while on a new library.".into());
+            ui.set_setup_progress_failed(false);
+            ui.set_setup_progress_phase(
+                if database_path(resolved_setup_directory(&config.scan.cache_dir)).is_file() {
+                    "Opening existing SQLite database"
+                } else if config.scan.sqlite_shared {
+                    "Preparing shared SQLite database"
+                } else {
+                    "Preparing local SQLite database"
+                }
+                .into(),
+            );
+            ui.set_setup_progress_detail(
+                "Saving Config v5, validating SQLite, and preparing the music library index."
+                    .into(),
+            );
+            ui.set_setup_progress_current_path(SharedString::default());
+            ui.set_setup_progress_completed(0);
+            ui.set_setup_progress_total(0);
+            ui.set_setup_progress_percent(0);
+            ui.set_setup_progress_errors(0);
+            ui.set_setup_message("Saving settings and preparing the music library… Large libraries and network databases can take time; live progress appears below.".into());
             let weak = weak.clone();
             let state = Arc::clone(&state);
             let settings_draft = Arc::clone(&settings_draft);
             std::thread::spawn(move || {
                 let result = (|| {
                     let config = splined_core::settings::save_config(&config)?;
-                    let snapshot = media_snapshot(&config, false)?;
+                    let progress_weak = weak.clone();
+                    let progress_batch =
+                        i64::try_from(config.scan.index_batch_size.clamp(1, 64)).unwrap_or(16);
+                    let mut last_progress_update =
+                        Instant::now() - Duration::from_millis(250);
+                    let mut last_progress_phase = String::new();
+                    let snapshot = media_snapshot_for_setup_with_progress(
+                        &config,
+                        &mut |status| {
+                            let phase_changed = status.phase != last_progress_phase;
+                            if !phase_changed
+                                && last_progress_update.elapsed() < Duration::from_millis(100)
+                            {
+                                return true;
+                            }
+                            last_progress_phase = status.phase.clone();
+                            last_progress_update = Instant::now();
+                            let publishing = status.phase == "publishing";
+                            let estimated_total = if publishing {
+                                status
+                                    .completed_albums
+                                    .max(status.discovered_albums)
+                                    .max(1)
+                            } else {
+                                status
+                                    .discovered_albums
+                                    .max(status.completed_albums.saturating_add(progress_batch))
+                                    .max(1)
+                            };
+                            let percent = if publishing {
+                                99
+                            } else {
+                                (status.completed_albums.saturating_mul(100) / estimated_total)
+                                    .clamp(0, 99) as i32
+                            };
+                            let phase = match status.phase.as_str() {
+                                "enumerating" => "Indexing music library",
+                                "staging" => "Saving catalog batches",
+                                "publishing" => "Publishing SQLite catalog",
+                                other => other,
+                            }
+                            .to_string();
+                            let completed = i32::try_from(status.completed_albums.max(0))
+                                .unwrap_or(i32::MAX);
+                            let total =
+                                i32::try_from(estimated_total).unwrap_or(i32::MAX);
+                            let errors =
+                                i32::try_from(status.error_count.max(0)).unwrap_or(i32::MAX);
+                            let current_path = splined_core::portable::display_path(Path::new(
+                                &status.current_path,
+                            ));
+                            let detail = format!(
+                                "{} Albums indexed · {} changed · {} unchanged · {} errors",
+                                status.completed_albums,
+                                status.changed_albums,
+                                status.unchanged_albums,
+                                status.error_count
+                            );
+                            let progress_weak = progress_weak.clone();
+                            slint::invoke_from_event_loop(move || {
+                                if let Some(ui) = progress_weak.upgrade() {
+                                    ui.set_setup_progress_phase(phase.into());
+                                    ui.set_setup_progress_detail(detail.into());
+                                    ui.set_setup_progress_current_path(current_path.into());
+                                    ui.set_setup_progress_completed(completed);
+                                    ui.set_setup_progress_total(total);
+                                    ui.set_setup_progress_percent(percent);
+                                    ui.set_setup_progress_errors(errors);
+                                }
+                            })
+                            .is_ok()
+                        },
+                    )?;
                     let diagnostics = startup_diagnostics(&config, &snapshot);
                     let mut replacement = ApplicationState::new(config.clone(), snapshot)?;
                     replacement.push_log("First-run Setup completed.".to_string());
@@ -15158,6 +15346,11 @@ fn bind_service_callbacks(
                         ui.set_setup_saving(false);
                         match result {
                             Ok((config, replacement)) => {
+                                ui.set_setup_progress_percent(100);
+                                ui.set_setup_progress_phase("Setup complete".into());
+                                ui.set_setup_progress_detail(
+                                    "SQLite is ready and the Windows workspace is opening.".into(),
+                                );
                                 if let Ok(mut app) = state.lock() {
                                     let mut replacement = replacement;
                                     replacement.embed_locked_album_paths =
@@ -15175,6 +15368,9 @@ fn bind_service_callbacks(
                                 }
                             }
                             Err(error) => {
+                                ui.set_setup_progress_failed(true);
+                                ui.set_setup_progress_phase("Setup stopped".into());
+                                ui.set_setup_progress_detail(error.clone().into());
                                 ui.set_setup_message("Setup could not finish. Correct the problem below and try Save & Open Settings again.".into());
                                 record_action_result(&state, Err(error));
                             }
@@ -16113,20 +16309,30 @@ fn ensure_active_tint_palette(app: &mut ApplicationState) {
 }
 
 fn set_settings_ui(ui: &AppWindow, config: &Config) {
-    ui.set_settings_music_library(config.library.music_library.clone().into());
-    ui.set_settings_scan_library(config.scan.scan_library_dir.clone().into());
+    ui.set_settings_music_library(
+        splined_core::portable::display_path(Path::new(&config.library.music_library)).into(),
+    );
+    ui.set_settings_scan_library(
+        splined_core::portable::display_path(Path::new(&config.scan.scan_library_dir)).into(),
+    );
     ui.set_settings_artist_separator_regex(config.scan.artist_separator_regex.clone().into());
     ui.set_settings_artist_separator_profile(config.scan.artist_separator_profile.clone().into());
-    ui.set_settings_database_dir(config.scan.cache_dir.clone().into());
-    ui.set_settings_shared_artist_art_dir(
-        configured_shared_artist_art_dir(config)
-            .to_string_lossy()
-            .into_owned()
-            .into(),
+    ui.set_settings_database_dir(
+        splined_core::portable::display_path(Path::new(&config.scan.cache_dir)).into(),
     );
-    ui.set_settings_temporary_cache_dir(config.scan.temporary_cache_dir.clone().into());
-    ui.set_settings_log_dir(config.scan.log_dir.clone().into());
-    ui.set_settings_credential_dir(config.credentials.credential_dir.clone().into());
+    inspect_setup_database_path_ui(ui, &config.scan.cache_dir);
+    ui.set_settings_shared_artist_art_dir(
+        splined_core::portable::display_path(&configured_shared_artist_art_dir(config)).into(),
+    );
+    ui.set_settings_temporary_cache_dir(
+        splined_core::portable::display_path(Path::new(&config.scan.temporary_cache_dir)).into(),
+    );
+    ui.set_settings_log_dir(
+        splined_core::portable::display_path(Path::new(&config.scan.log_dir)).into(),
+    );
+    ui.set_settings_credential_dir(
+        splined_core::portable::display_path(Path::new(&config.credentials.credential_dir)).into(),
+    );
     ui.set_settings_ignored_subs(config.library.ignored_subs.join(", ").into());
     ui.set_settings_mode(
         match config.mode {
@@ -16297,6 +16503,14 @@ fn apply_settings_ui(ui: &AppWindow, config: &mut Config) -> Result<(), String> 
         override_delay_hours(ui.get_settings_scan_timeout().as_str())?;
     config.scan.sqlite_shared = ui.get_settings_sqlite_shared();
     config.scan.windows_client_lock = ui.get_settings_windows_client_lock();
+    if is_remote_path(&resolved_setup_directory(&config.scan.cache_dir))
+        && !config.scan.sqlite_shared
+    {
+        return Err(
+            "The SQLite database directory is on network storage. Enable Shared/network SQLite before saving so SPLINED uses the rollback journal instead of WAL."
+                .to_string(),
+        );
+    }
     config.samples.sample_write = ui.get_settings_sample_write();
     config.samples.sample_dir = ui.get_settings_sample_dir().trim().to_string();
     config.output.file_formats = split_values(ui.get_settings_file_formats().as_str());
