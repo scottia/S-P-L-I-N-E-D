@@ -133,6 +133,13 @@ embedded art nor modifies music files. **Settings → Refresh DB** remains the
 deliberate complete index rebuild. A new local or shared index can be published
 entirely by Windows; Python is not an index authority.
 
+First-run **Setup → Save & Open Settings** is also an explicit publication
+boundary. If the selected shared database has a current schema but no usable
+inventory, Setup publishes its first index with shared mode already active,
+using the rollback `DELETE` journal rather than building a network database in
+local WAL mode. If the shared database already has a usable inventory, Setup
+loads it read-only and does not rebuild it.
+
 Raw UNC cache paths are supported and are preferred when mapped drive letters
 are not stable across devices or sessions. On Windows, SPLINED internally
 adapts a configured path such as `\\server\share\path\to\_cache`. It dynamically

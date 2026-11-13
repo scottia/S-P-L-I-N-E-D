@@ -193,9 +193,13 @@ The shared `cliff.toml` and checked-in Tera templates classify release changes.
 GitHub notes cover the previous numeric tag through the current tag. Store
 Highlights cover the **last published Store package** through the target tag,
 so intervening GitHub-only releases are included. The Store Highlights file
-must fit the 1,500-character Store limit; generation fails instead of
-truncating. `STORE-SUBMISSION.json` records the target, published baseline,
-range, git-cliff version, and Highlights checksum.
+must fit the 1,500-character Store limit. If the complete cumulative history
+exceeds that boundary, generation retains the highest-priority complete
+bullets that fit and appends the target GitHub Release link. It never cuts a
+bullet or sentence mid-text. `STORE-SUBMISSION.json` records the source and
+final character counts, candidate/emitted/omitted bullet counts, whether
+compaction occurred, the target, published baseline, range, git-cliff version,
+and Highlights checksum.
 
 The active scripts, templates, and intentionally historical Store regression
 fixtures are inventoried in the [release support-file guide](../release/README.md).

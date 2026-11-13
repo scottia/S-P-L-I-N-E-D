@@ -82,6 +82,7 @@ jobs:
             cliff.toml
             release/Install-GitCliff.ps1
             release/Generate-StoreHighlights.ps1
+            release/StoreHighlightsPolicy.ps1
             release/Resolve-StoreBaseline.ps1
             release/Test-StoreBaseline.ps1
             release/tests

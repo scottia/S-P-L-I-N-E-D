@@ -550,7 +550,7 @@ where
 }
 
 #[cfg(windows)]
-fn is_remote_path(path: &Path) -> bool {
+pub fn is_remote_path(path: &Path) -> bool {
     use std::os::windows::ffi::OsStrExt;
     use std::path::{Component, Prefix};
     use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
@@ -575,7 +575,7 @@ fn is_remote_path(path: &Path) -> bool {
 }
 
 #[cfg(not(windows))]
-fn is_remote_path(_path: &Path) -> bool {
+pub fn is_remote_path(_path: &Path) -> bool {
     false
 }
 

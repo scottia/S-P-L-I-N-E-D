@@ -1,5 +1,5 @@
 use crate::musicbrainz::MusicBrainzConfig;
-use crate::portable::{app_layout, state_root};
+use crate::portable::{app_layout, display_path, state_root};
 use crate::source_policy::SourcePolicyConfig;
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Serialize};
@@ -796,7 +796,7 @@ pub fn load_config_at_root(root: &Path) -> Result<Config, String> {
     if !path.is_file() {
         return Err(format!(
             "Config v5 was not found. Open a .spl backup to import its settings, or complete SPLINED Setup.\nPortable Config v5 location: {}",
-            path.display()
+            display_path(&path)
         ));
     }
     let text = std::fs::read_to_string(&path).map_err(|error| {
