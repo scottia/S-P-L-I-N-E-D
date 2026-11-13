@@ -157,6 +157,19 @@ class ConfigV5ParityTests(unittest.TestCase):
                 ):
                     splined.validate_config_v5(config)
 
+    def test_large_album_deferral_threshold_is_explicit_and_disableable(self) -> None:
+        config = load_example("docker/config.example.toml")
+        self.assertEqual(config["scan"]["index_large_album_track_threshold"], 100)
+        for threshold in (0, 100, 10000):
+            with self.subTest(threshold=threshold):
+                config["scan"]["index_large_album_track_threshold"] = threshold
+                splined.validate_config_v5(config)
+        config["scan"]["index_large_album_track_threshold"] = 10001
+        with self.assertRaisesRegex(
+            splined.SplinedError, "index_large_album_track_threshold"
+        ):
+            splined.validate_config_v5(config)
+
     def test_upscale_percentage_is_a_ceiling_not_an_all_or_nothing_gate(self) -> None:
         config = load_example("docker/config.example.toml")
         config["output"]["upscale_below_ideal"] = True

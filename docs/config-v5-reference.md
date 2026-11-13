@@ -83,6 +83,7 @@ mounts.
 | `index_batch_size` | `16` | Initial maximum Albums per durable catalog checkpoint; adaptive batching remains bounded at 64 |
 | `index_batch_adaptive` | `true` | Adjust checkpoint size from observed payload, track count, processing time, and commit latency |
 | `index_metadata_readers` | `16` | Bounded concurrent local tag readers, configurable from 1 through 32; catalog publication retains one database writer |
+| `index_large_album_track_threshold` | `100` | Process Albums at or above this track count after ordinary Albums and report live track progress; `0` disables deferral |
 | `cache_dir` | WebGUI `"/_cache"`; Windows `"_db"` | **Persistent Cache Directory**. WebGUI stores staged work and original-artwork backups here; native Windows also retains its historical SQLite-directory compatibility |
 | `temporary_cache_dir` | WebGUI `"/_cache/_tmp"`; Windows `"_cache"` | **Temporary Cache Directory** for disposable previews, downloaded candidates, uploads, and COMP work; an older Config v5 file that omits it falls back to `cache_dir` |
 | `shared_artist_art_dir` | empty | **V/A / OST Artist Images Directory** for shared Soundtrack or Various Artists portrait/banner files; blank uses Persistent Cache Directory itself, while any other persistent server-visible directory or preferred folder name may be selected |

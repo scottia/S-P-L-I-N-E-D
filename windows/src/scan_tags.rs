@@ -7,6 +7,7 @@ use lofty::tag::ItemKey;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 
 const MAX_ID3V2_BYTES: usize = 16 * 1024 * 1024;
 
@@ -55,12 +56,54 @@ pub fn read_album_index_tags(path: &Path) -> Result<AlbumIndexTags, String> {
             path.display()
         )
     })?;
-    let album = read_optional(&tagged_file, &ItemKey::AlbumTitle).unwrap_or_default();
-    let album_artist = read_optional(&tagged_file, &ItemKey::AlbumArtist)
-        .or_else(|| read_optional(&tagged_file, &ItemKey::TrackArtist))
+    Ok(album_index_from_tagged_file(&tagged_file))
+}
+
+/// Read the representative Album identity and its track credit from one tag
+/// block. The caller can seed the bounded all-track pass with the returned
+/// evidence instead of opening the representative file a second time.
+pub fn read_album_index_tags_and_track_evidence(
+    path: &Path,
+) -> Result<(AlbumIndexTags, Option<LocalTrackEvidence>), String> {
+    if is_mpeg_path(path)
+        && let Some(fields) = read_id3v2_fields(path)?
+    {
+        let album = album_index_from_id3(fields.clone());
+        let mut evidence = evidence_from_id3(path, fields).ok();
+        if let Some(value) = evidence.as_mut()
+            && (value.musicbrainz_track_id.is_none() || value.musicbrainz_artist_id.is_none())
+            && let Ok(tagged_file) = read_tags_only(path)
+        {
+            value.musicbrainz_track_id = value
+                .musicbrainz_track_id
+                .take()
+                .or_else(|| read_optional(&tagged_file, &ItemKey::MusicBrainzRecordingId));
+            value.musicbrainz_artist_id = value
+                .musicbrainz_artist_id
+                .take()
+                .or_else(|| read_optional(&tagged_file, &ItemKey::MusicBrainzArtistId));
+        }
+        return Ok((album, evidence));
+    }
+
+    let tagged_file = read_tags_only(path).map_err(|error| {
+        format!(
+            "Unable to read SPLINED representative tags from {}: {error}",
+            path.display()
+        )
+    })?;
+    let album = album_index_from_tagged_file(&tagged_file);
+    let evidence = evidence_from_tagged_file(path, &tagged_file).ok();
+    Ok((album, evidence))
+}
+
+fn album_index_from_tagged_file(tagged_file: &TaggedFile) -> AlbumIndexTags {
+    let album = read_optional(tagged_file, &ItemKey::AlbumTitle).unwrap_or_default();
+    let album_artist = read_optional(tagged_file, &ItemKey::AlbumArtist)
+        .or_else(|| read_optional(tagged_file, &ItemKey::TrackArtist))
         .unwrap_or_default();
-    let date = read_optional(&tagged_file, &ItemKey::RecordingDate)
-        .or_else(|| read_optional(&tagged_file, &ItemKey::OriginalReleaseDate))
+    let date = read_optional(tagged_file, &ItemKey::RecordingDate)
+        .or_else(|| read_optional(tagged_file, &ItemKey::OriginalReleaseDate))
         .unwrap_or_default();
     let year = date
         .as_bytes()
@@ -69,36 +112,36 @@ pub fn read_album_index_tags(path: &Path) -> Result<AlbumIndexTags, String> {
         .map(|value| String::from_utf8_lossy(value).into_owned())
         .unwrap_or_default();
     let musicbrainz_album_id =
-        read_optional(&tagged_file, &ItemKey::MusicBrainzReleaseId).unwrap_or_default();
-    let compilation = read_optional(&tagged_file, &ItemKey::FlagCompilation).is_some_and(|value| {
+        read_optional(tagged_file, &ItemKey::MusicBrainzReleaseId).unwrap_or_default();
+    let compilation = read_optional(tagged_file, &ItemKey::FlagCompilation).is_some_and(|value| {
         matches!(
             value.trim().to_ascii_lowercase().as_str(),
             "1" | "true" | "yes" | "y"
         )
     });
 
-    Ok(AlbumIndexTags {
+    AlbumIndexTags {
         album,
         album_artist,
-        artist_sort: read_optional(&tagged_file, &ItemKey::AlbumArtistSortOrder)
-            .or_else(|| read_optional(&tagged_file, &ItemKey::TrackArtistSortOrder))
+        artist_sort: read_optional(tagged_file, &ItemKey::AlbumArtistSortOrder)
+            .or_else(|| read_optional(tagged_file, &ItemKey::TrackArtistSortOrder))
             .unwrap_or_default(),
-        album_sort: read_optional(&tagged_file, &ItemKey::AlbumTitleSortOrder).unwrap_or_default(),
+        album_sort: read_optional(tagged_file, &ItemKey::AlbumTitleSortOrder).unwrap_or_default(),
         musicbrainz_album_id,
         musicbrainz_release_group_id: read_optional(
-            &tagged_file,
+            tagged_file,
             &ItemKey::MusicBrainzReleaseGroupId,
         )
         .unwrap_or_default(),
         musicbrainz_album_artist_id: read_optional(
-            &tagged_file,
+            tagged_file,
             &ItemKey::MusicBrainzReleaseArtistId,
         )
-        .or_else(|| read_optional(&tagged_file, &ItemKey::MusicBrainzArtistId))
+        .or_else(|| read_optional(tagged_file, &ItemKey::MusicBrainzArtistId))
         .unwrap_or_default(),
         year,
         compilation,
-    })
+    }
 }
 
 pub fn read_album_track_evidence(
@@ -115,35 +158,47 @@ pub fn read_local_track_evidence_bounded(
     paths: &[PathBuf],
     maximum_readers: usize,
 ) -> Vec<Option<LocalTrackEvidence>> {
+    read_local_track_evidence_bounded_with_progress(paths, maximum_readers, |_, _| Ok(()))
+        .unwrap_or_default()
+}
+
+pub fn read_local_track_evidence_bounded_with_progress<F>(
+    paths: &[PathBuf],
+    maximum_readers: usize,
+    mut progress: F,
+) -> Result<Vec<Option<LocalTrackEvidence>>, String>
+where
+    F: FnMut(usize, usize) -> Result<(), String>,
+{
     if paths.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let readers = maximum_readers.clamp(1, paths.len());
     let chunk_size = paths.len().div_ceil(readers);
     std::thread::scope(|scope| {
-        let handles = paths
-            .chunks(chunk_size)
-            .map(|chunk| {
-                let length = chunk.len();
-                (
-                    length,
-                    scope.spawn(move || {
-                        chunk
-                            .iter()
-                            .map(|path| read_local_track_evidence(path).ok())
-                            .collect::<Vec<_>>()
-                    }),
-                )
-            })
+        let (sender, receiver) = mpsc::channel();
+        for (chunk_index, chunk) in paths.chunks(chunk_size).enumerate() {
+            let sender = sender.clone();
+            scope.spawn(move || {
+                let start = chunk_index * chunk_size;
+                for (offset, path) in chunk.iter().enumerate() {
+                    let _ = sender.send((start + offset, read_local_track_evidence(path).ok()));
+                }
+            });
+        }
+        drop(sender);
+        let mut values = std::iter::repeat_with(|| None)
+            .take(paths.len())
             .collect::<Vec<_>>();
-        handles
-            .into_iter()
-            .flat_map(|(length, handle)| {
-                handle
-                    .join()
-                    .unwrap_or_else(|_| std::iter::repeat_with(|| None).take(length).collect())
-            })
-            .collect()
+        let report_every = paths.len().div_ceil(20).max(16);
+        for (completed, (index, value)) in receiver.into_iter().enumerate() {
+            values[index] = value;
+            let completed = completed + 1;
+            if completed == paths.len() || completed % report_every == 0 {
+                progress(completed, paths.len())?;
+            }
+        }
+        Ok(values)
     })
 }
 
@@ -660,6 +715,25 @@ mod tests {
         assert_eq!(evidence.musicbrainz_album_id.as_deref(), Some(RELEASE_ID));
         assert_eq!(evidence.musicbrainz_track_id.as_deref(), Some(RECORDING_ID));
         assert_eq!(evidence.compilation.as_deref(), Some("1"));
+        fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn representative_album_and_track_evidence_share_the_leading_tag_read() {
+        let path = write_id3_fixture(&[
+            id3_text_frame("TIT2", "Track Title"),
+            id3_text_frame("TPE1", "Track Artist"),
+            id3_text_frame("TALB", "Album Title"),
+            id3_text_frame("TPE2", "Album Artist"),
+            id3_user_text_frame("MUSICBRAINZ_ALBUMID", RELEASE_ID),
+            id3_user_text_frame("MusicBrainz Track Id", RECORDING_ID),
+        ]);
+        let (album, evidence) = read_album_index_tags_and_track_evidence(&path).unwrap();
+        let evidence = evidence.unwrap();
+        assert_eq!(album.album, "Album Title");
+        assert_eq!(album.musicbrainz_album_id, RELEASE_ID);
+        assert_eq!(evidence.title, "Track Title");
+        assert_eq!(evidence.musicbrainz_track_id.as_deref(), Some(RECORDING_ID));
         fs::remove_file(path).ok();
     }
 

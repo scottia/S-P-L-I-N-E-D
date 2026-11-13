@@ -1244,3 +1244,39 @@ and retains physical path resolution for write-time event validation. The same
 read-only passes take 2.827, 2.722, and 2.767 seconds and return the same 5,240
 stored/projected Artist identities. The count query remains 0.005 seconds. Pool
 state after the run was maximum 8, size 1, available 1, waiting 0.
+
+### Live NAS metadata-reader taper and eager baseline
+
+The earlier small-fixture result established that bounded parallel tag reads
+were safe, but it was not representative production sizing evidence. A live
+PostgreSQL development catalog was therefore exercised against the real NAS
+library with the SPLINED container limited to two CPUs and 16 GiB. Every taper
+sample processed the same first 352 Albums, retained one database writer and
+reported zero errors.
+
+| Local tag readers | 352-Album duration | Change from 8 readers |
+| ---: | ---: | ---: |
+| 8 | 62.0 s | baseline |
+| 16 | 50.0 s | 19.4% faster |
+| 24 | 51.0 s | 17.7% faster |
+| 32 | 52.0 s | 16.1% faster |
+
+The curve tapers after sixteen. The default is therefore sixteen for every
+library size, configurable from 1 through 32. It is a ceiling: an Album with
+fewer tracks naturally occupies fewer readers. Reader count is not adaptive;
+the independent durable database checkpoint batch remains adaptive.
+
+With sixteen readers, the eager baseline published 3,825 Albums / 5,241
+Artists in 2,413 seconds (40m13s) with zero errors while the authenticated GUI
+remained active. The first 352 Albums had warm stored evidence from the taper;
+the remaining Albums required cold NAS tag reads. The run excluded the
+Billboard and `Compilations (Top 40)` test directories but deliberately kept
+`[Various Artists]`. Container memory reached a stable 2.6/16 GiB plateau,
+CPU was 13.7% at the observed tail, and the container had zero restarts.
+
+The follow-up gate reuses representative-track evidence instead of opening
+that file again in the bounded track pass. It also places Albums at or above a
+configurable track threshold (default 100, zero disables) after ordinary
+Albums and emits intra-Album track progress/lease heartbeats. Track-credit
+authority and its eager publication semantics remain unchanged pending a
+separate architecture review.

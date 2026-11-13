@@ -5353,6 +5353,12 @@ def validate_config_v5(cfg: dict[str, Any]) -> None:
         32,
         "[scan].index_metadata_readers",
     )
+    _bounded_int(
+        scan.get("index_large_album_track_threshold", 100),
+        0,
+        10000,
+        "[scan].index_large_album_track_threshold",
+    )
 
     ranges = section(cfg, "range")
     try:

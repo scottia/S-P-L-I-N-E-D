@@ -653,6 +653,43 @@ class CompilationAuthorityPolicyTests(unittest.TestCase):
                 + "Aaron Neville",
             )
 
+    def test_representative_album_and_track_identity_share_one_tag_view(self) -> None:
+        parsed = SimpleNamespace(tags={
+            "title": ["Song"],
+            "artist": ["Track Artist"],
+            "album": ["Album"],
+            "albumartist": ["Album Artist"],
+            "musicbrainz_trackid": [RECORDING_ID],
+            "musicbrainz_artistid": [ARTIST_ID],
+            "musicbrainz_albumid": [RELEASE_ID],
+        })
+        with patch.object(
+            splined_media_tags, "MutagenFile", return_value=parsed
+        ) as opened:
+            album, track = (
+                splined_media_tags.read_album_and_track_identity_tags(
+                    Path("representative.mp3")
+                )
+            )
+            rows, reads, reuses = splined_media_tags.inspect_album_tracks(
+                SimpleNamespace(
+                    audio_files=[Path("representative.mp3")],
+                    audio_metadata={"representative.mp3": (0, 0)},
+                ),
+                "album",
+                {},
+                force_read=True,
+                preloaded={"representative.mp3": track},
+            )
+        # Mutagen's easy/raw views may each open the tag block once, but the
+        # bounded all-track pass must not open the representative again.
+        self.assertEqual(opened.call_count, 2)
+        self.assertEqual(album["album"], "Album")
+        self.assertEqual(album["album_mbid"], RELEASE_ID)
+        self.assertEqual(track["title"], "Song")
+        self.assertEqual(track["recording_mbid"], RECORDING_ID)
+        self.assertEqual((len(rows), reads, reuses), (1, 1, 0))
+
     def test_credential_options_use_exact_json_names(self) -> None:
         core = SimpleNamespace(
             credential_file=lambda *_args: Path("musicbrainz.json"),
