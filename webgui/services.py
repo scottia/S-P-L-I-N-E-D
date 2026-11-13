@@ -1731,6 +1731,8 @@ class Services:
                 },
             )
             report_progress("published", "Published the validated generation", published=True)
+        except indexer.GenerationInterrupted:
+            raise
         except core.InteractionCancelled:
             indexer.finish(r.database, lease, "cancelled", "Cancelled by operator")
             raise

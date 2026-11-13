@@ -1164,6 +1164,7 @@ function activeIndexJob() {
 }
 function renderIndexProgress() {
   const job = activeIndexJob();
+  const pausedJob = (state.jobs || []).find(item => item.kind === "index" && item.state === "paused") || null;
   const generation = state.indexStatus?.generation || null;
   const generationActive = generation && ["building", "validating", "publishing"].includes(generation.state);
   const active = Boolean(job || generationActive);
@@ -1171,9 +1172,13 @@ function renderIndexProgress() {
   button.hidden = !active;
   if (!active) {
     state.indexStopping = false;
-    if (!job) state.indexJobId = null;
+    state.indexJobId = null;
     status.classList?.remove?.("index-progress");
     status.style?.removeProperty?.("--index-progress");
+    if (pausedJob) {
+      const completed = Number(pausedJob.progress?.completed || 0);
+      setStatus(`PostgreSQL index paused · ${completed} Albums checkpointed · Resume to continue`, "busy");
+    }
     return;
   }
   if (job) state.indexJobId = job.id;

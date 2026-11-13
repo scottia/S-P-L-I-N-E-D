@@ -47,6 +47,10 @@ class GenerationLeaseLost(RuntimeError):
     pass
 
 
+class GenerationInterrupted(RuntimeError):
+    """Process shutdown interrupted work that the next worker may reclaim."""
+
+
 def _lease_deadline() -> datetime:
     return utc_now() + timedelta(seconds=LEASE_SECONDS)
 

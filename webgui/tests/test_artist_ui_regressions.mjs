@@ -127,6 +127,12 @@ test("catalog progress stays indeterminate until discovery has a final total", (
   context.renderIndexProgress();
   assert.match(statuses.at(-1).message, /validating · 99% · 64\/~64 Albums/);
   assert.equal(progressStyle.get("--index-progress"), "99%");
+
+  state.jobs[0].state = "paused";
+  context.renderIndexProgress();
+  assert.match(statuses.at(-1).message, /index paused · 64 Albums checkpointed · Resume to continue/);
+  assert.doesNotMatch(statuses.at(-1).message, /discovering more/);
+  assert.equal(button.hidden, true);
 });
 
 test("opposing Album overrides use their own dark-grey filter and never inflate Bypassed", () => {

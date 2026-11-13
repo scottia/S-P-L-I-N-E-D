@@ -3134,6 +3134,39 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.assertEqual(maintenance, resumed.generation_id)
         coordinator.finish(self.db, resumed, "cancelled", "test cleanup")
 
+    def test_process_interruption_leaves_catalog_generation_recoverable(self):
+        from webgui import index_coordinator as coordinator
+
+        def interrupted():
+            raise coordinator.GenerationInterrupted()
+
+        with self.assertRaises(coordinator.GenerationInterrupted):
+            self.services.refresh_index(cancelled=interrupted, mode="full")
+
+        with closing(self.db.connect()) as db:
+            generation = db.execute(
+                "SELECT generation_id,state,phase FROM catalog_generations "
+                "WHERE state='building' ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+            maintenance = db.execute(
+                "SELECT maintenance_generation_id FROM catalog_index_state "
+                "WHERE singleton=TRUE"
+            ).fetchone()["maintenance_generation_id"]
+        self.assertIsNotNone(generation)
+        self.assertEqual(generation["state"], "building")
+        self.assertEqual(maintenance, generation["generation_id"])
+
+        with closing(self.db.connect()) as db, db:
+            db.raw.execute(
+                "UPDATE catalog_generations SET lease_expires_at=now() "
+                "WHERE generation_id=%s",
+                (generation["generation_id"],),
+            )
+        lease = coordinator.claim(self.db, "full", str(self.root / "music"))
+        self.assertTrue(lease.resumed)
+        self.assertEqual(lease.generation_id, generation["generation_id"])
+        coordinator.finish(self.db, lease, "cancelled", "test cleanup")
+
     def test_postgres_validation_and_publication_interruptions_preserve_atomic_catalog(self):
         from webgui import index_coordinator as coordinator
 

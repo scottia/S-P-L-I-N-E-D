@@ -1286,3 +1286,11 @@ configurable track threshold (default 100, zero disables) after ordinary
 Albums and emits intra-Album track progress/lease heartbeats. Track-credit
 authority and its eager publication semantics remain unchanged pending a
 separate architecture review.
+
+The first live container-restart gate exposed an orderly-shutdown regression:
+the job retained 1,129 completed checkpoints, but shutdown converted its
+generation to terminal `cancelled` and its job to `paused`. The worker shutdown
+contract now leaves an active index generation recoverable for the next
+process while other interactive/write jobs retain their explicit pause
+behavior. A genuinely paused index is labeled as paused rather than continuing
+to display its stale "discovering more" snapshot.
