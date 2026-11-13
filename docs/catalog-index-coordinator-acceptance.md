@@ -1274,6 +1274,12 @@ Billboard and `Compilations (Top 40)` test directories but deliberately kept
 `[Various Artists]`. Container memory reached a stable 2.6/16 GiB plateau,
 CPU was 13.7% at the observed tail, and the container had zero restarts.
 
+The generation's durable timing record reports 55,780 Track tag reads and
+2,388.981 seconds (39m49s) inside the coordinator. Filesystem/tag metadata
+accounted for 2,290.318 seconds, inventory for 52.004 seconds, and 3,325
+PostgreSQL checkpoints for only 19.251 seconds. This isolates local tag/NAS
+work—not PostgreSQL publication—as the dominant cost of the eager baseline.
+
 The follow-up gate reuses representative-track evidence instead of opening
 that file again in the bounded track pass. It also places Albums at or above a
 configurable track threshold (default 100, zero disables) after ordinary
