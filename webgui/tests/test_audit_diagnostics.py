@@ -260,6 +260,16 @@ class AuditDiagnosticsTests(unittest.TestCase):
         self.assertIn('"complete_for_retained_window"', server)
         self.assertIn('"fallback_records_pending_recovery"', (root / "services.py").read_text(encoding="utf-8"))
 
+    def test_v3_upgrade_prunes_only_pre_v3_diagnostics(self) -> None:
+        root = Path(__file__).parents[1]
+        migration = (
+            root / "migrations" / "023_prune_pre_v3_diagnostics.sql"
+        ).read_text(encoding="utf-8")
+        self.assertIn("DELETE FROM web_audit", migration)
+        self.assertIn("DELETE FROM web_audit_sessions", migration)
+        self.assertNotIn("DELETE FROM albums", migration)
+        self.assertNotIn("UPDATE albums", migration)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -251,35 +251,67 @@ pub fn reusable_checkpoint(
         .map_err(sqlite_error("read catalog Album checkpoint"))
 }
 
+pub fn reusable_checkpoints(
+    connection: &Connection,
+    lease: &CatalogGenerationLease,
+) -> Result<Vec<(String, String)>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT album_path,inventory_signature FROM catalog_generation_albums
+             WHERE generation_id=?1 AND disposition<>'error'",
+        )
+        .map_err(sqlite_error("prepare reusable Album checkpoints"))?;
+    let rows = statement
+        .query_map([&lease.generation_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(sqlite_error("read reusable Album checkpoints"))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(sqlite_error("decode reusable Album checkpoints"))
+}
+
 pub fn touch_reusable_checkpoint(
     connection: &mut Connection,
     lease: &CatalogGenerationLease,
     album_path: &str,
 ) -> Result<(), String> {
+    touch_reusable_checkpoints(connection, lease, &[album_path.to_string()])
+}
+
+pub fn touch_reusable_checkpoints(
+    connection: &mut Connection,
+    lease: &CatalogGenerationLease,
+    album_paths: &[String],
+) -> Result<(), String> {
+    if album_paths.is_empty() {
+        return Ok(());
+    }
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(sqlite_error("start catalog checkpoint reuse"))?;
     assert_lease(&transaction, lease)?;
-    let disposition = transaction
-        .query_row(
-            "SELECT disposition FROM catalog_generation_albums
-             WHERE generation_id=?1 AND lower(album_path)=lower(?2)",
-            params![lease.generation_id, album_path],
-            |row| row.get::<_, String>(0),
-        )
-        .map_err(sqlite_error("read reusable Album disposition"))?;
-    transaction
-        .execute(
-            "UPDATE catalog_generation_albums SET scan_token=?1,
-                 completed_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-             WHERE generation_id=?2 AND lower(album_path)=lower(?3)",
-            params![lease.scan_token, lease.generation_id, album_path],
-        )
-        .map_err(sqlite_error("reuse catalog Album checkpoint"))?;
-    increment_progress(&transaction, lease, album_path, &disposition, false)?;
+    for album_path in album_paths {
+        let disposition = transaction
+            .query_row(
+                "SELECT disposition FROM catalog_generation_albums
+                 WHERE generation_id=?1 AND lower(album_path)=lower(?2)",
+                params![lease.generation_id, album_path],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(sqlite_error("read reusable Album disposition"))?;
+        transaction
+            .execute(
+                "UPDATE catalog_generation_albums SET scan_token=?1,
+                     completed_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                 WHERE generation_id=?2 AND lower(album_path)=lower(?3)",
+                params![lease.scan_token, lease.generation_id, album_path],
+            )
+            .map_err(sqlite_error("reuse catalog Album checkpoint"))?;
+        increment_progress(&transaction, lease, album_path, &disposition, false)?;
+    }
     transaction
         .commit()
-        .map_err(sqlite_error("commit catalog checkpoint reuse"))
+        .map_err(sqlite_error("commit catalog checkpoint reuse batch"))
 }
 
 pub fn stage_album(
@@ -871,6 +903,43 @@ mod tests {
             )
             .unwrap();
         assert_eq!(staged, 3);
+        let status = status(&connection).unwrap();
+        assert_eq!(status.discovered_albums, 3);
+        assert_eq!(status.completed_albums, 3);
+        assert_eq!(status.changed_albums, 3);
+    }
+
+    #[test]
+    fn resumed_checkpoints_are_loaded_and_touched_as_one_batch() {
+        let mut connection = database();
+        let stale = claim_generation(&mut connection, "full", "C:/music").unwrap();
+        stage_albums(
+            &mut connection,
+            &stale,
+            &[
+                checkpoint("C:/music/One"),
+                checkpoint("C:/music/Two"),
+                checkpoint("C:/music/Three"),
+            ],
+        )
+        .unwrap();
+        connection
+            .execute(
+                "UPDATE catalog_generations SET lease_expires_at='2000-01-01T00:00:00.000Z'
+                 WHERE generation_id=?1",
+                [&stale.generation_id],
+            )
+            .unwrap();
+        let resumed = claim_generation(&mut connection, "full", "C:/music").unwrap();
+        let checkpoints = reusable_checkpoints(&connection, &resumed).unwrap();
+        assert_eq!(checkpoints.len(), 3);
+        let paths = checkpoints
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect::<Vec<_>>();
+
+        touch_reusable_checkpoints(&mut connection, &resumed, &paths).unwrap();
+
         let status = status(&connection).unwrap();
         assert_eq!(status.discovered_albums, 3);
         assert_eq!(status.completed_albums, 3);

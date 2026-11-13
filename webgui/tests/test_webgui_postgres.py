@@ -1819,6 +1819,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 ).status_code,
                 403,
             )
+
             self.assertEqual(
                 client.post(
                     "/api/login",
@@ -1836,6 +1837,95 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertEqual(client.post("/api/logout").status_code, 200)
             self.assertEqual(client.get("/api/artists").status_code, 401)
         self.runtime = Runtime(self.config, self.db)
+
+    def test_browser_authentication_survives_server_restart(self):
+        self.runtime.close()
+        first_app = create_app(
+            self.config, self.url, token="restart-test-token", start_worker=False
+        )
+        with TestClient(first_app) as first:
+            status = first.get("/api/status").json()
+            first.headers["X-SPLINED-CSRF"] = status["csrf"]
+            response = first.post(
+                "/api/admin/setup",
+                json={
+                    "username": "restart-admin",
+                    "password": "RestartPassword123",
+                    "confirmation": "RestartPassword123",
+                    "token": "restart-test-token",
+                },
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            session_cookie = first.cookies.get("splined_session")
+            self.assertTrue(session_cookie)
+            self.assertTrue(first.get("/api/status").json()["authenticated"])
+
+        restarted_app = create_app(
+            self.config, self.url, token="restart-test-token", start_worker=False
+        )
+        with TestClient(restarted_app) as restarted:
+            restarted.cookies.set("splined_session", session_cookie)
+            status = restarted.get("/api/status")
+            self.assertEqual(status.status_code, 200, status.text)
+            self.assertTrue(status.json()["authenticated"])
+            self.assertEqual(status.json()["username"], "restart-admin")
+            self.assertEqual(status.json()["database_migration"]["current"], 23)
+            self.assertTrue(status.json()["database_migration"]["automatic"])
+            self.assertEqual(restarted.get("/api/artists").status_code, 200)
+        self.runtime = Runtime(self.config, self.db)
+
+    def test_v3_migration_prunes_legacy_diagnostics_and_reports_catalog_drift(self):
+        with closing(self.db.connect()) as db, db:
+            db.raw.execute("DELETE FROM web_schema_versions WHERE version=23")
+            db.raw.execute(
+                "INSERT INTO web_audit_sessions("
+                "session_id,application_version,application_revision) "
+                "VALUES('legacy-v2','2.0.36','legacy')"
+            )
+            db.raw.execute(
+                "INSERT INTO web_audit("
+                "action,subject,session_id,application_version,application_revision) "
+                "VALUES('api-error','legacy thumbnail','legacy-v2','2.0.36','legacy')"
+            )
+            db.raw.execute(
+                "UPDATE albums SET splined_version='2.0.36' WHERE album_key=%s",
+                (self.row["album_key"],),
+            )
+            db.raw.execute(
+                "UPDATE artists SET splined_version='2.0.36' WHERE artist_key=%s",
+                (self.row["artist_key"],),
+            )
+            db.raw.execute(
+                "UPDATE tracks SET splined_version='2.0.36' WHERE album_key=%s",
+                (self.row["album_key"],),
+            )
+
+        migration = self.db.migrate()
+        self.assertEqual(migration["applied"], [23])
+        self.assertEqual(migration["cleanup"]["pre_v3_audit"], 1)
+        status = self.db.upgrade_status(core.VERSION)
+        self.assertEqual(status["catalog_older_major_records"], 4)
+        self.assertEqual(
+            status["catalog_older_major_by_table"],
+            {"artists": 1, "albums": 1, "tracks": 2},
+        )
+        self.assertEqual(status["audit_older_major_records"], 0)
+        self.assertTrue(status["recommendations"])
+        with closing(self.db.connect()) as db:
+            self.assertEqual(
+                db.raw.execute(
+                    "SELECT count(*) AS n FROM web_audit "
+                    "WHERE application_version='2.0.36'"
+                ).fetchone()["n"],
+                0,
+            )
+            self.assertEqual(
+                db.raw.execute(
+                    "SELECT splined_version FROM albums WHERE album_key=%s",
+                    (self.row["album_key"],),
+                ).fetchone()["splined_version"],
+                "2.0.36",
+            )
 
     def test_library_changes_get_is_cached_and_probe_is_explicit(self):
         self.runtime.close()  # The API owns its runtime for this test.
@@ -3333,6 +3423,8 @@ class PostgreSQLBrowserTests(unittest.TestCase):
 
         original_inspect = services_module.tags.inspect_album
         inspected_after_restart = []
+        recovery_batch_sizes = []
+        original_touch_batch = coordinator.touch_completed_batch
 
         def observe_inspect(album, *args, **kwargs):
             path = str(album.path)
@@ -3340,11 +3432,21 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             inspected_after_restart.append(path)
             return original_inspect(album, *args, **kwargs)
 
-        with patch.object(services_module.tags, "inspect_album", new=observe_inspect):
+        def observe_touch_batch(database, lease, checkpoints, **kwargs):
+            recovery_batch_sizes.append(len(checkpoints))
+            return original_touch_batch(database, lease, checkpoints, **kwargs)
+
+        with (
+            patch.object(services_module.tags, "inspect_album", new=observe_inspect),
+            patch.object(
+                coordinator, "touch_completed_batch", new=observe_touch_batch
+            ),
+        ):
             recovered = self.services.refresh_index(mode="full")
         self.assertTrue(recovered["resumed"])
         self.assertEqual(recovered["generation_id"], interrupted["generation"])
         self.assertTrue(inspected_after_restart)
+        self.assertEqual(recovery_batch_sizes, [3])
         with closing(self.db.connect()) as db:
             state = db.execute(
                 "SELECT active_generation_id,maintenance_generation_id,catalog_state "

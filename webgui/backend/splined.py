@@ -139,6 +139,9 @@ class AlbumDir:
     # Completion writes deliberately recompute it so execution authority never
     # relies on stale preselection metadata.
     inventory_fingerprint: str | None = None
+    # One directory enumeration supplies the size/mtime evidence reused by
+    # manifest, resume, and track-index work. This avoids repeated NAS stats.
+    audio_metadata: dict[str, tuple[int, int]] = field(default_factory=dict)
 
 
 
@@ -991,6 +994,7 @@ def iter_inventory(
                 f"Unable to read SPLINED scan directory {directory}: {exc}"
             ) from exc
         audio: list[Path] = []
+        audio_metadata: dict[str, tuple[int, int]] = {}
         local_art: list[Path] = []
         children: list[Path] = []
         for entry in entries:
@@ -1008,13 +1012,23 @@ def iter_inventory(
                 continue
             if path.suffix.lower() in AUDIO_EXTENSIONS:
                 audio.append(path)
+                try:
+                    stat = entry.stat(follow_symlinks=False)
+                    audio_metadata[str(path)] = (int(stat.st_size), int(stat.st_mtime_ns))
+                except OSError:
+                    audio_metadata[str(path)] = (0, 0)
             elif _is_inventory_local_art(path, configured_file_name):
                 local_art.append(path)
         directories_seen += 1
         pending.extend(reversed(children))
         if audio:
             albums_seen += 1
-            yield AlbumDir(directory, sorted(audio), sorted(local_art))
+            yield AlbumDir(
+                directory,
+                sorted(audio),
+                sorted(local_art),
+                audio_metadata=audio_metadata,
+            )
         if progress is not None and (
             directories_seen == 1 or directories_seen % 100 == 0
         ):

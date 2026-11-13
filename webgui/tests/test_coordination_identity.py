@@ -3,6 +3,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from webgui.coordination import (
+    catalog_relative_album_path,
     canonical_album_identity,
     canonical_track_identity,
     new_event,
@@ -11,6 +12,25 @@ from webgui.coordination import (
 
 
 class CoordinationIdentityTests(unittest.TestCase):
+    def test_catalog_relative_path_is_lexical_and_rejects_traversal(self):
+        root = Path.cwd() / "catalog-root"
+        self.assertEqual(
+            catalog_relative_album_path(
+                root / "Artist" / "Album", root
+            ),
+            "artist/album",
+        )
+        self.assertEqual(
+            catalog_relative_album_path(
+                root / "Artist" / ".." / "Outside", root
+            ),
+            "",
+        )
+        self.assertEqual(
+            catalog_relative_album_path(root.parent / "other" / "Album", root),
+            "",
+        )
+
     def test_album_event_strips_bom_from_persisted_key_and_mbid(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
