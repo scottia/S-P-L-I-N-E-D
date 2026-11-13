@@ -104,6 +104,17 @@ fn full_release_has_selected_os_gates_and_optional_strict_windows_validation() {
 }
 
 #[test]
+fn blank_release_version_skips_tag_names_from_abandoned_histories() {
+    let workflow = source(FULL);
+    assert!(workflow.contains("Only tags on the current main history define its release line"));
+    assert!(workflow.contains("while ("));
+    assert!(workflow.contains("\".\".join(map(str, candidate)) in tags"));
+    assert!(workflow.contains("or f\"v{'.'.join(map(str, candidate))}\" in tags"));
+    assert!(workflow.contains("candidate = (candidate[0], candidate[1], candidate[2] + 1)"));
+    assert!(workflow.contains("release_version = \".\".join(map(str, candidate))"));
+}
+
+#[test]
 fn store_workflows_preserve_their_distinct_review_and_submission_modes() {
     let full = source(FULL);
     assert!(full.contains("store_submit_update:"));
