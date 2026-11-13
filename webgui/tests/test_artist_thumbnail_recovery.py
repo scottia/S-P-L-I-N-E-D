@@ -264,6 +264,16 @@ class ArtistThumbnailEndpointTests(unittest.TestCase):
         self.assertEqual(response.status_code, 403)
         catalog.artist_thumbnails.assert_not_called()
 
+    def test_health_endpoint_is_a_database_independent_liveness_probe(self) -> None:
+        with TemporaryDirectory() as temporary:
+            app, catalog = self._app(Path(temporary), token="owner-token")
+            with TestClient(app) as client:
+                response = client.get("/api/health")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"ok": True, "service": "SPLINED WebGUI"})
+        self.assertNotIn("splined_session", response.cookies)
+        catalog.artist_thumbnails.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

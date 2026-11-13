@@ -2732,8 +2732,9 @@ test("empty and offline thumbnail hydration leave local results usable", async (
   assert.equal(renders, 0);
 });
 
-test("artist artwork write refreshes the corresponding list row", async () => {
+test("artist artwork write refreshes the corresponding list row without rebuilding the library", async () => {
   let libraryRenders = 0;
+  let artistRowRefreshes = 0;
   const listed = {id: "artist-1", portrait: "old", status: "unprocessed"};
   const state = {
     queuedDecision: null,
@@ -2760,6 +2761,7 @@ test("artist artwork write refreshes the corresponding list row", async () => {
     api: async () => ({id: "artist-1", portrait: "fresh", banner: null, status: "processed"}),
     componentPayload: kind => ({kind}),
     renderLibrary: () => { libraryRenders += 1; },
+    refreshLibraryArtistRow: id => { assert.equal(id, "artist-1"); artistRowRefreshes += 1; },
     renderHero() {},
     renderPanes() {},
     renderReview() {},
@@ -2773,7 +2775,16 @@ test("artist artwork write refreshes the corresponding list row", async () => {
 
   assert.equal(listed.portrait, "fresh");
   assert.equal(listed.status, "processed");
-  assert.equal(libraryRenders, 1);
+  assert.equal(libraryRenders, 0);
+  assert.equal(artistRowRefreshes, 1);
+});
+
+test("remote Artist thumbnails are visibility queued and critical artwork is eager", () => {
+  assert.match(appSource, /const LIBRARY_THUMBNAIL_CONCURRENCY = 3/);
+  assert.match(appSource, /new IntersectionObserver/);
+  assert.match(appSource, /startsWith\("\/api\/artist\/thumbnail"\)/);
+  assert.match(appSource, /element\.fetchPriority = "high"/);
+  assert.match(appSource, /criticalImage\(source, "hero-portrait"/);
 });
 
 test("Album search and Album overview use the global single-Album contract", () => {

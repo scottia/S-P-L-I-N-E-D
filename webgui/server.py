@@ -338,6 +338,10 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
             request.headers.get("x-splined-action", ""), limit=100
         )
         path = request.url.path
+        # Container liveness must not allocate a browser session or wait for
+        # PostgreSQL. Readiness remains the authenticated /api/status contract.
+        if path == "/api/health":
+            return await call_next(request)
         noisy = (
             path
             in {
@@ -562,6 +566,13 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
         return JSONResponse(
             {"error": message or "Operation failed"}, status_code=status
         )
+
+    @app.get("/api/health")
+    async def health():
+        # Docker health is process liveness. Readiness and database state stay
+        # available from /api/status without letting a busy PostgreSQL pool
+        # cause an external auto-healer to replace a healthy WebGUI process.
+        return {"ok": True, "service": "SPLINED WebGUI"}
 
     @app.get("/api/status")
     def status(request: Request):

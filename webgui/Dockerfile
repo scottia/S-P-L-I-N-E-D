@@ -12,5 +12,5 @@ COPY docker/config.example.toml /app/docker/config.example.toml
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 SPLINED_WEB_HOST=0.0.0.0 SPLINED_WEB_PORT=8080 SPLINED_CONFIG=/config/config.toml
 USER splined
 EXPOSE 8080
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/status',timeout=4)"
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health',timeout=4)"
 CMD ["python", "-m", "webgui"]

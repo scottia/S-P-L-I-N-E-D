@@ -381,7 +381,7 @@ async function writeArtwork() {
   state.selectedPortrait = null; state.selectedBanner = null; state.renderedPreview = {};
   state.fx.current = {}; state.fx.artist = {}; state.fx.banner = {};
   state.fit.artist = {zoom: 1, x: 0, y: 0}; state.fit.banner = {zoom: 1, x: 0, y: 0};
-  renderLibrary(); renderHero(); renderPanes(); renderReview(); setStatus("Written: " + result.written.join(", "));
+  refreshLibraryArtistRow(state.artist.id); renderHero(); renderPanes(); renderReview(); setStatus("Written: " + result.written.join(", "));
 }
 const previewReview = renderReview;
 renderReview = function () {

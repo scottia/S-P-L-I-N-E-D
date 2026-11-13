@@ -246,13 +246,65 @@ function node(tag, className = "", text) {
   if (text !== undefined) element.textContent = text;
   return element;
 }
-function image(src, className = "", alt = "") {
+function image(src, className = "", alt = "", eager = false) {
   const element = node("img", className);
   const dynamic = typeof src === "string" && src.startsWith("/api/image/");
   element.src = dynamic && state.server && !state.server.animate_webp_preview
     ? src + (src.includes("?") ? "&" : "?") + "still=1" : src;
-  element.alt = alt; element.loading = "lazy"; element.draggable = false; return element;
+  element.alt = alt; element.loading = eager ? "eager" : "lazy";
+  if (eager) element.fetchPriority = "high";
+  element.draggable = false; return element;
 }
+const LIBRARY_THUMBNAIL_CONCURRENCY = 3;
+let libraryThumbnailObserver = null;
+let libraryThumbnailActive = 0;
+const libraryThumbnailQueue = [];
+function pumpLibraryThumbnailQueue() {
+  while (libraryThumbnailActive < LIBRARY_THUMBNAIL_CONCURRENCY && libraryThumbnailQueue.length) {
+    const element = libraryThumbnailQueue.shift();
+    if (!element || element.isConnected === false || element.getAttribute("src") || !element.dataset.thumbnailSrc) continue;
+    libraryThumbnailActive += 1;
+    const finished = () => {
+      libraryThumbnailActive = Math.max(0, libraryThumbnailActive - 1);
+      pumpLibraryThumbnailQueue();
+    };
+    element.addEventListener("load", finished, {once: true});
+    element.addEventListener("error", finished, {once: true});
+    element.src = element.dataset.thumbnailSrc;
+  }
+}
+function observeLibraryThumbnail(element) {
+  if (typeof IntersectionObserver === "undefined") {
+    element.src = element.dataset.thumbnailSrc;
+    return;
+  }
+  if (!libraryThumbnailObserver) {
+    const observer = new IntersectionObserver(entries => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        observer.unobserve(entry.target);
+        libraryThumbnailQueue.push(entry.target);
+      }
+      pumpLibraryThumbnailQueue();
+    }, {root: $("artistList"), rootMargin: "160px 0px"});
+    libraryThumbnailObserver = observer;
+  }
+  libraryThumbnailObserver.observe(element);
+}
+function resetLibraryThumbnailLoading() {
+  if (libraryThumbnailObserver) libraryThumbnailObserver.disconnect();
+  libraryThumbnailObserver = null;
+  libraryThumbnailQueue.length = 0;
+}
+function libraryThumbnail(src, className, alt, eager = false) {
+  if (eager || !String(src).startsWith("/api/artist/thumbnail")) return image(src, className, alt, eager);
+  const element = node("img", className);
+  element.alt = alt; element.loading = "lazy"; element.draggable = false;
+  element.dataset.thumbnailSrc = src;
+  observeLibraryThumbnail(element);
+  return element;
+}
+function criticalImage(src, className = "", alt = "") { return image(src, className, alt, true); }
 function clear(element) { element.replaceChildren(); }
 const ARTIST_IMAGE_SOURCES = new Set(["deezer", "itunes", "fanarttv", "lastfm", "discogs", "navidrome"]);
 function artistSourceConfigured(key) {
@@ -579,7 +631,7 @@ function renderLibraryContents() {
   $("albumsTab").classList.toggle("active", state.libraryMode === "albums");
   $("fallbackTab").classList.toggle("active", state.libraryMode === "fallback");
   $("libraryListTitle").textContent = state.libraryMode === "fallback" ? "Fallback Albums" : state.libraryMode === "albums" ? "Albums" : "Artists";
-  const list = $("artistList"); clear(list);
+  const list = $("artistList"); resetLibraryThumbnailLoading(); clear(list);
   if (state.libraryLoading) {
     $("artistCount").textContent = "loading";
     list.append(node("p", "empty-copy", state.libraryMode === "artists" ? "Loading artists…" : "Loading albums…"));
@@ -600,10 +652,11 @@ function renderLibraryContents() {
     $("artistCount").textContent = state.albumLibraryLoading ? "loading" : visibleArtists.length + " shown";
     for (const artist of visibleArtists) {
       const button = node("button", "library-row"); button.type = "button";
+      button.dataset.artistId = String(artist.id);
       const orbit = node("span", "status-orbit" + (selectedMedia(artist) ? " selected" : ""), selectedMedia(artist) ? "●" : "○"); button.append(orbit);
       applyStatusPalette(button, mediaStatusKey(artist));
       const thumbUrl = state.artist?.id === artist.id && state.artist.portrait ? state.artist.portrait : artist.portrait;
-      const thumb = thumbUrl ? image(thumbUrl, "library-thumb", artist.name + " artist image") : node("span", "library-thumb", artist.name.slice(0, 1).toUpperCase());
+      const thumb = thumbUrl ? libraryThumbnail(thumbUrl, "library-thumb", artist.name + " artist image", state.artist?.id === artist.id) : node("span", "library-thumb", artist.name.slice(0, 1).toUpperCase());
       if (thumbUrl) thumb.addEventListener("error", () => thumb.replaceWith(node("span", "library-thumb", artist.name.slice(0, 1).toUpperCase())), {once: true});
       button.append(thumb);
       const matchingAlbums = matchesByArtist.get(artist.id) || [];
@@ -640,6 +693,27 @@ function renderLibraryContents() {
       ? "No missing-ID COMP albums in the library."
       : "No items match this filter."));
   renderMediaStatusChips();
+}
+function refreshLibraryArtistRow(artistId) {
+  if (state.libraryMode !== "artists") return false;
+  const artist = state.artists.find(item => String(item.id) === String(artistId));
+  const row = Array.from($("artistList").querySelectorAll(".library-row[data-artist-id]"))
+    .find(item => item.dataset.artistId === String(artistId));
+  if (!artist || !row) return false;
+  applyStatusPalette(row, mediaStatusKey(artist));
+  const orbit = row.querySelector(".status-orbit");
+  if (orbit) {
+    const selected = selectedMedia(artist);
+    orbit.classList.toggle("selected", selected);
+    orbit.textContent = selected ? "●" : "○";
+  }
+  const thumbUrl = state.artist?.id === artist.id && state.artist.portrait ? state.artist.portrait : artist.portrait;
+  const thumb = thumbUrl ? libraryThumbnail(thumbUrl, "library-thumb", artist.name + " artist image", true)
+    : node("span", "library-thumb", artist.name.slice(0, 1).toUpperCase());
+  if (thumbUrl) thumb.addEventListener("error", () => thumb.replaceWith(node("span", "library-thumb", artist.name.slice(0, 1).toUpperCase())), {once: true});
+  row.querySelector(".library-thumb")?.replaceWith(thumb);
+  renderMediaStatusChips();
+  return true;
 }
 function renderMediaStatusChips() {
   // Artist State is a mutually exclusive Album summary for the selected
@@ -745,10 +819,10 @@ function albumRow(album, child) {
   button.addEventListener("click", () => chooseAlbum(album.id)); return button;
 }
 
-function albumArtworkNode(album, className, alt, placeholderClass = className) {
+function albumArtworkNode(album, className, alt, placeholderClass = className, eager = false) {
   const placeholder = () => node("span", `${placeholderClass} album-artwork-placeholder`.trim(), "🎵");
   if (!album?.cover) return placeholder();
-  const artwork = image(album.cover, className, alt);
+  const artwork = image(album.cover, className, alt, eager);
   artwork.addEventListener("error", () => artwork.replaceWith(placeholder()), {once: true});
   return artwork;
 }
@@ -1039,7 +1113,7 @@ function renderHeroPortrait(artist) {
       current.alt = artist.name + " artist image";
       return;
     }
-    const replacement = image(source, "hero-portrait", artist.name + " artist image");
+    const replacement = criticalImage(source, "hero-portrait", artist.name + " artist image");
     replacement.id = "heroPortrait";
     current.replaceWith(replacement);
     return;
@@ -1168,7 +1242,7 @@ function renderHeroContents() {
     const kind = albumDisplayBannerKind(album, artist), bannerStyle = albumBannerStyle(kind);
     const bannerNode = node("span", "album-type-banner", bannerStyle.name); bannerNode.style.setProperty("--banner-bg", bannerStyle.background); bannerNode.style.setProperty("--banner-ink", bannerStyle.letters); bannerNode.style.borderColor = bannerStyle.frame;
     const body = node("span", "album-card-body");
-    const picture = node("span", "album-card-picture"); picture.append(albumArtworkNode(album, "", album.name + " cover", "album-placeholder"));
+    const picture = node("span", "album-card-picture"); picture.append(albumArtworkNode(album, "", album.name + " cover", "album-placeholder", true));
     const dots = node("span", "album-status-dots"); for (const [color, tip] of cardState.dots) { const dot = node("span", "", "●"); dot.style.color = color; dot.title = tip; dots.append(dot); }
     picture.append(dots);
     if (state.embedQueue.some(item => item.id === album.id)) { const staged = node("span", "album-staged-indicator", "●"); staged.title = "Staged for embedding"; bannerNode.append(staged); }
@@ -1223,7 +1297,7 @@ function renderFallbackOverview() {
     const card = node("div", "album-card windows-card fallback-album-card");
     card.style.setProperty("--frame-color", state.graphicalEnhancement.frame_styles.thumbnail.color);
     const cover = node("span", "album-card-picture");
-    cover.append(albumArtworkNode(album, "", album.name + " album card cover", "album-placeholder"));
+    cover.append(albumArtworkNode(album, "", album.name + " album card cover", "album-placeholder", true));
     const body = node("span", "album-card-body");
     body.append(cover, node("strong", "", album.name), node("span", "album-card-foot", (album.year || "—") + "   ☆☆☆☆☆"));
     const compiled = albumBannerStyle("compiled"), banner = node("span", "album-type-banner", compiled.name);
@@ -1996,14 +2070,14 @@ function selectCandidate(candidate, target) {
 function packageFrame(frame, banner, portrait) {
   clear(frame);
   if (!banner && !portrait) { frame.append(node("span", "empty-image", "No current artist package")); return; }
-  if (banner) frame.append(image(banner, "package-banner", "Artist banner"));
-  if (portrait) frame.append(image(portrait, "package-portrait", "Artist portrait"));
+  if (banner) frame.append(criticalImage(banner, "package-banner", "Artist banner"));
+  if (portrait) frame.append(criticalImage(portrait, "package-portrait", "Artist portrait"));
 }
 function paneImage(frame, src, label, portrait = false) {
   clear(frame);
   if (!src) { frame.append(node("span", "empty-image", label)); return; }
-  if (portrait) { const mask = node("span", "portrait-viewport"); mask.append(image(src, "portrait-preview", label)); frame.append(mask); }
-  else frame.append(image(src, "", label));
+  if (portrait) { const mask = node("span", "portrait-viewport"); mask.append(criticalImage(src, "portrait-preview", label)); frame.append(mask); }
+  else frame.append(criticalImage(src, "", label));
 }
 function renderSelectedArtworkMetadata({source, type, dimensions, fileSize, prepared, preview, existing, candidate, originSource, metric}) {
   const host = $("artMetadata"); clear(host);
@@ -2081,7 +2155,7 @@ function selectedImage() {
     type = "Embedded Thumb";
     source = state.pendingCompWrite ? "Verified COMP write pending refresh" : "Prepared COMP thumbnail";
     quality = state.pendingCompWrite ? "Embedding…" : "Thumb Ready";
-    if (url) frame.append(image(url, "selected-image", "Prepared COMP thumbnail"));
+    if (url) frame.append(criticalImage(url, "selected-image", "Prepared COMP thumbnail"));
   } else if (musicBrainzPreviewOption(decision)) {
     const option = musicBrainzPreviewOption(decision);
     candidate = {image: musicBrainzArtworkSource(option), source: "MusicBrainz / Cover Art Archive", name: option.title || "MusicBrainz release",
@@ -2090,7 +2164,7 @@ function selectedImage() {
     type = "MusicBrainz Release Cover"; source = "MusicBrainz / Cover Art Archive";
     quality = state.upscalePreview ? "Upscale Preview" : "Release Preview";
     if (url) {
-      const preview = image(url, "selected-image", candidate.name);
+      const preview = criticalImage(url, "selected-image", candidate.name);
       preview.addEventListener("load", () => {
         if (!preview.naturalWidth || !preview.naturalHeight) return;
         const measured = `${preview.naturalWidth} × ${preview.naturalHeight}`;
@@ -2108,38 +2182,38 @@ function selectedImage() {
     url = state.upscalePreview?.image || candidate.image;
     type = candidate.source === "Embedded matching track" ? "Existing Embedded Cover" : "Existing Album Cover";
     source = candidate.source; quality = state.upscalePreview ? "Upscale Preview" : "SELECT EXISTING";
-    if (url) frame.append(image(url, "selected-image", candidate.name));
+    if (url) frame.append(criticalImage(url, "selected-image", candidate.name));
   } else if (decision?.selected) {
     candidate = decision.selected;
     const compCandidate = decision.jobKind === "comp";
     url = compCandidate ? state.renderedPreview.comp?.image || state.upscalePreview?.image || candidate.image : candidate.image;
     type = compCandidate ? "COMP Track Candidate" : "Queued Cover Candidate"; source = state.upscalePreview ? "Upscale preview" : candidate.source || "Queued review"; quality = state.upscalePreview ? "Upscale Preview" : "Preview";
-    if (url) frame.append(image(url, "selected-image", candidate.name));
+    if (url) frame.append(criticalImage(url, "selected-image", candidate.name));
   } else if (state.editorMode === "album" && !state.reviewCleared) {
     candidate = state.selectedCover; url = state.renderedPreview.album?.image || state.upscalePreview?.image || candidate?.image || state.album?.cover;
     type = candidate ? "Front Cover" : "Current Cover"; source = state.upscalePreview ? "Upscale preview" : candidate?.source || (url ? "Local" : "—");
     quality = state.upscalePreview ? "Upscale Preview" : candidate ? "Preview" : "Current";
-    if (url) frame.append(image(url, "selected-image", state.album?.name + " cover"));
+    if (url) frame.append(criticalImage(url, "selected-image", state.album?.name + " cover"));
   } else if (state.editorMode === "fallback") {
     url = state.renderedPreview.comp?.image || state.upscalePreview?.image
       || (state.fallbackPreviewMode ? state.fallbackTrack?.image : "");
     type = state.fallbackTrack ? "COMP Track" : "Current Cover";
     source = state.upscalePreview ? "Upscale preview" : state.fallbackPreviewMode && state.fallbackTrack ? "Embedded track" : "Choose MusicBrainz artwork";
     quality = state.upscalePreview ? "Upscale Preview" : state.fallbackPreviewMode ? "Current" : "Review";
-    if (url) frame.append(image(url, "selected-image", state.fallbackTrack?.file + " embedded artwork"));
+    if (url) frame.append(criticalImage(url, "selected-image", state.fallbackTrack?.file + " embedded artwork"));
   } else if (!queuedComp && state.editorMode === "artist" && state.compReportVisible && state.compPreviewMode && state.compTrack) {
     url = state.renderedPreview.comp?.image || state.upscalePreview?.image || state.compTrack.image;
     type = "COMP Track"; source = state.upscalePreview ? "Upscale preview" : "Embedded track";
     quality = state.upscalePreview ? "Upscale Preview" : "Existing";
-    if (url) frame.append(image(url, "selected-image", state.compTrack.file + " embedded artwork"));
+    if (url) frame.append(criticalImage(url, "selected-image", state.compTrack.file + " embedded artwork"));
   } else if (queuedComp) {
     type = "COMP Track"; source = "Loading selected track"; quality = "Loading";
   } else if ((state.workspace === "enhance" && state.radioCurrent) || (!state.radioCurrent && state.radioArtist && state.radioBanner)) {
     const banner = state.radioCurrent ? state.selectedBanner?.image || state.artist?.banner : state.renderedPreview.banner?.image || state.selectedBanner?.image || state.artist?.banner;
     const portrait = state.radioCurrent ? state.selectedPortrait?.image || state.artist?.portrait : state.renderedPreview.artist?.image || state.selectedPortrait?.image || state.artist?.portrait;
     const packageView = node("div", "selected-package");
-    if (banner) packageView.append(image(banner, "banner-art", "Artist banner"));
-    if (portrait) { const mask = node("span", "portrait-viewport"); mask.append(image(portrait, "portrait-art", "Artist portrait")); packageView.append(mask); }
+    if (banner) packageView.append(criticalImage(banner, "banner-art", "Artist banner"));
+    if (portrait) { const mask = node("span", "portrait-viewport"); mask.append(criticalImage(portrait, "portrait-art", "Artist portrait")); packageView.append(mask); }
     if (banner || portrait) frame.append(packageView);
     type = "Artist package"; source = state.radioCurrent ? "Current local art" : "Candidate preview"; quality = state.radioCurrent ? "Current" : "Preview";
   } else {
@@ -2148,8 +2222,8 @@ function selectedImage() {
     url = (bannerOnly ? state.renderedPreview.banner?.image : state.renderedPreview.artist?.image)
       || candidate?.image || (bannerOnly ? state.artist?.banner : state.artist?.portrait);
     type = bannerOnly ? "Artist Banner" : "Artist Image"; source = candidate?.source || (url ? "Local" : "—"); quality = candidate ? "Preview" : "Current";
-    if (url && bannerOnly) frame.append(image(url, "selected-image", type));
-    else if (url) { const mask = node("span", "portrait-viewport"); mask.append(image(url, "selected-image portrait", type)); frame.append(mask); }
+    if (url && bannerOnly) frame.append(criticalImage(url, "selected-image", type));
+    else if (url) { const mask = node("span", "portrait-viewport"); mask.append(criticalImage(url, "selected-image portrait", type)); frame.append(mask); }
   }
   if (!frame.childElementCount && state.editorMode !== "fallback" && !(state.compReportVisible && state.compTrack))
     frame.append(image("/assets/set-your-imagination-tv.jpg", "", "Set your imagination now"));
