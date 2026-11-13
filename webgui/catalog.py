@@ -37,6 +37,7 @@ from interaction.artist_search import discover_artist_images, discover_artist_pr
 from webgui.database import Database
 from webgui import imaging
 from webgui.coordination import (
+    catalog_relative_album_path,
     normalized_coordination_relative,
     relative_album_path,
 )
@@ -348,6 +349,7 @@ class Catalog:
     )
     images: dict[str, Path | bytes] = field(default_factory=dict)
     metadata_cache: dict[str, dict[str, object]] = field(default_factory=dict)
+    metadata_locks: dict[str, Lock] = field(default_factory=dict, repr=False)
     appearance_cache: dict[str, dict[str, object]] = field(default_factory=dict)
     portrait_cache: dict[str, Path] = field(default_factory=dict)
     portrait_retry_at: dict[str, float] = field(default_factory=dict)
@@ -469,7 +471,9 @@ class Catalog:
             targets.append(
                 {
                     "album_key": key,
-                    "relative_path": relative_album_path(path, self.music) if path else "",
+                    "relative_path": catalog_relative_album_path(path, self.music)
+                    if path
+                    else "",
                 }
             )
         if not targets:
@@ -542,7 +546,7 @@ class Catalog:
         targets = [
             {
                 "album_key": str(album["album_key"]),
-                "relative_path": relative_album_path(album["path"], self.music),
+                "relative_path": catalog_relative_album_path(album["path"], self.music),
             }
             for album in albums
         ]
@@ -1500,7 +1504,11 @@ class Catalog:
                 for key in sorted(song_paths):
                     db.execute(
                         "INSERT INTO artist_album_appearances"
-                        "(artist_key,album_key,navidrome_album_id,featured,song_paths_json) VALUES(?,?,?,?,?)",
+                        "(artist_key,album_key,navidrome_album_id,featured,song_paths_json) "
+                        "VALUES(?,?,?,?,?) ON CONFLICT(artist_key,album_key) DO UPDATE SET "
+                        "navidrome_album_id=excluded.navidrome_album_id,"
+                        "featured=excluded.featured,song_paths_json=excluded.song_paths_json,"
+                        "updated_at=now()",
                         (canonical_id, key, remote_album_ids.get(key, ""), int(key in featured),
                          json.dumps(context["song_paths"][key])),
                     )
@@ -2478,19 +2486,42 @@ class Catalog:
             "pending": True,
         }
 
+    def _artist_metadata_lock(self, artist_id: str) -> Lock:
+        """Return the selected Artist's single-flight metadata lock.
+
+        Artist selection, a post-write refresh, and a delayed browser request
+        can otherwise enter the provider-backed metadata path together.  The
+        appearance projection replaces one Artist's rows transactionally, so
+        duplicate refreshes are both wasteful and capable of racing the table's
+        primary key.
+        """
+        with self.lock:
+            locks = getattr(self, "metadata_locks", None)
+            if locks is None:
+                locks = {}
+                self.metadata_locks = locks
+            return locks.setdefault(artist_id, Lock())
+
     def artist_metadata(self, artist_id: str, *, refresh: bool = False) -> dict[str, object]:
         if refresh:
             with self.lock:
                 self.metadata_cache.pop(artist_id, None)
                 self.appearance_cache.pop(artist_id, None)
-        with self.lock:
-            cached = self.metadata_cache.get(artist_id)
-        if cached is not None:
-            return {
-                **cached,
-                "artist": self.artist(artist_id),
-                "comp_albums": self.artist_comp_albums(artist_id),
-            }
+        # Recheck the cache after acquiring the per-Artist lock. A concurrent
+        # request may have completed the same expensive provider refresh while
+        # this caller was waiting.
+        with self._artist_metadata_lock(artist_id):
+            with self.lock:
+                cached = self.metadata_cache.get(artist_id)
+            if cached is not None:
+                return {
+                    **cached,
+                    "artist": self.artist(artist_id),
+                    "comp_albums": self.artist_comp_albums(artist_id),
+                }
+            return self._load_artist_metadata(artist_id)
+
+    def _load_artist_metadata(self, artist_id: str) -> dict[str, object]:
         artist = self.artist(artist_id)
         stored_profile = self._stored_artist_profile(artist_id)
         result: dict[str, object] = {"source": "unavailable", "biography": "", "similar": [], "top_songs": []}

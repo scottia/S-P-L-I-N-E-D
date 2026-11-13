@@ -69,9 +69,18 @@ async function initialize() {
   // saved panel dimensions only after it has measurable width and height.
   requestAnimationFrame(() => { restoreLayout(); fitReviewToViewport(); });
   await loadLibrary(); await pollJobs();
+  const migration = status.database_migration || {};
+  const recommendations = Array.isArray(migration.recommendations) ? migration.recommendations : [];
+  if (recommendations.length) {
+    setStatus(`PostgreSQL ${migration.application_version || ""} · schema v${migration.current} · ${recommendations.join(" · ")}`, "error");
+  } else if (Array.isArray(migration.applied) && migration.applied.length) {
+    const pruned = Number(migration.cleanup?.pre_v3_audit || 0);
+    setStatus(`PostgreSQL ${migration.application_version || ""} · schema automatically upgraded to v${migration.current} · applied ${migration.applied.join(", ")}${pruned ? ` · removed ${pruned} pre-v3 diagnostic records` : ""}`);
+  }
   // Discover physical library changes after the workspace is usable. This
   // remains a read-only check; the operator explicitly chooses whether to run
   // the incremental PostgreSQL refresh from the header notice.
+  scheduleHourlyLibraryChangeProbe();
   void requestLibraryChangeProbe().catch(libraryChangeProbeFailed);
 }
 function showAuthentication(status) {
@@ -115,6 +124,8 @@ async function submitPasswordRecovery(payload) {
   }
 }
 let libraryChangePollTimer = null;
+let libraryChangeHourlyTimer = null;
+const LIBRARY_CHANGE_HOURLY_MS = 60 * 60 * 1000;
 function libraryChangeProbeFailed(error) {
   libraryChangePollTimer = null;
   state.libraryChanges = {...(state.libraryChanges || {}), checking: false};
@@ -165,6 +176,22 @@ async function requestLibraryChangeProbe() {
     setStatus("Checking the music library for changes…", "busy");
   }
   await checkLibraryChanges();
+}
+function scheduleHourlyLibraryChangeProbe() {
+  if (libraryChangeHourlyTimer !== null) return;
+  libraryChangeHourlyTimer = setTimeout(async () => {
+    libraryChangeHourlyTimer = null;
+    const catalogBusy = (state.jobs || []).some(job =>
+      ["index", "index-probe"].includes(job.kind)
+      && ["queued", "running", "waiting"].includes(job.state));
+    try {
+      if (!catalogBusy) await requestLibraryChangeProbe();
+    } catch (error) {
+      libraryChangeProbeFailed(error);
+    } finally {
+      scheduleHourlyLibraryChangeProbe();
+    }
+  }, LIBRARY_CHANGE_HOURLY_MS);
 }
 function componentPayload(kind, imageURL, extra = {}) {
   const target = kind === "cover" ? "album" : kind;
@@ -354,7 +381,17 @@ async function writeArtwork() {
   state.selectedPortrait = null; state.selectedBanner = null; state.renderedPreview = {};
   state.fx.current = {}; state.fx.artist = {}; state.fx.banner = {};
   state.fit.artist = {zoom: 1, x: 0, y: 0}; state.fit.banner = {zoom: 1, x: 0, y: 0};
-  renderLibrary(); renderHero(); renderPanes(); renderReview(); setStatus("Written: " + result.written.join(", "));
+  refreshLibraryArtistRow(state.artist.id); renderHero(); renderPanes(); renderReview(); setStatus("Written: " + result.written.join(", "));
+}
+async function writeArtworkOnce() {
+  if (state.writePending) {
+    setStatus("Artwork write is already in progress", "busy");
+    return;
+  }
+  state.writePending = true;
+  renderReview();
+  try { await writeArtwork(); }
+  finally { state.writePending = false; renderReview(); }
 }
 const previewReview = renderReview;
 renderReview = function () {
@@ -363,11 +400,13 @@ renderReview = function () {
   const writable = state.server?.mode === "write";
   const currentPackage = state.editorMode === "artist" && state.workspace === "enhance" && state.radioCurrent
     && !!(state.selectedPortrait?.image || state.selectedBanner?.image || state.artist?.portrait || state.artist?.banner);
-  $("writeButton").disabled = entry ? !state.artist : !writable || (state.editorMode === "album" ? !editableArtworkSource()
+  const writeUnavailable = entry ? !state.artist : !writable || (state.editorMode === "album" ? !editableArtworkSource()
     : state.editorMode === "fallback" ? !editableArtworkSource() : state.compReportVisible ? !state.compTrack?.image : !(currentPackage || (state.radioArtist && (state.selectedPortrait || state.artist?.portrait)) || (state.radioBanner && (state.selectedBanner || state.artist?.banner))));
+  $("writeButton").disabled = state.writePending || writeUnavailable;
   const compContext = compContextActive();
   const staged = state.editorMode === "album" && state.embedQueue.some(item => item.id === state.album?.id);
   $("writeButton").textContent = compContext ? "EMBED Comp" : $("writeButton").textContent;
+  if (state.writePending) $("writeButton").textContent = compContext ? "EMBEDDING…" : "WRITING…";
   $("embedBatchButton").textContent = "EMBED Batch";
   $("embedBatchButton").classList.add("action-purple");
   $("embedBatchButton").classList.remove("action-cyan");
@@ -606,8 +645,16 @@ async function activateCandidateWork() {
 }
 async function activateCompTrackWork(target) {
   if (state.launchStopping) return;
+  const identity = compLaunchIdentity(target.artistId, target.albumId, target.trackKey);
+  if (state.launchActive) {
+    setStatus(state.activeCompLaunch === identity
+      ? "This COMP track is already processing"
+      : "COMP processing is active · finish it or press STOP PROCESS before starting another track", "busy");
+    renderCandidateLaunchControl();
+    return;
+  }
   const controller = new AbortController();
-  state.launchActive = true; state.launchStopping = false; state.launchAbort = controller;
+  state.launchActive = true; state.launchStopping = false; state.launchAbort = controller; state.activeCompLaunch = identity;
   renderCandidateLaunchControl(); renderHero();
   try {
     if (target.artistId) await launchArtistComp(controller.signal, {albumId: target.albumId, trackKey: target.trackKey});
@@ -616,7 +663,7 @@ async function activateCompTrackWork(target) {
     if (error?.name !== "AbortError") throw error;
   } finally {
     if (state.launchAbort === controller) {
-      state.launchActive = false; state.launchStopping = false; state.launchAbort = null;
+      state.launchActive = false; state.launchStopping = false; state.launchAbort = null; state.activeCompLaunch = "";
       renderCandidateLaunchControl(); renderHero();
     }
   }
@@ -1156,6 +1203,7 @@ function activeIndexJob() {
 }
 function renderIndexProgress() {
   const job = activeIndexJob();
+  const pausedJob = (state.jobs || []).find(item => item.kind === "index" && item.state === "paused") || null;
   const generation = state.indexStatus?.generation || null;
   const generationActive = generation && ["building", "validating", "publishing"].includes(generation.state);
   const active = Boolean(job || generationActive);
@@ -1163,22 +1211,34 @@ function renderIndexProgress() {
   button.hidden = !active;
   if (!active) {
     state.indexStopping = false;
-    if (!job) state.indexJobId = null;
+    state.indexJobId = null;
     status.classList?.remove?.("index-progress");
     status.style?.removeProperty?.("--index-progress");
+    if (pausedJob) {
+      const completed = Number(pausedJob.progress?.completed || 0);
+      setStatus(`PostgreSQL index paused · ${completed} Albums checkpointed · Resume to continue`, "busy");
+    }
     return;
   }
   if (job) state.indexJobId = job.id;
   const progress = job?.progress || {};
   const completed = Number(progress.completed ?? generation?.completed_albums ?? 0);
   const total = Math.max(1, Number(progress.total || 0), Number(generation?.discovered_albums || 0));
+  const phase = String(progress.phase || generation?.phase || job?.state || "indexing");
+  const totalKnown = Boolean(progress.total_known
+    ?? ["validating", "publishing", "published"].includes(phase));
   const percentage = Math.max(0, Math.min(100,
     Number(progress.percentage ?? (generation?.state === "published" ? 100 : Math.min(99, Math.floor(completed * 100 / total))))));
-  const phase = String(progress.phase || generation?.phase || job?.state || "indexing");
   const message = String(progress.message || generation?.current_path || "Preparing catalog generation");
   const errors = Number(progress.errors ?? generation?.error_count ?? 0);
   button.textContent = state.indexStopping ? "STOPPING…" : "STOP INDEX";
   button.disabled = state.indexStopping || !state.indexJobId;
+  if (!totalKnown) {
+    setStatus(`PostgreSQL ${phase} · ${completed} Albums indexed · discovering more… · ${errors} errors · ${message}`, "busy");
+    status.classList?.remove?.("index-progress");
+    status.style?.removeProperty?.("--index-progress");
+    return;
+  }
   setStatus(`PostgreSQL ${phase} · ${percentage}% · ${completed}/~${total} Albums · ${errors} errors · ${message}`, "busy");
   status.classList?.add?.("index-progress");
   status.style?.setProperty?.("--index-progress", `${percentage}%`);
@@ -1950,6 +2010,7 @@ async function openSettings() {
     }
   }
   async function saveCurrentSection(section, message = section.label + " settings saved") {
+    const ignoredBefore = JSON.stringify(settingValue(saved.config, "library.ignored_subs", []));
     applySettingsInputs(draft, bindings);
     if (section.id === "library") {
       const separator = String(settingValue(draft, "scan.artist_separator_regex", DEFAULT_ARTIST_SEPARATOR_REGEX)).trim();
@@ -1964,6 +2025,10 @@ async function openSettings() {
     state.artistSourceEnabled = Array.from(ARTIST_IMAGE_SOURCES).filter(key => artistSourceConfigured(key));
     state.enabledSources = state.sourceOrder.filter(key => !saved.config.sources?.exclude_cover_sources?.includes(key) && saved.config.source_policies?.[key]?.enabled !== false);
     renderAll(); setStatus(message); renderSection(active);
+    const ignoredAfter = JSON.stringify(settingValue(saved.config, "library.ignored_subs", []));
+    if (section.id === "library" && ignoredBefore !== ignoredAfter) {
+      await requestLibraryChangeProbe();
+    }
   }
   function renderSection(id, preserveDraft = false) {
     active = id; bindings = [];
@@ -1984,7 +2049,7 @@ async function openSettings() {
     if (section.id === "runtime") renderRuntimeSettings(fields, section, draft, bindings, saved, advanced);
     else {
       let displayedGroup = "";
-      const groupFor = path => section.id === "library" ? (["library.music_library", "scan.scan_mode", "scan.scan_library_dir"].includes(path) ? "Library And Application Paths" : path.startsWith("scan.artist_separator_") || path === "scan.index_batch_size" || path === "scan.index_batch_adaptive" ? "Library Index" : path === "database.url" ? "Database" : "Persistent Folders")
+      const groupFor = path => section.id === "library" ? (["library.music_library", "scan.scan_mode", "scan.scan_library_dir"].includes(path) ? "Library And Application Paths" : path.startsWith("scan.artist_separator_") || path.startsWith("scan.index_") ? "Library Index" : path === "database.url" ? "Database" : "Persistent Folders")
         : section.id === "artwork" ? (path.startsWith("output.") ? "Output Files" : path === "scan.shared_artist_art_dir" ? "V/A / OST Artist Images Directory" : "Sample Images")
         : section.id === "enhancement" ? "Resolution Range" : "";
       for (const descriptor of section.fields || []) {

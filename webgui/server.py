@@ -24,10 +24,11 @@ import splined as core
 from webgui.catalog import ASSETS
 from webgui.database import Database
 from webgui.runtime import Runtime
-from webgui.services import Services
+from webgui.services import Services, _web_image_signing_key
 from webgui.jobs import JobQueue
 from webgui.credentials import Credentials
 from webgui.auth import AdminAuth
+from webgui.browser_sessions import BrowserSessionStore, SESSION_MAX_AGE_SECONDS
 from webgui.audit import sanitize, sanitize_text, utc_now
 from webgui.reconciliation import SQLiteReconciler
 from webgui import index_coordinator as indexer
@@ -45,7 +46,14 @@ def _sqlite_snapshot_roots() -> tuple[Path, ...]:
 
 
 class Context:
-    def __init__(self, config_file, database_url=None, *, start_worker=True):
+    def __init__(
+        self,
+        config_file,
+        database_url=None,
+        *,
+        start_worker=True,
+        image_signing_key=None,
+    ):
         self.config_file = Path(config_file).resolve()
         self.explicit_url = (
             database_url
@@ -53,12 +61,14 @@ class Context:
             or ("postgresql://" if os.environ.get("PGHOST") else "")
         )
         self.start_worker = start_worker
+        self.image_signing_key = image_signing_key
         self.runtime = None
         self.services = None
         self.jobs = None
         self.reconciliation = None
         self.url = ""
         self.error = ""
+        self.database_migration = {"current": 0, "applied": [], "automatic": True}
         self.lifecycle_lock = threading.RLock()
         try:
             cfg = (
@@ -81,9 +91,12 @@ class Context:
 
     def open(self, url):
         database = Database(url)
-        database.migrate()
+        self.database_migration = database.migrate()
+        self.database_migration.update(database.upgrade_status(core.VERSION))
         self.runtime = Runtime(self.config_file, database)
-        self.services = Services(self.runtime)
+        self.services = Services(
+            self.runtime, image_signing_key=self.image_signing_key
+        )
         self.services.start_audit_session()
         self.reconciliation = SQLiteReconciler(
             database,
@@ -161,7 +174,8 @@ class Context:
                     "Finish or remove queued work before changing databases"
                 )
             database = Database(url)
-            database.migrate()
+            self.database_migration = database.migrate()
+            self.database_migration.update(database.upgrade_status(core.VERSION))
             Runtime.validate(cfg)
             core.validate_filename(str(cfg.get("output", {}).get("file_name", "cover")))
             if not core.resolve_path(
@@ -177,7 +191,9 @@ class Context:
             runtime = Runtime(self.config_file, database, cfg)
             runtime.save_settings(cfg)
             self.runtime = runtime
-            self.services = Services(runtime)
+            self.services = Services(
+                runtime, image_signing_key=self.image_signing_key
+            )
             self.services.start_audit_session()
             self.jobs = JobQueue(self.services) if self.start_worker else None
             self.reconciliation = SQLiteReconciler(
@@ -197,7 +213,9 @@ class Context:
         runtime = self.runtime
         if runtime is None:
             raise ValueError("Complete PostgreSQL setup before resetting the database")
-        self.services = Services(runtime)
+        self.services = Services(
+            runtime, image_signing_key=self.image_signing_key
+        )
         self.reconciliation = SQLiteReconciler(
             runtime.database,
             runtime.cache,
@@ -243,13 +261,22 @@ class Context:
 
 def create_app(config_file=None, database_url=None, *, token=None, start_worker=True):
     config_file = config_file or os.environ.get("SPLINED_CONFIG", "/config/config.toml")
-    context = Context(config_file, database_url, start_worker=start_worker)
     access_token = (
         token if token is not None else os.environ.get("SPLINED_WEB_TOKEN", "")
+    )
+    context = Context(
+        config_file,
+        database_url,
+        start_worker=start_worker,
+        image_signing_key=_web_image_signing_key(access_token),
     )
     sessions = {}
     sessions_lock = threading.Lock()
     login_attempts = {}
+
+    def durable_sessions() -> BrowserSessionStore | None:
+        runtime = context.runtime
+        return BrowserSessionStore(runtime.database) if runtime is not None else None
 
     def account_auth() -> AdminAuth:
         if not context.runtime:
@@ -311,6 +338,10 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
             request.headers.get("x-splined-action", ""), limit=100
         )
         path = request.url.path
+        # Container liveness must not allocate a browser session or wait for
+        # PostgreSQL. Readiness remains the authenticated /api/status contract.
+        if path == "/api/health":
+            return await call_next(request)
         noisy = (
             path
             in {
@@ -323,7 +354,15 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
                 "/api/database/reset",
                 "/api/database/reset-target",
             }
-            or path.startswith(("/api/image/", "/api/fallback/thumbnail", "/api/audit"))
+            or path.startswith(
+                (
+                    "/api/image/",
+                    "/api/artist/thumbnail",
+                    "/api/album/thumbnail",
+                    "/api/fallback/thumbnail",
+                    "/api/audit",
+                )
+            )
         )
         auditable = path.startswith("/api/") and not noisy
         scope = {
@@ -408,17 +447,36 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
                 )
             )
         sid = request.cookies.get("splined_session", "")
+        restored = None
+        if sid:
+            with sessions_lock:
+                known = sid in sessions
+            if not known:
+                store = durable_sessions()
+                if store is not None:
+                    try:
+                        restored = store.load(sid)
+                    except Exception as session_error:
+                        core.runtime_log(
+                            "warning",
+                            "webgui.browser session restore unavailable "
+                            + core._redact_log_message(str(session_error)),
+                        )
         with sessions_lock:
             if sid not in sessions:
                 if len(sessions) > 1000:
                     sessions.clear()
-                sid = secrets.token_urlsafe(32)
-                sessions[sid] = {
-                    "csrf": secrets.token_urlsafe(32),
-                    "authenticated": not bool(access_token),
-                    "username": "Local administrator" if not access_token else "",
-                }
+                if restored is not None:
+                    sessions[sid] = restored
+                else:
+                    sid = secrets.token_urlsafe(32)
+                    sessions[sid] = {
+                        "csrf": secrets.token_urlsafe(32),
+                        "authenticated": not bool(access_token),
+                        "username": "Local administrator" if not access_token else "",
+                    }
             session = sessions[sid]
+            session_before = json.dumps(session, sort_keys=True, default=str)
         request.state.session = session
         public = request.url.path in {
             "/api/status",
@@ -445,9 +503,24 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
                     JSONResponse({"error": "Request is too large"}, status_code=413)
                 )
         response = await call_next(request)
+        with sessions_lock:
+            session_after = json.dumps(session, sort_keys=True, default=str)
+            session_data = dict(session)
+        if session_after != session_before:
+            store = durable_sessions()
+            if store is not None:
+                try:
+                    store.save(sid, session_data)
+                except Exception as session_error:
+                    core.runtime_log(
+                        "warning",
+                        "webgui.browser session save unavailable "
+                        + core._redact_log_message(str(session_error)),
+                    )
         response.set_cookie(
             "splined_session",
             sid,
+            max_age=SESSION_MAX_AGE_SECONDS,
             httponly=True,
             samesite="strict",
             secure=request.url.scheme == "https",
@@ -494,6 +567,13 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
             {"error": message or "Operation failed"}, status_code=status
         )
 
+    @app.get("/api/health")
+    async def health():
+        # Docker health is process liveness. Readiness and database state stay
+        # available from /api/status without letting a busy PostgreSQL pool
+        # cause an external auto-healer to replace a healthy WebGUI process.
+        return {"ok": True, "service": "SPLINED WebGUI"}
+
     @app.get("/api/status")
     def status(request: Request):
         session = request.state.session
@@ -510,6 +590,7 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
             ),
             "database": "PostgreSQL",
             "database_ready": bool(context.services),
+            "database_migration": context.database_migration,
         }
         if session["authenticated"]:
             result.update(
@@ -605,6 +686,9 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
             record_auth_failure(rate_key, failures)
             raise
         context.services.audit("reset-admin-password", username)
+        store = durable_sessions()
+        if store is not None:
+            store.delete_all()
         with sessions_lock:
             sessions.clear()
             login_attempts.clear()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -196,47 +197,67 @@ def _mbids(value: Any) -> list[str]:
     )
 
 
-def read_album_tags(audio_path: Path) -> dict[str, Any]:
-    easy = None
-    raw: Any = None
-    try:
-        easy = MutagenFile(audio_path, easy=True)
-    except Exception:
-        easy = None
-    tags = getattr(easy, "tags", None) if easy is not None else None
+class _TagReader:
+    """Open one local tag source once for Album and track identity fields."""
 
-    def value(*keys: str) -> str:
-        found = _first_value(tags, *keys)
+    def __init__(self, audio_path: Path):
+        self.audio_path = audio_path
+        self.raw: Any = None
+        try:
+            easy = MutagenFile(audio_path, easy=True)
+        except Exception:
+            easy = None
+        self.tags = getattr(easy, "tags", None) if easy is not None else None
+
+    def raw_file(self):
+        if self.raw is None:
+            try:
+                self.raw = MutagenFile(self.audio_path, easy=False)
+            except Exception:
+                self.raw = False
+        return self.raw
+
+    def value(self, *keys: str) -> str:
+        found = _first_value(self.tags, *keys)
         if found:
             return found
-        nonlocal raw
-        if raw is None:
-            try:
-                raw = MutagenFile(audio_path, easy=False)
-            except Exception:
-                raw = False
+        raw = self.raw_file()
         return _raw_alias_value(raw, *keys) if raw else ""
 
-    raw_year = value("date", "originaldate", "original year", "year")
+    def values(self, *keys: str) -> str:
+        if self.tags:
+            for key in keys:
+                try:
+                    found = _all_text_multivalue(self.tags.get(key))
+                except Exception:
+                    found = ""
+                if found:
+                    return found
+        raw = self.raw_file()
+        return _raw_alias_values(raw, *keys) if raw else ""
+
+
+def _album_tags(reader: _TagReader) -> dict[str, Any]:
+    raw_year = reader.value("date", "originaldate", "original year", "year")
     year_match = re.search(r"\b(\d{4})\b", raw_year)
-    compilation_text = value("compilation", "itunescompilation")
+    compilation_text = reader.value("compilation", "itunescompilation")
     return {
-        "album": value("album"),
-        "album_artist": value("albumartist", "album artist", "artist"),
-        "artist_sort": value(
+        "album": reader.value("album"),
+        "album_artist": reader.value("albumartist", "album artist", "artist"),
+        "artist_sort": reader.value(
             "albumartistsort", "album artist sort", "artistsort"
         ),
-        "album_sort": value("albumsort", "album sort"),
-        "album_mbid": value(
+        "album_sort": reader.value("albumsort", "album sort"),
+        "album_mbid": reader.value(
             "musicbrainz_albumid",
             "musicbrainz album id",
             "musicbrainz release id",
         ),
-        "release_group_mbid": value(
+        "release_group_mbid": reader.value(
             "musicbrainz_releasegroupid",
             "musicbrainz release group id",
         ),
-        "artist_mbid": value(
+        "artist_mbid": reader.value(
             "musicbrainz_albumartistid",
             "musicbrainz album artist id",
             "musicbrainz artist id",
@@ -245,6 +266,10 @@ def read_album_tags(audio_path: Path) -> dict[str, Any]:
         "compilation": compilation_text.strip().casefold()
         in {"1", "true", "yes", "y"},
     }
+
+
+def read_album_tags(audio_path: Path) -> dict[str, Any]:
+    return _album_tags(_TagReader(audio_path))
 
 
 DEFAULT_ARTIST_SEPARATOR_REGEX = r"(?i)(?: / | feat\. | feat | ft\. | ft |; )"
@@ -289,76 +314,51 @@ def normalize_artist_credit_text(
     )
 
 
-def read_track_identity_tags(
-    audio_path: Path,
+def _track_identity_tags(
+    reader: _TagReader,
     artist_separator_regex: str = DEFAULT_ARTIST_SEPARATOR_REGEX,
 ) -> dict[str, str]:
-    """Read only the local fields needed for authoritative track matching."""
-    easy = None
-    raw: Any = None
-    try:
-        easy = MutagenFile(audio_path, easy=True)
-    except Exception:
-        easy = None
-    tags = getattr(easy, "tags", None) if easy is not None else None
-
-    def value(*keys: str) -> str:
-        found = _first_value(tags, *keys)
-        if found:
-            return found
-        nonlocal raw
-        if raw is None:
-            try:
-                raw = MutagenFile(audio_path, easy=False)
-            except Exception:
-                raw = False
-        return _raw_alias_value(raw, *keys) if raw else ""
-
-    def values(*keys: str) -> str:
-        if tags:
-            for key in keys:
-                try:
-                    found = _all_text_multivalue(tags.get(key))
-                except Exception:
-                    found = ""
-                if found:
-                    return found
-        nonlocal raw
-        if raw is None:
-            try:
-                raw = MutagenFile(audio_path, easy=False)
-            except Exception:
-                raw = False
-        return _raw_alias_values(raw, *keys) if raw else ""
-
-    recording_mbid = value(
+    recording_mbid = reader.value(
         "musicbrainz_trackid",
         "musicbrainz recording id",
         "musicbrainz track id",
     )
     if not recording_mbid:
-        if raw is None:
-            try:
-                raw = MutagenFile(audio_path, easy=False)
-            except Exception:
-                raw = False
+        raw = reader.raw_file()
         recording_mbid = _musicbrainz_recording_ufid(raw) if raw else ""
 
-    artist_mbids = values(
+    artist_mbids = reader.values(
         "musicbrainz_artistid",
         "musicbrainz artist id",
     )
     return {
-        "title": value("title"),
+        "title": reader.value("title"),
         # TPE1/ARTIST is explicitly multi-value. Keeping only its first value
         # hides Featured performers from the Artist catalog even though tools
         # such as Mp3tag and Navidrome correctly expose every credit.
         "artist": normalize_artist_credit_text(
-            values("artist"), artist_separator_regex, artist_mbids
+            reader.values("artist"), artist_separator_regex, artist_mbids
         ),
         "recording_mbid": recording_mbid,
         "artist_mbid": artist_mbids,
     }
+
+
+def read_track_identity_tags(
+    audio_path: Path,
+    artist_separator_regex: str = DEFAULT_ARTIST_SEPARATOR_REGEX,
+) -> dict[str, str]:
+    """Read only the local fields needed for authoritative track matching."""
+    return _track_identity_tags(_TagReader(audio_path), artist_separator_regex)
+
+
+def read_album_and_track_identity_tags(
+    audio_path: Path,
+    artist_separator_regex: str = DEFAULT_ARTIST_SEPARATOR_REGEX,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Read representative Album and track identity from one opened tag view."""
+    reader = _TagReader(audio_path)
+    return _album_tags(reader), _track_identity_tags(reader, artist_separator_regex)
 
 
 def inspect_album_tracks(
@@ -368,32 +368,91 @@ def inspect_album_tracks(
     *,
     force_read: bool = False,
     artist_separator_regex: str = DEFAULT_ARTIST_SEPARATOR_REGEX,
+    executor: Any = None,
+    preloaded: Mapping[str, Mapping[str, Any]] | None = None,
+    progress: Any = None,
 ) -> tuple[list[dict[str, Any]], int, int]:
     """Build exact Recording/Artist relationships without remote inference."""
     rows: list[dict[str, Any]] = []
     reads = 0
     reuses = 0
     now = utc_now()
-    for raw_path in sorted(
+    audio_metadata = dict(getattr(album, "audio_metadata", {}) or {})
+    paths = sorted(
         (Path(value) for value in album.audio_files),
         key=lambda value: str(value).casefold(),
-    ):
+    )
+
+    def metadata(raw_path: Path) -> tuple[int, int]:
         path = str(raw_path)
+        if path in audio_metadata:
+            return audio_metadata[path]
         try:
             stat = raw_path.stat()
-            size = int(stat.st_size)
-            modified = int(stat.st_mtime_ns)
+            return int(stat.st_size), int(stat.st_mtime_ns)
         except OSError:
-            size = 0
-            modified = 0
+            return 0, 0
+
+    def needs_read(raw_path: Path) -> bool:
+        path = str(raw_path)
+        size, modified = metadata(raw_path)
+        prior = existing_by_path.get(path)
+        return bool(
+            force_read
+            or prior is None
+            or int(prior["file_size"] or 0) != size
+            or int(prior["file_mtime_ns"] or 0) != modified
+        )
+
+    preloaded_values = {
+        str(path): dict(value) for path, value in (preloaded or {}).items()
+    }
+    preloaded_count = sum(str(path) in preloaded_values for path in paths)
+    read_paths = [
+        path for path in paths
+        if needs_read(path) and str(path) not in preloaded_values
+    ]
+
+    def read(raw_path: Path) -> dict[str, Any]:
+        try:
+            return read_track_identity_tags(raw_path, artist_separator_regex)
+        except Exception:
+            return {
+                "title": raw_path.stem,
+                "artist": "",
+                "recording_mbid": "",
+                "artist_mbid": "",
+            }
+
+    read_results = dict(preloaded_values)
+    if executor is not None and len(read_paths) > 1:
+        futures = {executor.submit(read, path): path for path in read_paths}
+        total_reads = len(read_paths) + preloaded_count
+        report_every = max(16, (total_reads + 19) // 20)
+        for completed, future in enumerate(
+            concurrent.futures.as_completed(futures), 1
+        ):
+            path = futures[future]
+            read_results[str(path)] = future.result()
+            if progress is not None and (
+                completed == len(read_paths) or completed % report_every == 0
+            ):
+                progress(completed + preloaded_count, total_reads)
+    else:
+        total_reads = len(read_paths) + preloaded_count
+        for completed, path in enumerate(read_paths, 1):
+            read_results[str(path)] = read(path)
+            if progress is not None and (
+                completed == len(read_paths) or completed % 16 == 0
+            ):
+                progress(completed + preloaded_count, total_reads)
+
+    for raw_path in paths:
+        path = str(raw_path)
+        size, modified = metadata(raw_path)
 
         prior = existing_by_path.get(path)
-        if (
-            not force_read
-            and prior is not None
-            and int(prior["file_size"] or 0) == size
-            and int(prior["file_mtime_ns"] or 0) == modified
-        ):
+        if path not in read_results and prior is not None:
             tags = {
                 "title": str(prior["title"] or raw_path.stem),
                 "artist": str(prior["artist_name"] or ""),
@@ -404,15 +463,7 @@ def inspect_album_tracks(
             }
             reuses += 1
         else:
-            try:
-                tags = read_track_identity_tags(raw_path, artist_separator_regex)
-            except Exception:
-                tags = {
-                    "title": raw_path.stem,
-                    "artist": "",
-                    "recording_mbid": "",
-                    "artist_mbid": "",
-                }
+            tags = read_results[path]
             reads += 1
 
         recording_ids = _mbids(tags["recording_mbid"])
@@ -634,6 +685,9 @@ def inspect_album(
     existing: Mapping[str, Mapping[str, Any]],
     existing_by_path: Mapping[str, Mapping[str, Any]],
     used_keys: dict[str, str],
+    *,
+    include_track_identity: bool = False,
+    artist_separator_regex: str = DEFAULT_ARTIST_SEPARATOR_REGEX,
 ) -> tuple[
     dict[str, Any],
     dict[str, Any],
@@ -650,15 +704,21 @@ def inspect_album(
         key=lambda path: str(path).casefold(),
     )[0]
     path_text = str(album.path)
-    try:
-        stat = representative.stat()
-        representative_size = int(stat.st_size)
-        representative_mtime_ns = int(stat.st_mtime_ns)
-    except OSError:
-        representative_size = 0
-        representative_mtime_ns = 0
+    audio_metadata = dict(getattr(album, "audio_metadata", {}) or {})
+    representative_size, representative_mtime_ns = audio_metadata.get(
+        str(representative), (0, 0)
+    )
+    if str(representative) not in audio_metadata:
+        try:
+            stat = representative.stat()
+            representative_size = int(stat.st_size)
+            representative_mtime_ns = int(stat.st_mtime_ns)
+        except OSError:
+            representative_size = 0
+            representative_mtime_ns = 0
 
     prior_at_path = existing_by_path.get(path_text)
+    album.representative_track_tags = None
     reuse_tags = bool(
         prior_at_path is not None
         and str(prior_at_path["representative_file"] or "")
@@ -694,7 +754,14 @@ def inspect_album(
         }
         tag_signature = str(prior_at_path["tag_signature"] or "")
     else:
-        tags = read_album_tags(representative)
+        if include_track_identity:
+            tags, album.representative_track_tags = (
+                read_album_and_track_identity_tags(
+                    representative, artist_separator_regex
+                )
+            )
+        else:
+            tags = read_album_tags(representative)
         artist_name = str(
             tags["album_artist"] or artist_folder.name or "Unknown Artist"
         )

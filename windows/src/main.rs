@@ -15148,6 +15148,7 @@ fn bind_service_callbacks(
             ui.set_setup_progress_total(0);
             ui.set_setup_progress_percent(0);
             ui.set_setup_progress_errors(0);
+            ui.set_setup_progress_indeterminate(false);
             ui.set_setup_loaded_archive_path(SharedString::default());
             ui.set_setup_message("Reading Settings Archive…".into());
             let weak = weak.clone();
@@ -15253,6 +15254,7 @@ fn bind_service_callbacks(
             ui.set_setup_progress_total(0);
             ui.set_setup_progress_percent(0);
             ui.set_setup_progress_errors(0);
+            ui.set_setup_progress_indeterminate(true);
             ui.set_setup_message("Saving settings and preparing the music library… Large libraries and network databases can take time; live progress appears below.".into());
             let weak = weak.clone();
             let state = Arc::clone(&state);
@@ -15289,11 +15291,11 @@ fn bind_service_callbacks(
                                     .max(status.completed_albums.saturating_add(progress_batch))
                                     .max(1)
                             };
+                            let indeterminate = !publishing;
                             let percent = if publishing {
                                 99
                             } else {
-                                (status.completed_albums.saturating_mul(100) / estimated_total)
-                                    .clamp(0, 99) as i32
+                                0
                             };
                             let phase = match status.phase.as_str() {
                                 "enumerating" => "Indexing music library",
@@ -15328,6 +15330,7 @@ fn bind_service_callbacks(
                                     ui.set_setup_progress_total(total);
                                     ui.set_setup_progress_percent(percent);
                                     ui.set_setup_progress_errors(errors);
+                                    ui.set_setup_progress_indeterminate(indeterminate);
                                 }
                             })
                             .is_ok()
@@ -15344,6 +15347,7 @@ fn bind_service_callbacks(
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = weak.upgrade() {
                         ui.set_setup_saving(false);
+                        ui.set_setup_progress_indeterminate(false);
                         match result {
                             Ok((config, replacement)) => {
                                 ui.set_setup_progress_percent(100);

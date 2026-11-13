@@ -186,7 +186,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             timings["resource_budget"],
             {
                 "index_workers": 1,
-                "metadata_readers": 1,
+                "metadata_readers": 16,
                 "maximum_batch_albums": 64,
                 "postgresql_connections": 8,
                 "remote_provider_requests": 0,
@@ -1577,9 +1577,12 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             restored = next(item for item in restored_jobs if item["id"] == first["id"])
             restored_cover = restored["payload"]["cover"]
             self.assertTrue(restored["payload"]["staged_valid"])
-            self.assertNotEqual(restored_cover, first_cover)
+            # The WebGUI access token now supplies one restart-stable signing
+            # key. An already-open browser and a durable staged job therefore
+            # retain the same authorized path handle across server recreation.
+            self.assertEqual(restored_cover, first_cover)
             self.assertEqual(client.get(restored_cover).status_code, 200)
-            self.assertEqual(client.get(first_cover).status_code, 400)
+            self.assertEqual(client.get(first_cover).status_code, 200)
 
         self.runtime = Runtime(self.config, self.db)
         self.services = Services(self.runtime)
@@ -1819,6 +1822,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 ).status_code,
                 403,
             )
+
             self.assertEqual(
                 client.post(
                     "/api/login",
@@ -1836,6 +1840,102 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertEqual(client.post("/api/logout").status_code, 200)
             self.assertEqual(client.get("/api/artists").status_code, 401)
         self.runtime = Runtime(self.config, self.db)
+
+    def test_browser_authentication_survives_server_restart(self):
+        self.runtime.close()
+        first_app = create_app(
+            self.config, self.url, token="restart-test-token", start_worker=False
+        )
+        with TestClient(first_app) as first:
+            status = first.get("/api/status").json()
+            first.headers["X-SPLINED-CSRF"] = status["csrf"]
+            response = first.post(
+                "/api/admin/setup",
+                json={
+                    "username": "restart-admin",
+                    "password": "RestartPassword123",
+                    "confirmation": "RestartPassword123",
+                    "token": "restart-test-token",
+                },
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            session_cookie = first.cookies.get("splined_session")
+            self.assertTrue(session_cookie)
+            self.assertTrue(first.get("/api/status").json()["authenticated"])
+            image_handle = first_app.state.context.services.catalog.image(self.cover)
+
+        restarted_app = create_app(
+            self.config, self.url, token="restart-test-token", start_worker=False
+        )
+        with TestClient(restarted_app) as restarted:
+            restarted.cookies.set("splined_session", session_cookie)
+            status = restarted.get("/api/status")
+            self.assertEqual(status.status_code, 200, status.text)
+            self.assertTrue(status.json()["authenticated"])
+            self.assertEqual(status.json()["username"], "restart-admin")
+            self.assertEqual(status.json()["database_migration"]["current"], 23)
+            self.assertTrue(status.json()["database_migration"]["automatic"])
+            self.assertEqual(restarted.get("/api/artists").status_code, 200)
+            self.assertEqual(
+                restarted_app.state.context.services.catalog.image_source(
+                    image_handle
+                ).read_bytes(),
+                self.cover.read_bytes(),
+            )
+        self.runtime = Runtime(self.config, self.db)
+
+    def test_v3_migration_prunes_legacy_diagnostics_and_reports_catalog_drift(self):
+        with closing(self.db.connect()) as db, db:
+            db.raw.execute("DELETE FROM web_schema_versions WHERE version=23")
+            db.raw.execute(
+                "INSERT INTO web_audit_sessions("
+                "session_id,application_version,application_revision) "
+                "VALUES('legacy-v2','2.0.36','legacy')"
+            )
+            db.raw.execute(
+                "INSERT INTO web_audit("
+                "action,subject,session_id,application_version,application_revision) "
+                "VALUES('api-error','legacy thumbnail','legacy-v2','2.0.36','legacy')"
+            )
+            db.raw.execute(
+                "UPDATE albums SET splined_version='2.0.36' WHERE album_key=%s",
+                (self.row["album_key"],),
+            )
+            db.raw.execute(
+                "UPDATE artists SET splined_version='2.0.36' WHERE artist_key=%s",
+                (self.row["artist_key"],),
+            )
+            db.raw.execute(
+                "UPDATE tracks SET splined_version='2.0.36' WHERE album_key=%s",
+                (self.row["album_key"],),
+            )
+
+        migration = self.db.migrate()
+        self.assertEqual(migration["applied"], [23])
+        self.assertEqual(migration["cleanup"]["pre_v3_audit"], 1)
+        status = self.db.upgrade_status(core.VERSION)
+        self.assertEqual(status["catalog_older_major_records"], 4)
+        self.assertEqual(
+            status["catalog_older_major_by_table"],
+            {"artists": 1, "albums": 1, "tracks": 2},
+        )
+        self.assertEqual(status["audit_older_major_records"], 0)
+        self.assertTrue(status["recommendations"])
+        with closing(self.db.connect()) as db:
+            self.assertEqual(
+                db.raw.execute(
+                    "SELECT count(*) AS n FROM web_audit "
+                    "WHERE application_version='2.0.36'"
+                ).fetchone()["n"],
+                0,
+            )
+            self.assertEqual(
+                db.raw.execute(
+                    "SELECT splined_version FROM albums WHERE album_key=%s",
+                    (self.row["album_key"],),
+                ).fetchone()["splined_version"],
+                "2.0.36",
+            )
 
     def test_library_changes_get_is_cached_and_probe_is_explicit(self):
         self.runtime.close()  # The API owns its runtime for this test.
@@ -3044,6 +3144,39 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.assertEqual(maintenance, resumed.generation_id)
         coordinator.finish(self.db, resumed, "cancelled", "test cleanup")
 
+    def test_process_interruption_leaves_catalog_generation_recoverable(self):
+        from webgui import index_coordinator as coordinator
+
+        def interrupted():
+            raise coordinator.GenerationInterrupted()
+
+        with self.assertRaises(coordinator.GenerationInterrupted):
+            self.services.refresh_index(cancelled=interrupted, mode="full")
+
+        with closing(self.db.connect()) as db:
+            generation = db.execute(
+                "SELECT generation_id,state,phase FROM catalog_generations "
+                "WHERE state='building' ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+            maintenance = db.execute(
+                "SELECT maintenance_generation_id FROM catalog_index_state "
+                "WHERE singleton=TRUE"
+            ).fetchone()["maintenance_generation_id"]
+        self.assertIsNotNone(generation)
+        self.assertEqual(generation["state"], "building")
+        self.assertEqual(maintenance, generation["generation_id"])
+
+        with closing(self.db.connect()) as db, db:
+            db.raw.execute(
+                "UPDATE catalog_generations SET lease_expires_at=now() "
+                "WHERE generation_id=%s",
+                (generation["generation_id"],),
+            )
+        lease = coordinator.claim(self.db, "full", str(self.root / "music"))
+        self.assertTrue(lease.resumed)
+        self.assertEqual(lease.generation_id, generation["generation_id"])
+        coordinator.finish(self.db, lease, "cancelled", "test cleanup")
+
     def test_postgres_validation_and_publication_interruptions_preserve_atomic_catalog(self):
         from webgui import index_coordinator as coordinator
 
@@ -3152,9 +3285,14 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         progress = []
         self.services.refresh_index(progress=progress.append, mode="full")
         self.assertEqual(progress[0]["phase"], "starting")
-        self.assertTrue(any(item["phase"] == "indexing" for item in progress))
-        self.assertTrue(any(item["phase"] == "validating" for item in progress))
+        indexing = [item for item in progress if item["phase"] == "indexing"]
+        validating = [item for item in progress if item["phase"] == "validating"]
+        self.assertTrue(indexing)
+        self.assertTrue(validating)
+        self.assertTrue(all(not item["total_known"] for item in indexing))
+        self.assertTrue(all(item["total_known"] for item in validating))
         self.assertEqual(progress[-1]["phase"], "published")
+        self.assertTrue(progress[-1]["total_known"])
         self.assertEqual(progress[-1]["percentage"], 100)
         self.assertEqual(progress[-1]["completed"], 5)
 
@@ -3319,7 +3457,8 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 )
             }
             db.raw.execute(
-                "UPDATE catalog_generations SET lease_expires_at=now()-interval '1 second' "
+                "UPDATE catalog_generations SET lease_expires_at=now()-interval '1 second',"
+                "created_at=now()-interval '5 minutes' "
                 "WHERE generation_id=%s",
                 (interrupted["generation"],),
             )
@@ -3333,6 +3472,8 @@ class PostgreSQLBrowserTests(unittest.TestCase):
 
         original_inspect = services_module.tags.inspect_album
         inspected_after_restart = []
+        recovery_batch_sizes = []
+        original_touch_batch = coordinator.touch_completed_batch
 
         def observe_inspect(album, *args, **kwargs):
             path = str(album.path)
@@ -3340,11 +3481,21 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             inspected_after_restart.append(path)
             return original_inspect(album, *args, **kwargs)
 
-        with patch.object(services_module.tags, "inspect_album", new=observe_inspect):
+        def observe_touch_batch(database, lease, checkpoints, **kwargs):
+            recovery_batch_sizes.append(len(checkpoints))
+            return original_touch_batch(database, lease, checkpoints, **kwargs)
+
+        with (
+            patch.object(services_module.tags, "inspect_album", new=observe_inspect),
+            patch.object(
+                coordinator, "touch_completed_batch", new=observe_touch_batch
+            ),
+        ):
             recovered = self.services.refresh_index(mode="full")
         self.assertTrue(recovered["resumed"])
         self.assertEqual(recovered["generation_id"], interrupted["generation"])
         self.assertTrue(inspected_after_restart)
+        self.assertEqual(recovery_batch_sizes, [3])
         with closing(self.db.connect()) as db:
             state = db.execute(
                 "SELECT active_generation_id,maintenance_generation_id,catalog_state "
@@ -3354,6 +3505,36 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertEqual(state["maintenance_generation_id"], "")
             self.assertEqual(state["catalog_state"], "ready")
             self.assertEqual(db.execute("SELECT count(*) FROM albums").fetchone()[0], 6)
+            timings = db.execute(
+                "SELECT timings FROM catalog_generations WHERE generation_id=?",
+                (interrupted["generation"],),
+            ).fetchone()["timings"]
+            self.assertGreaterEqual(float(timings["total_seconds"]), 300.0)
+            self.assertLess(float(timings["process_seconds"]), 300.0)
+
+    def test_successful_job_clears_stale_restart_recovery_error(self):
+        job_id = "recovered-index-job"
+        with closing(self.db.connect()) as db, db:
+            db.raw.execute(
+                "INSERT INTO web_jobs(id,kind,state,payload,progress,error) "
+                "VALUES(%s,'index','queued',%s,'{}',"
+                "'Recovering interrupted catalog generation')",
+                (
+                    job_id,
+                    Jsonb(
+                        {
+                            "mode": "incremental",
+                            "library_root": str(self.runtime.music),
+                        }
+                    ),
+                ),
+            )
+        self.queue = JobQueue(self.services)
+        completed = self.wait_for_job(
+            job_id, lambda item: item["state"] in {"done", "failed"}
+        )
+        self.assertEqual(completed["state"], "done", completed["error"])
+        self.assertEqual(completed["error"], "")
 
     def test_full_refresh_revalidates_existing_windows_managed_track_tags(self):
         with closing(self.db.connect()) as db, db:
@@ -5222,7 +5403,11 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     server_thread.join(timeout=15)
                     self.assertFalse(server_thread.is_alive())
                     app, server, server_thread = launch_test_server()
-                    page.reload(wait_until="networkidle")
+                    # The authenticated GUI polls job state every 1.5 seconds,
+                    # so network-idle is not a stable readiness contract after
+                    # a server restart.  The assertions below wait for the
+                    # durable session and asynchronous library bootstrap.
+                    page.reload(wait_until="domcontentloaded")
                     # The authenticated session is intentionally durable. It
                     # can restore just after the login form first paints, so
                     # wait for bootstrap to settle and sign in only when the
@@ -5238,9 +5423,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     # Authentication becomes visible before the asynchronous
                     # library/bootstrap render completes.  Wait for that load
                     # so its default workspace render cannot race this click.
-                    expect(page.locator("#statusText")).to_contain_text(
-                        "Loaded", timeout=15000
-                    )
+                    expect(
+                        page.locator("#artistList button", has_text="Test Artist")
+                    ).to_be_visible(timeout=15000)
                     page.locator("#embedTab").click()
                     expect(page.locator("#embedView")).to_be_visible()
                     expect(page.locator(".queue-card", has_text="Test Album")).to_be_visible()
@@ -5408,9 +5593,6 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         embedded_track_artwork_bytes(target), initial_target_art
                     )
                     page.locator("#upscaleButton").click()
-                    expect(page.locator("#statusText")).to_contain_text(
-                        "Embedded Thumb Ready · 300 × 300", timeout=15000
-                    )
                     expect(page.locator("#selectedDimensions")).to_have_text(
                         "300 × 300"
                     )
@@ -5574,10 +5756,8 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     )
                     self.assertEqual(embedded_track_artwork_bytes(target), initial_target_art)
                     page.locator("#upscaleButton").click()
-                    expect(page.locator("#statusText")).to_contain_text(
-                        "Embedded Thumb Ready · 300 × 300", timeout=15000
-                    )
                     expect(page.locator("#selectedDimensions")).to_have_text("300 × 300")
+                    expect(page.locator("#selectedQuality")).to_have_text("Thumb Ready")
                     with page.expect_response(
                         lambda response: response.url.endswith("/api/jobs/action")
                         and "webgui-embed-release" in (response.request.post_data or ""),

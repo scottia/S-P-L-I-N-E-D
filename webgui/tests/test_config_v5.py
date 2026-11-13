@@ -142,6 +142,34 @@ class ConfigV5ParityTests(unittest.TestCase):
                 self.assertEqual(config["config_version"], 5)
                 splined.validate_config_v5(config)
 
+    def test_index_metadata_reader_bound_is_explicit_and_portable(self) -> None:
+        config = load_example("docker/config.example.toml")
+        self.assertEqual(config["scan"]["index_metadata_readers"], 16)
+        for readers in (1, 16, 32):
+            with self.subTest(readers=readers):
+                config["scan"]["index_metadata_readers"] = readers
+                splined.validate_config_v5(config)
+        for readers in (0, 33):
+            with self.subTest(readers=readers):
+                config["scan"]["index_metadata_readers"] = readers
+                with self.assertRaisesRegex(
+                    splined.SplinedError, "index_metadata_readers"
+                ):
+                    splined.validate_config_v5(config)
+
+    def test_large_album_deferral_threshold_is_explicit_and_disableable(self) -> None:
+        config = load_example("docker/config.example.toml")
+        self.assertEqual(config["scan"]["index_large_album_track_threshold"], 100)
+        for threshold in (0, 100, 10000):
+            with self.subTest(threshold=threshold):
+                config["scan"]["index_large_album_track_threshold"] = threshold
+                splined.validate_config_v5(config)
+        config["scan"]["index_large_album_track_threshold"] = 10001
+        with self.assertRaisesRegex(
+            splined.SplinedError, "index_large_album_track_threshold"
+        ):
+            splined.validate_config_v5(config)
+
     def test_upscale_percentage_is_a_ceiling_not_an_all_or_nothing_gate(self) -> None:
         config = load_example("docker/config.example.toml")
         config["output"]["upscale_below_ideal"] = True

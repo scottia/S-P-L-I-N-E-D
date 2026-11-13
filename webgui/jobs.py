@@ -11,15 +11,17 @@ import threading
 from psycopg.types.json import Jsonb
 import splined as core
 from interaction.status import use_adapter
+from webgui import index_coordinator as indexer
 
 
 TERMINAL_STATES = {"done", "failed", "cancelled"}
 
 
 class JobAdapter:
-    def __init__(self, queue, job_id):
+    def __init__(self, queue, job_id, kind=""):
         self.queue = queue
         self.id = job_id
+        self.kind = kind
         self.events = []
         self.current = {}
         self.context = {}
@@ -56,6 +58,13 @@ class JobAdapter:
             )
 
     def cancelled(self):
+        # A container shutdown must leave a running catalog generation and its
+        # durable job claim recoverable. A distinct interruption unwinds the
+        # worker without terminally cancelling the generation or pausing its
+        # job; the next process can then reclaim both. Other interactive/write
+        # work retains the existing orderly-pause behavior.
+        if self.kind == "index" and self.queue.stopped.is_set():
+            raise indexer.GenerationInterrupted()
         return self.queue.cancel_requested(self.id)
 
     def read(self, prompt, context):
@@ -660,7 +669,7 @@ class JobQueue:
                     state_to="running",
                     request_status="running",
                 )
-                adapter = JobAdapter(self, job["id"])
+                adapter = JobAdapter(self, job["id"], str(job["kind"]))
                 try:
                     # Keep configuration stable for the full queued operation,
                     # but let an interactive scan release the media-write lock
@@ -695,7 +704,9 @@ class JobQueue:
                             result = self.services.run_scan(payload, adapter)
                     with closing(self.db.connect()) as db, db:
                         db.raw.execute(
-                            "UPDATE web_jobs SET state='done',result=%s,progress=progress-'prompt',updated_at=now() WHERE id=%s AND state NOT IN ('cancelled','paused')",
+                            "UPDATE web_jobs SET state='done',result=%s,"
+                            "progress=progress-'prompt',error='',updated_at=now() "
+                            "WHERE id=%s AND state NOT IN ('cancelled','paused')",
                             (Jsonb(result), job["id"]),
                         )
                     self.audit_job(
@@ -707,6 +718,11 @@ class JobQueue:
                         request_status="completed",
                         details={"result": result},
                     )
+                except indexer.GenerationInterrupted:
+                    # Preserve the running job and building generation. The
+                    # next worker expires the old lease and requeues this exact
+                    # job before resuming its durable Album checkpoints.
+                    pass
                 except (core.InteractionCancelled, core.InteractionReturn):
                     with closing(self.db.connect()) as db, db:
                         db.execute(

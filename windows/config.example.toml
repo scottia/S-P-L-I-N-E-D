@@ -18,6 +18,8 @@ library_scan = false
 scan_mode_timeout = 24
 index_batch_size = 16
 index_batch_adaptive = true
+index_metadata_readers = 16
+index_large_album_track_threshold = 100
 cache_dir = "_db"
 temporary_cache_dir = "_cache"
 # Enable only for an intentional shared/network splined.db (for example a UNC cache).

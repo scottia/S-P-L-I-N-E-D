@@ -1114,11 +1114,11 @@ recorded with the Windows UI scale and biography follow-up below.
   PostgreSQL service. Credentialed startup was restored after localhost-only UI
   validation (`auth_required=true`, `database_ready=true`).
 - The isolated WebGUI test service intentionally has no automation-only token,
-  user ID, or password stored in the repository. A service restart invalidates
-  the owner-authenticated browser session, so the owner must sign in again before
-  live UI inspection. Automated API and browser-state suites do not depend on
-  owner credentials; installed browser validation records this session boundary
-  instead of embedding a reusable credential in source or test configuration.
+  user ID, or password stored in the repository. Browser session identifiers
+  are opaque cookies whose hashes and bounded session data are stored in
+  PostgreSQL; a service restart therefore preserves authentication without
+  embedding a reusable credential in source or test configuration. Password
+  recovery revokes every durable browser session.
 
 ### PR #174 preparedness handoff
 
@@ -1156,3 +1156,176 @@ recorded with the Windows UI scale and biography follow-up below.
 All implementation, focused regression, full local-suite, installed-client and
 final-head supported-runtime CI gates are complete. PR #170 and PR #174 remain
 Draft and unmerged pending owner acceptance.
+
+## v3.0.1 post-release correction — recovery commit accounting
+
+Recorded 2026-11-13 after a 3,885-Album NAS catalog exposed multi-hour Windows
+recovery and repeated WebGUI restarts.
+
+PR #170's Requirement 1 intended bounded recovery writes, but its accepted
+implementation called `touch_reusable_checkpoint` / `touch_completed` once per
+recovered Album. Each call opened and committed its own SQLite or PostgreSQL
+transaction. The benchmark's `checkpoint_commits` value counted only normal
+staging batches, so the published “13 commits” result omitted the recovered
+Album commits and could not enforce the acceptance contract.
+
+The corrected regression gate requires all of the following:
+
+- Load committed checkpoint identity once per resumed generation; do not issue
+  one checkpoint lookup per Album.
+- Attach recovered checkpoints in the configured adaptive 1–64 Album batch.
+- Observe the recovery batch call/transaction in tests; final row counts alone
+  are insufficient.
+- Count recovery transactions in generation timings.
+- Reuse filesystem size/mtime evidence gathered during enumeration instead of
+  repeating NAS metadata calls during fingerprint, manifest and Track work.
+- Preserve deterministic Track order while Windows and WebGUI each perform at
+  a configurable one-to-thirty-two bounded concurrent tag-reader budget
+  (default sixteen); both retain one database writer.
+
+The v3 PostgreSQL upgrade now also reports the pinned application and schema
+versions, lists automatically applied migrations, removes pre-v3 diagnostic
+events that refer to retired cache paths, and recommends a Full Refresh when
+earlier-major catalog rows require revalidation. It never relabels catalog rows
+without reading the media again.
+
+### Corrected N-share benchmark
+
+The established 216-Album / 3,496-Track read-only library was indexed with the
+disposable SQLite database on
+`N:\downloads\0_backups\splined\windows\test`. The first run includes cold
+filesystem cache; the next two are the comparable warm-cache policy check.
+
+| Policy | Interruption + recovery | Recovery commits | Unchanged incremental | Peak RSS growth |
+| --- | ---: | ---: | ---: | ---: |
+| Adaptive, cold | 17.048 s | 25 | 1.167 s | 10.58 MiB |
+| Fixed 64, warm | 4.833 s | 4 | 1.032 s | 10.75 MiB |
+| Adaptive, warm | 4.517 s | 14 | 1.076 s | 10.16 MiB |
+
+The warm adaptive run is slightly faster than fixed 64 with equivalent memory,
+so the default remains adaptive with an initial batch of 16 and a bounded 1–64
+range. The correction does not trade a larger recovery window for throughput.
+
+### Two-core 100,000-Track regression
+
+The original Requirement 5 uneven fixture (1,000 Albums / 100,000 Tracks) was
+rerun on the corrected code with each client pinned to two logical CPUs at
+BelowNormal priority. A 16 GiB process ceiling was recorded; neither client
+approached it. PostgreSQL server/container memory is separate from the measured
+WebGUI client process and is not claimed by this ceiling.
+
+| Client / database | Interruption + recovery | Accurate commits | Unchanged incremental | Peak client RSS growth |
+| --- | ---: | ---: | ---: | ---: |
+| Windows / disposable local SQLite | 48.520 s | 44 | 26.502 s | 85.17 MiB |
+| Windows / disposable N: test SQLite | 50.989 s | 45 | 24.733 s | 84.66 MiB |
+| WebGUI / disposable PostgreSQL schema | 201.862 s | 44 | 8.756 s | 118.56 MiB |
+
+Every run staged 16 Albums before simulated worker loss, exposed zero live
+Albums before recovery, published 1,000 Albums / 100,000 Tracks, and recorded
+zero Album or Track tag reads on the unchanged pass. The one-commit variation
+is an adaptive boundary decision. Unlike the PR #170 results, these commit
+totals include the recovered-checkpoint transaction.
+
+Result JSON is retained outside the repository under
+`E:\apps\ChatGpt\SPLINED-local-test-library\state\pr170-regression-20261113-2core`.
+
+### Production read-only WebGUI projection reference
+
+The production read-only role was loaded only from
+`production-splined_postgresql-readonly.env`; no service startup, migration,
+audit, or write was attempted. At 1,141 stored Artists / 3,885 Albums / 63,483
+Tracks, the three two-core Artist projection passes originally took 37.090,
+37.292, and 36.969 seconds. Profiling assigned about 34.05 seconds to resolving
+3,885 already-authoritative catalog paths against the NAS for an empty
+coordination result.
+
+Catalog coordination projection now derives that relative identity lexically
+and retains physical path resolution for write-time event validation. The same
+read-only passes take 2.827, 2.722, and 2.767 seconds and return the same 5,240
+stored/projected Artist identities. The count query remains 0.005 seconds. Pool
+state after the run was maximum 8, size 1, available 1, waiting 0.
+
+### Live NAS metadata-reader taper and eager baseline
+
+The earlier small-fixture result established that bounded parallel tag reads
+were safe, but it was not representative production sizing evidence. A live
+PostgreSQL development catalog was therefore exercised against the real NAS
+library with the SPLINED container limited to two CPUs and 16 GiB. Every taper
+sample processed the same first 352 Albums, retained one database writer and
+reported zero errors.
+
+| Local tag readers | 352-Album duration | Change from 8 readers |
+| ---: | ---: | ---: |
+| 8 | 62.0 s | baseline |
+| 16 | 50.0 s | 19.4% faster |
+| 24 | 51.0 s | 17.7% faster |
+| 32 | 52.0 s | 16.1% faster |
+
+The curve tapers after sixteen. The default is therefore sixteen for every
+library size, configurable from 1 through 32. It is a ceiling: an Album with
+fewer tracks naturally occupies fewer readers. Reader count is not adaptive;
+the independent durable database checkpoint batch remains adaptive.
+
+With sixteen readers, the eager baseline published 3,825 Albums / 5,241
+Artists in 2,413 seconds (40m13s) with zero errors while the authenticated GUI
+remained active. The first 352 Albums had warm stored evidence from the taper;
+the remaining Albums required cold NAS tag reads. The run excluded the
+Billboard and `Compilations (Top 40)` test directories but deliberately kept
+`[Various Artists]`. Container memory reached a stable 2.6/16 GiB plateau,
+CPU was 13.7% at the observed tail, and the container had zero restarts.
+
+The generation's durable timing record reports 55,780 Track tag reads and
+2,388.981 seconds (39m49s) inside the coordinator. Filesystem/tag metadata
+accounted for 2,290.318 seconds, inventory for 52.004 seconds, and 3,325
+PostgreSQL checkpoints for only 19.251 seconds. This isolates local tag/NAS
+work—not PostgreSQL publication—as the dominant cost of the eager baseline.
+
+The follow-up gate reuses representative-track evidence instead of opening
+that file again in the bounded track pass. It also places Albums at or above a
+configurable track threshold (default 100, zero disables) after ordinary
+Albums and emits intra-Album track progress/lease heartbeats. Track-credit
+authority and its eager publication semantics are intentionally unchanged; the
+live evidence did not justify changing that architecture.
+
+The first live container-restart gate exposed an orderly-shutdown regression:
+the job retained 1,129 completed checkpoints, but shutdown converted its
+generation to terminal `cancelled` and its job to `paused`. The worker shutdown
+contract now leaves an active index generation recoverable for the next
+process while other interactive/write jobs retain their explicit pause
+behavior. A genuinely paused index is labeled as paused rather than continuing
+to display its stale "discovering more" snapshot.
+
+The corrected restart gate ran commit `f5b8939` against the same two-CPU,
+16-GiB development stack. At 1,231 observed completed Albums the application
+container was recreated without stopping PostgreSQL. The browser remained
+authenticated, the same job and generation entered `recovering`, rebuilt its
+visible count to 1,232, and returned to `indexing` without rereading durable
+checkpoints. It ultimately published 3,891 Albums / 62,410 Tracks / 1,141
+catalog Artists with zero errors and `resumed=true`. The generation wall clock
+was 3,109.173 seconds (51m49s), including the forced restart and recovery.
+
+The pre-fix timing payload restarted its process timer after recovery and
+therefore reported only the final 2,250.246-second process segment. That live
+finding added separate `process_seconds` and cumulative `total_seconds`
+generation timing. The successful job also retained the non-terminal recovery
+message in its `error` field; successful completion now clears it.
+
+Seventy-eight Albums met the 100-Track threshold. Ordinary Albums completed
+before the deferred lane began with Billboard 1960 through 2025, followed by
+the remaining large compilations. Heartbeats remained visible through 207-Track
+sets and no Album appeared stalled. Filesystem metadata consumed 2,168.591
+seconds, inventory 39.857 seconds, and 2,645 PostgreSQL checkpoint commits only
+14.500 seconds. Publication validation completed within the 15-second monitor
+resolution, again isolating NAS/tag work as the dominant cost.
+
+Removing only `Compilations (Top 40)` from `ignored_subs` produced a read-only
+57.227-second probe with exactly four additions and no changed, moved, or
+removed Albums. The incremental generation reused all 3,891 published Albums,
+read four new Album identities and 1,235 new Track tags, and published 3,895
+Albums / 63,645 Tracks / 1,142 catalog Artists in 88.960 seconds. The
+994-Track `Jaar Radio Top 2000` reported progress from 51 through 951 Tracks and
+completed normally. The backend cached the four-Album notice, but an already
+open browser did not observe a probe started by another API session. Library
+settings changes now start and watch their probe immediately; an open WebGUI
+also probes read-only on load/reload and once per hour, deduplicating while
+catalog work is active.

@@ -70,6 +70,47 @@ test("library change completion clears a busy status after backgrounding", async
   assert.equal(button.hidden, true);
 });
 
+test("open WebGUI schedules an hourly read-only library change probe", async () => {
+  const timers = [];
+  let probes = 0;
+  const context = load(libraryChangeFunctions, {
+    state: {jobs: []},
+    api: async () => ({count: 0, added: 0, changed: 0, moved: 0, removed: 0, checking: false}),
+    post: async () => { probes += 1; return {state: "queued"}; },
+    $: id => {
+      assert.equal(id, "applyLibraryChanges");
+      return {};
+    },
+    setStatus: () => {},
+    auditEvent: () => {},
+    setTimeout: (callback, delay) => {
+      timers.push({callback, delay});
+      return timers.length;
+    },
+    clearTimeout: () => {},
+    document: {hidden: false, addEventListener: () => {}},
+  });
+
+  context.scheduleHourlyLibraryChangeProbe();
+  assert.equal(timers.length, 1);
+  assert.equal(timers[0].delay, 60 * 60 * 1000);
+  await timers[0].callback();
+  assert.equal(probes, 1);
+  assert.equal(timers.length, 2);
+  assert.equal(timers[1].delay, 60 * 60 * 1000);
+});
+
+test("saving changed ignored folders immediately requests a change probe", () => {
+  const saveSection = between(
+    operationsSource,
+    "async function saveCurrentSection",
+    "function renderSection",
+  );
+  assert.match(saveSection, /ignoredBefore/);
+  assert.match(saveSection, /section\.id === "library" && ignoredBefore !== ignoredAfter/);
+  assert.match(saveSection, /await requestLibraryChangeProbe\(\)/);
+});
+
 const contextFunctions = between(
   appSource,
   "function albumInCurrentArtistContext",
@@ -85,6 +126,55 @@ const mediaStatusFunctions = between(
   "const MEDIA_STATUSES",
   "function validMusicBrainzId",
 );
+const indexProgressFunctions = between(
+  operationsSource,
+  "function activeIndexJob()",
+  "async function performJobsPoll()",
+);
+
+test("catalog progress stays indeterminate until discovery has a final total", () => {
+  const statuses = [];
+  const progressStyle = new Map();
+  const status = {
+    classList: {add: () => {}, remove: () => {}},
+    style: {
+      setProperty: (name, value) => progressStyle.set(name, value),
+      removeProperty: name => progressStyle.delete(name),
+    },
+  };
+  const button = {};
+  const state = {
+    jobs: [{
+      id: "index-1", kind: "index", state: "running",
+      progress: {phase: "indexing", completed: 64, total: 65, percentage: 98, total_known: false},
+    }],
+    indexStatus: {},
+    indexStopping: false,
+  };
+  const context = load(indexProgressFunctions, {
+    state,
+    $: id => id === "indexStopProcess" ? button : status,
+    setStatus: (message, type) => statuses.push({message, type}),
+  });
+
+  context.renderIndexProgress();
+  assert.match(statuses.at(-1).message, /64 Albums indexed · discovering more…/);
+  assert.doesNotMatch(statuses.at(-1).message, /98%/);
+  assert.equal(progressStyle.has("--index-progress"), false);
+
+  state.jobs[0].progress = {
+    phase: "validating", completed: 64, total: 64, percentage: 99, total_known: true,
+  };
+  context.renderIndexProgress();
+  assert.match(statuses.at(-1).message, /validating · 99% · 64\/~64 Albums/);
+  assert.equal(progressStyle.get("--index-progress"), "99%");
+
+  state.jobs[0].state = "paused";
+  context.renderIndexProgress();
+  assert.match(statuses.at(-1).message, /index paused · 64 Albums checkpointed · Resume to continue/);
+  assert.doesNotMatch(statuses.at(-1).message, /discovering more/);
+  assert.equal(button.hidden, true);
+});
 
 test("opposing Album overrides use their own dark-grey filter and never inflate Bypassed", () => {
   const album = {id: "album-1", album_mbid: "release-1", status: "partial"};
@@ -199,6 +289,11 @@ const queuedCandidateSelectionFunctions = between(
 const writeArtworkFunction = compDecisionFunctions + "\n" + between(
   operationsSource,
   "async function writeArtwork",
+  "const previewReview",
+);
+const writeArtworkOnceFunction = between(
+  operationsSource,
+  "async function writeArtworkOnce",
   "const previewReview",
 );
 const compThumbnailFunctions = compDecisionFunctions + "\n" + between(
@@ -818,6 +913,56 @@ test("Artist COMP reviews the first job before later Album enqueue back-pressure
   assert.equal(posts, 2);
 });
 
+test("repeated selection of an active COMP track cannot enqueue another job", async () => {
+  const statuses = [];
+  let launches = 0;
+  const identity = JSON.stringify(["artist-1", "comp-1", "track-1"]);
+  const state = {
+    launchActive: true, launchStopping: false, activeCompLaunch: identity,
+  };
+  const context = load(launchCompFunctions, {
+    state, AbortController,
+    compLaunchIdentity: (artistId, albumId, trackKey) => JSON.stringify([
+      String(artistId || ""), String(albumId || ""), String(trackKey || ""),
+    ]),
+    launchArtistComp: async () => { launches += 1; },
+    launchFallback: async () => { launches += 1; },
+    setStatus: message => statuses.push(message),
+    renderCandidateLaunchControl() {}, renderHero() {},
+  });
+
+  await context.activateCompTrackWork({artistId: "artist-1", albumId: "comp-1", trackKey: "track-1"});
+
+  assert.equal(launches, 0);
+  assert.equal(state.launchActive, true);
+  assert.match(statuses[0], /already processing/);
+});
+
+test("artwork writes are single-flight while the first write is pending", async () => {
+  let releaseWrite;
+  const pendingWrite = new Promise(resolve => { releaseWrite = resolve; });
+  let writes = 0;
+  const renders = [];
+  const statuses = [];
+  const state = {writePending: false};
+  const context = load(writeArtworkOnceFunction, {
+    state,
+    writeArtwork: async () => { writes += 1; await pendingWrite; },
+    renderReview: () => renders.push(state.writePending),
+    setStatus: message => statuses.push(message),
+  });
+
+  const first = context.writeArtworkOnce();
+  await context.writeArtworkOnce();
+  assert.equal(writes, 1);
+  assert.match(statuses[0], /already in progress/);
+
+  releaseWrite();
+  await first;
+  assert.equal(state.writePending, false);
+  assert.deepEqual(renders, [true, false]);
+});
+
 test("STOP cancels a COMP job accepted after its enqueue was already in flight", async () => {
   let acceptJob;
   const accepted = new Promise(resolve => { acceptJob = resolve; });
@@ -1017,6 +1162,48 @@ test("Artist COMP groups use the native descending fallback order", async () => 
   await context.openArtistCompReport();
 
   assert.deepEqual(Array.from(state.compGroups, group => group.id), ["new", "zulu", "alpha"]);
+});
+
+test("Artist COMP remains available after an Album edit and restores Artist context", async () => {
+  const state = {
+    libraryMode: "artists", editorMode: "album", workspace: "find",
+    artist: {id: "artist-1", name: "Artist"}, album: {id: "album-1"},
+    albumSearchActive: true, albumSearchAlbumId: "album-1", albumSearchCandidates: [{id: "cover"}],
+    selectedCover: {image: "cover.jpg"}, compAlbums: [], compGroups: [],
+    compCollapsed: new Set(), compReportVisible: false, compReportLoading: false,
+    compPreviewMode: false, compTrack: null, compTrackRequest: 0,
+    compStatusRequest: 0, compReportRequest: 0, compBusy: false,
+    candidates: [], upscalePreview: null,
+  };
+  const elements = {
+    compReportButton: {disabled: false, textContent: "COMP Report", title: ""},
+    fallbackReport: {querySelectorAll: () => [], getBoundingClientRect: () => ({top: 0})},
+    overviewContent: {scrollTop: 0, getBoundingClientRect: () => ({top: 0})},
+  };
+  const buttonStateFunction = between(
+    appSource,
+    "function renderCompReportButtonState",
+    "function renderHeroContents",
+  );
+  const context = load(buttonStateFunction + "\n" + artistCompReportFunction, {
+    state,
+    api: async () => [{id: "comp-1", name: "Compilation", year: "2024", tracks: []}],
+    $: id => elements[id], renderHero() {}, renderCandidates() {}, renderReview() {},
+    setStatus() {}, probeArtistCompStatuses() {}, requestAnimationFrame() {},
+  });
+
+  context.renderCompReportButtonState();
+  assert.equal(elements.compReportButton.disabled, false);
+
+  await context.openArtistCompReport();
+
+  assert.equal(state.editorMode, "artist");
+  assert.equal(state.album, null);
+  assert.equal(state.albumSearchActive, false);
+  assert.equal(state.albumSearchAlbumId, "");
+  assert.deepEqual(Array.from(state.albumSearchCandidates), []);
+  assert.equal(state.selectedCover, null);
+  assert.equal(state.compReportVisible, true);
 });
 
 test("COMP summary and TRACK FILE columns reserve Album title space", () => {
@@ -1516,7 +1703,7 @@ test("COMP Selected Artwork keeps the Windows button contract", () => {
   assert.match(operationsSource, /\$\("embedBatchButton"\)\.textContent = "EMBED Batch"/);
   assert.match(operationsSource, /\$\("embedBatchButton"\)\.disabled = compContext \|\|/);
   assert.doesNotMatch(operationsSource, /textContent = compContext \? "EMBED Thumbs"/);
-  assert.match(appSource, /\$\("writeButton"\)\.addEventListener\("click", \(\) => runAction\(writeArtwork\)\)/);
+  assert.match(appSource, /\$\("writeButton"\)\.addEventListener\("click", \(\) => runAction\(writeArtworkOnce\)\)/);
   assert.match(appSource, /\$\("embedBatchButton"\)\.addEventListener\("click", \(\) => runAction\(stageAlbum\)\)/);
   assert.match(operationsSource, /Writing selected cover…/);
   assert.match(operationsSource, /Writing selected Artist Art…/);
@@ -2642,8 +2829,9 @@ test("empty and offline thumbnail hydration leave local results usable", async (
   assert.equal(renders, 0);
 });
 
-test("artist artwork write refreshes the corresponding list row", async () => {
+test("artist artwork write refreshes the corresponding list row without rebuilding the library", async () => {
   let libraryRenders = 0;
+  let artistRowRefreshes = 0;
   const listed = {id: "artist-1", portrait: "old", status: "unprocessed"};
   const state = {
     queuedDecision: null,
@@ -2670,6 +2858,7 @@ test("artist artwork write refreshes the corresponding list row", async () => {
     api: async () => ({id: "artist-1", portrait: "fresh", banner: null, status: "processed"}),
     componentPayload: kind => ({kind}),
     renderLibrary: () => { libraryRenders += 1; },
+    refreshLibraryArtistRow: id => { assert.equal(id, "artist-1"); artistRowRefreshes += 1; },
     renderHero() {},
     renderPanes() {},
     renderReview() {},
@@ -2683,7 +2872,16 @@ test("artist artwork write refreshes the corresponding list row", async () => {
 
   assert.equal(listed.portrait, "fresh");
   assert.equal(listed.status, "processed");
-  assert.equal(libraryRenders, 1);
+  assert.equal(libraryRenders, 0);
+  assert.equal(artistRowRefreshes, 1);
+});
+
+test("remote Artist thumbnails are visibility queued and critical artwork is eager", () => {
+  assert.match(appSource, /const LIBRARY_THUMBNAIL_CONCURRENCY = 3/);
+  assert.match(appSource, /new IntersectionObserver/);
+  assert.match(appSource, /startsWith\("\/api\/artist\/thumbnail"\)/);
+  assert.match(appSource, /element\.fetchPriority = "high"/);
+  assert.match(appSource, /criticalImage\(source, "hero-portrait"/);
 });
 
 test("Album search and Album overview use the global single-Album contract", () => {
@@ -2711,7 +2909,7 @@ test("WebGUI renders native-parity overview sections and artwork footer", () => 
   assert.match(cssSource, /overview-actions #compReportButton/);
   assert.match(cssSource, /review-actions \.action-orange/);
   assert.match(appSource, /function renderCompReportButtonState\(\)/);
-  assert.match(appSource, /state\.libraryMode === "artists" && state\.editorMode === "artist"/);
+  assert.match(appSource, /state\.libraryMode === "artists" && !!state\.artist/);
   assert.match(appSource, /selectFallbackTrack\(item\.key, state\.fallbackPreviewMode, !state\.fallbackPreviewMode\)/);
   assert.match(appSource, /selectArtistCompTrack\(group\.id, track\.key, !state\.compPreviewMode\)/);
   assert.match(appSource, /node\("div", "musicbrainz-release-actions"\)/);

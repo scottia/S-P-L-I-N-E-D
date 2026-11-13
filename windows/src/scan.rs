@@ -70,6 +70,38 @@ where
     Ok(ignored_directories)
 }
 
+/// Visit ordinary Albums first, then the bounded exceptional large-Album tail.
+///
+/// The inventory walk already has exact audio-file counts, so this changes no
+/// tag authority and performs no extra filesystem pass. Zero disables
+/// prioritization and preserves deterministic path order exactly.
+pub fn walk_album_directories_prioritized<F>(
+    root: &Path,
+    ignored_subs: &[String],
+    large_album_track_threshold: usize,
+    mut on_album: F,
+) -> Result<Vec<PathBuf>, String>
+where
+    F: FnMut(AlbumDirectory) -> Result<(), String>,
+{
+    if large_album_track_threshold == 0 {
+        return walk_album_directories(root, ignored_subs, on_album);
+    }
+    let mut deferred = Vec::new();
+    let ignored = walk_album_directories(root, ignored_subs, |album| {
+        if album.audio_files.len() >= large_album_track_threshold {
+            deferred.push(album);
+            Ok(())
+        } else {
+            on_album(album)
+        }
+    })?;
+    for album in deferred {
+        on_album(album)?;
+    }
+    Ok(ignored)
+}
+
 /// Discover Album folders for the startup new-media notice without retaining
 /// every track path. Directory entries must still be enumerated to find child
 /// folders, but no audio file is opened or statted here.
@@ -317,6 +349,28 @@ mod tests {
                 .map(|album| album.path.clone())
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn prioritized_walk_defers_only_albums_at_the_track_threshold() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let root = temp.path();
+        let large = root.join("A Large");
+        let small = root.join("Z Small");
+        fs::create_dir_all(&large).unwrap();
+        fs::create_dir_all(&small).unwrap();
+        File::create(large.join("01.mp3")).unwrap();
+        File::create(large.join("02.mp3")).unwrap();
+        File::create(small.join("01.mp3")).unwrap();
+
+        let mut visited = Vec::new();
+        walk_album_directories_prioritized(root, &[], 2, |album| {
+            visited.push(album.path);
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(visited, vec![small, large]);
     }
 
     #[test]

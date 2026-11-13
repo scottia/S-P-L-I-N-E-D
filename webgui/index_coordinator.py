@@ -47,6 +47,10 @@ class GenerationLeaseLost(RuntimeError):
     pass
 
 
+class GenerationInterrupted(RuntimeError):
+    """Process shutdown interrupted work that the next worker may reclaim."""
+
+
 def _lease_deadline() -> datetime:
     return utc_now() + timedelta(seconds=LEASE_SECONDS)
 
@@ -181,6 +185,25 @@ def completed_paths(database, lease: GenerationLease) -> dict[str, str]:
         }
 
 
+def completed_checkpoints(
+    database, lease: GenerationLease
+) -> dict[str, tuple[str, str]]:
+    """Load recovered checkpoint identity once instead of querying per Album."""
+    with closing(database.connect()) as db:
+        return {
+            str(row["album_path"]): (
+                str(row["inventory_signature"]),
+                str(row["disposition"]),
+            )
+            for row in db.execute(
+                "SELECT album_path,inventory_signature,disposition "
+                "FROM catalog_generation_albums WHERE generation_id=? "
+                "AND disposition<>'error'",
+                (lease.generation_id,),
+            )
+        }
+
+
 def checkpoint_counts(database, lease: GenerationLease) -> dict[str, int]:
     with closing(database.connect()) as db:
         row = db.raw.execute(
@@ -225,6 +248,71 @@ def touch_completed(
             ),
         ).fetchone()
     return str(row["disposition"]) if row is not None else None
+
+
+def touch_completed_batch(
+    database,
+    lease: GenerationLease,
+    checkpoints: Iterable[tuple[str, str]],
+    *,
+    discovered: int,
+    completed: int,
+    changed: int,
+    unchanged: int,
+    current_path: str,
+) -> None:
+    """Attach recovered checkpoints with one transaction and one update round trip."""
+    rows = list(checkpoints)
+    if not rows:
+        return
+    paths = [row[0] for row in rows]
+    signatures = [row[1] for row in rows]
+    with closing(database.connect()) as db, db:
+        recovered = db.raw.execute(
+            "WITH candidates(album_path,inventory_signature) AS ("
+            "SELECT * FROM unnest(%s::text[],%s::text[])) "
+            "UPDATE catalog_generation_albums checkpoint SET scan_token=%s,"
+            "completed_at=now() FROM candidates "
+            "WHERE checkpoint.generation_id=%s "
+            "AND checkpoint.album_path=candidates.album_path "
+            "AND checkpoint.inventory_signature=candidates.inventory_signature "
+            "AND checkpoint.disposition<>'error' "
+            "AND EXISTS(SELECT 1 FROM catalog_generations generation "
+            "WHERE generation.generation_id=checkpoint.generation_id "
+            "AND generation.owner_token=%s AND generation.state='building' "
+            "AND generation.lease_expires_at>now()) "
+            "RETURNING checkpoint.album_path",
+            (
+                paths,
+                signatures,
+                lease.owner_token,
+                lease.generation_id,
+                lease.owner_token,
+            ),
+        ).fetchall()
+        if len(recovered) != len(rows):
+            raise GenerationLeaseLost(
+                "Catalog index generation lease was lost while recovering checkpoints"
+            )
+        owned = db.raw.execute(
+            "UPDATE catalog_generations SET lease_expires_at=%s,"
+            "discovered_albums=%s,completed_albums=%s,changed_albums=%s,"
+            "unchanged_albums=%s,current_path=%s,phase='recovering',"
+            "updated_at=now() WHERE generation_id=%s AND owner_token=%s "
+            "AND state='building' AND lease_expires_at>now()",
+            (
+                _lease_deadline(),
+                discovered,
+                completed,
+                changed,
+                unchanged,
+                current_path,
+                lease.generation_id,
+                lease.owner_token,
+            ),
+        ).rowcount
+        if owned != 1:
+            raise GenerationLeaseLost("Catalog index generation lease was lost")
 
 
 def stage_batch(
@@ -359,7 +447,7 @@ def status(database) -> dict[str, Any]:
         row = db.raw.execute(
             "SELECT generation_id,mode,state,phase,discovered_albums,"
             "completed_albums,changed_albums,unchanged_albums,removed_albums,"
-            "error_count,current_path,error,created_at,updated_at,published_at "
+            "error_count,current_path,error,timings,created_at,updated_at,published_at "
             "FROM catalog_generations WHERE generation_id=%s",
             (generation_id,),
         ).fetchone()

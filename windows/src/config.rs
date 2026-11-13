@@ -58,6 +58,14 @@ fn default_index_batch_adaptive() -> bool {
     true
 }
 
+fn default_index_metadata_readers() -> usize {
+    16
+}
+
+fn default_index_large_album_track_threshold() -> usize {
+    100
+}
+
 fn default_artist_separator_profile() -> String {
     DEFAULT_ARTIST_SEPARATOR_PROFILE.to_string()
 }
@@ -119,6 +127,14 @@ pub struct ScanConfig {
     /// explicit `index_batch_size` unchanged for every checkpoint.
     #[serde(default = "default_index_batch_adaptive")]
     pub index_batch_adaptive: bool,
+    /// Maximum concurrent local tag readers; database publication remains
+    /// single-writer and deterministic.
+    #[serde(default = "default_index_metadata_readers")]
+    pub index_metadata_readers: usize,
+    /// Albums at or above this track count are processed after ordinary
+    /// Albums. Zero disables the deferred large-Album queue.
+    #[serde(default = "default_index_large_album_track_threshold")]
+    pub index_large_album_track_threshold: usize,
     /// Regex used only when a track/filename supplies one joined Artist value.
     /// Native multi-value ARTIST/TPE1 values are preserved without splitting.
     #[serde(default = "default_artist_separator_regex")]
@@ -393,6 +409,8 @@ impl Default for ScanConfig {
             scan_library_dir: DEFAULT_SCAN_LIBRARY_DIR.to_string(),
             index_batch_size: default_index_batch_size(),
             index_batch_adaptive: default_index_batch_adaptive(),
+            index_metadata_readers: default_index_metadata_readers(),
+            index_large_album_track_threshold: default_index_large_album_track_threshold(),
             artist_separator_regex: default_artist_separator_regex(),
             artist_separator_profile: default_artist_separator_profile(),
         }
@@ -685,6 +703,14 @@ pub fn parse_config(text: &str) -> Result<Config, String> {
     }
 
     config.scan.index_batch_size = config.scan.index_batch_size.clamp(1, 64);
+    if !(1..=32).contains(&config.scan.index_metadata_readers) {
+        return Err("SPLINED index_metadata_readers must be between 1 and 32.".to_string());
+    }
+    if config.scan.index_large_album_track_threshold > 10000 {
+        return Err(
+            "SPLINED index_large_album_track_threshold must be between 0 and 10000.".to_string(),
+        );
+    }
     config.scan.artist_separator_regex = config.scan.artist_separator_regex.trim().to_string();
     if config.scan.artist_separator_regex.is_empty() {
         return Err("Artist separator Regex cannot be empty.".to_string());

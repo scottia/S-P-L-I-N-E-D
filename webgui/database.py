@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from contextlib import closing
+import os
 from pathlib import Path
 from urllib.parse import urlsplit
 import re
@@ -204,9 +205,18 @@ class Database:
     def target(self) -> str:
         """Return a credential-free database identity for destructive confirms."""
         parsed = urlsplit(self._url)
-        host = parsed.hostname or "localhost"
-        port = f":{parsed.port}" if parsed.port else ""
-        database = parsed.path.lstrip("/") or "postgres"
+        # ``postgresql://`` is the intentional connection string when the
+        # standard libpq PGHOST/PGPORT/PGDATABASE variables own the target.
+        # The confirmation must describe that same target instead of silently
+        # displaying urlsplit's localhost/postgres defaults.
+        host = parsed.hostname or os.environ.get("PGHOST", "").strip() or "localhost"
+        port_value = parsed.port or os.environ.get("PGPORT", "").strip()
+        port = f":{port_value}" if port_value else ""
+        database = (
+            parsed.path.lstrip("/")
+            or os.environ.get("PGDATABASE", "").strip()
+            or "postgres"
+        )
         return f"{host}{port}/{database}"
 
     def reset_application_data(self) -> dict[str, object]:
@@ -292,24 +302,93 @@ class Database:
         }
 
     def migrate(self):
+        applied = []
+        cleanup = {"pre_v3_audit": 0}
+        migrations = sorted(Path(__file__).with_name("migrations").glob("*.sql"))
+        target = max(
+            (int(migration.name.split("_", 1)[0]) for migration in migrations),
+            default=0,
+        )
         with closing(self.connect()) as db, db:
             # One schema owner at a time, including simultaneous container starts.
             db.raw.execute("SELECT pg_advisory_xact_lock(741520204)")
             db.raw.execute(
                 "CREATE TABLE IF NOT EXISTS web_schema_versions (version INTEGER PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())"
             )
-            for migration in sorted(
-                Path(__file__).with_name("migrations").glob("*.sql")
-            ):
+            for migration in migrations:
                 version = int(migration.name.split("_", 1)[0])
                 if db.raw.execute(
                     "SELECT 1 FROM web_schema_versions WHERE version=%s", (version,)
                 ).fetchone():
                     continue
+                if version == 23:
+                    cleanup["pre_v3_audit"] = int(
+                        db.raw.execute(
+                            "SELECT count(*) AS n FROM web_audit "
+                            "WHERE application_version ~ '^[0-9]+\\.' "
+                            "AND split_part(application_version,'.',1)::INTEGER < 3"
+                        ).fetchone()["n"]
+                    )
                 db.raw.execute(migration.read_text(encoding="utf-8"))
                 db.raw.execute(
                     "INSERT INTO web_schema_versions(version) VALUES(%s)", (version,)
                 )
+                applied.append(version)
+            current = int(
+                db.raw.execute(
+                    "SELECT coalesce(max(version),0) AS version FROM web_schema_versions"
+                ).fetchone()["version"]
+            )
+        return {
+            "current": current,
+            "target": target,
+            "applied": applied,
+            "automatic": True,
+            "cleanup": cleanup,
+        }
+
+    def upgrade_status(self, application_version: str) -> dict[str, object]:
+        """Report version drift that requires content revalidation, not relabeling."""
+        major = application_version.split(".", 1)[0]
+        with closing(self.connect()) as db:
+            pattern = major + ".%"
+            catalog_row = db.raw.execute(
+                "SELECT "
+                "(SELECT count(*) FROM artists WHERE splined_version<>'' "
+                "AND splined_version NOT LIKE %s) AS artists,"
+                "(SELECT count(*) FROM albums WHERE splined_version<>'' "
+                "AND splined_version NOT LIKE %s) AS albums,"
+                "(SELECT count(*) FROM tracks WHERE splined_version<>'' "
+                "AND splined_version NOT LIKE %s) AS tracks",
+                (pattern, pattern, pattern),
+            ).fetchone()
+            catalog_by_table = {
+                name: int(catalog_row[name]) for name in ("artists", "albums", "tracks")
+            }
+            catalog = sum(catalog_by_table.values())
+            audit = int(
+                db.raw.execute(
+                    "SELECT count(*) AS n FROM web_audit WHERE application_version<>'' "
+                    "AND application_version NOT LIKE %s",
+                    (major + ".%",),
+                ).fetchone()["n"]
+            )
+        recommendations = []
+        if catalog:
+            recommendations.append(
+                "Run Full Refresh Library Index to revalidate earlier-major catalog records"
+            )
+        if audit:
+            recommendations.append(
+                "Review diagnostic retention because earlier-major audit records remain"
+            )
+        return {
+            "application_version": application_version,
+            "catalog_older_major_records": catalog,
+            "catalog_older_major_by_table": catalog_by_table,
+            "audit_older_major_records": audit,
+            "recommendations": recommendations,
+        }
 
     def import_sqlite(self, source: Path):
         """Copy a named legacy snapshot into an empty PostgreSQL catalog.
