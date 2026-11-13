@@ -69,6 +69,14 @@ async function initialize() {
   // saved panel dimensions only after it has measurable width and height.
   requestAnimationFrame(() => { restoreLayout(); fitReviewToViewport(); });
   await loadLibrary(); await pollJobs();
+  const migration = status.database_migration || {};
+  const recommendations = Array.isArray(migration.recommendations) ? migration.recommendations : [];
+  if (recommendations.length) {
+    setStatus(`PostgreSQL ${migration.application_version || ""} · schema v${migration.current} · ${recommendations.join(" · ")}`, "error");
+  } else if (Array.isArray(migration.applied) && migration.applied.length) {
+    const pruned = Number(migration.cleanup?.pre_v3_audit || 0);
+    setStatus(`PostgreSQL ${migration.application_version || ""} · schema automatically upgraded to v${migration.current} · applied ${migration.applied.join(", ")}${pruned ? ` · removed ${pruned} pre-v3 diagnostic records` : ""}`);
+  }
   // Discover physical library changes after the workspace is usable. This
   // remains a read-only check; the operator explicitly chooses whether to run
   // the incremental PostgreSQL refresh from the header notice.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import closing, contextmanager
+import concurrent.futures
 import logging
 from dataclasses import asdict
 from functools import wraps
@@ -119,7 +120,28 @@ def _album_inventory_fingerprint(album, fallback=False):
     # Per-track Artist credits now participate in every identified Album's
     # Artist projection. Include size/mtime for all tracks so changing a guest
     # credit on a non-representative track is visible to incremental refresh.
-    return TRACK_INVENTORY_PREFIX + core.album_scan_fingerprint(album)
+    metadata = _album_audio_metadata(album)
+    return TRACK_INVENTORY_PREFIX + core._fingerprint_from_metadata(
+        [
+            (path, *metadata.get(str(path), (0, 0)))
+            for path in album.audio_files
+        ]
+    )
+
+
+def _album_audio_metadata(album):
+    metadata = dict(getattr(album, "audio_metadata", {}) or {})
+    for path in album.audio_files:
+        key = str(path)
+        if key in metadata:
+            continue
+        try:
+            stat = path.stat()
+            metadata[key] = (int(stat.st_size), int(stat.st_mtime_ns))
+        except OSError:
+            metadata[key] = (0, 0)
+    album.audio_metadata = metadata
+    return metadata
 
 
 def _album_manifest_facts(album):
@@ -127,14 +149,9 @@ def _album_manifest_facts(album):
     total_size = 0
     newest_mtime_ns = 0
     track_parts = []
+    metadata = _album_audio_metadata(album)
     for path in sorted(album.audio_files, key=lambda value: str(value).casefold()):
-        try:
-            stat = path.stat()
-            size = int(stat.st_size)
-            modified = int(stat.st_mtime_ns)
-        except OSError:
-            size = 0
-            modified = 0
+        size, modified = metadata.get(str(path), (0, 0))
         total_size += size
         newest_mtime_ns = max(newest_mtime_ns, modified)
         track_parts.append(f"{path.name.casefold()}:{size}:{modified}")
@@ -166,13 +183,7 @@ def _indexed_album_unchanged(prior, album, fingerprint):
     representative = sorted(
         album.audio_files, key=lambda value: str(value).casefold()
     )[0]
-    try:
-        stat = representative.stat()
-        size = int(stat.st_size)
-        mtime = int(stat.st_mtime_ns)
-    except OSError:
-        size = 0
-        mtime = 0
+    size, mtime = _album_audio_metadata(album).get(str(representative), (0, 0))
     if (
         str(prior["representative_file"] or "").casefold()
         != str(representative).casefold()
@@ -1326,6 +1337,10 @@ class Services:
         checkpoint_seconds = 0.0
         checkpoint_commits = 0
         cover_name = str(r.cfg.get("output", {}).get("file_name", "cover"))
+        recovered_checkpoints = (
+            indexer.completed_checkpoints(r.database, lease) if lease.resumed else {}
+        )
+        recovery_batch = []
 
         def report_progress(phase, message="", *, published=False):
             if not progress:
@@ -1388,6 +1403,29 @@ class Services:
             used.pending.clear()
             batch_started = time.perf_counter()
 
+        def flush_recovery():
+            nonlocal recovery_batch, checkpoint_seconds, checkpoint_commits
+            if not recovery_batch:
+                return
+            checkpoint_started = time.perf_counter()
+            indexer.touch_completed_batch(
+                r.database,
+                lease,
+                recovery_batch,
+                discovered=discovered,
+                completed=completed,
+                changed=changed_albums,
+                unchanged=unchanged_albums,
+                current_path=recovery_batch[-1][0],
+            )
+            checkpoint_seconds += time.perf_counter() - checkpoint_started
+            checkpoint_commits += 1
+            recovery_batch = []
+
+        metadata_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=8,
+            thread_name_prefix="splined-track-tags",
+        )
         try:
             iterator = core.iter_inventory(
                 root,
@@ -1423,13 +1461,9 @@ class Services:
                         old_paths.aliases[path] = moved_prior
                         prior_at_path = moved_prior
                 if lease.resumed:
-                    disposition = indexer.touch_completed(
-                        r.database,
-                        lease,
-                        path,
-                        facts["inventory_signature"],
-                    )
-                    if disposition is not None:
+                    recovered = recovered_checkpoints.get(path)
+                    if recovered is not None and recovered[0] == facts["inventory_signature"]:
+                        disposition = recovered[1]
                         completed += 1
                         if disposition == "changed":
                             changed_albums += 1
@@ -1439,6 +1473,9 @@ class Services:
                             protected_albums += 1
                         elif disposition == "deferred":
                             deferred_albums += 1
+                        recovery_batch.append((path, facts["inventory_signature"]))
+                        if len(recovery_batch) >= batch_controller.current_size:
+                            flush_recovery()
                         if progress:
                             report_progress("recovering", album.path.name)
                         continue
@@ -1476,6 +1513,7 @@ class Services:
                             old_tracks,
                             force_read=True,
                             artist_separator_regex=separator_regex,
+                            executor=metadata_executor,
                         )
                         filesystem_metadata_seconds += (
                             time.perf_counter() - filesystem_started
@@ -1531,6 +1569,7 @@ class Services:
                             old_tracks,
                             force_read=force_track_credit_read,
                             artist_separator_regex=separator_regex,
+                            executor=metadata_executor,
                         )
                         filesystem_metadata_seconds += (
                             time.perf_counter() - filesystem_started
@@ -1573,6 +1612,7 @@ class Services:
                     or completed % batch_controller.current_size == 0
                 ):
                     report_progress("indexing", album.path.name)
+            flush_recovery()
             flush()
             report_progress("validating", "Validating the staged generation")
             publication = self._publish_index_generation(
@@ -1599,7 +1639,7 @@ class Services:
                     "adaptive_batching": batch_controller.summary(),
                     "resource_budget": {
                         "index_workers": 1,
-                        "metadata_readers": 1,
+                        "metadata_readers": 8,
                         "maximum_batch_albums": 64,
                         "postgresql_connections": r.database.pool_stats()["max_size"],
                         "remote_provider_requests": 0,
@@ -1614,6 +1654,7 @@ class Services:
             indexer.finish(r.database, lease, "failed", str(error))
             raise
         finally:
+            metadata_executor.shutdown(wait=True, cancel_futures=True)
             lookup_db.close()
 
         result = {

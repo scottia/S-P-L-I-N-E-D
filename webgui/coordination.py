@@ -55,6 +55,28 @@ def relative_album_path(album_path: object, library_root: Path) -> str:
     return normalized_coordination_relative(relative)
 
 
+def catalog_relative_album_path(album_path: object, library_root: Path) -> str:
+    """Return a catalog-relative identity without touching the media filesystem.
+
+    Published catalog paths and the configured library root are already absolute
+    authorities. Resolving every Album against a NAS adds two network metadata
+    operations per row merely to prepare a coordination lookup. Keep this path
+    lexical, reject traversal, and retain ``relative_album_path`` for write-time
+    event validation where resolving the physical target is required.
+    """
+    candidate = Path(str(album_path or ""))
+    root = Path(library_root)
+    if not candidate.is_absolute() or not root.is_absolute():
+        return ""
+    try:
+        relative = candidate.relative_to(root)
+    except ValueError:
+        return ""
+    if any(part in {"", ".", ".."} for part in relative.parts):
+        return ""
+    return normalized_coordination_relative(relative)
+
+
 def normalized_coordination_relative(value: object) -> str:
     return "".join(
         character

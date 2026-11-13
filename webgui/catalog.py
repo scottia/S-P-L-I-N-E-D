@@ -37,6 +37,7 @@ from interaction.artist_search import discover_artist_images, discover_artist_pr
 from webgui.database import Database
 from webgui import imaging
 from webgui.coordination import (
+    catalog_relative_album_path,
     normalized_coordination_relative,
     relative_album_path,
 )
@@ -469,7 +470,9 @@ class Catalog:
             targets.append(
                 {
                     "album_key": key,
-                    "relative_path": relative_album_path(path, self.music) if path else "",
+                    "relative_path": catalog_relative_album_path(path, self.music)
+                    if path
+                    else "",
                 }
             )
         if not targets:
@@ -542,7 +545,7 @@ class Catalog:
         targets = [
             {
                 "album_key": str(album["album_key"]),
-                "relative_path": relative_album_path(album["path"], self.music),
+                "relative_path": catalog_relative_album_path(album["path"], self.music),
             }
             for album in albums
         ]

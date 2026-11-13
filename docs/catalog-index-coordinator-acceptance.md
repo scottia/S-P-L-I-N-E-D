@@ -1114,11 +1114,11 @@ recorded with the Windows UI scale and biography follow-up below.
   PostgreSQL service. Credentialed startup was restored after localhost-only UI
   validation (`auth_required=true`, `database_ready=true`).
 - The isolated WebGUI test service intentionally has no automation-only token,
-  user ID, or password stored in the repository. A service restart invalidates
-  the owner-authenticated browser session, so the owner must sign in again before
-  live UI inspection. Automated API and browser-state suites do not depend on
-  owner credentials; installed browser validation records this session boundary
-  instead of embedding a reusable credential in source or test configuration.
+  user ID, or password stored in the repository. Browser session identifiers
+  are opaque cookies whose hashes and bounded session data are stored in
+  PostgreSQL; a service restart therefore preserves authentication without
+  embedding a reusable credential in source or test configuration. Password
+  recovery revokes every durable browser session.
 
 ### PR #174 preparedness handoff
 
@@ -1156,3 +1156,90 @@ recorded with the Windows UI scale and biography follow-up below.
 All implementation, focused regression, full local-suite, installed-client and
 final-head supported-runtime CI gates are complete. PR #170 and PR #174 remain
 Draft and unmerged pending owner acceptance.
+
+## v3.0.1 post-release correction — recovery commit accounting
+
+Recorded 2026-11-13 after a 3,885-Album NAS catalog exposed multi-hour Windows
+recovery and repeated WebGUI restarts.
+
+PR #170's Requirement 1 intended bounded recovery writes, but its accepted
+implementation called `touch_reusable_checkpoint` / `touch_completed` once per
+recovered Album. Each call opened and committed its own SQLite or PostgreSQL
+transaction. The benchmark's `checkpoint_commits` value counted only normal
+staging batches, so the published “13 commits” result omitted the recovered
+Album commits and could not enforce the acceptance contract.
+
+The corrected regression gate requires all of the following:
+
+- Load committed checkpoint identity once per resumed generation; do not issue
+  one checkpoint lookup per Album.
+- Attach recovered checkpoints in the configured adaptive 1–64 Album batch.
+- Observe the recovery batch call/transaction in tests; final row counts alone
+  are insufficient.
+- Count recovery transactions in generation timings.
+- Reuse filesystem size/mtime evidence gathered during enumeration instead of
+  repeating NAS metadata calls during fingerprint, manifest and Track work.
+- Preserve deterministic Track order while Windows and WebGUI each perform at
+  most eight bounded concurrent tag reads; both retain one database writer.
+
+The v3 PostgreSQL upgrade now also reports the pinned application and schema
+versions, lists automatically applied migrations, removes pre-v3 diagnostic
+events that refer to retired cache paths, and recommends a Full Refresh when
+earlier-major catalog rows require revalidation. It never relabels catalog rows
+without reading the media again.
+
+### Corrected N-share benchmark
+
+The established 216-Album / 3,496-Track read-only library was indexed with the
+disposable SQLite database on
+`N:\downloads\0_backups\splined\windows\test`. The first run includes cold
+filesystem cache; the next two are the comparable warm-cache policy check.
+
+| Policy | Interruption + recovery | Recovery commits | Unchanged incremental | Peak RSS growth |
+| --- | ---: | ---: | ---: | ---: |
+| Adaptive, cold | 17.048 s | 25 | 1.167 s | 10.58 MiB |
+| Fixed 64, warm | 4.833 s | 4 | 1.032 s | 10.75 MiB |
+| Adaptive, warm | 4.517 s | 14 | 1.076 s | 10.16 MiB |
+
+The warm adaptive run is slightly faster than fixed 64 with equivalent memory,
+so the default remains adaptive with an initial batch of 16 and a bounded 1–64
+range. The correction does not trade a larger recovery window for throughput.
+
+### Two-core 100,000-Track regression
+
+The original Requirement 5 uneven fixture (1,000 Albums / 100,000 Tracks) was
+rerun on the corrected code with each client pinned to two logical CPUs at
+BelowNormal priority. A 16 GiB process ceiling was recorded; neither client
+approached it. PostgreSQL server/container memory is separate from the measured
+WebGUI client process and is not claimed by this ceiling.
+
+| Client / database | Interruption + recovery | Accurate commits | Unchanged incremental | Peak client RSS growth |
+| --- | ---: | ---: | ---: | ---: |
+| Windows / disposable local SQLite | 48.520 s | 44 | 26.502 s | 85.17 MiB |
+| Windows / disposable N: test SQLite | 50.989 s | 45 | 24.733 s | 84.66 MiB |
+| WebGUI / disposable PostgreSQL schema | 201.862 s | 44 | 8.756 s | 118.56 MiB |
+
+Every run staged 16 Albums before simulated worker loss, exposed zero live
+Albums before recovery, published 1,000 Albums / 100,000 Tracks, and recorded
+zero Album or Track tag reads on the unchanged pass. The one-commit variation
+is an adaptive boundary decision. Unlike the PR #170 results, these commit
+totals include the recovered-checkpoint transaction.
+
+Result JSON is retained outside the repository under
+`E:\apps\ChatGpt\SPLINED-local-test-library\state\pr170-regression-20261113-2core`.
+
+### Production read-only WebGUI projection reference
+
+The production read-only role was loaded only from
+`production-splined_postgresql-readonly.env`; no service startup, migration,
+audit, or write was attempted. At 1,141 stored Artists / 3,885 Albums / 63,483
+Tracks, the three two-core Artist projection passes originally took 37.090,
+37.292, and 36.969 seconds. Profiling assigned about 34.05 seconds to resolving
+3,885 already-authoritative catalog paths against the NAS for an empty
+coordination result.
+
+Catalog coordination projection now derives that relative identity lexically
+and retains physical path resolution for write-time event validation. The same
+read-only passes take 2.827, 2.722, and 2.767 seconds and return the same 5,240
+stored/projected Artist identities. The count query remains 0.005 seconds. Pool
+state after the run was maximum 8, size 1, available 1, waiting 0.

@@ -6,7 +6,7 @@ use lofty::probe::Probe;
 use lofty::tag::ItemKey;
 use std::fs::File;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const MAX_ID3V2_BYTES: usize = 16 * 1024 * 1024;
 
@@ -109,6 +109,42 @@ pub fn read_album_track_evidence(
         .iter()
         .map(|path| read_local_track_evidence(path))
         .collect()
+}
+
+pub fn read_local_track_evidence_bounded(
+    paths: &[PathBuf],
+    maximum_readers: usize,
+) -> Vec<Option<LocalTrackEvidence>> {
+    if paths.is_empty() {
+        return Vec::new();
+    }
+    let readers = maximum_readers.clamp(1, paths.len());
+    let chunk_size = paths.len().div_ceil(readers);
+    std::thread::scope(|scope| {
+        let handles = paths
+            .chunks(chunk_size)
+            .map(|chunk| {
+                let length = chunk.len();
+                (
+                    length,
+                    scope.spawn(move || {
+                        chunk
+                            .iter()
+                            .map(|path| read_local_track_evidence(path).ok())
+                            .collect::<Vec<_>>()
+                    }),
+                )
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .flat_map(|(length, handle)| {
+                handle
+                    .join()
+                    .unwrap_or_else(|_| std::iter::repeat_with(|| None).take(length).collect())
+            })
+            .collect()
+    })
 }
 
 pub fn read_local_track_evidence(path: &Path) -> Result<LocalTrackEvidence, String> {
@@ -625,6 +661,31 @@ mod tests {
         assert_eq!(evidence.musicbrainz_track_id.as_deref(), Some(RECORDING_ID));
         assert_eq!(evidence.compilation.as_deref(), Some("1"));
         fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn bounded_track_evidence_preserves_input_order_and_failed_entries() {
+        let first = write_id3_fixture(&[
+            id3_text_frame("TIT2", "First"),
+            id3_text_frame("TPE1", "Artist One"),
+        ]);
+        let third = write_id3_fixture(&[
+            id3_text_frame("TIT2", "Third"),
+            id3_text_frame("TPE1", "Artist Three"),
+        ]);
+        let missing = first.with_extension("missing.mp3");
+
+        let evidence =
+            read_local_track_evidence_bounded(&[first.clone(), missing, third.clone()], 8);
+
+        assert_eq!(evidence.len(), 3);
+        assert_eq!(evidence[0].as_ref().unwrap().path, first);
+        assert_eq!(evidence[0].as_ref().unwrap().title, "First");
+        assert!(evidence[1].is_none());
+        assert_eq!(evidence[2].as_ref().unwrap().path, third);
+        assert_eq!(evidence[2].as_ref().unwrap().title, "Third");
+        fs::remove_file(first).ok();
+        fs::remove_file(third).ok();
     }
 
     #[test]

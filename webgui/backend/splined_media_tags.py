@@ -368,32 +368,66 @@ def inspect_album_tracks(
     *,
     force_read: bool = False,
     artist_separator_regex: str = DEFAULT_ARTIST_SEPARATOR_REGEX,
+    executor: Any = None,
 ) -> tuple[list[dict[str, Any]], int, int]:
     """Build exact Recording/Artist relationships without remote inference."""
     rows: list[dict[str, Any]] = []
     reads = 0
     reuses = 0
     now = utc_now()
-    for raw_path in sorted(
+    audio_metadata = dict(getattr(album, "audio_metadata", {}) or {})
+    paths = sorted(
         (Path(value) for value in album.audio_files),
         key=lambda value: str(value).casefold(),
-    ):
+    )
+
+    def metadata(raw_path: Path) -> tuple[int, int]:
         path = str(raw_path)
+        if path in audio_metadata:
+            return audio_metadata[path]
         try:
             stat = raw_path.stat()
-            size = int(stat.st_size)
-            modified = int(stat.st_mtime_ns)
+            return int(stat.st_size), int(stat.st_mtime_ns)
         except OSError:
-            size = 0
-            modified = 0
+            return 0, 0
+
+    def needs_read(raw_path: Path) -> bool:
+        path = str(raw_path)
+        size, modified = metadata(raw_path)
+        prior = existing_by_path.get(path)
+        return bool(
+            force_read
+            or prior is None
+            or int(prior["file_size"] or 0) != size
+            or int(prior["file_mtime_ns"] or 0) != modified
+        )
+
+    read_paths = [path for path in paths if needs_read(path)]
+
+    def read(raw_path: Path) -> dict[str, Any]:
+        try:
+            return read_track_identity_tags(raw_path, artist_separator_regex)
+        except Exception:
+            return {
+                "title": raw_path.stem,
+                "artist": "",
+                "recording_mbid": "",
+                "artist_mbid": "",
+            }
+
+    read_values = (
+        list(executor.map(read, read_paths))
+        if executor is not None and len(read_paths) > 1
+        else [read(path) for path in read_paths]
+    )
+    read_results = {str(path): value for path, value in zip(read_paths, read_values)}
+
+    for raw_path in paths:
+        path = str(raw_path)
+        size, modified = metadata(raw_path)
 
         prior = existing_by_path.get(path)
-        if (
-            not force_read
-            and prior is not None
-            and int(prior["file_size"] or 0) == size
-            and int(prior["file_mtime_ns"] or 0) == modified
-        ):
+        if path not in read_results and prior is not None:
             tags = {
                 "title": str(prior["title"] or raw_path.stem),
                 "artist": str(prior["artist_name"] or ""),
@@ -404,15 +438,7 @@ def inspect_album_tracks(
             }
             reuses += 1
         else:
-            try:
-                tags = read_track_identity_tags(raw_path, artist_separator_regex)
-            except Exception:
-                tags = {
-                    "title": raw_path.stem,
-                    "artist": "",
-                    "recording_mbid": "",
-                    "artist_mbid": "",
-                }
+            tags = read_results[path]
             reads += 1
 
         recording_ids = _mbids(tags["recording_mbid"])
@@ -650,13 +676,18 @@ def inspect_album(
         key=lambda path: str(path).casefold(),
     )[0]
     path_text = str(album.path)
-    try:
-        stat = representative.stat()
-        representative_size = int(stat.st_size)
-        representative_mtime_ns = int(stat.st_mtime_ns)
-    except OSError:
-        representative_size = 0
-        representative_mtime_ns = 0
+    audio_metadata = dict(getattr(album, "audio_metadata", {}) or {})
+    representative_size, representative_mtime_ns = audio_metadata.get(
+        str(representative), (0, 0)
+    )
+    if str(representative) not in audio_metadata:
+        try:
+            stat = representative.stat()
+            representative_size = int(stat.st_size)
+            representative_mtime_ns = int(stat.st_mtime_ns)
+        except OSError:
+            representative_size = 0
+            representative_mtime_ns = 0
 
     prior_at_path = existing_by_path.get(path_text)
     reuse_tags = bool(
