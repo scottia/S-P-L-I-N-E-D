@@ -79,6 +79,25 @@ fn windows_desktop_is_one_cargo_built_rust_slint_executable() {
 }
 
 #[test]
+fn windows_schema_upgrade_is_prepared_before_workspace_startup() {
+    let ui = source("windows/ui/app.slint");
+    let main = source("windows/src/main.rs");
+    let database = source("windows/src/media_database.rs");
+
+    assert!(ui.contains("export component DatabaseUpgradeWindow"));
+    assert!(ui.contains("Back Up & Upgrade"));
+    assert!(main.contains("Database conversion has begun"));
+    assert!(ui.contains("manual downgrade requires restoring"));
+    assert!(main.contains("run_database_upgrade_preparedness()?"));
+    assert!(main.contains("pending_database_schema_upgrade(&config)"));
+    assert!(main.contains("upgrade_database_schema(&config)"));
+    assert!(database.contains("TransactionBehavior::Exclusive"));
+    assert!(database.contains("create_schema_upgrade_backup"));
+    assert!(database.contains("legacy-pre-coordinator"));
+    assert!(database.contains("schema_upgrade_required(current)"));
+}
+
+#[test]
 fn no_active_csharp_or_winforms_implementation_remains() {
     let mut files = Vec::new();
     repository_files(Path::new("windows"), &mut files);

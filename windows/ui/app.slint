@@ -1399,6 +1399,67 @@ export component EmbedQueueWindow inherits Window {
     }
 }
 
+export component DatabaseUpgradeWindow inherits Window {
+    title: "S.P.L.I.N.E.D. — Database Upgrade";
+    preferred-width: 820px;
+    preferred-height: 610px;
+    min-width: 680px;
+    min-height: 540px;
+    background: AppTheme.window-background;
+
+    in property <int> source-schema: 0;
+    in property <int> target-schema: 0;
+    in property <string> database-path;
+    in property <string> backup-directory;
+    in property <string> catalog-summary;
+    in-out property <string> upgrade-message;
+    in-out property <bool> upgrade-running: false;
+    in-out property <bool> upgrade-failed: false;
+    in-out property <bool> upgrade-complete: false;
+    callback start-upgrade();
+    callback exit-upgrade();
+    callback open-splined();
+
+    Rectangle {
+        background: AppTheme.window-background;
+        VerticalLayout {
+            padding: 24px;
+            spacing: 14px;
+            HorizontalLayout {
+                height: 58px;
+                BrandMark { width: 310px; height: 52px; compact: true; }
+                Rectangle { horizontal-stretch: 1; background: transparent; }
+                Text { text: "SQLite v" + root.source-schema + "  →  v" + root.target-schema; color: AppTheme.yellow; font-size: 20px * AppTheme.font-scale; font-weight: 700; vertical-alignment: center; }
+            }
+            Heading { text: root.upgrade-complete ? "Database Upgrade Complete" : (root.upgrade-running ? "Database Conversion In Progress" : "Prepare This Database Upgrade"); color: root.upgrade-failed ? AppTheme.danger : (root.upgrade-complete ? AppTheme.green : AppTheme.cyan); font-size: 25px * AppTheme.font-scale; height: 40px; }
+            Text {
+                text: root.upgrade-complete
+                    ? "Your published Albums, Tracks, artwork history, and completion history were preserved. The existing catalog is now the legacy published generation, so SPLINED can open without a reset or re-index."
+                    : "This Microsoft Store update requires a one-way, additive SQLite schema conversion. SPLINED will first create and verify a standalone v" + root.source-schema + " backup, lock SQLite for the conversion, preserve the current catalog, and validate the upgraded database before opening the workspace.";
+                color: AppTheme.foreground; wrap: word-wrap; height: 86px; font-size: 15px * AppTheme.font-scale;
+            }
+            Rectangle { height: 106px; border-radius: 8px; border-width: 1px; border-color: AppTheme.border; background: AppTheme.quiet-surface;
+                VerticalLayout { padding: 10px; spacing: 5px;
+                    Text { text: "Database: " + root.database-path; color: AppTheme.foreground; wrap: word-wrap; height: 38px; font-size: 13px * AppTheme.font-scale; }
+                    Text { text: "Pre-upgrade backup: " + root.backup-directory; color: AppTheme.cyan; wrap: word-wrap; height: 38px; font-size: 13px * AppTheme.font-scale; }
+                    Text { text: root.catalog-summary; color: AppTheme.secondary-foreground; overflow: elide; font-size: 13px * AppTheme.font-scale; }
+                }
+            }
+            Text { text: "Important: an older v" + root.source-schema + "-only SPLINED build cannot safely reopen the resulting v" + root.target-schema + " database. A manual downgrade requires restoring the pre-upgrade SQLite backup shown here. This operation does not reset SQLite, scan music, or read, write, truncate, or migrate PostgreSQL."; color: AppTheme.yellow; wrap: word-wrap; height: 84px; font-size: 14px * AppTheme.font-scale; }
+            Rectangle { vertical-stretch: 1; border-radius: 8px; border-width: 1px; border-color: root.upgrade-failed ? AppTheme.danger : (root.upgrade-complete ? AppTheme.green : AppTheme.cyan); background: AppTheme.panel-background;
+                Text { x: 12px; y: 10px; width: parent.width - 24px; height: parent.height - 20px; text: root.upgrade-message; color: root.upgrade-failed ? AppTheme.danger : (root.upgrade-complete ? AppTheme.green : AppTheme.foreground); wrap: word-wrap; vertical-alignment: center; horizontal-alignment: center; font-size: 15px * AppTheme.font-scale; }
+            }
+            HorizontalLayout { height: 42px; spacing: 12px;
+                if !root.upgrade-running && !root.upgrade-complete: NeonAction { width: 150px; label: "Exit Safely"; clicked => root.exit-upgrade(); }
+                Rectangle { horizontal-stretch: 1; background: transparent; }
+                if !root.upgrade-running && !root.upgrade-complete: NeonAction { width: 235px; label: root.upgrade-failed ? "Retry Back Up & Upgrade" : "Back Up & Upgrade"; tone: "active"; clicked => root.start-upgrade(); }
+                if root.upgrade-running: NeonAction { width: 235px; label: "Conversion Running…"; enabled: false; tone: "active"; }
+                if root.upgrade-complete: NeonAction { width: 190px; label: "Open SPLINED"; tone: "active"; clicked => root.open-splined(); }
+            }
+        }
+    }
+}
+
 export component AppWindow inherits Window {
     title: "S:P:L:I:N:E:D — Artwork Workspace";
     icon: @image-url("../gui/splined-app-icon.png");
