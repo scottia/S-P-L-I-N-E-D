@@ -47,7 +47,7 @@ from interaction.picker_index import (
 from interaction.result_filters import order_musicbrainz_results, musicbrainz_title_match
 from splined_db_audit import connect_sqlite
 
-USER_AGENT = "SPLINED/3.0.0 (https://github.com/scottia/S-P-L-I-N-E-D)"
+USER_AGENT = "SPLINED/3.0.1 (https://github.com/scottia/S-P-L-I-N-E-D)"
 MB_BASE = "https://musicbrainz.org/ws/2"
 MB_AUTHORIZE_URL = "https://musicbrainz.org/oauth2/authorize"
 MB_OAUTH_ENDPOINT = "https://musicbrainz.org/oauth2/token"
@@ -5159,7 +5159,7 @@ def resolve_scan_root(
 
 
 APP_NAME = "SPLINED"
-VERSION = "3.0.0"
+VERSION = "3.0.1"
 CONFIG_VERSION = 5
 DEFAULT_ARTIST_SEPARATOR_REGEX = r"(?i)(?: / | feat\. | feat | ft\. | ft |; )"
 DEFAULT_ARTIST_SEPARATOR_PROFILE = "Navidrome default"
