@@ -58,7 +58,6 @@ const INVENTORY_KEY: &str = "splined-media-library";
 const TRACK_INVENTORY_PREFIX: &str = "tracks-v1:";
 const TRACK_CREDIT_INDEX_VERSION: i64 = 1;
 const CATALOG_INDEX_CANCELLED: &str = "Catalog index refresh cancelled by the operator.";
-const INDEX_METADATA_READERS: usize = 8;
 const INDEX_DATABASE_WRITERS: usize = 1;
 const INDEX_REMOTE_PROVIDER_REQUESTS: usize = 0;
 const SCHEMA: &str = include_str!("../../schema/media.sql");
@@ -4677,7 +4676,7 @@ fn rebuild_index_generation(
                 .cloned()
                 .zip(read_local_track_evidence_bounded(
                     &evidence_paths,
-                    INDEX_METADATA_READERS,
+                    config.scan.index_metadata_readers,
                 ))
                 .collect::<HashMap<_, _>>();
             let mut tracks = Vec::with_capacity(album.audio_files.len());
@@ -5264,7 +5263,7 @@ fn publish_index_generation(
         "batch_size": adaptive_batching["initial_size"],
         "adaptive_batching": adaptive_batching,
         "resource_budget": {
-            "metadata_readers": INDEX_METADATA_READERS,
+            "metadata_readers": config.scan.index_metadata_readers,
             "database_writers": INDEX_DATABASE_WRITERS,
             "maximum_batch_albums": crate::index_batch_policy::MAX_BATCH_SIZE,
             "remote_provider_requests": INDEX_REMOTE_PROVIDER_REQUESTS,
@@ -8003,7 +8002,7 @@ mod tests {
         assert_eq!(details["mode"], "incremental");
         assert_eq!(details["album_tag_reads"], 0);
         assert_eq!(details["track_tag_reads"], 0);
-        assert_eq!(details["resource_budget"]["metadata_readers"], 8);
+        assert_eq!(details["resource_budget"]["metadata_readers"], 16);
         assert_eq!(details["resource_budget"]["database_writers"], 1);
         assert_eq!(details["resource_budget"]["maximum_batch_albums"], 64);
         assert_eq!(details["resource_budget"]["remote_provider_requests"], 0);

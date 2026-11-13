@@ -186,7 +186,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             timings["resource_budget"],
             {
                 "index_workers": 1,
-                "metadata_readers": 8,
+                "metadata_readers": 16,
                 "maximum_batch_albums": 64,
                 "postgresql_connections": 8,
                 "remote_provider_requests": 0,
@@ -3242,9 +3242,14 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         progress = []
         self.services.refresh_index(progress=progress.append, mode="full")
         self.assertEqual(progress[0]["phase"], "starting")
-        self.assertTrue(any(item["phase"] == "indexing" for item in progress))
-        self.assertTrue(any(item["phase"] == "validating" for item in progress))
+        indexing = [item for item in progress if item["phase"] == "indexing"]
+        validating = [item for item in progress if item["phase"] == "validating"]
+        self.assertTrue(indexing)
+        self.assertTrue(validating)
+        self.assertTrue(all(not item["total_known"] for item in indexing))
+        self.assertTrue(all(item["total_known"] for item in validating))
         self.assertEqual(progress[-1]["phase"], "published")
+        self.assertTrue(progress[-1]["total_known"])
         self.assertEqual(progress[-1]["percentage"], 100)
         self.assertEqual(progress[-1]["completed"], 5)
 

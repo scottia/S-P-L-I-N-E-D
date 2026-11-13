@@ -1794,6 +1794,7 @@ export component AppWindow inherits Window {
     in-out property <int> setup-progress-total: 0;
     in-out property <int> setup-progress-percent: 0;
     in-out property <int> setup-progress-errors: 0;
+    in-out property <bool> setup-progress-indeterminate: false;
     in-out property <string> settings-music-library;
     in-out property <string> settings-scan-library;
     in-out property <string> settings-artist-separator-regex;
@@ -2105,16 +2106,16 @@ export component AppWindow inherits Window {
                         VerticalLayout { padding: (12px * AppTheme.ui-scale); spacing: (7px * AppTheme.ui-scale);
                             HorizontalLayout { height: (28px * AppTheme.ui-scale); spacing: (10px * AppTheme.ui-scale);
                                 Text { text: root.setup-progress-phase; color: root.setup-progress-failed ? AppTheme.danger : (root.setup-saving ? AppTheme.cyan : AppTheme.yellow); font-size: (17px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 700; horizontal-stretch: 1; overflow: elide; }
-                                if root.setup-saving: Text { text: root.setup-progress-percent + "%"; color: AppTheme.yellow; font-size: (17px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 700; }
+                                if root.setup-saving: Text { text: root.setup-progress-indeterminate ? "Discovering…" : root.setup-progress-percent + "%"; color: AppTheme.yellow; font-size: (17px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 700; }
                             }
                             Text { text: root.setup-progress-failed ? root.setup-progress-detail : root.setup-message; color: root.setup-progress-failed ? AppTheme.danger : AppTheme.foreground; wrap: word-wrap; height: (42px * AppTheme.ui-scale); font-size: (14px * AppTheme.ui-scale) * AppTheme.font-scale; }
                             if root.setup-saving: Rectangle {
                                 height: (12px * AppTheme.ui-scale); border-radius: (6px * AppTheme.ui-scale); border-width: (1px * AppTheme.ui-scale); border-color: AppTheme.border; background: AppTheme.quiet-surface;
-                                Rectangle { width: max((6px * AppTheme.ui-scale), parent.width * max(0, min(100, root.setup-progress-percent)) / 100); height: parent.height; border-radius: (6px * AppTheme.ui-scale); background: root.setup-progress-errors > 0 ? AppTheme.danger : AppTheme.cyan; }
+                                Rectangle { width: root.setup-progress-indeterminate ? parent.width * 0.22 : max((6px * AppTheme.ui-scale), parent.width * max(0, min(100, root.setup-progress-percent)) / 100); height: parent.height; border-radius: (6px * AppTheme.ui-scale); background: root.setup-progress-errors > 0 ? AppTheme.danger : AppTheme.cyan; }
                             }
                             if root.setup-saving: HorizontalLayout { height: (22px * AppTheme.ui-scale); spacing: (10px * AppTheme.ui-scale);
                                 Text { text: root.setup-progress-detail; color: AppTheme.secondary-foreground; horizontal-stretch: 1; overflow: elide; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; }
-                                Text { text: root.setup-progress-total > 0 ? root.setup-progress-completed + " / ~" + root.setup-progress-total + " Albums" : "Preparing index…"; color: AppTheme.yellow; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; }
+                                Text { text: root.setup-progress-indeterminate ? root.setup-progress-completed + " Albums indexed · discovering more…" : (root.setup-progress-total > 0 ? root.setup-progress-completed + " / " + root.setup-progress-total + " Albums" : "Preparing index…"); color: AppTheme.yellow; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; }
                             }
                             if root.setup-saving && root.setup-progress-current-path != "": Text { text: root.setup-progress-current-path; color: AppTheme.secondary-foreground; overflow: elide; font-size: (12px * AppTheme.ui-scale) * AppTheme.font-scale; }
                         }

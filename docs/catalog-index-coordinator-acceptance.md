@@ -1180,7 +1180,8 @@ The corrected regression gate requires all of the following:
 - Reuse filesystem size/mtime evidence gathered during enumeration instead of
   repeating NAS metadata calls during fingerprint, manifest and Track work.
 - Preserve deterministic Track order while Windows and WebGUI each perform at
-  most eight bounded concurrent tag reads; both retain one database writer.
+  a configurable one-to-thirty-two bounded concurrent tag-reader budget
+  (default sixteen); both retain one database writer.
 
 The v3 PostgreSQL upgrade now also reports the pinned application and schema
 versions, lists automatically applied migrations, removes pre-v3 diagnostic

@@ -1180,13 +1180,21 @@ function renderIndexProgress() {
   const progress = job?.progress || {};
   const completed = Number(progress.completed ?? generation?.completed_albums ?? 0);
   const total = Math.max(1, Number(progress.total || 0), Number(generation?.discovered_albums || 0));
+  const phase = String(progress.phase || generation?.phase || job?.state || "indexing");
+  const totalKnown = Boolean(progress.total_known
+    ?? ["validating", "publishing", "published"].includes(phase));
   const percentage = Math.max(0, Math.min(100,
     Number(progress.percentage ?? (generation?.state === "published" ? 100 : Math.min(99, Math.floor(completed * 100 / total))))));
-  const phase = String(progress.phase || generation?.phase || job?.state || "indexing");
   const message = String(progress.message || generation?.current_path || "Preparing catalog generation");
   const errors = Number(progress.errors ?? generation?.error_count ?? 0);
   button.textContent = state.indexStopping ? "STOPPING…" : "STOP INDEX";
   button.disabled = state.indexStopping || !state.indexJobId;
+  if (!totalKnown) {
+    setStatus(`PostgreSQL ${phase} · ${completed} Albums indexed · discovering more… · ${errors} errors · ${message}`, "busy");
+    status.classList?.remove?.("index-progress");
+    status.style?.removeProperty?.("--index-progress");
+    return;
+  }
   setStatus(`PostgreSQL ${phase} · ${percentage}% · ${completed}/~${total} Albums · ${errors} errors · ${message}`, "busy");
   status.classList?.add?.("index-progress");
   status.style?.setProperty?.("--index-progress", `${percentage}%`);

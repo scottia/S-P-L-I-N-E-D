@@ -17,6 +17,7 @@ scan_mode = true
 scan_mode_timeout = 24
 index_batch_size = 16
 index_batch_adaptive = true
+index_metadata_readers = 16
 # PostgreSQL stores catalog, completion ledger, and queued work.
 # Persistent cache holds staged work and original-artwork backups.
 cache_dir = "/_cache"

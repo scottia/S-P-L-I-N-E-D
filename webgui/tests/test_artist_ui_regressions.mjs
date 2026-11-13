@@ -85,6 +85,49 @@ const mediaStatusFunctions = between(
   "const MEDIA_STATUSES",
   "function validMusicBrainzId",
 );
+const indexProgressFunctions = between(
+  operationsSource,
+  "function activeIndexJob()",
+  "async function performJobsPoll()",
+);
+
+test("catalog progress stays indeterminate until discovery has a final total", () => {
+  const statuses = [];
+  const progressStyle = new Map();
+  const status = {
+    classList: {add: () => {}, remove: () => {}},
+    style: {
+      setProperty: (name, value) => progressStyle.set(name, value),
+      removeProperty: name => progressStyle.delete(name),
+    },
+  };
+  const button = {};
+  const state = {
+    jobs: [{
+      id: "index-1", kind: "index", state: "running",
+      progress: {phase: "indexing", completed: 64, total: 65, percentage: 98, total_known: false},
+    }],
+    indexStatus: {},
+    indexStopping: false,
+  };
+  const context = load(indexProgressFunctions, {
+    state,
+    $: id => id === "indexStopProcess" ? button : status,
+    setStatus: (message, type) => statuses.push({message, type}),
+  });
+
+  context.renderIndexProgress();
+  assert.match(statuses.at(-1).message, /64 Albums indexed · discovering more…/);
+  assert.doesNotMatch(statuses.at(-1).message, /98%/);
+  assert.equal(progressStyle.has("--index-progress"), false);
+
+  state.jobs[0].progress = {
+    phase: "validating", completed: 64, total: 64, percentage: 99, total_known: true,
+  };
+  context.renderIndexProgress();
+  assert.match(statuses.at(-1).message, /validating · 99% · 64\/~64 Albums/);
+  assert.equal(progressStyle.get("--index-progress"), "99%");
+});
 
 test("opposing Album overrides use their own dark-grey filter and never inflate Bypassed", () => {
   const album = {id: "album-1", album_mbid: "release-1", status: "partial"};

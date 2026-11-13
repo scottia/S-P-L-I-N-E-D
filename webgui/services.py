@@ -1345,6 +1345,7 @@ class Services:
         def report_progress(phase, message="", *, published=False):
             if not progress:
                 return
+            total_known = phase in {"validating", "published"}
             remaining_estimate = (
                 0 if phase in {"validating", "published"} else batch_controller.current_size
             )
@@ -1356,6 +1357,7 @@ class Services:
                     "completed": completed,
                     "total": total,
                     "percentage": percentage,
+                    "total_known": total_known,
                     "discovered": discovered,
                     "changed": changed_albums,
                     "unchanged": unchanged_albums,
@@ -1422,8 +1424,12 @@ class Services:
             checkpoint_commits += 1
             recovery_batch = []
 
+        metadata_readers = max(
+            1,
+            min(32, int(r.cfg.get("scan", {}).get("index_metadata_readers", 16))),
+        )
         metadata_executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=8,
+            max_workers=metadata_readers,
             thread_name_prefix="splined-track-tags",
         )
         try:
@@ -1639,7 +1645,7 @@ class Services:
                     "adaptive_batching": batch_controller.summary(),
                     "resource_budget": {
                         "index_workers": 1,
-                        "metadata_readers": 8,
+                        "metadata_readers": metadata_readers,
                         "maximum_batch_albums": 64,
                         "postgresql_connections": r.database.pool_stats()["max_size"],
                         "remote_provider_requests": 0,
