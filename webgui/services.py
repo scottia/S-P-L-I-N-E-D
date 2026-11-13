@@ -74,6 +74,20 @@ LOGGER = logging.getLogger("uvicorn.error")
 
 NAME_INVENTORY_PREFIX = "names-v1:"
 TRACK_INVENTORY_PREFIX = "tracks-v1:"
+
+
+def _web_image_signing_key(access_token: str | None = None) -> bytes | None:
+    """Keep authenticated path handles valid across WebGUI restarts."""
+    token = (
+        access_token
+        if access_token is not None
+        else os.environ.get("SPLINED_WEB_TOKEN", "")
+    ).encode("utf-8")
+    if not token:
+        return None
+    return hashlib.sha256(b"SPLINED web image handles v1\0" + token).digest()
+
+
 # Increment when a corrected tag projection requires one deliberate Full
 # Refresh to reopen Windows-managed tracks whose size/mtime did not change.
 # Version 3 republishes positional Artist-credit MBIDs without the historical
@@ -231,7 +245,7 @@ def serialized(function):
 
 
 class Services:
-    def __init__(self, runtime: Runtime):
+    def __init__(self, runtime: Runtime, *, image_signing_key: bytes | None = None):
         self.runtime = runtime
         configured_artist_separator = str(
             runtime.cfg.get("scan", {}).get(
@@ -260,6 +274,7 @@ class Services:
                 active_artist_separator = core.DEFAULT_ARTIST_SEPARATOR_REGEX
         except (KeyError, TypeError, ValueError):
             active_artist_separator = configured_artist_separator
+        image_key = image_signing_key or _web_image_signing_key()
         self.catalog = Catalog(
             runtime.music,
             runtime.database,
@@ -274,6 +289,7 @@ class Services:
             temporary_cache=runtime.temporary_cache,
             preview_cache=runtime.temporary_files.session_workspace("web-images"),
             artist_separator_regex=active_artist_separator,
+            **({"image_key": image_key} if image_key is not None else {}),
         )
         self.catalog.cache = runtime.cache
         self.catalog.artist_sources = tuple(core.resolve_artist_sources(runtime.cfg))
@@ -2785,8 +2801,9 @@ class Services:
             )
             written.append(path.name)
         self.audit("write-artist-art", artist_id, {"files": written})
-        self.catalog.metadata_cache.pop(artist_id, None)
-        self.catalog.portrait_cache.pop(artist_id, None)
+        with self.catalog.lock:
+            self.catalog.metadata_cache.pop(artist_id, None)
+            self.catalog.portrait_cache.pop(artist_id, None)
         return {"written": written}
 
     def _persist_comp_track_authority(self, track, recording_mbid, artist_mbids):

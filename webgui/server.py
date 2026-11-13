@@ -24,7 +24,7 @@ import splined as core
 from webgui.catalog import ASSETS
 from webgui.database import Database
 from webgui.runtime import Runtime
-from webgui.services import Services
+from webgui.services import Services, _web_image_signing_key
 from webgui.jobs import JobQueue
 from webgui.credentials import Credentials
 from webgui.auth import AdminAuth
@@ -46,7 +46,14 @@ def _sqlite_snapshot_roots() -> tuple[Path, ...]:
 
 
 class Context:
-    def __init__(self, config_file, database_url=None, *, start_worker=True):
+    def __init__(
+        self,
+        config_file,
+        database_url=None,
+        *,
+        start_worker=True,
+        image_signing_key=None,
+    ):
         self.config_file = Path(config_file).resolve()
         self.explicit_url = (
             database_url
@@ -54,6 +61,7 @@ class Context:
             or ("postgresql://" if os.environ.get("PGHOST") else "")
         )
         self.start_worker = start_worker
+        self.image_signing_key = image_signing_key
         self.runtime = None
         self.services = None
         self.jobs = None
@@ -86,7 +94,9 @@ class Context:
         self.database_migration = database.migrate()
         self.database_migration.update(database.upgrade_status(core.VERSION))
         self.runtime = Runtime(self.config_file, database)
-        self.services = Services(self.runtime)
+        self.services = Services(
+            self.runtime, image_signing_key=self.image_signing_key
+        )
         self.services.start_audit_session()
         self.reconciliation = SQLiteReconciler(
             database,
@@ -181,7 +191,9 @@ class Context:
             runtime = Runtime(self.config_file, database, cfg)
             runtime.save_settings(cfg)
             self.runtime = runtime
-            self.services = Services(runtime)
+            self.services = Services(
+                runtime, image_signing_key=self.image_signing_key
+            )
             self.services.start_audit_session()
             self.jobs = JobQueue(self.services) if self.start_worker else None
             self.reconciliation = SQLiteReconciler(
@@ -201,7 +213,9 @@ class Context:
         runtime = self.runtime
         if runtime is None:
             raise ValueError("Complete PostgreSQL setup before resetting the database")
-        self.services = Services(runtime)
+        self.services = Services(
+            runtime, image_signing_key=self.image_signing_key
+        )
         self.reconciliation = SQLiteReconciler(
             runtime.database,
             runtime.cache,
@@ -247,9 +261,14 @@ class Context:
 
 def create_app(config_file=None, database_url=None, *, token=None, start_worker=True):
     config_file = config_file or os.environ.get("SPLINED_CONFIG", "/config/config.toml")
-    context = Context(config_file, database_url, start_worker=start_worker)
     access_token = (
         token if token is not None else os.environ.get("SPLINED_WEB_TOKEN", "")
+    )
+    context = Context(
+        config_file,
+        database_url,
+        start_worker=start_worker,
+        image_signing_key=_web_image_signing_key(access_token),
     )
     sessions = {}
     sessions_lock = threading.Lock()
