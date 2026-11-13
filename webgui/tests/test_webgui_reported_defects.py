@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
 from io import BytesIO
+import os
 import sqlite3
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from threading import Lock
+from threading import Event, Lock
 from unittest.mock import patch
 import unittest
 
-from webgui.services import Services
+from webgui.services import Services, _web_image_signing_key
 from webgui.catalog import Catalog
 from webgui.imaging import framed
 from PIL import Image
@@ -29,6 +31,61 @@ class _SqliteDatabase:
 
 
 class ReportedDefectTests(unittest.TestCase):
+    def test_signed_library_image_survives_webgui_restart(self):
+        with TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"SPLINED_WEB_TOKEN": "restart-stable-fixture-token"}
+        ):
+            root = Path(directory)
+            source = root / "artist.png"
+            Image.new("RGB", (32, 32), "green").save(source)
+            first = Catalog(
+                root, root / "catalog.sqlite", root, root,
+                image_key=_web_image_signing_key(),
+            )
+            handle = first.image(source)
+            restarted = Catalog(
+                root, root / "catalog.sqlite", root, root,
+                image_key=_web_image_signing_key(),
+            )
+
+            self.assertEqual(restarted.image_source(handle), source)
+
+    def test_artist_metadata_coalesces_concurrent_refreshes(self):
+        catalog = Catalog.__new__(Catalog)
+        catalog.lock = Lock()
+        catalog.metadata_cache = {}
+        catalog.metadata_locks = {}
+        catalog.appearance_cache = {}
+        catalog.artist = lambda artist_id: {"id": artist_id, "name": "Selected"}
+        catalog.artist_comp_albums = lambda _artist_id: []
+        started = Event()
+        release = Event()
+        calls = []
+
+        def load(artist_id):
+            calls.append(artist_id)
+            started.set()
+            self.assertTrue(release.wait(2))
+            cached = {"source": "fixture"}
+            with catalog.lock:
+                catalog.metadata_cache[artist_id] = cached
+            return {
+                **cached,
+                "artist": catalog.artist(artist_id),
+                "comp_albums": [],
+            }
+
+        catalog._load_artist_metadata = load
+        with ThreadPoolExecutor(max_workers=2) as readers:
+            first = readers.submit(catalog.artist_metadata, "selected")
+            self.assertTrue(started.wait(2))
+            second = readers.submit(catalog.artist_metadata, "selected")
+            release.set()
+            results = [first.result(2), second.result(2)]
+
+        self.assertEqual(calls, ["selected"])
+        self.assertEqual([result["source"] for result in results], ["fixture", "fixture"])
+
     def test_container_context_includes_settings_contract(self):
         repository = Path(__file__).parents[2]
         dockerignore = (repository / ".dockerignore").read_text(encoding="utf-8")

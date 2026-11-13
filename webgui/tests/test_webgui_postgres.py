@@ -1577,9 +1577,12 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             restored = next(item for item in restored_jobs if item["id"] == first["id"])
             restored_cover = restored["payload"]["cover"]
             self.assertTrue(restored["payload"]["staged_valid"])
-            self.assertNotEqual(restored_cover, first_cover)
+            # The WebGUI access token now supplies one restart-stable signing
+            # key. An already-open browser and a durable staged job therefore
+            # retain the same authorized path handle across server recreation.
+            self.assertEqual(restored_cover, first_cover)
             self.assertEqual(client.get(restored_cover).status_code, 200)
-            self.assertEqual(client.get(first_cover).status_code, 400)
+            self.assertEqual(client.get(first_cover).status_code, 200)
 
         self.runtime = Runtime(self.config, self.db)
         self.services = Services(self.runtime)
@@ -1859,6 +1862,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             session_cookie = first.cookies.get("splined_session")
             self.assertTrue(session_cookie)
             self.assertTrue(first.get("/api/status").json()["authenticated"])
+            image_handle = first_app.state.context.services.catalog.image(self.cover)
 
         restarted_app = create_app(
             self.config, self.url, token="restart-test-token", start_worker=False
@@ -1872,6 +1876,12 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertEqual(status.json()["database_migration"]["current"], 23)
             self.assertTrue(status.json()["database_migration"]["automatic"])
             self.assertEqual(restarted.get("/api/artists").status_code, 200)
+            self.assertEqual(
+                restarted_app.state.context.services.catalog.image_source(
+                    image_handle
+                ).read_bytes(),
+                self.cover.read_bytes(),
+            )
         self.runtime = Runtime(self.config, self.db)
 
     def test_v3_migration_prunes_legacy_diagnostics_and_reports_catalog_drift(self):

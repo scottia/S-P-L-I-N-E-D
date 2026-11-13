@@ -207,7 +207,8 @@ docker compose --env-file .env up -d
 Both services join only the private `splined` network. The service name
 `postgres` becomes the database hostname. `depends_on` delays WebGUI until
 PostgreSQL passes its health check; it does not replace monitoring or backups.
-The image's own health check probes WebGUI at `/api/status`.
+The image's own liveness check probes WebGUI at `/api/health`. Authenticated
+readiness, PostgreSQL state, and setup details remain available at `/api/status`.
 
 ### Use an external PostgreSQL server
 
