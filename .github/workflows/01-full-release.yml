@@ -186,10 +186,19 @@ jobs:
               baseline = max([source_version, *compatible_versions])
               # The 1.0.99 -> 2.0.0 jump is intentional, not a semantic-
               # versioning rollover. Subsequent blank runs resume patch bumps.
-              release_version = (
-                  "2.0.0" if baseline == (1, 0, 99)
-                  else f"{baseline[0]}.{baseline[1]}.{baseline[2] + 1}"
+              candidate = (
+                  (2, 0, 0) if baseline == (1, 0, 99)
+                  else (baseline[0], baseline[1], baseline[2] + 1)
               )
+              # Tags on abandoned histories do not define the active release
+              # line, but their globally unique names still cannot be reused.
+              # Skip those occupied names when the version field is blank.
+              while (
+                  ".".join(map(str, candidate)) in tags
+                  or f"v{'.'.join(map(str, candidate))}" in tags
+              ):
+                  candidate = (candidate[0], candidate[1], candidate[2] + 1)
+              release_version = ".".join(map(str, candidate))
               if tuple(map(int, release_version.split("."))) <= max([source_version, *versions]):
                   raise SystemExit("Automatic release version must exceed the current main release line")
           if release_version in tags or f"v{release_version}" in tags:
