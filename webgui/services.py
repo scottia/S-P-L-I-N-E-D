@@ -1706,7 +1706,7 @@ class Services:
                 managed_artists=managed_artists,
                 managed_albums=managed_albums,
                 timings={
-                    "total_seconds": round(time.perf_counter() - started, 3),
+                    "process_seconds": round(time.perf_counter() - started, 3),
                     "album_tag_reads": tag_reads,
                     "album_tag_reuses": tag_reuses,
                     "track_tag_reads": track_reads,
@@ -2085,6 +2085,14 @@ class Services:
                 "(SELECT count(*) FROM tracks) AS tracks"
             ).fetchone()
             publication_timings = dict(timings)
+            generation_seconds = db.raw.execute(
+                "SELECT EXTRACT(EPOCH FROM (clock_timestamp()-created_at)) AS seconds "
+                "FROM catalog_generations WHERE generation_id=%s",
+                (lease.generation_id,),
+            ).fetchone()
+            publication_timings["total_seconds"] = round(
+                float(generation_seconds["seconds"]), 3
+            )
             publication_timings["artists"] = int(counts["artists"])
             publication_timings["albums"] = int(counts["albums"])
             publication_timings["tracks"] = int(counts["tracks"])

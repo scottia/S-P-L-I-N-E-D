@@ -70,6 +70,47 @@ test("library change completion clears a busy status after backgrounding", async
   assert.equal(button.hidden, true);
 });
 
+test("open WebGUI schedules an hourly read-only library change probe", async () => {
+  const timers = [];
+  let probes = 0;
+  const context = load(libraryChangeFunctions, {
+    state: {jobs: []},
+    api: async () => ({count: 0, added: 0, changed: 0, moved: 0, removed: 0, checking: false}),
+    post: async () => { probes += 1; return {state: "queued"}; },
+    $: id => {
+      assert.equal(id, "applyLibraryChanges");
+      return {};
+    },
+    setStatus: () => {},
+    auditEvent: () => {},
+    setTimeout: (callback, delay) => {
+      timers.push({callback, delay});
+      return timers.length;
+    },
+    clearTimeout: () => {},
+    document: {hidden: false, addEventListener: () => {}},
+  });
+
+  context.scheduleHourlyLibraryChangeProbe();
+  assert.equal(timers.length, 1);
+  assert.equal(timers[0].delay, 60 * 60 * 1000);
+  await timers[0].callback();
+  assert.equal(probes, 1);
+  assert.equal(timers.length, 2);
+  assert.equal(timers[1].delay, 60 * 60 * 1000);
+});
+
+test("saving changed ignored folders immediately requests a change probe", () => {
+  const saveSection = between(
+    operationsSource,
+    "async function saveCurrentSection",
+    "function renderSection",
+  );
+  assert.match(saveSection, /ignoredBefore/);
+  assert.match(saveSection, /section\.id === "library" && ignoredBefore !== ignoredAfter/);
+  assert.match(saveSection, /await requestLibraryChangeProbe\(\)/);
+});
+
 const contextFunctions = between(
   appSource,
   "function albumInCurrentArtistContext",

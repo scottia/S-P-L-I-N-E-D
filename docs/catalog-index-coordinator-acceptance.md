@@ -1284,8 +1284,8 @@ The follow-up gate reuses representative-track evidence instead of opening
 that file again in the bounded track pass. It also places Albums at or above a
 configurable track threshold (default 100, zero disables) after ordinary
 Albums and emits intra-Album track progress/lease heartbeats. Track-credit
-authority and its eager publication semantics remain unchanged pending a
-separate architecture review.
+authority and its eager publication semantics are intentionally unchanged; the
+live evidence did not justify changing that architecture.
 
 The first live container-restart gate exposed an orderly-shutdown regression:
 the job retained 1,129 completed checkpoints, but shutdown converted its
@@ -1294,3 +1294,38 @@ contract now leaves an active index generation recoverable for the next
 process while other interactive/write jobs retain their explicit pause
 behavior. A genuinely paused index is labeled as paused rather than continuing
 to display its stale "discovering more" snapshot.
+
+The corrected restart gate ran commit `f5b8939` against the same two-CPU,
+16-GiB development stack. At 1,231 observed completed Albums the application
+container was recreated without stopping PostgreSQL. The browser remained
+authenticated, the same job and generation entered `recovering`, rebuilt its
+visible count to 1,232, and returned to `indexing` without rereading durable
+checkpoints. It ultimately published 3,891 Albums / 62,410 Tracks / 1,141
+catalog Artists with zero errors and `resumed=true`. The generation wall clock
+was 3,109.173 seconds (51m49s), including the forced restart and recovery.
+
+The pre-fix timing payload restarted its process timer after recovery and
+therefore reported only the final 2,250.246-second process segment. That live
+finding added separate `process_seconds` and cumulative `total_seconds`
+generation timing. The successful job also retained the non-terminal recovery
+message in its `error` field; successful completion now clears it.
+
+Seventy-eight Albums met the 100-Track threshold. Ordinary Albums completed
+before the deferred lane began with Billboard 1960 through 2025, followed by
+the remaining large compilations. Heartbeats remained visible through 207-Track
+sets and no Album appeared stalled. Filesystem metadata consumed 2,168.591
+seconds, inventory 39.857 seconds, and 2,645 PostgreSQL checkpoint commits only
+14.500 seconds. Publication validation completed within the 15-second monitor
+resolution, again isolating NAS/tag work as the dominant cost.
+
+Removing only `Compilations (Top 40)` from `ignored_subs` produced a read-only
+57.227-second probe with exactly four additions and no changed, moved, or
+removed Albums. The incremental generation reused all 3,891 published Albums,
+read four new Album identities and 1,235 new Track tags, and published 3,895
+Albums / 63,645 Tracks / 1,142 catalog Artists in 88.960 seconds. The
+994-Track `Jaar Radio Top 2000` reported progress from 51 through 951 Tracks and
+completed normally. The backend cached the four-Album notice, but an already
+open browser did not observe a probe started by another API session. Library
+settings changes now start and watch their probe immediately; an open WebGUI
+also probes read-only on load/reload and once per hour, deduplicating while
+catalog work is active.

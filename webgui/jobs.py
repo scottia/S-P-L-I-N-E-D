@@ -704,7 +704,9 @@ class JobQueue:
                             result = self.services.run_scan(payload, adapter)
                     with closing(self.db.connect()) as db, db:
                         db.raw.execute(
-                            "UPDATE web_jobs SET state='done',result=%s,progress=progress-'prompt',updated_at=now() WHERE id=%s AND state NOT IN ('cancelled','paused')",
+                            "UPDATE web_jobs SET state='done',result=%s,"
+                            "progress=progress-'prompt',error='',updated_at=now() "
+                            "WHERE id=%s AND state NOT IN ('cancelled','paused')",
                             (Jsonb(result), job["id"]),
                         )
                     self.audit_job(

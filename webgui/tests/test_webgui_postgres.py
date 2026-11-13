@@ -3447,7 +3447,8 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 )
             }
             db.raw.execute(
-                "UPDATE catalog_generations SET lease_expires_at=now()-interval '1 second' "
+                "UPDATE catalog_generations SET lease_expires_at=now()-interval '1 second',"
+                "created_at=now()-interval '5 minutes' "
                 "WHERE generation_id=%s",
                 (interrupted["generation"],),
             )
@@ -3494,6 +3495,36 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertEqual(state["maintenance_generation_id"], "")
             self.assertEqual(state["catalog_state"], "ready")
             self.assertEqual(db.execute("SELECT count(*) FROM albums").fetchone()[0], 6)
+            timings = db.execute(
+                "SELECT timings FROM catalog_generations WHERE generation_id=?",
+                (interrupted["generation"],),
+            ).fetchone()["timings"]
+            self.assertGreaterEqual(float(timings["total_seconds"]), 300.0)
+            self.assertLess(float(timings["process_seconds"]), 300.0)
+
+    def test_successful_job_clears_stale_restart_recovery_error(self):
+        job_id = "recovered-index-job"
+        with closing(self.db.connect()) as db, db:
+            db.raw.execute(
+                "INSERT INTO web_jobs(id,kind,state,payload,progress,error) "
+                "VALUES(%s,'index','queued',%s,'{}',"
+                "'Recovering interrupted catalog generation')",
+                (
+                    job_id,
+                    Jsonb(
+                        {
+                            "mode": "incremental",
+                            "library_root": str(self.runtime.music),
+                        }
+                    ),
+                ),
+            )
+        self.queue = JobQueue(self.services)
+        completed = self.wait_for_job(
+            job_id, lambda item: item["state"] in {"done", "failed"}
+        )
+        self.assertEqual(completed["state"], "done", completed["error"])
+        self.assertEqual(completed["error"], "")
 
     def test_full_refresh_revalidates_existing_windows_managed_track_tags(self):
         with closing(self.db.connect()) as db, db:

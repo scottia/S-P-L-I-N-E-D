@@ -80,6 +80,7 @@ async function initialize() {
   // Discover physical library changes after the workspace is usable. This
   // remains a read-only check; the operator explicitly chooses whether to run
   // the incremental PostgreSQL refresh from the header notice.
+  scheduleHourlyLibraryChangeProbe();
   void requestLibraryChangeProbe().catch(libraryChangeProbeFailed);
 }
 function showAuthentication(status) {
@@ -123,6 +124,8 @@ async function submitPasswordRecovery(payload) {
   }
 }
 let libraryChangePollTimer = null;
+let libraryChangeHourlyTimer = null;
+const LIBRARY_CHANGE_HOURLY_MS = 60 * 60 * 1000;
 function libraryChangeProbeFailed(error) {
   libraryChangePollTimer = null;
   state.libraryChanges = {...(state.libraryChanges || {}), checking: false};
@@ -173,6 +176,22 @@ async function requestLibraryChangeProbe() {
     setStatus("Checking the music library for changes…", "busy");
   }
   await checkLibraryChanges();
+}
+function scheduleHourlyLibraryChangeProbe() {
+  if (libraryChangeHourlyTimer !== null) return;
+  libraryChangeHourlyTimer = setTimeout(async () => {
+    libraryChangeHourlyTimer = null;
+    const catalogBusy = (state.jobs || []).some(job =>
+      ["index", "index-probe"].includes(job.kind)
+      && ["queued", "running", "waiting"].includes(job.state));
+    try {
+      if (!catalogBusy) await requestLibraryChangeProbe();
+    } catch (error) {
+      libraryChangeProbeFailed(error);
+    } finally {
+      scheduleHourlyLibraryChangeProbe();
+    }
+  }, LIBRARY_CHANGE_HOURLY_MS);
 }
 function componentPayload(kind, imageURL, extra = {}) {
   const target = kind === "cover" ? "album" : kind;
@@ -1971,6 +1990,7 @@ async function openSettings() {
     }
   }
   async function saveCurrentSection(section, message = section.label + " settings saved") {
+    const ignoredBefore = JSON.stringify(settingValue(saved.config, "library.ignored_subs", []));
     applySettingsInputs(draft, bindings);
     if (section.id === "library") {
       const separator = String(settingValue(draft, "scan.artist_separator_regex", DEFAULT_ARTIST_SEPARATOR_REGEX)).trim();
@@ -1985,6 +2005,10 @@ async function openSettings() {
     state.artistSourceEnabled = Array.from(ARTIST_IMAGE_SOURCES).filter(key => artistSourceConfigured(key));
     state.enabledSources = state.sourceOrder.filter(key => !saved.config.sources?.exclude_cover_sources?.includes(key) && saved.config.source_policies?.[key]?.enabled !== false);
     renderAll(); setStatus(message); renderSection(active);
+    const ignoredAfter = JSON.stringify(settingValue(saved.config, "library.ignored_subs", []));
+    if (section.id === "library" && ignoredBefore !== ignoredAfter) {
+      await requestLibraryChangeProbe();
+    }
   }
   function renderSection(id, preserveDraft = false) {
     active = id; bindings = [];
