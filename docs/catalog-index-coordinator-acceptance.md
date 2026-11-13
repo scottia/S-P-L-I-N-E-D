@@ -899,9 +899,9 @@ computer-use validation. The owner explicitly performed the Rob Wasserman
 WRITE Artist Art acceptance step described above against the established test
 fixture; its resulting files and post-write UI state were inspected read-only.
 
-Focused validation: **57/57 WebGUI Artist Art/identity tests**, **399/399 full
-WebGUI tests (78 environment-dependent skips)**, **533/533 Windows core tests**,
-**116/116 Windows application tests**, **93/93 browser behavior tests**, Python
+Focused validation: **57/57 WebGUI Artist Art/identity tests**, **403/403 full
+WebGUI tests (78 environment-dependent skips)**, **535/535 Windows core tests**,
+**122/122 Windows application tests**, **100/100 browser behavior tests**, Python
 compilation, JavaScript syntax, Slint/Rust compilation, and `git diff --check`
 passed.
 
@@ -909,9 +909,8 @@ Installed validation: WebGUI 2.0.36 was restarted against the established test
 PostgreSQL service and reports `database_ready=true`; its live-served assets
 contain Default, the standard-access Status Bar, and Logging expand/compress.
 The updated native 2.0.36 executable was installed and started from
-`E:\apps\SPLINED\splined.exe` with SHA-256
-`30EA6B99AB2D4881D9EAF1A146628037743A8C077D8062491CEB4F06452672B8`
-from functional commit `197ced1`.
+`E:\apps\SPLINED\splined.exe`. The final installed revision and executable hash
+are recorded in **Final regression evidence and installed revisions** below.
 The successful computer-use session supplied current native and browser visual
 captures plus accessibility-state inspection. Earlier installed evidence for
 the source-card, artwork-opacity, audit and two-stage source-policy corrections
@@ -993,7 +992,7 @@ recorded with the Windows UI scale and biography follow-up below.
 - Focused contracts verify proportional 80/90/100/110/125 percent choices,
   native window bounds, responsive paragraph reflow, bounded justified gaps,
   source-text preservation and the single clickable paragraph without a
-  visible expansion suffix. The full Windows workspace passed **535 core + 121
+  visible expansion suffix. The full Windows workspace passed **535 core + 122
   application tests** at this source revision. The test PC's active monitor
   reports 96 DPI (100 percent); installed
   80/100/125 percent application-scale validation is recorded below after the
@@ -1004,34 +1003,81 @@ recorded with the Windows UI scale and biography follow-up below.
 ### Opposing override Artist aggregation follow-up
 
 - An opposing-client verified Album write continues to render that Album card
-  grey/overridden. The expanded Artist/Album file-list row uses the same grey
-  override treatment rather than the red error color. In the existing Artist
-  State controls, each verified override is included in the red **Bypassed**
-  count; no additional override filter or competing status category was added.
-  For the containing Artist aggregate and overview Completed total, that
-  verified override contributes completed work. Therefore an Artist whose
-  Albums are local green completions and/or opposing grey overrides renders
-  **green Artist Complete**, never a false purple partial or white unprocessed
-  state. Genuine partial/error and orange-purple embedded-thumbnail states are
-  unchanged.
+  dark grey/overridden. The expanded Artist/Album file-list row uses the same
+  dark-grey treatment rather than the red error color. Artist State now exposes
+  six actionable Album rows in both clients: **Incomplete, Processed, Bypassed,
+  Embedding Review, Overridden, Albums Complete**. **Unprocessed** is deliberately
+  not an actionable state row; its blue count appears in the `Artist State (#) >
+  Unprocessed` heading until an Album acquires a state. The old Artist Bypass row
+  was removed and all actual bypass cases use the single yellow Bypassed category.
+- The heading count and six Artist State rows are mutually exclusive and
+  cumulative for the currently selected Artist. The full-width white
+  `Artists Album Count` row supplies the green authoritative total. Album and
+  Fallback workspaces report zero Artist State totals. An opposing write
+  contributes only to dark-grey Overridden; it
+  does not inflate Bypassed or Albums Complete. The overview equation is now
+  `shown = completed + in process + overridden + validating`, preventing the
+  prior 17-Album summary from adding to 19. The Artist's aggregate list color
+  may remain green when all work is satisfied by local completions and/or
+  opposing overrides, while each Album retains its true green or grey state.
+- Album cards restore the orange Processed dot, use a yellow frame for bypassed
+  Albums, and add a dark-grey opposing-override dot/frame. The Album Status Key
+  documents the combined yellow `Artist/Album art missing/bypassed` meaning,
+  the dark-grey `Opposing album override`, and the yellow `BYPASSED albums with
+  custom art` frame. The blue WebP dot is documented separately under
+  `MISC STATUS` as `Animated — cover.webp present: review the still cover`; it
+  remains supplemental artwork information and does not alter Artist State.
+- The installed AC/DC regression demonstrated the upgrade failure and its fix.
+  SQLite contained all 17 Albums, but an older `ui.toml` recorded
+  `status_filter = "all"` alongside a serialized member list created before the
+  Overridden state existed. Windows restored that stale list literally, hiding
+  the two opposing overrides and producing 16 file-list/15 overview Albums.
+  Durable `all` intent now takes precedence over serialized members, while a
+  genuine custom list automatically retains hidden Unprocessed. Live Windows
+  validation now shows AC/DC `(17 Albums)`, `17 shown`, `Artists Album Count 17`,
+  and the exact partition `7 Unprocessed + 7 Embedding Review + 2 Overridden +
+  1 Albums Complete = 17`.
 - Windows applies the projection from the newest WebGUI coordination writer;
   WebGUI applies the equivalent projection from the newest Windows writer.
   Neither client rewrites the Album's stored catalog status, coordination
   history, database schema or opposing-card presentation.
-- Focused regressions cover an incomplete Album completed by the opposing
-  client, a local green plus opposing grey Artist, grey Album rows, red
-  Bypassed counts, accurate overview Completed/in-Process totals, and an
-  overridden local bypass. Full validation passed **535/535 Windows core**, **121/121 Windows
-  application**, and **402/402 WebGUI tests** with **78 environment-dependent
-  skips**.
+- Focused regressions cover a verified opposing Album, separate Bypassed and
+  Overridden counts, exclusive Completed/in-Process totals, the seven-row
+  category contract, legacy `all` preference migration, grey Album rows/dots,
+  and retained purple Embedding Review behavior.
+  Installed-client evidence and final full-suite totals are recorded below at
+  the final validation commit.
+
+#### ABBA five-Album authority regression
+
+- The established test catalogs both contain exactly five ABBA Albums. SQLite
+  retains five durable artwork-write events whose latest writer is `webgui`, so
+  Windows correctly presents all five Album cards as dark-grey opposing
+  overrides and treats the Artist aggregate as satisfied/complete (green).
+- PostgreSQL records a present cover and verified full embedded-track count for
+  all five Albums. `Arrival`, `Gold (Greatest Hits) 40th Anniversary`, and `The
+  Visitors` were already stored as `processed`; `Super Trouper` and `Waterloo`
+  still carried a stale `unprocessed` label even though their materialized
+  cover and embedded-track evidence was complete. Trusting that stale label
+  made WebGUI's ABBA Artist name purple.
+- Album projection now derives effective completion from current cover plus
+  verified full embedded-track evidence while preserving explicit bypass,
+  timeout, partial, and error states. Windows likewise no longer treats a real
+  timeout as complete. Consequently, opposing overrides satisfy the Artist but
+  remain counted only as Overridden; verified local Albums are Albums Complete;
+  only genuine embedding-review evidence produces the purple Artist state.
+- Focused Windows aggregate tests, the WebGUI catalog-projection suite, and the
+  100-test browser-state suite cover this regression without rewriting stored
+  catalog history or coordination ownership. Installed WebGUI validation then
+  confirmed the corrected five-Album ABBA projection after restart and sign-in.
 
 ### Final regression evidence and installed revisions
 
-- Windows: **533 core + 116 application tests passed**; the full Rust workspace,
+- Windows: **535 core + 122 application tests passed**; the full Rust workspace,
   focused duplicate-flight, resource, thumbnail, progress/cancellation,
   forced-interruption and identity-history tests passed.
-- WebGUI: **399 passed, 78 skipped** in the full suite. Browser behavior is
-  **93/93 passed** after the Artist workspace and status-lifecycle corrections. The focused real
+- WebGUI: **403 passed, 78 skipped** in the full suite. Browser behavior is
+  **100/100 passed** after the Artist workspace and status-lifecycle corrections. The focused real
   PostgreSQL pool, no-provider, thumbnail, progress/cancellation, forced
   interruption, `American Pie 2` and `A$AP Rocky` regressions passed.
 - Formatting, Python compilation, JavaScript syntax and `git diff --check`
@@ -1039,11 +1085,17 @@ recorded with the Windows UI scale and biography follow-up below.
   final-head CI is recorded on PR #170 after the documentation commit.
 - Installed Windows 2.0.36 executable:
   `E:\apps\SPLINED\splined.exe`, SHA-256
-  `30EA6B99AB2D4881D9EAF1A146628037743A8C077D8062491CEB4F06452672B8`
-  from functional commit `197ced1`.
+  `4A7FC81BF27F66BC5B57B7079DD3D09E4532249B0DC6E02D40C4397323B1DDD5`
+  from functional commit `7f3ee3a66d90b0bc9f9e842ee8dfc8fab63e963d`.
   The installed WebGUI runs current PR source at 2.0.36 against the established
   PostgreSQL service. Credentialed startup was restored after localhost-only UI
   validation (`auth_required=true`, `database_ready=true`).
+- The isolated WebGUI test service intentionally has no automation-only token,
+  user ID, or password stored in the repository. A service restart invalidates
+  the owner-authenticated browser session, so the owner must sign in again before
+  live UI inspection. Automated API and browser-state suites do not depend on
+  owner credentials; installed browser validation records this session boundary
+  instead of embedding a reusable credential in source or test configuration.
 
 ### PR #174 preparedness handoff
 
