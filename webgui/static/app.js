@@ -1136,7 +1136,10 @@ function renderArtistInfoVisibility(artist = state.artist) {
 function renderCompReportButtonState() {
   const button = $("compReportButton");
   const open = state.compReportVisible || state.compReportLoading;
-  const available = state.libraryMode === "artists" && state.editorMode === "artist" && !!state.artist;
+  // An Album selected from the Artist overview still retains its Artist
+  // context. Keep COMP Report available so finishing a cover edit does not
+  // require selecting the Artist row again.
+  const available = state.libraryMode === "artists" && !!state.artist;
   button.textContent = open ? "CLOSE REPORT" : "COMP Report";
   button.disabled = !available || state.compBusy || state.compReportLoading;
   button.title = state.libraryMode === "albums"
@@ -1478,6 +1481,12 @@ async function openArtistCompReport(albumId = "") {
     state.compGroups = [...compGroups].sort(compareCompReportGroups);
     state.compReportLoading = false;
     if (!state.compGroups.length) { state.compReportVisible = false; setStatus("This Artist has no indexed COMP tracks", "error"); renderHero(); return; }
+    // Opening COMP from an Album edit returns to the Artist-scoped report.
+    // Clear only Album-local presentation state; the selected Artist and its
+    // hydrated COMP projection remain authoritative.
+    state.album = null; state.editorMode = "artist"; state.workspace = "find";
+    state.albumSearchActive = false; state.albumSearchAlbumId = ""; state.albumSearchCandidates = [];
+    state.selectedCover = null;
     state.compReportVisible = true; state.compPreviewMode = false; state.compTrack = null;
     if (albumId) state.compCollapsed.delete(albumId);
     state.candidates = []; state.upscalePreview = null; renderHero(); renderCandidates(); renderReview();

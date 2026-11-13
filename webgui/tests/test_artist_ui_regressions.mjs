@@ -1109,6 +1109,48 @@ test("Artist COMP groups use the native descending fallback order", async () => 
   assert.deepEqual(Array.from(state.compGroups, group => group.id), ["new", "zulu", "alpha"]);
 });
 
+test("Artist COMP remains available after an Album edit and restores Artist context", async () => {
+  const state = {
+    libraryMode: "artists", editorMode: "album", workspace: "find",
+    artist: {id: "artist-1", name: "Artist"}, album: {id: "album-1"},
+    albumSearchActive: true, albumSearchAlbumId: "album-1", albumSearchCandidates: [{id: "cover"}],
+    selectedCover: {image: "cover.jpg"}, compAlbums: [], compGroups: [],
+    compCollapsed: new Set(), compReportVisible: false, compReportLoading: false,
+    compPreviewMode: false, compTrack: null, compTrackRequest: 0,
+    compStatusRequest: 0, compReportRequest: 0, compBusy: false,
+    candidates: [], upscalePreview: null,
+  };
+  const elements = {
+    compReportButton: {disabled: false, textContent: "COMP Report", title: ""},
+    fallbackReport: {querySelectorAll: () => [], getBoundingClientRect: () => ({top: 0})},
+    overviewContent: {scrollTop: 0, getBoundingClientRect: () => ({top: 0})},
+  };
+  const buttonStateFunction = between(
+    appSource,
+    "function renderCompReportButtonState",
+    "function renderHeroContents",
+  );
+  const context = load(buttonStateFunction + "\n" + artistCompReportFunction, {
+    state,
+    api: async () => [{id: "comp-1", name: "Compilation", year: "2024", tracks: []}],
+    $: id => elements[id], renderHero() {}, renderCandidates() {}, renderReview() {},
+    setStatus() {}, probeArtistCompStatuses() {}, requestAnimationFrame() {},
+  });
+
+  context.renderCompReportButtonState();
+  assert.equal(elements.compReportButton.disabled, false);
+
+  await context.openArtistCompReport();
+
+  assert.equal(state.editorMode, "artist");
+  assert.equal(state.album, null);
+  assert.equal(state.albumSearchActive, false);
+  assert.equal(state.albumSearchAlbumId, "");
+  assert.deepEqual(Array.from(state.albumSearchCandidates), []);
+  assert.equal(state.selectedCover, null);
+  assert.equal(state.compReportVisible, true);
+});
+
 test("COMP summary and TRACK FILE columns reserve Album title space", () => {
   assert.match(cssSource, /\.comp-report-counts\{[^}]*justify-content:flex-start/);
   assert.match(appSource, /const summary = node\("div", "fallback-report-summary comp-report-counts"\)/);
@@ -2812,7 +2854,7 @@ test("WebGUI renders native-parity overview sections and artwork footer", () => 
   assert.match(cssSource, /overview-actions #compReportButton/);
   assert.match(cssSource, /review-actions \.action-orange/);
   assert.match(appSource, /function renderCompReportButtonState\(\)/);
-  assert.match(appSource, /state\.libraryMode === "artists" && state\.editorMode === "artist"/);
+  assert.match(appSource, /state\.libraryMode === "artists" && !!state\.artist/);
   assert.match(appSource, /selectFallbackTrack\(item\.key, state\.fallbackPreviewMode, !state\.fallbackPreviewMode\)/);
   assert.match(appSource, /selectArtistCompTrack\(group\.id, track\.key, !state\.compPreviewMode\)/);
   assert.match(appSource, /node\("div", "musicbrainz-release-actions"\)/);
