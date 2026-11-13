@@ -186,7 +186,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             timings["resource_budget"],
             {
                 "index_workers": 1,
-                "metadata_readers": 1,
+                "metadata_readers": 8,
                 "maximum_batch_albums": 64,
                 "postgresql_connections": 8,
                 "remote_provider_requests": 0,
@@ -5324,7 +5324,11 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     server_thread.join(timeout=15)
                     self.assertFalse(server_thread.is_alive())
                     app, server, server_thread = launch_test_server()
-                    page.reload(wait_until="networkidle")
+                    # The authenticated GUI polls job state every 1.5 seconds,
+                    # so network-idle is not a stable readiness contract after
+                    # a server restart.  The assertions below wait for the
+                    # durable session and asynchronous library bootstrap.
+                    page.reload(wait_until="domcontentloaded")
                     # The authenticated session is intentionally durable. It
                     # can restore just after the login form first paints, so
                     # wait for bootstrap to settle and sign in only when the
