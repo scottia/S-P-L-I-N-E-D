@@ -322,6 +322,31 @@ pub fn stage_album(
     stage_albums(connection, lease, std::slice::from_ref(checkpoint))
 }
 
+pub fn heartbeat(
+    connection: &Connection,
+    lease: &CatalogGenerationLease,
+    current_path: &str,
+) -> Result<(), String> {
+    let updated = connection
+        .execute(
+            "UPDATE catalog_generations SET phase='indexing',current_path=?1,
+             lease_expires_at=strftime('%Y-%m-%dT%H:%M:%fZ','now',?2),
+             updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+             WHERE generation_id=?3 AND owner_token=?4 AND state='building'",
+            params![
+                current_path,
+                format!("+{LEASE_SECONDS} seconds"),
+                lease.generation_id,
+                lease.owner_token,
+            ],
+        )
+        .map_err(sqlite_error("heartbeat catalog generation"))?;
+    if updated != 1 {
+        return Err("Catalog generation heartbeat lost its lease.".to_string());
+    }
+    Ok(())
+}
+
 pub fn stage_albums(
     connection: &mut Connection,
     lease: &CatalogGenerationLease,

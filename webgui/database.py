@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from contextlib import closing
+import os
 from pathlib import Path
 from urllib.parse import urlsplit
 import re
@@ -204,9 +205,18 @@ class Database:
     def target(self) -> str:
         """Return a credential-free database identity for destructive confirms."""
         parsed = urlsplit(self._url)
-        host = parsed.hostname or "localhost"
-        port = f":{parsed.port}" if parsed.port else ""
-        database = parsed.path.lstrip("/") or "postgres"
+        # ``postgresql://`` is the intentional connection string when the
+        # standard libpq PGHOST/PGPORT/PGDATABASE variables own the target.
+        # The confirmation must describe that same target instead of silently
+        # displaying urlsplit's localhost/postgres defaults.
+        host = parsed.hostname or os.environ.get("PGHOST", "").strip() or "localhost"
+        port_value = parsed.port or os.environ.get("PGPORT", "").strip()
+        port = f":{port_value}" if port_value else ""
+        database = (
+            parsed.path.lstrip("/")
+            or os.environ.get("PGDATABASE", "").strip()
+            or "postgres"
+        )
         return f"{host}{port}/{database}"
 
     def reset_application_data(self) -> dict[str, object]:

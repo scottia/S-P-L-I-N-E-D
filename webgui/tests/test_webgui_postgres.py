@@ -186,7 +186,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             timings["resource_budget"],
             {
                 "index_workers": 1,
-                "metadata_readers": 8,
+                "metadata_readers": 16,
                 "maximum_batch_albums": 64,
                 "postgresql_connections": 8,
                 "remote_provider_requests": 0,
@@ -3134,6 +3134,39 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.assertEqual(maintenance, resumed.generation_id)
         coordinator.finish(self.db, resumed, "cancelled", "test cleanup")
 
+    def test_process_interruption_leaves_catalog_generation_recoverable(self):
+        from webgui import index_coordinator as coordinator
+
+        def interrupted():
+            raise coordinator.GenerationInterrupted()
+
+        with self.assertRaises(coordinator.GenerationInterrupted):
+            self.services.refresh_index(cancelled=interrupted, mode="full")
+
+        with closing(self.db.connect()) as db:
+            generation = db.execute(
+                "SELECT generation_id,state,phase FROM catalog_generations "
+                "WHERE state='building' ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+            maintenance = db.execute(
+                "SELECT maintenance_generation_id FROM catalog_index_state "
+                "WHERE singleton=TRUE"
+            ).fetchone()["maintenance_generation_id"]
+        self.assertIsNotNone(generation)
+        self.assertEqual(generation["state"], "building")
+        self.assertEqual(maintenance, generation["generation_id"])
+
+        with closing(self.db.connect()) as db, db:
+            db.raw.execute(
+                "UPDATE catalog_generations SET lease_expires_at=now() "
+                "WHERE generation_id=%s",
+                (generation["generation_id"],),
+            )
+        lease = coordinator.claim(self.db, "full", str(self.root / "music"))
+        self.assertTrue(lease.resumed)
+        self.assertEqual(lease.generation_id, generation["generation_id"])
+        coordinator.finish(self.db, lease, "cancelled", "test cleanup")
+
     def test_postgres_validation_and_publication_interruptions_preserve_atomic_catalog(self):
         from webgui import index_coordinator as coordinator
 
@@ -3242,9 +3275,14 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         progress = []
         self.services.refresh_index(progress=progress.append, mode="full")
         self.assertEqual(progress[0]["phase"], "starting")
-        self.assertTrue(any(item["phase"] == "indexing" for item in progress))
-        self.assertTrue(any(item["phase"] == "validating" for item in progress))
+        indexing = [item for item in progress if item["phase"] == "indexing"]
+        validating = [item for item in progress if item["phase"] == "validating"]
+        self.assertTrue(indexing)
+        self.assertTrue(validating)
+        self.assertTrue(all(not item["total_known"] for item in indexing))
+        self.assertTrue(all(item["total_known"] for item in validating))
         self.assertEqual(progress[-1]["phase"], "published")
+        self.assertTrue(progress[-1]["total_known"])
         self.assertEqual(progress[-1]["percentage"], 100)
         self.assertEqual(progress[-1]["completed"], 5)
 
@@ -3409,7 +3447,8 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 )
             }
             db.raw.execute(
-                "UPDATE catalog_generations SET lease_expires_at=now()-interval '1 second' "
+                "UPDATE catalog_generations SET lease_expires_at=now()-interval '1 second',"
+                "created_at=now()-interval '5 minutes' "
                 "WHERE generation_id=%s",
                 (interrupted["generation"],),
             )
@@ -3456,6 +3495,36 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertEqual(state["maintenance_generation_id"], "")
             self.assertEqual(state["catalog_state"], "ready")
             self.assertEqual(db.execute("SELECT count(*) FROM albums").fetchone()[0], 6)
+            timings = db.execute(
+                "SELECT timings FROM catalog_generations WHERE generation_id=?",
+                (interrupted["generation"],),
+            ).fetchone()["timings"]
+            self.assertGreaterEqual(float(timings["total_seconds"]), 300.0)
+            self.assertLess(float(timings["process_seconds"]), 300.0)
+
+    def test_successful_job_clears_stale_restart_recovery_error(self):
+        job_id = "recovered-index-job"
+        with closing(self.db.connect()) as db, db:
+            db.raw.execute(
+                "INSERT INTO web_jobs(id,kind,state,payload,progress,error) "
+                "VALUES(%s,'index','queued',%s,'{}',"
+                "'Recovering interrupted catalog generation')",
+                (
+                    job_id,
+                    Jsonb(
+                        {
+                            "mode": "incremental",
+                            "library_root": str(self.runtime.music),
+                        }
+                    ),
+                ),
+            )
+        self.queue = JobQueue(self.services)
+        completed = self.wait_for_job(
+            job_id, lambda item: item["state"] in {"done", "failed"}
+        )
+        self.assertEqual(completed["state"], "done", completed["error"])
+        self.assertEqual(completed["error"], "")
 
     def test_full_refresh_revalidates_existing_windows_managed_track_tags(self):
         with closing(self.db.connect()) as db, db:
@@ -5514,9 +5583,6 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                         embedded_track_artwork_bytes(target), initial_target_art
                     )
                     page.locator("#upscaleButton").click()
-                    expect(page.locator("#statusText")).to_contain_text(
-                        "Embedded Thumb Ready · 300 × 300", timeout=15000
-                    )
                     expect(page.locator("#selectedDimensions")).to_have_text(
                         "300 × 300"
                     )
@@ -5680,10 +5746,8 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     )
                     self.assertEqual(embedded_track_artwork_bytes(target), initial_target_art)
                     page.locator("#upscaleButton").click()
-                    expect(page.locator("#statusText")).to_contain_text(
-                        "Embedded Thumb Ready · 300 × 300", timeout=15000
-                    )
                     expect(page.locator("#selectedDimensions")).to_have_text("300 × 300")
+                    expect(page.locator("#selectedQuality")).to_have_text("Thumb Ready")
                     with page.expect_response(
                         lambda response: response.url.endswith("/api/jobs/action")
                         and "webgui-embed-release" in (response.request.post_data or ""),

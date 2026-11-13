@@ -5347,6 +5347,18 @@ def validate_config_v5(cfg: dict[str, Any]) -> None:
     ).strip()
     if not artist_separator_profile:
         raise SplinedError("[scan].artist_separator_profile cannot be empty.")
+    _bounded_int(
+        scan.get("index_metadata_readers", 16),
+        1,
+        32,
+        "[scan].index_metadata_readers",
+    )
+    _bounded_int(
+        scan.get("index_large_album_track_threshold", 100),
+        0,
+        10000,
+        "[scan].index_large_album_track_threshold",
+    )
 
     ranges = section(cfg, "range")
     try:

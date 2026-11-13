@@ -6,8 +6,8 @@
 
 use crate::catalog_index_coordinator::{
     CatalogGenerationLease, CatalogIndexStatus, StagedAlbumCheckpoint, assert_publication_lease,
-    begin_publication, claim_generation, mark_terminal, reusable_checkpoints, stage_albums,
-    status as catalog_index_status, touch_reusable_checkpoints,
+    begin_publication, claim_generation, heartbeat, mark_terminal, reusable_checkpoints,
+    stage_albums, status as catalog_index_status, touch_reusable_checkpoints,
 };
 use crate::config::{Config, resolve_sources};
 use crate::database_audit;
@@ -19,10 +19,14 @@ use crate::override_coordination::{
     canonical_track_identity, ensure_sqlite_schema, queue_historical_windows_comp_track_write,
     queue_windows_album_write, queue_windows_comp_track_write, relative_path,
 };
-use crate::scan::{AlbumDirectory, inventory_album_directories, walk_album_directories};
+use crate::scan::{
+    AlbumDirectory, inventory_album_directories, walk_album_directories,
+    walk_album_directories_prioritized,
+};
 use crate::scan_tags::{
-    AlbumIndexTags, read_album_index_tags, read_local_track_evidence,
-    read_local_track_evidence_bounded,
+    AlbumIndexTags, read_album_index_tags, read_album_index_tags_and_track_evidence,
+    read_local_track_evidence, read_local_track_evidence_bounded,
+    read_local_track_evidence_bounded_with_progress,
 };
 use image::ImageFormat;
 use regex::Regex;
@@ -58,7 +62,6 @@ const INVENTORY_KEY: &str = "splined-media-library";
 const TRACK_INVENTORY_PREFIX: &str = "tracks-v1:";
 const TRACK_CREDIT_INDEX_VERSION: i64 = 1;
 const CATALOG_INDEX_CANCELLED: &str = "Catalog index refresh cancelled by the operator.";
-const INDEX_METADATA_READERS: usize = 8;
 const INDEX_DATABASE_WRITERS: usize = 1;
 const INDEX_REMOTE_PROVIDER_REQUESTS: usize = 0;
 const SCHEMA: &str = include_str!("../../schema/media.sql");
@@ -4347,6 +4350,7 @@ fn rebuild_index_generation(
     let mut tag_reuses = 0_i64;
     let mut track_tag_reads = 0_i64;
     let mut track_tag_reuses = 0_i64;
+    let mut deferred_large_albums = 0_i64;
     let mut batch_controller = AdaptiveBatchController::from_database(
         connection,
         config.scan.index_batch_adaptive,
@@ -4369,10 +4373,16 @@ fn rebuild_index_generation(
     }
 
     let walk_started = Instant::now();
-    walk_album_directories(
+    walk_album_directories_prioritized(
         Path::new(mapper.local_root()),
         &config.library.ignored_subs,
+        config.scan.index_large_album_track_threshold,
         |album| {
+            if config.scan.index_large_album_track_threshold > 0
+                && album.audio_files.len() >= config.scan.index_large_album_track_threshold
+            {
+                deferred_large_albums += 1;
+            }
             let representative = album.audio_files.first().ok_or_else(|| {
                 format!(
                     "Album has no representative track: {}",
@@ -4536,7 +4546,7 @@ fn rebuild_index_generation(
             let reuse = prior.as_ref().is_some_and(|value| {
                 representative_unchanged(value, &canonical_representative, size, mtime)
             });
-            let (tags, prior_key, prior_status) =
+            let (tags, prior_key, prior_status, representative_evidence) =
                 if let Some(prior) = prior.as_ref().filter(|_| reuse) {
                     tag_reuses += 1;
                     (
@@ -4553,15 +4563,20 @@ fn rebuild_index_generation(
                         },
                         Some(prior.album_key.clone()),
                         Some(prior.clone()),
+                        None,
                     )
                 } else {
                     tag_reads += 1;
+                    let (album_tags, track_evidence) =
+                        read_album_index_tags_and_track_evidence(representative)
+                            .unwrap_or_else(|_| (AlbumIndexTags::default(), None));
                     (
-                        read_album_index_tags(representative).unwrap_or_default(),
+                        album_tags,
                         prior_from_move
                             .then(|| prior.as_ref().map(|value| value.album_key.clone()))
                             .flatten(),
                         prior.clone(),
+                        track_evidence,
                     )
                 };
             let physical_artist = physical_artist_name(mapper.local_root(), &album.path);
@@ -4659,6 +4674,7 @@ fn rebuild_index_generation(
             } else {
                 HashMap::new()
             };
+            let representative_seeded = representative_evidence.is_some();
             let evidence_paths = album
                 .audio_files
                 .iter()
@@ -4669,17 +4685,50 @@ fn rebuild_index_generation(
                     let unchanged = prior_track.is_some_and(|value| {
                         value.file_size == file_size && value.file_mtime_ns == track_fact.mtime_ns
                     });
-                    (!unchanged || refresh_track_credits).then_some(track_path.clone())
+                    ((!unchanged || refresh_track_credits)
+                        && !(track_path == representative && representative_evidence.is_some()))
+                    .then_some(track_path.clone())
                 })
                 .collect::<Vec<_>>();
+            let evidence_values = if config.scan.index_large_album_track_threshold > 0
+                && album.audio_files.len() >= config.scan.index_large_album_track_threshold
+            {
+                read_local_track_evidence_bounded_with_progress(
+                    &evidence_paths,
+                    config.scan.index_metadata_readers,
+                    |completed, total| {
+                        let seeded = usize::from(representative_seeded);
+                        heartbeat(
+                            connection,
+                            lease,
+                            &format!(
+                                "{} · {}/{} tracks",
+                                album.path.display(),
+                                completed + seeded,
+                                total + seeded
+                            ),
+                        )?;
+                        if report_catalog_progress(connection, &mut progress)? {
+                            Ok(())
+                        } else {
+                            Err(CATALOG_INDEX_CANCELLED.to_string())
+                        }
+                    },
+                )?
+            } else {
+                read_local_track_evidence_bounded(
+                    &evidence_paths,
+                    config.scan.index_metadata_readers,
+                )
+            };
             let mut track_evidence = evidence_paths
                 .iter()
                 .cloned()
-                .zip(read_local_track_evidence_bounded(
-                    &evidence_paths,
-                    INDEX_METADATA_READERS,
-                ))
+                .zip(evidence_values)
                 .collect::<HashMap<_, _>>();
+            if let Some(evidence) = representative_evidence {
+                track_evidence.insert(representative.clone(), Some(evidence));
+            }
             let mut tracks = Vec::with_capacity(album.audio_files.len());
             for (track_path, track_fact) in album.audio_files.iter().zip(&track_inventory) {
                 let canonical_track = track_fact.canonical_path.clone();
@@ -4924,6 +4973,7 @@ fn rebuild_index_generation(
         tag_reuses,
         track_tag_reads,
         track_tag_reuses,
+        deferred_large_albums,
         walk_duration.saturating_sub(checkpoint_duration),
         checkpoint_duration,
         checkpoint_commits,
@@ -4944,6 +4994,7 @@ fn publish_index_generation(
     tag_reuses: i64,
     track_tag_reads: i64,
     track_tag_reuses: i64,
+    deferred_large_albums: i64,
     filesystem_metadata_duration: Duration,
     checkpoint_duration: Duration,
     checkpoint_commits: u64,
@@ -5258,13 +5309,15 @@ fn publish_index_generation(
         "album_tag_reuses": tag_reuses,
         "track_tag_reads": track_tag_reads,
         "track_tag_reuses": track_tag_reuses,
+        "deferred_large_albums": deferred_large_albums,
+        "large_album_track_threshold": config.scan.index_large_album_track_threshold,
         "filesystem_metadata_seconds": filesystem_metadata_duration.as_secs_f64(),
         "checkpoint_seconds": checkpoint_duration.as_secs_f64(),
         "checkpoint_commits": checkpoint_commits,
         "batch_size": adaptive_batching["initial_size"],
         "adaptive_batching": adaptive_batching,
         "resource_budget": {
-            "metadata_readers": INDEX_METADATA_READERS,
+            "metadata_readers": config.scan.index_metadata_readers,
             "database_writers": INDEX_DATABASE_WRITERS,
             "maximum_batch_albums": crate::index_batch_policy::MAX_BATCH_SIZE,
             "remote_provider_requests": INDEX_REMOTE_PROVIDER_REQUESTS,
@@ -8003,7 +8056,7 @@ mod tests {
         assert_eq!(details["mode"], "incremental");
         assert_eq!(details["album_tag_reads"], 0);
         assert_eq!(details["track_tag_reads"], 0);
-        assert_eq!(details["resource_budget"]["metadata_readers"], 8);
+        assert_eq!(details["resource_budget"]["metadata_readers"], 16);
         assert_eq!(details["resource_budget"]["database_writers"], 1);
         assert_eq!(details["resource_budget"]["maximum_batch_albums"], 64);
         assert_eq!(details["resource_budget"]["remote_provider_requests"], 0);

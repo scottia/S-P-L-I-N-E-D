@@ -80,6 +80,7 @@ async function initialize() {
   // Discover physical library changes after the workspace is usable. This
   // remains a read-only check; the operator explicitly chooses whether to run
   // the incremental PostgreSQL refresh from the header notice.
+  scheduleHourlyLibraryChangeProbe();
   void requestLibraryChangeProbe().catch(libraryChangeProbeFailed);
 }
 function showAuthentication(status) {
@@ -123,6 +124,8 @@ async function submitPasswordRecovery(payload) {
   }
 }
 let libraryChangePollTimer = null;
+let libraryChangeHourlyTimer = null;
+const LIBRARY_CHANGE_HOURLY_MS = 60 * 60 * 1000;
 function libraryChangeProbeFailed(error) {
   libraryChangePollTimer = null;
   state.libraryChanges = {...(state.libraryChanges || {}), checking: false};
@@ -173,6 +176,22 @@ async function requestLibraryChangeProbe() {
     setStatus("Checking the music library for changes…", "busy");
   }
   await checkLibraryChanges();
+}
+function scheduleHourlyLibraryChangeProbe() {
+  if (libraryChangeHourlyTimer !== null) return;
+  libraryChangeHourlyTimer = setTimeout(async () => {
+    libraryChangeHourlyTimer = null;
+    const catalogBusy = (state.jobs || []).some(job =>
+      ["index", "index-probe"].includes(job.kind)
+      && ["queued", "running", "waiting"].includes(job.state));
+    try {
+      if (!catalogBusy) await requestLibraryChangeProbe();
+    } catch (error) {
+      libraryChangeProbeFailed(error);
+    } finally {
+      scheduleHourlyLibraryChangeProbe();
+    }
+  }, LIBRARY_CHANGE_HOURLY_MS);
 }
 function componentPayload(kind, imageURL, extra = {}) {
   const target = kind === "cover" ? "album" : kind;
@@ -1164,6 +1183,7 @@ function activeIndexJob() {
 }
 function renderIndexProgress() {
   const job = activeIndexJob();
+  const pausedJob = (state.jobs || []).find(item => item.kind === "index" && item.state === "paused") || null;
   const generation = state.indexStatus?.generation || null;
   const generationActive = generation && ["building", "validating", "publishing"].includes(generation.state);
   const active = Boolean(job || generationActive);
@@ -1171,22 +1191,34 @@ function renderIndexProgress() {
   button.hidden = !active;
   if (!active) {
     state.indexStopping = false;
-    if (!job) state.indexJobId = null;
+    state.indexJobId = null;
     status.classList?.remove?.("index-progress");
     status.style?.removeProperty?.("--index-progress");
+    if (pausedJob) {
+      const completed = Number(pausedJob.progress?.completed || 0);
+      setStatus(`PostgreSQL index paused · ${completed} Albums checkpointed · Resume to continue`, "busy");
+    }
     return;
   }
   if (job) state.indexJobId = job.id;
   const progress = job?.progress || {};
   const completed = Number(progress.completed ?? generation?.completed_albums ?? 0);
   const total = Math.max(1, Number(progress.total || 0), Number(generation?.discovered_albums || 0));
+  const phase = String(progress.phase || generation?.phase || job?.state || "indexing");
+  const totalKnown = Boolean(progress.total_known
+    ?? ["validating", "publishing", "published"].includes(phase));
   const percentage = Math.max(0, Math.min(100,
     Number(progress.percentage ?? (generation?.state === "published" ? 100 : Math.min(99, Math.floor(completed * 100 / total))))));
-  const phase = String(progress.phase || generation?.phase || job?.state || "indexing");
   const message = String(progress.message || generation?.current_path || "Preparing catalog generation");
   const errors = Number(progress.errors ?? generation?.error_count ?? 0);
   button.textContent = state.indexStopping ? "STOPPING…" : "STOP INDEX";
   button.disabled = state.indexStopping || !state.indexJobId;
+  if (!totalKnown) {
+    setStatus(`PostgreSQL ${phase} · ${completed} Albums indexed · discovering more… · ${errors} errors · ${message}`, "busy");
+    status.classList?.remove?.("index-progress");
+    status.style?.removeProperty?.("--index-progress");
+    return;
+  }
   setStatus(`PostgreSQL ${phase} · ${percentage}% · ${completed}/~${total} Albums · ${errors} errors · ${message}`, "busy");
   status.classList?.add?.("index-progress");
   status.style?.setProperty?.("--index-progress", `${percentage}%`);
@@ -1958,6 +1990,7 @@ async function openSettings() {
     }
   }
   async function saveCurrentSection(section, message = section.label + " settings saved") {
+    const ignoredBefore = JSON.stringify(settingValue(saved.config, "library.ignored_subs", []));
     applySettingsInputs(draft, bindings);
     if (section.id === "library") {
       const separator = String(settingValue(draft, "scan.artist_separator_regex", DEFAULT_ARTIST_SEPARATOR_REGEX)).trim();
@@ -1972,6 +2005,10 @@ async function openSettings() {
     state.artistSourceEnabled = Array.from(ARTIST_IMAGE_SOURCES).filter(key => artistSourceConfigured(key));
     state.enabledSources = state.sourceOrder.filter(key => !saved.config.sources?.exclude_cover_sources?.includes(key) && saved.config.source_policies?.[key]?.enabled !== false);
     renderAll(); setStatus(message); renderSection(active);
+    const ignoredAfter = JSON.stringify(settingValue(saved.config, "library.ignored_subs", []));
+    if (section.id === "library" && ignoredBefore !== ignoredAfter) {
+      await requestLibraryChangeProbe();
+    }
   }
   function renderSection(id, preserveDraft = false) {
     active = id; bindings = [];
@@ -1992,7 +2029,7 @@ async function openSettings() {
     if (section.id === "runtime") renderRuntimeSettings(fields, section, draft, bindings, saved, advanced);
     else {
       let displayedGroup = "";
-      const groupFor = path => section.id === "library" ? (["library.music_library", "scan.scan_mode", "scan.scan_library_dir"].includes(path) ? "Library And Application Paths" : path.startsWith("scan.artist_separator_") || path === "scan.index_batch_size" || path === "scan.index_batch_adaptive" ? "Library Index" : path === "database.url" ? "Database" : "Persistent Folders")
+      const groupFor = path => section.id === "library" ? (["library.music_library", "scan.scan_mode", "scan.scan_library_dir"].includes(path) ? "Library And Application Paths" : path.startsWith("scan.artist_separator_") || path.startsWith("scan.index_") ? "Library Index" : path === "database.url" ? "Database" : "Persistent Folders")
         : section.id === "artwork" ? (path.startsWith("output.") ? "Output Files" : path === "scan.shared_artist_art_dir" ? "V/A / OST Artist Images Directory" : "Sample Images")
         : section.id === "enhancement" ? "Resolution Range" : "";
       for (const descriptor of section.fields || []) {

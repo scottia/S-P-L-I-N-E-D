@@ -70,6 +70,47 @@ test("library change completion clears a busy status after backgrounding", async
   assert.equal(button.hidden, true);
 });
 
+test("open WebGUI schedules an hourly read-only library change probe", async () => {
+  const timers = [];
+  let probes = 0;
+  const context = load(libraryChangeFunctions, {
+    state: {jobs: []},
+    api: async () => ({count: 0, added: 0, changed: 0, moved: 0, removed: 0, checking: false}),
+    post: async () => { probes += 1; return {state: "queued"}; },
+    $: id => {
+      assert.equal(id, "applyLibraryChanges");
+      return {};
+    },
+    setStatus: () => {},
+    auditEvent: () => {},
+    setTimeout: (callback, delay) => {
+      timers.push({callback, delay});
+      return timers.length;
+    },
+    clearTimeout: () => {},
+    document: {hidden: false, addEventListener: () => {}},
+  });
+
+  context.scheduleHourlyLibraryChangeProbe();
+  assert.equal(timers.length, 1);
+  assert.equal(timers[0].delay, 60 * 60 * 1000);
+  await timers[0].callback();
+  assert.equal(probes, 1);
+  assert.equal(timers.length, 2);
+  assert.equal(timers[1].delay, 60 * 60 * 1000);
+});
+
+test("saving changed ignored folders immediately requests a change probe", () => {
+  const saveSection = between(
+    operationsSource,
+    "async function saveCurrentSection",
+    "function renderSection",
+  );
+  assert.match(saveSection, /ignoredBefore/);
+  assert.match(saveSection, /section\.id === "library" && ignoredBefore !== ignoredAfter/);
+  assert.match(saveSection, /await requestLibraryChangeProbe\(\)/);
+});
+
 const contextFunctions = between(
   appSource,
   "function albumInCurrentArtistContext",
@@ -85,6 +126,55 @@ const mediaStatusFunctions = between(
   "const MEDIA_STATUSES",
   "function validMusicBrainzId",
 );
+const indexProgressFunctions = between(
+  operationsSource,
+  "function activeIndexJob()",
+  "async function performJobsPoll()",
+);
+
+test("catalog progress stays indeterminate until discovery has a final total", () => {
+  const statuses = [];
+  const progressStyle = new Map();
+  const status = {
+    classList: {add: () => {}, remove: () => {}},
+    style: {
+      setProperty: (name, value) => progressStyle.set(name, value),
+      removeProperty: name => progressStyle.delete(name),
+    },
+  };
+  const button = {};
+  const state = {
+    jobs: [{
+      id: "index-1", kind: "index", state: "running",
+      progress: {phase: "indexing", completed: 64, total: 65, percentage: 98, total_known: false},
+    }],
+    indexStatus: {},
+    indexStopping: false,
+  };
+  const context = load(indexProgressFunctions, {
+    state,
+    $: id => id === "indexStopProcess" ? button : status,
+    setStatus: (message, type) => statuses.push({message, type}),
+  });
+
+  context.renderIndexProgress();
+  assert.match(statuses.at(-1).message, /64 Albums indexed · discovering more…/);
+  assert.doesNotMatch(statuses.at(-1).message, /98%/);
+  assert.equal(progressStyle.has("--index-progress"), false);
+
+  state.jobs[0].progress = {
+    phase: "validating", completed: 64, total: 64, percentage: 99, total_known: true,
+  };
+  context.renderIndexProgress();
+  assert.match(statuses.at(-1).message, /validating · 99% · 64\/~64 Albums/);
+  assert.equal(progressStyle.get("--index-progress"), "99%");
+
+  state.jobs[0].state = "paused";
+  context.renderIndexProgress();
+  assert.match(statuses.at(-1).message, /index paused · 64 Albums checkpointed · Resume to continue/);
+  assert.doesNotMatch(statuses.at(-1).message, /discovering more/);
+  assert.equal(button.hidden, true);
+});
 
 test("opposing Album overrides use their own dark-grey filter and never inflate Bypassed", () => {
   const album = {id: "album-1", album_mbid: "release-1", status: "partial"};
