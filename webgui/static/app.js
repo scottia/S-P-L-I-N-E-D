@@ -74,6 +74,7 @@ const state = {
   artworkRange: {min: 1200, ideal: 1800, max: 2400, ladder: 3600},
   embedQueue: [], queueControls: {pause_after_album: false, pause_all_albums: false}, queuedDecision: null, reviewJobState: "", listRequest: 0, selectionRequest: 0, searchRequest: 0,
   jobs: [], launchActive: false, launchStopping: false, launchAbort: null,
+  activeCompLaunch: "", writePending: false,
   pendingMusicBrainzExisting: null,
   albumSearchActive: false, albumSearchAlbumId: "", albumSearchCandidates: [],
   albumLibraryMatches: [], albumLibraryRequest: 0, albumLibraryLoading: false,
@@ -545,6 +546,9 @@ function clearCompDerivedPreview() {
   if (state.renderedPreview) state.renderedPreview.comp = null;
   state.compThumbnailPreview = null;
   state.pendingCompWrite = null;
+}
+function compLaunchIdentity(artistId, albumId, trackKey) {
+  return JSON.stringify([String(artistId || ""), String(albumId || ""), String(trackKey || "")]);
 }
 function musicBrainzArtworkSource(option) {
   const source = String(option?.artwork_preview_url || "");
@@ -1348,6 +1352,9 @@ function renderFallbackOverview() {
     const row = node("button", "fallback-track" + (track?.key === item.key ? " selected" : ""));
     row.classList.toggle("opposing-track-override", compTrackOverride(item)?.writer === "windows");
     row.type = "button";
+    const processing = state.launchActive && state.activeCompLaunch === compLaunchIdentity("", album?.id, item.key);
+    row.disabled = processing;
+    if (processing) row.title = "This COMP track is already processing";
     row.classList.add(compTrackStatusClass(item));
     if (item.status === "check-error") row.title = item.checkError || "Thumbnail validation could not be completed; reload the album to retry";
     row.append(node("span", "fallback-track-spacer"), node("span", "fallback-track-file", item.file),
@@ -1444,6 +1451,9 @@ function renderArtistCompReport() {
     for (const track of group.tracks) {
       const selected = state.compTrack?.key === track.key && state.compTrack?.albumId === group.id;
       const row = node("button", "fallback-track" + (selected ? " selected" : "")); row.type = "button";
+      const processing = state.launchActive && state.activeCompLaunch === compLaunchIdentity(state.artist?.id, group.id, track.key);
+      row.disabled = processing;
+      if (processing) row.title = "This COMP track is already processing";
       row.classList.toggle("opposing-track-override", compTrackOverride(track)?.writer === "windows");
       row.classList.add(compTrackStatusClass(track));
       if (track.status === "check-error") row.title = track.checkError || "Thumbnail validation could not be completed; reopen the report to retry";
@@ -1533,7 +1543,13 @@ async function probeArtistCompStatuses() {
 }
 
 async function selectArtistCompTrack(albumId, key, autoLaunch = true) {
-  const request = ++state.compTrackRequest, artistId = state.artist?.id;
+  const artistId = state.artist?.id;
+  if (autoLaunch && state.launchActive && state.activeCompLaunch === compLaunchIdentity(artistId, albumId, key)) {
+    setStatus("This COMP track is already processing", "busy");
+    renderCandidateLaunchControl();
+    return;
+  }
+  const request = ++state.compTrackRequest;
   if (!await cancelMismatchedCompWork({artist_id: artistId, album_id: albumId, track_key: key})) return;
   if (request !== state.compTrackRequest || artistId !== state.artist?.id || !state.compReportVisible) return;
   state.upscalePreview = null; state.renderedPreview.comp = null; state.compThumbnailPreview = null; state.pendingCompWrite = null; state.fx.comp = {};
@@ -2588,7 +2604,13 @@ async function chooseAlbum(id) {
 }
 async function selectFallbackTrack(key, previewOnly, autoLaunch = true) {
   if (!state.album || state.editorMode !== "fallback") return;
-  const albumId = state.album.id, request = ++state.fallbackTrackRequest;
+  const albumId = state.album.id;
+  if (autoLaunch && state.launchActive && state.activeCompLaunch === compLaunchIdentity("", albumId, key)) {
+    setStatus("This COMP track is already processing", "busy");
+    renderCandidateLaunchControl();
+    return;
+  }
+  const request = ++state.fallbackTrackRequest;
   if (!await cancelMismatchedCompWork({artist_id: "", album_id: albumId, track_key: key})) return;
   if (request !== state.fallbackTrackRequest || state.album?.id !== albumId || state.editorMode !== "fallback") return;
   state.upscalePreview = null; state.renderedPreview.comp = null; state.compThumbnailPreview = null; state.pendingCompWrite = null; state.fx.comp = {};
@@ -2777,7 +2799,7 @@ $("refreshArtistInfo").addEventListener("click", () => state.artist && runAction
 $("musicbrainzArtistButton").addEventListener("click", () => {
   if (state.artist?.mbid) window.open("https://musicbrainz.org/artist/" + encodeURIComponent(state.artist.mbid), "_blank", "noopener");
 });
-$("writeButton").addEventListener("click", () => runAction(writeArtwork));
+$("writeButton").addEventListener("click", () => runAction(writeArtworkOnce));
 $("themedPackaging").addEventListener("click", () => { state.themedPackaging = !state.themedPackaging; renderReview(); setStatus(state.themedPackaging ? "Themed Packaging adjustments active" : "Themed Packaging preview off"); });
 $("compareButton").addEventListener("click", () => {
   const choices = state.candidates.filter(candidate => state.compare.has(candidate.image));

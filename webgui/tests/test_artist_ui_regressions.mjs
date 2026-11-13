@@ -291,6 +291,11 @@ const writeArtworkFunction = compDecisionFunctions + "\n" + between(
   "async function writeArtwork",
   "const previewReview",
 );
+const writeArtworkOnceFunction = between(
+  operationsSource,
+  "async function writeArtworkOnce",
+  "const previewReview",
+);
 const compThumbnailFunctions = compDecisionFunctions + "\n" + between(
   operationsSource,
   "function compContextActive",
@@ -906,6 +911,56 @@ test("Artist COMP reviews the first job before later Album enqueue back-pressure
   releaseSecond({id: "job-second"});
   await launch;
   assert.equal(posts, 2);
+});
+
+test("repeated selection of an active COMP track cannot enqueue another job", async () => {
+  const statuses = [];
+  let launches = 0;
+  const identity = JSON.stringify(["artist-1", "comp-1", "track-1"]);
+  const state = {
+    launchActive: true, launchStopping: false, activeCompLaunch: identity,
+  };
+  const context = load(launchCompFunctions, {
+    state, AbortController,
+    compLaunchIdentity: (artistId, albumId, trackKey) => JSON.stringify([
+      String(artistId || ""), String(albumId || ""), String(trackKey || ""),
+    ]),
+    launchArtistComp: async () => { launches += 1; },
+    launchFallback: async () => { launches += 1; },
+    setStatus: message => statuses.push(message),
+    renderCandidateLaunchControl() {}, renderHero() {},
+  });
+
+  await context.activateCompTrackWork({artistId: "artist-1", albumId: "comp-1", trackKey: "track-1"});
+
+  assert.equal(launches, 0);
+  assert.equal(state.launchActive, true);
+  assert.match(statuses[0], /already processing/);
+});
+
+test("artwork writes are single-flight while the first write is pending", async () => {
+  let releaseWrite;
+  const pendingWrite = new Promise(resolve => { releaseWrite = resolve; });
+  let writes = 0;
+  const renders = [];
+  const statuses = [];
+  const state = {writePending: false};
+  const context = load(writeArtworkOnceFunction, {
+    state,
+    writeArtwork: async () => { writes += 1; await pendingWrite; },
+    renderReview: () => renders.push(state.writePending),
+    setStatus: message => statuses.push(message),
+  });
+
+  const first = context.writeArtworkOnce();
+  await context.writeArtworkOnce();
+  assert.equal(writes, 1);
+  assert.match(statuses[0], /already in progress/);
+
+  releaseWrite();
+  await first;
+  assert.equal(state.writePending, false);
+  assert.deepEqual(renders, [true, false]);
 });
 
 test("STOP cancels a COMP job accepted after its enqueue was already in flight", async () => {
@@ -1648,7 +1703,7 @@ test("COMP Selected Artwork keeps the Windows button contract", () => {
   assert.match(operationsSource, /\$\("embedBatchButton"\)\.textContent = "EMBED Batch"/);
   assert.match(operationsSource, /\$\("embedBatchButton"\)\.disabled = compContext \|\|/);
   assert.doesNotMatch(operationsSource, /textContent = compContext \? "EMBED Thumbs"/);
-  assert.match(appSource, /\$\("writeButton"\)\.addEventListener\("click", \(\) => runAction\(writeArtwork\)\)/);
+  assert.match(appSource, /\$\("writeButton"\)\.addEventListener\("click", \(\) => runAction\(writeArtworkOnce\)\)/);
   assert.match(appSource, /\$\("embedBatchButton"\)\.addEventListener\("click", \(\) => runAction\(stageAlbum\)\)/);
   assert.match(operationsSource, /Writing selected cover…/);
   assert.match(operationsSource, /Writing selected Artist Art…/);

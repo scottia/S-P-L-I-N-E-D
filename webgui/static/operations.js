@@ -383,6 +383,16 @@ async function writeArtwork() {
   state.fit.artist = {zoom: 1, x: 0, y: 0}; state.fit.banner = {zoom: 1, x: 0, y: 0};
   refreshLibraryArtistRow(state.artist.id); renderHero(); renderPanes(); renderReview(); setStatus("Written: " + result.written.join(", "));
 }
+async function writeArtworkOnce() {
+  if (state.writePending) {
+    setStatus("Artwork write is already in progress", "busy");
+    return;
+  }
+  state.writePending = true;
+  renderReview();
+  try { await writeArtwork(); }
+  finally { state.writePending = false; renderReview(); }
+}
 const previewReview = renderReview;
 renderReview = function () {
   previewReview();
@@ -390,11 +400,13 @@ renderReview = function () {
   const writable = state.server?.mode === "write";
   const currentPackage = state.editorMode === "artist" && state.workspace === "enhance" && state.radioCurrent
     && !!(state.selectedPortrait?.image || state.selectedBanner?.image || state.artist?.portrait || state.artist?.banner);
-  $("writeButton").disabled = entry ? !state.artist : !writable || (state.editorMode === "album" ? !editableArtworkSource()
+  const writeUnavailable = entry ? !state.artist : !writable || (state.editorMode === "album" ? !editableArtworkSource()
     : state.editorMode === "fallback" ? !editableArtworkSource() : state.compReportVisible ? !state.compTrack?.image : !(currentPackage || (state.radioArtist && (state.selectedPortrait || state.artist?.portrait)) || (state.radioBanner && (state.selectedBanner || state.artist?.banner))));
+  $("writeButton").disabled = state.writePending || writeUnavailable;
   const compContext = compContextActive();
   const staged = state.editorMode === "album" && state.embedQueue.some(item => item.id === state.album?.id);
   $("writeButton").textContent = compContext ? "EMBED Comp" : $("writeButton").textContent;
+  if (state.writePending) $("writeButton").textContent = compContext ? "EMBEDDING…" : "WRITING…";
   $("embedBatchButton").textContent = "EMBED Batch";
   $("embedBatchButton").classList.add("action-purple");
   $("embedBatchButton").classList.remove("action-cyan");
@@ -633,8 +645,16 @@ async function activateCandidateWork() {
 }
 async function activateCompTrackWork(target) {
   if (state.launchStopping) return;
+  const identity = compLaunchIdentity(target.artistId, target.albumId, target.trackKey);
+  if (state.launchActive) {
+    setStatus(state.activeCompLaunch === identity
+      ? "This COMP track is already processing"
+      : "COMP processing is active · finish it or press STOP PROCESS before starting another track", "busy");
+    renderCandidateLaunchControl();
+    return;
+  }
   const controller = new AbortController();
-  state.launchActive = true; state.launchStopping = false; state.launchAbort = controller;
+  state.launchActive = true; state.launchStopping = false; state.launchAbort = controller; state.activeCompLaunch = identity;
   renderCandidateLaunchControl(); renderHero();
   try {
     if (target.artistId) await launchArtistComp(controller.signal, {albumId: target.albumId, trackKey: target.trackKey});
@@ -643,7 +663,7 @@ async function activateCompTrackWork(target) {
     if (error?.name !== "AbortError") throw error;
   } finally {
     if (state.launchAbort === controller) {
-      state.launchActive = false; state.launchStopping = false; state.launchAbort = null;
+      state.launchActive = false; state.launchStopping = false; state.launchAbort = null; state.activeCompLaunch = "";
       renderCandidateLaunchControl(); renderHero();
     }
   }
