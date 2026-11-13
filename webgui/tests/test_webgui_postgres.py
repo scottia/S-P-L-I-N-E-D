@@ -1577,9 +1577,12 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             restored = next(item for item in restored_jobs if item["id"] == first["id"])
             restored_cover = restored["payload"]["cover"]
             self.assertTrue(restored["payload"]["staged_valid"])
-            self.assertNotEqual(restored_cover, first_cover)
+            # The WebGUI access token now supplies one restart-stable signing
+            # key. An already-open browser and a durable staged job therefore
+            # retain the same authorized path handle across server recreation.
+            self.assertEqual(restored_cover, first_cover)
             self.assertEqual(client.get(restored_cover).status_code, 200)
-            self.assertEqual(client.get(first_cover).status_code, 400)
+            self.assertEqual(client.get(first_cover).status_code, 200)
 
         self.runtime = Runtime(self.config, self.db)
         self.services = Services(self.runtime)
