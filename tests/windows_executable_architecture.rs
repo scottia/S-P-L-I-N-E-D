@@ -98,6 +98,22 @@ fn windows_schema_upgrade_is_prepared_before_workspace_startup() {
 }
 
 #[test]
+fn windows_setup_reports_network_sqlite_safety_and_index_progress() {
+    let ui = source("windows/ui/app.slint");
+    let main = source("windows/src/main.rs");
+    let database = source("windows/src/media_database.rs");
+
+    assert!(ui.contains("Windows Setup Guide ↗"));
+    assert!(ui.contains("Shared DB Guide ↗"));
+    assert!(ui.contains("Network SQLite requires Shared mode"));
+    assert!(ui.contains("setup-progress-percent"));
+    assert!(ui.contains("setup-progress-current-path"));
+    assert!(main.contains("is_remote_path(&resolved_setup_directory"));
+    assert!(main.contains("media_snapshot_for_setup_with_progress"));
+    assert!(database.contains("publish_missing_shared_inventory"));
+}
+
+#[test]
 fn no_active_csharp_or_winforms_implementation_remains() {
     let mut files = Vec::new();
     repository_files(Path::new("windows"), &mut files);

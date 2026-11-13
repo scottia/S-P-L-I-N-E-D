@@ -40,6 +40,7 @@ fn git_cliff_is_the_shared_pinned_release_note_engine() {
     let installer = source("release/Install-GitCliff.ps1");
     let github = source("release/Generate-ReleaseNotes.ps1");
     let store = source("release/Generate-StoreHighlights.ps1");
+    let store_policy = source("release/StoreHighlightsPolicy.ps1");
     let config = source("cliff.toml");
     assert!(installer.contains("$version = \"2.14.2\""));
     assert!(installer.contains("24f397c733add5390fdceee3a2088588ab0d5f944ce00d34cb7029b888cf2db4"));
@@ -48,6 +49,10 @@ fn git_cliff_is_the_shared_pinned_release_note_engine() {
     assert!(github.contains("GITHUB-RELEASE.md"));
     assert!(store.contains("STORE-HIGHLIGHTS.txt"));
     assert!(store.contains("STORE-SUBMISSION.json"));
+    assert!(store.contains("ConvertTo-BoundedStoreHighlights"));
+    assert!(store_policy.contains("MaximumCharacters = 1500"));
+    assert!(store_policy.contains("Full release details:"));
+    assert!(store_policy.contains("OmittedBullets"));
     assert!(config.contains("🛍️ Microsoft Store"));
     for path in [FULL, STORE] {
         let workflow = source(path);
@@ -62,6 +67,7 @@ fn git_cliff_is_the_shared_pinned_release_note_engine() {
             "{path}"
         );
     }
+    assert!(source(STORE).contains("release/StoreHighlightsPolicy.ps1"));
 }
 
 #[test]
@@ -71,6 +77,7 @@ fn release_support_files_distinguish_active_fixtures_from_retired_notes() {
     assert!(
         inventory.contains("numbered release workflow does not currently publish a Linux archive")
     );
+    assert!(inventory.contains("complete, priority-ordered bullet boundaries"));
     assert!(!std::path::Path::new("release/RELEASE-NOTES-WINDOWS.md").exists());
 }
 

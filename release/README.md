@@ -8,6 +8,9 @@ published history belongs in Git tags and GitHub Releases.
 
 - `Generate-ReleaseNotes.ps1`, `Generate-StoreHighlights.ps1`, and
   `Resolve-StoreBaseline.ps1` are called by the numbered release workflows.
+- `StoreHighlightsPolicy.ps1` keeps over-limit Store notes within Microsoft's
+  1,500-character boundary at complete, priority-ordered bullet boundaries and
+  adds the full GitHub Release link for omitted details.
 - `Install-GitCliff.ps1` installs the pinned release-note engine and validates
   its checksum.
 - `templates/` contains the active GitHub Release and Microsoft Store Tera

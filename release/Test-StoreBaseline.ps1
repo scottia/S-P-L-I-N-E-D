@@ -6,10 +6,13 @@ param(
 $ErrorActionPreference = "Stop"
 $resolver = Join-Path $PSScriptRoot "Resolve-StoreBaseline.ps1"
 $generator = Join-Path $PSScriptRoot "Generate-StoreHighlights.ps1"
+$policy = Join-Path $PSScriptRoot "StoreHighlightsPolicy.ps1"
 $config = Join-Path (Split-Path -Parent $PSScriptRoot) "cliff.toml"
 $template = Join-Path $PSScriptRoot "templates/store-highlights.tera"
 $fixtures = Join-Path $PSScriptRoot "tests"
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ("splined-store-baseline-" + [Guid]::NewGuid().ToString("N"))
+
+. $policy
 
 function Assert-ThrowsLike {
     param(
@@ -32,6 +35,26 @@ function Assert-ThrowsLike {
 }
 
 try {
+    $syntheticBullets = @(1..80 | ForEach-Object { "- Customer-facing release improvement $($_.ToString('00')) with complete wording." })
+    $syntheticSource = (@("What's new in 9.9.9:") + $syntheticBullets) -join "`n"
+    $bounded = ConvertTo-BoundedStoreHighlights -Highlights $syntheticSource -Version "9.9.9"
+    $boundedLines = @($bounded.Highlights -split "`n")
+    $emittedSynthetic = @($boundedLines | Where-Object { $_ -like "- Customer-facing release improvement*" })
+    if (-not $bounded.Compacted -or
+        $bounded.FinalCharacters -gt 1500 -or
+        $bounded.SourceCharacters -le 1500 -or
+        $bounded.CandidateBullets -ne 80 -or
+        $bounded.EmittedBullets -ne $emittedSynthetic.Count -or
+        $bounded.OmittedBullets -ne (80 - $emittedSynthetic.Count) -or
+        $bounded.Highlights -notmatch '(?m)^- Full release details: https://github\.com/scottia/S-P-L-I-N-E-D/releases/tag/9\.9\.9$') {
+        throw "Over-limit Store Highlights were not compacted at complete bullet boundaries with an audited release link."
+    }
+    for ($index = 0; $index -lt $emittedSynthetic.Count; $index++) {
+        if ($emittedSynthetic[$index] -cne $syntheticBullets[$index]) {
+            throw "Store Highlights compaction did not preserve the priority-ordered bullet prefix."
+        }
+    }
+
     [IO.Directory]::CreateDirectory($testRoot) | Out-Null
     $positive = Join-Path $testRoot "positive"
     & $resolver `
@@ -66,7 +89,11 @@ try {
         throw "Cumulative Store Highlights were incomplete, noisy, repeated, or over the Store limit."
     }
     $audit = Get-Content -Raw -LiteralPath (Join-Path $positive "STORE-SUBMISSION.json") | ConvertFrom-Json
-    if ($audit.range -cne "1.0.71..1.0.78" -or $audit.highlights_characters -ne $highlights.Length) {
+    if ($audit.range -cne "1.0.71..1.0.78" -or
+        $audit.highlights_characters -ne $highlights.Length -or
+        $audit.highlights_source_characters -lt $audit.highlights_characters -or
+        $null -eq $audit.highlights_compacted -or
+        $audit.highlights_omitted_bullets -lt 0) {
         throw "Store submission audit does not describe the rendered cumulative history."
     }
 
