@@ -244,7 +244,7 @@ class ReportedDefectTests(unittest.TestCase):
             styles,
         )
         self.assertNotIn(".opposing-override{filter:grayscale", styles)
-        self.assertIn('const frame = overridden ? "#ff344f"', application)
+        self.assertIn('const frame = overridden ? "#6b737b"', application)
         self.assertIn(
             'override: {name: "OVERRIDE", background: "#D3D3D3", frame: "#FFFFFF", letters: "#FF344F"}',
             application,
@@ -261,7 +261,8 @@ class ReportedDefectTests(unittest.TestCase):
         self.assertIn("grid-template-columns:repeat(4,minmax(0,1fr))", styles)
         self.assertIn(": processed ? frames.in_process.color : mediaStatusColor(status)", application)
         self.assertIn('const staleUnprocessed = overridden && status === "unprocessed"', application)
-        self.assertIn('status === "partial" || (!overridden && status === "unprocessed")', application)
+        self.assertIn('checkEmbedded || status === "partial" ? "partial"', application)
+        self.assertIn(': processed || validating ? "processed" : incomplete || missingCover ? "incomplete" : "unprocessed"', application)
         self.assertIn('if (!staleUnprocessed && (missingCover || incomplete))', application)
 
     def test_comp_report_backfills_only_albums_in_selected_artist_scope(self):

@@ -46,8 +46,8 @@ pub enum StatusFilter {
     Processed,
     Bypassed,
     PartialTimeout,
+    Overridden,
     ArtistComplete,
-    ArtistContainsBypass,
 }
 
 impl StatusFilter {
@@ -58,9 +58,9 @@ impl StatusFilter {
             Self::Incomplete => "Incomplete",
             Self::Processed => "Processed",
             Self::Bypassed => "Bypassed",
-            Self::PartialTimeout => "Partial / Error",
-            Self::ArtistComplete => "Artist Complete",
-            Self::ArtistContainsBypass => "Artist Bypass",
+            Self::PartialTimeout => "Embedding Review",
+            Self::Overridden => "Overridden",
+            Self::ArtistComplete => "Albums Complete",
         }
     }
 }
@@ -72,8 +72,8 @@ fn all_status_filters() -> BTreeSet<StatusFilter> {
         StatusFilter::Processed,
         StatusFilter::Bypassed,
         StatusFilter::PartialTimeout,
+        StatusFilter::Overridden,
         StatusFilter::ArtistComplete,
-        StatusFilter::ArtistContainsBypass,
     ]
     .into_iter()
     .collect()
@@ -143,9 +143,9 @@ impl ArtistState {
     pub fn label(self) -> &'static str {
         match self {
             Self::Unprocessed => "Unprocessed",
-            Self::Partial => "Partial / Error",
-            Self::Complete => "Artist Complete",
-            Self::ContainsBypass => "Artist Bypass",
+            Self::Partial => "Embedding Review",
+            Self::Complete => "Albums Complete",
+            Self::ContainsBypass => "Bypassed",
         }
     }
 }
@@ -156,6 +156,10 @@ pub struct AlbumEntry {
     pub state: AlbumState,
     pub selected: bool,
     pub bypass_override: bool,
+    /// True only when the opposing client owns the latest verified Album
+    /// write. This is presentation/filter provenance, not a local status
+    /// rewrite.
+    pub opposing_override: bool,
 }
 
 impl AlbumEntry {
@@ -166,6 +170,7 @@ impl AlbumEntry {
             state,
             selected: false,
             bypass_override: false,
+            opposing_override: false,
         }
     }
 
@@ -472,12 +477,10 @@ impl LibraryState {
             ArtistState::ContainsBypass
         } else if values.is_empty() || values.iter().all(|album| album.state == AlbumState::New) {
             ArtistState::Unprocessed
-        } else if values.iter().all(|album| {
-            matches!(
-                album.state,
-                AlbumState::Processed | AlbumState::TimeoutActive
-            )
-        }) {
+        } else if values
+            .iter()
+            .all(|album| album.state == AlbumState::Processed)
+        {
             ArtistState::Complete
         } else {
             ArtistState::Partial
@@ -512,13 +515,10 @@ impl LibraryState {
                 .all(|album| !overridden(album) && album.state == AlbumState::New)
         {
             ArtistState::Unprocessed
-        } else if values.iter().all(|album| {
-            overridden(album)
-                || matches!(
-                    album.state,
-                    AlbumState::Processed | AlbumState::TimeoutActive
-                )
-        }) {
+        } else if values
+            .iter()
+            .all(|album| overridden(album) || album.state == AlbumState::Processed)
+        {
             ArtistState::Complete
         } else {
             ArtistState::Partial
@@ -678,6 +678,9 @@ impl LibraryState {
     }
 
     fn album_matches_filter(album: &AlbumEntry, filter: StatusFilter) -> bool {
+        if album.opposing_override {
+            return matches!(filter, StatusFilter::All | StatusFilter::Overridden);
+        }
         match filter {
             StatusFilter::All => true,
             StatusFilter::Unprocessed => album.state == AlbumState::New,
@@ -685,10 +688,9 @@ impl LibraryState {
             StatusFilter::Processed | StatusFilter::ArtistComplete => {
                 album.state == AlbumState::Processed
             }
-            StatusFilter::Bypassed | StatusFilter::ArtistContainsBypass => {
-                album.state == AlbumState::Bypassed
-            }
+            StatusFilter::Bypassed => album.state == AlbumState::Bypassed,
             StatusFilter::PartialTimeout => album.state == AlbumState::TimeoutActive,
+            StatusFilter::Overridden => false,
         }
     }
 
@@ -696,26 +698,33 @@ impl LibraryState {
         let state = Self::artist_state(indices.iter().map(|index| &self.albums[*index]));
         match filter {
             StatusFilter::All => true,
-            StatusFilter::Unprocessed => indices
-                .iter()
-                .any(|index| self.albums[*index].state == AlbumState::New),
-            StatusFilter::Incomplete => indices
-                .iter()
-                .any(|index| self.albums[*index].state == AlbumState::Incomplete),
-            StatusFilter::Processed => indices
-                .iter()
-                .any(|index| self.albums[*index].state == AlbumState::Processed),
-            StatusFilter::Bypassed => indices
-                .iter()
-                .any(|index| self.albums[*index].state == AlbumState::Bypassed),
+            StatusFilter::Unprocessed => indices.iter().any(|index| {
+                !self.albums[*index].opposing_override
+                    && self.albums[*index].state == AlbumState::New
+            }),
+            StatusFilter::Incomplete => indices.iter().any(|index| {
+                !self.albums[*index].opposing_override
+                    && self.albums[*index].state == AlbumState::Incomplete
+            }),
+            StatusFilter::Processed => indices.iter().any(|index| {
+                !self.albums[*index].opposing_override
+                    && self.albums[*index].state == AlbumState::Processed
+            }),
+            StatusFilter::Bypassed => indices.iter().any(|index| {
+                !self.albums[*index].opposing_override
+                    && self.albums[*index].state == AlbumState::Bypassed
+            }),
             StatusFilter::PartialTimeout => {
                 state == ArtistState::Partial
-                    || indices
-                        .iter()
-                        .any(|index| self.albums[*index].state == AlbumState::TimeoutActive)
+                    || indices.iter().any(|index| {
+                        !self.albums[*index].opposing_override
+                            && self.albums[*index].state == AlbumState::TimeoutActive
+                    })
             }
+            StatusFilter::Overridden => indices
+                .iter()
+                .any(|index| self.albums[*index].opposing_override),
             StatusFilter::ArtistComplete => state == ArtistState::Complete,
-            StatusFilter::ArtistContainsBypass => state == ArtistState::ContainsBypass,
         }
     }
 
@@ -782,7 +791,7 @@ impl LibraryState {
             StatusFilter::Processed => completed,
             StatusFilter::ArtistComplete if total > 0 && completed == total => total,
             StatusFilter::ArtistComplete => 0,
-            StatusFilter::Bypassed | StatusFilter::ArtistContainsBypass => {
+            StatusFilter::Bypassed => {
                 if album.state == AlbumState::Bypassed {
                     total
                 } else {
@@ -796,6 +805,7 @@ impl LibraryState {
                     0
                 }
             }
+            StatusFilter::Overridden => 0,
         }
     }
 
@@ -815,10 +825,9 @@ impl LibraryState {
             StatusFilter::ArtistComplete => {
                 total > 0 && completed == total && track.embedded_artwork_recorded
             }
-            StatusFilter::Bypassed | StatusFilter::ArtistContainsBypass => {
-                album.state == AlbumState::Bypassed
-            }
+            StatusFilter::Bypassed => album.state == AlbumState::Bypassed,
             StatusFilter::PartialTimeout => album.state == AlbumState::TimeoutActive,
+            StatusFilter::Overridden => false,
         }
     }
 
@@ -1320,26 +1329,16 @@ impl LibraryState {
         0
     }
 
-    /// Project verified opposing-client Album writes into the focused status
-    /// panel without rewriting the local SQLite catalog status. Opposing
-    /// Albums are grouped with the existing Bypassed action bucket, while the
-    /// Artist aggregate treats them as completed work.
+    /// Count mutually exclusive Album states for the currently selected
+    /// Artist. Albums and Fallback views intentionally report zero here: the
+    /// panel is an Artist-state summary, not a library-wide total.
     pub fn focused_status_count_with_overrides(
         &self,
         value: StatusFilter,
         completed_overrides: &HashSet<String>,
     ) -> usize {
-        if completed_overrides.is_empty() || self.show_tracks {
-            return self.focused_status_count(value);
-        }
-        if let Some(album_key) = self.focused_album_key.as_deref() {
-            if completed_overrides.contains(&album_key.to_ascii_lowercase()) {
-                return usize::from(matches!(value, StatusFilter::All | StatusFilter::Bypassed));
-            }
-            return self.focused_status_count(value);
-        }
-        if self.view != LibraryView::Artists {
-            return self.focused_status_count(value);
+        if self.show_tracks || self.view != LibraryView::Artists {
+            return 0;
         }
         let Some(artist) = self.focused_artist.as_deref() else {
             return 0;
@@ -1358,50 +1357,42 @@ impl LibraryState {
             .filter(|index| !overridden(index))
             .map(|index| &self.albums[*index])
             .collect::<Vec<_>>();
-        let aggregate = self.artist_state_with_overrides(artist, completed_overrides);
         match value {
-            StatusFilter::All => 1,
-            StatusFilter::Unprocessed => {
-                usize::from(local.iter().any(|album| album.state == AlbumState::New))
-            }
-            StatusFilter::Incomplete => usize::from(
-                local
-                    .iter()
-                    .any(|album| album.state == AlbumState::Incomplete),
-            ),
-            StatusFilter::Processed => usize::from(
-                local
-                    .iter()
-                    .any(|album| album.state == AlbumState::Processed),
-            ),
-            StatusFilter::Bypassed => {
-                override_count
-                    + usize::from(
-                        local
-                            .iter()
-                            .any(|album| album.state == AlbumState::Bypassed),
-                    )
-            }
-            StatusFilter::PartialTimeout => usize::from(
-                aggregate == ArtistState::Partial
-                    || local
-                        .iter()
-                        .any(|album| album.state == AlbumState::TimeoutActive),
-            ),
-            StatusFilter::ArtistComplete => usize::from(aggregate == ArtistState::Complete),
-            StatusFilter::ArtistContainsBypass => {
-                usize::from(aggregate == ArtistState::ContainsBypass)
-            }
+            StatusFilter::All => indices.len(),
+            StatusFilter::Unprocessed => local
+                .iter()
+                .filter(|album| album.state == AlbumState::New)
+                .count(),
+            StatusFilter::Incomplete => local
+                .iter()
+                .filter(|album| album.state == AlbumState::Incomplete)
+                .count(),
+            StatusFilter::Processed => local
+                .iter()
+                .filter(|album| album.state == AlbumState::Processed)
+                .count(),
+            StatusFilter::Bypassed => local
+                .iter()
+                .filter(|album| album.state == AlbumState::Bypassed)
+                .count(),
+            StatusFilter::PartialTimeout => local
+                .iter()
+                .filter(|album| album.state == AlbumState::TimeoutActive)
+                .count(),
+            StatusFilter::Overridden => override_count,
+            // The presentation layer refines processed Albums using the
+            // embedded-thumbnail validation cache before showing this row.
+            StatusFilter::ArtistComplete => 0,
         }
     }
 
     pub fn state_scope_label(&self) -> &'static str {
         if self.show_tracks {
             "Fallback"
-        } else if self.focused_album_key.is_some() {
-            "Album"
         } else if self.view == LibraryView::Artists && self.focused_artist.is_some() {
             "Artist"
+        } else if self.focused_album_key.is_some() {
+            "Album"
         } else {
             match self.view {
                 LibraryView::Artists => "Artists",
@@ -1413,15 +1404,7 @@ impl LibraryState {
 
     pub fn status_label(&self, value: StatusFilter) -> String {
         match value {
-            StatusFilter::ArtistComplete => {
-                format!(
-                    "{} Complete",
-                    self.state_scope_label().trim_end_matches('s')
-                )
-            }
-            StatusFilter::ArtistContainsBypass => {
-                format!("{} Bypass", self.state_scope_label().trim_end_matches('s'))
-            }
+            StatusFilter::ArtistComplete => "Albums Complete".to_string(),
             _ => value.label().to_string(),
         }
     }
@@ -5260,7 +5243,7 @@ mod tests {
         );
         assert_eq!(
             LibraryState::artist_state(artists["Beta"].iter().map(|index| &state.albums[*index])),
-            ArtistState::Complete
+            ArtistState::Partial
         );
         assert_eq!(
             LibraryState::artist_state(artists["Gamma"].iter().map(|index| &state.albums[*index])),
@@ -5907,18 +5890,21 @@ mod tests {
                 state: AlbumState::TimeoutActive,
                 selected: false,
                 bypass_override: false,
+                opposing_override: false,
             },
             AlbumEntry {
                 snapshot: album("g", "Alpha", "No", "bypassed"),
                 state: AlbumState::Bypassed,
                 selected: false,
                 bypass_override: false,
+                opposing_override: false,
             },
             AlbumEntry {
                 snapshot: album("h", "Alpha", "Resume", "incomplete"),
                 state: AlbumState::Incomplete,
                 selected: false,
                 bypass_override: false,
+                opposing_override: false,
             },
         ]);
         for album in &mut state.albums {
@@ -5930,7 +5916,7 @@ mod tests {
             StatusFilter::Incomplete,
             StatusFilter::Bypassed,
             StatusFilter::PartialTimeout,
-            StatusFilter::ArtistContainsBypass,
+            StatusFilter::Overridden,
         ]);
         assert!(state.toggle_artist_scope("Alpha"));
 
@@ -5970,10 +5956,10 @@ mod tests {
         assert_eq!(state.status_count(StatusFilter::All), 4);
         assert_eq!(state.status_count(StatusFilter::Unprocessed), 1);
         assert_eq!(state.status_count(StatusFilter::Processed), 1);
-        assert_eq!(state.status_count(StatusFilter::ArtistComplete), 1);
+        assert_eq!(state.status_count(StatusFilter::ArtistComplete), 0);
         assert_eq!(
             state.status_label(StatusFilter::ArtistComplete),
-            "Artist Complete"
+            "Albums Complete"
         );
 
         state.set_top_level_view(LibraryView::Albums);
@@ -5982,7 +5968,7 @@ mod tests {
         assert_eq!(state.status_count(StatusFilter::Unprocessed), 1);
         assert_eq!(
             state.status_label(StatusFilter::ArtistComplete),
-            "Album Complete"
+            "Albums Complete"
         );
 
         state.set_show_tracks(true);
@@ -5994,7 +5980,7 @@ mod tests {
         assert_eq!(state.status_count(StatusFilter::All), 1);
         assert_eq!(
             state.status_label(StatusFilter::ArtistComplete),
-            "Fallback Complete"
+            "Albums Complete"
         );
     }
 
@@ -6007,7 +5993,9 @@ mod tests {
         assert_eq!(state.focused_status_count(StatusFilter::All), 1);
         assert_eq!(state.focused_status_count(StatusFilter::Processed), 1);
         state.focused_album_key = Some("a".to_string());
-        assert_eq!(state.state_scope_label(), "Album");
+        // Artist mode retains Artist State even when one of its Album rows is
+        // focused; the seven displayed totals remain cumulative for Artist.
+        assert_eq!(state.state_scope_label(), "Artist");
         assert_eq!(state.focused_status_count(StatusFilter::Processed), 0);
         assert_eq!(state.focused_status_count(StatusFilter::Unprocessed), 1);
         state.set_top_level_view(LibraryView::Albums);
@@ -6018,30 +6006,34 @@ mod tests {
     }
 
     #[test]
-    fn focused_artist_counts_group_overrides_as_bypassed_and_complete() {
+    fn focused_artist_counts_keep_overrides_separate_from_bypassed_and_complete() {
         let mut state = artist_library();
         state.focused_artist = Some("Alpha".to_string());
         let overrides = HashSet::from(["a".to_string()]);
 
         assert_eq!(
             state.focused_status_count_with_overrides(StatusFilter::All, &overrides),
-            1
+            2
         );
         assert_eq!(
             state.focused_status_count_with_overrides(StatusFilter::Bypassed, &overrides),
-            1
+            0
         );
         assert_eq!(
             state.focused_status_count_with_overrides(StatusFilter::PartialTimeout, &overrides),
             0
         );
         assert_eq!(
-            state.focused_status_count_with_overrides(StatusFilter::ArtistComplete, &overrides),
+            state.focused_status_count_with_overrides(StatusFilter::Overridden, &overrides),
             1
         );
         assert_eq!(
             state.focused_status_count_with_overrides(StatusFilter::Processed, &overrides),
             1
+        );
+        assert_eq!(
+            state.focused_status_count_with_overrides(StatusFilter::ArtistComplete, &overrides),
+            0
         );
     }
 

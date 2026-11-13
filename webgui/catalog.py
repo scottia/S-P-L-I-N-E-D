@@ -724,6 +724,39 @@ class Catalog:
         )
 
     @staticmethod
+    def _effective_album_status(row, coordination: dict[str, object] | None = None) -> str:
+        """Classify current Album authority without trusting a stale status column.
+
+        An opposing Windows write is completed authority. For a local WebGUI
+        Album, a present cover plus a verified full embedded-track count is
+        equally authoritative even when an older refresh left ``status`` as
+        ``unprocessed``. Explicit bypass/review states remain actionable and
+        are never hidden by the materialized completion evidence.
+        """
+        keys = set(row.keys())
+        status = str(row["status"] or "unprocessed").casefold() if "status" in keys else "unprocessed"
+        if str((coordination or {}).get("writer", "")).casefold() == "windows":
+            return "processed"
+        if status in {"bypassed", "timeout", "partial", "error"}:
+            return status
+        if {
+            "cover_found",
+            "track_count",
+            "embedded_tracks",
+            "embedded_validation_status",
+        }.issubset(keys):
+            track_count = int(row["track_count"] or 0)
+            if (
+                bool(row["cover_found"])
+                and track_count > 0
+                and str(row["embedded_validation_status"] or "").casefold()
+                == "verified"
+                and int(row["embedded_tracks"] or 0) >= track_count
+            ):
+                return "processed"
+        return status
+
+    @staticmethod
     def _aggregate_stored_artist_status(rows) -> str:
         """Compatibility fallback for reduced, pre-status Album fixtures."""
         statuses = {str(row["status"] or "unprocessed").casefold() for row in rows}
@@ -1529,7 +1562,7 @@ class Catalog:
             projected = self._projected_track_artists(db)
             try:
                 status_rows = db.execute(
-                    "SELECT album_key,artist_key,status FROM albums "
+                    "SELECT * FROM albums "
                     "WHERE COALESCE(compilation,0)=0 "
                     "OR TRIM(COALESCE(musicbrainz_albumid,''))<>''"
                 ).fetchall()
@@ -1552,11 +1585,8 @@ class Catalog:
         owned_album_keys: dict[str, set[str]] = {}
         for row in status_rows:
             album_key = str(row["album_key"])
-            effective_status = (
-                "processed"
-                if str(coordination.get(album_key, {}).get("writer", "")).casefold()
-                == "windows"
-                else str(row["status"] or "unprocessed")
+            effective_status = self._effective_album_status(
+                row, coordination.get(album_key, {})
             )
             statuses_by_artist.setdefault(str(row["artist_key"]), []).append(
                 {"album_key": album_key, "status": effective_status}
@@ -1952,11 +1982,8 @@ class Catalog:
             "mbid": artist["musicbrainz_artistid"] or "",
             "status": self._aggregate_album_status([
                 {
-                    "status": (
-                        "processed"
-                        if str(coordination.get(str(row["album_key"]), {}).get("writer", "")).casefold()
-                        == "windows"
-                        else row["status"]
+                    "status": self._effective_album_status(
+                        row, coordination.get(str(row["album_key"]), {})
                     )
                 }
                 for row in rows

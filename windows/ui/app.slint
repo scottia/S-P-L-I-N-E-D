@@ -2,11 +2,11 @@ import { Button, ComboBox, LineEdit, ListView, Palette, ScrollView, TextEdit } f
 
 export struct UiLibraryRow { key: string, primary: string, secondary: string, status: string, icon: string, artwork: image, has-artwork: bool, status-color: color, kind: string, depth: int, expanded: bool, selected: bool, eligible: bool, queue-locked: bool }
 export struct UiAlbumStatusBullet { color: color, tip: string }
-export struct UiArtistAlbumRow { key: string, title: string, display-title: string, year: string, artwork: image, has-artwork: bool, status-color: color, selected: bool, bullets: [UiAlbumStatusBullet], check-embedded: bool, validating: bool, comp-loading: bool, processed: bool, fully-complete: bool, fallback: bool, fallback-complete: bool, featured: bool, soundtrack: bool, various-artists: bool, separator-before: bool, banner-display: string, banner-background: color, banner-frame: color, banner-letters: color, complete-frame: color, pending-frame: color, attention-frame: color, queue-locked: bool, overridden: bool }
+export struct UiArtistAlbumRow { key: string, title: string, display-title: string, year: string, artwork: image, has-artwork: bool, status-color: color, state-key: string, selected: bool, bullets: [UiAlbumStatusBullet], check-embedded: bool, validating: bool, comp-loading: bool, processed: bool, fully-complete: bool, fallback: bool, fallback-complete: bool, featured: bool, soundtrack: bool, various-artists: bool, separator-before: bool, banner-display: string, banner-background: color, banner-frame: color, banner-letters: color, complete-frame: color, pending-frame: color, attention-frame: color, queue-locked: bool, overridden: bool }
 export struct UiAdjustmentPresetRow { index: int, name: string, summary: string, saved: bool }
 export struct UiBannerThemeRow { key: string, name: string, background: color, frame: color, letters: color, at-baseline: bool }
 export struct UiAlbumFrameThemeRow { key: string, name: string, color: color, at-baseline: bool }
-export struct UiArtistOverviewLegendCounts { shown: int, completed: int, in-process: int, validating: int, overridden: int, red-dots: int, yellow-dots: int, orange-dots: int, green-dots: int, purple-dots: int, blue-dots: int, green-frames: int, orange-purple-frames: int, green-purple-frames: int, comp-pending: int, comp-complete: int, feat: int, ost: int, various: int, artist: int, track-blue: int, track-green: int, track-purple: int }
+export struct UiArtistOverviewLegendCounts { shown: int, completed: int, in-process: int, validating: int, overridden: int, red-dots: int, yellow-dots: int, orange-dots: int, green-dots: int, purple-dots: int, blue-dots: int, grey-dots: int, green-frames: int, yellow-frames: int, grey-frames: int, orange-purple-frames: int, green-purple-frames: int, comp-pending: int, comp-complete: int, feat: int, ost: int, various: int, artist: int, track-blue: int, track-green: int, track-purple: int }
 export struct UiSimilarArtistRow { name: string, artwork: image, available: bool }
 export struct UiBiographyWord { text: string, x: float, width: float }
 export struct UiBiographyLine { words: [UiBiographyWord], justified: bool, extent: float }
@@ -30,6 +30,10 @@ export global AppTheme {
     in-out property <float> ui-scale: 1.0;
     // Narrow-window font reflow is separate from the persisted UI scale.
     in-out property <float> font-scale: 1.0;
+    // Keep one-device-pixel surface outlines visible below 100% UI scale.
+    // Album-card frames remain independently styled at their established
+    // widths; this hairline is for controls, filters, cards, and thumbnails.
+    out property <length> hairline: max(1px, (1px * root.ui-scale));
     out property <bool> chalk: root.appearance == "Chalk";
     // "System" remains accepted only as a saved-preference migration alias.
     out property <bool> system: root.appearance == "Default" || root.appearance == "System";
@@ -61,7 +65,7 @@ export global AppTheme {
 }
 
 component Panel inherits Rectangle {
-    background: AppTheme.panel-background; border-color: AppTheme.border; border-width: (1px * AppTheme.ui-scale); border-radius: (9px * AppTheme.ui-scale); clip: true;
+    background: AppTheme.panel-background; border-color: AppTheme.border; border-width: AppTheme.hairline; border-radius: (9px * AppTheme.ui-scale); clip: true;
     drop-shadow-color: AppTheme.chalk ? #c8b6ce24 : transparent; drop-shadow-blur: AppTheme.chalk ? (10px * AppTheme.ui-scale) : (0px * AppTheme.ui-scale); drop-shadow-spread: AppTheme.chalk ? (1px * AppTheme.ui-scale) : (0px * AppTheme.ui-scale);
     if AppTheme.chalk: Image { source: @image-url("../gui/chalk-texture.svg"); width: parent.width; height: parent.height; image-fit: cover; opacity: 0.44; }
 }
@@ -88,7 +92,7 @@ component NeonAction inherits Rectangle {
     height: (38px * AppTheme.ui-scale);
     clip: true;
     border-radius: (6px * AppTheme.ui-scale);
-    border-width: (1px * AppTheme.ui-scale);
+    border-width: AppTheme.hairline;
     border-color:
         root.tone == "active" ? AppTheme.green :
         root.tone == "purple" || root.tone == "embed" ? AppTheme.violet :
@@ -280,7 +284,7 @@ component ModeTab inherits Rectangle {
     in property <bool> enabled: true;
     callback activated();
     border-radius: (7px * AppTheme.ui-scale);
-    border-width: root.selected ? (1px * AppTheme.ui-scale) : (0px * AppTheme.ui-scale);
+    border-width: root.selected ? AppTheme.hairline : (0px * AppTheme.ui-scale);
     border-color: root.selected ? AppTheme.border : transparent;
     background: !root.enabled ? AppTheme.quiet-surface : (root.selected ? (AppTheme.chalk ? AppTheme.selected-surface : (AppTheme.light ? AppTheme.selected-surface : @linear-gradient(90deg, #163b6a, #222c65))) : (mode-touch.has-hover ? AppTheme.card-hover : transparent));
     HorizontalLayout { padding-left: (14px * AppTheme.ui-scale); padding-right: (14px * AppTheme.ui-scale); spacing: (9px * AppTheme.ui-scale);
@@ -334,7 +338,7 @@ component WorkspaceButton inherits Rectangle {
     callback activated();
     horizontal-stretch: 1;
     border-radius: (7px * AppTheme.ui-scale);
-    border-width: (1px * AppTheme.ui-scale);
+    border-width: AppTheme.hairline;
     border-color: root.queued ? AppTheme.violet : AppTheme.border;
     background: !root.enabled ? AppTheme.quiet-surface : (root.queued ? (AppTheme.light ? #d7cbe5 : (AppTheme.chalk ? #342d3b : #211632)) : (root.selected ? AppTheme.selected-surface : (button-touch.has-hover ? AppTheme.card-hover : AppTheme.card)));
     Text {
@@ -395,7 +399,7 @@ component LibraryItem inherits Rectangle {
                 }
             }
         }
-        Rectangle { width: root.item.kind == "artist" ? (48px * AppTheme.ui-scale) : (42px * AppTheme.ui-scale); height: root.item.kind == "artist" ? (48px * AppTheme.ui-scale) : (42px * AppTheme.ui-scale); clip: true; border-radius: self.width / 2; background: root.item.kind == "artist" ? transparent : (root.item.eligible ? @linear-gradient(135deg, #223e63, #6840a2) : #392f45); border-color: root.item.kind != "artist" && root.item.selected && !root.status-only-album-selection ? AppTheme.magenta : #4d6d83; border-width: (1px * AppTheme.ui-scale);
+        Rectangle { width: root.item.kind == "artist" ? (48px * AppTheme.ui-scale) : (42px * AppTheme.ui-scale); height: root.item.kind == "artist" ? (48px * AppTheme.ui-scale) : (42px * AppTheme.ui-scale); clip: true; border-radius: self.width / 2; background: root.item.kind == "artist" ? transparent : (root.item.eligible ? @linear-gradient(135deg, #223e63, #6840a2) : #392f45); border-color: root.item.kind != "artist" && root.item.selected && !root.status-only-album-selection ? AppTheme.magenta : #4d6d83; border-width: AppTheme.hairline;
             Text { text: root.item.primary == "" ? "?" : (root.item.kind == "artist" ? root.item.icon : "🎵"); color: AppTheme.foreground; font-size: (19px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; visible: !root.item.has-artwork; }
             Image { source: root.item.artwork; width: parent.width; height: parent.height; image-fit: cover; visible: root.item.has-artwork; }
         }
@@ -436,7 +440,7 @@ component ArtistAlbumCard inherits Rectangle {
             clip: true;
             border-radius: (7px * AppTheme.ui-scale);
             border-width: self.mixed-embedded-outline ? (0px * AppTheme.ui-scale) : (2px * AppTheme.ui-scale);
-            border-color: root.item.overridden ? #ff344f : (root.item.comp-loading || root.item.validating ? AppTheme.cyan : (root.item.fully-complete ? root.item.complete-frame : (root.item.check-embedded ? root.item.attention-frame : (root.item.processed ? root.item.pending-frame : root.item.status-color))));
+    border-color: root.item.overridden ? #6b737b : (root.item.state-key == "Bypassed" ? AppTheme.yellow : (root.item.comp-loading || root.item.validating ? AppTheme.cyan : (root.item.fully-complete ? root.item.complete-frame : (root.item.check-embedded ? root.item.attention-frame : (root.item.processed ? root.item.pending-frame : root.item.status-color)))));
             background: self.mixed-embedded-outline ? (self.green-purple-outline ? @linear-gradient(135deg, root.item.complete-frame, root.item.attention-frame, root.item.complete-frame) : @linear-gradient(135deg, root.item.attention-frame, root.item.pending-frame, root.item.attention-frame)) : (album-touch.has-hover ? AppTheme.card-hover : AppTheme.card);
             if self.mixed-embedded-outline: Rectangle {
                 x: (2px * AppTheme.ui-scale); y: (2px * AppTheme.ui-scale); width: parent.width - (4px * AppTheme.ui-scale); height: parent.height - (4px * AppTheme.ui-scale);
@@ -521,14 +525,14 @@ component CandidateFilterBody inherits Rectangle {
     border-radius: (7px * AppTheme.ui-scale);
     background: AppTheme.quiet-surface;
     border-color: AppTheme.border;
-    border-width: (1px * AppTheme.ui-scale);
+    border-width: AppTheme.hairline;
     VerticalLayout { padding: (9px * AppTheme.ui-scale); spacing: (6px * AppTheme.ui-scale);
         ScrollView { vertical-stretch: 1;
             VerticalLayout { spacing: (7px * AppTheme.ui-scale); min-height: (350px * AppTheme.ui-scale);
                 Text { text: "Candidate State / Image Type"; color: AppTheme.green; font-size: (15px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800; height: (24px * AppTheme.ui-scale); }
                 GridLayout { spacing: (4px * AppTheme.ui-scale);
                     for filter[i] in root.type-rows: Rectangle {
-                        row: i / 2; col: mod(i, 2); height: (34px * AppTheme.ui-scale); background: AppTheme.card; border-radius: (4px * AppTheme.ui-scale);
+                        row: i / 2; col: mod(i, 2); height: (34px * AppTheme.ui-scale); background: AppTheme.card; border-radius: (4px * AppTheme.ui-scale); border-width: AppTheme.hairline; border-color: AppTheme.border;
                         HorizontalLayout { padding-left: (4px * AppTheme.ui-scale); padding-right: (4px * AppTheme.ui-scale); spacing: (4px * AppTheme.ui-scale);
                             Text { text: filter.state == "Included" ? "●" : "○"; color: filter.state == "Included" ? AppTheme.green : AppTheme.danger; width: (29px * AppTheme.ui-scale); vertical-alignment: center; horizontal-alignment: center; font-size: (25px * AppTheme.ui-scale) * AppTheme.font-scale; }
                             Text { text: filter.label; color: filter.state == "Disregarded" ? #b47a88 : (filter.label == "Rejected" ? AppTheme.danger : (filter.label == "Back Cover" || filter.label == "Upscalable" ? #ff9738 : AppTheme.green)); font-size: (14px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
@@ -540,7 +544,7 @@ component CandidateFilterBody inherits Rectangle {
                 Text { text: "Image Policy"; color: AppTheme.yellow; font-size: (15px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800; height: (24px * AppTheme.ui-scale); }
                 GridLayout { spacing: (4px * AppTheme.ui-scale);
                     for filter[i] in root.policy-rows: Rectangle {
-                        row: 0; col: i; height: (34px * AppTheme.ui-scale); background: AppTheme.card; border-radius: (4px * AppTheme.ui-scale);
+                        row: 0; col: i; height: (34px * AppTheme.ui-scale); background: AppTheme.card; border-radius: (4px * AppTheme.ui-scale); border-width: AppTheme.hairline; border-color: AppTheme.border;
                         HorizontalLayout { padding-left: (4px * AppTheme.ui-scale); padding-right: (4px * AppTheme.ui-scale); spacing: (4px * AppTheme.ui-scale);
                             Text { text: filter.state == "Included" ? "●" : "○"; color: filter.state == "Included" ? AppTheme.green : AppTheme.danger; width: (29px * AppTheme.ui-scale); vertical-alignment: center; horizontal-alignment: center; font-size: (25px * AppTheme.ui-scale) * AppTheme.font-scale; }
                             Text { text: filter.label; color: filter.state == "Disregarded" ? #b47a88 : (filter.label == "Rejected" ? AppTheme.danger : (filter.label == "Recommended" ? AppTheme.green : AppTheme.yellow)); font-size: (14px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
@@ -552,7 +556,7 @@ component CandidateFilterBody inherits Rectangle {
                 Text { text: "Resolution Range"; color: #ff9738; font-size: (15px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800; height: (24px * AppTheme.ui-scale); }
                 GridLayout { spacing: (4px * AppTheme.ui-scale);
                     for filter[i] in root.range-rows: Rectangle {
-                        row: i / 2; col: mod(i, 2); height: (34px * AppTheme.ui-scale); background: AppTheme.card; border-radius: (4px * AppTheme.ui-scale);
+                        row: i / 2; col: mod(i, 2); height: (34px * AppTheme.ui-scale); background: AppTheme.card; border-radius: (4px * AppTheme.ui-scale); border-width: AppTheme.hairline; border-color: AppTheme.border;
                         HorizontalLayout { padding-left: (4px * AppTheme.ui-scale); padding-right: (4px * AppTheme.ui-scale); spacing: (4px * AppTheme.ui-scale);
                             Text { text: filter.state == "Included" ? "●" : "○"; color: filter.state == "Included" ? AppTheme.green : AppTheme.danger; width: (29px * AppTheme.ui-scale); vertical-alignment: center; horizontal-alignment: center; font-size: (25px * AppTheme.ui-scale) * AppTheme.font-scale; }
                             Text { text: filter.label; color: filter.state == "Disregarded" ? #b47a88 : (filter.label == "Below Minimum" || filter.label == "Above Ladder" ? AppTheme.danger : (filter.label == "Lower Range" || filter.label == "Upper Range" ? #ff9738 : AppTheme.green)); font-size: (14px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
@@ -579,6 +583,8 @@ component MediaLibraryPane inherits NeonPanel {
     in-out property <length> list-scroll-y: (0px * AppTheme.ui-scale);
     in property <[UiCompilationTrackRow]> compilation-track-rows;
     in property <[UiStatusFilterRow]> status-filter-rows;
+    in property <int> artist-state-unprocessed-count: 0;
+    in property <int> artist-state-album-count: 0;
     in property <[UiCandidateFilterRow]> candidate-type-filter-rows;
     in property <[UiCandidateFilterRow]> candidate-policy-filter-rows;
     in property <[UiCandidateFilterRow]> candidate-range-filter-rows;
@@ -640,7 +646,7 @@ component MediaLibraryPane inherits NeonPanel {
             HorizontalLayout { height: (42px * AppTheme.ui-scale); spacing: (6px * AppTheme.ui-scale);
                 Rectangle {
                     horizontal-stretch: 1; border-radius: (7px * AppTheme.ui-scale); background: root.filter-expanded ? AppTheme.selected-surface : AppTheme.card;
-                    border-color: AppTheme.border; border-width: (1px * AppTheme.ui-scale);
+                    border-color: AppTheme.border; border-width: AppTheme.hairline;
                     HorizontalLayout { padding-left: (8px * AppTheme.ui-scale); padding-right: (36px * AppTheme.ui-scale); spacing: (4px * AppTheme.ui-scale);
                         Text { text: "Media Filter"; color: AppTheme.foreground; font-size: (15px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
                         Text { text: root.filter-expanded ? "−" : "+"; color: root.filter-expanded ? AppTheme.magenta : AppTheme.cyan; font-size: (24px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800; width: (25px * AppTheme.ui-scale); horizontal-alignment: center; vertical-alignment: center; }
@@ -658,7 +664,7 @@ component MediaLibraryPane inherits NeonPanel {
                 }
                 Rectangle {
                     horizontal-stretch: 1; border-radius: (7px * AppTheme.ui-scale); background: root.candidate-filter-expanded ? AppTheme.selected-surface : AppTheme.card;
-                    border-color: AppTheme.border; border-width: (1px * AppTheme.ui-scale);
+                    border-color: AppTheme.border; border-width: AppTheme.hairline;
                     HorizontalLayout { padding-left: (8px * AppTheme.ui-scale); padding-right: (36px * AppTheme.ui-scale); spacing: (4px * AppTheme.ui-scale);
                         Text { text: "Candidate Filter"; color: AppTheme.foreground; font-size: (15px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
                         Text { text: root.candidate-filter-expanded ? "−" : "+"; color: root.candidate-filter-expanded ? AppTheme.magenta : AppTheme.cyan; font-size: (24px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800; width: (25px * AppTheme.ui-scale); horizontal-alignment: center; vertical-alignment: center; }
@@ -676,7 +682,7 @@ component MediaLibraryPane inherits NeonPanel {
                 }
             }
             if root.filter-expanded: Rectangle {
-                height: (430px * AppTheme.ui-scale); clip: true; border-radius: (7px * AppTheme.ui-scale); background: AppTheme.quiet-surface; border-color: AppTheme.border; border-width: (1px * AppTheme.ui-scale);
+                height: (430px * AppTheme.ui-scale); clip: true; border-radius: (7px * AppTheme.ui-scale); background: AppTheme.quiet-surface; border-color: AppTheme.border; border-width: AppTheme.hairline;
                 ScrollView {
                     VerticalLayout { padding: (10px * AppTheme.ui-scale); spacing: (7px * AppTheme.ui-scale); min-height: (410px * AppTheme.ui-scale);
                         Text { text: "Artist Search"; color: AppTheme.secondary-foreground; font-size: (14px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 600; }
@@ -689,7 +695,12 @@ component MediaLibraryPane inherits NeonPanel {
                             Rectangle { horizontal-stretch: 1; NeonAction { label: "Filtered"; width: parent.width; height: (38px * AppTheme.ui-scale); enabled: !root.media-filter-locked; clicked => root.select-filtered(); } }
                             Rectangle { horizontal-stretch: 1; NeonAction { label: "None"; width: parent.width; height: (38px * AppTheme.ui-scale); tone: "red"; enabled: !root.media-filter-locked; clicked => root.select-none(); } }
                         }
-                        Text { text: root.media-status-scope-label + " State"; color: AppTheme.foreground; font-size: (16px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 700; }
+                        HorizontalLayout { height: (24px * AppTheme.ui-scale); spacing: (0px * AppTheme.ui-scale);
+                            Text { text: "Artist State ("; color: AppTheme.foreground; font-size: (16px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 700; }
+                            Text { text: root.artist-state-unprocessed-count; color: AppTheme.blue; font-size: (16px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800; }
+                            Text { text: ") > Unprocessed"; color: AppTheme.foreground; font-size: (16px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 700; }
+                            Rectangle { horizontal-stretch: 1; background: transparent; }
+                        }
                         GridLayout { spacing: (4px * AppTheme.ui-scale);
                             for status[i] in root.status-filter-rows: Rectangle {
                                 row: i / 2; col: mod(i, 2); height: (36px * AppTheme.ui-scale); background: transparent;
@@ -699,6 +710,12 @@ component MediaLibraryPane inherits NeonPanel {
                                     Text { text: status.count; color: status.semantic-color; width: (42px * AppTheme.ui-scale); font-size: (15px * AppTheme.ui-scale) * AppTheme.font-scale; horizontal-alignment: right; vertical-alignment: center; }
                                 }
                                 TouchArea { enabled: !root.media-filter-locked; mouse-cursor: pointer; clicked => root.status-filter-toggled(status.key); }
+                            }
+                        }
+                        Rectangle { height: (34px * AppTheme.ui-scale); border-radius: (4px * AppTheme.ui-scale); border-width: AppTheme.hairline; border-color: AppTheme.border; background: transparent;
+                            HorizontalLayout { padding-left: (8px * AppTheme.ui-scale); padding-right: (8px * AppTheme.ui-scale); spacing: (7px * AppTheme.ui-scale);
+                                Text { text: "Artists Album Count"; color: AppTheme.foreground; font-size: (15px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 400; horizontal-stretch: 1; vertical-alignment: center; }
+                                Text { text: root.artist-state-album-count; color: AppTheme.green; font-size: (15px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 700; vertical-alignment: center; }
                             }
                         }
                     }
@@ -804,7 +821,7 @@ component SourceCard inherits Rectangle {
     property <color> mode-color: root.source-row.artist-enabled && root.source-row.enabled ? AppTheme.green : (root.source-row.artist-enabled ? AppTheme.magenta : (root.source-row.enabled ? AppTheme.orange : AppTheme.danger));
     width: (126px * AppTheme.ui-scale);
     border-radius: (7px * AppTheme.ui-scale);
-    border-width: (1px * AppTheme.ui-scale);
+    border-width: AppTheme.hairline;
     border-color: !root.source-row.enabled && !root.source-row.artist-enabled ? AppTheme.danger : (root.selected ? AppTheme.violet : AppTheme.border);
     background: source-drop.has-drag ? AppTheme.selected-surface : (root.selected ? AppTheme.selected-surface : (source-touch.has-hover ? AppTheme.card-hover : AppTheme.card));
     source-drop := DropArea {
@@ -873,7 +890,7 @@ component CandidateCard inherits Rectangle {
     callback wheel-scrolled(length);
     width: (150px * AppTheme.ui-scale);
     border-radius: (7px * AppTheme.ui-scale);
-    border-width: (1px * AppTheme.ui-scale);
+    border-width: AppTheme.hairline;
     border-color: root.candidate.selected ? #493575 : (root.candidate.recommended ? AppTheme.green : #285a83);
     background: candidate-touch.has-hover ? AppTheme.card-hover : AppTheme.card;
     property <bool> candidate-hovered: candidate-touch.has-hover;
@@ -1436,6 +1453,8 @@ export component AppWindow inherits Window {
     in property <[UiCandidateFilterRow]> candidate-policy-filter-rows;
     in property <[UiCandidateFilterRow]> candidate-range-filter-rows;
     in property <[UiStatusFilterRow]> status-filter-rows;
+    in property <int> artist-state-unprocessed-count: 0;
+    in property <int> artist-state-album-count: 0;
     in property <[UiMusicBrainzRow]> musicbrainz-rows;
     in property <[UiExistingArtworkRow]> musicbrainz-existing-rows;
     in property <bool> musicbrainz-existing-available: false;
@@ -2060,6 +2079,8 @@ export component AppWindow inherits Window {
                     list-scroll-y <=> root.library-scroll-y;
                     compilation-track-rows: root.compilation-track-rows;
                     status-filter-rows: root.status-filter-rows;
+                    artist-state-unprocessed-count: root.artist-state-unprocessed-count;
+                    artist-state-album-count: root.artist-state-album-count;
                     candidate-type-filter-rows: root.candidate-type-filter-rows;
                     candidate-policy-filter-rows: root.candidate-policy-filter-rows;
                     candidate-range-filter-rows: root.candidate-range-filter-rows;
@@ -2460,7 +2481,7 @@ export component AppWindow inherits Window {
                                                                         Text { row: 0; col: 0; text: "Artist"; color: AppTheme.cyan; font-size: (12px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800; }
                                                                         Text { row: 0; col: 1; text: root.artist-overview-name; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; overflow: elide; }
                                                                         Text { row: 1; col: 0; text: "Status"; color: AppTheme.cyan; font-size: (12px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800; }
-                                                                        Text { row: 1; col: 1; text: root.artist-overview-legend-counts.shown > 0 && root.artist-overview-legend-counts.completed == root.artist-overview-legend-counts.shown ? "Artist Complete" : "In Process"; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; overflow: elide; }
+                                                                        Text { row: 1; col: 1; text: root.artist-overview-legend-counts.shown > 0 && root.artist-overview-legend-counts.completed == root.artist-overview-legend-counts.shown ? "Albums Complete" : "In Process"; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; overflow: elide; }
                                                                         Text { row: 2; col: 0; text: "Albums"; color: AppTheme.cyan; font-size: (12px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800; }
                                                                         Text { row: 2; col: 1; text: root.artist-overview-legend-counts.shown; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; }
                                                                         Text { row: 3; col: 0; text: "Roles"; color: AppTheme.cyan; font-size: (12px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800; }
@@ -2513,7 +2534,7 @@ export component AppWindow inherits Window {
                                                                 y: floor(index / similar-gallery.column-count) * (78px * AppTheme.ui-scale);
                                                                 width: (72px * AppTheme.ui-scale); height: (76px * AppTheme.ui-scale); background: transparent; opacity: 1;
                                                                 VerticalLayout { spacing: (3px * AppTheme.ui-scale); alignment: center;
-                                                                    Rectangle { width: (58px * AppTheme.ui-scale); height: (58px * AppTheme.ui-scale); border-radius: (29px * AppTheme.ui-scale); clip: true; background: transparent;
+                                                                    Rectangle { width: (58px * AppTheme.ui-scale); height: (58px * AppTheme.ui-scale); border-radius: (29px * AppTheme.ui-scale); clip: true; background: transparent; border-width: AppTheme.hairline; border-color: AppTheme.border;
                                                                         Text { text: "♪"; color: AppTheme.secondary-foreground; font-size: (24px * AppTheme.ui-scale) * AppTheme.font-scale; horizontal-alignment: center; vertical-alignment: center; }
                                                                         Image { source: similar.artwork; width: parent.width; height: parent.height; image-fit: cover; }
                                                                     }
@@ -2541,14 +2562,13 @@ export component AppWindow inherits Window {
                                                             Text { text: "/"; color: AppTheme.foreground; font-size: (artist-scroll.visible-width < (520px * AppTheme.ui-scale) ? (12px * AppTheme.ui-scale) : (14px * AppTheme.ui-scale)) * AppTheme.font-scale; vertical-alignment: center; }
                                                             Text { text: root.artist-overview-legend-counts.in-process + " in Process"; color: #efa54e; font-size: (artist-scroll.visible-width < (520px * AppTheme.ui-scale) ? (12px * AppTheme.ui-scale) : (14px * AppTheme.ui-scale)) * AppTheme.font-scale; font-weight: 800; vertical-alignment: center; }
                                                             Text { text: "/"; color: AppTheme.foreground; font-size: (artist-scroll.visible-width < (520px * AppTheme.ui-scale) ? (12px * AppTheme.ui-scale) : (14px * AppTheme.ui-scale)) * AppTheme.font-scale; vertical-alignment: center; }
-                                                            Text { text: "Overridden"; color: #ff344f; font-size: (artist-scroll.visible-width < (520px * AppTheme.ui-scale) ? (12px * AppTheme.ui-scale) : (14px * AppTheme.ui-scale)) * AppTheme.font-scale; font-weight: 800; vertical-alignment: center; }
-                                                            Text { text: root.artist-overview-legend-counts.overridden; color: AppTheme.secondary-foreground; font-size: (artist-scroll.visible-width < (520px * AppTheme.ui-scale) ? (12px * AppTheme.ui-scale) : (14px * AppTheme.ui-scale)) * AppTheme.font-scale; font-weight: 800; vertical-alignment: center; }
+                                                            Text { text: root.artist-overview-legend-counts.overridden + " Overridden"; color: #6b737b; font-size: (artist-scroll.visible-width < (520px * AppTheme.ui-scale) ? (12px * AppTheme.ui-scale) : (14px * AppTheme.ui-scale)) * AppTheme.font-scale; font-weight: 800; vertical-alignment: center; }
                                                             if root.artist-overview-legend-counts.validating > 0: Text { text: "/"; color: AppTheme.foreground; font-size: (artist-scroll.visible-width < (520px * AppTheme.ui-scale) ? (12px * AppTheme.ui-scale) : (14px * AppTheme.ui-scale)) * AppTheme.font-scale; vertical-alignment: center; }
                                                             if root.artist-overview-legend-counts.validating > 0: Text { text: root.artist-overview-legend-counts.validating + " Validating"; color: AppTheme.cyan; font-size: (artist-scroll.visible-width < (520px * AppTheme.ui-scale) ? (12px * AppTheme.ui-scale) : (14px * AppTheme.ui-scale)) * AppTheme.font-scale; font-weight: 800; vertical-alignment: center; }
                                                         }
                                                         Rectangle { horizontal-stretch: 1; background: transparent; }
                                                     }
-                                                    if root.artist-status-help-visible: Rectangle { width: min(parent.width, (1240px * AppTheme.ui-scale)); horizontal-stretch: 0; height: (349px * AppTheme.ui-scale); background: #000000; border-radius: (6px * AppTheme.ui-scale); border-color: AppTheme.cyan; border-width: (1px * AppTheme.ui-scale);
+                                                    if root.artist-status-help-visible: Rectangle { width: min(parent.width, (1240px * AppTheme.ui-scale)); horizontal-stretch: 0; height: (385px * AppTheme.ui-scale); background: #000000; border-radius: (6px * AppTheme.ui-scale); border-color: AppTheme.cyan; border-width: AppTheme.hairline;
                                                         VerticalLayout { padding: (9px * AppTheme.ui-scale); spacing: (0px * AppTheme.ui-scale);
                                                             Text { text: "Album Status Key"; color: AppTheme.cyan; font-size: (14px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800; height: (21px * AppTheme.ui-scale); }
                                                             Rectangle { height: (7px * AppTheme.ui-scale); background: transparent; }
@@ -2558,15 +2578,15 @@ export component AppWindow inherits Window {
                                                                     ArtistLegendCountRow { label: "●  Red"; label-color: AppTheme.danger; count: root.artist-overview-legend-counts.red-dots; }
                                                                     Text { text: "Missing art or unfinished tracks"; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; height: (17px * AppTheme.ui-scale); }
                                                                     ArtistLegendCountRow { label: "●  Yellow"; label-color: AppTheme.yellow; count: root.artist-overview-legend-counts.yellow-dots; }
-                                                                    Text { text: "Artist art missing or bypassed"; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; height: (17px * AppTheme.ui-scale); }
+                                                                    Text { text: "Artist/Album art missing/bypassed"; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; height: (17px * AppTheme.ui-scale); }
                                                                     ArtistLegendCountRow { label: "●  Orange"; label-color: #efa54e; count: root.artist-overview-legend-counts.orange-dots; }
                                                                     Text { text: "Processed, not yet complete"; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; height: (17px * AppTheme.ui-scale); }
                                                                     ArtistLegendCountRow { label: "●  Green"; label-color: AppTheme.green; count: root.artist-overview-legend-counts.green-dots; }
                                                                     Text { text: "Artist's tracks complete"; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; height: (17px * AppTheme.ui-scale); }
                                                                     ArtistLegendCountRow { label: "●  Purple"; label-color: AppTheme.violet; count: root.artist-overview-legend-counts.purple-dots; }
                                                                     Text { text: "Embedded art needs attention"; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; height: (17px * AppTheme.ui-scale); }
-                                                                    ArtistLegendCountRow { label: "●  Blue"; label-color: AppTheme.blue; count: root.artist-overview-legend-counts.blue-dots; }
-                                                                    Text { text: "cover.webp present; review the still cover"; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; height: (17px * AppTheme.ui-scale); }
+                                                                    ArtistLegendCountRow { label: "●  Dark Grey"; label-color: #6b737b; count: root.artist-overview-legend-counts.grey-dots; }
+                                                                    Text { text: "Opposing album override"; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; height: (17px * AppTheme.ui-scale); }
                                                                 }
                                                                 VerticalLayout { spacing: (0px * AppTheme.ui-scale); horizontal-stretch: 1;
                                                                     Text { text: "ALBUM CARD FRAMES"; color: AppTheme.secondary-foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800; height: (20px * AppTheme.ui-scale); }
@@ -2590,7 +2610,9 @@ export component AppWindow inherits Window {
                                                                         Text { text: root.artist-overview-legend-counts.green-purple-frames; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; width: (32px * AppTheme.ui-scale); horizontal-alignment: right; }
                                                                     }
                                                                     Text { text: "COMP tracks done; thumbnail check"; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; height: (17px * AppTheme.ui-scale); }
-                                                                    ArtistLegendCountRow { label: "Red"; label-color: #ff344f; count: root.artist-overview-legend-counts.overridden; }
+                                                                    ArtistLegendCountRow { label: "Yellow"; label-color: AppTheme.yellow; count: root.artist-overview-legend-counts.yellow-frames; }
+                                                                    Text { text: "BYPASSED albums with custom art"; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; height: (17px * AppTheme.ui-scale); }
+                                                                    ArtistLegendCountRow { label: "Dark Grey"; label-color: #6b737b; count: root.artist-overview-legend-counts.grey-frames; }
                                                                     Text { text: "Overridden by opposing application"; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; height: (17px * AppTheme.ui-scale); }
                                                                 }
                                                                 VerticalLayout { spacing: (0px * AppTheme.ui-scale); horizontal-stretch: 1;
@@ -2608,6 +2630,10 @@ export component AppWindow inherits Window {
                                                                     Text { text: "Artwork complete"; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; height: (17px * AppTheme.ui-scale); }
                                                                     ArtistLegendCountRow { label: "Purple"; label-color: AppTheme.violet; count: root.artist-overview-legend-counts.track-purple; }
                                                                     Text { text: "Complete; thumb needs attention"; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; height: (17px * AppTheme.ui-scale); }
+                                                                    Rectangle { height: (9px * AppTheme.ui-scale); background: transparent; }
+                                                                    Text { text: "MISC STATUS"; color: AppTheme.secondary-foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800; height: (20px * AppTheme.ui-scale); }
+                                                                    ArtistLegendCountRow { label: "●  Animated"; label-color: AppTheme.blue; count: root.artist-overview-legend-counts.blue-dots; }
+                                                                    Text { text: "cover.webp present: review the still cover"; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; height: (17px * AppTheme.ui-scale); }
                                                                 }
                                                             }
                                                         }

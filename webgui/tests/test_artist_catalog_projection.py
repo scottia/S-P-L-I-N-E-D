@@ -19,10 +19,25 @@ from webgui.catalog import (
     embedded_album_artwork_summary,
     normalized_artist_identity,
 )
-from splined_media_database import update_artist_aggregate
+from splined_media_database import aggregate_artist, update_artist_aggregate
 
 
 class ArtistCatalogProjectionTests(unittest.TestCase):
+    def test_verified_album_material_overrides_stale_unprocessed_status(self):
+        stale = {
+            "status": "unprocessed",
+            "cover_found": 1,
+            "track_count": 10,
+            "embedded_tracks": 10,
+            "embedded_validation_status": "verified",
+        }
+        self.assertEqual(PreviewApp._effective_album_status(stale), "processed")
+        self.assertEqual(aggregate_artist(["processed"] * 5), "complete")
+
+        review = {**stale, "status": "timeout"}
+        self.assertEqual(PreviewApp._effective_album_status(review), "timeout")
+        self.assertEqual(aggregate_artist(["processed", "timeout"]), "partial")
+
     def test_album_embedded_summary_matches_native_footer_semantics(self):
         first = BytesIO()
         second = BytesIO()

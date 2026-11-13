@@ -108,8 +108,7 @@ impl AdaptiveBatchController {
     }
 
     pub fn should_checkpoint(&self, albums: usize, payload_bytes: u64) -> bool {
-        albums >= self.current_size
-            || (self.enabled && payload_bytes >= TARGET_PAYLOAD_BYTES)
+        albums >= self.current_size || (self.enabled && payload_bytes >= TARGET_PAYLOAD_BYTES)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -133,8 +132,8 @@ impl AdaptiveBatchController {
         let average_tracks = tracks as f64 / albums as f64;
         let bytes_per_album = payload_bytes / albums as u64;
         let processing_per_album = processing.as_secs_f64() / albums as f64;
-        let severe_memory_pressure = payload_bytes > TARGET_PAYLOAD_BYTES
-            || bytes_per_album > 768 * 1024;
+        let severe_memory_pressure =
+            payload_bytes > TARGET_PAYLOAD_BYTES || bytes_per_album > 768 * 1024;
         let heavy_album = average_tracks >= 96.0 || processing_per_album >= 0.35;
         let slow_checkpoint = checkpoint > TARGET_CHECKPOINT * 4;
 
@@ -201,7 +200,9 @@ impl AdaptiveBatchController {
     }
 }
 
-pub fn checkpoint_payload_bytes(rows: &[crate::catalog_index_coordinator::StagedAlbumCheckpoint]) -> u64 {
+pub fn checkpoint_payload_bytes(
+    rows: &[crate::catalog_index_coordinator::StagedAlbumCheckpoint],
+) -> u64 {
     rows.iter()
         .map(|row| {
             [
@@ -265,7 +266,11 @@ fn prior_adaptive_size(
     let Some(adaptive) = details.get("adaptive_batching") else {
         return Ok(None);
     };
-    if !adaptive.get("enabled").and_then(Value::as_bool).unwrap_or(false) {
+    if !adaptive
+        .get("enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
         return Ok(None);
     }
     let prior_albums = adaptive

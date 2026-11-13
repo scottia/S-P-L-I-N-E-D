@@ -10,9 +10,7 @@ use std::time::Instant;
 fn main() -> Result<(), String> {
     let arguments = env::args().collect::<Vec<_>>();
     if arguments.len() != 3 {
-        return Err(
-            "usage: catalog_startup_benchmark <music-root> <existing-cache>".to_string(),
-        );
+        return Err("usage: catalog_startup_benchmark <music-root> <existing-cache>".to_string());
     }
     let music = PathBuf::from(&arguments[1]);
     let cache = PathBuf::from(&arguments[2]);

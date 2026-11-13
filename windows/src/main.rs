@@ -1350,7 +1350,11 @@ fn capture_ui_preferences(
         display_scale_percent: ui.get_display_scale_percent().clamp(80, 125) as u16,
         workspace_mode: ui.get_workspace_mode().clamp(0, 3) as u8,
         library_view: state.library.view.label().to_ascii_lowercase(),
-        status_filter: state.library.status_filter.label().to_ascii_lowercase(),
+        status_filter: if state.library.status_filter_enabled(StatusFilter::All) {
+            "all".to_string()
+        } else {
+            "custom".to_string()
+        },
         status_filters: state
             .library
             .status_filters
@@ -3579,6 +3583,11 @@ fn apply_album_coordination_states(
         .collect::<Vec<_>>();
     let writers = coordination_writers(states);
     let changed = app.album_override_writers != writers || !changed_albums.is_empty();
+    for album in &mut app.library.albums {
+        album.opposing_override = writers
+            .get(&album.snapshot.album_key.to_ascii_lowercase())
+            .is_some_and(|writer| writer.eq_ignore_ascii_case("webgui"));
+    }
     app.album_override_writers = writers;
     let invalidated = refresh_coordinated_album_artwork(app, &changed_albums);
     *previous = states.clone();
@@ -5149,7 +5158,14 @@ fn apply_ui_preferences(state: &mut ApplicationState, preferences: &UiPreference
             "albums" => LibraryView::Albums,
             _ => LibraryView::Artists,
         });
-    if preferences.status_filters.is_empty() {
+    // `status_filter = "all"` is the durable user intent. Prefer it over
+    // the serialized member list so an upgrade that introduces a new state
+    // (for example Overridden) cannot silently hide that state. Custom
+    // lists keep Unprocessed enabled because it is now a heading count, not
+    // a separately clickable Artist State row.
+    if preferences.status_filter.eq_ignore_ascii_case("all") {
+        state.library.set_status_filter(StatusFilter::All);
+    } else if preferences.status_filters.is_empty() {
         state
             .library
             .set_status_filter(parse_status_filter(&preferences.status_filter));
@@ -5158,7 +5174,8 @@ fn apply_ui_preferences(state: &mut ApplicationState, preferences: &UiPreference
             preferences
                 .status_filters
                 .iter()
-                .map(|value| parse_status_filter(value)),
+                .map(|value| parse_status_filter(value))
+                .chain(std::iter::once(StatusFilter::Unprocessed)),
         );
     }
     state
@@ -5271,11 +5288,12 @@ fn parse_status_filter(value: &str) -> StatusFilter {
         "incomplete" => StatusFilter::Incomplete,
         "processed" => StatusFilter::Processed,
         "bypassed" => StatusFilter::Bypassed,
-        "partial / error" | "partial / timeout" | "partial" | "timeout" => {
+        "embedding review" | "partial / error" | "partial / timeout" | "partial" | "timeout" => {
             StatusFilter::PartialTimeout
         }
-        "artist complete" => StatusFilter::ArtistComplete,
-        "artist contains bypass" | "artist bypass" => StatusFilter::ArtistContainsBypass,
+        "albums complete" | "album complete" | "artist complete" => StatusFilter::ArtistComplete,
+        "overridden" => StatusFilter::Overridden,
+        "artist contains bypass" | "artist bypass" => StatusFilter::Bypassed,
         _ => StatusFilter::All,
     }
 }
@@ -10363,9 +10381,14 @@ fn bind_callbacks(
                 "Incomplete" => StatusFilter::Incomplete,
                 "Processed" => StatusFilter::Processed,
                 "Bypassed" => StatusFilter::Bypassed,
-                "Partial / Timeout" | "Partial / Error" => StatusFilter::PartialTimeout,
-                "Artist Complete" => StatusFilter::ArtistComplete,
-                "Artist Contains Bypass" | "Artist Bypass" => StatusFilter::ArtistContainsBypass,
+                "Partial / Timeout" | "Partial / Error" | "Embedding Review" => {
+                    StatusFilter::PartialTimeout
+                }
+                "Albums Complete" | "Album Complete" | "Artist Complete" => {
+                    StatusFilter::ArtistComplete
+                }
+                "Overridden" => StatusFilter::Overridden,
+                "Artist Contains Bypass" | "Artist Bypass" => StatusFilter::Bypassed,
                 _ => StatusFilter::All,
             };
             if let Ok(mut app) = state.lock() {
@@ -19154,7 +19177,11 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
     ui.set_candidate_policy_filter_rows(model(candidate_policy_filters));
     ui.set_candidate_range_filter_rows(model(candidate_range_filters));
 
-    ui.set_status_filter_rows(model(status_filter_ui_rows(&state)));
+    let (status_filter_rows, artist_unprocessed_count, artist_album_count) =
+        artist_state_summary(&state);
+    ui.set_status_filter_rows(model(status_filter_rows));
+    ui.set_artist_state_unprocessed_count(artist_unprocessed_count);
+    ui.set_artist_state_album_count(artist_album_count);
 
     let mut visible_musicbrainz = musicbrainz_visible_deduplicated_results(&state);
     let preferred_families = visible_musicbrainz
@@ -20142,9 +20169,9 @@ fn library_ui_model_from_rows(
             } else if matches!(row.kind.as_str(), "album" | "album-child")
                 && completed_overrides.contains(&row.key.to_ascii_lowercase())
             {
-                // Grey is the established opposing-client visual. The same
-                // Album is counted in the red Bypassed action bucket below,
-                // without presenting a successful override as an error.
+                // Grey is the established opposing-client visual and owns an
+                // exclusive Overridden count. It must never inflate Bypassed
+                // or Albums Complete.
                 row.status = "Overridden".to_string();
             }
         }
@@ -20298,6 +20325,12 @@ fn theme_preview_album_row(state: &ApplicationState, target: &str) -> UiArtistAl
         artwork: slint::Image::default(),
         has_artwork: false,
         status_color: frame_color(selected_frame, "#32DDA0"),
+        state_key: if selected_frame == "complete" {
+            "Albums Complete"
+        } else {
+            "Processed"
+        }
+        .into(),
         selected: false,
         bullets: model(Vec::<UiAlbumStatusBullet>::new()),
         check_embedded: selected_frame == "thumbnail",
@@ -20606,6 +20639,13 @@ fn artist_album_card_artwork_path(
 }
 
 fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRow> {
+    artist_overview_ui_model_with_show_all(state, state.artist_overview_show_all)
+}
+
+fn artist_overview_ui_model_with_show_all(
+    state: &ApplicationState,
+    show_all: bool,
+) -> ModelRc<UiArtistAlbumRow> {
     let artist_mode = !state.library.show_tracks
         && state.library.view == LibraryView::Artists
         && state.library.focused_artist.is_some();
@@ -20649,10 +20689,9 @@ fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRo
             })
             .unwrap_or_default()
     } else {
-        state.library.artist_overview_album_indices(
-            &state.artist_overview_album_keys,
-            state.artist_overview_show_all,
-        )
+        state
+            .library
+            .artist_overview_album_indices(&state.artist_overview_album_keys, show_all)
     };
     indices.sort_by(|left, right| {
         let left_album = &state.library.albums[*left];
@@ -20882,7 +20921,7 @@ fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRo
                 .to_string(),
             );
             add_bullet(
-                processed && !fully_complete && !validating,
+                processed && !fully_complete,
                 Color::from_rgb_u8(239, 165, 78),
                 "Processed Album".to_string(),
             );
@@ -20926,8 +20965,30 @@ fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRo
                 }
                 .to_string(),
             );
+            add_bullet(
+                overridden,
+                Color::from_rgb_u8(107, 115, 123),
+                "Opposing Album override".to_string(),
+            );
             let artwork_path = artist_album_card_artwork_path(state, snapshot);
             let artwork = load_album_card_image(&artwork_path, 192, overridden);
+            let state_key = if overridden {
+                "Overridden"
+            } else if bypassed {
+                "Bypassed"
+            } else if check_embedded
+                || album.state == splined_core::application::AlbumState::TimeoutActive
+            {
+                "Embedding Review"
+            } else if fully_complete {
+                "Albums Complete"
+            } else if processed || validating {
+                "Processed"
+            } else if incomplete || missing_album_art {
+                "Incomplete"
+            } else {
+                "Unprocessed"
+            };
             UiArtistAlbumRow {
                 key: SharedString::from(snapshot.album_key.clone()),
                 title: SharedString::from(snapshot.title.clone()),
@@ -20942,6 +21003,7 @@ fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRo
                 } else {
                     library_status_color(album.state.label())
                 },
+                state_key: state_key.into(),
                 selected: album.selected
                     && !state
                         .embed_locked_album_paths
@@ -20986,15 +21048,15 @@ fn artist_overview_legend_counts(
         };
         counts.shown += 1;
         if album.overridden {
-            // The card stays grey/OVERRIDE, but the opposing client's
-            // verified write is completed work for the Artist aggregate.
             counts.overridden += 1;
-            counts.completed += 1;
+            counts.grey_frames += 1;
         } else if album.validating {
             counts.validating += 1;
         } else if album.fully_complete {
             counts.completed += 1;
             counts.green_frames += 1;
+        } else if album.state_key == "Bypassed" {
+            counts.yellow_frames += 1;
         } else if album.check_embedded
             && (album.processed || (album.fallback && album.fallback_complete))
         {
@@ -21015,6 +21077,7 @@ fn artist_overview_legend_counts(
                 color if color == Color::from_rgb_u8(50, 221, 160) => counts.green_dots += 1,
                 color if color == Color::from_rgb_u8(124, 77, 255) => counts.purple_dots += 1,
                 color if color == Color::from_rgb_u8(52, 120, 255) => counts.blue_dots += 1,
+                color if color == Color::from_rgb_u8(107, 115, 123) => counts.grey_dots += 1,
                 _ => {}
             }
         }
@@ -21045,7 +21108,7 @@ fn artist_overview_legend_counts(
             counts.artist += 1;
         }
     }
-    counts.in_process = counts.shown - counts.completed - counts.validating;
+    counts.in_process = counts.shown - counts.completed - counts.overridden - counts.validating;
     for track in tracks {
         if track.status_color == Color::from_rgb_u8(124, 77, 255) {
             counts.track_purple += 1;
@@ -21146,17 +21209,17 @@ fn artist_overview_is_fully_complete(
 
 fn library_status_color(status: &str) -> Color {
     match status.trim().to_ascii_lowercase().as_str() {
-        "overridden" => Color::from_rgb_u8(169, 176, 184),
+        "overridden" => status_filter_color(StatusFilter::Overridden),
         "processed" => status_filter_color(StatusFilter::Processed),
         "bypassed" => status_filter_color(StatusFilter::Bypassed),
-        "partial / error" | "partial / timeout" => {
+        "embedding review" | "partial / error" | "partial / timeout" => {
             status_filter_color(StatusFilter::PartialTimeout)
         }
         "incomplete" => status_filter_color(StatusFilter::Incomplete),
-        "artist complete" => status_filter_color(StatusFilter::ArtistComplete),
-        "artist bypass" | "artist contains bypass" => {
-            status_filter_color(StatusFilter::ArtistContainsBypass)
+        "albums complete" | "album complete" | "artist complete" => {
+            status_filter_color(StatusFilter::ArtistComplete)
         }
+        "artist bypass" | "artist contains bypass" => status_filter_color(StatusFilter::Bypassed),
         _ => status_filter_color(StatusFilter::Unprocessed),
     }
 }
@@ -21227,33 +21290,72 @@ fn completed_compilation_track_needs_attention(
     })
 }
 
+fn artist_state_overview_model(state: &ApplicationState) -> Option<ModelRc<UiArtistAlbumRow>> {
+    let focused_artist = state.library.view == splined_core::application::LibraryView::Artists
+        && !state.library.show_tracks
+        && state.library.focused_artist.is_some();
+    if focused_artist {
+        Some(artist_overview_ui_model_with_show_all(state, true))
+    } else {
+        None
+    }
+}
+
+fn artist_state_summary(state: &ApplicationState) -> (Vec<UiStatusFilterRow>, i32, i32) {
+    let Some(cards) = artist_state_overview_model(state) else {
+        return (status_filter_ui_rows_from_cards(state, None), 0, 0);
+    };
+    let total = cards.row_count() as i32;
+    let unprocessed = (0..cards.row_count())
+        .filter(|index| {
+            cards
+                .row_data(*index)
+                .is_some_and(|row| row.state_key == "Unprocessed")
+        })
+        .count() as i32;
+    (
+        status_filter_ui_rows_from_cards(state, Some(&cards)),
+        unprocessed,
+        total,
+    )
+}
+
+#[cfg(test)]
 fn status_filter_ui_rows(state: &ApplicationState) -> Vec<UiStatusFilterRow> {
-    let completed_overrides = state
-        .album_override_writers
-        .iter()
-        .filter(|(_, writer)| writer.eq_ignore_ascii_case("webgui"))
-        .map(|(album_key, _)| album_key.to_ascii_lowercase())
-        .collect::<HashSet<_>>();
+    let cards = artist_state_overview_model(state);
+    status_filter_ui_rows_from_cards(state, cards.as_ref())
+}
+
+fn status_filter_ui_rows_from_cards(
+    state: &ApplicationState,
+    cards: Option<&ModelRc<UiArtistAlbumRow>>,
+) -> Vec<UiStatusFilterRow> {
     [
-        StatusFilter::All,
-        StatusFilter::Unprocessed,
         StatusFilter::Incomplete,
         StatusFilter::Processed,
         StatusFilter::Bypassed,
         StatusFilter::PartialTimeout,
+        StatusFilter::Overridden,
         StatusFilter::ArtistComplete,
-        StatusFilter::ArtistContainsBypass,
     ]
     .into_iter()
-    .map(|filter| UiStatusFilterRow {
-        key: SharedString::from(filter.label()),
-        label: SharedString::from(state.library.status_label(filter)),
-        count: state
-            .library
-            .focused_status_count_with_overrides(filter, &completed_overrides)
-            as i32,
-        enabled: state.library.status_filter_enabled(filter),
-        semantic_color: status_filter_color(filter),
+    .map(|filter| {
+        let label = state.library.status_label(filter);
+        let count = cards.map_or(0, |rows| {
+            (0..rows.row_count())
+                .filter(|index| {
+                    rows.row_data(*index)
+                        .is_some_and(|row| row.state_key == label)
+                })
+                .count()
+        });
+        UiStatusFilterRow {
+            key: SharedString::from(filter.label()),
+            label: SharedString::from(label),
+            count: count as i32,
+            enabled: state.library.status_filter_enabled(filter),
+            semantic_color: status_filter_color(filter),
+        }
     })
     .collect()
 }
@@ -22842,11 +22944,11 @@ fn status_filter_color(filter: StatusFilter) -> Color {
     let (red, green, blue) = match filter {
         StatusFilter::All | StatusFilter::Unprocessed => (238, 248, 255),
         StatusFilter::Processed => (239, 165, 78),
-        StatusFilter::Bypassed => (255, 92, 102),
+        StatusFilter::Bypassed => (244, 204, 77),
         StatusFilter::PartialTimeout => (181, 92, 228),
-        StatusFilter::Incomplete => (80, 185, 255),
+        StatusFilter::Incomplete => (255, 82, 104),
+        StatusFilter::Overridden => (107, 115, 123),
         StatusFilter::ArtistComplete => (76, 217, 137),
-        StatusFilter::ArtistContainsBypass => (64, 153, 255),
     };
     Color::from_rgb_u8(red, green, blue)
 }
@@ -24740,6 +24842,7 @@ mod tests {
 
         let normal = artist_overview_ui_model(&app).row_data(0).unwrap();
         assert!(!normal.overridden);
+        assert_eq!(normal.state_key, "Unprocessed");
         assert!((0..normal.bullets.row_count()).any(|index| {
             normal
                 .bullets
@@ -24755,8 +24858,9 @@ mod tests {
         assert_eq!(overridden.banner_display, "O\nV\nE\nR\nR\nI\nD\nE");
         let counts = artist_overview_legend_counts(&overridden_model, &[]);
         assert_eq!(counts.overridden, 1);
-        assert_eq!(counts.completed, 1);
+        assert_eq!(counts.completed, 0);
         assert_eq!(counts.in_process, 0);
+        assert_eq!(counts.grey_dots, 1);
         assert_eq!(counts.artist, 0);
         let library_model = super::library_ui_model_from_rows(&app, app.library.rows());
         let child = (0..library_model.row_count())
@@ -24764,8 +24868,26 @@ mod tests {
             .find(|row| row.kind == "album-child")
             .expect("expanded Artist exposes its Album row");
         assert_eq!(child.status, "Overridden");
-        assert_eq!(child.status_color, Color::from_rgb_u8(169, 176, 184));
+        assert_eq!(child.status_color, Color::from_rgb_u8(107, 115, 123));
         let filters = super::status_filter_ui_rows(&app);
+        assert_eq!(
+            filters
+                .iter()
+                .map(|row| row.label.to_string())
+                .collect::<Vec<_>>(),
+            vec![
+                "Incomplete",
+                "Processed",
+                "Bypassed",
+                "Embedding Review",
+                "Overridden",
+                "Albums Complete",
+            ]
+        );
+        assert_eq!(filters.iter().map(|row| row.count).sum::<i32>(), 1);
+        let (_, unprocessed, total) = super::artist_state_summary(&app);
+        assert_eq!(unprocessed, 0);
+        assert_eq!(total, 1);
         let count = |label: &str| {
             filters
                 .iter()
@@ -24773,9 +24895,17 @@ mod tests {
                 .map(|row| row.count)
                 .unwrap_or_default()
         };
-        assert_eq!(count("Bypassed"), 1);
-        assert_eq!(count("Partial / Error"), 0);
-        assert_eq!(count("Artist Complete"), 1);
+        assert_eq!(count("Bypassed"), 0);
+        assert_eq!(count("Embedding Review"), 0);
+        assert_eq!(count("Overridden"), 1);
+        assert_eq!(count("Albums Complete"), 0);
+        assert_eq!(
+            filters
+                .iter()
+                .find(|row| row.label == "Incomplete")
+                .map(|row| row.semantic_color),
+            Some(Color::from_rgb_u8(255, 82, 104))
+        );
         assert!(!(0..overridden.bullets.row_count()).any(|index| {
             overridden.bullets.row_data(index).is_some_and(|bullet| {
                 bullet.tip == "Missing Album Art"
@@ -25083,7 +25213,7 @@ mod tests {
         assert_eq!(counts.validating, 3);
         assert_eq!(counts.completed, 1);
         assert_eq!(counts.in_process, 0);
-        assert_eq!(counts.orange_dots, 0);
+        assert_eq!(counts.orange_dots, 3);
         assert_eq!(counts.purple_dots, 0);
         assert!((0..cards.row_count()).all(|index| {
             cards.row_data(index).is_some_and(|card| {
@@ -27843,6 +27973,41 @@ mod tests {
         preferences.candidate_filter_locked = false;
         apply_ui_preferences(&mut state, &preferences);
         assert!(state.candidate_excluded_types.is_empty());
+    }
+
+    #[test]
+    fn legacy_all_status_preference_includes_states_added_after_it_was_saved() {
+        let snapshot = MediaSnapshot {
+            schema_version: splined_core::media_database::SCHEMA_VERSION,
+            database_path: String::new(),
+            canonical_root: String::new(),
+            local_root: String::new(),
+            albums: Vec::new(),
+        };
+        let mut state = ApplicationState::new(Config::default(), snapshot).unwrap();
+        let preferences = UiPreferences {
+            status_filter: "all".to_string(),
+            // This is the exact pre-Overridden member list an older ui.toml
+            // persisted. The durable `all` intent must win on upgrade.
+            status_filters: vec![
+                "Unprocessed".to_string(),
+                "Incomplete".to_string(),
+                "Processed".to_string(),
+                "Bypassed".to_string(),
+                "Embedding Review".to_string(),
+                "Albums Complete".to_string(),
+            ],
+            ..UiPreferences::default()
+        };
+
+        apply_ui_preferences(&mut state, &preferences);
+
+        assert!(state.library.status_filter_enabled(StatusFilter::All));
+        assert!(
+            state
+                .library
+                .status_filter_enabled(StatusFilter::Overridden)
+        );
     }
 
     #[test]

@@ -86,7 +86,7 @@ const mediaStatusFunctions = between(
   "function validMusicBrainzId",
 );
 
-test("opposing Album overrides use Bypassed filtering without losing the grey row visual", () => {
+test("opposing Album overrides use their own dark-grey filter and never inflate Bypassed", () => {
   const album = {id: "album-1", album_mbid: "release-1", status: "partial"};
   const state = {albumOverrides: new Map([["album-1", {writer: "windows"}]])};
   const context = load(mediaStatusFunctions, {
@@ -95,10 +95,40 @@ test("opposing Album overrides use Bypassed filtering without losing the grey ro
   });
 
   assert.equal(context.rawMediaStatusKey(album), "partial");
-  assert.equal(context.mediaStatusKey(album), "bypassed");
-  assert.equal(context.mediaStatusColor("override"), "#a9b0b8");
+  assert.equal(context.mediaStatusKey(album), "overridden");
+  assert.equal(context.mediaStatusColor("override"), "#6b737b");
   assert.match(appSource, /applyStatusPalette\(button, overridden \? "override" : mediaStatusKey\(album\)\)/);
-  assert.match(appSource, /counts\.set\("bypassed", \(counts\.get\("bypassed"\) \|\| 0\) \+ overrideCount\)/);
+  assert.doesNotMatch(appSource, /counts\.set\("bypassed", \(counts\.get\("bypassed"\) \|\| 0\) \+ overrideCount\)/);
+});
+
+test("Artist State exposes six filters plus an Unprocessed heading and Album total", () => {
+  const context = load(mediaStatusFunctions, {state: {}, albumOverride: () => null});
+  assert.match(appSource, /const MEDIA_STATUSES = \[\["incomplete", "Incomplete"\], \["processed", "Processed"\], \["bypassed", "Bypassed"\], \["partial", "Embedding Review"\], \["overridden", "Overridden"\], \["albumsComplete", "Albums Complete"\]\]/);
+  assert.match(appSource, /const ALL_MEDIA_STATUS_KEYS = \["unprocessed", \.\.\.MEDIA_STATUSES\.map/);
+  assert.match(appSource, /document\.createTextNode\("Artist State \("\)/);
+  assert.match(appSource, /node\("span", "media-unprocessed-count", String\(unprocessed\)\)/);
+  assert.match(appSource, /document\.createTextNode\("\) > Unprocessed"\)/);
+  assert.match(appSource, /node\("span", "artist-album-total-label", "Artists Album Count"\)/);
+  assert.match(appSource, /node\("span", "artist-album-total-count", String\(items\.length\)\)/);
+  assert.equal(context.rawMediaStatusKey({status: "artistBypass"}), "bypassed");
+  assert.equal(context.rawMediaStatusKey({status: "complete"}), "albumsComplete");
+  assert.doesNotMatch(appSource, /\["all", "All"\], \.\.\.MEDIA_STATUSES/);
+  assert.doesNotMatch(appSource, /\["artistBypass", "Artist Bypass"\]/);
+  assert.equal(context.mediaStatusColor("unprocessed"), "#eef8ff");
+  assert.equal(context.mediaStatusColor("incomplete"), "#ff5268");
+  assert.match(appSource, /const incomplete = fallback \? album\.fallback_complete === false\s+: status === "incomplete" \|\| status === "partial";/);
+  assert.doesNotMatch(appSource, /status === "partial" \|\| \(!overridden && status === "unprocessed"\)/);
+  assert.match(appSource, /: processed \|\| validating \? "processed" : incomplete \|\| missingCover \? "incomplete" : "unprocessed";/);
+});
+
+test("Album Status Key separates animated WebP from mutually exclusive status dots", () => {
+  const keySource = between(appSource, "function renderAlbumStatusKey", "function updateBiographyToggle");
+  assert.match(keySource, /\["Status dots", \[/);
+  assert.doesNotMatch(keySource, /\[\["●", "#3478ff"\], \["Blue", "#3478ff"\]\]/);
+  assert.match(keySource, /\{heading: "MISC STATUS"\}/);
+  assert.match(keySource, /\[\["● Animated", "#3478ff"\]\], detail: "cover\.webp present: review the still cover"/);
+  assert.match(keySource, /\[\["Yellow", "#f4cc4d"\]\], detail: "BYPASSED albums with custom art"/);
+  assert.doesNotMatch(keySource, /Yellow · BYPASSED/);
 });
 const albumBannerFunctions = between(
   appSource,
@@ -2296,11 +2326,11 @@ test("Artist Albums row reports shown, Completed, and in Process with status col
   ], artist);
 
   assert.deepEqual(children.map(item => item.text), [
-    "3 shown", "/", "2 Completed", "/", "1 in Process", "/", "Overridden", "1",
+    "3 shown", "/", "1 Completed", "/", "1 in Process", "/", "1 Overridden",
   ]);
   assert.equal(styles["--album-complete-color"], "theme-complete");
   assert.equal(styles["--album-process-color"], "theme-process");
-  assert.equal(host["aria-label"], "3 Albums shown, 2 Completed, 1 in Process, 1 overridden by Windows");
+  assert.equal(host["aria-label"], "3 Albums shown, 1 Completed, 1 in Process, 1 overridden by Windows");
 });
 
 test("Album cards keep unknown validation separate from confirmed missing thumbnails", () => {
@@ -2343,6 +2373,10 @@ test("Album cards keep unknown validation separate from confirmed missing thumbn
     const complete = context.albumCardState({...base, embedded: 2, embedded_validation: "verified"}, artist);
     assert.equal(complete.fullyComplete, true, `${type.name} verified complete is green`);
     assert.equal(complete.dots.some(([color]) => color === "#32dda0"), true);
+
+    const staleUnprocessed = context.albumCardState({...base, status: "unprocessed", embedded: 2, embedded_validation: "verified"}, artist);
+    assert.equal(staleUnprocessed.fullyComplete, true, `${type.name} verified material outranks stale unprocessed status`);
+    assert.equal(staleUnprocessed.stateKey, "albumsComplete");
   }
 
   const fallback = context.albumCardState({
@@ -2658,7 +2692,8 @@ test("Album search and Album overview use the global single-Album contract", () 
   assert.match(appSource, /const matchesByArtist = new Map\(\)/);
   assert.match(appSource, /matchesByArtist\.has\(artist\.id\)/);
   assert.match(appSource, /matchingIds\.has\(item\.id\)/);
-  assert.match(appSource, /const presentedAlbums = singleAlbumOverviewActive\(\)/);
+  assert.match(appSource, /const presentedAlbums = honorSingleAlbum && singleAlbumOverviewActive\(\)/);
+  assert.match(appSource, /const albums = artistOverviewAlbums\(artist\)/);
   assert.match(appSource, /allAlbums\.find\(album => album\.id === state\.album\.id\)/);
 });
 
