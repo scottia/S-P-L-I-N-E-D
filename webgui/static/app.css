@@ -461,3 +461,4 @@ html[data-theme=light] .top-genres,html[data-theme=light] .top-songs-copy{text-s
 .review>.panel-title .quality-pill{flex:none}
 @media(max-width:1050px){.review>.panel-title{gap:4px}.review>.panel-title h2{font-size:11px}.quality-pill{padding:2px 6px}.review-actions button{font-size:10px}}
 .candidate-card .candidate-animation{color:var(--blue);font-weight:700}
+.header-actions #indexStopProcess[data-action="resume"]{border-color:var(--green);background:#0e2926;color:var(--green);font-weight:800}
