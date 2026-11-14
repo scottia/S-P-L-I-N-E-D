@@ -1201,6 +1201,12 @@ function activeIndexJob() {
   return (state.jobs || []).find(job => job.kind === "index"
     && ["queued", "running", "waiting"].includes(job.state)) || null;
 }
+function indexControlIntent() {
+  const job = (state.jobs || []).find(item => item.kind === "index" && item.id === state.indexJobId);
+  return job?.state === "paused"
+    ? {action: "retry", pending: "resume"}
+    : {action: "cancel", pending: "stop"};
+}
 function renderIndexProgress() {
   const job = activeIndexJob();
   const pausedJob = (state.jobs || []).find(item => item.kind === "index" && item.state === "paused") || null;
@@ -1208,18 +1214,29 @@ function renderIndexProgress() {
   const generationActive = generation && ["building", "validating", "publishing"].includes(generation.state);
   const active = Boolean(job || generationActive);
   const button = $("indexStopProcess"), status = $("status");
-  button.hidden = !active;
   if (!active) {
-    state.indexStopping = false;
-    state.indexJobId = null;
+    state.indexJobId = pausedJob?.id || null;
     status.classList?.remove?.("index-progress");
     status.style?.removeProperty?.("--index-progress");
     if (pausedJob) {
       const completed = Number(pausedJob.progress?.completed || 0);
-      setStatus(`PostgreSQL index paused · ${completed} Albums checkpointed · Resume to continue`, "busy");
+      const resuming = state.indexActionPending === "resume";
+      button.hidden = false;
+      if (button.dataset) button.dataset.action = "resume";
+      button.textContent = resuming ? "RESUMING…" : "RESUME INDEX";
+      button.disabled = Boolean(state.indexActionPending);
+      setStatus(resuming
+        ? `Resuming PostgreSQL index · ${completed} Albums checkpointed`
+        : `PostgreSQL index paused · ${completed} Albums checkpointed · Resume to continue`, "busy");
+    } else {
+      button.hidden = true;
+      button.disabled = false;
+      if (button.dataset) delete button.dataset.action;
     }
     return;
   }
+  button.hidden = false;
+  if (button.dataset) button.dataset.action = "stop";
   if (job) state.indexJobId = job.id;
   const progress = job?.progress || {};
   const completed = Number(progress.completed ?? generation?.completed_albums ?? 0);
@@ -1231,8 +1248,8 @@ function renderIndexProgress() {
     Number(progress.percentage ?? (generation?.state === "published" ? 100 : Math.min(99, Math.floor(completed * 100 / total))))));
   const message = String(progress.message || generation?.current_path || "Preparing catalog generation");
   const errors = Number(progress.errors ?? generation?.error_count ?? 0);
-  button.textContent = state.indexStopping ? "STOPPING…" : "STOP INDEX";
-  button.disabled = state.indexStopping || !state.indexJobId;
+  button.textContent = state.indexActionPending === "stop" ? "STOPPING…" : "STOP INDEX";
+  button.disabled = Boolean(state.indexActionPending) || !state.indexJobId;
   if (!totalKnown) {
     setStatus(`PostgreSQL ${phase} · ${completed} Albums indexed · discovering more… · ${errors} errors · ${message}`, "busy");
     status.classList?.remove?.("index-progress");
@@ -1242,6 +1259,20 @@ function renderIndexProgress() {
   setStatus(`PostgreSQL ${phase} · ${percentage}% · ${completed}/~${total} Albums · ${errors} errors · ${message}`, "busy");
   status.classList?.add?.("index-progress");
   status.style?.setProperty?.("--index-progress", `${percentage}%`);
+}
+async function runIndexControl() {
+  if (!state.indexJobId || state.indexActionPending) return;
+  const intent = indexControlIntent();
+  const jobId = state.indexJobId;
+  state.indexActionPending = intent.pending;
+  renderIndexProgress();
+  try {
+    await post("/api/jobs/action", {action: intent.action, id: jobId});
+    await pollJobs();
+  } finally {
+    state.indexActionPending = "";
+    renderIndexProgress();
+  }
 }
 async function performJobsPoll() {
   try {
@@ -2248,13 +2279,7 @@ $("applyLibraryChanges").addEventListener("click", () => runAction(async () => {
   const job = await post("/api/jobs", {kind: "index", payload: {mode: "incremental"}});
   await reviewJob(job.id);
 }));
-$("indexStopProcess").addEventListener("click", () => runAction(async () => {
-  if (!state.indexJobId || state.indexStopping) return;
-  state.indexStopping = true;
-  renderIndexProgress();
-  await post("/api/jobs/action", {action: "cancel", id: state.indexJobId});
-  await pollJobs();
-}));
+$("indexStopProcess").addEventListener("click", () => runAction(runIndexControl));
 $("closeDialog").addEventListener("click", () => { state.reviewJobId = null; });
 $("workspaceDialog").addEventListener("cancel", () => { state.reviewJobId = null; });
 $("musicbrainzButton").addEventListener("click", () => runAction(chooseMusicBrainz));

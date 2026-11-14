@@ -132,7 +132,7 @@ const indexProgressFunctions = between(
   "async function performJobsPoll()",
 );
 
-test("catalog progress stays indeterminate until discovery has a final total", () => {
+test("catalog progress stays indeterminate and a paused index can be resumed", async () => {
   const statuses = [];
   const progressStyle = new Map();
   const status = {
@@ -142,19 +142,22 @@ test("catalog progress stays indeterminate until discovery has a final total", (
       removeProperty: name => progressStyle.delete(name),
     },
   };
-  const button = {};
+  const button = {dataset: {}};
+  const requests = [];
   const state = {
     jobs: [{
       id: "index-1", kind: "index", state: "running",
       progress: {phase: "indexing", completed: 64, total: 65, percentage: 98, total_known: false},
     }],
     indexStatus: {},
-    indexStopping: false,
+    indexActionPending: "",
   };
   const context = load(indexProgressFunctions, {
     state,
     $: id => id === "indexStopProcess" ? button : status,
     setStatus: (message, type) => statuses.push({message, type}),
+    post: async (path, body) => requests.push({path, body}),
+    pollJobs: async () => {},
   });
 
   context.renderIndexProgress();
@@ -173,7 +176,27 @@ test("catalog progress stays indeterminate until discovery has a final total", (
   context.renderIndexProgress();
   assert.match(statuses.at(-1).message, /index paused · 64 Albums checkpointed · Resume to continue/);
   assert.doesNotMatch(statuses.at(-1).message, /discovering more/);
-  assert.equal(button.hidden, true);
+  assert.equal(button.hidden, false);
+  assert.equal(button.textContent, "RESUME INDEX");
+  assert.equal(button.dataset.action, "resume");
+  assert.equal(button.disabled, false);
+  assert.equal(state.indexJobId, "index-1");
+
+  await context.runIndexControl();
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].path, "/api/jobs/action");
+  assert.equal(requests[0].body.action, "retry");
+  assert.equal(requests[0].body.id, "index-1");
+  assert.equal(state.indexActionPending, "");
+  assert.equal(button.textContent, "RESUME INDEX");
+
+  state.jobs[0].state = "running";
+  context.renderIndexProgress();
+  assert.equal(button.dataset.action, "stop");
+  assert.equal(button.textContent, "STOP INDEX");
+  await context.runIndexControl();
+  assert.equal(requests[1].body.action, "cancel");
+  assert.equal(requests[1].body.id, "index-1");
 });
 
 test("opposing Album overrides use their own dark-grey filter and never inflate Bypassed", () => {

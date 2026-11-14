@@ -87,7 +87,7 @@ const state = {
   compTrackOverrides: new Map(), compTrackOverrideRevision: 0,
   statusRevision: 0, statusType: "ready",
   statusBar: {intensity: "Full", position: "Top", size: "Small"},
-  indexStatus: null, indexJobId: null, indexStopping: false,
+  indexStatus: null, indexJobId: null, indexActionPending: "",
 };
 function applyGraphicalEnhancement(value) {
   state.graphicalEnhancement = normalizeGraphicalEnhancement(value);
