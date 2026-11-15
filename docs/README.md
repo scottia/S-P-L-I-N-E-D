@@ -56,6 +56,11 @@ diagnostic reports.
 
 ## Maintainer procedures and architecture
 
+- [PR #185 Windows acceptance and promotion record](pr-185-acceptance.md) —
+  accepted startup projection, SQLite/Fallback, round Artist thumbnails,
+  configuration relocation, credential masking, directory browsing, and
+  WebGUI-aligned Artist Art identity behavior for promotion through `dev` to
+  `main`.
 - [PR #180–182 v3.0.1 acceptance and promotion record](pr-180-182-acceptance.md)
   — accepted catalog recovery, NAS reader tuning, large-Album deferral,
   restart-stable WebGUI sessions and artwork, COMP single-flight behavior, and

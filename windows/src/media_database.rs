@@ -34,14 +34,17 @@ use rusqlite::{
     Connection, ErrorCode, MAIN_DB, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
     named_params, params,
 };
+use rusqlite::trace::{TraceEvent, TraceEventCodes};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, OpenOptions};
+use std::io::{BufWriter, Write};
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, UNIX_EPOCH};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use unicode_casefold::UnicodeCaseFold;
 use unicode_normalization::UnicodeNormalization;
 
@@ -65,6 +68,89 @@ const CATALOG_INDEX_CANCELLED: &str = "Catalog index refresh cancelled by the op
 const INDEX_DATABASE_WRITERS: usize = 1;
 const INDEX_REMOTE_PROVIDER_REQUESTS: usize = 0;
 const SCHEMA: &str = include_str!("../../schema/media.sql");
+const SQL_TRACE_PATH_ENV: &str = "SPLINED_SQL_TRACE_PATH";
+static SQL_TRACE_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
+
+fn attach_sql_trace(connection: &mut Connection, database_path: &Path) -> Result<(), String> {
+    let Some(trace_path) = std::env::var_os(SQL_TRACE_PATH_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    else {
+        return Ok(());
+    };
+    if let Some(parent) = trace_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "Unable to create SQLite trace directory {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&trace_path)
+        .map_err(|error| {
+            format!(
+                "Unable to open SQLite trace {}: {error}",
+                trace_path.display()
+            )
+        })?;
+    let mut output = BufWriter::new(file);
+    let connection_id = SQL_TRACE_CONNECTION_ID.fetch_add(1, Ordering::Relaxed);
+    let database_path = database_path.display().to_string();
+    let timestamp = || {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    };
+    let _ = writeln!(
+        output,
+        "{}\tpid={}\tconnection={}\tOPEN\tdatabase={}",
+        timestamp(),
+        std::process::id(),
+        connection_id,
+        database_path.replace(['\r', '\n', '\t'], " ")
+    );
+    let _ = output.flush();
+    connection
+        .trace_v2(
+            TraceEventCodes::SQLITE_TRACE_STMT
+                | TraceEventCodes::SQLITE_TRACE_PROFILE
+                | TraceEventCodes::SQLITE_TRACE_CLOSE,
+            Some(move |event: TraceEvent<'_>| {
+                let (kind, elapsed_ms, sql) = match event {
+                    TraceEvent::Stmt(_, sql) => ("BEGIN", String::new(), sql.to_string()),
+                    TraceEvent::Profile(statement, elapsed) => (
+                        "END",
+                        format!("\telapsed_ms={:.3}", elapsed.as_secs_f64() * 1_000.0),
+                        statement.sql().into_owned(),
+                    ),
+                    TraceEvent::Close(_) => ("CLOSE", String::new(), String::new()),
+                    _ => return,
+                };
+                let sql = sql
+                    .replace(['\r', '\n', '\t'], " ")
+                    .chars()
+                    .take(8192)
+                    .collect::<String>();
+                let _ = writeln!(
+                    output,
+                    "{}\tpid={}\tconnection={}\t{}{}\t{}",
+                    timestamp(),
+                    std::process::id(),
+                    connection_id,
+                    kind,
+                    elapsed_ms,
+                    sql
+                );
+                let _ = output.flush();
+            }),
+        )
+        .map_err(db_error("enable opt-in SQLite tracing"))?;
+    Ok(())
+}
 
 #[cfg(test)]
 thread_local! {
@@ -221,10 +307,33 @@ fn numbered_track_artist_credit(value: &str) -> Option<&str> {
     (numbered && !artist.is_empty() && !title.is_empty()).then_some(artist)
 }
 
+/// Split a strict numbered filename/title duet only when one side is the
+/// indexed Album owner. This recovers a real guest credit from historical
+/// rows such as `Rob Wasserman & Aaron Neville` without treating a band whose
+/// own name contains `&` as two Artists.
+fn owner_anchored_inferred_credits(value: &str, owner: &str) -> Vec<String> {
+    let owner_identity = artist_projection_identity(owner);
+    let parts = value
+        .split(" & ")
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if parts.len() > 1
+        && parts
+            .iter()
+            .any(|part| artist_projection_identity(part) == owner_identity)
+    {
+        parts.into_iter().map(str::to_string).collect()
+    } else {
+        vec![value.trim().to_string()]
+    }
+}
+
 fn indexed_track_artist_credits<'a>(
     track_artist: &'a str,
     title: &'a str,
     filename: &'a str,
+    owner: &'a str,
     separator: &Regex,
 ) -> Vec<String> {
     let mut credits = artist_credit_values(track_artist, separator);
@@ -241,7 +350,11 @@ fn indexed_track_artist_credits<'a>(
     ]
     .into_iter()
     .flatten()
-    .flat_map(|value| artist_credit_values(value, separator))
+    .flat_map(|value| {
+        artist_credit_values(value, separator)
+            .into_iter()
+            .flat_map(|credit| owner_anchored_inferred_credits(&credit, owner))
+    })
     {
         if !credits.iter().any(|existing| {
             artist_projection_identity(existing) == artist_projection_identity(&inferred)
@@ -315,7 +428,13 @@ pub fn indexed_artist_appearances(
             .file_stem()
             .and_then(|value| value.to_str())
             .unwrap_or_default();
-        let matched = indexed_track_artist_credits(&track_artist, &title, filename, &separator)
+        let matched = indexed_track_artist_credits(
+            &track_artist,
+            &title,
+            filename,
+            &owner,
+            &separator,
+        )
             .into_iter()
             .any(|credit| artist_credit_position(&credit, artist_name, &separator).is_some());
         if !matched {
@@ -381,7 +500,13 @@ pub fn indexed_artist_catalog_projection(
             .file_stem()
             .and_then(|value| value.to_str())
             .unwrap_or_default();
-        let credits = indexed_track_artist_credits(&track_artist, &title, filename, &separator);
+        let credits = indexed_track_artist_credits(
+            &track_artist,
+            &title,
+            filename,
+            &owner,
+            &separator,
+        );
         let mbids = extract_mbids(&track_artist_mbids);
         for (position, credit) in credits.iter().enumerate() {
             if synthetic_album_artist(credit) {
@@ -414,17 +539,16 @@ pub fn indexed_artist_catalog_projection(
     }
     let album_keys = album_keys
         .into_iter()
-        .filter_map(|(identity, keys)| names.remove(&identity).map(|name| (name, keys)))
+        .filter_map(|(identity, keys)| {
+            names
+                .get(&identity)
+                .cloned()
+                .map(|name| (name, keys))
+        })
         .collect::<IndexedArtistCatalog>();
     let musicbrainz_ids = musicbrainz_ids
         .into_iter()
-        .filter_map(|(identity, mbid)| {
-            album_keys
-                .keys()
-                .find(|name| artist_projection_identity(name) == identity)
-                .cloned()
-                .map(|name| (name, mbid))
-        })
+        .filter_map(|(identity, mbid)| names.get(&identity).cloned().map(|name| (name, mbid)))
         .collect();
     Ok(IndexedArtistCatalogProjection {
         album_keys,
@@ -4009,6 +4133,7 @@ fn open_database(path: &Path, shared: bool) -> Result<Connection, String> {
             path.display()
         )
     })?;
+    attach_sql_trace(&mut connection, path)?;
     database_audit::attach(&mut connection);
     connection
         .busy_timeout(Duration::from_secs(30))
@@ -4137,6 +4262,7 @@ fn open_read_only_connection(path: &Path) -> Result<Connection, String> {
                 path.display()
             )
         })?;
+    attach_sql_trace(&mut connection, path)?;
     database_audit::attach(&mut connection);
     Ok(connection)
 }
@@ -4149,13 +4275,14 @@ fn sqlite_read_only_error(error: &rusqlite::Error) -> bool {
 }
 
 fn recover_interrupted_transaction(path: &Path) -> Result<(), String> {
-    let connection =
+    let mut connection =
         Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE).map_err(|error| {
             format!(
                 "Unable to recover interrupted SPLINED database transaction {}: {error}",
                 path.display()
             )
         })?;
+    attach_sql_trace(&mut connection, path)?;
     connection
         .busy_timeout(Duration::from_secs(30))
         .map_err(db_error("configure SQLite recovery timeout"))?;
@@ -7893,6 +8020,46 @@ mod tests {
             Some(aaron)
         );
         assert_eq!(projection.album_keys.get("Rob Wasserman").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn numbered_duet_title_recovers_guest_without_manufacturing_combined_artist() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = database_path(temp.path());
+        let connection = open_database(&db, false).unwrap();
+        let now = sqlite_now(&connection).unwrap();
+        connection.execute(
+            "INSERT INTO artists(artist_key,artist_name,primary_path,created_at,updated_at,last_seen_at,splined_version) \
+             VALUES('aaron','Aaron Neville','/music/Aaron Neville',?1,?1,?1,'test')",
+            params![now],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO albums(album_key,artist_key,album_name,musicbrainz_albumid,path,representative_file,tag_signature,created_at,updated_at,last_seen_at,splined_version) \
+             VALUES('gold','aaron','Gold','release-gold','/music/Aaron Neville/Gold','/music/Aaron Neville/Gold/1-16.mp3','tags',?1,?1,?1,'test')",
+            params![now],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO tracks(track_key,album_key,path,title,artist_name,file_size,file_mtime_ns,updated_at,splined_version) \
+             VALUES('stardust','gold','/music/Aaron Neville/Gold/1-16 - Rob Wasserman & Aaron Neville - Stardust.mp3','1-16 - Rob Wasserman & Aaron Neville - Stardust','Aaron Neville',1,1,?1,'test')",
+            params![now],
+        ).unwrap();
+        drop(connection);
+
+        let projection = indexed_artist_catalog_projection(
+            db.to_str().unwrap(),
+            crate::config::DEFAULT_ARTIST_SEPARATOR_REGEX,
+        )
+        .unwrap();
+
+        assert_eq!(
+            projection.album_keys.get("Rob Wasserman"),
+            Some(&["gold".to_string()].into_iter().collect())
+        );
+        assert_eq!(
+            projection.album_keys.get("Aaron Neville"),
+            Some(&["gold".to_string()].into_iter().collect())
+        );
+        assert!(!projection.album_keys.contains_key("Rob Wasserman & Aaron Neville"));
     }
 
     #[test]
