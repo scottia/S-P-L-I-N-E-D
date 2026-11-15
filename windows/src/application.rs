@@ -497,6 +497,32 @@ impl LibraryState {
         completed_overrides: &HashSet<String>,
     ) -> ArtistState {
         let indices = self.artist_album_indices(&self.artist_indices(artist));
+        self.artist_state_for_indices_with_overrides(&indices, completed_overrides)
+    }
+
+    /// Compute every Artist aggregate from one catalog projection. UI refreshes
+    /// must use this bulk form instead of rebuilding the complete Artist map
+    /// once for every visible row.
+    pub fn artist_states_with_overrides(
+        &self,
+        completed_overrides: &HashSet<String>,
+    ) -> BTreeMap<String, ArtistState> {
+        self.artists()
+            .into_iter()
+            .map(|(artist, indices)| {
+                let indices = self.artist_album_indices(&indices);
+                let state =
+                    self.artist_state_for_indices_with_overrides(&indices, completed_overrides);
+                (artist, state)
+            })
+            .collect()
+    }
+
+    fn artist_state_for_indices_with_overrides(
+        &self,
+        indices: &[usize],
+        completed_overrides: &HashSet<String>,
+    ) -> ArtistState {
         let values = indices
             .iter()
             .map(|index| &self.albums[*index])
@@ -5276,6 +5302,43 @@ mod tests {
         assert_eq!(
             state.artist_state_with_overrides("Gamma", &HashSet::from(["d".to_string()])),
             ArtistState::Complete
+        );
+        let states = state.artist_states_with_overrides(&completed_overrides);
+        assert_eq!(states.get("Alpha"), Some(&ArtistState::Complete));
+        assert_eq!(states.get("Beta"), Some(&ArtistState::Partial));
+        assert_eq!(states.get("Gamma"), Some(&ArtistState::ContainsBypass));
+    }
+
+    #[test]
+    fn bulk_override_projection_handles_production_scale_artist_catalog() {
+        const ARTIST_COUNT: usize = 5_024;
+        let albums = (0..ARTIST_COUNT)
+            .map(|index| {
+                let key = format!("album-{index:04}");
+                let artist = format!("Artist {index:04}");
+                let mut snapshot = album(&key, &artist, "Release", "unprocessed");
+                snapshot.album_mbid = format!("release-{index:04}");
+                snapshot
+            })
+            .collect();
+        let state = LibraryState::from_snapshot(MediaSnapshot {
+            schema_version: crate::media_database::SCHEMA_VERSION,
+            database_path: "splined.db".to_string(),
+            canonical_root: "/music".to_string(),
+            local_root: r"C:\Music".to_string(),
+            albums,
+        })
+        .unwrap();
+
+        let states = state.artist_states_with_overrides(&HashSet::from([
+            "album-0000".to_string(),
+        ]));
+
+        assert_eq!(states.len(), ARTIST_COUNT);
+        assert_eq!(states.get("Artist 0000"), Some(&ArtistState::Complete));
+        assert_eq!(
+            states.get("Artist 5023"),
+            Some(&ArtistState::Unprocessed)
         );
     }
 

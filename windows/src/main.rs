@@ -20565,14 +20565,14 @@ fn library_ui_model_from_rows(
         .filter(|(_, writer)| writer.eq_ignore_ascii_case("webgui"))
         .map(|(album_key, _)| album_key.to_ascii_lowercase())
         .collect::<HashSet<_>>();
-    if !completed_overrides.is_empty() {
+    let artist_states = (!completed_overrides.is_empty())
+        .then(|| state.library.artist_states_with_overrides(&completed_overrides));
+    if let Some(artist_states) = artist_states {
         for row in &mut rows {
             if row.kind == "artist" {
-                row.status = state
-                    .library
-                    .artist_state_with_overrides(&row.primary, &completed_overrides)
-                    .label()
-                    .to_string();
+                if let Some(status) = artist_states.get(&row.primary) {
+                    row.status = status.label().to_string();
+                }
             } else if matches!(row.kind.as_str(), "album" | "album-child")
                 && completed_overrides.contains(&row.key.to_ascii_lowercase())
             {
