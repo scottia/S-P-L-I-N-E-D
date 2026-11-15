@@ -34,14 +34,17 @@ use rusqlite::{
     Connection, ErrorCode, MAIN_DB, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
     named_params, params,
 };
+use rusqlite::trace::{TraceEvent, TraceEventCodes};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, OpenOptions};
+use std::io::{BufWriter, Write};
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, UNIX_EPOCH};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use unicode_casefold::UnicodeCaseFold;
 use unicode_normalization::UnicodeNormalization;
 
@@ -65,6 +68,89 @@ const CATALOG_INDEX_CANCELLED: &str = "Catalog index refresh cancelled by the op
 const INDEX_DATABASE_WRITERS: usize = 1;
 const INDEX_REMOTE_PROVIDER_REQUESTS: usize = 0;
 const SCHEMA: &str = include_str!("../../schema/media.sql");
+const SQL_TRACE_PATH_ENV: &str = "SPLINED_SQL_TRACE_PATH";
+static SQL_TRACE_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
+
+fn attach_sql_trace(connection: &mut Connection, database_path: &Path) -> Result<(), String> {
+    let Some(trace_path) = std::env::var_os(SQL_TRACE_PATH_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    else {
+        return Ok(());
+    };
+    if let Some(parent) = trace_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "Unable to create SQLite trace directory {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&trace_path)
+        .map_err(|error| {
+            format!(
+                "Unable to open SQLite trace {}: {error}",
+                trace_path.display()
+            )
+        })?;
+    let mut output = BufWriter::new(file);
+    let connection_id = SQL_TRACE_CONNECTION_ID.fetch_add(1, Ordering::Relaxed);
+    let database_path = database_path.display().to_string();
+    let timestamp = || {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    };
+    let _ = writeln!(
+        output,
+        "{}\tpid={}\tconnection={}\tOPEN\tdatabase={}",
+        timestamp(),
+        std::process::id(),
+        connection_id,
+        database_path.replace(['\r', '\n', '\t'], " ")
+    );
+    let _ = output.flush();
+    connection
+        .trace_v2(
+            TraceEventCodes::SQLITE_TRACE_STMT
+                | TraceEventCodes::SQLITE_TRACE_PROFILE
+                | TraceEventCodes::SQLITE_TRACE_CLOSE,
+            Some(move |event: TraceEvent<'_>| {
+                let (kind, elapsed_ms, sql) = match event {
+                    TraceEvent::Stmt(_, sql) => ("BEGIN", String::new(), sql.to_string()),
+                    TraceEvent::Profile(statement, elapsed) => (
+                        "END",
+                        format!("\telapsed_ms={:.3}", elapsed.as_secs_f64() * 1_000.0),
+                        statement.sql().into_owned(),
+                    ),
+                    TraceEvent::Close(_) => ("CLOSE", String::new(), String::new()),
+                    _ => return,
+                };
+                let sql = sql
+                    .replace(['\r', '\n', '\t'], " ")
+                    .chars()
+                    .take(8192)
+                    .collect::<String>();
+                let _ = writeln!(
+                    output,
+                    "{}\tpid={}\tconnection={}\t{}{}\t{}",
+                    timestamp(),
+                    std::process::id(),
+                    connection_id,
+                    kind,
+                    elapsed_ms,
+                    sql
+                );
+                let _ = output.flush();
+            }),
+        )
+        .map_err(db_error("enable opt-in SQLite tracing"))?;
+    Ok(())
+}
 
 #[cfg(test)]
 thread_local! {
@@ -414,17 +500,16 @@ pub fn indexed_artist_catalog_projection(
     }
     let album_keys = album_keys
         .into_iter()
-        .filter_map(|(identity, keys)| names.remove(&identity).map(|name| (name, keys)))
+        .filter_map(|(identity, keys)| {
+            names
+                .get(&identity)
+                .cloned()
+                .map(|name| (name, keys))
+        })
         .collect::<IndexedArtistCatalog>();
     let musicbrainz_ids = musicbrainz_ids
         .into_iter()
-        .filter_map(|(identity, mbid)| {
-            album_keys
-                .keys()
-                .find(|name| artist_projection_identity(name) == identity)
-                .cloned()
-                .map(|name| (name, mbid))
-        })
+        .filter_map(|(identity, mbid)| names.get(&identity).cloned().map(|name| (name, mbid)))
         .collect();
     Ok(IndexedArtistCatalogProjection {
         album_keys,
@@ -4009,6 +4094,7 @@ fn open_database(path: &Path, shared: bool) -> Result<Connection, String> {
             path.display()
         )
     })?;
+    attach_sql_trace(&mut connection, path)?;
     database_audit::attach(&mut connection);
     connection
         .busy_timeout(Duration::from_secs(30))
@@ -4137,6 +4223,7 @@ fn open_read_only_connection(path: &Path) -> Result<Connection, String> {
                 path.display()
             )
         })?;
+    attach_sql_trace(&mut connection, path)?;
     database_audit::attach(&mut connection);
     Ok(connection)
 }
@@ -4149,13 +4236,14 @@ fn sqlite_read_only_error(error: &rusqlite::Error) -> bool {
 }
 
 fn recover_interrupted_transaction(path: &Path) -> Result<(), String> {
-    let connection =
+    let mut connection =
         Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE).map_err(|error| {
             format!(
                 "Unable to recover interrupted SPLINED database transaction {}: {error}",
                 path.display()
             )
         })?;
+    attach_sql_trace(&mut connection, path)?;
     connection
         .busy_timeout(Duration::from_secs(30))
         .map_err(db_error("configure SQLite recovery timeout"))?;

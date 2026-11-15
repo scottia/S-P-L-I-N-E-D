@@ -483,6 +483,28 @@ static IMAGE_PRELOAD_HITS: AtomicU64 = AtomicU64::new(0);
 static STARTUP_TIMING_EVENTS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 
 fn record_startup_timing(event: String) {
+    if let Some(path) = std::env::var_os("SPLINED_STARTUP_TRACE_PATH")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    {
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis();
+            let event = event.replace(['\r', '\n'], " ");
+            let _ = writeln!(
+                file,
+                "{timestamp}\tpid={}\tthread={:?}\t{event}",
+                std::process::id(),
+                std::thread::current().id()
+            );
+            let _ = file.flush();
+        }
+    }
     if let Ok(mut events) = STARTUP_TIMING_EVENTS
         .get_or_init(|| Mutex::new(Vec::new()))
         .lock()
@@ -4107,6 +4129,7 @@ fn run_database_upgrade_preparedness() -> Result<bool, slint::PlatformError> {
 }
 
 fn main() -> Result<(), slint::PlatformError> {
+    record_startup_timing("startup-process begin".to_string());
     // The software renderer is deliberately selected on Windows. It avoids
     // multi-window OpenGL context loss that previously produced white frames
     // and crashed while opening or maximizing Custom Upscale.
@@ -4114,6 +4137,7 @@ fn main() -> Result<(), slint::PlatformError> {
         .backend_name("winit".to_string())
         .renderer_name("software".to_string())
         .select()?;
+    record_startup_timing("startup-renderer selected".to_string());
     let restore_request = restore_request_from_args(std::env::args_os().skip(1));
     if let Some(result) = command_line_operation() {
         if let Err(error) = result {
@@ -4148,9 +4172,11 @@ fn main() -> Result<(), slint::PlatformError> {
         .and_then(|result| result.as_ref().ok())
         .or(staged_archive_config.as_ref())
         .is_some_and(|config| config.scan.sqlite_shared && !config.scan.windows_client_lock);
+    record_startup_timing("startup-upgrade-preparedness begin".to_string());
     if !archive_setup_staged && !run_database_upgrade_preparedness()? {
         return Ok(());
     }
+    record_startup_timing("startup-upgrade-preparedness end".to_string());
     let association_warning =
         splined_core::file_association::register_portable_backup_association().err();
     let state_load_started = Instant::now();
@@ -4254,7 +4280,12 @@ fn main() -> Result<(), slint::PlatformError> {
         ScanController::new_with_debug(Arc::clone(&state), processing_debug_log);
     let controller = Arc::new(controller);
     let ui_create_started = Instant::now();
+    record_startup_timing("startup-ui-create begin".to_string());
     let ui = AppWindow::new()?;
+    record_startup_timing(format!(
+        "startup-ui-create end elapsed_ms={}",
+        ui_create_started.elapsed().as_millis()
+    ));
     bind_biography_text_callbacks(&ui);
     if let Some(log) = ui_debug_log.as_ref() {
         log.record(format!(
@@ -5188,7 +5219,9 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     }
 
+    record_startup_timing("startup-event-loop begin".to_string());
     let result = ui.run();
+    record_startup_timing("startup-event-loop end".to_string());
     album_coordination_stop.store(true, Ordering::Relaxed);
     if let Some(stop) = embed_queue_stop {
         stop.store(true, Ordering::Relaxed);
@@ -7819,6 +7852,7 @@ fn package_identity_smoke() {
 }
 
 fn load_application_state() -> (ApplicationState, bool, Option<String>) {
+    record_startup_timing("startup-state begin".to_string());
     let config_started = Instant::now();
     let mut first_error = splined_core::portable::initialize_process_roots().err();
     if first_error.is_none()
@@ -7829,6 +7863,7 @@ fn load_application_state() -> (ApplicationState, bool, Option<String>) {
     let config = match splined_core::config::load_config() {
         Ok(config) => config,
         Err(error) => {
+            record_startup_timing(format!("startup-config error={error}"));
             first_error.get_or_insert(error);
             let mut setup = Config::default();
             setup.library.music_library.clear();
@@ -7884,6 +7919,7 @@ fn load_application_state() -> (ApplicationState, bool, Option<String>) {
     let portable_cache = splined_core::portable::app_layout()
         .ok()
         .map(|layout| layout.root.join("_cache"));
+    record_startup_timing("startup-cache-cleanup begin".to_string());
     let mut cache_cleanups = vec![
         splined_core::pipeline::cleanup_stale_artwork_on_startup(configured_cache),
         splined_core::pipeline::cleanup_stale_artwork_on_startup(&embedded_preview_cache_dir(
@@ -7895,7 +7931,9 @@ fn load_application_state() -> (ApplicationState, bool, Option<String>) {
             portable_cache,
         ));
     }
+    record_startup_timing("startup-cache-cleanup end".to_string());
     let snapshot_started = Instant::now();
+    record_startup_timing("startup-database begin".to_string());
     let snapshot = match media_snapshot(&config, false) {
         Ok(snapshot) => snapshot,
         Err(error) => {
@@ -7918,6 +7956,7 @@ fn load_application_state() -> (ApplicationState, bool, Option<String>) {
     ));
     let diagnostics = startup_diagnostics(&config, &snapshot);
     let model_started = Instant::now();
+    record_startup_timing("startup-model begin".to_string());
     let mut state = ApplicationState::new(config, snapshot)
         .expect("a parsed Config v5 and database snapshot must initialize application state");
     record_startup_timing(format!(

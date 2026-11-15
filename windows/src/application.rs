@@ -527,6 +527,12 @@ impl LibraryState {
 
     fn artists(&self) -> BTreeMap<String, Vec<usize>> {
         let mut values = BTreeMap::<String, Vec<usize>>::new();
+        let album_indices = self
+            .albums
+            .iter()
+            .enumerate()
+            .map(|(index, album)| (album.snapshot.album_key.to_ascii_lowercase(), index))
+            .collect::<HashMap<_, _>>();
         for (index, album) in self.albums.iter().enumerate() {
             if Self::is_synthetic_album_artist(&album.snapshot.artist) {
                 continue;
@@ -536,24 +542,29 @@ impl LibraryState {
                 .or_default()
                 .push(index);
         }
+        let mut display_names = values
+            .keys()
+            .map(|artist| (artist_projection_identity(artist), artist.clone()))
+            .collect::<HashMap<_, _>>();
         for (appearance_artist, album_keys) in &self.artist_appearance_album_keys {
             if Self::is_synthetic_album_artist(appearance_artist) {
                 continue;
             }
             let appearance_identity = artist_projection_identity(appearance_artist);
-            let display = values
-                .keys()
-                .find(|artist| artist_projection_identity(artist) == appearance_identity)
+            let display = display_names
+                .get(&appearance_identity)
                 .cloned()
                 .unwrap_or_else(|| appearance_artist.clone());
+            display_names
+                .entry(appearance_identity)
+                .or_insert_with(|| display.clone());
             let indices = values.entry(display).or_default();
-            for (index, album) in self.albums.iter().enumerate() {
-                if album_keys
-                    .iter()
-                    .any(|key| key.eq_ignore_ascii_case(&album.snapshot.album_key))
-                    && !indices.contains(&index)
+            let mut known_indices = indices.iter().copied().collect::<HashSet<_>>();
+            for album_key in album_keys {
+                if let Some(index) = album_indices.get(&album_key.to_ascii_lowercase())
+                    && known_indices.insert(*index)
                 {
-                    indices.push(index);
+                    indices.push(*index);
                 }
             }
         }
@@ -5717,7 +5728,7 @@ mod tests {
         .unwrap();
         state
             .artist_appearance_album_keys
-            .insert("AC-DC".into(), BTreeSet::from(["back".into()]));
+            .insert("AC-DC".into(), BTreeSet::from(["BACK".into()]));
 
         let artist_rows = state
             .rows()
@@ -5727,6 +5738,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(artist_rows, vec!["AC/DC"]);
+        assert_eq!(state.artist_indices("AC-DC"), vec![0]);
     }
 
     #[test]
