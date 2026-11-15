@@ -811,7 +811,8 @@ pub fn parse_config(text: &str) -> Result<Config, String> {
 
 pub fn load_config() -> Result<Config, String> {
     let root = state_root()?;
-    load_config_at_root(&root)
+    let path = app_layout()?.config_file;
+    load_config_at_path(&path, &root)
 }
 
 /// Discover and load the sole Config v5 authority beneath an explicit state
@@ -819,6 +820,12 @@ pub fn load_config() -> Result<Config, String> {
 /// default document when the file is absent or invalid.
 pub fn load_config_at_root(root: &Path) -> Result<Config, String> {
     let path = config_path_for_root(root);
+    load_config_at_path(&path, root)
+}
+
+/// Load Config v5 from an explicit file while resolving its portable runtime
+/// paths against the application's stable state root.
+pub fn load_config_at_path(path: &Path, runtime_root: &Path) -> Result<Config, String> {
     if !path.is_file() {
         return Err(format!(
             "Config v5 was not found. Open a .spl backup to import its settings, or complete SPLINED Setup.\nPortable Config v5 location: {}",
@@ -838,7 +845,7 @@ pub fn load_config_at_root(root: &Path) -> Result<Config, String> {
             path.display()
         )
     })?;
-    resolve_runtime_paths(&mut config, root);
+    resolve_runtime_paths(&mut config, runtime_root);
 
     Ok(config)
 }

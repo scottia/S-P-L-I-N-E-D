@@ -1,7 +1,10 @@
 //! Config v5 and Rust-owned UI preference persistence.
 
-use crate::config::{Config, load_config_at_root, load_config_text_at_root};
-use crate::portable::{app_layout, state_root};
+use crate::config::{Config, load_config_at_path, load_config_text_at_root};
+use crate::portable::{
+    AppLayout, app_layout, configuration_directory_from_locator, configuration_locator_path,
+    default_configuration_directory, state_root,
+};
 use crate::safe_write::replace_text_file;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -796,27 +799,42 @@ pub fn config_text() -> Result<String, String> {
 
 pub fn save_config_text(text: &str) -> Result<Config, String> {
     let root = state_root()?;
-    save_config_text_at_root(text, &root)
+    let path = app_layout()?.config_file;
+    save_config_text_at_path(text, &root, &path)
 }
 
 pub fn save_config_text_at_root(text: &str, root: &Path) -> Result<Config, String> {
-    let runtime = load_config_text_at_root(text, root)?;
+    let path = root.join("data").join("config.toml");
+    save_config_text_at_path(text, root, &path)
+}
+
+fn save_config_text_at_path(
+    text: &str,
+    runtime_root: &Path,
+    path: &Path,
+) -> Result<Config, String> {
+    let runtime = load_config_text_at_root(text, runtime_root)?;
     validate_operational_config(&runtime)?;
     create_configured_runtime_directories(&runtime)?;
-    let path = root.join("data").join("config.toml");
-    replace_text_file(&path, text, "SPLINED configuration", |candidate| {
-        load_config_text_at_root(candidate, root)
+    replace_text_file(path, text, "SPLINED configuration", |candidate| {
+        load_config_text_at_root(candidate, runtime_root)
             .and_then(|candidate| validate_operational_config(&candidate))
     })?;
-    load_config_at_root(root)
+    load_config_at_path(path, runtime_root)
 }
 
 pub fn save_config(config: &Config) -> Result<Config, String> {
     let root = state_root()?;
-    save_config_at_root(config, &root)
+    let path = app_layout()?.config_file;
+    save_config_at_path(config, &root, &path)
 }
 
 pub fn save_config_at_root(config: &Config, root: &Path) -> Result<Config, String> {
+    let path = root.join("data").join("config.toml");
+    save_config_at_path(config, root, &path)
+}
+
+fn save_config_at_path(config: &Config, root: &Path, path: &Path) -> Result<Config, String> {
     let mut portable = config.clone();
     portable.library.music_library = portable_path(root, &portable.library.music_library);
     portable.scan.scan_library_dir = portable_path(root, &portable.scan.scan_library_dir);
@@ -827,7 +845,150 @@ pub fn save_config_at_root(config: &Config, root: &Path) -> Result<Config, Strin
     portable.credentials.credential_dir = portable_path(root, &portable.credentials.credential_dir);
     let text = toml::to_string_pretty(&portable)
         .map_err(|error| format!("Unable to serialize Config v5: {error}"))?;
-    save_config_text_at_root(&text, root)
+    save_config_text_at_path(&text, root, path)
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ConfigurationLocationDocument {
+    directory: PathBuf,
+}
+
+/// Save Config v5 into an operator-selected directory, move ui.toml beside
+/// it, switch the user-scoped locator, and only then remove the old copies.
+/// Runtime paths continue to resolve against the stable application root.
+pub fn save_config_in_directory(
+    config: &Config,
+    selected_directory: &Path,
+) -> Result<Config, String> {
+    let root = state_root()?;
+    let current = app_layout()?;
+    let locator = configuration_locator_path()?;
+    save_config_in_directory_at(config, &root, &current, selected_directory, &locator)
+}
+
+fn save_config_in_directory_at(
+    config: &Config,
+    root: &Path,
+    current: &AppLayout,
+    selected_directory: &Path,
+    locator: &Path,
+) -> Result<Config, String> {
+    if !selected_directory.is_absolute() {
+        return Err(format!(
+            "Configuration Path must be an absolute directory: {}",
+            selected_directory.display()
+        ));
+    }
+    if selected_directory.exists() && !selected_directory.is_dir() {
+        return Err(format!(
+            "Configuration Path is not a directory: {}",
+            selected_directory.display()
+        ));
+    }
+    std::fs::create_dir_all(selected_directory).map_err(|error| {
+        format!(
+            "Unable to create Configuration Path {}: {error}",
+            selected_directory.display()
+        )
+    })?;
+
+    let destination = selected_directory
+        .canonicalize()
+        .unwrap_or_else(|_| selected_directory.to_path_buf());
+    let current_directory = current
+        .config_dir
+        .canonicalize()
+        .unwrap_or_else(|_| current.config_dir.clone());
+    if current_directory == destination {
+        return save_config_at_path(config, root, &current.config_file);
+    }
+
+    let destination_config = destination.join("config.toml");
+    let destination_ui = destination.join("ui.toml");
+    save_config_at_path(config, root, &destination_config)?;
+
+    if current.ui_file.is_file() {
+        let ui_body = std::fs::read_to_string(&current.ui_file).map_err(|error| {
+            format!(
+                "Unable to read Interface Settings {} before moving them: {error}",
+                current.ui_file.display()
+            )
+        })?;
+        replace_text_file(
+            &destination_ui,
+            &ui_body,
+            "SPLINED interface settings",
+            |candidate| {
+                toml::from_str::<UiPreferences>(candidate)
+                    .map(|_| ())
+                    .map_err(|error| format!("Invalid staged interface settings: {error}"))
+            },
+        )?;
+    }
+
+    let default_directory = default_configuration_directory(root);
+    let default_directory = default_directory
+        .canonicalize()
+        .unwrap_or(default_directory);
+    if destination == default_directory {
+        if locator.is_file() {
+            std::fs::remove_file(locator).map_err(|error| {
+                format!(
+                    "Unable to restore the default Configuration Path locator {}: {error}",
+                    locator.display()
+                )
+            })?;
+        }
+    } else {
+        let locator_body = toml::to_string_pretty(&ConfigurationLocationDocument {
+            directory: destination.clone(),
+        })
+        .map_err(|error| format!("Unable to serialize Configuration Path: {error}"))?;
+        replace_text_file(
+            locator,
+            &locator_body,
+            "SPLINED configuration locator",
+            |candidate| {
+                let parsed: ConfigurationLocationDocument = toml::from_str(candidate)
+                    .map_err(|error| format!("Invalid staged Configuration Path: {error}"))?;
+                if parsed.directory.is_absolute() {
+                    Ok(())
+                } else {
+                    Err("The staged Configuration Path is not absolute.".to_string())
+                }
+            },
+        )?;
+    }
+
+    let activated_directory = configuration_directory_from_locator(root, locator)?;
+    let activated = AppLayout::from_root_and_config_dir(root.to_path_buf(), activated_directory);
+    if activated.config_file != destination_config {
+        return Err(format!(
+            "Configuration Path activation failed; expected {}, got {}.",
+            destination_config.display(),
+            activated.config_file.display()
+        ));
+    }
+    let verified = load_config_at_path(&activated.config_file, root)?;
+
+    for old_file in [&current.config_file, &current.ui_file] {
+        if old_file.is_file() {
+            std::fs::remove_file(old_file).map_err(|error| {
+                format!(
+                    "Configuration Path changed, but the old file could not be removed {}: {error}",
+                    old_file.display()
+                )
+            })?;
+        }
+    }
+    if current.config_dir.is_dir()
+        && std::fs::read_dir(&current.config_dir)
+            .map(|mut entries| entries.next().is_none())
+            .unwrap_or(false)
+    {
+        let _ = std::fs::remove_dir(&current.config_dir);
+    }
+    Ok(verified)
 }
 
 /// Windows setup/settings validation. Parsing protects the complete Config v5
@@ -965,6 +1126,20 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    fn test_config(root: &Path) -> Config {
+        let library = root.join("music");
+        std::fs::create_dir_all(&library).unwrap();
+        let mut config = Config::default();
+        config.library.music_library = library.to_string_lossy().into_owned();
+        config.scan.scan_library_dir = config.library.music_library.clone();
+        config.scan.cache_dir = root.join("database").to_string_lossy().into_owned();
+        config.scan.shared_artist_art_dir = root.join("artist-art").to_string_lossy().into_owned();
+        config.scan.temporary_cache_dir = root.join("temporary").to_string_lossy().into_owned();
+        config.scan.log_dir = root.join("logs").to_string_lossy().into_owned();
+        config.credentials.credential_dir = root.join("credentials").to_string_lossy().into_owned();
+        config
+    }
+
     #[test]
     fn external_paths_remain_absolute_and_state_paths_become_portable() {
         let root = Path::new(r"C:\Portable\SPLINED");
@@ -984,7 +1159,7 @@ mod tests {
     fn clean_root_stays_empty_until_explicit_save() {
         let parent = TempDir::new().unwrap();
         let root = parent.path().join("clean-portable");
-        let error = load_config_at_root(&root).unwrap_err();
+        let error = crate::config::load_config_at_root(&root).unwrap_err();
         assert!(error.contains("Config v5 was not found"));
         assert!(!root.exists());
         assert!(!root.join("data").exists());
@@ -1019,6 +1194,63 @@ mod tests {
         assert!(Path::new(&saved.credentials.credential_dir).is_dir());
         assert!(!root.path().join("docker_builds").exists());
         assert!(!root.path().join("_cache").exists());
+    }
+
+    #[test]
+    fn configuration_relocation_moves_config_and_ui_then_removes_old_data_dir() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("install");
+        std::fs::create_dir_all(&root).unwrap();
+        let config = test_config(&root);
+        save_config_at_root(&config, &root).unwrap();
+        let current = AppLayout::from_root(root.clone());
+        std::fs::write(
+            &current.ui_file,
+            toml::to_string_pretty(&UiPreferences::default()).unwrap(),
+        )
+        .unwrap();
+        let destination = temp.path().join("relocated-config");
+        let locator = temp
+            .path()
+            .join("local-app-data/configuration-location.toml");
+
+        let saved =
+            save_config_in_directory_at(&config, &root, &current, &destination, &locator).unwrap();
+
+        assert!(destination.join("config.toml").is_file());
+        assert!(destination.join("ui.toml").is_file());
+        assert!(!current.config_file.exists());
+        assert!(!current.ui_file.exists());
+        assert!(!current.config_dir.exists());
+        assert_eq!(
+            configuration_directory_from_locator(&root, &locator).unwrap(),
+            destination.canonicalize().unwrap()
+        );
+        assert_eq!(saved.library.music_library, config.library.music_library);
+    }
+
+    #[test]
+    fn relative_configuration_path_is_rejected_without_touching_existing_files() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("install");
+        std::fs::create_dir_all(&root).unwrap();
+        let config = test_config(&root);
+        save_config_at_root(&config, &root).unwrap();
+        let current = AppLayout::from_root(root.clone());
+        let locator = temp.path().join("locator.toml");
+
+        let error = save_config_in_directory_at(
+            &config,
+            &root,
+            &current,
+            Path::new("relative-config"),
+            &locator,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("absolute"));
+        assert!(current.config_file.is_file());
+        assert!(!locator.exists());
     }
 
     #[test]

@@ -8,6 +8,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
+use serde::Deserialize;
+
 static APP_ROOT_OVERRIDE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
 static STATE_ROOT_OVERRIDE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
 
@@ -22,6 +24,10 @@ pub struct AppLayout {
 impl AppLayout {
     pub fn from_root(root: PathBuf) -> Self {
         let config_dir = root.join("data");
+        Self::from_root_and_config_dir(root, config_dir)
+    }
+
+    pub fn from_root_and_config_dir(root: PathBuf, config_dir: PathBuf) -> Self {
         Self {
             config_file: config_dir.join("config.toml"),
             ui_file: config_dir.join("ui.toml"),
@@ -108,7 +114,63 @@ pub(crate) fn portable_root_from_executable(
 }
 
 pub fn app_layout() -> Result<AppLayout, String> {
-    state_root().map(AppLayout::from_root)
+    let root = state_root()?;
+    let config_dir = configuration_directory_for_root(&root)?;
+    Ok(AppLayout::from_root_and_config_dir(root, config_dir))
+}
+
+#[derive(Debug, Deserialize)]
+struct ConfigurationLocation {
+    directory: PathBuf,
+}
+
+pub fn default_configuration_directory(root: &Path) -> PathBuf {
+    root.join("data")
+}
+
+/// The locator is deliberately user-scoped rather than stored beside the
+/// executable. That lets an operator move config.toml and ui.toml completely
+/// out of the install directory while preserving the selection across starts.
+pub fn configuration_locator_path() -> Result<PathBuf, String> {
+    let local_app_data = std::env::var_os("LOCALAPPDATA").ok_or_else(|| {
+        "LOCALAPPDATA is unavailable for the SPLINED configuration locator.".to_string()
+    })?;
+    Ok(PathBuf::from(local_app_data)
+        .join("SPLINED")
+        .join("configuration-location.toml"))
+}
+
+pub fn configuration_directory_for_root(root: &Path) -> Result<PathBuf, String> {
+    let locator = configuration_locator_path()?;
+    configuration_directory_from_locator(root, &locator)
+}
+
+pub fn configuration_directory_from_locator(
+    root: &Path,
+    locator: &Path,
+) -> Result<PathBuf, String> {
+    if !locator.is_file() {
+        return Ok(default_configuration_directory(root));
+    }
+    let body = std::fs::read_to_string(locator).map_err(|error| {
+        format!(
+            "Unable to read the SPLINED configuration locator {}: {error}",
+            locator.display()
+        )
+    })?;
+    let location: ConfigurationLocation = toml::from_str(&body).map_err(|error| {
+        format!(
+            "Invalid SPLINED configuration locator {}: {error}",
+            locator.display()
+        )
+    })?;
+    if !location.directory.is_absolute() {
+        return Err(format!(
+            "The SPLINED configuration directory must be absolute: {}",
+            location.directory.display()
+        ));
+    }
+    Ok(location.directory)
 }
 
 /// Format an internal Windows path for editable UI and operator-facing text.
@@ -219,6 +281,28 @@ mod tests {
         let layout = AppLayout::from_root(root.clone());
         assert!(!root.exists());
         assert!(!layout.config_dir.exists());
+    }
+
+    #[test]
+    fn explicit_locator_selects_an_absolute_configuration_directory() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().join("portable");
+        let selected = temp.path().join("settings");
+        let locator = temp.path().join("locator.toml");
+        std::fs::write(
+            &locator,
+            format!("directory = {:?}\n", selected.to_string_lossy()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            configuration_directory_from_locator(&root, &locator).unwrap(),
+            selected
+        );
+        assert_eq!(
+            configuration_directory_from_locator(&root, &temp.path().join("missing.toml")).unwrap(),
+            root.join("data")
+        );
     }
 
     #[test]

@@ -199,8 +199,9 @@ fn artist_overview_keeps_native_parity_controls_and_album_row_navigation() {
     let ui = source("windows/ui/app.slint");
     assert!(ui.contains("artist-summary-visible"));
     assert!(ui.contains("MusicBrainz ID"));
-    assert!(ui.contains("root.browse-artist-artwork(); root.workspace-mode = 2;"));
-    assert!(ui.contains("callback browse-artist-artwork(); callback upload-artist-artwork();"));
+    assert!(ui.contains("root.enter-artist-artwork(); root.workspace-mode = 2;"));
+    assert!(ui.contains("else if (root.artist-artwork-mode) { root.browse-artist-artwork(); }"));
+    assert!(ui.contains("callback enter-artist-artwork(); callback browse-artist-artwork();"));
     assert!(ui.contains("label: \"Upload Art\""));
     assert!(ui.contains("clicked => root.upload-artist-artwork();"));
     assert!(ui.contains("thumbnail-size: artist-scroll.visible-width < (760px * AppTheme.ui-scale) ? (120px * AppTheme.ui-scale) : (170px * AppTheme.ui-scale)"));

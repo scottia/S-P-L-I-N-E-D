@@ -436,7 +436,7 @@ impl LibraryState {
                     .filter(move |track| {
                         (!filter_to_artist
                             || focused_artist.is_some_and(|artist| {
-                                Self::track_matches_artist(&track.artist, artist)
+                                Self::track_matches_artist_in_album(album, track, artist)
                             }))
                             && (!self.show_tracks
                                 || self.completed_fallback_return_key.as_deref().is_some_and(
@@ -924,8 +924,69 @@ impl LibraryState {
         album.snapshot.album_mbid.trim().is_empty()
     }
 
-    fn track_matches_artist(track_artist: &str, artist: &str) -> bool {
-        Self::artist_credit_position(track_artist, artist).is_some()
+    fn numbered_track_artist_credit(value: &str) -> Option<&str> {
+        let mut fields = value.split(" - ");
+        let number = fields.next()?.trim();
+        let artist = fields.next()?.trim();
+        let title = fields.next()?.trim();
+        let numbered = !number.is_empty()
+            && number.split('-').all(|part| {
+                !part.is_empty() && part.chars().all(|character| character.is_ascii_digit())
+            });
+        (numbered && !artist.is_empty() && !title.is_empty()).then_some(artist)
+    }
+
+    fn artist_credit_position_in_album(
+        album: &AlbumEntry,
+        track: &MediaTrackSnapshot,
+        artist: &str,
+    ) -> Option<usize> {
+        if let Some(position) = Self::artist_credit_position(&track.artist, artist) {
+            return Some(position);
+        }
+        let owner = album.snapshot.artist.trim();
+        let owner_identity = artist_projection_identity(owner);
+        let requested_identity = artist_projection_identity(artist);
+        let filename = Path::new(&track.path)
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        for inferred in [
+            Self::numbered_track_artist_credit(&track.title),
+            Self::numbered_track_artist_credit(filename),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let parts = inferred
+                .split(" & ")
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>();
+            if parts.len() > 1
+                && parts
+                    .iter()
+                    .any(|part| artist_projection_identity(part) == owner_identity)
+            {
+                if let Some(position) = parts
+                    .iter()
+                    .position(|part| artist_projection_identity(part) == requested_identity)
+                {
+                    return Some(position);
+                }
+            } else if artist_projection_identity(inferred) == requested_identity {
+                return Some(0);
+            }
+        }
+        None
+    }
+
+    fn track_matches_artist_in_album(
+        album: &AlbumEntry,
+        track: &MediaTrackSnapshot,
+        artist: &str,
+    ) -> bool {
+        Self::artist_credit_position_in_album(album, track, artist).is_some()
     }
 
     fn artist_credit_position(track_artist: &str, artist: &str) -> Option<usize> {
@@ -975,7 +1036,7 @@ impl LibraryState {
             .snapshot
             .compilation_tracks
             .iter()
-            .filter(|track| Self::track_matches_artist(&track.artist, artist))
+            .filter(|track| Self::track_matches_artist_in_album(album, track, artist))
             .collect::<Vec<_>>();
         (!matching.is_empty()).then(|| {
             (
@@ -995,7 +1056,10 @@ impl LibraryState {
             .snapshot
             .compilation_tracks
             .iter()
-            .any(|track| Self::artist_credit_is_secondary(&track.artist, artist))
+            .any(|track| {
+                Self::artist_credit_position_in_album(album, track, artist)
+                    .is_some_and(|position| position > 0)
+            })
     }
 
     pub fn rows(&self) -> Vec<LibraryRow> {
@@ -1121,7 +1185,7 @@ impl LibraryState {
                         .snapshot
                         .compilation_tracks
                         .iter()
-                        .any(|track| Self::track_matches_artist(&track.artist, artist));
+                        .any(|track| Self::track_matches_artist_in_album(album, track, artist));
                 let fallback_appearance = album.snapshot.album_mbid.trim().is_empty()
                     && (appearance || matching_fallback_track);
                 let in_artist_scope = album.snapshot.artist.trim().eq_ignore_ascii_case(artist)
@@ -1899,7 +1963,7 @@ impl LibraryState {
             && self.focused_artist.as_ref().is_some_and(|artist| {
                 !album.snapshot.compilation_tracks.iter().any(|track| {
                     track.path.eq_ignore_ascii_case(track_path)
-                        && Self::track_matches_artist(&track.artist, artist)
+                        && Self::track_matches_artist_in_album(album, track, artist)
                 })
             })
         {
@@ -1983,7 +2047,9 @@ impl LibraryState {
                 self.show_tracks
                     || self.view != LibraryView::Artists
                     || focused_artist
-                        .is_none_or(|artist| Self::track_matches_artist(&track.artist, artist))
+                        .is_none_or(|artist| {
+                            Self::track_matches_artist_in_album(album, track, artist)
+                        })
             })
             .map(|track| track.path.to_ascii_lowercase())
             .collect::<BTreeSet<_>>();
@@ -2689,6 +2755,10 @@ pub struct ApplicationState {
     pub artist_overview_biography: String,
     pub artist_overview_external_url: String,
     pub artist_overview_musicbrainz_id: String,
+    /// Full-resolution portrait for the focused Artist overview. The library
+    /// row map contains circular list derivatives and must never replace this
+    /// source path.
+    pub artist_overview_portrait_path: String,
     pub artist_overview_banner_path: String,
     pub artist_overview_similar_artists: Vec<(String, String)>,
     pub artist_overview_genres: Vec<String>,
@@ -2959,6 +3029,7 @@ impl ApplicationState {
             artist_overview_biography: String::new(),
             artist_overview_external_url: String::new(),
             artist_overview_musicbrainz_id: String::new(),
+            artist_overview_portrait_path: String::new(),
             artist_overview_banner_path: String::new(),
             artist_overview_similar_artists: Vec::new(),
             artist_overview_genres: Vec::new(),
@@ -3081,6 +3152,57 @@ impl ApplicationState {
             run_completed: 0,
             run_failed: 0,
         })
+    }
+
+    /// Apply a saved non-library configuration without reopening SQLite or
+    /// discarding the current selection, artwork, provider hydration, and run
+    /// history. Library path/separator changes still use a full snapshot
+    /// replacement in the GUI save handler.
+    pub fn apply_saved_runtime_config(&mut self, config: Config) -> Result<(), String> {
+        let enabled_source_names =
+            resolve_sources(&config.sources, &config.source_policies, None, None, &[])?;
+        let previous_sources = self.sources.clone();
+        self.sources = candidate_source_card_names(&config)
+            .into_iter()
+            .map(|name| {
+                let prior = previous_sources
+                    .iter()
+                    .find(|source| source.name.eq_ignore_ascii_case(&name));
+                let is_samples = name.eq_ignore_ascii_case("samples");
+                let enabled = !is_samples
+                    && (name.eq_ignore_ascii_case("local")
+                        || enabled_source_names
+                            .iter()
+                            .any(|source| source.eq_ignore_ascii_case(&name)));
+                SourceState {
+                    name,
+                    enabled,
+                    candidate_count: prior.map_or(0, |source| source.candidate_count),
+                    artist_candidate_count: prior.map_or(0, |source| source.artist_candidate_count),
+                    cover_candidate_count: prior.map_or(0, |source| source.cover_candidate_count),
+                    status: if is_samples && !config.samples.sample_write {
+                        "Excluded".to_string()
+                    } else if is_samples {
+                        "No images".to_string()
+                    } else if !enabled {
+                        "Excluded".to_string()
+                    } else if prior.is_some_and(|source| source.enabled) {
+                        prior
+                            .map(|source| source.status.clone())
+                            .unwrap_or_else(|| "Ready".to_string())
+                    } else {
+                        "Ready".to_string()
+                    },
+                }
+            })
+            .collect();
+        self.launch_mode = match config.mode {
+            Mode::Read => LaunchMode::Read,
+            Mode::Write => LaunchMode::LiveWrite,
+        };
+        self.adjustments = AdjustmentState::from_config(&config);
+        self.config = config;
+        Ok(())
     }
 
     pub fn replace_config(&mut self, config: Config) -> Result<(), String> {
@@ -3489,7 +3611,9 @@ impl ApplicationState {
             .snapshot
             .compilation_tracks
             .iter()
-            .filter(|track| LibraryState::track_matches_artist(&track.artist, artist))
+            .filter(|track| {
+                LibraryState::track_matches_artist_in_album(album, track, artist)
+            })
             .map(|track| track.path.clone())
             .collect::<Vec<_>>();
         let album_key = album.snapshot.album_key.to_ascii_lowercase();
@@ -5330,16 +5454,11 @@ mod tests {
         })
         .unwrap();
 
-        let states = state.artist_states_with_overrides(&HashSet::from([
-            "album-0000".to_string(),
-        ]));
+        let states = state.artist_states_with_overrides(&HashSet::from(["album-0000".to_string()]));
 
         assert_eq!(states.len(), ARTIST_COUNT);
         assert_eq!(states.get("Artist 0000"), Some(&ArtistState::Complete));
-        assert_eq!(
-            states.get("Artist 5023"),
-            Some(&ArtistState::Unprocessed)
-        );
+        assert_eq!(states.get("Artist 5023"), Some(&ArtistState::Unprocessed));
     }
 
     #[test]
@@ -5655,6 +5774,53 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(visible, vec!["b", "e"]);
+    }
+
+    #[test]
+    fn artist_overview_projects_owner_anchored_numbered_duet_into_comp_card() {
+        let mut state = library();
+        let owned = state
+            .albums
+            .iter_mut()
+            .find(|album| album.snapshot.album_key == "a")
+            .unwrap();
+        owned.snapshot.artist = "Rob Wasserman".to_string();
+        owned.snapshot.album_mbid = "release-rob".to_string();
+
+        {
+            let fallback = state
+                .albums
+                .iter_mut()
+                .find(|album| album.snapshot.album_key == "e")
+                .unwrap();
+            fallback.snapshot.artist = "Aaron Neville".to_string();
+            fallback.snapshot.album_mbid.clear();
+            fallback.snapshot.compilation_tracks = vec![MediaTrackSnapshot {
+                path: r"C:\Music\Aaron Neville\COMP\1-16 - Rob Wasserman & Aaron Neville - Stardust.flac".to_string(),
+                title: "1-16 - Rob Wasserman & Aaron Neville - Stardust".to_string(),
+                artist: "Aaron Neville".to_string(),
+                embedded_artwork_recorded: false,
+            }];
+        }
+        state.focused_artist = Some("Rob Wasserman".to_string());
+
+        let visible = state
+            .artist_overview_album_indices(&BTreeSet::new(), true)
+            .into_iter()
+            .map(|index| state.albums[index].snapshot.album_key.as_str())
+            .collect::<BTreeSet<_>>();
+
+        assert!(visible.contains("a"));
+        assert!(visible.contains("e"));
+        let fallback = state
+            .albums
+            .iter()
+            .find(|album| album.snapshot.album_key == "e")
+            .unwrap();
+        assert_eq!(
+            LibraryState::artist_fallback_track_progress(fallback, "Rob Wasserman"),
+            Some((0, 1))
+        );
     }
 
     #[test]

@@ -1799,6 +1799,7 @@ export component AppWindow inherits Window {
     in-out property <string> settings-scan-library;
     in-out property <string> settings-artist-separator-regex;
     in-out property <string> settings-artist-separator-profile: "Navidrome default";
+    in-out property <string> settings-configuration-dir;
     in-out property <string> settings-database-dir;
     in-out property <string> settings-shared-artist-art-dir;
     in-out property <string> storage-cache-usage: "Calculating…";
@@ -1963,7 +1964,7 @@ export component AppWindow inherits Window {
     // Slint 1.18 has no native justified paragraph alignment.
     pure callback layout-artist-biography(string, float, float) -> [UiBiographyLine];
     callback open-artist-external(); callback open-artist-musicbrainz();
-    callback browse-artist-artwork(); callback upload-artist-artwork(); callback write-artist-artwork(); callback approve-banner();
+    callback enter-artist-artwork(); callback browse-artist-artwork(); callback upload-artist-artwork(); callback write-artist-artwork(); callback approve-banner();
     callback prepare-artist-embed(); callback confirm-artist-embed-action(bool);
     callback queue-artist-albums();
     callback prepare-compilation-repair(string); callback confirm-compilation-repair-action(bool);
@@ -2121,6 +2122,10 @@ export component AppWindow inherits Window {
                         }
                     }
 
+                    Heading { text: "Configuration Storage"; color: AppTheme.cyan; height: (30px * AppTheme.ui-scale); }
+                    Text { text: "Config v5 and Interface Settings default to the installation data folder. Saving a different absolute folder moves config.toml and ui.toml there and removes the old copies."; color: AppTheme.secondary-foreground; wrap: word-wrap; height: (42px * AppTheme.ui-scale); }
+                    PathSettingField { label: "Configuration Path *"; value <=> root.settings-configuration-dir; hint: "Folder containing config.toml and ui.toml"; browse => root.browse-setting-directory("configuration"); }
+
                     Rectangle { height: (128px * AppTheme.ui-scale); border-radius: (8px * AppTheme.ui-scale); border-width: (1px * AppTheme.ui-scale); border-color: AppTheme.border; background: AppTheme.quiet-surface;
                         VerticalLayout { padding: (11px * AppTheme.ui-scale); spacing: (7px * AppTheme.ui-scale);
                             HorizontalLayout { height: (27px * AppTheme.ui-scale); spacing: (10px * AppTheme.ui-scale);
@@ -2275,7 +2280,15 @@ export component AppWindow inherits Window {
                                 HorizontalLayout { padding: (4px * AppTheme.ui-scale); spacing: (1px * AppTheme.ui-scale);
                                     if !root.media-selector-expanded: ExpansionGlyph { expanded: false; clicked => root.set-region-expanded("media", true); }
                                     WorkspaceButton { label: "Find & Match Artwork"; selected: root.workspace-mode == 0; enabled: !root.intro-active; activated => { root.workspace-mode = 0; } }
-                                    WorkspaceButton { label: root.artist-artwork-mode ? "Artists Art Enhancements" : "Album Art Enhancements"; selected: root.workspace-mode == 2; enabled: !root.intro-active; activated => { root.workspace-mode = 2; } }
+                                    WorkspaceButton {
+                                        label: root.artist-artwork-mode || (root.selected-artwork-artist-overview && root.overview-mode == "Artist") ? "Artists Art Enhancements" : "Album Art Enhancements";
+                                        selected: root.workspace-mode == 2;
+                                        enabled: !root.intro-active;
+                                        activated => {
+                                            if (root.selected-artwork-artist-overview && root.overview-mode == "Artist") { root.enter-artist-artwork(); }
+                                            root.workspace-mode = 2;
+                                        }
+                                    }
                                     WorkspaceButton { label: "Album Track Embedding"; selected: root.workspace-mode == 3; queued: root.embed-panel-has-work || root.embed-panel-staging-count > 0; enabled: !root.intro-active; activated => { root.workspace-mode = 3; root.show-embed-queue(); } }
                                 }
                             }
@@ -2556,7 +2569,7 @@ export component AppWindow inherits Window {
                                                                 Image { visible: root.artist-overview-draft-selected || root.artist-overview-has-artwork; source: root.artist-overview-draft-selected ? root.artist-overview-draft-artwork : root.artist-overview-artwork; x: (3px * AppTheme.ui-scale); y: (3px * AppTheme.ui-scale); width: parent.width - (6px * AppTheme.ui-scale); height: parent.height - (6px * AppTheme.ui-scale); image-fit: cover; }
                                                             }
                                                             Rectangle { x: artist-header.thumbnail-x - (8px * AppTheme.ui-scale); y: artist-header.thumbnail-y + artist-header.thumbnail-size - (13px * AppTheme.ui-scale); width: (14px * AppTheme.ui-scale); height: (14px * AppTheme.ui-scale); border-radius: (7px * AppTheme.ui-scale); border-width: (2px * AppTheme.ui-scale); border-color: AppTheme.green; background: root.artist-artwork-mode ? AppTheme.green : AppTheme.image-surface;
-                                                                TouchArea { enabled: !root.operation-busy; mouse-cursor: pointer; clicked => { root.browse-artist-artwork(); root.workspace-mode = 2; } }
+                                                                TouchArea { enabled: !root.operation-busy; mouse-cursor: pointer; clicked => { root.enter-artist-artwork(); root.workspace-mode = 2; } }
                                                             }
                                                             Rectangle { x: artist-header.thumbnail-x + artist-header.thumbnail-size + (3px * AppTheme.ui-scale); y: artist-header.thumbnail-y + (5px * AppTheme.ui-scale); width: (17px * AppTheme.ui-scale); height: (17px * AppTheme.ui-scale); border-radius: (3px * AppTheme.ui-scale); border-width: (1px * AppTheme.ui-scale); border-color: AppTheme.cyan; background: root.artist-summary-visible ? AppTheme.cyan : AppTheme.image-surface;
                                                                 Text { text: root.artist-summary-visible ? "▴" : "▾"; color: root.artist-summary-visible ? AppTheme.image-surface : AppTheme.cyan; font-size: (10px * AppTheme.ui-scale) * AppTheme.font-scale; horizontal-alignment: center; vertical-alignment: center; }
@@ -3190,12 +3203,14 @@ export component AppWindow inherits Window {
                                         Text { text: "Themed Packaging"; color: root.artist-theme-art-enabled ? AppTheme.green : AppTheme.secondary-foreground; font-size: (11px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; }
                                         TouchArea { mouse-cursor: pointer; clicked => root.artist-theme-art-toggle(); }
                                     }
-                                    if root.selected-artwork-artist-overview && root.selected-artwork-artist-has-art && !root.artist-banner-preview-active && !root.artist-artwork-mode: Image {
-                                        source: root.selected-artwork-artist-art;
+                                    if root.selected-artwork-artist-overview && root.selected-artwork-artist-has-art && !root.artist-banner-preview-active && !root.artist-artwork-mode: Rectangle {
                                         width: min(max((0px * AppTheme.ui-scale), parent.width - (40px * AppTheme.ui-scale)), max((0px * AppTheme.ui-scale), parent.height - (40px * AppTheme.ui-scale)));
                                         height: self.width;
                                         x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
-                                        image-fit: contain;
+                                        border-radius: self.width / 2;
+                                        clip: true;
+                                        background: AppTheme.image-surface;
+                                        Image { source: root.selected-artwork-artist-art; width: parent.width; height: parent.height; image-fit: cover; }
                                     }
                                     if root.selected-artwork-artist-overview && !root.selected-artwork-artist-has-art && !root.artist-banner-preview-active && !root.artist-artwork-mode: Rectangle {
                                         width: min((220px * AppTheme.ui-scale), min(max((0px * AppTheme.ui-scale), parent.width - (40px * AppTheme.ui-scale)), max((0px * AppTheme.ui-scale), parent.height - (40px * AppTheme.ui-scale))));
@@ -3233,7 +3248,7 @@ export component AppWindow inherits Window {
                                         label: root.selected-artwork-artist-overview && !root.artist-artwork-mode && root.overview-mode != "Fallback" ? "Artist Art" : root.selected-artwork-write-label; width: (parent.width - (12px * AppTheme.ui-scale)) / 3; height: (34px * AppTheme.ui-scale); label-font-size: (parent.width < (340px * AppTheme.ui-scale) ? (10px * AppTheme.ui-scale) : (13px * AppTheme.ui-scale)) * AppTheme.font-scale; tone: root.selected-artwork-comp ? "embed" : (root.selected-artwork-existing ? "green" : "orange");
                                         enabled: !root.operation-busy && !root.intro-active && !root.compilation-report-preview-mode && (!root.artist-artwork-mode || root.workspace-mode == 2) && (root.selected-artwork-write-ready || (root.selected-artwork-artist-overview && !root.artist-artwork-mode && root.overview-mode != "Fallback"));
                                         clicked => {
-                                            if (root.selected-artwork-artist-overview && !root.artist-artwork-mode && root.overview-mode != "Fallback") { root.browse-artist-artwork(); root.workspace-mode = 2; }
+                                            if (root.selected-artwork-artist-overview && !root.artist-artwork-mode && root.overview-mode != "Fallback") { root.enter-artist-artwork(); root.workspace-mode = 2; }
                                             else if (root.artist-artwork-mode) { root.write-artist-artwork(); }
                                             else if (root.selected-artwork-is-sample) {
                                                 if (root.confirmation-messages-disabled) {
@@ -3308,6 +3323,7 @@ export component AppWindow inherits Window {
                                     clicked => {
                                         if (root.awaiting-candidate || root.awaiting-musicbrainz) { root.candidate-action("skip_album"); }
                                         else if (root.running) { root.stop(); }
+                                        else if (root.artist-artwork-mode) { root.browse-artist-artwork(); }
                                         else { root.launch(); }
                                     }
                                 }
@@ -3416,6 +3432,7 @@ export component AppWindow inherits Window {
                             VerticalLayout { spacing: (5px * AppTheme.ui-scale);
                                 SettingsHelpTip { summary: "Which folders does SPLINED use?"; detail: "The music library is read as your collection. The database directory contains splined.db, which records inventory and progress. Temporary cache holds disposable artwork and previews; logs contain diagnostics. Saving settings validates these paths and reloads the library, but does not write music files."; }
                                 Heading { text: "Library And Application Paths"; height: (27px * AppTheme.ui-scale); }
+                                PathSettingField { label: "Configuration Path *"; value <=> root.settings-configuration-dir; hint: "Folder containing config.toml and ui.toml"; browse => root.browse-setting-directory("configuration"); }
                                 PathSettingField { label: "Music Library *"; value <=> root.settings-music-library; hint: "Existing local or UNC directory"; browse => root.browse-setting-directory("music"); }
                                 SettingToggle { label: "Scan Mode Enabled"; value <=> root.settings-scan-mode; }
                                 if root.settings-scan-mode: PathSettingField { label: "Scan Folder"; value <=> root.settings-scan-library; hint: "Optional · defaults to Music Library"; browse => root.browse-setting-directory("scan"); }

@@ -307,10 +307,33 @@ fn numbered_track_artist_credit(value: &str) -> Option<&str> {
     (numbered && !artist.is_empty() && !title.is_empty()).then_some(artist)
 }
 
+/// Split a strict numbered filename/title duet only when one side is the
+/// indexed Album owner. This recovers a real guest credit from historical
+/// rows such as `Rob Wasserman & Aaron Neville` without treating a band whose
+/// own name contains `&` as two Artists.
+fn owner_anchored_inferred_credits(value: &str, owner: &str) -> Vec<String> {
+    let owner_identity = artist_projection_identity(owner);
+    let parts = value
+        .split(" & ")
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if parts.len() > 1
+        && parts
+            .iter()
+            .any(|part| artist_projection_identity(part) == owner_identity)
+    {
+        parts.into_iter().map(str::to_string).collect()
+    } else {
+        vec![value.trim().to_string()]
+    }
+}
+
 fn indexed_track_artist_credits<'a>(
     track_artist: &'a str,
     title: &'a str,
     filename: &'a str,
+    owner: &'a str,
     separator: &Regex,
 ) -> Vec<String> {
     let mut credits = artist_credit_values(track_artist, separator);
@@ -327,7 +350,11 @@ fn indexed_track_artist_credits<'a>(
     ]
     .into_iter()
     .flatten()
-    .flat_map(|value| artist_credit_values(value, separator))
+    .flat_map(|value| {
+        artist_credit_values(value, separator)
+            .into_iter()
+            .flat_map(|credit| owner_anchored_inferred_credits(&credit, owner))
+    })
     {
         if !credits.iter().any(|existing| {
             artist_projection_identity(existing) == artist_projection_identity(&inferred)
@@ -401,7 +428,13 @@ pub fn indexed_artist_appearances(
             .file_stem()
             .and_then(|value| value.to_str())
             .unwrap_or_default();
-        let matched = indexed_track_artist_credits(&track_artist, &title, filename, &separator)
+        let matched = indexed_track_artist_credits(
+            &track_artist,
+            &title,
+            filename,
+            &owner,
+            &separator,
+        )
             .into_iter()
             .any(|credit| artist_credit_position(&credit, artist_name, &separator).is_some());
         if !matched {
@@ -467,7 +500,13 @@ pub fn indexed_artist_catalog_projection(
             .file_stem()
             .and_then(|value| value.to_str())
             .unwrap_or_default();
-        let credits = indexed_track_artist_credits(&track_artist, &title, filename, &separator);
+        let credits = indexed_track_artist_credits(
+            &track_artist,
+            &title,
+            filename,
+            &owner,
+            &separator,
+        );
         let mbids = extract_mbids(&track_artist_mbids);
         for (position, credit) in credits.iter().enumerate() {
             if synthetic_album_artist(credit) {
@@ -7981,6 +8020,46 @@ mod tests {
             Some(aaron)
         );
         assert_eq!(projection.album_keys.get("Rob Wasserman").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn numbered_duet_title_recovers_guest_without_manufacturing_combined_artist() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = database_path(temp.path());
+        let connection = open_database(&db, false).unwrap();
+        let now = sqlite_now(&connection).unwrap();
+        connection.execute(
+            "INSERT INTO artists(artist_key,artist_name,primary_path,created_at,updated_at,last_seen_at,splined_version) \
+             VALUES('aaron','Aaron Neville','/music/Aaron Neville',?1,?1,?1,'test')",
+            params![now],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO albums(album_key,artist_key,album_name,musicbrainz_albumid,path,representative_file,tag_signature,created_at,updated_at,last_seen_at,splined_version) \
+             VALUES('gold','aaron','Gold','release-gold','/music/Aaron Neville/Gold','/music/Aaron Neville/Gold/1-16.mp3','tags',?1,?1,?1,'test')",
+            params![now],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO tracks(track_key,album_key,path,title,artist_name,file_size,file_mtime_ns,updated_at,splined_version) \
+             VALUES('stardust','gold','/music/Aaron Neville/Gold/1-16 - Rob Wasserman & Aaron Neville - Stardust.mp3','1-16 - Rob Wasserman & Aaron Neville - Stardust','Aaron Neville',1,1,?1,'test')",
+            params![now],
+        ).unwrap();
+        drop(connection);
+
+        let projection = indexed_artist_catalog_projection(
+            db.to_str().unwrap(),
+            crate::config::DEFAULT_ARTIST_SEPARATOR_REGEX,
+        )
+        .unwrap();
+
+        assert_eq!(
+            projection.album_keys.get("Rob Wasserman"),
+            Some(&["gold".to_string()].into_iter().collect())
+        );
+        assert_eq!(
+            projection.album_keys.get("Aaron Neville"),
+            Some(&["gold".to_string()].into_iter().collect())
+        );
+        assert!(!projection.album_keys.contains_key("Rob Wasserman & Aaron Neville"));
     }
 
     #[test]

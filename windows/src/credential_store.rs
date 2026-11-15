@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use url::Url;
 
 pub const ALBUM_COORDINATION_PROVIDER: &str = "Album Coordination";
+pub const CREDENTIAL_MASK: &str = "***";
 
 pub const PROVIDERS: [&str; 6] = [
     "Navidrome",
@@ -52,6 +53,23 @@ impl CredentialEditor {
             value.auth_method = "password".to_string();
         }
         value
+    }
+
+    /// Return a UI-safe editor. Credentials remain available to the runtime,
+    /// but populated usernames, identifiers, API keys, tokens, and passwords
+    /// are never copied into visible controls or diagnostic snapshots.
+    pub fn masked_for_display(&self) -> Self {
+        let mut masked = self.clone();
+        for value in [
+            &mut masked.username,
+            &mut masked.identifier,
+            &mut masked.secret,
+        ] {
+            if !value.trim().is_empty() {
+                *value = CREDENTIAL_MASK.to_string();
+            }
+        }
+        masked
     }
 }
 
@@ -125,6 +143,7 @@ pub fn load_editor(config: &Config, provider: &str) -> Result<CredentialEditor, 
 }
 
 pub fn save_editor(config: &Config, editor: &CredentialEditor) -> Result<(), String> {
+    let editor = resolve_masked_editor(config, editor)?;
     let provider = canonical_provider(&editor.provider);
     let path = credential_path(config, provider)?;
     let mut object = if path.is_file() {
@@ -194,7 +213,7 @@ pub fn save_editor(config: &Config, editor: &CredentialEditor) -> Result<(), Str
             }
         }
         ALBUM_COORDINATION_PROVIDER => {
-            album_coordination_database_url(editor)?;
+            album_coordination_database_url(&editor)?;
             object.insert("server_url".into(), json!(editor.server_url.trim()));
             object.insert("username".into(), json!(editor.username.trim()));
             object.insert("password".into(), json!(editor.secret));
@@ -209,6 +228,34 @@ pub fn save_editor(config: &Config, editor: &CredentialEditor) -> Result<(), Str
         &format!("{provider} credential"),
         |candidate| parse_object(candidate, provider).map(|_| ()),
     )
+}
+
+/// Resolve unchanged `***` placeholders against the provider's saved file.
+/// A user-entered replacement remains visible while editing and atomically
+/// replaces the stored value on Save. Saving a masked field is a no-op for
+/// that field and can never overwrite a working credential with the mask.
+pub fn resolve_masked_editor(
+    config: &Config,
+    editor: &CredentialEditor,
+) -> Result<CredentialEditor, String> {
+    let has_mask = [&editor.username, &editor.identifier, &editor.secret]
+        .into_iter()
+        .any(|value| value.trim() == CREDENTIAL_MASK);
+    if !has_mask {
+        return Ok(editor.clone());
+    }
+    let saved = load_editor(config, &editor.provider)?;
+    let mut resolved = editor.clone();
+    if resolved.username.trim() == CREDENTIAL_MASK {
+        resolved.username = saved.username;
+    }
+    if resolved.identifier.trim() == CREDENTIAL_MASK {
+        resolved.identifier = saved.identifier;
+    }
+    if resolved.secret.trim() == CREDENTIAL_MASK {
+        resolved.secret = saved.secret;
+    }
+    Ok(resolved)
 }
 
 pub async fn test_editor(editor: &CredentialEditor) -> Result<String, String> {
@@ -420,6 +467,51 @@ mod tests {
         assert_eq!(loaded.username, "listener");
         assert_eq!(loaded.secret, "secret");
         assert!(!serde_json::to_string(&config).unwrap().contains("secret"));
+    }
+
+    #[test]
+    fn populated_credentials_are_masked_for_display() {
+        let editor = CredentialEditor {
+            provider: "Last.fm".into(),
+            username: "listener".into(),
+            identifier: "api-key".into(),
+            secret: "shared-secret".into(),
+            server_url: "https://example.test".into(),
+            ..CredentialEditor::default()
+        };
+        let masked = editor.masked_for_display();
+        assert_eq!(masked.username, CREDENTIAL_MASK);
+        assert_eq!(masked.identifier, CREDENTIAL_MASK);
+        assert_eq!(masked.secret, CREDENTIAL_MASK);
+        assert_eq!(masked.server_url, editor.server_url);
+    }
+
+    #[test]
+    fn masked_save_preserves_existing_values_and_real_edits_replace_them() {
+        let dir = TempDir::new().unwrap();
+        let config = config(dir.path());
+        let original = CredentialEditor {
+            provider: "Last.fm".into(),
+            username: "listener".into(),
+            identifier: "first-key".into(),
+            secret: "first-secret".into(),
+            ..CredentialEditor::default()
+        };
+        save_editor(&config, &original).unwrap();
+
+        let mut unchanged = original.masked_for_display();
+        save_editor(&config, &unchanged).unwrap();
+        let preserved = load_editor(&config, "Last.fm").unwrap();
+        assert_eq!(preserved.username, original.username);
+        assert_eq!(preserved.identifier, original.identifier);
+        assert_eq!(preserved.secret, original.secret);
+
+        unchanged.identifier = "second-key".into();
+        save_editor(&config, &unchanged).unwrap();
+        let replaced = load_editor(&config, "Last.fm").unwrap();
+        assert_eq!(replaced.username, "listener");
+        assert_eq!(replaced.identifier, "second-key");
+        assert_eq!(replaced.secret, "first-secret");
     }
 
     #[test]

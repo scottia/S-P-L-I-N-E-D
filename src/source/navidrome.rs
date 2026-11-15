@@ -477,6 +477,47 @@ impl NavidromeCompanion {
         Ok(result)
     }
 
+    /// Resolve Artists that are credited only on another owner's Album.
+    /// Navidrome's getArtists directory can omit these performers, while the
+    /// bounded search3 Artist result still provides the stable ID required by
+    /// getArtistInfo2, Similar Artists, and appearance lookup.
+    pub async fn search_artists(
+        &self,
+        query: &str,
+        count: usize,
+    ) -> Result<Vec<NavidromeArtist>, String> {
+        if query.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        let response = self
+            .request_value(
+                "search3",
+                &[
+                    ("query", query.trim().to_string()),
+                    ("artistCount", count.clamp(1, 50).to_string()),
+                    ("albumCount", "0".to_string()),
+                    ("songCount", "0".to_string()),
+                ],
+            )
+            .await?;
+        Ok(response
+            .get("searchResult3")
+            .and_then(|result| result.get("artist"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .map(|value| NavidromeArtist {
+                id: json_text(value, "id"),
+                name: json_text(value, "name"),
+                cover_art_id: json_text(value, "coverArt"),
+                artist_image_url: json_text(value, "artistImageUrl"),
+                musicbrainz_id: json_text(value, "musicBrainzId"),
+                album_count: json_u32(value, "albumCount"),
+            })
+            .filter(|artist| !artist.id.trim().is_empty() && !artist.name.trim().is_empty())
+            .collect())
+    }
+
     pub async fn artist_albums(&self, artist_id: &str) -> Result<Vec<NavidromeAlbum>, String> {
         if artist_id.trim().is_empty() {
             return Err("Navidrome artist identity is required.".to_string());
@@ -1683,7 +1724,7 @@ mod tests {
             (
                 "application/json",
                 ok_response(
-                    r#""searchResult3":{"song":[{"id":"song-1","title":"Freedom","artist":"Beyoncé","artistId":"artist-1","album":"Renaissance","albumId":"album-1","path":"Beyoncé/Renaissance/Freedom.flac","genre":"Pop","artists":[{"id":"artist-1","name":"Beyoncé","roles":["performer"]}]},{"id":"song-2","title":"Compilation Song","artist":"Beyoncé","artistId":"artist-1","album":"Festival","albumId":"compilation-1","path":"Various Artists/Festival/Compilation Song.flac","genres":[{"name":"R&B"}],"artists":[{"id":"artist-1","name":"Beyoncé","role":"vocal"}]}]}"#,
+                    r#""searchResult3":{"artist":[{"id":"artist-1","name":"Beyoncé","coverArt":"artist-cover","musicBrainzId":"artist-mbid","albumCount":2}],"song":[{"id":"song-1","title":"Freedom","artist":"Beyoncé","artistId":"artist-1","album":"Renaissance","albumId":"album-1","path":"Beyoncé/Renaissance/Freedom.flac","genre":"Pop","artists":[{"id":"artist-1","name":"Beyoncé","roles":["performer"]}]},{"id":"song-2","title":"Compilation Song","artist":"Beyoncé","artistId":"artist-1","album":"Festival","albumId":"compilation-1","path":"Various Artists/Festival/Compilation Song.flac","genres":[{"name":"R&B"}],"artists":[{"id":"artist-1","name":"Beyoncé","role":"vocal"}]}]}"#,
                 )
                 .into_bytes(),
             )
@@ -1869,6 +1910,11 @@ mod tests {
         assert_eq!(artists[0].name, "Beyoncé");
         assert_eq!(artists[0].album_count, 2);
         assert_eq!(artists[0].musicbrainz_id, "artist-mbid");
+
+        let searched = companion.search_artists("Beyoncé", 20).await.unwrap();
+        assert_eq!(searched.len(), 1);
+        assert_eq!(searched[0].id, "artist-1");
+        assert_eq!(searched[0].name, "Beyoncé");
 
         let artist_info = companion.artist_info(&artists[0].id).await.unwrap();
         assert_eq!(
