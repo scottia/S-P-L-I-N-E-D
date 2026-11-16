@@ -76,6 +76,11 @@ mounts.
 | `curated_compilations_path` | Music Library | Optional single Curated Compilations root. Every descendant uses track-scoped **Fallback**, regardless of Album MBID. A nested Curated root overrides a broader Various Artist root. |
 | `ignored_subs` | `[]` | Exact names or supported wildcard patterns excluded from scans and index refresh |
 
+These roots are the only automatic Album-category authority. An Album outside
+all three narrower roots is an Artist Album regardless of its stored Artist
+name, compilation flag, or MusicBrainz IDs. A saved per-Album category override
+wins over the roots and can be returned to path grouping with **Automatic**.
+
 ## `[scan]`
 
 | Key | Default | Meaning |

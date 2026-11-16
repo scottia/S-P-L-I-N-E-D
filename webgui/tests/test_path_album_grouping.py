@@ -36,7 +36,7 @@ class PathAlbumGroupingTests(unittest.TestCase):
             for row, expected in rows:
                 self.assertEqual(catalog.album_library_group(row), expected)
 
-    def test_shared_music_root_is_an_inherited_default_not_three_claims(self):
+    def test_shared_music_root_is_inherited_and_unmatched_album_is_artist(self):
         with TemporaryDirectory() as directory:
             music = Path(directory) / "music"
             album = music / "Various Artists" / "Collection"
@@ -56,8 +56,45 @@ class PathAlbumGroupingTests(unittest.TestCase):
                     "artist_name": "Various Artists",
                     "compilation": True,
                 }),
-                "various-artists",
+                "artist",
             )
+
+    def test_path_is_the_only_automatic_category_authority(self):
+        with TemporaryDirectory() as directory:
+            music = Path(directory) / "music"
+            various = music / "[Various Artists]"
+            soundtracks = music / "[Soundtracks]"
+            curated = various / "Billboard"
+            catalog = Catalog(
+                music,
+                Path(directory) / "unused.db",
+                Path(directory),
+                Path(directory),
+                various_artist_path=various,
+                soundtracks_path=soundtracks,
+                curated_compilations_path=curated,
+            )
+
+            self.assertEqual(catalog.album_library_group({
+                "path": str(music / "Adele" / "25"),
+                "artist_name": "Various Artists",
+                "compilation": True,
+            }), "artist")
+            self.assertEqual(catalog.album_library_group({
+                "path": str(various / "25"),
+                "artist_name": "Adele",
+                "compilation": False,
+            }), "various-artists")
+            self.assertEqual(catalog.album_library_group({
+                "path": str(soundtracks / "Movie"),
+                "artist_name": "Composer",
+                "compilation": False,
+            }), "soundtracks")
+            self.assertEqual(catalog.album_library_group({
+                "path": str(curated / "Hot 100"),
+                "artist_name": "Artist",
+                "compilation": False,
+            }), "fallback")
 
     def test_single_roots_match_imported_windows_album_paths(self):
         with TemporaryDirectory() as directory:

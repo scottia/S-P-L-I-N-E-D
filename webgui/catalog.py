@@ -450,16 +450,9 @@ class Catalog:
         if explicit:
             return max(explicit)[2]
 
-        artist_field = "artist_name" if "artist_name" in keys else "album_artist"
-        artist = normalized_artist_identity(str(row[artist_field] or ""))
-        if artist == "variousartists":
-            return "various-artists"
-        if artist in {"soundtrack", "soundtracks"}:
-            return "soundtracks"
-        if bool(row["compilation"]):
-            return "misc-curated"
-        if not artist or artist in {"unknown", "unknownartist"}:
-            return "misc-undefined"
+        # Configured category roots are the sole automatic grouping authority.
+        # An Album outside those roots is an Artist Album. Operator exceptions
+        # are handled above by the durable per-Album override.
         return "artist"
 
     def reload_category_overrides(self) -> dict[str, str]:
