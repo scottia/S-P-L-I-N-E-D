@@ -1,6 +1,7 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from webgui.catalog import Catalog
 
@@ -74,21 +75,24 @@ class PathAlbumGroupingTests(unittest.TestCase):
                 curated_compilations_path=curated,
             )
 
-            self.assertEqual(catalog.album_library_group({
-                "path": r"K:\Music\[Soundtracks]\2 Fast 2 Furious",
-                "artist_name": "Various Artists",
-                "compilation": True,
-            }), "soundtracks")
-            self.assertEqual(catalog.album_library_group({
-                "path": r"K:\Music\[Various Artists]\Billboard\Hot 100",
-                "artist_name": "Various Artists",
-                "compilation": True,
-            }), "fallback")
-            self.assertEqual(catalog.album_library_group({
-                "path": r"K:\Music\[Various Artists]\Collection",
-                "artist_name": "Various Artists",
-                "compilation": True,
-            }), "various-artists")
+            with patch.object(
+                Path, "resolve", side_effect=AssertionError("filesystem access")
+            ):
+                self.assertEqual(catalog.album_library_group({
+                    "path": r"K:\Music\[Soundtracks]\2 Fast 2 Furious",
+                    "artist_name": "Various Artists",
+                    "compilation": True,
+                }), "soundtracks")
+                self.assertEqual(catalog.album_library_group({
+                    "path": r"K:\Music\[Various Artists]\Billboard\Hot 100",
+                    "artist_name": "Various Artists",
+                    "compilation": True,
+                }), "fallback")
+                self.assertEqual(catalog.album_library_group({
+                    "path": r"K:\Music\[Various Artists]\Collection",
+                    "artist_name": "Various Artists",
+                    "compilation": True,
+                }), "various-artists")
 
     def test_root_owned_va_and_soundtrack_albums_do_not_become_artist_cards(self):
         with TemporaryDirectory() as directory:

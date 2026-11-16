@@ -377,14 +377,11 @@ class Catalog:
         """
         if value is None:
             return None
-        try:
-            resolved = value.resolve(strict=False)
-            music = self.music.resolve(strict=False)
-        except OSError:
+        candidate = self._portable_path_parts(value)
+        music = self._portable_path_parts(self.music)
+        if len(candidate) <= len(music) or candidate[:len(music)] != music:
             return None
-        if resolved == music or not inside(resolved, music):
-            return None
-        return resolved
+        return value
 
     @staticmethod
     def _portable_path_parts(value: Path | str) -> tuple[str, ...]:
@@ -402,19 +399,15 @@ class Catalog:
         root = self._distinct_category_path(configured)
         if root is None:
             return None
-        if inside(folder, root):
-            return len(root.parts)
-        try:
-            relative = root.resolve(strict=False).relative_to(
-                self.music.resolve(strict=False)
-            )
-        except (OSError, ValueError):
-            return None
-        claim = self._portable_path_parts(relative)
+        root_parts = self._portable_path_parts(root)
         parts = self._portable_path_parts(folder)
+        if len(parts) >= len(root_parts) and parts[:len(root_parts)] == root_parts:
+            return len(root_parts)
+        music_parts = self._portable_path_parts(self.music)
+        claim = root_parts[len(music_parts):]
         if not claim or len(parts) <= len(claim):
             return None
-        for start in range(0, len(parts) - len(claim)):
+        for start in range(0, len(parts) - len(claim) + 1):
             if parts[start:start + len(claim)] == claim:
                 return len(claim)
         return None
