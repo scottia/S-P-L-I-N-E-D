@@ -82,8 +82,10 @@ use splined_core::source_policy::{
     MinimumRangeType, SourcePolicyConfig, default_artist_art_search,
 };
 use std::cell::{Cell, RefCell};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{self, OpenOptions};
+use std::hash::{Hash, Hasher};
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -402,6 +404,9 @@ static NAVIDROME_ALBUM_CATALOG: OnceLock<Mutex<HashMap<String, NavidromeAlbumCat
     OnceLock::new();
 const PREVIEW_CACHE_DIMENSION: u32 = 1600;
 const LARGE_RAW_IMAGE_CACHE_LIMIT: usize = 6;
+const LARGE_RENDERED_IMAGE_CACHE_LIMIT: usize = 4;
+const MEDIUM_IMAGE_CACHE_LIMIT: usize = 16;
+const SMALL_IMAGE_CACHE_LIMIT: usize = 256;
 const COMPILATION_GATHERING_STATUS: &str =
     "Gathering compilation albums and artists track information…";
 
@@ -1204,9 +1209,12 @@ fn apply_album_year_updates(
         if year.is_empty() {
             continue;
         }
-        if let Some(album) = app.library.albums.iter_mut().find(|album| {
-            album.snapshot.album_key.eq_ignore_ascii_case(album_key)
-        }) && album.snapshot.release_year.trim().is_empty()
+        if let Some(album) = app
+            .library
+            .albums
+            .iter_mut()
+            .find(|album| album.snapshot.album_key.eq_ignore_ascii_case(album_key))
+            && album.snapshot.release_year.trim().is_empty()
         {
             album.snapshot.release_year = year.to_string();
             changed = true;
@@ -1750,7 +1758,7 @@ fn refresh_navidrome_thumbnails(
             );
             let banner = saved.banner.as_deref().and_then(|source| {
                 let cache = navidrome_thumbnail_cache_root(&config).join("artist-banners");
-                cached_artist_banner_with_bottom_blur(source, &cache, artist)
+                artist_banner_for_overview(source, &cache, artist)
                     .ok()
                     .or_else(|| Some(source.to_path_buf()))
             });
@@ -1841,7 +1849,7 @@ fn refresh_navidrome_thumbnails(
             .unwrap_or_default();
         let saved_banner = saved_package.banner.as_deref().map(|source| {
             let cache = navidrome_thumbnail_cache_root(&config).join("artist-banners");
-            cached_artist_banner_with_bottom_blur(
+            artist_banner_for_overview(
                 source,
                 &cache,
                 requested_artist.as_deref().unwrap_or("artist"),
@@ -1981,7 +1989,17 @@ fn refresh_navidrome_thumbnails(
                         .collect::<Vec<_>>()
                 };
                 let mut artist_paths = Vec::new();
-                let mut artist_ids = Vec::new();
+                // The complete Navidrome catalog is the same real-Artist
+                // authority WebGUI starts from. Artwork remains lazy, but
+                // identity must not be limited to the subset being hydrated.
+                let mut artist_ids = if requested_artist.is_none() {
+                    remote_artists
+                        .iter()
+                        .map(|artist| (artist.name.clone(), artist.id.clone()))
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
                 let mut artist_metadata = None;
                 let remote_album_catalog = navidrome_album_catalog(&companion, &server_key).await?;
                 let exact_album_years = overview_album_year_updates(
@@ -2103,7 +2121,7 @@ fn refresh_navidrome_thumbnails(
                         let banner_path = raw_banner
                             .as_deref()
                             .and_then(|path| {
-                                cached_artist_banner_with_bottom_blur(
+                                artist_banner_for_overview(
                                     path,
                                     &artist_banner_cache,
                                     &artist.id,
@@ -2761,7 +2779,9 @@ fn overview_album_year_updates(
     requested_artist: Option<&str>,
     appearance_album_keys: &BTreeSet<String>,
 ) -> HashMap<String, String> {
-    let Some(requested_artist) = requested_artist.map(str::trim).filter(|value| !value.is_empty())
+    let Some(requested_artist) = requested_artist
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
     else {
         return HashMap::new();
     };
@@ -3423,74 +3443,16 @@ fn write_prepared_artist_art_file_with_stem(
     Ok((target, unchanged, warnings))
 }
 
-fn cached_artist_banner_with_bottom_blur(
+fn artist_banner_for_overview(
     source: &Path,
-    cache_directory: &Path,
-    artist_id: &str,
+    _cache_directory: &Path,
+    _artist_id: &str,
 ) -> Result<PathBuf, String> {
     inspect_image(source)?;
-    fs::create_dir_all(cache_directory).map_err(|error| {
-        format!(
-            "Unable to create Navidrome artist-banner cache {}: {error}",
-            cache_directory.display()
-        )
-    })?;
-    // A saved artist.* can be replaced at the same path. Key the derivative
-    // by image content so the overview never reuses the previous banner.
-    let source_bytes = fs::read(source).map_err(|error| {
-        format!(
-            "Unable to read artist banner source {}: {error}",
-            source.display()
-        )
-    })?;
-    let source_digest = Sha256::digest(&source_bytes);
-    let source_identity = source_digest[..12]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    let path = cache_directory.join(format!(
-        "banner-v6-{}-{}.png",
-        sanitize_sample_component(artist_id),
-        source_identity
-    ));
-    if path.is_file() && inspect_image(&path).is_ok() {
-        return Ok(path);
-    }
-    let decoded = image::load_from_memory(&source_bytes).map_err(|error| {
-        format!(
-            "Unable to decode artist banner source {}: {error}",
-            source.display()
-        )
-    })?;
-    // Navidrome can supply a square portrait when no dedicated banner exists.
-    // Filling the landscape overview with that image avoids placing the round
-    // artist thumbnail a second time in the center of the background.
-    let banner = if decoded.width() as f32 / (decoded.height().max(1) as f32) < 1.6 {
-        decoded
-            .resize_to_fill(1400, 600, image::imageops::FilterType::Lanczos3)
-            .to_rgba8()
-    } else {
-        compose_artist_banner(&decoded, 1.0, 0.0)
-    };
-    let mut encoded = Cursor::new(Vec::new());
-    image::DynamicImage::ImageRgba8(banner)
-        .write_to(&mut encoded, image::ImageFormat::Png)
-        .map_err(|error| format!("Unable to encode the artist banner: {error}"))?;
-    replace_binary_file(
-        &path,
-        encoded.get_ref(),
-        "Navidrome artist banner cache",
-        |staged| inspect_image(staged).map(|_| ()),
-    )?;
-    Ok(path)
-}
-
-fn compose_artist_banner(
-    decoded: &image::DynamicImage,
-    zoom: f32,
-    vertical: f32,
-) -> image::RgbaImage {
-    compose_artist_banner_with_position(decoded, zoom, 0.0, vertical)
+    // Artist Overview must display the approved banner bytes directly. Cropping
+    // belongs to the view's image-fit operation; a blurred or colour-adjusted
+    // runtime derivative changes the artwork the operator already approved.
+    Ok(source.to_path_buf())
 }
 
 fn compose_artist_banner_with_position(
@@ -6057,13 +6019,13 @@ fn artist_art_query_sources(config: &Config, artist_mbid: &str) -> Vec<String> {
         "itunes",
         "navidrome",
     ]
-        .into_iter()
-        .filter(|source| {
-            (*source != "fanarttv" || !artist_mbid.trim().is_empty())
-                && artist_art_source_enabled(config, source)
-        })
-        .map(str::to_string)
-        .collect()
+    .into_iter()
+    .filter(|source| {
+        (*source != "fanarttv" || !artist_mbid.trim().is_empty())
+            && artist_art_source_enabled(config, source)
+    })
+    .map(str::to_string)
+    .collect()
 }
 
 fn indexed_artist_search_mbid(library: &LibraryState, artist: &str) -> String {
@@ -6075,7 +6037,11 @@ fn indexed_artist_search_mbid(library: &LibraryState, artist: &str) -> String {
         .cloned()
         .or_else(|| {
             library.albums.iter().find_map(|album| {
-                (album.snapshot.artist.trim().eq_ignore_ascii_case(artist.trim())
+                (album
+                    .snapshot
+                    .artist
+                    .trim()
+                    .eq_ignore_ascii_case(artist.trim())
                     && !album.snapshot.artist_mbid.trim().is_empty())
                 .then(|| album.snapshot.artist_mbid.trim().to_string())
             })
@@ -6318,8 +6284,9 @@ fn discover_remote_artist_artwork(
 
 fn enter_artist_artwork_workspace(app: &mut ApplicationState) -> Result<(), String> {
     if app.operation_busy {
-        return Err("Wait for the current operation before opening Artists Art Enhancements."
-            .to_string());
+        return Err(
+            "Wait for the current operation before opening Artists Art Enhancements.".to_string(),
+        );
     }
     let artist = overview_artist_name(app)
         .map(str::to_owned)
@@ -6344,9 +6311,8 @@ fn enter_artist_artwork_workspace(app: &mut ApplicationState) -> Result<(), Stri
     app.artist_banner_radio_active = false;
     app.artist_package_overview_enabled = false;
     app.artist_theme_art_enabled = false;
-    app.operation_status = format!(
-        "Artist Art ready for {artist} · press LAUNCH to search artist-image sources"
-    );
+    app.operation_status =
+        format!("Artist Art ready for {artist} · press LAUNCH to search artist-image sources");
     app.operation_tone = "cyan".to_string();
     app.last_error = None;
     Ok(())
@@ -6718,7 +6684,7 @@ fn activate_library_row(
             && app.library.focused_artist.is_some()
             && app.library.albums.iter().any(|album| {
                 album.snapshot.album_key.eq_ignore_ascii_case(key)
-                    && album.snapshot.album_mbid.trim().is_empty()
+                    && app.library.is_curated_fallback(album)
             });
         if artist_overview_fallback {
             // An Artist Overview album card is navigation into that artist's
@@ -10934,8 +10900,7 @@ fn bind_callbacks(
                     .map_err(|_| "The SPLINED application state is unavailable.".to_string())?;
                 if app.operation_busy || app.phase != RunPhase::Idle {
                     return Err(
-                        "Finish or stop the current operation before moving an Album."
-                            .to_string(),
+                        "Finish or stop the current operation before moving an Album.".to_string(),
                     );
                 }
                 let title = app
@@ -10955,7 +10920,11 @@ fn bind_callbacks(
                 app.operation_tone = "green".to_string();
                 app.push_log(format!(
                     "Album category override · {title} · {}",
-                    if category.is_empty() { "automatic" } else { category }
+                    if category.is_empty() {
+                        "automatic"
+                    } else {
+                        category
+                    }
                 ));
                 Ok(())
             })();
@@ -12384,7 +12353,7 @@ fn bind_callbacks(
                             cleanup_warnings.join("; ")
                         ));
                     }
-                    cached_artist_banner_with_bottom_blur(&target, &cache, &artist)
+                    artist_banner_for_overview(&target, &cache, &artist)
                 })();
                 if let Some(log) = action_log.as_ref() {
                     log.record(format!(
@@ -12596,7 +12565,7 @@ fn bind_callbacks(
                         preserve_file,
                     )?;
                     let banner = if refresh_fallback_banner {
-                        match cached_artist_banner_with_bottom_blur(&target, &banner_cache, &artist) {
+                        match artist_banner_for_overview(&target, &banner_cache, &artist) {
                             Ok(path) => Some(path),
                             Err(error) => {
                                 warnings.push(format!("Artist Art saved, but fallback banner refresh failed: {error}"));
@@ -14844,7 +14813,9 @@ fn bind_callbacks(
                     "music" => ui.get_settings_music_library().to_string(),
                     "various-artist" => ui.get_settings_various_artist_path().to_string(),
                     "soundtracks" => ui.get_settings_soundtracks_path().to_string(),
-                    "curated-compilations" => ui.get_settings_curated_compilations_path().to_string(),
+                    "curated-compilations" => {
+                        ui.get_settings_curated_compilations_path().to_string()
+                    }
                     "scan" => ui.get_settings_scan_library().to_string(),
                     "database" => ui.get_settings_database_dir().to_string(),
                     "artist-art" => ui.get_settings_shared_artist_art_dir().to_string(),
@@ -14881,7 +14852,9 @@ fn bind_callbacks(
                         "music" => ui.set_settings_music_library(path.into()),
                         "various-artist" => ui.set_settings_various_artist_path(path.into()),
                         "soundtracks" => ui.set_settings_soundtracks_path(path.into()),
-                        "curated-compilations" => ui.set_settings_curated_compilations_path(path.into()),
+                        "curated-compilations" => {
+                            ui.set_settings_curated_compilations_path(path.into())
+                        }
                         "scan" => ui.set_settings_scan_library(path.into()),
                         "database" => {
                             ui.set_settings_database_dir(path.clone().into());
@@ -16979,11 +16952,12 @@ fn set_source_policy_ui(ui: &AppWindow, config: &Config, source: &str) {
 
 fn apply_settings_ui(ui: &AppWindow, config: &mut Config) -> Result<(), String> {
     config.library.music_library = ui.get_settings_music_library().trim().to_string();
-    config.library.various_artist_path =
-        ui.get_settings_various_artist_path().trim().to_string();
+    config.library.various_artist_path = ui.get_settings_various_artist_path().trim().to_string();
     config.library.soundtracks_path = ui.get_settings_soundtracks_path().trim().to_string();
-    config.library.curated_compilations_path =
-        ui.get_settings_curated_compilations_path().trim().to_string();
+    config.library.curated_compilations_path = ui
+        .get_settings_curated_compilations_path()
+        .trim()
+        .to_string();
     config.scan.scan_library_dir = ui.get_settings_scan_library().trim().to_string();
     config.scan.artist_separator_regex =
         ui.get_settings_artist_separator_regex().trim().to_string();
@@ -17102,10 +17076,11 @@ fn apply_settings_section_ui(
             config.library.music_library = ui.get_settings_music_library().trim().to_string();
             config.library.various_artist_path =
                 ui.get_settings_various_artist_path().trim().to_string();
-            config.library.soundtracks_path =
-                ui.get_settings_soundtracks_path().trim().to_string();
-            config.library.curated_compilations_path =
-                ui.get_settings_curated_compilations_path().trim().to_string();
+            config.library.soundtracks_path = ui.get_settings_soundtracks_path().trim().to_string();
+            config.library.curated_compilations_path = ui
+                .get_settings_curated_compilations_path()
+                .trim()
+                .to_string();
             config.scan.scan_library_dir = ui.get_settings_scan_library().trim().to_string();
             config.scan.artist_separator_regex =
                 ui.get_settings_artist_separator_regex().trim().to_string();
@@ -19515,22 +19490,76 @@ fn sync_media_filter_ui(ui: &AppWindow, state: &ApplicationState) {
     } else {
         state.library.rows()
     };
+    // Slint recreates virtual ListView delegates when its model is replaced.
+    // Preserve the bound scroll offset across that replacement so lazy
+    // thumbnail publication and live filtering cannot jump the file list to
+    // the top.  A collapsed category model is intentionally reset because a
+    // stale Artist offset can otherwise hide the first V/A OST categories.
+    let previous_scroll_y = ui.get_library_scroll_y();
+    let reset_category_scroll = !state.library.show_tracks
+        && state.library.view == LibraryView::Albums
+        && library_rows.iter().all(|row| row.kind == "album-category");
+    let reset_short_scroll = library_rows.len() < 8;
     let shown_count = if !state.library.show_tracks && state.library.view == LibraryView::Albums {
         state.library.visible_album_count()
     } else {
         library_rows.iter().filter(|row| row.depth == 0).count()
     };
     ui.set_library_shown_count(shown_count as i32);
-    ui.set_library_rows(if state.media_selector_expanded {
-        library_ui_model_from_rows(state, library_rows)
-    } else {
-        model(Vec::new())
-    });
+    let model_signature = library_model_signature(state, &library_rows);
+    if ui.get_library_model_signature().as_str() != model_signature {
+        ui.set_library_rows(if state.media_selector_expanded {
+            library_ui_model_from_rows(state, library_rows)
+        } else {
+            model(Vec::new())
+        });
+        ui.set_library_model_signature(model_signature.into());
+        ui.set_library_scroll_y(if reset_category_scroll || reset_short_scroll {
+            0.0
+        } else {
+            previous_scroll_y.min(0.0)
+        });
+    }
     let (status_filter_rows, artist_unprocessed_count, artist_album_count) =
         artist_state_summary(state);
     ui.set_status_filter_rows(model(status_filter_rows));
     ui.set_artist_state_unprocessed_count(artist_unprocessed_count);
     ui.set_artist_state_album_count(artist_album_count);
+}
+
+fn library_model_signature(state: &ApplicationState, rows: &[LibraryRow]) -> String {
+    let mut signature = DefaultHasher::new();
+    state.media_selector_expanded.hash(&mut signature);
+    state.library.show_tracks.hash(&mut signature);
+    state.library.view.label().hash(&mut signature);
+    for row in rows {
+        row.key.hash(&mut signature);
+        row.primary.hash(&mut signature);
+        row.secondary.hash(&mut signature);
+        row.status.hash(&mut signature);
+        row.artwork_path.hash(&mut signature);
+        row.kind.hash(&mut signature);
+        row.depth.hash(&mut signature);
+        row.expanded.hash(&mut signature);
+        row.selected.hash(&mut signature);
+        row.eligible.hash(&mut signature);
+        row.album_count.hash(&mut signature);
+    }
+    let mut overrides = state
+        .album_override_writers
+        .iter()
+        .map(|(key, writer)| (key.as_str(), writer.as_str()))
+        .collect::<Vec<_>>();
+    overrides.sort_unstable();
+    overrides.hash(&mut signature);
+    let mut locked_paths = state
+        .embed_locked_album_paths
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    locked_paths.sort_unstable();
+    locked_paths.hash(&mut signature);
+    format!("{:016x}", signature.finish())
 }
 
 fn sync_workspace_scroll_context(ui: &AppWindow, state: &ApplicationState) {
@@ -19641,10 +19670,18 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
     let artist_artwork_path = if Path::new(&state.artist_overview_portrait_path).is_file() {
         state.artist_overview_portrait_path.clone()
     } else {
-        artist_list_artwork_path
+        artist_list_artwork_path.clone()
+    };
+    // The list cache is the same circular Artist presentation used by
+    // WebGUI.  Prefer it for the overview thumbnail even when a raw square
+    // portrait is also available for editing and full-resolution preview.
+    let artist_overview_thumbnail_path = if Path::new(&artist_list_artwork_path).is_file() {
+        artist_list_artwork_path.as_str()
+    } else {
+        artist_artwork_path.as_str()
     };
     ui.set_artist_overview_has_artwork(!artist_artwork_path.trim().is_empty());
-    ui.set_artist_overview_artwork(load_scaled_image(&artist_artwork_path, 320));
+    ui.set_artist_overview_artwork(load_scaled_image(artist_overview_thumbnail_path, 320));
     ui.set_selected_artwork_artist_art(load_scaled_image(&artist_artwork_path, 1400));
     let artist_artwork_draft = state.artist_artwork_draft_path.clone();
     ui.set_artist_overview_draft_selected(!artist_artwork_draft.trim().is_empty());
@@ -21037,8 +21074,8 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
     ui.set_completion_message(SharedString::from(state.completion_message.clone()));
     // Preserve unsaved toggle edits while the Library settings section is
     // open. Saving copies them into ApplicationState and ui.toml explicitly.
-    let editing_library_settings = ui.get_page_index() == 1
-        && ui.get_settings_section().as_str() == "Library";
+    let editing_library_settings =
+        ui.get_page_index() == 1 && ui.get_settings_section().as_str() == "Library";
     if !editing_library_settings {
         ui.set_settings_disable_intro_message(state.disable_intro_message);
         ui.set_settings_disable_confirmation_messages(state.disable_confirmation_messages);
@@ -22582,10 +22619,9 @@ fn artist_fallback_embedded_track_paths(
         .compilation_tracks
         .iter()
         .filter(|track| {
-            track
-                .artist
-                .split(['\0', ';'])
-                .any(|credit| credit.trim().eq_ignore_ascii_case(artist))
+            splined_core::application::LibraryState::track_matches_artist_in_album(
+                album, track, artist,
+            )
         })
         .map(|track| PathBuf::from(&track.path))
         .collect::<Vec<_>>();
@@ -22941,8 +22977,7 @@ fn fallback_album_report_track_ui_rows(app: &ApplicationState) -> Vec<UiCompilat
         return Vec::new();
     };
     let Some(album) = app.library.albums.iter().find(|album| {
-        album.snapshot.album_key.eq_ignore_ascii_case(key)
-            && app.library.is_curated_fallback(album)
+        album.snapshot.album_key.eq_ignore_ascii_case(key) && app.library.is_curated_fallback(album)
     }) else {
         return Vec::new();
     };
@@ -24042,23 +24077,69 @@ fn cache_slint_image(cache_key: String, maximum_dimension: u32, cached: CachedIm
     IMAGE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         if maximum_dimension >= 1024 {
-            let large_suffix = format!("\u{1f}{PREVIEW_CACHE_DIMENSION}");
-            let large_keys = cache
-                .keys()
-                .filter(|key| key.ends_with(&large_suffix))
-                .cloned()
-                .collect::<Vec<_>>();
-            let remove_count = large_keys.len().saturating_sub(3);
-            for key in large_keys.into_iter().take(remove_count) {
-                cache.remove(&key);
-            }
-        } else if cache.len() >= 8192
-            && let Some(oldest_key) = cache.keys().next().cloned()
-        {
-            cache.remove(&oldest_key);
+            trim_image_cache_class(
+                &mut cache,
+                ImageCacheClass::Large,
+                LARGE_RENDERED_IMAGE_CACHE_LIMIT.saturating_sub(1),
+            );
+        } else if maximum_dimension >= 256 || maximum_dimension == 0 {
+            trim_image_cache_class(
+                &mut cache,
+                ImageCacheClass::Medium,
+                MEDIUM_IMAGE_CACHE_LIMIT.saturating_sub(1),
+            );
+        } else {
+            trim_image_cache_class(
+                &mut cache,
+                ImageCacheClass::Small,
+                SMALL_IMAGE_CACHE_LIMIT.saturating_sub(1),
+            );
         }
         cache.insert(cache_key, cached);
     });
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ImageCacheClass {
+    Small,
+    Medium,
+    Large,
+}
+
+fn image_cache_class(maximum_dimension: u32) -> ImageCacheClass {
+    if maximum_dimension >= 1024 {
+        ImageCacheClass::Large
+    } else if maximum_dimension >= 256 || maximum_dimension == 0 {
+        ImageCacheClass::Medium
+    } else {
+        ImageCacheClass::Small
+    }
+}
+
+fn image_cache_key_class(key: &str) -> ImageCacheClass {
+    let maximum_dimension = key
+        .split('\u{1f}')
+        .rev()
+        .find_map(|part| part.parse::<u32>().ok())
+        .unwrap_or_default();
+    image_cache_class(maximum_dimension)
+}
+
+fn trim_image_cache_class<T>(cache: &mut HashMap<String, T>, class: ImageCacheClass, limit: usize) {
+    let matching = cache
+        .keys()
+        .filter(|key| image_cache_key_class(key) == class)
+        .cloned()
+        .collect::<Vec<_>>();
+    for key in matching.into_iter().take(
+        cache
+            .keys()
+            .filter(|key| image_cache_key_class(key) == class)
+            .count()
+            .saturating_sub(limit),
+    ) {
+        cache.remove(&key);
+    }
 }
 
 fn load_image_with_maximum(path: &str, maximum_dimension: Option<u32>) -> slint::Image {
@@ -24214,10 +24295,10 @@ fn insert_raw_image_pixels(
             .unwrap_or_default();
         protected.insert(cache_key);
         trim_large_raw_image_cache(cache, &protected, LARGE_RAW_IMAGE_CACHE_LIMIT);
-    } else if cache.len() > 8192
-        && let Some(oldest_key) = cache.keys().next().cloned()
-    {
-        cache.remove(&oldest_key);
+    } else if maximum_dimension >= 256 || maximum_dimension == 0 {
+        trim_image_cache_class(cache, ImageCacheClass::Medium, MEDIUM_IMAGE_CACHE_LIMIT);
+    } else {
+        trim_image_cache_class(cache, ImageCacheClass::Small, SMALL_IMAGE_CACHE_LIMIT);
     }
 }
 
@@ -24297,22 +24378,24 @@ mod tests {
     use super::{
         AlbumEmbeddedCheck, AlbumWriteState, ArtistAlbumEmbedTarget, ArtistArtTarget,
         CATALOG_INDEX_REFRESH_ACTIVE, CachedPixels, EMBEDDED_METADATA_CACHE,
-        EMBEDDED_METADATA_ERRORS, EmbedQueueSource, EmbedQueueTarget, MaximizeGuard,
+        EMBEDDED_METADATA_ERRORS, EmbedQueueSource, EmbedQueueTarget,
+        LARGE_RENDERED_IMAGE_CACHE_LIMIT, MEDIUM_IMAGE_CACHE_LIMIT, MaximizeGuard,
         NAVIDROME_ALBUM_DOWNLOAD_LIMIT, NAVIDROME_ARTIST_DOWNLOAD_LIMIT, PREVIEW_CACHE_DIMENSION,
-        ThumbnailAlbumTarget, UiCompilationReportRow, UiMusicBrainzRow, WorkspaceLayout,
-        add_embedded_thumbnail_decision, add_uploaded_artist_artwork, album_embedded_check,
-        album_embedded_check_cache, album_embedded_check_key, album_overview_queue_target,
-        apply_album_coordination_states, apply_ui_preferences, artist_album_card_artwork_path,
-        artist_album_card_display_title, artist_album_queue_targets, artist_art_candidate_source,
-        artist_art_query_sources, artist_art_targets_for_albums,
+        SMALL_IMAGE_CACHE_LIMIT, ThumbnailAlbumTarget, UiCompilationReportRow, UiMusicBrainzRow,
+        WorkspaceLayout, add_embedded_thumbnail_decision, add_uploaded_artist_artwork,
+        album_embedded_check, album_embedded_check_cache, album_embedded_check_key,
+        album_overview_queue_target, apply_album_coordination_states, apply_ui_preferences,
+        artist_album_card_artwork_path, artist_album_card_display_title,
+        artist_album_queue_targets, artist_art_candidate_source, artist_art_query_sources,
+        artist_art_targets_for_albums, artist_banner_for_overview,
         artist_compilation_thumb_repair_plan, artist_fallback_embedded_track_paths,
         artist_is_secondary_credit, artist_overview_is_fully_complete,
         artist_overview_legend_counts, artist_overview_release_banners,
         artist_overview_track_is_featured, artist_overview_ui_model,
         artist_separator_profile_from_json, automatic_backup_is_due, backup_file_in_directory,
         backup_schedule_interval, begin_musicbrainz_preview_request,
-        cached_artist_banner_with_bottom_blur, cached_circular_artist_thumbnail, candidate_ui_row,
-        canonical_webp_status, choose_musicbrainz_artist_match, circular_artist_art_png,
+        cached_circular_artist_thumbnail, candidate_ui_row, canonical_webp_status,
+        choose_musicbrainz_artist_match, circular_artist_art_png,
         clear_rendered_preview_for_adjustment, compilation_artwork_context,
         compilation_report_track_status, compilation_thumb_repair_plan,
         completed_compilation_track_needs_attention, current_embedded_thumbnail_infos,
@@ -24321,13 +24404,13 @@ mod tests {
         edit_existing_cover, embedded_artwork_footer, embedded_artwork_size_comparison,
         embedded_thumbnail_owner_key, embedded_thumbnail_ready, ensure_webp_album_still,
         fallback_compilation_cover_suppressed, format_existing_embedded_info,
-        group_compilation_report_rows, include_artwork_source, is_sqlite_backup_path,
-        indexed_artist_search_mbid, is_valid_mbid, layout_artist_biography,
-        load_artist_art_candidates, load_scaled_image,
-        local_album_art_file, local_artist_art_candidates, local_artist_art_file,
-        local_artist_art_for_albums, local_artist_thumbnail_source_at_target, logical_dimension,
-        match_artist_overview_album, merge_artist_art_candidates, model,
-        musicbrainz_existing_preview_path, musicbrainz_failed_url, musicbrainz_ui_rows_equal,
+        group_compilation_report_rows, include_artwork_source, indexed_artist_search_mbid,
+        is_sqlite_backup_path, is_valid_mbid, layout_artist_biography, load_artist_art_candidates,
+        load_scaled_image, local_album_art_file, local_artist_art_candidates,
+        local_artist_art_file, local_artist_art_for_albums,
+        local_artist_thumbnail_source_at_target, logical_dimension, match_artist_overview_album,
+        merge_artist_art_candidates, model, musicbrainz_existing_preview_path,
+        musicbrainz_failed_url, musicbrainz_ui_rows_equal,
         musicbrainz_visible_deduplicated_results, navidrome_artist_for_lookup,
         navidrome_thumbnail_cache_root, normalize_backup_schedule, normalize_status_bar_intensity,
         normalize_status_bar_position, normalize_status_bar_size, overview_artist_name,
@@ -26379,10 +26462,9 @@ mod tests {
         let mut library = splined_core::application::LibraryState::empty();
         assert_eq!(indexed_artist_search_mbid(&library, "Rob Wasserman"), "");
 
-        library.artist_appearance_musicbrainz_ids.insert(
-            "rob wasserman".to_string(),
-            "rob-indexed-mbid".to_string(),
-        );
+        library
+            .artist_appearance_musicbrainz_ids
+            .insert("rob wasserman".to_string(), "rob-indexed-mbid".to_string());
         assert_eq!(
             indexed_artist_search_mbid(&library, "Rob Wasserman"),
             "rob-indexed-mbid"
@@ -27956,6 +28038,58 @@ mod tests {
     }
 
     #[test]
+    fn thumbnail_cache_classes_remain_independently_bounded() {
+        let mut cache = HashMap::<String, usize>::new();
+        for index in 0..400 {
+            cache.insert(format!("small-{index}\u{1f}64"), index);
+        }
+        for index in 0..30 {
+            cache.insert(format!("medium-{index}\u{1f}320"), index);
+        }
+        for index in 0..10 {
+            cache.insert(
+                format!("large-{index}\u{1f}{PREVIEW_CACHE_DIMENSION}"),
+                index,
+            );
+        }
+
+        super::trim_image_cache_class(
+            &mut cache,
+            super::ImageCacheClass::Small,
+            SMALL_IMAGE_CACHE_LIMIT,
+        );
+        super::trim_image_cache_class(
+            &mut cache,
+            super::ImageCacheClass::Medium,
+            MEDIUM_IMAGE_CACHE_LIMIT,
+        );
+        super::trim_image_cache_class(
+            &mut cache,
+            super::ImageCacheClass::Large,
+            LARGE_RENDERED_IMAGE_CACHE_LIMIT,
+        );
+
+        let count = |class| {
+            cache
+                .keys()
+                .filter(|key| super::image_cache_key_class(key) == class)
+                .count()
+        };
+        assert_eq!(
+            count(super::ImageCacheClass::Small),
+            SMALL_IMAGE_CACHE_LIMIT
+        );
+        assert_eq!(
+            count(super::ImageCacheClass::Medium),
+            MEDIUM_IMAGE_CACHE_LIMIT
+        );
+        assert_eq!(
+            count(super::ImageCacheClass::Large),
+            LARGE_RENDERED_IMAGE_CACHE_LIMIT
+        );
+    }
+
+    #[test]
     fn themed_artist_package_keeps_both_preview_images_during_refresh() {
         let snapshot = MediaSnapshot {
             schema_version: splined_core::media_database::SCHEMA_VERSION,
@@ -28390,31 +28524,30 @@ mod tests {
     }
 
     #[test]
-    fn artist_banner_is_a_bounded_blurred_runtime_derivative() {
+    fn artist_banner_overview_uses_the_approved_source_without_a_derivative() {
         let directory = tempfile::TempDir::new().unwrap();
         let source = directory.path().join("artist.png");
         image::RgbaImage::from_pixel(320, 480, image::Rgba([80, 140, 220, 255]))
             .save_with_format(&source, image::ImageFormat::Png)
             .unwrap();
-        let banner =
-            cached_artist_banner_with_bottom_blur(&source, directory.path(), "artist-id").unwrap();
+        let banner = artist_banner_for_overview(&source, directory.path(), "artist-id").unwrap();
         let inspected = splined_core::inspect::inspect_image(&banner).unwrap();
-        assert_eq!((inspected.width, inspected.height), (1400, 600));
+        assert_eq!((inspected.width, inspected.height), (320, 480));
+        assert_eq!(banner, source);
         assert_eq!(
             banner,
-            cached_artist_banner_with_bottom_blur(&source, directory.path(), "artist-id").unwrap()
+            artist_banner_for_overview(&source, directory.path(), "artist-id").unwrap()
         );
         image::RgbaImage::from_pixel(320, 480, image::Rgba([220, 80, 80, 255]))
             .save_with_format(&source, image::ImageFormat::Png)
             .unwrap();
-        let refreshed =
-            cached_artist_banner_with_bottom_blur(&source, directory.path(), "artist-id").unwrap();
-        assert_ne!(banner, refreshed);
+        let refreshed = artist_banner_for_overview(&source, directory.path(), "artist-id").unwrap();
+        assert_eq!(banner, refreshed);
         assert_eq!(
             splined_core::inspect::inspect_image(&refreshed)
                 .unwrap()
                 .width,
-            1400
+            320
         );
     }
 

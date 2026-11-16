@@ -76,6 +76,11 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         )
         self.cfg["mode"] = "write"
         self.cfg["library"]["music_library"] = str(self.root / "music")
+        self.cfg["library"].update(
+            various_artist_path=str(self.root / "music" / "Various Artists"),
+            soundtracks_path=str(self.root / "music" / "Soundtracks"),
+            curated_compilations_path=str(self.root / "music" / "Compilations"),
+        )
         self.cfg["scan"].update(
             cache_dir=str(self.root / "cache"),
             temporary_cache_dir=str(self.root / "temporary"),
@@ -961,7 +966,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.assertTrue(featured[0]["featured"])
 
     def test_artist_comp_report_is_scoped_while_full_fallback_keeps_every_track(self):
-        comp = self.root / "music" / "Various Artists" / "Billboard Fixture"
+        comp = self.root / "music" / "Compilations" / "Billboard Fixture"
         other_album = self.root / "music" / "Other Artist" / "Other Release"
         comp.mkdir(parents=True)
         other_album.mkdir(parents=True)
@@ -5027,7 +5032,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         comp = (
             self.root
             / "music"
-            / "Various Artists"
+            / "Compilations"
             / "Billboard Hot 100 Singles of 1994"
         )
         comp.mkdir(parents=True)

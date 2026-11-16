@@ -410,12 +410,18 @@ component LibraryItem inherits Rectangle {
         }
         if root.item.kind == "album" || root.item.kind == "album-child" || root.item.kind == "fallback-album": Rectangle {
             width: (38px * AppTheme.ui-scale); background: transparent;
-            Text {
-                text: "⇄";
-                color: AppTheme.cyan; font-size: (22px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800;
-                horizontal-alignment: center; vertical-alignment: center;
+            Rectangle {
+                x: (3px * AppTheme.ui-scale); y: (parent.height - self.height) / 2;
+                width: (32px * AppTheme.ui-scale); height: (32px * AppTheme.ui-scale);
+                border-radius: (4px * AppTheme.ui-scale); border-width: AppTheme.hairline;
+                border-color: AppTheme.border; background: AppTheme.card;
+                Text {
+                    text: "⇄";
+                    color: AppTheme.cyan; font-size: (20px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800;
+                    horizontal-alignment: center; vertical-alignment: center;
+                }
+                TouchArea { mouse-cursor: pointer; clicked => root.category-activated(root.item.key); }
             }
-            TouchArea { mouse-cursor: pointer; clicked => root.category-activated(root.item.key); }
         }
         if root.item.kind == "artist" || root.item.kind == "fallback-album" || root.item.kind == "album-category": Rectangle {
             width: (38px * AppTheme.ui-scale); background: transparent;
@@ -1577,6 +1583,7 @@ export component AppWindow inherits Window {
     in property <string> library-view-label: "Artists";
     in-out property <string> library-scroll-key;
     in-out property <length> library-scroll-y: (0px * AppTheme.ui-scale);
+    in-out property <string> library-model-signature;
     in-out property <string> overview-scroll-key;
     in-out property <length> overview-scroll-y: (0px * AppTheme.ui-scale);
     in-out property <string> musicbrainz-scroll-key;
@@ -2569,9 +2576,8 @@ export component AppWindow inherits Window {
                                                     image-fit: contain;
                                                 }
                                                 Image { source: @image-url("../gui/splined-watermark.png"); visible: root.overview-mode == "Fallback"; width: min(parent.width * 0.7, (640px * AppTheme.ui-scale)); height: min(parent.height * 0.7, (480px * AppTheme.ui-scale)); x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; image-fit: contain; opacity: 0.16; }
-                                                // Slint uses #RRGGBBAA. Keep the banner neutral: the
-                                                // final byte is opacity and the RGB channels are equal.
-                                                Rectangle { width: parent.width; height: parent.height; background: AppTheme.chalk ? @linear-gradient(180deg, #30303070 0%, #242424b8 64%, #181818e0 100%) : (AppTheme.light ? @linear-gradient(180deg, #f4f4f466 0%, #edededa8 64%, #e6e6e6d8 100%) : @linear-gradient(180deg, #14141470 0%, #101010b8 64%, #0b0b0be0 100%)); }
+                                                // The overview image is the approved artwork. No tint, shade,
+                                                // colour wash, or translucent surface may be painted over it.
                                                 artist-scroll := ScrollView {
                                                     content-y <=> root.overview-scroll-y;
                                                     content-width: self.visible-width;

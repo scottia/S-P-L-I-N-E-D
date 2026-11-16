@@ -739,7 +739,8 @@ pub fn parse_config(text: &str) -> Result<Config, String> {
     config.library.music_library = normalize_optional_directory(&config.library.music_library);
     config.library.various_artist_path =
         normalize_optional_directory(&config.library.various_artist_path);
-    config.library.soundtracks_path = normalize_optional_directory(&config.library.soundtracks_path);
+    config.library.soundtracks_path =
+        normalize_optional_directory(&config.library.soundtracks_path);
     config.library.curated_compilations_path =
         normalize_optional_directory(&config.library.curated_compilations_path);
     config.scan.scan_library_dir = normalize_optional_directory(&config.scan.scan_library_dir);

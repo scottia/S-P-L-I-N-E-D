@@ -1733,7 +1733,12 @@ function renderSources() {
   for (const [key, source] of sourceByKey) {
     if (!seen.has(key)) { orderedSources.push(source); seen.add(key); }
   }
-  for (const [label, key, icon] of orderedSources.filter(Boolean)) {
+  const sourceEmoji = key => ({
+    "": "⊘", local: "📁", itunes: "🍎", fanarttv: "🎨",
+    amazon: "📦", coverartarchive: "🖼️", musicbrainz: "🧠",
+    discogs: "💿", lastfm: "📻", navidrome: "🧑‍🎨", deezer: "🎧",
+  })[key] || "✨";
+  for (const [label, key] of orderedSources.filter(Boolean)) {
     const currentCount = candidates.filter(candidate => sourceKey(candidate.source) === key).length;
     const artistCount = Number(state.sourceCounts.artist?.[key] || 0);
     const coverCount = Number(state.sourceCounts.cover?.[key] || 0);
@@ -1747,7 +1752,7 @@ function renderSources() {
     button.title = currentCount ? "Show " + label + " candidates"
       : runtime.message ? label + " · " + runtime.message
       : label + (searchable ? " · ready for artist search" : " · unavailable for this selection");
-    button.append(icon === "⊘" ? node("span", "source-symbol", "⊘") : image("/assets/source-icons/" + icon + ".svg", "", ""));
+    button.append(node("span", "source-symbol source-emoji", sourceEmoji(key)));
     const mode = artistEnabled && configured ? "Artist / Album" : artistEnabled ? "Artist-Only" : configured ? "Album-Only" : "Deactivated";
     const modeClass = artistEnabled && configured ? "artist-album" : artistEnabled ? "artist-only" : configured ? "album-only" : "deactivated";
     const modeTitle = artistEnabled && configured ? "Artist and Album artwork source"

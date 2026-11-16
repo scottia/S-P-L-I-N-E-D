@@ -15,6 +15,12 @@ test("WebGUI biography uses bright copy and a complete five-line collapsed guard
   assert.match(appSource, /biography\.classList\.add\("collapsed"\)/);
 });
 
+test("Artist Overview renders the saved banner without a tint layer", () => {
+  assert.doesNotMatch(indexSource, /hero-shade/);
+  assert.doesNotMatch(cssSource, /\.hero-shade/);
+  assert.match(appSource, /\$\("hero"\)\.style\.backgroundImage = artist\?\.banner/);
+});
+
 function between(source, start, end) {
   const first = source.indexOf(start);
   const last = source.indexOf(end, first + start.length);

@@ -30,11 +30,11 @@ use crate::scan_tags::{
 };
 use image::ImageFormat;
 use regex::Regex;
+use rusqlite::trace::{TraceEvent, TraceEventCodes};
 use rusqlite::{
     Connection, ErrorCode, MAIN_DB, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
     named_params, params,
 };
-use rusqlite::trace::{TraceEvent, TraceEventCodes};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -268,7 +268,8 @@ fn artist_credit_position(track_artist: &str, artist: &str, separator: &Regex) -
 }
 
 /// Canonicalize one Artist string for durable indexing. Real multi-value tags
-/// arrive NUL-separated and are never split again; the configured Regex is
+/// arrive with the SQLite NUL boundary or WebGUI/PostgreSQL's durable Unit
+/// Separator boundary and are never guessed apart; the configured Regex is
 /// applied only to one joined Artist/TPE1 or filename credit.
 fn artist_credit_values(track_artist: &str, separator: &Regex) -> Vec<String> {
     artist_credit_values_with_mbids(track_artist, "", separator)
@@ -284,7 +285,7 @@ fn artist_credit_values_with_mbids(
     separator: &Regex,
 ) -> Vec<String> {
     let explicit = track_artist
-        .split('\0')
+        .split(['\0', '\x1f'])
         .map(str::trim)
         .filter(|credit| !credit.is_empty())
         .map(str::to_string)
@@ -300,7 +301,8 @@ fn artist_credit_values_with_mbids(
         .map(str::trim)
         .filter(|credit| !credit.is_empty())
         .collect::<Vec<_>>();
-    if slash_parts.len() > 1 && extract_mbids(artist_mbids).len() == slash_parts.len() {
+    let mbids = extract_mbids(artist_mbids);
+    if slash_parts.len() > 1 && mbids.len() == slash_parts.len() {
         let mut values = Vec::with_capacity(slash_parts.len());
         for credit in slash_parts {
             if !values.contains(&credit) {
@@ -309,12 +311,32 @@ fn artist_credit_values_with_mbids(
         }
         return values.into_iter().map(str::to_string).collect();
     }
-    separator
+    for delimiter in [" & ", ", "] {
+        let parts = joined
+            .split(delimiter)
+            .map(str::trim)
+            .filter(|credit| !credit.is_empty())
+            .collect::<Vec<_>>();
+        if parts.len() > 1 && parts.len() == mbids.len() {
+            return parts.into_iter().map(str::to_string).collect();
+        }
+    }
+    let separated = separator
         .split(joined)
         .map(str::trim)
         .filter(|credit| !credit.is_empty())
         .map(str::to_string)
-        .collect()
+        .collect::<Vec<_>>();
+    // A configured display separator can also occur inside one real Artist
+    // name. One MusicBrainz Artist ID is decisive evidence that a joined
+    // value such as `Ike & Tina Turner` or `Elvis Costello & The Attractions`
+    // is one identity, not multiple credits. Multiple ordered IDs continue to
+    // authorize the configured split without rereading or rewriting tags.
+    if separated.len() > 1 && mbids.len() == 1 {
+        vec![joined.clone()]
+    } else {
+        separated
+    }
 }
 
 fn canonical_artist_credit_text(
@@ -337,11 +359,26 @@ fn numbered_track_artist_credit(value: &str) -> Option<&str> {
     (numbered && !artist.is_empty() && !title.is_empty()).then_some(artist)
 }
 
-/// Split a strict numbered filename/title duet only when one side is the
-/// indexed Album owner. This recovers a real guest credit from historical
-/// rows such as `Rob Wasserman & Aaron Neville` without treating a band whose
-/// own name contains `&` as two Artists.
+/// Split a strict numbered filename/title collaboration only at the indexed
+/// Album-owner boundary. The owner is kept intact even when its real name
+/// contains `&` (`Brooks & Dunn & Kacey Musgraves` becomes the owner plus the
+/// guest), while suffix ownership preserves the Rob Wasserman rule. An
+/// unanchored joined display value is not manufactured as a selectable Artist.
 fn owner_anchored_inferred_credits(value: &str, owner: &str) -> Vec<String> {
+    let value = value.trim();
+    let owner = owner.trim();
+    let owner_prefix = format!("{owner} & ");
+    if let Some(guest) = value.strip_prefix(&owner_prefix).map(str::trim)
+        && !guest.is_empty()
+    {
+        return vec![owner.to_string(), guest.to_string()];
+    }
+    let owner_suffix = format!(" & {owner}");
+    if let Some(guest) = value.strip_suffix(&owner_suffix).map(str::trim)
+        && !guest.is_empty()
+    {
+        return vec![guest.to_string(), owner.to_string()];
+    }
     let owner_identity = artist_projection_identity(owner);
     let parts = value
         .split(" & ")
@@ -354,8 +391,10 @@ fn owner_anchored_inferred_credits(value: &str, owner: &str) -> Vec<String> {
             .any(|part| artist_projection_identity(part) == owner_identity)
     {
         parts.into_iter().map(str::to_string).collect()
+    } else if parts.len() > 1 {
+        Vec::new()
     } else {
-        vec![value.trim().to_string()]
+        vec![value.to_string()]
     }
 }
 
@@ -367,8 +406,7 @@ fn indexed_track_artist_credits<'a>(
     owner: &'a str,
     separator: &Regex,
 ) -> Vec<String> {
-    let mut credits =
-        artist_credit_values_with_mbids(track_artist, track_artist_mbids, separator);
+    let mut credits = artist_credit_values_with_mbids(track_artist, track_artist_mbids, separator);
     // Explicit multi-value ARTIST/TPE1 tags are authoritative.  Adding the
     // filename's joined display credit would manufacture a duplicate combined
     // Artist (for example, "Rob Wasserman & Aaron Neville") beside the two
@@ -376,22 +414,30 @@ fn indexed_track_artist_credits<'a>(
     if credits.len() > 1 {
         return credits;
     }
-    for inferred in [
+    for joined in [
         numbered_track_artist_credit(title),
         numbered_track_artist_credit(filename),
     ]
     .into_iter()
     .flatten()
-    .flat_map(|value| {
-        artist_credit_values(value, separator)
+    {
+        // A strict numbered filename commonly repeats the tagged credit. Do
+        // not reinterpret that same authoritative group as an owner/guest
+        // join (`Ike & Tina Turner` must not also manufacture `Ike`).
+        if credits.iter().any(|existing| {
+            artist_projection_identity(existing) == artist_projection_identity(joined)
+        }) {
+            continue;
+        }
+        for inferred in artist_credit_values(joined, separator)
             .into_iter()
             .flat_map(|credit| owner_anchored_inferred_credits(&credit, owner))
-    })
-    {
-        if !credits.iter().any(|existing| {
-            artist_projection_identity(existing) == artist_projection_identity(&inferred)
-        }) {
-            credits.push(inferred);
+        {
+            if !credits.iter().any(|existing| {
+                artist_projection_identity(existing) == artist_projection_identity(&inferred)
+            }) {
+                credits.push(inferred);
+            }
         }
     }
     credits
@@ -469,8 +515,8 @@ pub fn indexed_artist_appearances(
             &owner,
             &separator,
         )
-            .into_iter()
-            .any(|credit| artist_credit_position(&credit, artist_name, &separator).is_some());
+        .into_iter()
+        .any(|credit| artist_credit_position(&credit, artist_name, &separator).is_some());
         if !matched {
             continue;
         }
@@ -482,7 +528,7 @@ pub fn indexed_artist_appearances(
     Ok(appearances)
 }
 
-/// Return every real Artist credited on an MBID-backed indexed Album.
+/// Return every real Artist credited on an indexed Album.
 ///
 /// Album ownership remains unchanged: the map is a presentation projection
 /// from Artist name to Album keys. This makes Featured/Soundtrack/Various
@@ -507,7 +553,6 @@ pub fn indexed_artist_catalog_projection(
             "SELECT albums.album_key,owners.artist_name,tracks.artist_name,tracks.title,tracks.path,COALESCE(tracks.musicbrainz_artistid,'') \
              FROM tracks JOIN albums ON albums.album_key=tracks.album_key \
              JOIN artists owners ON owners.artist_key=albums.artist_key \
-             WHERE trim(COALESCE(albums.musicbrainz_albumid,''))<>'' \
              ORDER BY albums.album_key,tracks.path COLLATE NOCASE",
         )
         .map_err(db_error("prepare indexed Artist catalog"))?;
@@ -548,12 +593,24 @@ pub fn indexed_artist_catalog_projection(
                 continue;
             }
             let identity = artist_projection_identity(credit);
-            let display = if identity == artist_projection_identity(&owner) {
+            // A positionally paired MusicBrainz Artist ID makes the track
+            // credit authoritative for presentation.  This mirrors WebGUI's
+            // canonical-row policy and lets a filesystem-safe owner such as
+            // `AC-DC` merge into the tagged `AC/DC` identity without changing
+            // any durable SQLite owner or Album key.
+            let authoritative_credit = mbids.len() == credits.len();
+            let display = if authoritative_credit {
+                credit.to_string()
+            } else if identity == artist_projection_identity(&owner) {
                 owner.clone()
             } else {
                 credit.to_string()
             };
-            names.entry(identity.clone()).or_insert(display);
+            if authoritative_credit {
+                names.insert(identity.clone(), display);
+            } else {
+                names.entry(identity.clone()).or_insert(display);
+            }
             album_keys
                 .entry(identity.clone())
                 .or_default()
@@ -574,12 +631,7 @@ pub fn indexed_artist_catalog_projection(
     }
     let album_keys = album_keys
         .into_iter()
-        .filter_map(|(identity, keys)| {
-            names
-                .get(&identity)
-                .cloned()
-                .map(|name| (name, keys))
-        })
+        .filter_map(|(identity, keys)| names.get(&identity).cloned().map(|name| (name, keys)))
         .collect::<IndexedArtistCatalog>();
     let musicbrainz_ids = musicbrainz_ids
         .into_iter()
@@ -4144,7 +4196,10 @@ pub fn save_album_category_override(
         config.scan.windows_client_lock,
     )?;
     if !database_access.path().is_file() {
-        return Err(format!("SPLINED database is missing: {}", db_path.display()));
+        return Err(format!(
+            "SPLINED database is missing: {}",
+            db_path.display()
+        ));
     }
     let connection = open_database(database_access.path(), config.scan.sqlite_shared)?;
     let exists = connection
@@ -4438,8 +4493,8 @@ fn sqlite_read_only_error(error: &rusqlite::Error) -> bool {
 }
 
 fn recover_interrupted_transaction(path: &Path) -> Result<(), String> {
-    let mut connection =
-        Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE).map_err(|error| {
+    let mut connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)
+        .map_err(|error| {
             format!(
                 "Unable to recover interrupted SPLINED database transaction {}: {error}",
                 path.display()
@@ -8191,7 +8246,7 @@ mod tests {
         assert_eq!(
             catalog.get("Target Artist"),
             Some(
-                &["featured", "own", "various-release"]
+                &["fallback", "featured", "own", "various-release"]
                     .into_iter()
                     .map(str::to_string)
                     .collect()
@@ -8307,6 +8362,40 @@ mod tests {
     }
 
     #[test]
+    fn one_musicbrainz_id_preserves_a_joined_artist_name() {
+        let separator = Regex::new(r"(?i) & ").unwrap();
+        let ike_and_tina = "1c7b3786-b99a-40ab-81e4-f3056da19e13";
+        let ike = "11111111-2222-4333-8444-555555555555";
+        let tina = "66666666-7777-4888-8999-aaaaaaaaaaaa";
+
+        assert_eq!(
+            artist_credit_values_with_mbids("Ike & Tina Turner", ike_and_tina, &separator,),
+            ["Ike & Tina Turner"]
+        );
+        assert_eq!(
+            artist_credit_values_with_mbids(
+                "Ike & Tina Turner",
+                &format!("{ike}; {tina}"),
+                &separator,
+            ),
+            ["Ike", "Tina Turner"]
+        );
+
+        let default_separator = Regex::new(crate::config::DEFAULT_ARTIST_SEPARATOR_REGEX).unwrap();
+        assert_eq!(
+            indexed_track_artist_credits(
+                "Ike & Tina Turner",
+                ike_and_tina,
+                "1-01 - Ike & Tina Turner - Proud Mary",
+                "1-01 - Ike & Tina Turner - Proud Mary",
+                "Tina Turner",
+                &default_separator,
+            ),
+            ["Ike & Tina Turner"]
+        );
+    }
+
+    #[test]
     fn numbered_duet_title_recovers_guest_without_manufacturing_combined_artist() {
         let temp = tempfile::tempdir().unwrap();
         let db = database_path(temp.path());
@@ -8343,7 +8432,51 @@ mod tests {
             projection.album_keys.get("Aaron Neville"),
             Some(&["gold".to_string()].into_iter().collect())
         );
-        assert!(!projection.album_keys.contains_key("Rob Wasserman & Aaron Neville"));
+        assert!(
+            !projection
+                .album_keys
+                .contains_key("Rob Wasserman & Aaron Neville")
+        );
+    }
+
+    #[test]
+    fn numbered_collaboration_preserves_ampersand_band_owner_and_projects_guest() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = database_path(temp.path());
+        let connection = open_database(&db, false).unwrap();
+        let now = sqlite_now(&connection).unwrap();
+        connection.execute(
+            "INSERT INTO artists(artist_key,artist_name,primary_path,created_at,updated_at,last_seen_at,splined_version) \
+             VALUES('brooks','Brooks & Dunn','/music/Brooks & Dunn',?1,?1,?1,'test')",
+            params![now],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO albums(album_key,artist_key,album_name,musicbrainz_albumid,path,representative_file,tag_signature,created_at,updated_at,last_seen_at,splined_version) \
+             VALUES('reboot','brooks','Reboot','release-reboot','/music/Brooks & Dunn/Reboot','/music/Brooks & Dunn/Reboot/1-04.mp3','tags',?1,?1,?1,'test')",
+            params![now],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO tracks(track_key,album_key,path,title,artist_name,file_size,file_mtime_ns,updated_at,splined_version) \
+             VALUES('neon','reboot','/music/Brooks & Dunn/Reboot/1-04 - Brooks & Dunn & Kacey Musgraves - Neon Moon.mp3','1-04 - Brooks & Dunn & Kacey Musgraves - Neon Moon','Brooks & Dunn',1,1,?1,'test')",
+            params![now],
+        ).unwrap();
+        drop(connection);
+
+        let projection = indexed_artist_catalog_projection(
+            db.to_str().unwrap(),
+            crate::config::DEFAULT_ARTIST_SEPARATOR_REGEX,
+        )
+        .unwrap();
+
+        assert!(projection.album_keys.contains_key("Brooks & Dunn"));
+        assert!(projection.album_keys.contains_key("Kacey Musgraves"));
+        assert!(!projection.album_keys.contains_key("Brooks"));
+        assert!(!projection.album_keys.contains_key("Dunn"));
+        assert!(
+            !projection
+                .album_keys
+                .contains_key("Brooks & Dunn & Kacey Musgraves")
+        );
     }
 
     #[test]
@@ -8355,8 +8488,8 @@ mod tests {
         let acdc = "66c662b6-6e2f-4930-8610-912e24c63ed1";
         connection.execute(
             "INSERT INTO artists(artist_key,artist_name,primary_path,musicbrainz_artistid,created_at,updated_at,last_seen_at,splined_version) \
-             VALUES('acdc','AC/DC','/music/AC-DC',?1,?2,?2,?2,'test')",
-            params![acdc, now],
+             VALUES('acdc','AC-DC','/music/AC-DC',NULL,?1,?1,?1,'test')",
+            params![now],
         ).unwrap();
         connection.execute(
             "INSERT INTO albums(album_key,artist_key,album_name,musicbrainz_albumid,path,representative_file,tag_signature,created_at,updated_at,last_seen_at,splined_version) \
@@ -8391,6 +8524,10 @@ mod tests {
         let separator = Regex::new(r"\\+").unwrap();
         assert_eq!(
             artist_credit_values("Rob Wasserman\0Aaron Neville", &separator),
+            ["Rob Wasserman", "Aaron Neville"]
+        );
+        assert_eq!(
+            artist_credit_values("Rob Wasserman\x1fAaron Neville", &separator),
             ["Rob Wasserman", "Aaron Neville"]
         );
         assert_eq!(
