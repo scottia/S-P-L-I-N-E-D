@@ -1458,6 +1458,30 @@ function setSettingValue(object, path, value) {
   for (const key of keys.slice(0, -1)) owner = owner[key] ||= {};
   if (value === undefined) delete owner[keys.at(-1)]; else owner[keys.at(-1)] = value;
 }
+async function browseLibrarySetting(input) {
+  const chooser = document.createElement("dialog"); chooser.className = "server-directory-dialog";
+  const heading = node("h3", "", "Choose category root"), current = node("code", "server-directory-current", "");
+  const directories = node("div", "server-directory-list"), actions = node("div", "server-directory-actions");
+  const back = node("button", "minor-button", "Up"), cancel = node("button", "minor-button", "Cancel"), choose = node("button", "operation-button", "Select this root");
+  for (const button of [back, cancel, choose]) button.type = "button";
+  actions.append(back, cancel, choose); chooser.append(heading, current, directories, actions); document.body.append(chooser);
+  let selected = input.value.trim();
+  async function load(path) {
+    const value = await api("/api/settings/library-directories?path=" + encodeURIComponent(path || ""));
+    selected = value.current; current.textContent = value.current; back.disabled = !value.parent; clear(directories);
+    back.onclick = () => value.parent && runAction(() => load(value.parent));
+    for (const item of value.directories) {
+      const button = node("button", "server-directory-row", "📁  " + item.name); button.type = "button";
+      button.addEventListener("click", () => runAction(() => load(item.path))); directories.append(button);
+    }
+    if (!value.directories.length) directories.append(node("p", "settings-subcopy", "No child folders"));
+  }
+  cancel.addEventListener("click", () => chooser.close());
+  choose.addEventListener("click", () => { input.value = selected; input.dispatchEvent(new Event("input", {bubbles: true})); chooser.close(); });
+  chooser.addEventListener("close", () => chooser.remove(), {once: true});
+  chooser.showModal();
+  try { await load(selected); } catch (error) { await load(""); setStatus(error.message, "error"); }
+}
 function settingsInput(host, descriptor, path, draft, bindings, saved) {
   const label = node("label", "setting-field"), title = node("span", "setting-label", descriptor.label);
   if (descriptor.future) { label.classList.add("future-setting"); title.append(node("span", "future-badge", "FUTURE")); }
@@ -1486,6 +1510,12 @@ function settingsInput(host, descriptor, path, draft, bindings, saved) {
   }
   if (saved.database_managed && path === "database.url") { input.disabled = true; input.placeholder = "Managed by server environment"; }
   shell.append(input);
+  if (descriptor.type === "path" && [
+    "library.various_artist_path", "library.soundtracks_path", "library.curated_compilations_path"
+  ].includes(path)) {
+    const browse = node("button", "minor-button setting-path-browse", "Browse…"); browse.type = "button";
+    browse.addEventListener("click", () => runAction(() => browseLibrarySetting(input))); shell.append(browse);
+  }
   if (descriptor.suffix) shell.append(node("span", "setting-suffix", descriptor.suffix));
   if (descriptor.type === "boolean") label.append(shell, title); else label.append(title, shell);
   if (descriptor.help) label.append(node("small", "", descriptor.help));
@@ -2064,6 +2094,9 @@ async function openSettings() {
   function renderSection(id, preserveDraft = false) {
     active = id; bindings = [];
     if (!preserveDraft) draft = structuredClone(saved.config);
+    draft.library ||= {};
+    for (const key of ["various_artist_path", "soundtracks_path", "curated_compilations_path"])
+      draft.library[key] ||= draft.library.music_library || "";
     draft.scan ||= {}; draft.scan.shared_artist_art_dir ??= ""; draft.scan.temporary_cache_dir ??= draft.scan.cache_dir || ""; draft.scan.artist_separator_regex ??= DEFAULT_ARTIST_SEPARATOR_REGEX; draft.scan.artist_separator_profile ??= "Navidrome default"; delete draft.scan.sqlite_shared; delete draft.scan.windows_client_lock;
     draft.samples ||= {}; draft.aisplined ||= {};
     const section = available.find(item => item.id === id); clear(content); renderNav();
@@ -2080,7 +2113,7 @@ async function openSettings() {
     if (section.id === "runtime") renderRuntimeSettings(fields, section, draft, bindings, saved, advanced);
     else {
       let displayedGroup = "";
-      const groupFor = path => section.id === "library" ? (["library.music_library", "scan.scan_mode", "scan.scan_library_dir"].includes(path) ? "Library And Application Paths" : path.startsWith("scan.artist_separator_") || path.startsWith("scan.index_") ? "Library Index" : path === "database.url" ? "Database" : "Persistent Folders")
+      const groupFor = path => section.id === "library" ? (["library.music_library", "library.various_artist_path", "library.soundtracks_path", "library.curated_compilations_path", "scan.scan_mode", "scan.scan_library_dir"].includes(path) ? "Library And Application Paths" : path.startsWith("scan.artist_separator_") || path.startsWith("scan.index_") ? "Library Index" : path === "database.url" ? "Database" : "Persistent Folders")
         : section.id === "artwork" ? (path.startsWith("output.") ? "Output Files" : path === "scan.shared_artist_art_dir" ? "V/A / OST Artist Images Directory" : "Sample Images")
         : section.id === "enhancement" ? "Resolution Range" : "";
       for (const descriptor of section.fields || []) {

@@ -57,7 +57,7 @@ function normalizeGraphicalEnhancement(value = {}) {
 const state = {
   artists: [], albumsIndex: [], artist: null, artistMetadata: null, album: null,
   biographyArtistId: null, biographyExpanded: false, biographyText: "",
-  libraryMode: "artists", editorMode: "artist", workspace: "find",
+  libraryMode: "artists", libraryCategory: "", editorMode: "artist", workspace: "find",
   candidates: [], selectedPortrait: null, selectedBanner: null, selectedCover: null, reviewCleared: false,
   upscalePreview: null, renderedPreview: {}, compThumbnailPreview: null, pendingCompWrite: null,
   fallbackTracks: [], fallbackTrack: null, fallbackPreviewOnly: false, fallbackRun: false, fallbackTrackRequest: 0, fallbackStatusRequest: 0,
@@ -634,7 +634,7 @@ function renderLibraryContents() {
   $("artistsTab").classList.toggle("active", state.libraryMode === "artists");
   $("albumsTab").classList.toggle("active", state.libraryMode === "albums");
   $("fallbackTab").classList.toggle("active", state.libraryMode === "fallback");
-  $("libraryListTitle").textContent = state.libraryMode === "fallback" ? "Fallback Albums" : state.libraryMode === "albums" ? "Albums" : "Artists";
+  $("libraryListTitle").textContent = state.libraryMode === "fallback" ? "Curated Compilations" : state.libraryMode === "albums" ? "V/A OST" : "Artists";
   const list = $("artistList"); resetLibraryThumbnailLoading(); clear(list);
   if (state.libraryLoading) {
     $("artistCount").textContent = "loading";
@@ -645,7 +645,7 @@ function renderLibraryContents() {
   if (state.libraryMode === "artists") {
     const albumQuery = $("albumSearch").value.trim();
     const matchesByArtist = new Map();
-    if (albumQuery) for (const album of state.albumLibraryMatches) {
+    if (albumQuery) for (const album of state.albumLibraryMatches.filter(artistFileListAlbum)) {
       if (!matchesByArtist.has(album.artist_id)) matchesByArtist.set(album.artist_id, []);
       matchesByArtist.get(album.artist_id).push(album);
     }
@@ -669,16 +669,52 @@ function renderLibraryContents() {
       button.addEventListener("click", () => chooseArtist(artist.id)); list.append(button);
       if (state.artist?.id === artist.id) {
         const matchingIds = new Set(matchingAlbums.map(album => album.id));
-        for (const album of state.artist.albums.filter(item => !albumQuery || matchingIds.has(item.id))) {
+        for (const album of state.artist.albums
+          .filter(artistFileListAlbum)
+          .filter(item => !albumQuery || matchingIds.has(item.id))
+          .sort(compareAlbumTitles)) {
           list.append(albumRow(album, true));
         }
       }
     }
   } else {
     $("artistCount").textContent = state.albumsIndex.filter(mediaMatches).length + " shown";
-    for (const album of state.albumsIndex.filter(mediaMatches)) {
+    const visibleAlbums = state.albumsIndex.filter(mediaMatches).sort(compareAlbumTitles);
+    if (state.libraryMode === "albums") {
+      const categoryRows = [
+        ["various-artists", "Various Artists"],
+        ["soundtracks", "Soundtracks"],
+        ["misc-undefined", "Miscellaneous Undefined"],
+      ];
+      for (const [key, label] of categoryRows) {
+        const members = visibleAlbums.filter(album => key === "misc-undefined"
+          ? ["misc-curated", "misc-undefined"].includes(album.library_group)
+          : album.library_group === key);
+        const category = node("button", "library-row library-category" + (state.libraryCategory === key ? " expanded" : ""));
+        category.type = "button";
+        category.append(node("span", "status-orbit", state.libraryCategory === key ? "●" : "○"),
+          node("span", "row-copy", ""), node("span", "expand-mark", state.libraryCategory === key ? "−" : "+"));
+        category.querySelector(".row-copy").append(node("strong", "", label), node("small", "", members.length + " Albums"));
+        category.addEventListener("click", () => { state.libraryCategory = state.libraryCategory === key ? "" : key; renderLibrary(); });
+        list.append(category);
+        if (state.libraryCategory !== key) continue;
+        if (key === "misc-undefined") {
+          const curated = members.filter(album => album.library_group === "misc-curated");
+          if (curated.length) {
+            const pinned = node("div", "library-subcategory pinned", "Miscellaneous Curated · " + curated.length + " Albums");
+            list.append(pinned);
+            for (const album of curated) list.append(albumRow(album, false));
+          }
+          const undefinedAlbums = members.filter(album => album.library_group === "misc-undefined");
+          if (undefinedAlbums.length) list.append(node("div", "library-subcategory", "Other Undefined · " + undefinedAlbums.length + " Albums"));
+          for (const album of undefinedAlbums) list.append(albumRow(album, false));
+        } else {
+          for (const album of members) list.append(albumRow(album, false));
+        }
+      }
+    } else for (const album of visibleAlbums) {
       list.append(albumRow(album, false));
-      if (state.libraryMode === "fallback" && state.album?.id === album.id) {
+      if (state.album?.id === album.id) {
         for (const track of state.fallbackTracks) {
           const row = node("button", "library-row fallback-library-track"); row.type = "button";
           row.classList.toggle("selected", state.fallbackTrack?.key === track.key);
@@ -694,7 +730,7 @@ function renderLibraryContents() {
   }
   if (!list.childElementCount) list.append(node("p", "empty-copy",
     state.libraryMode === "fallback" && !state.albumsIndex.length
-      ? "No missing-ID COMP albums in the library."
+      ? "No Albums are inside the Curated Compilations path."
       : "No items match this filter."));
   renderMediaStatusChips();
 }
@@ -774,7 +810,7 @@ function artistOverviewAlbums(artist = state.artist, honorSingleAlbum = true) {
       status: group.tracks.every(track => track.completed) ? "processed" : "incomplete",
     };
   });
-  const indexed = (artist.albums || []).filter(album => album.album_mbid || compIds.has(album.id)).map(album => {
+  const indexed = (artist.albums || []).map(album => {
     const group = compById.get(album.id);
     // COMP album cards use their indexed folder cover. Track thumbnails are
     // separate COMP-report evidence and never replace the album-card cover.
@@ -790,10 +826,86 @@ function artistOverviewAlbums(artist = state.artist, honorSingleAlbum = true) {
     ? [{...(allAlbums.find(album => album.id === state.album.id) || {}), ...state.album,
         cover_found: !!state.album.cover}]
     : allAlbums;
-  return presentedAlbums.sort((a, b) =>
-    albumPresentationGroup(a, artist) - albumPresentationGroup(b, artist)
-    || (parseInt(b.year, 10) || 0) - (parseInt(a.year, 10) || 0)
-    || a.name.localeCompare(b.name));
+  return presentedAlbums.sort((left, right) =>
+    albumPresentationGroup(left, artist) - albumPresentationGroup(right, artist)
+    || (parseInt(right.year, 10) || 0) - (parseInt(left.year, 10) || 0)
+    || compareAlbumTitles(left, right));
+}
+function artistFileListAlbum(album) {
+  // A qualifying Artist keeps V/A and OST appearances in the expanded file
+  // list. Fallback is the only Album class that is never duplicated there.
+  return String(album?.library_group || "") !== "fallback";
+}
+function compareAlbumTitles(left, right) {
+  return String(left?.name || "").localeCompare(String(right?.name || ""), undefined, {
+    sensitivity: "base", numeric: true,
+  }) || String(left?.id || "").localeCompare(String(right?.id || ""), undefined, {
+    sensitivity: "base", numeric: true,
+  });
+}
+const ALBUM_CATEGORY_CHOICES = [
+  ["", "Automatic (use configured roots)"],
+  ["artist", "Artist"],
+  ["various-artists", "Various Artists"],
+  ["soundtracks", "Soundtracks"],
+  ["fallback", "Curated Compilations"],
+  ["misc-curated", "Miscellaneous Curated"],
+  ["misc-undefined", "Miscellaneous Undefined"],
+];
+function albumCategoryLabel(value) {
+  return ALBUM_CATEGORY_CHOICES.find(([key]) => key === String(value || ""))?.[1]
+    || "Automatic (use configured roots)";
+}
+async function saveAlbumCategory(album, category, saveButton) {
+  saveButton.disabled = true;
+  setStatus("Moving " + album.name + "…", "busy");
+  try {
+    const result = await post("/api/album/category", {id: album.id, category});
+    for (const item of state.albumsIndex) if (item.id === album.id) Object.assign(item, result);
+    for (const item of state.artist?.albums || []) if (item.id === album.id) Object.assign(item, result);
+    if (state.album?.id === album.id) Object.assign(state.album, result);
+    $("workspaceDialog").close();
+    const query = state.libraryMode === "artists" ? $("artistSearch").value : $("albumSearch").value;
+    await loadLibrary(query);
+    if (state.libraryMode === "artists" && state.artist?.id) {
+      state.artist = await api("/api/artist?id=" + encodeURIComponent(state.artist.id));
+      renderAll();
+    }
+    setStatus(category
+      ? album.name + " moved to " + albumCategoryLabel(category)
+      : album.name + " restored to automatic root grouping");
+  } catch (error) {
+    saveButton.disabled = false;
+    setErrorStatus(error);
+  }
+}
+function openAlbumCategoryDialog(album) {
+  $("dialogTitle").textContent = "Move Album";
+  const body = $("dialogBody"); clear(body);
+  const form = node("form", "album-category-form");
+  form.append(
+    node("strong", "album-category-name", album.name),
+    node("p", "", "This Album will appear in one category only. Automatic uses the configured root paths."),
+  );
+  const label = node("label", "album-category-field");
+  label.append(node("span", "", "Category"));
+  const select = node("select", "");
+  for (const [value, text] of ALBUM_CATEGORY_CHOICES) {
+    const option = node("option", "", text); option.value = value;
+    option.selected = String(album.category_override || "") === value;
+    select.append(option);
+  }
+  label.append(select); form.append(label);
+  const actions = node("div", "album-category-actions");
+  const cancel = node("button", "", "Cancel"); cancel.type = "button";
+  cancel.addEventListener("click", () => $("workspaceDialog").close());
+  const save = node("button", "album-category-save", "Move Album"); save.type = "submit";
+  actions.append(cancel, save); form.append(actions);
+  form.addEventListener("submit", event => {
+    event.preventDefault();
+    void saveAlbumCategory(album, select.value, save);
+  });
+  body.append(form); $("workspaceDialog").showModal(); select.focus();
 }
 function renderCandidateTypeChips() {
   for (const [hostId, dimension, rows] of [["candidateTypeChips", "type", CANDIDATE_TYPES], ["candidatePolicyChips", "policy", [["Acceptable", "Acceptable"], ["Strict", "Strict"]]], ["candidateRangeChips", "range", CANDIDATE_RANGES]]) {
@@ -813,6 +925,7 @@ function renderCandidateTypeChips() {
   $("candidateDisregardSource").disabled = !sourceChosen || state.candidateFilterLocked;
 }
 function albumRow(album, child) {
+  const shell = node("div", "album-row-shell" + (child ? " album-child-shell" : ""));
   const button = node("button", "library-row album-row" + (child ? " album-child" : "")); button.type = "button";
   const orbit = node("span", "status-orbit" + (selectedMedia(album) ? " selected" : ""), selectedMedia(album) ? "●" : "○"); button.append(orbit);
   const overridden = opposingAlbumOverride(album);
@@ -820,7 +933,17 @@ function albumRow(album, child) {
   button.classList.toggle("opposing-override", overridden);
   button.append(albumArtworkNode(album, "library-thumb", ""));
   const copy = node("span", "row-copy"); copy.append(node("strong", "", album.name), node("small", "", child ? album.tracks + " tracks" : album.artist_name)); button.append(copy);
-  button.addEventListener("click", () => chooseAlbum(album.id)); return button;
+  button.addEventListener("click", () => chooseAlbum(album.id));
+  const categorize = node("button", "album-category-button" + (album.category_override ? " overridden" : ""), "⇄");
+  categorize.type = "button";
+  categorize.title = album.category_override
+    ? "Category override: " + albumCategoryLabel(album.category_override)
+    : "Move Album to another category";
+  categorize.setAttribute("aria-label", "Move " + album.name + " to another category");
+  categorize.addEventListener("click", event => {
+    event.stopPropagation(); openAlbumCategoryDialog(album);
+  });
+  shell.append(button, categorize); return shell;
 }
 
 function albumArtworkNode(album, className, alt, placeholderClass = className, eager = false) {
@@ -844,9 +967,10 @@ function singleAlbumOverviewActive() {
 }
 
 function albumBannerKind(album, artist) {
-  if (!album.album_mbid) return "compiled";
-  if (album.soundtrack) return "soundtrack";
-  if (album.various_artists) return "various";
+  const group = String(album?.library_group || "");
+  if (["fallback", "misc-curated"].includes(group) || !album.album_mbid) return "compiled";
+  if (group === "soundtracks" || album.soundtrack) return "soundtrack";
+  if (group === "various-artists" || album.various_artists) return "various";
   if (album.featured) return "featuring";
   return "artist";
 }
@@ -929,7 +1053,7 @@ function compTrackOverride(track) {
 }
 function albumCardState(album, artist) {
   const status = rawMediaStatusKey(album);
-  const fallback = !String(album.album_mbid || "").trim();
+  const fallback = Boolean(album.fallback || album.library_group === "fallback");
   const overridden = !fallback && albumOverride(album)?.writer === "windows";
   // A successful opposing write proves that an otherwise-unprocessed local
   // presentation is stale. Preserve every other independent status dot, but
@@ -1609,7 +1733,12 @@ function renderSources() {
   for (const [key, source] of sourceByKey) {
     if (!seen.has(key)) { orderedSources.push(source); seen.add(key); }
   }
-  for (const [label, key, icon] of orderedSources.filter(Boolean)) {
+  const sourceEmoji = key => ({
+    "": "⊘", local: "📁", itunes: "🍎", fanarttv: "🎨",
+    amazon: "📦", coverartarchive: "🖼️", musicbrainz: "🧠",
+    discogs: "💿", lastfm: "📻", navidrome: "🧑‍🎨", deezer: "🎧",
+  })[key] || "✨";
+  for (const [label, key] of orderedSources.filter(Boolean)) {
     const currentCount = candidates.filter(candidate => sourceKey(candidate.source) === key).length;
     const artistCount = Number(state.sourceCounts.artist?.[key] || 0);
     const coverCount = Number(state.sourceCounts.cover?.[key] || 0);
@@ -1623,7 +1752,7 @@ function renderSources() {
     button.title = currentCount ? "Show " + label + " candidates"
       : runtime.message ? label + " · " + runtime.message
       : label + (searchable ? " · ready for artist search" : " · unavailable for this selection");
-    button.append(icon === "⊘" ? node("span", "source-symbol", "⊘") : image("/assets/source-icons/" + icon + ".svg", "", ""));
+    button.append(node("span", "source-symbol source-emoji", sourceEmoji(key)));
     const mode = artistEnabled && configured ? "Artist / Album" : artistEnabled ? "Artist-Only" : configured ? "Album-Only" : "Deactivated";
     const modeClass = artistEnabled && configured ? "artist-album" : artistEnabled ? "artist-only" : configured ? "album-only" : "deactivated";
     const modeTitle = artistEnabled && configured ? "Artist and Album artwork source"
@@ -2449,7 +2578,7 @@ async function loadLibrary(query = "") {
     renderLibrary();
     if (state.libraryMode === "artists") hydrateArtistThumbnails(request);
     if (state.libraryMode === "artists" && !state.artist && state.artists.length) await chooseArtist(state.artists[0].id, false);
-    else setStatus(state.libraryMode === "fallback" && !state.albumsIndex.length ? "No missing-ID albums in the library" : "Library ready · WebGUI ready");
+    else setStatus(state.libraryMode === "fallback" && !state.albumsIndex.length ? "No Albums are inside the Curated Compilations path" : "Library ready · WebGUI ready");
   } catch (error) { if (request === state.listRequest) { state.libraryLoading = false; renderLibrary(); setStatus(error.message, "error"); } }
 }
 async function loadAlbumLibraryMatches(query) {
@@ -2464,7 +2593,7 @@ async function loadAlbumLibraryMatches(query) {
   state.albumLibraryLoading = true;
   renderLibrary();
   try {
-    const matches = await api("/api/albums?view=albums&q=" + encodeURIComponent(value));
+    const matches = await api("/api/albums?view=search&q=" + encodeURIComponent(value));
     if (request !== state.albumLibraryRequest || state.libraryMode !== "artists") return;
     state.albumLibraryMatches = matches;
     state.albumLibraryLoading = false;
@@ -2579,7 +2708,7 @@ async function chooseAlbum(id) {
       state.compAlbums = overview.comp_albums || [];
       loadArtistMetadata(overview.artist.id);
     }
-    const fallback = !String(album.album_mbid || "").trim();
+    const fallback = Boolean(album.fallback || album.library_group === "fallback");
     const tracks = fallback ? await api("/api/fallback/tracks?id=" + encodeURIComponent(id)) : [];
     if (request !== state.selectionRequest) return;
     state.album = album; state.editorMode = fallback ? "fallback" : "album"; state.workspace = "find";
@@ -2746,7 +2875,7 @@ async function changeLibraryMode(mode) {
   await cancelActiveCompWork();
   ++state.selectionRequest; ++state.searchRequest; ++state.artistMetadataRequest;
   state.libraryLoading = true;
-  state.libraryMode = mode; state.artist = null; state.artistMetadata = null; state.album = null; state.compAlbums = []; state.mediaSelected.clear();
+  state.libraryMode = mode; state.libraryCategory = ""; state.artist = null; state.artistMetadata = null; state.album = null; state.compAlbums = []; state.mediaSelected.clear();
   state.editorMode = mode === "fallback" ? "fallback" : "artist"; state.workspace = "find";
   auditEvent("navigation", "library-view", {details: {from: document.querySelector(".library-tabs .active")?.id || "", to: mode}});
   clearFocusCandidates(); resetFocusAdjustments(); renderAll();

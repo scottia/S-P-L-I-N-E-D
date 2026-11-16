@@ -76,6 +76,11 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         )
         self.cfg["mode"] = "write"
         self.cfg["library"]["music_library"] = str(self.root / "music")
+        self.cfg["library"].update(
+            various_artist_path=str(self.root / "music" / "Various Artists"),
+            soundtracks_path=str(self.root / "music" / "Soundtracks"),
+            curated_compilations_path=str(self.root / "music" / "Compilations"),
+        )
         self.cfg["scan"].update(
             cache_dir=str(self.root / "cache"),
             temporary_cache_dir=str(self.root / "temporary"),
@@ -294,7 +299,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         audio.save()
 
     def make_comp_track(self, folder_name, *, recording_id=True):
-        folder = self.root / "music" / "Various Artists" / folder_name
+        folder = self.root / "music" / "Compilations" / folder_name
         folder.mkdir(parents=True)
         target = folder / "01 Test Artist - Track 1.flac"
         shutil.copyfile(self.files[0], target)
@@ -961,7 +966,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.assertTrue(featured[0]["featured"])
 
     def test_artist_comp_report_is_scoped_while_full_fallback_keeps_every_track(self):
-        comp = self.root / "music" / "Various Artists" / "Billboard Fixture"
+        comp = self.root / "music" / "Compilations" / "Billboard Fixture"
         other_album = self.root / "music" / "Other Artist" / "Other Release"
         comp.mkdir(parents=True)
         other_album.mkdir(parents=True)
@@ -1146,7 +1151,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         )
         self.assertEqual(
             track_coordination[0]["relative_track_path"],
-            "various artists/billboard fixture/" + target_path.name.casefold(),
+            "compilations/billboard fixture/" + target_path.name.casefold(),
         )
 
         target_art = embedded_track_artwork_bytes(target_path)
@@ -1873,7 +1878,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertEqual(status.status_code, 200, status.text)
             self.assertTrue(status.json()["authenticated"])
             self.assertEqual(status.json()["username"], "restart-admin")
-            self.assertEqual(status.json()["database_migration"]["current"], 23)
+            self.assertEqual(status.json()["database_migration"]["current"], 24)
             self.assertTrue(status.json()["database_migration"]["automatic"])
             self.assertEqual(restarted.get("/api/artists").status_code, 200)
             self.assertEqual(
@@ -5027,7 +5032,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         comp = (
             self.root
             / "music"
-            / "Various Artists"
+            / "Compilations"
             / "Billboard Hot 100 Singles of 1994"
         )
         comp.mkdir(parents=True)

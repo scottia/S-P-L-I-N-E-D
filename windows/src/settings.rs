@@ -837,6 +837,11 @@ pub fn save_config_at_root(config: &Config, root: &Path) -> Result<Config, Strin
 fn save_config_at_path(config: &Config, root: &Path, path: &Path) -> Result<Config, String> {
     let mut portable = config.clone();
     portable.library.music_library = portable_path(root, &portable.library.music_library);
+    portable.library.various_artist_path =
+        portable_path(root, &portable.library.various_artist_path);
+    portable.library.soundtracks_path = portable_path(root, &portable.library.soundtracks_path);
+    portable.library.curated_compilations_path =
+        portable_path(root, &portable.library.curated_compilations_path);
     portable.scan.scan_library_dir = portable_path(root, &portable.scan.scan_library_dir);
     portable.scan.cache_dir = portable_path(root, &portable.scan.cache_dir);
     portable.scan.shared_artist_art_dir = portable_path(root, &portable.scan.shared_artist_art_dir);

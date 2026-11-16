@@ -253,8 +253,8 @@ fn artist_overview_keeps_native_parity_controls_and_album_row_navigation() {
     assert!(fallback_rows.contains("clicked => root.compilation-track-activated"));
     assert!(!fallback_rows.contains("track.selected ?"));
     assert!(!ui.contains("#7a061426"));
-    assert!(ui.contains("#14141470"));
-    assert!(ui.contains("#0b0b0be0"));
+    assert!(!ui.contains("#14141470"));
+    assert!(!ui.contains("#0b0b0be0"));
 }
 
 #[test]
