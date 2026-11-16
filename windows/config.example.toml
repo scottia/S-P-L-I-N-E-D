@@ -1,7 +1,7 @@
 # S:P:L:I:N:E:D Config v5 example
-# Windows GUI developer/reference Config v5 example.
-# The Windows v4 GUI stores Config v5 internally and does not read this file
-# during normal operation. Change settings through File > Settings.
+# Windows GUI first-run/reference Config v5 example.
+# The release executable embeds this exact file as its unsaved Setup draft.
+# No runtime TOML is created until the operator saves Setup.
 
 config_version = 5
 mode = "read"
@@ -130,8 +130,9 @@ allow_below_minimum_fallback = false
 primary_image_only = true
 
 [source_policies.amazon]
-# Amazon Store search is credential-free, best effort, and opt-in.
-enabled = false
+# Amazon Store search is credential-free and best effort for Album and Artist art.
+enabled = true
+include_in_artist_art_search = true
 strict_override = true
 source_override = false
 minimum_range_type = "LowerRange"

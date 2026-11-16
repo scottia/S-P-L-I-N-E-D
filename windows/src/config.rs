@@ -537,7 +537,8 @@ impl Default for Config {
         source_policies.insert(
             "amazon".to_string(),
             SourcePolicyConfig {
-                enabled: false,
+                enabled: true,
+                include_in_artist_art_search: Some(true),
                 strict_override: true,
                 ..SourcePolicyConfig::default()
             },
@@ -571,11 +572,18 @@ pub fn config_path() -> Option<PathBuf> {
 }
 
 pub fn config_path_for_root(root: &Path) -> PathBuf {
-    root.join("data").join("config.toml")
+    crate::portable::default_configuration_directory(root).join("config.toml")
 }
 
 pub fn default_toml() -> Result<String, toml::ser::Error> {
     toml::to_string_pretty(&Config::default())
+}
+
+/// Parse the repository's shipped Windows example as the unsaved first-run
+/// draft. `include_str!` makes a release executable use the exact source that
+/// was reviewed and built, without copying or creating a TOML at startup.
+pub fn first_run_config_at_root(root: &Path) -> Result<Config, String> {
+    load_config_text_at_root(include_str!("../config.example.toml"), root)
 }
 
 pub fn parse_config(text: &str) -> Result<Config, String> {
@@ -1126,11 +1134,33 @@ mod tests {
         assert_eq!(config.output.upscale_color_temperature, 0);
         assert!(config.sources.exclude_cover_sources.is_empty());
         assert_eq!(config.source_policies.len(), 1);
-        assert!(!config.source_policies["amazon"].enabled);
+        assert!(config.source_policies["amazon"].enabled);
+        assert!(config.source_policies["amazon"].includes_artist_art("amazon"));
         assert_eq!(
             config.sources.cover_sources.len(),
             SUPPORTED_COVER_SOURCES.len()
         );
+    }
+
+    #[test]
+    fn first_run_config_is_loaded_from_the_shipped_windows_example() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let config = first_run_config_at_root(temp.path()).unwrap();
+
+        assert_eq!(config.config_version, CURRENT_CONFIG_VERSION);
+        assert!(config.library.music_library.is_empty());
+        assert_eq!(
+            config.scan.cache_dir,
+            temp.path().join("_db").to_string_lossy()
+        );
+        assert_eq!(
+            config.scan.temporary_cache_dir,
+            temp.path().join("_cache").to_string_lossy()
+        );
+        assert!(config.source_policies["amazon"].enabled);
+        assert!(config.source_policies["amazon"].includes_artist_art("amazon"));
+        assert!(!temp.path().join("config.toml").exists());
+        assert!(!temp.path().join("ui.toml").exists());
     }
 
     #[test]
@@ -1378,10 +1408,7 @@ mod tests {
         let before_layout = AppLayout::from_root(resolved_root.clone());
         let after_layout = AppLayout::from_root(resolved_root.clone());
         assert_eq!(before_layout, after_layout);
-        assert_eq!(
-            after_layout.config_file,
-            portable_root.join("data").join("config.toml")
-        );
+        assert_eq!(after_layout.config_file, portable_root.join("config.toml"));
         let source = parse_config(&default_toml().unwrap()).unwrap();
         let mut before = source.clone();
         let mut after = source;

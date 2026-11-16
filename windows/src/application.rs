@@ -3501,6 +3501,7 @@ fn candidate_source_card_names(config: &Config) -> Vec<String> {
         "lastfm",
         "discogs",
         "navidrome",
+        "amazon",
     ] {
         let artist_enabled = config.source_policies.get(source).map_or_else(
             || default_artist_art_search(source),
@@ -3699,7 +3700,7 @@ impl ApplicationState {
             appearance_mode: "Default".to_string(),
             enhancement_settings_dirty: false,
             media_selector_expanded: true,
-            candidate_filter_expanded: true,
+            candidate_filter_expanded: false,
             media_filter_locked: false,
             candidate_filter_locked: false,
             animate_webp_preview: false,
@@ -8959,6 +8960,7 @@ mod tests {
                 "fanarttv",
                 "lastfm",
                 "navidrome",
+                "amazon",
             ]
         );
         let navidrome = state
@@ -9019,6 +9021,7 @@ mod tests {
                 "deezer",
                 "fanarttv",
                 "lastfm",
+                "amazon",
             ]
         );
         state.move_source_to("navidrome", "itunes").unwrap();
@@ -9099,6 +9102,7 @@ mod tests {
                 "lastfm",
                 "discogs",
                 "navidrome",
+                "amazon",
             ]
         );
 
@@ -9122,6 +9126,7 @@ mod tests {
                 "fanarttv",
                 "lastfm",
                 "navidrome",
+                "amazon",
             ]
         );
     }

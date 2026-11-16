@@ -36,7 +36,7 @@ Windows has two supported distribution channels:
 | Channel | Install/update behavior | Writable application state |
 | --- | --- | --- |
 | [Microsoft Store](https://apps.microsoft.com/detail/9p8g4gmbbvbs?hl=en-US&gl=US) | Windows installs, updates, and removes the package | Package-family `LocalState\SPLINED` |
-| [Portable ZIP](https://github.com/scottia/S-P-L-I-N-E-D/releases) | Extract to a writable folder; updates are manual | `data` beside `splined.exe` |
+| [Portable ZIP](https://github.com/scottia/S-P-L-I-N-E-D/releases) | Extract to a writable folder; updates are manual | Folder containing `splined.exe`, or the Configuration Path selected in Setup |
 
 The Store and Portable channels use the same x64 Rust/Slint application. The
 Store installation directory is read-only; Portable keeps its state with the
@@ -53,18 +53,116 @@ separate PostgreSQL database. See
 
 1. Start `splined.exe`. Missing or invalid Config v5 opens **Welcome to
    S.P.L.I.N.E.D.** instead of an initialized workspace.
-2. Choose the Music Library.
-3. Choose a persistent database directory for `splined.db`. New local
+2. Keep the default Configuration Path beside `splined.exe`, or deliberately
+   choose another persistent directory. No TOML exists yet.
+3. Optionally load an existing Settings Archive and enter its password.
+4. Choose the Music Library. This unlocks the remaining Setup paths.
+5. Choose a persistent database directory for `splined.db`. New local
    configurations use `_db` by default.
-4. Choose a separate Temporary Run Cache. New configurations use `_cache`.
-5. Choose log, credential, sample, and V/A / OST Artist Images directories.
-6. Leave **Shared/Network SQLite** off unless multiple native clients will open
+6. Choose a separate Temporary Run Cache. New configurations use `_cache`.
+7. Choose log, credential, sample, and V/A / OST Artist Images directories.
+8. Leave **Shared/Network SQLite** off unless multiple native clients will open
    the same physical database and you have reviewed the
    [shared-file requirements](splined-media-database.md#before-enabling-shared-mode).
-7. Select **Save & Open Settings**. SPLINED validates the paths, writes Config
-   v5 atomically, loads the library, and leaves any error visible for correction.
-8. Review Settings, configure credentials, refresh the library when needed,
+9. Select **Save & Open Settings**. SPLINED validates the paths, creates
+   `config.toml` and `ui.toml` in the selected Configuration Path, loads the
+   library, and leaves any error visible for correction.
+10. Create the offered first Settings Archive, then review Settings, configure
+   credentials, refresh the library when needed,
    and begin with a small READ run.
+
+### Setup path reference
+
+Setup keeps the repository's Windows example configuration in memory until
+**Save & Open Settings**. Each path has a separate responsibility:
+
+| Setup path | Purpose |
+| --- | --- |
+| Configuration Path | Owns `config.toml` and `ui.toml`. Portable installs default to the folder containing `splined.exe`; Advanced Settings unlocks later relocation. |
+| Music Library | Collection root and catalog authority. SPLINED reads Album folders below this root. |
+| Various Artist | Optional classification root for Various Artists Albums. It does not create Artist identities. |
+| Soundtracks | Optional, independent classification root for soundtrack Albums. |
+| Curated Compilations | Optional compilation root. It takes priority when nested inside another configured category root. |
+| Scan Library | Optional discovery boundary; blank means Music Library. It does not replace the collection authority. |
+| SQLite/database directory | Owns `splined.db`. Keep it persistent; use Shared/network mode only for a deliberate multi-client database. |
+| V/A / OST Artist Images | Materialized portraits and banners used for credited Artists appearing on categorized Albums. |
+| Temporary cache | Disposable downloads, previews, and candidate work. Local storage is fastest. |
+| Log directory | Runtime diagnostics and audit output according to the saved log policy. |
+| Credential directory | Provider JSON files. Credentials are not stored in Config v5. |
+| Sample images directory | Optional Artist/Album sample files used by the Samples source; it is not part of the music catalog. |
+
+Each **Guide ↗** control in Setup opens the matching explanation below.
+
+#### Configuration Path
+
+This folder owns `config.toml` and `ui.toml`. Portable starts with the folder
+containing `splined.exe`; Setup remains in memory and writes neither TOML until
+**Save & Open Settings** succeeds.
+
+#### Music Library
+
+This is the collection root and Album authority. Selecting it unlocks the
+remaining Setup paths; classification roots and Scan Library do not replace it.
+
+#### Various Artist category
+
+This optional root places its Albums under **V/A OST → Various Artists**. It
+does not manufacture Artist identities. A more specific Curated root nested
+inside it takes priority.
+
+#### Soundtracks category
+
+This independent optional root places its Albums under **V/A OST →
+Soundtracks**. It may be outside the Various Artist root.
+
+#### Curated Compilations category
+
+This highest-priority category root places Albums in the Curated/Fallback
+workflow. Curated Albums remain available as center Artist Overview cards and
+in the Artist COMP report when a real library Artist is credited, but they are
+never duplicated in the expanded Artist/Album file list. A per-Album category
+override takes effect immediately and does not require a rescan.
+
+#### Scan Library
+
+This optional path limits discovery. Blank means the Music Library root. It
+does not change Album ownership or category authority.
+
+#### SQLite database directory
+
+This persistent directory owns `splined.db`. A mapped or UNC location requires
+the deliberate **Shared/network SQLite** mode and its locking requirements.
+
+#### VA OST Artist Images
+
+This directory holds materialized portraits and banners for real Artists
+credited on V/A and soundtrack Albums. It is not another music root.
+
+#### Temporary cache
+
+This disposable workspace holds downloads, previews, and candidate work. Local
+storage is recommended even when the library and database are on a network.
+
+#### Log directory
+
+This is the diagnostics root. The current invocation writes one file under
+`<Log directory>/run/`; the next invocation clears that dedicated `run`
+directory before creating its own file. The log contains runtime and audit
+output at the saved verbosity and no music catalog authority.
+
+#### Credential directory
+
+This directory holds provider JSON files. Provider secrets remain outside
+`config.toml` and `ui.toml`.
+
+#### Sample images directory
+
+This optional directory supplies Artist and Album examples to the Samples
+source. It is never indexed as part of the Music Library.
+
+After Setup succeeds, SPLINED offers to create the first `.spl` Settings
+Archive before opening Settings. The selected archive directory is recorded in
+`ui.toml` and becomes the default Backup / Restore location.
 
 A clean launch does not precreate Config, database, cache, log, credential, or
 backup directories. They are created only by the corresponding saved setup or
@@ -72,11 +170,12 @@ operation.
 
 ### Where Windows keeps state
 
-Portable mode discovers:
+Portable mode discovers current state at the executable folder by default:
 
 ```text
-<portable folder>\data\config.toml       Config v5
-<portable folder>\data\ui.toml           interface preferences
+<portable folder>\config.toml              Config v5
+<portable folder>\ui.toml                  interface preferences
+<portable folder>\configuration-location.toml  optional pointer to a different Configuration Path
 <credential directory>\*.json             provider credentials
 <database directory>\splined.db            media and workflow database
 <temporary cache directory>\...            disposable candidates and previews
@@ -85,12 +184,13 @@ Portable mode discovers:
 Store mode keeps `config.toml` and `ui.toml` below:
 
 ```text
-%LOCALAPPDATA%\Packages\<package-family>\LocalState\SPLINED\data
+%LOCALAPPDATA%\Packages\<package-family>\LocalState\SPLINED
 ```
 
 Configured absolute, mapped-drive, and UNC paths remain unchanged. Relative
 paths resolve from the active Portable or Store state root. SPLINED does not
-use the Windows Registry as configuration authority.
+use the Windows Registry as configuration authority. Existing portable
+`data\config.toml` and `data\ui.toml` remain discoverable for compatibility.
 
 ### Move or restore existing settings
 
@@ -111,13 +211,14 @@ The left Media Library is a projection of the resident SQLite catalog:
 
 | View | What it shows |
 | --- | --- |
-| **Artists** | Artists and their Albums; activating an Artist opens its overview and appearances |
-| **Albums** | Direct Album browsing and selection |
-| **Fallback** | Albums without a MusicBrainz Album ID, with their indexed tracks |
+| **Artists** | Artists and their non-Curated Album file list; activating an Artist opens its complete overview and appearances |
+| **V/A OST** | Albums classified by the configured Various Artist and Soundtracks roots or per-Album override |
+| **Fallback** | Curated Compilations classified by path or per-Album override, with their indexed tracks |
 
-The Fallback rule is the missing Album ID—not a Various Artists or Compilation
-tag. An indexed folder cover can identify a fallback Album card, but it is
-never treated as embedded artwork for one of its tracks.
+Fallback/Curated membership is a category decision, not an inference from a
+missing MusicBrainz Album ID, Various Artists tag, or compilation flag. An
+indexed folder cover can identify a Curated Album card, but it is never treated
+as embedded artwork for one of its tracks.
 
 ### Select work
 
