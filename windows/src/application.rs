@@ -28,11 +28,21 @@ pub enum LibraryView {
     Folders,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AlbumLibraryGroup {
+    Artist,
+    VariousArtists,
+    Soundtracks,
+    MiscCurated,
+    MiscUndefined,
+    Fallback,
+}
+
 impl LibraryView {
     pub fn label(self) -> &'static str {
         match self {
             Self::Artists => "Artists",
-            Self::Albums => "Albums",
+            Self::Albums => "V/A OST",
             Self::Folders => "Folders",
         }
     }
@@ -293,6 +303,11 @@ pub struct LibraryState {
     /// Positionally paired local Artist MBIDs for projected/Featured Artists.
     /// This is stronger identity evidence than a conflicting Navidrome row.
     pub artist_appearance_musicbrainz_ids: HashMap<String, String>,
+    category_paths_configured: bool,
+    various_artist_path: String,
+    soundtracks_path: String,
+    curated_compilations_path: String,
+    expanded_library_category: Option<String>,
 }
 
 impl LibraryState {
@@ -381,6 +396,11 @@ impl LibraryState {
             artist_navidrome_ids: HashMap::new(),
             artist_appearance_album_keys,
             artist_appearance_musicbrainz_ids,
+            category_paths_configured: false,
+            various_artist_path: String::new(),
+            soundtracks_path: String::new(),
+            curated_compilations_path: String::new(),
+            expanded_library_category: None,
         })
     }
 
@@ -409,7 +429,96 @@ impl LibraryState {
             artist_navidrome_ids: HashMap::new(),
             artist_appearance_album_keys: BTreeMap::new(),
             artist_appearance_musicbrainz_ids: HashMap::new(),
+            category_paths_configured: false,
+            various_artist_path: String::new(),
+            soundtracks_path: String::new(),
+            curated_compilations_path: String::new(),
+            expanded_library_category: None,
         }
+    }
+
+    pub fn configure_library_categories(&mut self, config: &Config) {
+        let inherited = |value: &str| {
+            if value.trim().is_empty() {
+                config.library.music_library.clone()
+            } else {
+                value.trim().to_string()
+            }
+        };
+        self.various_artist_path = inherited(&config.library.various_artist_path);
+        self.soundtracks_path = inherited(&config.library.soundtracks_path);
+        self.curated_compilations_path = inherited(&config.library.curated_compilations_path);
+        self.category_paths_configured = true;
+    }
+
+    fn normalized_library_path(value: &str) -> String {
+        value
+            .trim()
+            .replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_ascii_lowercase()
+    }
+
+    fn distinct_category_path(&self, value: &str) -> Option<String> {
+        let root = Self::normalized_library_path(&self.local_root);
+        let candidate = Self::normalized_library_path(value);
+        (!candidate.is_empty()
+            && candidate != root
+            && candidate
+                .strip_prefix(&root)
+                .is_some_and(|suffix| suffix.starts_with('\\')))
+        .then_some(candidate)
+    }
+
+    fn path_inside(path: &str, root: &str) -> bool {
+        let path = Self::normalized_library_path(path);
+        path == root
+            || path
+                .strip_prefix(root)
+                .is_some_and(|suffix| suffix.starts_with('\\'))
+    }
+
+    fn album_library_group(&self, album: &AlbumEntry) -> AlbumLibraryGroup {
+        if !self.category_paths_configured {
+            return if album.snapshot.album_mbid.trim().is_empty() {
+                AlbumLibraryGroup::Fallback
+            } else {
+                AlbumLibraryGroup::Artist
+            };
+        }
+        let mut explicit = [
+            (AlbumLibraryGroup::Fallback, &self.curated_compilations_path, 3usize),
+            (AlbumLibraryGroup::Soundtracks, &self.soundtracks_path, 2usize),
+            (AlbumLibraryGroup::VariousArtists, &self.various_artist_path, 1usize),
+        ]
+        .into_iter()
+        .filter_map(|(group, value, priority)| {
+            let root = self.distinct_category_path(value)?;
+            Self::path_inside(&album.snapshot.path, &root)
+                .then_some((root.len(), priority, group))
+        })
+        .collect::<Vec<_>>();
+        explicit.sort_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
+        if let Some((_, _, group)) = explicit.last() {
+            return *group;
+        }
+        let artist = album
+            .snapshot
+            .artist
+            .trim()
+            .trim_matches(['[', ']'])
+            .to_ascii_lowercase();
+        match artist.as_str() {
+            "various artist" | "various artists" => AlbumLibraryGroup::VariousArtists,
+            "soundtrack" | "soundtracks" => AlbumLibraryGroup::Soundtracks,
+            "" | "unknown" | "unknown artist" => AlbumLibraryGroup::MiscUndefined,
+            _ if album.snapshot.compilation => AlbumLibraryGroup::MiscCurated,
+            _ => AlbumLibraryGroup::Artist,
+        }
+    }
+
+    fn is_curated_fallback(&self, album: &AlbumEntry) -> bool {
+        self.album_library_group(album) == AlbumLibraryGroup::Fallback
     }
 
     pub fn selected_count(&self) -> usize {
@@ -791,7 +900,7 @@ impl LibraryState {
 
     fn album_matches_active_filter(&self, album: &AlbumEntry) -> bool {
         self.status_filters.iter().copied().any(|filter| {
-            if self.show_tracks && Self::is_fallback_album(album) {
+            if self.show_tracks && self.is_curated_fallback(album) {
                 Self::fallback_album_matches_filter(album, filter)
             } else {
                 Self::album_matches_filter(album, filter)
@@ -870,8 +979,21 @@ impl LibraryState {
 
     fn album_visible(&self, index: usize, _artists: &BTreeMap<String, Vec<usize>>) -> bool {
         let album = &self.albums[index];
-        if self.view == LibraryView::Albums && !self.show_tracks && Self::is_fallback_album(album) {
-            return false;
+        if self.view == LibraryView::Albums && !self.show_tracks {
+            let group = self.album_library_group(album);
+            if self.category_paths_configured {
+                if !matches!(
+                    group,
+                    AlbumLibraryGroup::VariousArtists
+                        | AlbumLibraryGroup::Soundtracks
+                        | AlbumLibraryGroup::MiscCurated
+                        | AlbumLibraryGroup::MiscUndefined
+                ) {
+                    return false;
+                }
+            } else if Self::is_fallback_album(album) {
+                return false;
+            }
         }
         if !self.text_matches(album) {
             return false;
@@ -912,9 +1034,11 @@ impl LibraryState {
 
     fn album_is_in_active_review_view(&self, album: &AlbumEntry) -> bool {
         if self.show_tracks {
-            Self::is_fallback_album(album)
-        } else if matches!(self.view, LibraryView::Artists | LibraryView::Albums) {
+            self.is_curated_fallback(album)
+        } else if self.view == LibraryView::Artists {
             !Self::is_fallback_album(album)
+        } else if self.view == LibraryView::Albums {
+            !self.is_curated_fallback(album)
         } else {
             true
         }
@@ -1123,6 +1247,102 @@ impl LibraryState {
                 }
                 rows
             }
+            LibraryView::Albums if self.category_paths_configured => {
+                let visible = self
+                    .albums
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| self.album_visible(*index, &artists))
+                    .map(|(_, album)| album)
+                    .collect::<Vec<_>>();
+                let categories = [
+                    ("various-artists", "Various Artists"),
+                    ("soundtracks", "Soundtracks"),
+                    ("misc-undefined", "Miscellaneous Undefined"),
+                ];
+                let mut rows = Vec::new();
+                for (key, label) in categories {
+                    let members = visible
+                        .iter()
+                        .copied()
+                        .filter(|album| match key {
+                            "various-artists" => {
+                                self.album_library_group(album) == AlbumLibraryGroup::VariousArtists
+                            }
+                            "soundtracks" => {
+                                self.album_library_group(album) == AlbumLibraryGroup::Soundtracks
+                            }
+                            _ => matches!(
+                                self.album_library_group(album),
+                                AlbumLibraryGroup::MiscCurated | AlbumLibraryGroup::MiscUndefined
+                            ),
+                        })
+                        .collect::<Vec<_>>();
+                    let expanded = self
+                        .expanded_library_category
+                        .as_deref()
+                        .is_some_and(|value| value == key);
+                    rows.push(LibraryRow {
+                        key: format!("category:{key}"),
+                        primary: label.to_string(),
+                        secondary: format!("{} Albums", members.len()),
+                        status: "All".to_string(),
+                        artwork_path: String::new(),
+                        kind: "album-category".to_string(),
+                        depth: 0,
+                        expanded,
+                        selected: false,
+                        eligible: !members.is_empty(),
+                        album_count: members.len(),
+                    });
+                    if !expanded {
+                        continue;
+                    }
+                    if key == "misc-undefined" {
+                        let curated = members
+                            .iter()
+                            .copied()
+                            .filter(|album| {
+                                self.album_library_group(album) == AlbumLibraryGroup::MiscCurated
+                            })
+                            .collect::<Vec<_>>();
+                        if !curated.is_empty() {
+                            rows.push(LibraryRow {
+                                key: "subcategory:misc-curated".to_string(),
+                                primary: "Miscellaneous Curated".to_string(),
+                                secondary: format!("{} Albums", curated.len()),
+                                status: "All".to_string(),
+                                artwork_path: String::new(),
+                                kind: "album-subcategory".to_string(),
+                                depth: 1,
+                                expanded: true,
+                                selected: false,
+                                eligible: false,
+                                album_count: curated.len(),
+                            });
+                            rows.extend(curated.into_iter().map(|album| {
+                                self.album_row(album, "album", 2, false)
+                            }));
+                        }
+                        rows.extend(
+                            members
+                                .into_iter()
+                                .filter(|album| {
+                                    self.album_library_group(album)
+                                        == AlbumLibraryGroup::MiscUndefined
+                                })
+                                .map(|album| self.album_row(album, "album", 1, false)),
+                        );
+                    } else {
+                        rows.extend(
+                            members
+                                .into_iter()
+                                .map(|album| self.album_row(album, "album", 1, false)),
+                        );
+                    }
+                }
+                rows
+            }
             LibraryView::Albums | LibraryView::Folders => self
                 .albums
                 .iter()
@@ -1157,6 +1377,15 @@ impl LibraryState {
                 })
                 .collect(),
         }
+    }
+
+    pub fn visible_album_count(&self) -> usize {
+        let artists = self.artists();
+        self.albums
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| self.album_visible(*index, &artists))
+            .count()
     }
 
     /// Albums presented inside Artist Overview. `appearance_keys` adds albums
@@ -1260,7 +1489,7 @@ impl LibraryState {
             .iter()
             .enumerate()
             .filter(|(index, album)| {
-                Self::is_fallback_album(album)
+                self.is_curated_fallback(album)
                     && (self.album_visible(*index, &artists)
                         || (self
                             .completed_fallback_return_key
@@ -1296,7 +1525,27 @@ impl LibraryState {
         self.clear_artist_scope();
         self.focused_album_key = None;
         self.completed_fallback_return_key = None;
+        self.expanded_library_category = None;
         self.set_view(view);
+    }
+
+    pub fn toggle_library_category(&mut self, key: &str) -> bool {
+        let Some(category) = key.strip_prefix("category:") else {
+            return false;
+        };
+        if !matches!(category, "various-artists" | "soundtracks" | "misc-undefined") {
+            return false;
+        }
+        if self
+            .expanded_library_category
+            .as_deref()
+            .is_some_and(|expanded| expanded == category)
+        {
+            self.expanded_library_category = None;
+        } else {
+            self.expanded_library_category = Some(category.to_string());
+        }
+        true
     }
 
     pub fn set_text_filter(&mut self, value: impl Into<String>) {
@@ -1378,7 +1627,7 @@ impl LibraryState {
             return self
                 .albums
                 .iter()
-                .filter(|album| Self::is_fallback_album(album))
+                .filter(|album| self.is_curated_fallback(album))
                 .map(|album| Self::fallback_track_count_for_filter(album, value))
                 .sum();
         }
@@ -1399,7 +1648,7 @@ impl LibraryState {
                 .and_then(|key| {
                     self.albums.iter().find(|album| {
                         album.snapshot.album_key.eq_ignore_ascii_case(key)
-                            && Self::is_fallback_album(album)
+                            && self.is_curated_fallback(album)
                     })
                 })
                 .map_or(0, |album| {
@@ -1497,7 +1746,7 @@ impl LibraryState {
         } else {
             match self.view {
                 LibraryView::Artists => "Artists",
-                LibraryView::Albums => "Albums",
+                LibraryView::Albums => "V/A OST",
                 LibraryView::Folders => "Folders",
             }
         }
@@ -1636,7 +1885,7 @@ impl LibraryState {
         else {
             return false;
         };
-        if !Self::is_fallback_album(album) {
+        if !self.is_curated_fallback(album) {
             return false;
         }
         if self
@@ -1657,7 +1906,7 @@ impl LibraryState {
     ) -> Option<(String, String, Vec<MediaTrackSnapshot>)> {
         let album = self.albums.iter().find(|album| {
             album.snapshot.album_key.eq_ignore_ascii_case(key)
-                && Self::is_fallback_album(album)
+                && self.is_curated_fallback(album)
                 && self
                     .focused_album_key
                     .as_ref()
@@ -1675,12 +1924,13 @@ impl LibraryState {
     }
 
     pub fn replace_fallback_tracks(&mut self, key: &str, tracks: Vec<MediaTrackSnapshot>) -> bool {
-        let Some(album) = self.albums.iter_mut().find(|album| {
+        let Some(index) = self.albums.iter().position(|album| {
             album.snapshot.album_key.eq_ignore_ascii_case(key)
-                && album.snapshot.album_mbid.trim().is_empty()
+                && self.is_curated_fallback(album)
         }) else {
             return false;
         };
+        let album = &mut self.albums[index];
         let completed = album
             .snapshot
             .compilation_tracks
@@ -2025,7 +2275,7 @@ impl LibraryState {
         else {
             return Err(SelectionResult::NotFound);
         };
-        if !album.snapshot.album_mbid.trim().is_empty() {
+        if !self.is_curated_fallback(album) && !album.snapshot.album_mbid.trim().is_empty() {
             return Err(SelectionResult::NotFound);
         }
         if album.state == AlbumState::TimeoutActive {
@@ -2325,6 +2575,11 @@ impl LibraryState {
         let artist_artwork_paths = self.artist_artwork_paths.clone();
         let album_artwork_paths = self.album_artwork_paths.clone();
         let artist_navidrome_ids = self.artist_navidrome_ids.clone();
+        let category_paths_configured = self.category_paths_configured;
+        let various_artist_path = self.various_artist_path.clone();
+        let soundtracks_path = self.soundtracks_path.clone();
+        let curated_compilations_path = self.curated_compilations_path.clone();
+        let expanded_library_category = self.expanded_library_category.clone();
         let mut refreshed = Self::from_snapshot(snapshot)?;
         refreshed.view = view;
         refreshed.status_filter = status_filter;
@@ -2359,6 +2614,11 @@ impl LibraryState {
         refreshed.artist_artwork_paths = artist_artwork_paths;
         refreshed.album_artwork_paths = album_artwork_paths;
         refreshed.artist_navidrome_ids = artist_navidrome_ids;
+        refreshed.category_paths_configured = category_paths_configured;
+        refreshed.various_artist_path = various_artist_path;
+        refreshed.soundtracks_path = soundtracks_path;
+        refreshed.curated_compilations_path = curated_compilations_path;
+        refreshed.expanded_library_category = expanded_library_category;
         if let (Some(old), Some(new)) = (focused_artist, refreshed_artist)
             && !old.eq_ignore_ascii_case(&new)
         {
@@ -2942,10 +3202,11 @@ impl ApplicationState {
             Mode::Read => LaunchMode::Read,
             Mode::Write => LaunchMode::LiveWrite,
         };
-        let library = LibraryState::from_snapshot_with_separator(
+        let mut library = LibraryState::from_snapshot_with_separator(
             snapshot,
             &config.scan.artist_separator_regex,
         )?;
+        library.configure_library_categories(&config);
         let sources = candidate_source_card_names(&config)
             .into_iter()
             .map(|name| {
@@ -4559,11 +4820,8 @@ impl ApplicationState {
                     self.current_cover_path = album.snapshot.cover_path.clone();
                 }
                 self.operation_status = if self.library.albums.iter().any(|album| {
-                    album
-                        .snapshot
-                        .path
-                        .eq_ignore_ascii_case(&self.current_album_path)
-                        && album.snapshot.album_mbid.trim().is_empty()
+                    album.snapshot.path.eq_ignore_ascii_case(&self.current_album_path)
+                        && self.library.is_curated_fallback(album)
                 }) {
                     format!(
                         "Loading COMP tracks for {} — {} · matching recordings and releases…",
@@ -5378,6 +5636,72 @@ mod tests {
                 .map(String::as_str),
             Some(r"C:\Music\Alpha\Compilation\cover.jpg")
         );
+    }
+
+    #[test]
+    fn path_categories_are_unique_and_curated_overrides_a_broader_va_path() {
+        let mut various = album("va", "Various Artists", "Collection", "unprocessed");
+        various.path = r"C:\Music\Various Artists\Collection".to_string();
+        various.album_mbid = "release-va".to_string();
+        let mut soundtrack = album("ost", "Soundtracks", "Film", "unprocessed");
+        soundtrack.path = r"C:\Music\Soundtracks\Film".to_string();
+        soundtrack.album_mbid = "release-ost".to_string();
+        let mut curated = album("billboard", "Various Artists", "Billboard", "unprocessed");
+        curated.path = r"C:\Music\Various Artists\Billboard\Volume 1".to_string();
+        curated.album_mbid = "release-curated".to_string();
+        curated.compilation = true;
+        let mut ordinary = album("artist", "Alpha", "Release", "unprocessed");
+        ordinary.album_mbid = "release-artist".to_string();
+        let mut state = LibraryState::from_snapshot(MediaSnapshot {
+            schema_version: crate::media_database::SCHEMA_VERSION,
+            database_path: "splined.db".to_string(),
+            canonical_root: "/music".to_string(),
+            local_root: r"C:\Music".to_string(),
+            albums: vec![various, soundtrack, curated, ordinary],
+        })
+        .unwrap();
+        let mut config = Config::default();
+        config.library.music_library = r"C:\Music".to_string();
+        config.library.various_artist_path = r"C:\Music\Various Artists".to_string();
+        config.library.soundtracks_path = r"C:\Music\Soundtracks".to_string();
+        config.library.curated_compilations_path =
+            r"C:\Music\Various Artists\Billboard".to_string();
+        state.configure_library_categories(&config);
+
+        let group = |key: &str| {
+            state.album_library_group(
+                state
+                    .albums
+                    .iter()
+                    .find(|album| album.snapshot.album_key == key)
+                    .unwrap(),
+            )
+        };
+        assert_eq!(group("va"), AlbumLibraryGroup::VariousArtists);
+        assert_eq!(group("billboard"), AlbumLibraryGroup::Fallback);
+        assert_eq!(group("ost"), AlbumLibraryGroup::Soundtracks);
+        assert_eq!(group("artist"), AlbumLibraryGroup::Artist);
+        assert_eq!(
+            state
+                .albums
+                .iter()
+                .filter(|album| state.is_curated_fallback(album))
+                .count(),
+            1
+        );
+        assert_eq!(state.fallback_album_rows()[0].key, "billboard");
+
+        state.set_top_level_view(LibraryView::Albums);
+        assert_eq!(state.visible_album_count(), 2);
+        assert!(state.toggle_library_category("category:various-artists"));
+        let keys = state
+            .rows()
+            .into_iter()
+            .map(|row| row.key)
+            .collect::<BTreeSet<_>>();
+        assert!(keys.contains("va"));
+        assert!(!keys.contains("billboard"));
+        assert!(!keys.contains("artist"));
     }
 
     fn application_state() -> ApplicationState {
@@ -6204,7 +6528,7 @@ mod tests {
         );
 
         state.set_top_level_view(LibraryView::Albums);
-        assert_eq!(state.state_scope_label(), "Albums");
+        assert_eq!(state.state_scope_label(), "V/A OST");
         assert_eq!(state.status_count(StatusFilter::All), 5);
         assert_eq!(state.status_count(StatusFilter::Unprocessed), 1);
         assert_eq!(
@@ -7112,6 +7436,9 @@ mod tests {
     #[test]
     fn finished_fallback_album_stays_expanded_until_operator_changes_filter() {
         let mut state = application_state();
+        state.config.library.music_library = r"C:\Music".to_string();
+        state.config.library.curated_compilations_path = r"C:\Music\Alpha".to_string();
+        state.library.configure_library_categories(&state.config);
         state.library.albums[0].snapshot.album_mbid.clear();
         state.library.albums[0].snapshot.track_count = 1;
         state.library.albums[0]

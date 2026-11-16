@@ -337,6 +337,9 @@ class Catalog:
     database: Database | Path
     artist_art: Path
     credentials: Path
+    various_artist_path: Path | None = None
+    soundtracks_path: Path | None = None
+    curated_compilations_path: Path | None = None
     comp_thumbnail_side: int = 1200
     allow_comp_repairs: bool = False
     cover_stem: str = "cover"
@@ -363,6 +366,66 @@ class Catalog:
         default_factory=lambda: BoundedSemaphore(3), repr=False
     )
     image_key: bytes = field(default_factory=lambda: secrets.token_bytes(32),repr=False)
+
+    def _distinct_category_path(self, value: Path | None) -> Path | None:
+        """Return a category override only when it narrows Music Library.
+
+        The settings intentionally display Music Library as their inherited
+        default.  Treating that shared root as three active overrides would
+        classify every Album three times, so only a distinct descendant is a
+        path claim.
+        """
+        if value is None:
+            return None
+        try:
+            resolved = value.resolve(strict=False)
+            music = self.music.resolve(strict=False)
+        except OSError:
+            return None
+        if resolved == music or not inside(resolved, music):
+            return None
+        return resolved
+
+    def album_library_group(self, row) -> str:
+        """Return the single top-level/category placement for one Album."""
+        if all(
+            value is None
+            for value in (
+                self.various_artist_path,
+                self.soundtracks_path,
+                self.curated_compilations_path,
+            )
+        ):
+            keys = set(row.keys()) if hasattr(row, "keys") else set(row)
+            return (
+                "fallback"
+                if "musicbrainz_albumid" in keys
+                and not str(row["musicbrainz_albumid"] or "").strip()
+                else "artist"
+            )
+        folder = Path(str(row["path"] or ""))
+        explicit = []
+        for priority, (group, configured) in enumerate((
+            ("fallback", self.curated_compilations_path),
+            ("soundtracks", self.soundtracks_path),
+            ("various-artists", self.various_artist_path),
+        )):
+            root = self._distinct_category_path(configured)
+            if root is not None and inside(folder, root):
+                explicit.append((len(root.parts), -priority, group))
+        if explicit:
+            return max(explicit)[2]
+
+        artist = normalized_artist_identity(str(row["artist_name"] or ""))
+        if artist == "variousartists":
+            return "various-artists"
+        if artist in {"soundtrack", "soundtracks"}:
+            return "soundtracks"
+        if bool(row["compilation"]):
+            return "misc-curated"
+        if not artist or artist in {"unknown", "unknownartist"}:
+            return "misc-undefined"
+        return "artist"
 
     @staticmethod
     def readable_image_path(path: Path) -> bool:
@@ -1806,11 +1869,9 @@ class Catalog:
         except Exception:
             return False
 
-    def albums(self, query: str, fallback_only: bool = False) -> list[dict[str, object]]:
-        identity_clause = (
-            "TRIM(COALESCE(albums.musicbrainz_albumid,''))=''"
-            if fallback_only
-            else "TRIM(COALESCE(albums.musicbrainz_albumid,''))<>''"
+    def albums(self, query: str, view: str | bool = "va-ost") -> list[dict[str, object]]:
+        requested_view = (
+            "fallback" if view is True else "legacy-albums" if view is False else str(view)
         )
         with closing(self.connect()) as db:
             rows = db.execute(
@@ -1819,16 +1880,26 @@ class Catalog:
                 "albums.status, albums.compilation, albums.musicbrainz_albumid FROM albums "
                 "JOIN artists ON artists.artist_key=albums.artist_key "
                 "WHERE (albums.album_name LIKE ? ESCAPE '\\' OR artists.artist_name LIKE ? ESCAPE '\\') "
-                f"AND {identity_clause} "
                 "ORDER BY albums.album_name COLLATE NOCASE ",
                 ("%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%",) * 2,
             ).fetchall()
             coordination = self._album_write_coordination(db, rows)
         items = []
         for row in rows:
+            group = self.album_library_group(row)
+            if requested_view == "fallback" and group != "fallback":
+                continue
+            if requested_view == "legacy-albums" and not str(
+                row["musicbrainz_albumid"] or ""
+            ).strip():
+                continue
+            if requested_view in {"albums", "va-ost"} and group not in {
+                "various-artists", "soundtracks", "misc-curated", "misc-undefined"
+            }:
+                continue
             album_key = str(row["album_key"])
             cover_url = self.album_thumbnail_url(album_key)
-            if fallback_only:
+            if requested_view == "fallback":
                 cover_url = self.image(self.album_cover_path(row))
             items.append({
                 "id": row["album_key"], "name": row["album_name"],
@@ -1841,6 +1912,15 @@ class Catalog:
                 "tracks": row["track_count"],
                 "status": row["status"], "compilation": bool(row["compilation"]),
                 "album_mbid": row["musicbrainz_albumid"] or "",
+                "library_group": group,
+                "library_category": {
+                    "various-artists": "Various Artists",
+                    "soundtracks": "Soundtracks",
+                    "misc-curated": "Miscellaneous Curated",
+                    "misc-undefined": "Miscellaneous Undefined",
+                    "fallback": "Curated Compilations",
+                }.get(group, "Artist"),
+                "fallback": group == "fallback",
                 "override_writer": coordination.get(album_key, {}).get("writer", ""),
                 "override_operation": coordination.get(album_key, {}).get("operation", ""),
                 "override_revision": int(coordination.get(album_key, {}).get("revision", 0) or 0),
@@ -1958,6 +2038,11 @@ class Catalog:
                 continue
             cover = self.album_cover_path(row)
             override = coordination.get(str(row["album_key"]), {})
+            library_group = self.album_library_group({
+                "path": row["path"],
+                "compilation": row["compilation"],
+                "artist_name": row["album_artist"],
+            })
             albums.append({
                 "id": row["album_key"], "name": row["album_name"],
                 "tracks": row["track_count"], "status": row["status"],
@@ -1970,6 +2055,8 @@ class Catalog:
                 "embedded_validation": str(row["embedded_validation_status"] or "unknown")
                     if "embedded_validation_status" in row else "unknown",
                 "album_mbid": row["musicbrainz_albumid"] or "",
+                "library_group": library_group,
+                "fallback": library_group == "fallback",
                 "year": row["release_year"] or "",
                 "soundtrack": bool(row["musicbrainz_albumid"]) and (
                     any(part.casefold() in {"[soundtracks]", "soundtracks"} for part in folder.parts)
@@ -2043,6 +2130,8 @@ class Catalog:
             "artist_id": row["artist_key"], "artist_name": row["artist_name"],
             "tracks": row["track_count"], "compilation": bool(row["compilation"]),
             "album_mbid": row["musicbrainz_albumid"] or "", "year": row["release_year"] or "",
+            "library_group": self.album_library_group(row),
+            "fallback": self.album_library_group(row) == "fallback",
             "embedded": int(row["embedded_tracks"] or 0) if "embedded_tracks" in row.keys() else 0,
             "embedded_validation": str(row["embedded_validation_status"] or "unknown")
                 if "embedded_validation_status" in row else "unknown",
@@ -2058,12 +2147,16 @@ class Catalog:
 
     def fallback_tracks(self, album_id: str) -> list[dict[str, object]]:
         with closing(self.connect()) as db:
-            album = db.execute("SELECT path, musicbrainz_albumid FROM albums WHERE album_key=?",
-                               (album_id,)).fetchone()
+            album = db.execute(
+                "SELECT albums.path,albums.compilation,albums.musicbrainz_albumid,"
+                "artists.artist_name FROM albums JOIN artists ON "
+                "artists.artist_key=albums.artist_key WHERE albums.album_key=?",
+                (album_id,),
+            ).fetchone()
             if album is None:
                 raise KeyError("Album not found")
-            if str(album["musicbrainz_albumid"] or "").strip():
-                raise ValueError("This Album has a MusicBrainz Album ID and is not COMP fallback")
+            if self.album_library_group(album) != "fallback":
+                raise ValueError("This Album is not inside the Curated Compilations path")
             folder = Path(album["path"])
             if not inside(folder, self.music):
                 raise ValueError("Fallback Album is outside the configured music library")
@@ -2131,19 +2224,21 @@ class Catalog:
         """Read one recorded embedded thumbnail for a lazy fallback album card."""
         with closing(self.connect()) as db:
             row = db.execute(
-                "SELECT albums.path AS album_path,albums.musicbrainz_albumid,tracks.path "
+                "SELECT albums.path AS album_path,albums.path,albums.compilation,"
+                "albums.musicbrainz_albumid,artists.artist_name,tracks.path AS track_path "
                 "FROM albums JOIN tracks ON tracks.album_key=albums.album_key "
+                "JOIN artists ON artists.artist_key=albums.artist_key "
                 "WHERE albums.album_key=? AND tracks.track_key=?",
                 (album_id, track_key),
             ).fetchone()
-            if row is None or str(row["musicbrainz_albumid"] or "").strip():
+            if row is None or self.album_library_group(row) != "fallback":
                 raise KeyError("Recorded COMP thumbnail not found")
             recorded = db.execute(
                 "SELECT 1 FROM compilation_track_artwork WHERE track_path=? "
                 "AND outcome IN ('embedded-replaced','embedded-existing')",
-                (str(row["path"]),),
+                (str(row["track_path"]),),
             ).fetchone()
-        folder, path = Path(row["album_path"]), Path(row["path"])
+        folder, path = Path(row["album_path"]), Path(row["track_path"])
         if not recorded or not inside(folder, self.music) or not inside(path, folder):
             raise KeyError("Recorded COMP thumbnail not found")
         artwork = embedded_track_image(path)

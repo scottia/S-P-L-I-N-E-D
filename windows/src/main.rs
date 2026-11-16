@@ -6603,6 +6603,9 @@ fn activate_library_row(
     key: &str,
     include_bypassed: bool,
 ) -> Option<FallbackTrackHydration> {
+    if key.starts_with("category:") || key.starts_with("subcategory:") {
+        return None;
+    }
     if let Ok(mut app) = state.lock() {
         app.dismiss_intro();
         if app.library.show_tracks {
@@ -10816,6 +10819,16 @@ fn bind_callbacks(
         let action_log = ui_debug_log.clone();
         let controller = Arc::clone(&controller);
         ui.on_library_row_activated(move |key, include_bypassed| {
+            if key.as_str().starts_with("category:") {
+                if let Ok(mut app) = state.lock() {
+                    app.library.toggle_library_category(key.as_str());
+                }
+                refresh_weak(&weak, &state);
+                return;
+            }
+            if key.as_str().starts_with("subcategory:") {
+                return;
+            }
             if state
                 .lock()
                 .is_ok_and(|app| album_key_embed_locked(&app, key.as_str()))
@@ -14672,6 +14685,9 @@ fn bind_callbacks(
                 .map(|ui| match target.as_str() {
                     "configuration" => ui.get_settings_configuration_dir().to_string(),
                     "music" => ui.get_settings_music_library().to_string(),
+                    "various-artist" => ui.get_settings_various_artist_path().to_string(),
+                    "soundtracks" => ui.get_settings_soundtracks_path().to_string(),
+                    "curated-compilations" => ui.get_settings_curated_compilations_path().to_string(),
                     "scan" => ui.get_settings_scan_library().to_string(),
                     "database" => ui.get_settings_database_dir().to_string(),
                     "artist-art" => ui.get_settings_shared_artist_art_dir().to_string(),
@@ -14684,6 +14700,9 @@ fn bind_callbacks(
             let description = match target.as_str() {
                 "configuration" => "Choose the SPLINED Configuration Path",
                 "music" => "Choose the existing SPLINED Media Library",
+                "various-artist" => "Choose the Various Artist folder",
+                "soundtracks" => "Choose the Soundtracks folder",
+                "curated-compilations" => "Choose the Curated Compilations folder",
                 "scan" => "Choose the Media Library scan folder",
                 "database" => "Choose the SPLINED database directory",
                 "artist-art" => "Choose the V/A / OST Artist Images directory",
@@ -14703,6 +14722,9 @@ fn bind_callbacks(
                     match target.as_str() {
                         "configuration" => ui.set_settings_configuration_dir(path.into()),
                         "music" => ui.set_settings_music_library(path.into()),
+                        "various-artist" => ui.set_settings_various_artist_path(path.into()),
+                        "soundtracks" => ui.set_settings_soundtracks_path(path.into()),
+                        "curated-compilations" => ui.set_settings_curated_compilations_path(path.into()),
                         "scan" => ui.set_settings_scan_library(path.into()),
                         "database" => {
                             ui.set_settings_database_dir(path.clone().into());
@@ -16625,6 +16647,23 @@ fn set_settings_ui(ui: &AppWindow, config: &Config) {
     ui.set_settings_music_library(
         splined_core::portable::display_path(Path::new(&config.library.music_library)).into(),
     );
+    let inherited_library_path = |configured: &str| {
+        let value = if configured.trim().is_empty() {
+            config.library.music_library.as_str()
+        } else {
+            configured
+        };
+        splined_core::portable::display_path(Path::new(value))
+    };
+    ui.set_settings_various_artist_path(
+        inherited_library_path(&config.library.various_artist_path).into(),
+    );
+    ui.set_settings_soundtracks_path(
+        inherited_library_path(&config.library.soundtracks_path).into(),
+    );
+    ui.set_settings_curated_compilations_path(
+        inherited_library_path(&config.library.curated_compilations_path).into(),
+    );
     ui.set_settings_scan_library(
         splined_core::portable::display_path(Path::new(&config.scan.scan_library_dir)).into(),
     );
@@ -16783,6 +16822,11 @@ fn set_source_policy_ui(ui: &AppWindow, config: &Config, source: &str) {
 
 fn apply_settings_ui(ui: &AppWindow, config: &mut Config) -> Result<(), String> {
     config.library.music_library = ui.get_settings_music_library().trim().to_string();
+    config.library.various_artist_path =
+        ui.get_settings_various_artist_path().trim().to_string();
+    config.library.soundtracks_path = ui.get_settings_soundtracks_path().trim().to_string();
+    config.library.curated_compilations_path =
+        ui.get_settings_curated_compilations_path().trim().to_string();
     config.scan.scan_library_dir = ui.get_settings_scan_library().trim().to_string();
     config.scan.artist_separator_regex =
         ui.get_settings_artist_separator_regex().trim().to_string();
@@ -16899,6 +16943,12 @@ fn apply_settings_section_ui(
     match section {
         "Library" => {
             config.library.music_library = ui.get_settings_music_library().trim().to_string();
+            config.library.various_artist_path =
+                ui.get_settings_various_artist_path().trim().to_string();
+            config.library.soundtracks_path =
+                ui.get_settings_soundtracks_path().trim().to_string();
+            config.library.curated_compilations_path =
+                ui.get_settings_curated_compilations_path().trim().to_string();
             config.scan.scan_library_dir = ui.get_settings_scan_library().trim().to_string();
             config.scan.artist_separator_regex =
                 ui.get_settings_artist_separator_regex().trim().to_string();
@@ -17038,6 +17088,9 @@ fn apply_settings_section_ui(
 fn safe_reset_config(current: &Config) -> Config {
     let mut reset = Config::default();
     reset.library.music_library = current.library.music_library.clone();
+    reset.library.various_artist_path = current.library.various_artist_path.clone();
+    reset.library.soundtracks_path = current.library.soundtracks_path.clone();
+    reset.library.curated_compilations_path = current.library.curated_compilations_path.clone();
     reset.library.ignored_subs = current.library.ignored_subs.clone();
     reset.scan.scan_library_dir = current.scan.scan_library_dir.clone();
     reset.scan.cache_dir = current.scan.cache_dir.clone();
@@ -19357,7 +19410,12 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
     } else {
         state.library.rows()
     };
-    ui.set_library_shown_count(library_rows.iter().filter(|row| row.depth == 0).count() as i32);
+    let shown_count = if !state.library.show_tracks && state.library.view == LibraryView::Albums {
+        state.library.visible_album_count()
+    } else {
+        library_rows.iter().filter(|row| row.depth == 0).count()
+    };
+    ui.set_library_shown_count(shown_count as i32);
     ui.set_library_rows(if state.media_selector_expanded {
         library_ui_model_from_rows(&state, library_rows)
     } else {

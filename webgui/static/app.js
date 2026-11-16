@@ -57,7 +57,7 @@ function normalizeGraphicalEnhancement(value = {}) {
 const state = {
   artists: [], albumsIndex: [], artist: null, artistMetadata: null, album: null,
   biographyArtistId: null, biographyExpanded: false, biographyText: "",
-  libraryMode: "artists", editorMode: "artist", workspace: "find",
+  libraryMode: "artists", libraryCategory: "", editorMode: "artist", workspace: "find",
   candidates: [], selectedPortrait: null, selectedBanner: null, selectedCover: null, reviewCleared: false,
   upscalePreview: null, renderedPreview: {}, compThumbnailPreview: null, pendingCompWrite: null,
   fallbackTracks: [], fallbackTrack: null, fallbackPreviewOnly: false, fallbackRun: false, fallbackTrackRequest: 0, fallbackStatusRequest: 0,
@@ -634,7 +634,7 @@ function renderLibraryContents() {
   $("artistsTab").classList.toggle("active", state.libraryMode === "artists");
   $("albumsTab").classList.toggle("active", state.libraryMode === "albums");
   $("fallbackTab").classList.toggle("active", state.libraryMode === "fallback");
-  $("libraryListTitle").textContent = state.libraryMode === "fallback" ? "Fallback Albums" : state.libraryMode === "albums" ? "Albums" : "Artists";
+  $("libraryListTitle").textContent = state.libraryMode === "fallback" ? "Curated Compilations" : state.libraryMode === "albums" ? "V/A OST" : "Artists";
   const list = $("artistList"); resetLibraryThumbnailLoading(); clear(list);
   if (state.libraryLoading) {
     $("artistCount").textContent = "loading";
@@ -676,9 +676,42 @@ function renderLibraryContents() {
     }
   } else {
     $("artistCount").textContent = state.albumsIndex.filter(mediaMatches).length + " shown";
-    for (const album of state.albumsIndex.filter(mediaMatches)) {
+    const visibleAlbums = state.albumsIndex.filter(mediaMatches);
+    if (state.libraryMode === "albums") {
+      const categoryRows = [
+        ["various-artists", "Various Artists"],
+        ["soundtracks", "Soundtracks"],
+        ["misc-undefined", "Miscellaneous Undefined"],
+      ];
+      for (const [key, label] of categoryRows) {
+        const members = visibleAlbums.filter(album => key === "misc-undefined"
+          ? ["misc-curated", "misc-undefined"].includes(album.library_group)
+          : album.library_group === key);
+        const category = node("button", "library-row library-category" + (state.libraryCategory === key ? " expanded" : ""));
+        category.type = "button";
+        category.append(node("span", "status-orbit", state.libraryCategory === key ? "●" : "○"),
+          node("span", "row-copy", ""), node("span", "expand-mark", state.libraryCategory === key ? "−" : "+"));
+        category.querySelector(".row-copy").append(node("strong", "", label), node("small", "", members.length + " Albums"));
+        category.addEventListener("click", () => { state.libraryCategory = state.libraryCategory === key ? "" : key; renderLibrary(); });
+        list.append(category);
+        if (state.libraryCategory !== key) continue;
+        if (key === "misc-undefined") {
+          const curated = members.filter(album => album.library_group === "misc-curated");
+          if (curated.length) {
+            const pinned = node("div", "library-subcategory pinned", "Miscellaneous Curated · " + curated.length + " Albums");
+            list.append(pinned);
+            for (const album of curated) list.append(albumRow(album, false));
+          }
+          const undefinedAlbums = members.filter(album => album.library_group === "misc-undefined");
+          if (undefinedAlbums.length) list.append(node("div", "library-subcategory", "Other Undefined · " + undefinedAlbums.length + " Albums"));
+          for (const album of undefinedAlbums) list.append(albumRow(album, false));
+        } else {
+          for (const album of members) list.append(albumRow(album, false));
+        }
+      }
+    } else for (const album of visibleAlbums) {
       list.append(albumRow(album, false));
-      if (state.libraryMode === "fallback" && state.album?.id === album.id) {
+      if (state.album?.id === album.id) {
         for (const track of state.fallbackTracks) {
           const row = node("button", "library-row fallback-library-track"); row.type = "button";
           row.classList.toggle("selected", state.fallbackTrack?.key === track.key);
@@ -694,7 +727,7 @@ function renderLibraryContents() {
   }
   if (!list.childElementCount) list.append(node("p", "empty-copy",
     state.libraryMode === "fallback" && !state.albumsIndex.length
-      ? "No missing-ID COMP albums in the library."
+      ? "No Albums are inside the Curated Compilations path."
       : "No items match this filter."));
   renderMediaStatusChips();
 }
@@ -929,7 +962,7 @@ function compTrackOverride(track) {
 }
 function albumCardState(album, artist) {
   const status = rawMediaStatusKey(album);
-  const fallback = !String(album.album_mbid || "").trim();
+  const fallback = Boolean(album.fallback || album.library_group === "fallback");
   const overridden = !fallback && albumOverride(album)?.writer === "windows";
   // A successful opposing write proves that an otherwise-unprocessed local
   // presentation is stale. Preserve every other independent status dot, but
@@ -2449,7 +2482,7 @@ async function loadLibrary(query = "") {
     renderLibrary();
     if (state.libraryMode === "artists") hydrateArtistThumbnails(request);
     if (state.libraryMode === "artists" && !state.artist && state.artists.length) await chooseArtist(state.artists[0].id, false);
-    else setStatus(state.libraryMode === "fallback" && !state.albumsIndex.length ? "No missing-ID albums in the library" : "Library ready · WebGUI ready");
+    else setStatus(state.libraryMode === "fallback" && !state.albumsIndex.length ? "No Albums are inside the Curated Compilations path" : "Library ready · WebGUI ready");
   } catch (error) { if (request === state.listRequest) { state.libraryLoading = false; renderLibrary(); setStatus(error.message, "error"); } }
 }
 async function loadAlbumLibraryMatches(query) {
@@ -2464,7 +2497,7 @@ async function loadAlbumLibraryMatches(query) {
   state.albumLibraryLoading = true;
   renderLibrary();
   try {
-    const matches = await api("/api/albums?view=albums&q=" + encodeURIComponent(value));
+    const matches = await api("/api/albums?view=search&q=" + encodeURIComponent(value));
     if (request !== state.albumLibraryRequest || state.libraryMode !== "artists") return;
     state.albumLibraryMatches = matches;
     state.albumLibraryLoading = false;
@@ -2579,7 +2612,7 @@ async function chooseAlbum(id) {
       state.compAlbums = overview.comp_albums || [];
       loadArtistMetadata(overview.artist.id);
     }
-    const fallback = !String(album.album_mbid || "").trim();
+    const fallback = Boolean(album.fallback || album.library_group === "fallback");
     const tracks = fallback ? await api("/api/fallback/tracks?id=" + encodeURIComponent(id)) : [];
     if (request !== state.selectionRequest) return;
     state.album = album; state.editorMode = fallback ? "fallback" : "album"; state.workspace = "find";
@@ -2746,7 +2779,7 @@ async function changeLibraryMode(mode) {
   await cancelActiveCompWork();
   ++state.selectionRequest; ++state.searchRequest; ++state.artistMetadataRequest;
   state.libraryLoading = true;
-  state.libraryMode = mode; state.artist = null; state.artistMetadata = null; state.album = null; state.compAlbums = []; state.mediaSelected.clear();
+  state.libraryMode = mode; state.libraryCategory = ""; state.artist = null; state.artistMetadata = null; state.album = null; state.compAlbums = []; state.mediaSelected.clear();
   state.editorMode = mode === "fallback" ? "fallback" : "artist"; state.workspace = "find";
   auditEvent("navigation", "library-view", {details: {from: document.querySelector(".library-tabs .active")?.id || "", to: mode}});
   clearFocusCandidates(); resetFocusAdjustments(); renderAll();

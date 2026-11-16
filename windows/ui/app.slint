@@ -400,21 +400,21 @@ component LibraryItem inherits Rectangle {
             }
         }
         Rectangle { width: root.item.kind == "artist" ? (48px * AppTheme.ui-scale) : (42px * AppTheme.ui-scale); height: root.item.kind == "artist" ? (48px * AppTheme.ui-scale) : (42px * AppTheme.ui-scale); clip: true; border-radius: self.width / 2; background: root.item.kind == "artist" ? transparent : (root.item.eligible ? @linear-gradient(135deg, #223e63, #6840a2) : #392f45); border-color: root.item.kind != "artist" && root.item.selected && !root.status-only-album-selection ? AppTheme.magenta : #4d6d83; border-width: AppTheme.hairline;
-            Text { text: root.item.primary == "" ? "?" : (root.item.kind == "artist" ? root.item.icon : "🎵"); color: AppTheme.foreground; font-size: (19px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; visible: !root.item.has-artwork; }
+            Text { text: root.item.primary == "" ? "?" : (root.item.kind == "artist" ? root.item.icon : (root.item.kind == "album-category" || root.item.kind == "album-subcategory" ? "📁" : "🎵")); color: AppTheme.foreground; font-size: (19px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; visible: !root.item.has-artwork; }
             Image { source: root.item.artwork; width: parent.width; height: parent.height; image-fit: cover; visible: root.item.has-artwork; }
         }
         VerticalLayout { spacing: (2px * AppTheme.ui-scale); alignment: center;
             Text { text: root.item.primary; color: root.item.status == "Unprocessed" || root.item.status == "All" ? (AppTheme.light ? AppTheme.secondary-foreground : AppTheme.foreground) : root.item.status-color; font-size: (16px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: !root.status-only-album-selection && (root.item.selected || root.item.expanded) ? 700 : 600; overflow: elide; }
             if root.item.secondary != "": Text { text: root.item.secondary; color: root.item.kind == "artist" ? AppTheme.magenta : AppTheme.secondary-foreground; font-size: (15px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 600; overflow: elide; }
         }
-        if root.item.kind == "artist" || root.item.kind == "fallback-album": Rectangle {
+        if root.item.kind == "artist" || root.item.kind == "fallback-album" || root.item.kind == "album-category": Rectangle {
             width: (38px * AppTheme.ui-scale); background: transparent;
             Text {
                 text: root.item.expanded ? "−" : "+";
                 color: root.item.expanded ? AppTheme.magenta : AppTheme.cyan; font-size: (24px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800;
                 horizontal-alignment: center; vertical-alignment: center;
             }
-            TouchArea { mouse-cursor: pointer; clicked => root.expansion-activated(root.item.key); }
+            TouchArea { mouse-cursor: pointer; clicked => { if root.item.kind == "album-category" { root.activated(root.item.key); } else { root.expansion-activated(root.item.key); } } }
         }
     }
 }
@@ -640,7 +640,7 @@ component MediaLibraryPane inherits NeonPanel {
             vertical-stretch: 1;
             HorizontalLayout { height: (42px * AppTheme.ui-scale); spacing: (6px * AppTheme.ui-scale);
                 WorkspaceButton { label: "Artists"; selected: !root.show-tracks && root.library-view-label == "Artists"; activated => { root.set-show-tracks(false); root.change-library-view(0); } }
-                WorkspaceButton { label: "Albums"; selected: !root.show-tracks && root.library-view-label == "Albums"; activated => { root.set-show-tracks(false); root.change-library-view(1); } }
+                WorkspaceButton { label: "V/A OST"; selected: !root.show-tracks && root.library-view-label == "V/A OST"; activated => { root.set-show-tracks(false); root.change-library-view(1); } }
                 WorkspaceButton { label: "Fallback"; selected: root.show-tracks; activated => root.set-show-tracks(true); }
             }
             HorizontalLayout { height: (42px * AppTheme.ui-scale); spacing: (6px * AppTheme.ui-scale);
@@ -762,7 +762,7 @@ component MediaLibraryPane inherits NeonPanel {
                 }
             }
             if root.show-tracks: VerticalLayout { spacing: (6px * AppTheme.ui-scale); vertical-stretch: 1;
-                Text { text: "Fallback Albums"; color: AppTheme.foreground; font-size: (15px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 700; height: (24px * AppTheme.ui-scale); }
+                Text { text: "Curated Compilations"; color: AppTheme.foreground; font-size: (15px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 700; height: (24px * AppTheme.ui-scale); }
                 fallback-library-list := ListView {
                     content-y <=> root.list-scroll-y;
                     min-height: (115px * AppTheme.ui-scale);
@@ -1796,6 +1796,9 @@ export component AppWindow inherits Window {
     in-out property <int> setup-progress-errors: 0;
     in-out property <bool> setup-progress-indeterminate: false;
     in-out property <string> settings-music-library;
+    in-out property <string> settings-various-artist-path;
+    in-out property <string> settings-soundtracks-path;
+    in-out property <string> settings-curated-compilations-path;
     in-out property <string> settings-scan-library;
     in-out property <string> settings-artist-separator-regex;
     in-out property <string> settings-artist-separator-profile: "Navidrome default";
@@ -2144,6 +2147,9 @@ export component AppWindow inherits Window {
                     Heading { text: "Library and SQLite"; color: AppTheme.cyan; height: (30px * AppTheme.ui-scale); }
                     Text { text: "The Media Library must already exist. The database directory owns splined.db; Setup identifies an existing catalog before opening it. Scan Library defaults to Media Library when blank."; color: AppTheme.secondary-foreground; wrap: word-wrap; height: (42px * AppTheme.ui-scale); }
                     PathSettingField { label: "Media Library *"; value <=> root.settings-music-library; hint: "Existing local or UNC music directory"; browse => root.browse-setting-directory("music"); }
+                    PathSettingField { label: "Various Artist"; value <=> root.settings-various-artist-path; hint: "Defaults to Media Library"; browse => root.browse-setting-directory("various-artist"); }
+                    PathSettingField { label: "Soundtracks"; value <=> root.settings-soundtracks-path; hint: "Defaults to Media Library"; browse => root.browse-setting-directory("soundtracks"); }
+                    PathSettingField { label: "Curated Compilations"; value <=> root.settings-curated-compilations-path; hint: "Defaults to Media Library"; browse => root.browse-setting-directory("curated-compilations"); }
                     PathSettingField { label: "Scan Library (optional)"; value <=> root.settings-scan-library; hint: "Defaults to Media Library when blank"; browse => root.browse-setting-directory("scan"); }
                     PathSettingField { label: "SQLite/database directory *"; value <=> root.settings-database-dir; hint: "Directory that owns splined.db"; browse => root.browse-setting-directory("database"); edited(value) => root.setup-database-path-edited(value); }
 
@@ -3434,6 +3440,9 @@ export component AppWindow inherits Window {
                                 Heading { text: "Library And Application Paths"; height: (27px * AppTheme.ui-scale); }
                                 PathSettingField { label: "Configuration Path *"; value <=> root.settings-configuration-dir; hint: "Folder containing config.toml and ui.toml"; browse => root.browse-setting-directory("configuration"); }
                                 PathSettingField { label: "Music Library *"; value <=> root.settings-music-library; hint: "Existing local or UNC directory"; browse => root.browse-setting-directory("music"); }
+                                PathSettingField { label: "Various Artist"; value <=> root.settings-various-artist-path; hint: "Defaults to Music Library"; browse => root.browse-setting-directory("various-artist"); }
+                                PathSettingField { label: "Soundtracks"; value <=> root.settings-soundtracks-path; hint: "Defaults to Music Library"; browse => root.browse-setting-directory("soundtracks"); }
+                                PathSettingField { label: "Curated Compilations"; value <=> root.settings-curated-compilations-path; hint: "Defaults to Music Library"; browse => root.browse-setting-directory("curated-compilations"); }
                                 SettingToggle { label: "Scan Mode Enabled"; value <=> root.settings-scan-mode; }
                                 if root.settings-scan-mode: PathSettingField { label: "Scan Folder"; value <=> root.settings-scan-library; hint: "Optional · defaults to Music Library"; browse => root.browse-setting-directory("scan"); }
                                 if root.settings-scan-mode: Text { text: "Optional alternate folder to scan while the Music Library remains the catalog authority."; color: AppTheme.secondary-foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; height: (30px * AppTheme.ui-scale); wrap: word-wrap; }

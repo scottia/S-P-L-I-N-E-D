@@ -95,6 +95,16 @@ html[data-theme=light] .filter-chip.media-status .filter-dot,html[data-theme=lig
 /* Selection is the green orbit; the row's name reports its media state. */
 .library-row,.library-row:hover,.library-row.active{background:transparent;border-color:transparent}
 .library-row{cursor:pointer}
+.library-row.library-category{min-height:48px;margin-top:3px;border:1px solid var(--line);background:var(--card)}
+.library-row.library-category.expanded{border-color:var(--cyan);background:var(--selected)}
+.library-subcategory{margin:4px 7px 2px 24px;padding:5px 7px;border-left:2px solid var(--line);color:var(--muted);font-size:var(--ui-font-xs);font-weight:700}
+.library-subcategory.pinned{border-left-color:var(--pink);color:var(--pink)}
+.setting-input-shell .setting-path-browse{flex:none;margin-left:6px}
+.server-directory-dialog{width:min(680px,90vw);max-height:80vh;background:var(--panel);color:var(--text);border:1px solid var(--cyan);border-radius:8px;padding:14px}
+.server-directory-current{display:block;margin:8px 0;padding:8px;background:var(--quiet);color:var(--cyan);overflow-wrap:anywhere}
+.server-directory-list{min-height:180px;max-height:52vh;overflow:auto;display:flex;flex-direction:column;gap:4px}
+.server-directory-row{padding:8px;text-align:left;background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:4px}
+.server-directory-actions{display:flex;justify-content:flex-end;gap:7px;margin-top:10px}
 .library-row .status-orbit,.library-row.active .status-orbit{color:var(--danger)}
 .library-row .status-orbit.selected,.library-row.active .status-orbit.selected{color:var(--green)}
 .library-row .row-copy strong,.library-row.album-row .row-copy strong{color:var(--status-color)}

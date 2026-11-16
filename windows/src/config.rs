@@ -238,6 +238,12 @@ impl<'de> Deserialize<'de> for ScanTimeout {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LibraryConfig {
     pub music_library: String,
+    #[serde(default)]
+    pub various_artist_path: String,
+    #[serde(default)]
+    pub soundtracks_path: String,
+    #[serde(default)]
+    pub curated_compilations_path: String,
     pub ignored_subs: Vec<String>,
 }
 
@@ -425,6 +431,9 @@ impl Default for LibraryConfig {
     fn default() -> Self {
         Self {
             music_library: DEFAULT_MUSIC_LIBRARY.to_string(),
+            various_artist_path: DEFAULT_MUSIC_LIBRARY.to_string(),
+            soundtracks_path: DEFAULT_MUSIC_LIBRARY.to_string(),
+            curated_compilations_path: DEFAULT_MUSIC_LIBRARY.to_string(),
             ignored_subs: DEFAULT_IGNORED_SUBS
                 .iter()
                 .map(|value| (*value).to_string())
@@ -728,6 +737,11 @@ pub fn parse_config(text: &str) -> Result<Config, String> {
     }
 
     config.library.music_library = normalize_optional_directory(&config.library.music_library);
+    config.library.various_artist_path =
+        normalize_optional_directory(&config.library.various_artist_path);
+    config.library.soundtracks_path = normalize_optional_directory(&config.library.soundtracks_path);
+    config.library.curated_compilations_path =
+        normalize_optional_directory(&config.library.curated_compilations_path);
     config.scan.scan_library_dir = normalize_optional_directory(&config.scan.scan_library_dir);
     config.scan.cache_dir = normalize_required_directory(&config.scan.cache_dir, "scan.cache_dir")?;
     config.scan.shared_artist_art_dir = if config.scan.shared_artist_art_dir.trim().is_empty() {
@@ -919,6 +933,12 @@ pub fn configured_shared_artist_art_dir(config: &Config) -> PathBuf {
 
 fn resolve_runtime_paths(config: &mut Config, root: &Path) {
     config.library.music_library = resolve_runtime_directory(root, &config.library.music_library);
+    config.library.various_artist_path =
+        resolve_runtime_directory(root, &config.library.various_artist_path);
+    config.library.soundtracks_path =
+        resolve_runtime_directory(root, &config.library.soundtracks_path);
+    config.library.curated_compilations_path =
+        resolve_runtime_directory(root, &config.library.curated_compilations_path);
     config.scan.scan_library_dir = resolve_runtime_directory(root, &config.scan.scan_library_dir);
     config.scan.cache_dir = resolve_runtime_directory(root, &config.scan.cache_dir);
     config.scan.shared_artist_art_dir =

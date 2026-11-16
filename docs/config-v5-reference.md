@@ -71,6 +71,9 @@ mounts.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `music_library` | empty | Main media-library root |
+| `various_artist_path` | Music Library | Optional distinct Various Artist folder. A root-equivalent value is the inherited default; a narrower configured path places its Albums in **V/A OST → Various Artists**. |
+| `soundtracks_path` | Music Library | Optional distinct Soundtracks folder. A narrower configured path places its Albums in **V/A OST → Soundtracks**. |
+| `curated_compilations_path` | Music Library | Optional distinct Curated Compilations folder. Its Albums use track-scoped **Fallback**, regardless of Album MBID. The deepest matching path wins and Curated wins an equal-depth overlap. |
 | `ignored_subs` | `[]` | Exact names or supported wildcard patterns excluded from scans and index refresh |
 
 ## `[scan]`

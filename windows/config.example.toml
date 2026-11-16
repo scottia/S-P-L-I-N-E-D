@@ -9,6 +9,9 @@ verbosity = "info"
 
 [library]
 music_library = ""
+various_artist_path = ""
+soundtracks_path = ""
+curated_compilations_path = ""
 ignored_subs = []
 
 [scan]
