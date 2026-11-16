@@ -2458,8 +2458,6 @@ class Catalog:
 
     def artist_comp_albums(self, artist_id: str) -> list[dict[str, object]]:
         """Return indexed COMP cards without touching every track on disk."""
-        if self.path_album_grouping_enabled():
-            return []
         return self._artist_comp_groups(artist_id, verify_tracks=False)
 
     def artist_comp_album_ids(self, artist_id: str) -> list[str]:
@@ -2470,8 +2468,6 @@ class Catalog:
         already-projected appearance, so opening one Artist never scans every
         fallback directory in the library.
         """
-        if self.path_album_grouping_enabled():
-            return []
         with closing(self.connect()) as db:
             artist, aliases = self._artist_identity_rows(db, artist_id)
             name = str(artist["artist_name"]).strip()
@@ -2490,11 +2486,11 @@ class Catalog:
                 + "%"
             )
             rows = db.execute(
-                "SELECT albums.album_key,albums.artist_key,tracks.artist_name,"
-                "tracks.title,tracks.path "
+                "SELECT albums.album_key,albums.artist_key,albums.path,"
+                "albums.musicbrainz_albumid,tracks.artist_name,tracks.title,"
+                "tracks.path AS track_path "
                 "FROM albums LEFT JOIN tracks ON tracks.album_key=albums.album_key "
-                "WHERE TRIM(COALESCE(albums.musicbrainz_albumid,''))='' "
-                f"AND (albums.artist_key IN ({placeholders}) "
+                f"WHERE (albums.artist_key IN ({placeholders}) "
                 "OR tracks.artist_name LIKE ? ESCAPE '\\' "
                 "OR tracks.title LIKE ? ESCAPE '\\' "
                 "OR tracks.path LIKE ? ESCAPE '\\' "
@@ -2503,6 +2499,8 @@ class Catalog:
             ).fetchall()
         matching = set()
         for row in rows:
+            if self.album_library_group(row) != "fallback":
+                continue
             if (
                 str(row["album_key"]) in appearance_ids
                 or str(row["artist_key"]) in alias_ids
@@ -2513,7 +2511,7 @@ class Catalog:
                     for credit in indexed_track_credit_values(
                         str(row["artist_name"] or ""),
                         str(row["title"] or ""),
-                        str(row["path"] or ""),
+                        str(row["track_path"] or ""),
                         self.artist_separator_regex,
                     )
                 )
@@ -2523,8 +2521,6 @@ class Catalog:
 
     def artist_comp_report(self, artist_id: str) -> list[dict[str, object]]:
         """Project a focused artist's verified tracks for an opened COMP report."""
-        if self.path_album_grouping_enabled():
-            return []
         return self._artist_comp_groups(artist_id, verify_tracks=True)
 
     def _artist_comp_groups(self, artist_id: str, *, verify_tracks: bool) -> list[dict[str, object]]:
@@ -2543,11 +2539,12 @@ class Catalog:
             escaped_name = name.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             rows = db.execute(
                 "SELECT albums.album_key, albums.album_name, albums.path AS album_path, "
-                "albums.cover_path, albums.release_year, albums.artist_key, tracks.track_key, tracks.path, "
+                "albums.path, albums.musicbrainz_albumid, albums.cover_path, "
+                "albums.release_year, albums.artist_key, tracks.track_key, "
+                "tracks.path AS track_path, "
                 "tracks.title, tracks.artist_name FROM albums "
                 "JOIN tracks ON tracks.album_key=albums.album_key "
-                "WHERE TRIM(COALESCE(albums.musicbrainz_albumid,''))='' "
-                "AND (tracks.artist_name LIKE ? ESCAPE '\\' "
+                "WHERE (tracks.artist_name LIKE ? ESCAPE '\\' "
                 "OR tracks.title LIKE ? ESCAPE '\\' "
                 "OR tracks.path LIKE ? ESCAPE '\\' "
                 f"OR (albums.artist_key IN ({placeholders}) AND TRIM(COALESCE(tracks.artist_name,''))='') "
@@ -2572,13 +2569,15 @@ class Catalog:
         seen: set[str] = set()
         appearance_paths = appearance.get("song_paths", {})
         for row in rows:
+            if self.album_library_group(row) != "fallback":
+                continue
             credits = indexed_track_credit_values(
                 str(row["artist_name"] or ""),
                 str(row["title"] or ""),
-                str(row["path"] or ""),
+                str(row["track_path"] or ""),
                 self.artist_separator_regex,
             )
-            row_path = str(row["path"]).replace("\\", "/").strip("/")
+            row_path = str(row["track_path"]).replace("\\", "/").strip("/")
             expected_paths = [
                 str(value).replace("\\", "/").strip("/")
                 for value in appearance_paths.get(str(row["album_key"]), [])
@@ -2597,7 +2596,7 @@ class Catalog:
                     or not credits and row["artist_key"] in alias_ids
                     or appearance_match):
                 continue
-            folder, track_path = Path(row["album_path"]), Path(row["path"])
+            folder, track_path = Path(row["album_path"]), Path(row["track_path"])
             if verify_tracks and (
                 not inside(folder, self.music)
                 or not inside(track_path, folder)
@@ -2616,7 +2615,9 @@ class Catalog:
                     # cover.* through the standard Album thumbnail endpoint.
                     # Embedded track art remains exclusive to COMP Report.
                     "cover": self.album_thumbnail_url(key),
-                    "compilation": True, "album_mbid": "", "tracks": [],
+                    "compilation": True,
+                    "album_mbid": row["musicbrainz_albumid"] or "",
+                    "tracks": [],
                 }
             completed_track = str(track_path).casefold() in completed
             groups[key]["tracks"].append({
@@ -2632,13 +2633,14 @@ class Catalog:
         """Check one COMP thumbnail lazily so a large Artist report opens quickly."""
         with closing(self.connect()) as db:
             row = db.execute(
-                "SELECT albums.path AS album_path, albums.musicbrainz_albumid, tracks.path "
+                "SELECT albums.album_key,albums.path AS album_path,albums.path,"
+                "albums.musicbrainz_albumid,tracks.path AS track_path "
                 "FROM albums JOIN tracks ON tracks.album_key=albums.album_key "
                 "WHERE albums.album_key=? AND tracks.track_key=?", (album_id, track_key),
             ).fetchone()
-            if row is None or str(row["musicbrainz_albumid"] or "").strip():
+            if row is None or self.album_library_group(row) != "fallback":
                 raise KeyError("COMP track not found")
-            path, folder = Path(row["path"]), Path(row["album_path"])
+            path, folder = Path(row["track_path"]), Path(row["album_path"])
             if not inside(folder, self.music) or not inside(path, folder) or not path.is_file():
                 raise ValueError("COMP track is outside the configured music library")
             has_ledger = db.execute(

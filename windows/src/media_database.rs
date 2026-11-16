@@ -271,6 +271,18 @@ fn artist_credit_position(track_artist: &str, artist: &str, separator: &Regex) -
 /// arrive NUL-separated and are never split again; the configured Regex is
 /// applied only to one joined Artist/TPE1 or filename credit.
 fn artist_credit_values(track_artist: &str, separator: &Regex) -> Vec<String> {
+    artist_credit_values_with_mbids(track_artist, "", separator)
+}
+
+/// Match WebGUI's evidence-based ID3v2.3 slash handling. A bare slash is not
+/// a general Artist separator because it is part of real names such as AC/DC.
+/// It represents multiple TPE1 values only when the ordered MusicBrainz
+/// Artist-ID cardinality proves that every slash-delimited name is a credit.
+fn artist_credit_values_with_mbids(
+    track_artist: &str,
+    artist_mbids: &str,
+    separator: &Regex,
+) -> Vec<String> {
     let explicit = track_artist
         .split('\0')
         .map(str::trim)
@@ -283,6 +295,20 @@ fn artist_credit_values(track_artist: &str, separator: &Regex) -> Vec<String> {
     let Some(joined) = explicit.first() else {
         return Vec::new();
     };
+    let slash_parts = joined
+        .split('/')
+        .map(str::trim)
+        .filter(|credit| !credit.is_empty())
+        .collect::<Vec<_>>();
+    if slash_parts.len() > 1 && extract_mbids(artist_mbids).len() == slash_parts.len() {
+        let mut values = Vec::with_capacity(slash_parts.len());
+        for credit in slash_parts {
+            if !values.contains(&credit) {
+                values.push(credit);
+            }
+        }
+        return values.into_iter().map(str::to_string).collect();
+    }
     separator
         .split(joined)
         .map(str::trim)
@@ -291,8 +317,12 @@ fn artist_credit_values(track_artist: &str, separator: &Regex) -> Vec<String> {
         .collect()
 }
 
-fn canonical_artist_credit_text(track_artist: &str, separator: &Regex) -> String {
-    artist_credit_values(track_artist, separator).join("\0")
+fn canonical_artist_credit_text(
+    track_artist: &str,
+    artist_mbids: &str,
+    separator: &Regex,
+) -> String {
+    artist_credit_values_with_mbids(track_artist, artist_mbids, separator).join("\0")
 }
 
 fn numbered_track_artist_credit(value: &str) -> Option<&str> {
@@ -331,12 +361,14 @@ fn owner_anchored_inferred_credits(value: &str, owner: &str) -> Vec<String> {
 
 fn indexed_track_artist_credits<'a>(
     track_artist: &'a str,
+    track_artist_mbids: &'a str,
     title: &'a str,
     filename: &'a str,
     owner: &'a str,
     separator: &Regex,
 ) -> Vec<String> {
-    let mut credits = artist_credit_values(track_artist, separator);
+    let mut credits =
+        artist_credit_values_with_mbids(track_artist, track_artist_mbids, separator);
     // Explicit multi-value ARTIST/TPE1 tags are authoritative.  Adding the
     // filename's joined display credit would manufacture a duplicate combined
     // Artist (for example, "Rob Wasserman & Aaron Neville") beside the two
@@ -400,7 +432,7 @@ pub fn indexed_artist_appearances(
     let pattern = format!("%{escaped}%");
     let mut statement = connection
         .prepare(
-            "SELECT albums.album_key,owners.artist_name,tracks.artist_name,tracks.title,tracks.path \
+            "SELECT albums.album_key,owners.artist_name,tracks.artist_name,tracks.title,tracks.path,COALESCE(tracks.musicbrainz_artistid,'') \
              FROM tracks JOIN albums ON albums.album_key=tracks.album_key \
              JOIN artists owners ON owners.artist_key=albums.artist_key \
              WHERE trim(COALESCE(albums.musicbrainz_albumid,''))<>'' \
@@ -417,12 +449,13 @@ pub fn indexed_artist_appearances(
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
                 row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
             ))
         })
         .map_err(db_error("query indexed Artist appearances"))?;
     let mut appearances = IndexedArtistAppearances::default();
     for row in rows {
-        let (album_key, owner, track_artist, title, path) =
+        let (album_key, owner, track_artist, title, path, track_artist_mbids) =
             row.map_err(db_error("read indexed Artist appearance"))?;
         let filename = Path::new(&path)
             .file_stem()
@@ -430,6 +463,7 @@ pub fn indexed_artist_appearances(
             .unwrap_or_default();
         let matched = indexed_track_artist_credits(
             &track_artist,
+            &track_artist_mbids,
             &title,
             filename,
             &owner,
@@ -502,6 +536,7 @@ pub fn indexed_artist_catalog_projection(
             .unwrap_or_default();
         let credits = indexed_track_artist_credits(
             &track_artist,
+            &track_artist_mbids,
             &title,
             filename,
             &owner,
@@ -4019,6 +4054,133 @@ fn ensure_artist_art_schema(connection: &Connection) -> Result<(), String> {
         .map_err(db_error("initialize Artist Art SQLite authority"))
 }
 
+fn ensure_album_category_schema(connection: &Connection) -> Result<(), String> {
+    connection
+        .execute_batch(
+            "CREATE TABLE IF NOT EXISTS album_category_overrides(
+                 album_key TEXT PRIMARY KEY COLLATE NOCASE,
+                 category TEXT NOT NULL CHECK(category IN (
+                     'artist','various-artists','soundtracks','fallback',
+                     'misc-curated','misc-undefined'
+                 )),
+                 updated_at TEXT NOT NULL,
+                 splined_version TEXT NOT NULL,
+                 FOREIGN KEY(album_key) REFERENCES albums(album_key) ON DELETE CASCADE
+             );
+             CREATE INDEX IF NOT EXISTS idx_album_category_overrides_category
+             ON album_category_overrides(category);",
+        )
+        .map_err(db_error("initialize Album category SQLite authority"))
+}
+
+fn has_album_category_schema(connection: &Connection) -> Result<bool, String> {
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='album_category_overrides')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(db_error("inspect Album category SQLite authority"))
+}
+
+fn supported_album_category(category: &str) -> bool {
+    matches!(
+        category,
+        "artist"
+            | "various-artists"
+            | "soundtracks"
+            | "fallback"
+            | "misc-curated"
+            | "misc-undefined"
+    )
+}
+
+pub fn load_album_category_overrides(
+    database_path: &str,
+) -> Result<HashMap<String, String>, String> {
+    let path = Path::new(database_path);
+    if !path.is_file() {
+        return Ok(HashMap::new());
+    }
+    let (connection, current) = open_database_read_only(path)?;
+    if current != SCHEMA_VERSION || !has_album_category_schema(&connection)? {
+        return Ok(HashMap::new());
+    }
+    let mut statement = connection
+        .prepare("SELECT album_key,category FROM album_category_overrides")
+        .map_err(db_error("prepare Album category overrides"))?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(db_error("read Album category overrides"))?;
+    let mut overrides = HashMap::new();
+    for row in rows {
+        let (album_key, category) = row.map_err(db_error("decode Album category override"))?;
+        if supported_album_category(category.trim()) {
+            overrides.insert(album_key.trim().to_ascii_lowercase(), category);
+        }
+    }
+    Ok(overrides)
+}
+
+pub fn save_album_category_override(
+    config: &Config,
+    album_key: &str,
+    category: &str,
+) -> Result<(), String> {
+    let album_key = album_key.trim();
+    let category = category.trim().to_ascii_lowercase();
+    if album_key.is_empty() {
+        return Err("Choose an Album to categorize.".to_string());
+    }
+    if !category.is_empty() && !supported_album_category(&category) {
+        return Err("Choose a supported Album category.".to_string());
+    }
+    let db_path = database_path(&config.scan.cache_dir);
+    let database_access = DatabasePathAccess::new(
+        &db_path,
+        config.scan.sqlite_shared,
+        config.scan.windows_client_lock,
+    )?;
+    if !database_access.path().is_file() {
+        return Err(format!("SPLINED database is missing: {}", db_path.display()));
+    }
+    let connection = open_database(database_access.path(), config.scan.sqlite_shared)?;
+    let exists = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM albums WHERE lower(album_key)=lower(?1))",
+            [album_key],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(db_error("locate Album category target"))?;
+    if !exists {
+        return Err("Album not found in the current SQLite catalog.".to_string());
+    }
+    if category.is_empty() {
+        connection
+            .execute(
+                "DELETE FROM album_category_overrides WHERE lower(album_key)=lower(?1)",
+                [album_key],
+            )
+            .map_err(db_error("restore automatic Album category"))?;
+    } else {
+        let now = sqlite_now(&connection)?;
+        connection
+            .execute(
+                "INSERT INTO album_category_overrides(album_key,category,updated_at,splined_version)
+                 VALUES(?1,?2,?3,?4)
+                 ON CONFLICT(album_key) DO UPDATE SET
+                     category=excluded.category,
+                     updated_at=excluded.updated_at,
+                     splined_version=excluded.splined_version",
+                params![album_key, category, now, env!("CARGO_PKG_VERSION")],
+            )
+            .map_err(db_error("save Album category override"))?;
+    }
+    Ok(())
+}
+
 fn has_artist_art_schema(connection: &Connection) -> Result<bool, String> {
     connection
         .query_row(
@@ -4181,6 +4343,7 @@ fn open_database(path: &Path, shared: bool) -> Result<Connection, String> {
     }
     ensure_sqlite_schema(&connection)?;
     ensure_artist_art_schema(&connection)?;
+    ensure_album_category_schema(&connection)?;
     repair_cover_only_processed_statuses(&connection)?;
     Ok(connection)
 }
@@ -4895,7 +5058,16 @@ fn rebuild_index_generation(
                             .as_ref()
                             .map(|value| value.artist.trim())
                             .filter(|value| !value.is_empty())
-                            .map(|value| canonical_artist_credit_text(value, &artist_separator))
+                            .map(|value| {
+                                canonical_artist_credit_text(
+                                    value,
+                                    evidence
+                                        .as_ref()
+                                        .and_then(|item| item.musicbrainz_artist_id.as_deref())
+                                        .unwrap_or(""),
+                                    &artist_separator,
+                                )
+                            })
                             .unwrap_or_else(|| artist_name.clone());
                         let recording_mbid = evidence
                             .as_ref()
@@ -5770,7 +5942,16 @@ fn rebuild_index_legacy(
                         .as_ref()
                         .map(|value| value.artist.trim())
                         .filter(|value| !value.is_empty())
-                        .map(|value| canonical_artist_credit_text(value, &artist_separator))
+                        .map(|value| {
+                            canonical_artist_credit_text(
+                                value,
+                                evidence
+                                    .as_ref()
+                                    .and_then(|item| item.musicbrainz_artist_id.as_deref())
+                                    .unwrap_or(""),
+                                &artist_separator,
+                            )
+                        })
                         .unwrap_or_else(|| artist_name.clone());
                     let recording_mbid = evidence
                         .as_ref()
@@ -7320,6 +7501,55 @@ mod tests {
     }
 
     #[test]
+    fn album_category_override_round_trips_without_rescanning() {
+        let root = tempfile::TempDir::new().unwrap();
+        let mut config = Config::default();
+        config.scan.cache_dir = root.path().join("database").to_string_lossy().into_owned();
+        let path = database_path(&config.scan.cache_dir);
+        let connection = open_database(&path, false).unwrap();
+        let now = sqlite_now(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO artists(
+                     artist_key,artist_name,primary_path,created_at,updated_at,last_seen_at,splined_version
+                 ) VALUES('aaron','Aaron Neville','/music/Aaron Neville',?1,?1,?1,'test')",
+                [&now],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO albums(
+                     album_key,artist_key,album_name,path,tag_signature,
+                     cover_names_json,local_art_json,other_filenames_json,
+                     created_at,updated_at,last_seen_at,splined_version
+                 ) VALUES(
+                     'gold','aaron','Gold','/music/Aaron Neville/Gold','fixture',
+                     '[]','[]','[]',?1,?1,?1,'test'
+                 )",
+                [&now],
+            )
+            .unwrap();
+        drop(connection);
+
+        save_album_category_override(&config, "gold", "soundtracks").unwrap();
+        assert_eq!(
+            load_album_category_overrides(path.to_string_lossy().as_ref())
+                .unwrap()
+                .get("gold")
+                .map(String::as_str),
+            Some("soundtracks")
+        );
+
+        save_album_category_override(&config, "gold", "").unwrap();
+        assert!(
+            load_album_category_overrides(path.to_string_lossy().as_ref())
+                .unwrap()
+                .is_empty()
+        );
+        assert!(save_album_category_override(&config, "gold", "invalid").is_err());
+    }
+
+    #[test]
     fn fallback_artist_identity_can_be_recovered_from_indexed_track_tags() {
         let root = tempfile::TempDir::new().unwrap();
         let mut config = Config::default();
@@ -8020,6 +8250,60 @@ mod tests {
             Some(aaron)
         );
         assert_eq!(projection.album_keys.get("Rob Wasserman").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn id3v23_slash_credits_use_musicbrainz_cardinality_without_splitting_bands() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = database_path(temp.path());
+        let connection = open_database(&db, false).unwrap();
+        let now = sqlite_now(&connection).unwrap();
+        let tupac = "382f1005-e9ab-4684-afd4-0bdae4ee37f2";
+        let symmetry = "11111111-2222-4333-8444-555555555555";
+        connection.execute(
+            "INSERT INTO artists(artist_key,artist_name,primary_path,musicbrainz_artistid,created_at,updated_at,last_seen_at,splined_version) \
+             VALUES('tupac','2Pac','/music/2Pac',?1,?2,?2,?2,'test')",
+            params![tupac, now],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO albums(album_key,artist_key,album_name,musicbrainz_albumid,path,representative_file,tag_signature,created_at,updated_at,last_seen_at,splined_version) \
+             VALUES('duet','tupac','Duet','release-duet','/music/2Pac/Duet','/music/2Pac/Duet/1-01.mp3','tags',?1,?1,?1,'test')",
+            params![now],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO tracks(track_key,album_key,path,title,artist_name,musicbrainz_artistid,file_size,file_mtime_ns,updated_at,splined_version) \
+             VALUES('slash-duet','duet','/music/2Pac/Duet/1-01.mp3','Duet','2Pac/2Symmetry',?1,1,1,?2,'test')",
+            params![format!("{tupac}; {symmetry}"), now],
+        ).unwrap();
+        drop(connection);
+
+        let projection = indexed_artist_catalog_projection(
+            db.to_str().unwrap(),
+            crate::config::DEFAULT_ARTIST_SEPARATOR_REGEX,
+        )
+        .unwrap();
+
+        assert_eq!(
+            projection.album_keys.keys().cloned().collect::<Vec<_>>(),
+            vec!["2Pac", "2Symmetry"]
+        );
+        assert_eq!(
+            projection.musicbrainz_ids.get("2Pac").map(String::as_str),
+            Some(tupac)
+        );
+        assert_eq!(
+            projection
+                .musicbrainz_ids
+                .get("2Symmetry")
+                .map(String::as_str),
+            Some(symmetry)
+        );
+
+        let separator = Regex::new(crate::config::DEFAULT_ARTIST_SEPARATOR_REGEX).unwrap();
+        assert_eq!(
+            artist_credit_values_with_mbids("AC/DC", tupac, &separator),
+            ["AC/DC"]
+        );
     }
 
     #[test]

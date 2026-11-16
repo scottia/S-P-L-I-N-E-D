@@ -8,7 +8,7 @@ use crate::config::{Config, Mode, configured_samples_dir, resolve_sources};
 use crate::inspect::inspect_image;
 use crate::media_database::{
     MediaAlbumSnapshot, MediaSnapshot, MediaTrackSnapshot, artist_projection_identity,
-    indexed_artist_catalog_projection,
+    indexed_artist_catalog_projection, load_album_category_overrides,
 };
 use crate::range::Range;
 use crate::settings::{
@@ -36,6 +36,42 @@ enum AlbumLibraryGroup {
     MiscCurated,
     MiscUndefined,
     Fallback,
+}
+
+impl AlbumLibraryGroup {
+    fn from_category_key(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "artist" => Some(Self::Artist),
+            "various-artists" => Some(Self::VariousArtists),
+            "soundtracks" => Some(Self::Soundtracks),
+            "fallback" => Some(Self::Fallback),
+            "misc-curated" => Some(Self::MiscCurated),
+            "misc-undefined" => Some(Self::MiscUndefined),
+            _ => None,
+        }
+    }
+
+    fn category_key(self) -> &'static str {
+        match self {
+            Self::Artist => "artist",
+            Self::VariousArtists => "various-artists",
+            Self::Soundtracks => "soundtracks",
+            Self::Fallback => "fallback",
+            Self::MiscCurated => "misc-curated",
+            Self::MiscUndefined => "misc-undefined",
+        }
+    }
+
+    fn category_label(self) -> &'static str {
+        match self {
+            Self::Artist => "Artist",
+            Self::VariousArtists => "Various Artists",
+            Self::Soundtracks => "Soundtracks",
+            Self::Fallback => "Curated Compilations",
+            Self::MiscCurated => "Miscellaneous Curated",
+            Self::MiscUndefined => "Miscellaneous Undefined",
+        }
+    }
 }
 
 impl LibraryView {
@@ -307,6 +343,7 @@ pub struct LibraryState {
     various_artist_path: String,
     soundtracks_path: String,
     curated_compilations_path: String,
+    category_overrides: HashMap<String, String>,
     expanded_library_category: Option<String>,
 }
 
@@ -328,6 +365,8 @@ impl LibraryState {
         let projection =
             indexed_artist_catalog_projection(&snapshot.database_path, artist_separator_regex)
                 .unwrap_or_default();
+        let category_overrides =
+            load_album_category_overrides(&snapshot.database_path).unwrap_or_default();
         let artist_appearance_album_keys = projection.album_keys;
         let artist_appearance_musicbrainz_ids = projection
             .musicbrainz_ids
@@ -400,6 +439,7 @@ impl LibraryState {
             various_artist_path: String::new(),
             soundtracks_path: String::new(),
             curated_compilations_path: String::new(),
+            category_overrides,
             expanded_library_category: None,
         })
     }
@@ -433,6 +473,7 @@ impl LibraryState {
             various_artist_path: String::new(),
             soundtracks_path: String::new(),
             curated_compilations_path: String::new(),
+            category_overrides: HashMap::new(),
             expanded_library_category: None,
         }
     }
@@ -479,6 +520,13 @@ impl LibraryState {
     }
 
     fn album_library_group(&self, album: &AlbumEntry) -> AlbumLibraryGroup {
+        if let Some(group) = self
+            .category_overrides
+            .get(&album.snapshot.album_key.to_ascii_lowercase())
+            .and_then(|value| AlbumLibraryGroup::from_category_key(value))
+        {
+            return group;
+        }
         if !self.category_paths_configured {
             return if album.snapshot.album_mbid.trim().is_empty() {
                 AlbumLibraryGroup::Fallback
@@ -508,8 +556,50 @@ impl LibraryState {
         AlbumLibraryGroup::Artist
     }
 
-    fn is_curated_fallback(&self, album: &AlbumEntry) -> bool {
+    pub fn is_curated_fallback(&self, album: &AlbumEntry) -> bool {
         self.album_library_group(album) == AlbumLibraryGroup::Fallback
+    }
+
+    pub fn album_category_dialog(&self, album_key: &str) -> Option<(String, String)> {
+        let album = self.albums.iter().find(|album| {
+            album
+                .snapshot
+                .album_key
+                .eq_ignore_ascii_case(album_key.trim())
+        })?;
+        let current = self
+            .category_overrides
+            .get(&album.snapshot.album_key.to_ascii_lowercase())
+            .cloned()
+            .unwrap_or_default();
+        Some((album.snapshot.title.clone(), current))
+    }
+
+    pub fn apply_album_category_override(
+        &mut self,
+        album_key: &str,
+        category: &str,
+    ) -> Result<String, String> {
+        let album_key = album_key.trim();
+        if !self.albums.iter().any(|album| {
+            album
+                .snapshot
+                .album_key
+                .eq_ignore_ascii_case(album_key)
+        }) {
+            return Err("Album not found in the current library.".to_string());
+        }
+        let category = category.trim().to_ascii_lowercase();
+        if category.is_empty() {
+            self.category_overrides
+                .remove(&album_key.to_ascii_lowercase());
+            return Ok("Automatic (use configured roots)".to_string());
+        }
+        let group = AlbumLibraryGroup::from_category_key(&category)
+            .ok_or_else(|| "Choose a supported Album category.".to_string())?;
+        self.category_overrides
+            .insert(album_key.to_ascii_lowercase(), group.category_key().to_string());
+        Ok(group.category_label().to_string())
     }
 
     pub fn selected_count(&self) -> usize {
@@ -793,7 +883,7 @@ impl LibraryState {
             .filter(|(artist, indices)| {
                 indices.iter().any(|index| {
                     let album = &self.albums[*index];
-                    !Self::is_fallback_album(album)
+                    !self.is_curated_fallback(album)
                         && album.eligible_by_default()
                         && self.text_matches_for_artist(artist, album)
                 })
@@ -1419,9 +1509,9 @@ impl LibraryState {
 
     /// Albums presented inside Artist Overview. `appearance_keys` adds albums
     /// in which Navidrome tags the focused artist on a song even when the
-    /// album artist is Various Artists. A fallback album (no Release/Album
-    /// MBID) with a matching artist track is always visible here, regardless
-    /// of Library Status. Show All bypasses Library Status for the remaining
+    /// album artist is Various Artists. A path-defined Curated/Fallback album
+    /// with a matching artist track is always visible here, regardless of
+    /// Library Status. Show All bypasses Library Status for the remaining
     /// albums, never the selected artist scope.
     pub fn artist_overview_album_indices(
         &self,
@@ -1438,13 +1528,13 @@ impl LibraryState {
             .filter(|(_, album)| {
                 let appearance =
                     appearance_keys.contains(&album.snapshot.album_key.to_ascii_lowercase());
-                let matching_fallback_track = album.snapshot.album_mbid.trim().is_empty()
+                let matching_fallback_track = self.is_curated_fallback(album)
                     && album
                         .snapshot
                         .compilation_tracks
                         .iter()
                         .any(|track| Self::track_matches_artist_in_album(album, track, artist));
-                let fallback_appearance = album.snapshot.album_mbid.trim().is_empty()
+                let fallback_appearance = self.is_curated_fallback(album)
                     && (appearance || matching_fallback_track);
                 let in_artist_scope = album.snapshot.artist.trim().eq_ignore_ascii_case(artist)
                     || appearance
@@ -3890,7 +3980,7 @@ impl ApplicationState {
     }
 
     pub fn artist_fallback_track_progress(&self, album: &AlbumEntry) -> Option<(usize, usize)> {
-        if !album.snapshot.album_mbid.trim().is_empty() {
+        if !self.library.is_curated_fallback(album) {
             return None;
         }
         // Local completion records and Navidrome appearances may hydrate at
@@ -5697,7 +5787,7 @@ mod tests {
             r"C:\Music\Various Artists\Billboard".to_string();
         state.configure_library_categories(&config);
 
-        let group = |key: &str| {
+        let group = |state: &LibraryState, key: &str| {
             state.album_library_group(
                 state
                     .albums
@@ -5706,10 +5796,10 @@ mod tests {
                     .unwrap(),
             )
         };
-        assert_eq!(group("va"), AlbumLibraryGroup::VariousArtists);
-        assert_eq!(group("billboard"), AlbumLibraryGroup::Fallback);
-        assert_eq!(group("ost"), AlbumLibraryGroup::Soundtracks);
-        assert_eq!(group("artist"), AlbumLibraryGroup::Artist);
+        assert_eq!(group(&state, "va"), AlbumLibraryGroup::VariousArtists);
+        assert_eq!(group(&state, "billboard"), AlbumLibraryGroup::Fallback);
+        assert_eq!(group(&state, "ost"), AlbumLibraryGroup::Soundtracks);
+        assert_eq!(group(&state, "artist"), AlbumLibraryGroup::Artist);
         assert_eq!(
             state
                 .albums
@@ -5731,6 +5821,30 @@ mod tests {
         assert!(keys.contains("va"));
         assert!(!keys.contains("billboard"));
         assert!(!keys.contains("artist"));
+
+        assert_eq!(
+            state
+                .apply_album_category_override("billboard", "artist")
+                .unwrap(),
+            "Artist"
+        );
+        assert_eq!(group(&state, "billboard"), AlbumLibraryGroup::Artist);
+        assert!(state.fallback_album_rows().is_empty());
+        assert_eq!(
+            state.album_category_dialog("billboard"),
+            Some(("Billboard".to_string(), "artist".to_string()))
+        );
+
+        assert_eq!(
+            state.apply_album_category_override("billboard", "").unwrap(),
+            "Automatic (use configured roots)"
+        );
+        assert_eq!(group(&state, "billboard"), AlbumLibraryGroup::Fallback);
+        assert!(
+            state
+                .apply_album_category_override("billboard", "unsupported")
+                .is_err()
+        );
     }
 
     fn application_state() -> ApplicationState {
@@ -7440,6 +7554,10 @@ mod tests {
                 })
                 .collect();
         state.library.albums.push(compilation);
+        state
+            .library
+            .apply_album_category_override("comp", "fallback")
+            .unwrap();
         state.artist_overview_album_keys.insert("comp".to_string());
         state.artist_overview_track_paths.insert(
             "comp".to_string(),

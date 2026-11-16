@@ -360,6 +360,7 @@ component LibraryItem inherits Rectangle {
     callback activated(string);
     callback selection-activated(string);
     callback expansion-activated(string);
+    callback category-activated(string);
     callback wheel-scrolled(length);
     callback thumbnail-needed(string, string);
     init => { root.thumbnail-needed(root.item.key, root.item.kind); }
@@ -406,6 +407,15 @@ component LibraryItem inherits Rectangle {
         VerticalLayout { spacing: (2px * AppTheme.ui-scale); alignment: center;
             Text { text: root.item.primary; color: root.item.status == "Unprocessed" || root.item.status == "All" ? (AppTheme.light ? AppTheme.secondary-foreground : AppTheme.foreground) : root.item.status-color; font-size: (16px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: !root.status-only-album-selection && (root.item.selected || root.item.expanded) ? 700 : 600; overflow: elide; }
             if root.item.secondary != "": Text { text: root.item.secondary; color: root.item.kind == "artist" ? AppTheme.magenta : AppTheme.secondary-foreground; font-size: (15px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 600; overflow: elide; }
+        }
+        if root.item.kind == "album" || root.item.kind == "album-child" || root.item.kind == "fallback-album": Rectangle {
+            width: (38px * AppTheme.ui-scale); background: transparent;
+            Text {
+                text: "⇄";
+                color: AppTheme.cyan; font-size: (22px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800;
+                horizontal-alignment: center; vertical-alignment: center;
+            }
+            TouchArea { mouse-cursor: pointer; clicked => root.category-activated(root.item.key); }
         }
         if root.item.kind == "artist" || root.item.kind == "fallback-album" || root.item.kind == "album-category": Rectangle {
             width: (38px * AppTheme.ui-scale); background: transparent;
@@ -599,18 +609,22 @@ component MediaLibraryPane inherits NeonPanel {
     in-out property <bool> candidate-filter-expanded: false;
     in-out property <bool> media-filter-locked: false;
     in-out property <bool> candidate-filter-locked: false;
+    private property <string> restore-focus-field: "";
+    private property <int> restore-focus-request: 0;
     callback filter-lock-changed(string, bool);
     callback set-expanded(bool);
     callback change-library-view(int);
     callback search-edited(string);
     callback artist-filter-edited(string);
     callback album-filter-edited(string);
+    callback restore-filter-focus(string);
     callback select-all();
     callback select-filtered();
     callback select-none();
     callback library-row-activated(string, bool);
     callback library-row-selection-activated(string, bool);
     callback library-row-expansion-activated(string);
+    callback album-category-requested(string);
     callback thumbnail-needed(string, string);
     callback set-show-tracks(bool);
     callback compilation-track-activated(string, string, bool);
@@ -620,6 +634,11 @@ component MediaLibraryPane inherits NeonPanel {
     callback candidate-filter-cycle(string, string);
     callback candidate-source-action(string, string);
     callback clear-candidate-filters();
+
+    restore-filter-focus(field) => {
+        root.restore-focus-field = field;
+        root.restore-focus-request = root.restore-focus-request + 1;
+    }
 
     width: root.expanded ? root.pane-width * 1px : (0px * AppTheme.ui-scale);
     visible: root.expanded;
@@ -686,9 +705,23 @@ component MediaLibraryPane inherits NeonPanel {
                 ScrollView {
                     VerticalLayout { padding: (10px * AppTheme.ui-scale); spacing: (7px * AppTheme.ui-scale); min-height: (410px * AppTheme.ui-scale);
                         Text { text: "Artist Search"; color: AppTheme.secondary-foreground; font-size: (14px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 600; }
-                        LineEdit { enabled: !root.media-filter-locked; text <=> root.artist-filter-text; placeholder-text: "Filter artists…"; edited(text) => root.artist-filter-edited(text); }
+                        artist-filter-input := LineEdit {
+                            property <int> focus-request: root.restore-focus-request;
+                            changed focus-request => { if (root.restore-focus-field == "artist") { self.focus(); } }
+                            enabled: !root.media-filter-locked;
+                            text <=> root.artist-filter-text;
+                            placeholder-text: "Filter artists…";
+                            edited(text) => root.artist-filter-edited(text);
+                        }
                         Text { text: "Album Search"; color: AppTheme.secondary-foreground; font-size: (14px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 600; }
-                        LineEdit { enabled: !root.media-filter-locked; text <=> root.album-filter-text; placeholder-text: "Filter albums…"; edited(text) => root.album-filter-edited(text); }
+                        album-filter-input := LineEdit {
+                            property <int> focus-request: root.restore-focus-request;
+                            changed focus-request => { if (root.restore-focus-field == "album") { self.focus(); } }
+                            enabled: !root.media-filter-locked;
+                            text <=> root.album-filter-text;
+                            placeholder-text: "Filter albums…";
+                            edited(text) => root.album-filter-edited(text);
+                        }
                         Text { text: "Select Modes"; color: AppTheme.foreground; font-size: (15px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 700; }
                         HorizontalLayout { height: (38px * AppTheme.ui-scale); spacing: (6px * AppTheme.ui-scale);
                             Rectangle { horizontal-stretch: 1; NeonAction { label: "All"; width: parent.width; height: (38px * AppTheme.ui-scale); enabled: !root.media-filter-locked; clicked => root.select-all(); } }
@@ -753,6 +786,7 @@ component MediaLibraryPane inherits NeonPanel {
                     activated(key) => root.library-row-activated(key, root.include-bypassed);
                     selection-activated(key) => root.library-row-selection-activated(key, root.include-bypassed);
                     expansion-activated(key) => root.library-row-expansion-activated(key);
+                    category-activated(key) => root.album-category-requested(key);
                     wheel-scrolled(delta) => {
                         artist-library-list.content-y = max(
                             min((0px * AppTheme.ui-scale), artist-library-list.visible-height - artist-library-list.content-height),
@@ -777,6 +811,7 @@ component MediaLibraryPane inherits NeonPanel {
                             activated(key) => root.library-row-activated(key, root.include-bypassed);
                             selection-activated(key) => root.library-row-selection-activated(key, root.include-bypassed);
                             expansion-activated(key) => root.library-row-expansion-activated(key);
+                            category-activated(key) => root.album-category-requested(key);
                             wheel-scrolled(delta) => {
                                 fallback-library-list.content-y = max(
                                     min((0px * AppTheme.ui-scale), fallback-library-list.visible-height - fallback-library-list.content-height),
@@ -1478,6 +1513,10 @@ export component AppWindow inherits Window {
     out property <float> responsive-font-factor: root.width / 1px <= 1050 ? 0.82 : (root.width / 1px <= 1280 ? 0.90 : 1.0);
     in property <[UiLibraryRow]> library-rows;
     in property <int> library-shown-count;
+    in-out property <bool> album-category-dialog-visible: false;
+    in-out property <string> album-category-album-key;
+    in-out property <string> album-category-album-name;
+    in-out property <string> album-category-selection: "Automatic (use configured roots)";
     in property <[UiArtistAlbumRow]> artist-overview-albums;
     in property <bool> embed-queue-blink: false;
     in property <bool> selected-artwork-queue-locked: false;
@@ -1942,12 +1981,15 @@ export component AppWindow inherits Window {
 
     callback change-library-view(int); callback search-edited(string); callback status-filter-changed(string);
     callback artist-filter-edited(string); callback album-filter-edited(string); callback status-filter-toggled(string);
+    callback restore-media-filter-focus(string);
     callback media-filter-changed(bool);
     callback filter-lock-changed(string, bool);
     callback set-show-tracks(bool); callback set-region-expanded(string, bool);
     callback transient-region-toggled();
     callback pane-resized(string, float); callback set-appearance(string);
     callback window-resized(float, float);
+
+    restore-media-filter-focus(field) => media-library-pane.restore-filter-focus(field);
     changed width => {
         AppTheme.ui-scale = root.display-scale-percent / 100.0;
         AppTheme.font-scale = root.responsive-font-factor;
@@ -1958,7 +2000,7 @@ export component AppWindow inherits Window {
         root.window-resized(root.width / 1px, root.height / 1px);
     }
     callback set-auto-scan(bool, bool);
-    callback library-row-activated(string, bool); callback library-row-selection-activated(string, bool); callback library-row-expansion-activated(string); callback library-thumbnail-needed(string, string); callback clear-artist-scope(); callback select-all();
+    callback library-row-activated(string, bool); callback library-row-selection-activated(string, bool); callback library-row-expansion-activated(string); callback library-thumbnail-needed(string, string); callback album-category-requested(string); callback save-album-category(string, string); callback clear-artist-scope(); callback select-all();
     callback artist-overview-album-selected(string);
     callback queue-album-card(string);
     callback artist-overview-similar-selected(string);
@@ -2222,7 +2264,7 @@ export component AppWindow inherits Window {
                 max-width: (10000px * AppTheme.ui-scale);
                 height: parent.height;
                 spacing: (0px * AppTheme.ui-scale);
-                MediaLibraryPane {
+                media-library-pane := MediaLibraryPane {
                     expanded: root.media-selector-expanded;
                     pane-width <=> root.media-pane-width;
                     library-rows: root.library-rows;
@@ -2258,6 +2300,7 @@ export component AppWindow inherits Window {
                     library-row-activated(key, include-bypassed) => { root.workspace-mode = 0; root.library-row-activated(key, include-bypassed); }
                     library-row-selection-activated(key, include-bypassed) => root.library-row-selection-activated(key, include-bypassed);
                     library-row-expansion-activated(key) => root.library-row-expansion-activated(key);
+                    album-category-requested(key) => root.album-category-requested(key);
                     thumbnail-needed(key, kind) => root.library-thumbnail-needed(key, kind);
                     set-show-tracks(value) => root.set-show-tracks(value);
                     compilation-track-activated(album-key, path, include-bypassed) => root.compilation-track-activated(album-key, path, include-bypassed);
@@ -4169,6 +4212,45 @@ export component AppWindow inherits Window {
                 root.help-menu-visible = false;
                 if (root.page-index != 4) { root.help-return-page = root.page-index; root.page-index = 4; }
             } }
+        }
+    }
+
+    if root.album-category-dialog-visible: Rectangle {
+        x: (0px * AppTheme.ui-scale); y: (0px * AppTheme.ui-scale); width: root.width; height: root.height; background: #bf10080c;
+        TouchArea { }
+        Rectangle {
+            width: min((620px * AppTheme.ui-scale), root.width - (48px * AppTheme.ui-scale));
+            height: (300px * AppTheme.ui-scale);
+            x: (root.width - self.width) / 2; y: (root.height - self.height) / 2;
+            border-radius: (10px * AppTheme.ui-scale); background: AppTheme.panel-background;
+            border-color: AppTheme.cyan; border-width: (2px * AppTheme.ui-scale);
+            VerticalLayout { padding: (20px * AppTheme.ui-scale); spacing: (13px * AppTheme.ui-scale);
+                Heading { text: "Move Album"; color: AppTheme.cyan; height: (32px * AppTheme.ui-scale); horizontal-alignment: center; }
+                Text { text: root.album-category-album-name; color: AppTheme.foreground; font-size: (18px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800; horizontal-alignment: center; height: (28px * AppTheme.ui-scale); overflow: elide; }
+                Text { text: "This Album will appear in one category only. Automatic uses the configured root paths."; color: AppTheme.secondary-foreground; font-size: (14px * AppTheme.ui-scale) * AppTheme.font-scale; wrap: word-wrap; height: (44px * AppTheme.ui-scale); horizontal-alignment: center; }
+                HorizontalLayout { height: (38px * AppTheme.ui-scale); spacing: (12px * AppTheme.ui-scale);
+                    Label { text: "Category"; width: (105px * AppTheme.ui-scale); }
+                    ComboBox {
+                        horizontal-stretch: 1;
+                        model: [
+                            "Automatic (use configured roots)",
+                            "Artist",
+                            "Various Artists",
+                            "Soundtracks",
+                            "Curated Compilations",
+                            "Miscellaneous Curated",
+                            "Miscellaneous Undefined"
+                        ];
+                        current-value <=> root.album-category-selection;
+                    }
+                }
+                Rectangle { vertical-stretch: 1; background: transparent; }
+                HorizontalLayout { height: (40px * AppTheme.ui-scale); spacing: (10px * AppTheme.ui-scale);
+                    NeonAction { width: (120px * AppTheme.ui-scale); label: "Cancel"; clicked => { root.album-category-dialog-visible = false; } }
+                    Rectangle { horizontal-stretch: 1; background: transparent; }
+                    NeonAction { width: (160px * AppTheme.ui-scale); label: "Move Album"; tone: "active"; enabled: !root.running && !root.operation-busy; clicked => root.save-album-category(root.album-category-album-key, root.album-category-selection); }
+                }
+            }
         }
     }
 

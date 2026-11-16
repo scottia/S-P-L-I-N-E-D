@@ -224,18 +224,20 @@ class BrowserFallbackTests(unittest.TestCase):
             with closing(connect(database)) as db:
                 db.execute("CREATE TABLE artists (artist_key TEXT PRIMARY KEY, artist_name TEXT)")
                 db.execute("CREATE TABLE albums (album_key TEXT PRIMARY KEY, album_name TEXT, "
-                           "path TEXT, cover_path TEXT, release_year TEXT, musicbrainz_albumid TEXT, artist_key TEXT)")
+                           "path TEXT, cover_path TEXT, release_year TEXT, musicbrainz_albumid TEXT, "
+                           "artist_key TEXT, compilation INTEGER)")
                 db.execute("CREATE TABLE tracks (track_key TEXT PRIMARY KEY, album_key TEXT, "
                            "path TEXT, title TEXT, artist_name TEXT)")
                 db.execute("CREATE TABLE compilation_track_artwork (track_path TEXT, outcome TEXT)")
                 db.execute("CREATE TABLE artist_album_appearances (artist_key TEXT, album_key TEXT, "
                            "featured INTEGER, navidrome_album_id TEXT, song_paths_json TEXT)")
                 db.execute("INSERT INTO artists VALUES ('target', '3 Doors Down')")
-                db.executemany("INSERT INTO albums VALUES (?, ?, ?, ?, '2003', ?, ?)", [
-                    ("one", "COMP One", str(folders[0]), None, "", "various"),
-                    ("two", "COMP Two", str(folders[1]), None, None, "target"),
-                    ("three", "COMP Three", str(folders[2]), None, "", "various"),
-                    ("identified", "Has Release ID", str(folders[3]), str(covers[3]), "release-id", "target"),
+                db.execute("INSERT INTO artists VALUES ('various', 'Various Artists')")
+                db.executemany("INSERT INTO albums VALUES (?, ?, ?, ?, '2003', ?, ?, ?)", [
+                    ("one", "COMP One", str(folders[0]), None, "", "various", 1),
+                    ("two", "COMP Two", str(folders[1]), None, None, "target", 1),
+                    ("three", "COMP Three", str(folders[2]), None, "", "various", 1),
+                    ("identified", "Has Release ID", str(folders[3]), str(covers[3]), "release-id", "target", 0),
                 ])
                 db.executemany("INSERT INTO tracks VALUES (?, ?, ?, 'Track', ?)", [
                     ("first", "one", str(paths[0]), "3 Doors Down; Guest"),
@@ -291,6 +293,36 @@ class BrowserFallbackTests(unittest.TestCase):
                 {track["key"] for track in report_by_id["three"]["tracks"]},
                 {"appearance"},
             )
+
+            # Path-defined Curated Compilations remain Artist-scoped COMP
+            # reports even when a release has an Album MBID. Opening its card
+            # must never fall through to the full-album track list.
+            with closing(connect(database)) as db:
+                db.execute(
+                    "UPDATE albums SET musicbrainz_albumid='release-two' "
+                    "WHERE album_key='two'"
+                )
+                db.commit()
+            path_grouped = PreviewApp(
+                root,
+                database,
+                root,
+                root,
+                curated_compilations_path=folders[1],
+            )
+            path_summary = path_grouped.artist_comp_albums("target")
+            path_report = path_grouped.artist_comp_report("target")
+            self.assertEqual([group["id"] for group in path_summary], ["two"])
+            self.assertEqual([group["id"] for group in path_report], ["two"])
+            self.assertEqual(
+                {track["key"] for track in path_report[0]["tracks"]},
+                {"second", "blue", "untagged"},
+            )
+            with closing(connect(database)) as db:
+                db.execute(
+                    "UPDATE albums SET musicbrainz_albumid=NULL WHERE album_key='two'"
+                )
+                db.commit()
             self.assertEqual(
                 {track["key"] for track in full_fallback},
                 {"second", "blue", "untagged", "other"},
@@ -423,11 +455,14 @@ class BrowserFallbackTests(unittest.TestCase):
             tag.add(APIC(encoding=3, mime="image/png", type=3, desc="Cover", data=cover.getvalue()))
             tag.save(first)
             with closing(connect(database)) as db:
-                db.execute("CREATE TABLE albums (album_key TEXT PRIMARY KEY, path TEXT, musicbrainz_albumid TEXT)")
+                db.execute("CREATE TABLE artists (artist_key TEXT PRIMARY KEY, artist_name TEXT)")
+                db.execute("CREATE TABLE albums (album_key TEXT PRIMARY KEY, artist_key TEXT, "
+                           "path TEXT, compilation INTEGER, musicbrainz_albumid TEXT)")
                 db.execute("CREATE TABLE tracks (track_key TEXT PRIMARY KEY, album_key TEXT, path TEXT, title TEXT, artist_name TEXT)")
                 db.execute("CREATE TABLE compilation_track_artwork (track_path TEXT, outcome TEXT)")
-                db.execute("INSERT INTO albums VALUES ('comp', ?, '')", (str(folder),))
-                db.execute("INSERT INTO albums VALUES ('identified', ?, 'mb-release')", (str(folder),))
+                db.execute("INSERT INTO artists VALUES ('various', 'Various Artists')")
+                db.execute("INSERT INTO albums VALUES ('comp', 'various', ?, 1, '')", (str(folder),))
+                db.execute("INSERT INTO albums VALUES ('identified', 'various', ?, 1, 'mb-release')", (str(folder),))
                 db.execute("INSERT INTO tracks VALUES ('first', 'comp', ?, 'First', 'A')", (str(first),))
                 db.execute("INSERT INTO tracks VALUES ('second', 'comp', ?, 'Second', 'B')", (str(second),))
                 db.execute("INSERT INTO compilation_track_artwork VALUES (?, 'embedded-existing')", (str(first),))
