@@ -80,6 +80,10 @@ These roots are the only automatic Album-category authority. An Album outside
 all three narrower roots is an Artist Album regardless of its stored Artist
 name, compilation flag, or MusicBrainz IDs. A saved per-Album category override
 wins over the roots and can be returned to path grouping with **Automatic**.
+Category ownership does not remove Artist Album cards: real indexed track
+credits still project V/A, Soundtrack, Featured, and Curated Compilation Albums
+under their credited Artists (the Rob rule), without manufacturing synthetic
+`Various Artists` or `Soundtracks` entries in the Artist list.
 
 ## `[scan]`
 

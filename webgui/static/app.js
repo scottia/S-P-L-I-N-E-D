@@ -809,7 +809,7 @@ function artistOverviewAlbums(artist = state.artist, honorSingleAlbum = true) {
       status: group.tracks.every(track => track.completed) ? "processed" : "incomplete",
     };
   });
-  const indexed = (artist.albums || []).filter(album => album.album_mbid || compIds.has(album.id)).map(album => {
+  const indexed = (artist.albums || []).map(album => {
     const group = compById.get(album.id);
     // COMP album cards use their indexed folder cover. Track thumbnails are
     // separate COMP-report evidence and never replace the album-card cover.

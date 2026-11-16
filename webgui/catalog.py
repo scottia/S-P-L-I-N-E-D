@@ -993,11 +993,11 @@ class Catalog:
         return groups
 
     def _projected_track_artists(self, db) -> dict[str, dict[str, object]]:
-        """Project every real per-track credit from identified Albums.
+        """Project every real per-track credit from every indexed Album.
 
         These are selectable Artist identities, not Album owners. The Album
         remains stored once under its tagged Album Artist while every credited
-        performer can receive a Featured/Soundtrack/Various card.
+        performer can receive a Featured/Soundtrack/Various/Compilation card.
         """
         try:
             rows = db.execute(
@@ -1007,24 +1007,26 @@ class Catalog:
                 "FROM tracks JOIN albums "
                 "ON albums.album_key=tracks.album_key "
                 "JOIN artists owners ON owners.artist_key=albums.artist_key "
-                "WHERE TRIM(COALESCE(albums.musicbrainz_albumid,''))<>'' "
                 "ORDER BY albums.album_key,tracks.path COLLATE NOCASE"
             ).fetchall()
         except sqlite3.OperationalError:
-            return {}
+            try:
+                # Reduced read-only fixtures can predate per-track MBIDs; the
+                # real Artist credit remains sufficient for card projection.
+                rows = db.execute(
+                    "SELECT albums.album_key,albums.status,"
+                    "albums.path AS album_path,albums.compilation,"
+                    "owners.artist_name AS album_artist,tracks.artist_name,"
+                    "'' AS musicbrainz_artistid,tracks.title,tracks.path "
+                    "FROM tracks JOIN albums ON albums.album_key=tracks.album_key "
+                    "JOIN artists owners ON owners.artist_key=albums.artist_key "
+                    "ORDER BY albums.album_key,tracks.path COLLATE NOCASE"
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return {}
         result: dict[str, dict[str, object]] = {}
-        allowed_albums: dict[str, bool] = {}
         for row in rows:
             album_key = str(row["album_key"])
-            if album_key not in allowed_albums:
-                allowed_albums[album_key] = self.artist_album_allowed({
-                    "album_key": album_key,
-                    "path": row["album_path"],
-                    "compilation": row["compilation"],
-                    "artist_name": row["album_artist"],
-                })
-            if not allowed_albums[album_key]:
-                continue
             credits = tuple(dict.fromkeys(
                 credit
                 for value in indexed_track_credit_values(
@@ -1422,15 +1424,7 @@ class Catalog:
             ).fetchone() is not None:
                 raise
             return {"album_keys": set(), "featured_album_keys": set(), "song_paths": {}}
-        eligible = [
-            row for row in rows
-            if self.artist_album_allowed({
-                "album_key": row["album_key"],
-                "path": row["path"],
-                "compilation": row["compilation"],
-                "artist_name": row["album_artist_name"],
-            })
-        ]
+        eligible = rows
         return {
             "album_keys": {str(row["album_key"]) for row in eligible},
             "featured_album_keys": {
@@ -1477,11 +1471,11 @@ class Catalog:
         return result
 
     def _indexed_artist_appearances(self, db, artist, aliases) -> dict[str, object]:
-        """Project identified Featured releases from indexed PostgreSQL tracks.
+        """Project Featured releases from indexed PostgreSQL track credits.
 
         The candidate SQL is deliberately bounded by the selected display names;
-        Windows' exact multi-credit parser remains the final authority. COMP
-        albums stay in the separate track report and are never promoted here.
+        Windows' exact multi-credit parser remains the final authority. Category
+        ownership never suppresses the Rob-rule Artist Album card projection.
         """
         alias_ids = {str(row["artist_key"]) for row in aliases}
         names = list(dict.fromkeys(
@@ -1498,8 +1492,7 @@ class Catalog:
                     "tracks.path,tracks.title,tracks.artist_name FROM tracks "
                     "JOIN albums ON albums.album_key=tracks.album_key "
                     "JOIN artists owner ON owner.artist_key=albums.artist_key "
-                    "WHERE TRIM(COALESCE(albums.musicbrainz_albumid,''))<>'' "
-                    "AND (tracks.artist_name LIKE ? ESCAPE '\\' "
+                    "WHERE (tracks.artist_name LIKE ? ESCAPE '\\' "
                     "OR tracks.title LIKE ? ESCAPE '\\' "
                     "OR tracks.path LIKE ? ESCAPE '\\')",
                     (("%" + escaped + "%",) * 3),
@@ -1511,13 +1504,6 @@ class Catalog:
         paths: dict[str, set[str]] = {}
         normalized_names = {normalized_artist_identity(name) for name in names}
         for row in matches:
-            if not self.artist_album_allowed({
-                "album_key": row["album_key"],
-                "path": row["album_path"],
-                "compilation": row["compilation"],
-                "artist_name": row["album_artist_name"],
-            }):
-                continue
             if not any(
                 artist_credit_position(
                     credit, name, self.artist_separator_regex
@@ -2134,13 +2120,9 @@ class Catalog:
                 appearance_rows = db.execute(
                     "SELECT albums.*,artists.artist_name AS album_artist "
                     "FROM albums JOIN artists ON artists.artist_key=albums.artist_key "
-                    f"WHERE albums.album_key IN ({appearance_placeholders}) "
-                    "AND TRIM(COALESCE(albums.musicbrainz_albumid,''))<>''",
+                    f"WHERE albums.album_key IN ({appearance_placeholders})",
                     tuple(sorted(appearance_keys)),
                 ).fetchall()
-                appearance_rows = [
-                    row for row in appearance_rows if self.artist_album_allowed(row)
-                ]
             else:
                 appearance_rows = []
             appearance_track_keys = sorted(appearance_keys)
@@ -2157,10 +2139,10 @@ class Catalog:
             top_track_rows = db.execute(
                 "SELECT albums.artist_key,tracks.title,tracks.artist_name,tracks.path "
                 "FROM tracks JOIN albums ON albums.album_key=tracks.album_key "
-                f"WHERE (albums.artist_key IN ({placeholders})"
-                f"{appearance_track_clause}) "
+                f"WHERE ((albums.artist_key IN ({placeholders}) "
                 "AND (COALESCE(albums.compilation,0)=0 "
-                "OR TRIM(COALESCE(albums.musicbrainz_albumid,''))<>'') "
+                "OR TRIM(COALESCE(albums.musicbrainz_albumid,''))<>''))"
+                f"{appearance_track_clause}) "
                 "ORDER BY tracks.title COLLATE NOCASE",
                 tuple(top_track_parameters),
             ).fetchall()
