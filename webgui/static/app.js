@@ -645,7 +645,7 @@ function renderLibraryContents() {
   if (state.libraryMode === "artists") {
     const albumQuery = $("albumSearch").value.trim();
     const matchesByArtist = new Map();
-    if (albumQuery) for (const album of state.albumLibraryMatches) {
+    if (albumQuery) for (const album of state.albumLibraryMatches.filter(artistFileListAlbum)) {
       if (!matchesByArtist.has(album.artist_id)) matchesByArtist.set(album.artist_id, []);
       matchesByArtist.get(album.artist_id).push(album);
     }
@@ -670,6 +670,7 @@ function renderLibraryContents() {
       if (state.artist?.id === artist.id) {
         const matchingIds = new Set(matchingAlbums.map(album => album.id));
         for (const album of state.artist.albums
+          .filter(artistFileListAlbum)
           .filter(item => !albumQuery || matchingIds.has(item.id))
           .sort(compareAlbumTitles)) {
           list.append(albumRow(album, true));
@@ -825,7 +826,15 @@ function artistOverviewAlbums(artist = state.artist, honorSingleAlbum = true) {
     ? [{...(allAlbums.find(album => album.id === state.album.id) || {}), ...state.album,
         cover_found: !!state.album.cover}]
     : allAlbums;
-  return presentedAlbums.sort(compareAlbumTitles);
+  return presentedAlbums.sort((left, right) =>
+    albumPresentationGroup(left, artist) - albumPresentationGroup(right, artist)
+    || (parseInt(right.year, 10) || 0) - (parseInt(left.year, 10) || 0)
+    || compareAlbumTitles(left, right));
+}
+function artistFileListAlbum(album) {
+  // A qualifying Artist keeps V/A and OST appearances in the expanded file
+  // list. Fallback is the only Album class that is never duplicated there.
+  return String(album?.library_group || "") !== "fallback";
 }
 function compareAlbumTitles(left, right) {
   return String(left?.name || "").localeCompare(String(right?.name || ""), undefined, {
@@ -958,9 +967,10 @@ function singleAlbumOverviewActive() {
 }
 
 function albumBannerKind(album, artist) {
-  if (!album.album_mbid) return "compiled";
-  if (album.soundtrack) return "soundtrack";
-  if (album.various_artists) return "various";
+  const group = String(album?.library_group || "");
+  if (["fallback", "misc-curated"].includes(group) || !album.album_mbid) return "compiled";
+  if (group === "soundtracks" || album.soundtrack) return "soundtrack";
+  if (group === "various-artists" || album.various_artists) return "various";
   if (album.featured) return "featuring";
   return "artist";
 }

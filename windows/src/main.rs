@@ -988,6 +988,7 @@ struct ArtistOverviewMetadata {
     featured_album_keys: BTreeSet<String>,
     track_paths_by_album: HashMap<String, Vec<String>>,
     album_ratings: HashMap<String, u32>,
+    album_years: HashMap<String, String>,
     artwork_candidates: Vec<(String, String)>,
     fallback_tracks: Vec<(String, Vec<MediaTrackSnapshot>)>,
 }
@@ -1167,6 +1168,27 @@ fn apply_thumbnail_path_updates(
     changed
 }
 
+fn apply_album_year_updates(
+    app: &mut ApplicationState,
+    album_years: &HashMap<String, String>,
+) -> bool {
+    let mut changed = false;
+    for (album_key, year) in album_years {
+        let year = year.trim();
+        if year.is_empty() {
+            continue;
+        }
+        if let Some(album) = app.library.albums.iter_mut().find(|album| {
+            album.snapshot.album_key.eq_ignore_ascii_case(album_key)
+        }) && album.snapshot.release_year.trim().is_empty()
+        {
+            album.snapshot.release_year = year.to_string();
+            changed = true;
+        }
+    }
+    changed
+}
+
 fn publish_thumbnail_paths(
     state: &Arc<Mutex<ApplicationState>>,
     weak: &slint::Weak<AppWindow>,
@@ -1191,6 +1213,7 @@ fn publish_thumbnail_paths(
         changed = apply_thumbnail_path_updates(&mut app, artist_paths, album_paths, artist_ids);
         if let Some(metadata) = artist_metadata {
             changed = true;
+            changed |= apply_album_year_updates(&mut app, &metadata.album_years);
             if let Some(log) = UI_DEBUG_LOG_HANDLE.get() {
                 let hydrated_tracks = metadata
                     .fallback_tracks
@@ -1935,6 +1958,12 @@ fn refresh_navidrome_thumbnails(
                 let mut artist_ids = Vec::new();
                 let mut artist_metadata = None;
                 let remote_album_catalog = navidrome_album_catalog(&companion, &server_key).await?;
+                let exact_album_years = overview_album_year_updates(
+                    &albums,
+                    &remote_album_catalog,
+                    requested_artist.as_deref(),
+                    &indexed_appearances.album_keys,
+                );
                 for artist in &artists_to_hydrate {
                     let local_artist = requested_artist.as_deref().unwrap_or(artist.name.as_str());
                     artist_ids.push((local_artist.to_string(), artist.id.clone()));
@@ -2078,6 +2107,7 @@ fn refresh_navidrome_thumbnails(
                         let mut featured_album_keys =
                             indexed_appearances.featured_album_keys.clone();
                         let mut album_ratings = HashMap::new();
+                        let mut album_years = exact_album_years.clone();
                         let mut track_paths_by_album = HashMap::new();
                         for local in &albums {
                             if let Some(remote) = match_artist_overview_album(
@@ -2087,6 +2117,11 @@ fn refresh_navidrome_thumbnails(
                                 let key = local.album_key.to_ascii_lowercase();
                                 album_keys.insert(key.clone());
                                 album_ratings.insert(key.clone(), remote.user_rating);
+                                if local.release_year.trim().is_empty()
+                                    && !remote.year.trim().is_empty()
+                                {
+                                    album_years.insert(key.clone(), remote.year.trim().to_string());
+                                }
                                 if let Some(paths) = artist_library
                                     .song_paths_by_album_id
                                     .get(&remote.id.to_ascii_lowercase())
@@ -2194,6 +2229,7 @@ fn refresh_navidrome_thumbnails(
                             featured_album_keys,
                             track_paths_by_album,
                             album_ratings,
+                            album_years,
                             artwork_candidates,
                             fallback_tracks,
                         });
@@ -2206,6 +2242,7 @@ fn refresh_navidrome_thumbnails(
                         artist_key,
                         album_keys: indexed_appearances.album_keys.clone(),
                         featured_album_keys: indexed_appearances.featured_album_keys.clone(),
+                        album_years: exact_album_years,
                         ..ArtistOverviewMetadata::default()
                     });
                 }
@@ -2690,6 +2727,36 @@ fn match_artist_overview_album<'a>(
         });
     let candidate = matches.next()?;
     matches.next().is_none().then_some(candidate)
+}
+
+fn overview_album_year_updates(
+    local_albums: &[ThumbnailAlbumTarget],
+    remote_albums: &[NavidromeAlbum],
+    requested_artist: Option<&str>,
+    appearance_album_keys: &BTreeSet<String>,
+) -> HashMap<String, String> {
+    let Some(requested_artist) = requested_artist.map(str::trim).filter(|value| !value.is_empty())
+    else {
+        return HashMap::new();
+    };
+    local_albums
+        .iter()
+        .filter(|album| album.release_year.trim().is_empty())
+        .filter(|album| !album.album_mbid.trim().is_empty())
+        .filter(|album| {
+            album.artist.trim().eq_ignore_ascii_case(requested_artist)
+                || appearance_album_keys.contains(&album.album_key.to_ascii_lowercase())
+        })
+        .filter_map(|album| {
+            let remote = remote_albums.iter().find(|remote| {
+                remote
+                    .musicbrainz_id
+                    .eq_ignore_ascii_case(album.album_mbid.trim())
+            })?;
+            let year = remote.year.trim();
+            (!year.is_empty()).then(|| (album.album_key.to_ascii_lowercase(), year.to_string()))
+        })
+        .collect()
 }
 
 fn normalized_overview_identity(value: &str) -> String {
@@ -24342,7 +24409,7 @@ mod tests {
     };
     use splined_core::settings::UiPreferences;
     use splined_core::source::navidrome::{NavidromeAlbum, NavidromeArtist};
-    use std::collections::{HashMap, HashSet};
+    use std::collections::{BTreeSet, HashMap, HashSet};
     use std::ffi::OsString;
     use std::fs;
     use std::io::Cursor;
@@ -25324,6 +25391,10 @@ mod tests {
         }
         let mut config = Config::default();
         config.library.music_library = library.to_string_lossy().into_owned();
+        config.library.curated_compilations_path = library
+            .join("Various Artists")
+            .to_string_lossy()
+            .into_owned();
         config.scan.scan_library_dir = config.library.music_library.clone();
         config.scan.cache_dir = directory
             .path()
@@ -26918,6 +26989,86 @@ mod tests {
             Vec::new(),
             artist_ids,
         ));
+    }
+
+    #[test]
+    fn artist_overview_year_hydration_only_fills_blank_album_years() {
+        let snapshot = MediaSnapshot {
+            schema_version: splined_core::media_database::SCHEMA_VERSION,
+            database_path: String::new(),
+            canonical_root: String::new(),
+            local_root: String::new(),
+            albums: vec![MediaAlbumSnapshot {
+                album_key: "gold".to_string(),
+                artist: "Aaron Neville".to_string(),
+                tagged_artist: "Aaron Neville".to_string(),
+                title: "Gold".to_string(),
+                path: r"C:\Music\Aaron Neville\Gold".to_string(),
+                representative_file: String::new(),
+                status: "unprocessed".to_string(),
+                compilation: false,
+                compilation_track_art_eligible: false,
+                compilation_tracks: Vec::new(),
+                track_count: 36,
+                compilation_completed_tracks: 0,
+                release_year: String::new(),
+                artist_mbid: String::new(),
+                album_mbid: "gold-release-id".to_string(),
+                release_group_mbid: String::new(),
+                has_local_artwork: false,
+                local_artwork_files: Vec::new(),
+                cover_path: String::new(),
+                cover_name: String::new(),
+                cover_format: String::new(),
+                cover_width: 0,
+                cover_height: 0,
+                root_files: 0,
+                cover_files: 0,
+                processed_at: None,
+                timeout_until: None,
+                selected_source: None,
+            }],
+        };
+        let mut app = ApplicationState::new(Config::default(), snapshot).unwrap();
+
+        assert!(super::apply_album_year_updates(
+            &mut app,
+            &HashMap::from([("gold".to_string(), "2008".to_string())]),
+        ));
+        assert_eq!(app.library.albums[0].snapshot.release_year, "2008");
+
+        assert!(!super::apply_album_year_updates(
+            &mut app,
+            &HashMap::from([("gold".to_string(), "1999".to_string())]),
+        ));
+        assert_eq!(app.library.albums[0].snapshot.release_year, "2008");
+    }
+
+    #[test]
+    fn artist_overview_year_uses_exact_album_mbid_without_artist_lookup() {
+        let local = super::ThumbnailAlbumTarget {
+            album_key: "gold".to_string(),
+            artist: "Aaron Neville".to_string(),
+            artist_mbid: String::new(),
+            title: "Gold".to_string(),
+            path: r"C:\Music\Aaron Neville\Gold".to_string(),
+            album_mbid: "gold-release-id".to_string(),
+            release_year: String::new(),
+            cover_path: String::new(),
+        };
+        let remote = NavidromeAlbum {
+            musicbrainz_id: "gold-release-id".to_string(),
+            year: "2008".to_string(),
+            ..NavidromeAlbum::default()
+        };
+
+        let years = super::overview_album_year_updates(
+            &[local],
+            &[remote],
+            Some("Rob Wasserman"),
+            &BTreeSet::from(["gold".to_string()]),
+        );
+        assert_eq!(years.get("gold").map(String::as_str), Some("2008"));
     }
 
     #[test]

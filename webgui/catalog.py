@@ -993,15 +993,16 @@ class Catalog:
         return groups
 
     def _projected_track_artists(self, db) -> dict[str, dict[str, object]]:
-        """Project every real per-track credit from every indexed Album.
+        """Project selectable Artists from Artist-library Album credits.
 
-        These are selectable Artist identities, not Album owners. The Album
-        remains stored once under its tagged Album Artist while every credited
-        performer can receive a Featured/Soundtrack/Various/Compilation card.
+        This projection owns membership in the left Artist file list.  The
+        selected Artist's overview uses the separate appearance projection so
+        its V/A, soundtrack, Featured, and curated Album cards remain visible.
         """
         try:
             rows = db.execute(
                 "SELECT albums.album_key,albums.status,albums.path AS album_path,albums.compilation,"
+                "albums.musicbrainz_albumid,"
                 "owners.artist_name AS album_artist,tracks.artist_name,"
                 "tracks.musicbrainz_artistid,tracks.title,tracks.path "
                 "FROM tracks JOIN albums "
@@ -1016,6 +1017,7 @@ class Catalog:
                 rows = db.execute(
                     "SELECT albums.album_key,albums.status,"
                     "albums.path AS album_path,albums.compilation,"
+                    "albums.musicbrainz_albumid,"
                     "owners.artist_name AS album_artist,tracks.artist_name,"
                     "'' AS musicbrainz_artistid,tracks.title,tracks.path "
                     "FROM tracks JOIN albums ON albums.album_key=tracks.album_key "
@@ -1024,10 +1026,16 @@ class Catalog:
                 ).fetchall()
             except sqlite3.OperationalError:
                 return {}
-        result: dict[str, dict[str, object]] = {}
-        for row in rows:
+        album_groups: dict[str, str] = {}
+
+        def library_group(row) -> str:
             album_key = str(row["album_key"])
-            credits = tuple(dict.fromkeys(
+            if album_key not in album_groups:
+                album_groups[album_key] = self.album_library_group(row)
+            return album_groups[album_key]
+
+        def credits(row) -> tuple[str, ...]:
+            return tuple(dict.fromkeys(
                 credit
                 for value in indexed_track_credit_values(
                     str(row["artist_name"] or ""),
@@ -1038,29 +1046,53 @@ class Catalog:
                 for credit in explicit_artist_credits(
                     value, self.artist_separator_regex
                 )
+                if not synthetic_album_artist(credit)
             ))
-            if not credits:
+
+        # Artist Albums establish selectable Artist identities. Categorized
+        # V/A and OST credits can enrich those identities, but cannot create a
+        # new top-level Artist by themselves.
+        eligible_identities: set[str] = set()
+        for row in rows:
+            if library_group(row) != "artist":
                 continue
+            owner = str(row["album_artist"] or "").strip()
+            if owner and not synthetic_album_artist(owner):
+                eligible_identities.add(normalized_artist_identity(owner))
+            eligible_identities.update(
+                normalized_artist_identity(credit) for credit in credits(row)
+            )
+
+        result: dict[str, dict[str, object]] = {}
+        for row in rows:
+            group = library_group(row)
+            if group == "fallback":
+                continue
+            row_credits = credits(row)
             mbids = re.findall(
                 r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
                 r"[0-9a-f]{4}-[0-9a-f]{12}\b",
                 str(row["musicbrainz_artistid"] or ""),
             )
-            for index, credit in enumerate(credits):
-                if synthetic_album_artist(credit):
-                    continue
+            for index, credit in enumerate(row_credits):
                 identity = normalized_artist_identity(credit)
+                if identity not in eligible_identities:
+                    continue
                 projection = result.setdefault(identity, {
                     "artist_key": projected_artist_id(credit),
                     "artist_name": credit,
                     "musicbrainz_artistid": "",
                     "primary_path": "",
                     "album_keys": set(),
+                    "artist_album_keys": set(),
                     "statuses": {},
                 })
-                if len(mbids) == len(credits):
+                if len(mbids) == len(row_credits):
                     projection["musicbrainz_artistid"] = mbids[index].casefold()
+                album_key = str(row["album_key"])
                 projection["album_keys"].add(album_key)
+                if group == "artist":
+                    projection["artist_album_keys"].add(album_key)
                 projection["statuses"][album_key] = str(
                     row["status"] or "unprocessed"
                 )
@@ -1117,6 +1149,7 @@ class Catalog:
                 (
                     value for value in self._projected_track_artists(db).values()
                     if str(value["artist_key"]) == str(artist_id)
+                    and value.get("artist_album_keys")
                 ),
                 None,
             )
@@ -1783,6 +1816,7 @@ class Catalog:
             self._virtual_artist_row(value)
             for identity, value in projected.items()
             if identity not in existing_identities
+            and value.get("artist_album_keys")
         )]
         statuses_by_artist: dict[str, list] = {}
         owned_album_keys: dict[str, set[str]] = {}
@@ -1902,7 +1936,7 @@ class Catalog:
             )
             if self.path_album_grouping_enabled():
                 visible = has_owner_album or bool(
-                    projected.get(identity, {}).get("album_keys")
+                    projected.get(identity, {}).get("artist_album_keys")
                 )
             else:
                 visible = bool(

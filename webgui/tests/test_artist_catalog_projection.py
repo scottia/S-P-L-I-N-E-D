@@ -230,8 +230,8 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
 
             app = PreviewApp(root, database, root, credentials, cache=root / "cache")
             listed = app.artists("")[0]
-            self.assertEqual(listed["albums"], 2)
-            self.assertEqual(listed["status"], "partial")
+            self.assertEqual(listed["albums"], 1)
+            self.assertEqual(listed["status"], "complete")
             artist = app.artist("adele")
             self.assertEqual(
                 [item["id"] for item in artist["albums"]],
@@ -380,7 +380,7 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                 db.commit()
 
             app = PreviewApp(root, database, root, credentials, cache=root / "cache")
-            self.assertEqual(app.artists("")[0]["albums"], 3)
+            self.assertEqual(app.artists("")[0]["albums"], 2)
             artist = app.artist("aaron")
             self.assertEqual(
                 {item["id"] for item in artist["albums"]},
@@ -455,6 +455,10 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                             "Collection Song", "Rob Wasserman", "rob-mbid",
                         ),
                         (
+                            "collection-only", "collection", str(various_album / "guest.mp3"),
+                            "Guest Song", "V/A Only Performer", "guest-mbid",
+                        ),
+                        (
                             "hot-100-rob", "hot-100", str(curated_album / "song.mp3"),
                             "Compilation Song", "Rob Wasserman", "rob-mbid",
                         ),
@@ -478,7 +482,10 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             )
             self.assertNotIn("Rob Wasserman & Aaron Neville", artists)
             self.assertNotIn("Linda Ronstadt & Aaron Neville", artists)
-            self.assertEqual(artists["Rob Wasserman"]["albums"], 4)
+            self.assertNotIn("V/A Only Performer", artists)
+            # Rob qualifies through Gold, then keeps the non-Fallback V/A and
+            # soundtrack appearances in his expanded Artist file list.
+            self.assertEqual(artists["Rob Wasserman"]["albums"], 3)
             rob = app.artist(artists["Rob Wasserman"]["id"])
             self.assertEqual(
                 {item["id"] for item in rob["albums"]},
@@ -754,7 +761,9 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
 
             listed = [item for item in app.artists("") if item["name"].casefold().endswith("nsync")]
             self.assertEqual(len(listed), 1)
-            self.assertEqual(listed[0]["albums"], 6)
+            # The center overview retains the COMP card, while the expanded
+            # Artist file list never counts Fallback.
+            self.assertEqual(listed[0]["albums"], 5)
             self.assertNotIn(
                 "Various Artists",
                 {item["name"] for item in app.artists("")},

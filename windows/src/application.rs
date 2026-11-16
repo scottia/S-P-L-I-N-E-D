@@ -502,19 +502,10 @@ impl LibraryState {
         if let Some((_, _, group)) = explicit.last() {
             return *group;
         }
-        let artist = album
-            .snapshot
-            .artist
-            .trim()
-            .trim_matches(['[', ']'])
-            .to_ascii_lowercase();
-        match artist.as_str() {
-            "various artist" | "various artists" => AlbumLibraryGroup::VariousArtists,
-            "soundtrack" | "soundtracks" => AlbumLibraryGroup::Soundtracks,
-            "" | "unknown" | "unknown artist" => AlbumLibraryGroup::MiscUndefined,
-            _ if album.snapshot.compilation => AlbumLibraryGroup::MiscCurated,
-            _ => AlbumLibraryGroup::Artist,
-        }
+
+        // Configured roots are the sole automatic category authority. An
+        // Album outside those roots is an Artist Album.
+        AlbumLibraryGroup::Artist
     }
 
     fn is_curated_fallback(&self, album: &AlbumEntry) -> bool {
@@ -661,15 +652,51 @@ impl LibraryState {
     }
 
     fn artists(&self) -> BTreeMap<String, Vec<usize>> {
-        let mut values = BTreeMap::<String, Vec<usize>>::new();
         let album_indices = self
             .albums
             .iter()
             .enumerate()
             .map(|(index, album)| (album.snapshot.album_key.to_ascii_lowercase(), index))
             .collect::<HashMap<_, _>>();
+
+        // Artist-path releases establish file-list membership. V/A and OST
+        // appearances may enrich an established Artist but never manufacture
+        // thousands of V/A-only Artist rows.
+        let mut eligible_identities = self
+            .albums
+            .iter()
+            .filter(|album| {
+                !self.category_paths_configured
+                    || self.album_library_group(album) == AlbumLibraryGroup::Artist
+            })
+            .filter(|album| !Self::is_synthetic_album_artist(&album.snapshot.artist))
+            .map(|album| artist_projection_identity(&album.snapshot.artist))
+            .collect::<HashSet<_>>();
+        for (appearance_artist, album_keys) in &self.artist_appearance_album_keys {
+            if Self::is_synthetic_album_artist(appearance_artist) {
+                continue;
+            }
+            let has_artist_album = !self.category_paths_configured
+                || album_keys.iter().any(|album_key| {
+                    album_indices
+                        .get(&album_key.to_ascii_lowercase())
+                        .is_some_and(|index| {
+                            self.album_library_group(&self.albums[*index])
+                                == AlbumLibraryGroup::Artist
+                        })
+                });
+            if has_artist_album {
+                eligible_identities.insert(artist_projection_identity(appearance_artist));
+            }
+        }
+
+        let mut values = BTreeMap::<String, Vec<usize>>::new();
         for (index, album) in self.albums.iter().enumerate() {
-            if Self::is_synthetic_album_artist(&album.snapshot.artist) {
+            if Self::is_synthetic_album_artist(&album.snapshot.artist)
+                || !eligible_identities.contains(&artist_projection_identity(
+                    &album.snapshot.artist,
+                ))
+            {
                 continue;
             }
             values
@@ -682,10 +709,12 @@ impl LibraryState {
             .map(|artist| (artist_projection_identity(artist), artist.clone()))
             .collect::<HashMap<_, _>>();
         for (appearance_artist, album_keys) in &self.artist_appearance_album_keys {
-            if Self::is_synthetic_album_artist(appearance_artist) {
+            let appearance_identity = artist_projection_identity(appearance_artist);
+            if Self::is_synthetic_album_artist(appearance_artist)
+                || !eligible_identities.contains(&appearance_identity)
+            {
                 continue;
             }
-            let appearance_identity = artist_projection_identity(appearance_artist);
             let display = display_names
                 .get(&appearance_identity)
                 .cloned()
@@ -749,7 +778,7 @@ impl LibraryState {
         indices
             .iter()
             .copied()
-            .filter(|index| !Self::is_fallback_album(&self.albums[*index]))
+            .filter(|index| !self.is_curated_fallback(&self.albums[*index]))
             .collect()
     }
 
@@ -1036,7 +1065,7 @@ impl LibraryState {
         if self.show_tracks {
             self.is_curated_fallback(album)
         } else if self.view == LibraryView::Artists {
-            !Self::is_fallback_album(album)
+            !self.is_curated_fallback(album)
         } else if self.view == LibraryView::Albums {
             !self.is_curated_fallback(album)
         } else {
@@ -6267,6 +6296,73 @@ mod tests {
     }
 
     #[test]
+    fn va_ost_split_artists_only_enrich_an_existing_library_artist() {
+        let mut owned = album("owned", "Aaron Neville", "Gold", "unprocessed");
+        owned.path = r"C:\Music\Aaron Neville\Gold".into();
+        owned.album_mbid = "release-owned".into();
+        let mut various = album("various", "Various Artists", "Collection", "unprocessed");
+        various.path = r"C:\Music\Various Artists\Collection".into();
+        various.album_mbid = "release-various".into();
+        let mut soundtrack = album("ost", "Soundtracks", "Film", "unprocessed");
+        soundtrack.path = r"C:\Music\Soundtracks\Film".into();
+        soundtrack.album_mbid = "release-ost".into();
+        let mut fallback = album("fallback", "Various Artists", "Billboard", "unprocessed");
+        fallback.path = r"C:\Music\Various Artists\Billboard\Volume 1".into();
+        fallback.album_mbid = "release-fallback".into();
+
+        let mut state = LibraryState::from_snapshot(MediaSnapshot {
+            schema_version: crate::media_database::SCHEMA_VERSION,
+            database_path: "splined.db".into(),
+            canonical_root: "/music".into(),
+            local_root: r"C:\Music".into(),
+            albums: vec![owned, various, soundtrack, fallback],
+        })
+        .unwrap();
+        let mut config = Config::default();
+        config.library.music_library = r"C:\Music".into();
+        config.library.various_artist_path = r"C:\Music\Various Artists".into();
+        config.library.soundtracks_path = r"C:\Music\Soundtracks".into();
+        config.library.curated_compilations_path =
+            r"C:\Music\Various Artists\Billboard".into();
+        state.configure_library_categories(&config);
+        state.artist_appearance_album_keys.insert(
+            "Rob Wasserman".into(),
+            BTreeSet::from([
+                "owned".into(),
+                "various".into(),
+                "ost".into(),
+                "fallback".into(),
+            ]),
+        );
+        state.artist_appearance_album_keys.insert(
+            "V/A Only Performer".into(),
+            BTreeSet::from(["various".into(), "ost".into()]),
+        );
+
+        let artists = state
+            .rows()
+            .into_iter()
+            .filter(|row| row.kind == "artist")
+            .map(|row| (row.primary, row.album_count))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(artists.get("Rob Wasserman"), Some(&3));
+        assert!(!artists.contains_key("V/A Only Performer"));
+
+        assert!(state.toggle_artist_scope("Rob Wasserman"));
+        let expanded = state
+            .rows()
+            .into_iter()
+            .filter(|row| row.kind == "album-child")
+            .map(|row| row.key)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            expanded,
+            BTreeSet::from(["owned".into(), "various".into(), "ost".into()])
+        );
+        assert!(!expanded.contains("fallback"));
+    }
+
+    #[test]
     fn artist_file_list_prefers_tagged_owner_over_folder_safe_alias() {
         let mut release = album("back", "AC/DC", "Back in Black", "processed");
         release.album_mbid = "release-acdc".into();
@@ -7743,7 +7839,10 @@ mod tests {
             .artist_overview_album_keys
             .extend(["fresh", "done", "bypassed", "timeout", "comp"].map(str::to_string));
 
-        assert_eq!(state.library.select_all_for_review(), 4);
+        // Missing Album MBID alone no longer makes an Album Fallback. With no
+        // distinct Curated root this Album remains visible in Artist scope,
+        // although only the four identified releases are launchable.
+        assert_eq!(state.library.select_all_for_review(), 5);
         assert!(state.library.artist_run_scope_active);
         state.artist_bulk_reprocess_requested = true;
         state.select_artist_appearances_for_run();
@@ -7756,7 +7855,7 @@ mod tests {
         assert_eq!(all_keys, vec!["bypassed", "done", "fresh", "timeout"]);
 
         state.library.set_artist_filter("Alpha");
-        assert_eq!(state.library.select_filtered_for_review().unwrap(), 4);
+        assert_eq!(state.library.select_filtered_for_review().unwrap(), 5);
         assert!(state.library.artist_run_scope_active);
         let mut filtered_keys = state
             .launch_targets()
