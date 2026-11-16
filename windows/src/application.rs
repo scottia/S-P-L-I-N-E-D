@@ -806,15 +806,22 @@ impl LibraryState {
                 || self.album_library_group(album) == AlbumLibraryGroup::Artist
         };
 
-        // WebGUI starts with the complete Navidrome Artist catalog as its
-        // real-name authority. Use that same boundary here: an '&' in a
-        // catalog Artist such as AC/DC, Brooks & Dunn, or Earth, Wind & Fire
-        // is part of the name. A joined credit is expanded only when it is an
-        // explicit multi-value tag or resolves to independently known Artists.
-        let remote_identities = self
-            .artist_navidrome_ids
-            .keys()
-            .map(|name| artist_projection_identity(name))
+        // Artist membership is an indexed catalog decision. Navidrome may
+        // supply artwork and IDs later, but asynchronous provider hydration
+        // must never add, remove, or regroup file-list rows. A joined credit
+        // is expanded only when SQLite already contains independent evidence
+        // for one of its component Artists.
+        let indexed_identities = self
+            .albums
+            .iter()
+            .filter(|album| !Self::is_synthetic_album_artist(&album.snapshot.artist))
+            .map(|album| artist_projection_identity(&album.snapshot.artist))
+            .chain(
+                self.artist_appearance_album_keys
+                    .keys()
+                    .filter(|artist| !Self::is_synthetic_album_artist(artist))
+                    .map(|artist| artist_projection_identity(artist)),
+            )
             .collect::<HashSet<_>>();
 
         let mut owner_projections = HashMap::<usize, Vec<String>>::new();
@@ -831,13 +838,11 @@ impl LibraryState {
             let owner = album.snapshot.artist.clone();
             let parts = Self::potential_collaboration_credits(&owner);
             let authoritative = owner.contains(['\0', '\x1f']);
-            let owner_is_remote = remote_identities.contains(&artist_projection_identity(&owner));
-            let independently_known = parts
-                .iter()
-                .any(|part| remote_identities.contains(&artist_projection_identity(part)));
-            let projection = if parts.len() > 1
-                && (authoritative || (!owner_is_remote && independently_known))
-            {
+            let independently_known = parts.iter().any(|part| {
+                let identity = artist_projection_identity(part);
+                indexed_identities.contains(&identity)
+            });
+            let projection = if parts.len() > 1 && (authoritative || independently_known) {
                 parts
             } else {
                 vec![owner]
@@ -869,19 +874,16 @@ impl LibraryState {
             }
             let parts = Self::potential_collaboration_credits(appearance_artist);
             let authoritative = appearance_artist.contains(['\0', '\x1f']);
-            let appearance_is_remote =
-                remote_identities.contains(&artist_projection_identity(appearance_artist));
             let appearance_has_single_mbid = self
                 .artist_appearance_musicbrainz_ids
                 .get(&appearance_artist.trim().to_ascii_lowercase())
                 .is_some_and(|value| !value.trim().is_empty());
             let anchored = parts.iter().any(|part| {
                 let identity = artist_projection_identity(part);
-                remote_identities.contains(&identity) || eligible_identities.contains(&identity)
+                indexed_identities.contains(&identity) || eligible_identities.contains(&identity)
             });
             let projection = if parts.len() > 1
-                && (authoritative
-                    || (!appearance_is_remote && !appearance_has_single_mbid && anchored))
+                && (authoritative || (!appearance_has_single_mbid && anchored))
             {
                 parts
             } else {
@@ -907,7 +909,6 @@ impl LibraryState {
         for appearance_artist in self.artist_appearance_album_keys.keys() {
             let parts = Self::potential_collaboration_credits(appearance_artist);
             let authoritative = appearance_artist.contains(['\0', '\x1f']);
-            let appearance_identity = artist_projection_identity(appearance_artist);
             let appearance_has_single_mbid = self
                 .artist_appearance_musicbrainz_ids
                 .get(&appearance_artist.trim().to_ascii_lowercase())
@@ -915,7 +916,6 @@ impl LibraryState {
             let expanded = parts.len() > 1
                 && (authoritative
                     || (!appearance_has_single_mbid
-                        && !remote_identities.contains(&appearance_identity)
                         && parts.iter().any(|part| {
                             eligible_identities.contains(&artist_projection_identity(part))
                         })));
@@ -960,7 +960,6 @@ impl LibraryState {
             }
             let parts = Self::potential_collaboration_credits(appearance_artist);
             let authoritative = appearance_artist.contains(['\0', '\x1f']);
-            let appearance_identity = artist_projection_identity(appearance_artist);
             let appearance_has_single_mbid = self
                 .artist_appearance_musicbrainz_ids
                 .get(&appearance_artist.trim().to_ascii_lowercase())
@@ -968,7 +967,6 @@ impl LibraryState {
             let expanded = parts.len() > 1
                 && (authoritative
                     || (!appearance_has_single_mbid
-                        && !remote_identities.contains(&appearance_identity)
                         && parts.iter().any(|part| {
                             eligible_identities.contains(&artist_projection_identity(part))
                         })));
@@ -6685,6 +6683,40 @@ mod tests {
             BTreeSet::from(["owned".into(), "various".into(), "ost".into()])
         );
         assert!(!expanded.contains("fallback"));
+    }
+
+    #[test]
+    fn navidrome_hydration_never_regroups_indexed_artist_rows() {
+        let mut solo = album("solo", "Alpha", "Solo", "unprocessed");
+        solo.album_mbid = "release-solo".into();
+        let mut collaboration = album("duet", "Alpha & Beta", "Duet", "unprocessed");
+        collaboration.album_mbid = "release-duet".into();
+        let mut state = LibraryState::from_snapshot(MediaSnapshot {
+            schema_version: crate::media_database::SCHEMA_VERSION,
+            database_path: "splined.db".into(),
+            canonical_root: "/music".into(),
+            local_root: r"C:\Music".into(),
+            albums: vec![solo, collaboration],
+        })
+        .unwrap();
+
+        let before = state
+            .rows()
+            .into_iter()
+            .filter(|row| row.kind == "artist")
+            .map(|row| row.primary)
+            .collect::<Vec<_>>();
+        state.set_artist_navidrome_id("Alpha & Beta", "remote-collaboration");
+        state.set_artist_navidrome_id("Alpha", "remote-alpha");
+        state.set_artist_navidrome_id("Beta", "remote-beta");
+        let after = state
+            .rows()
+            .into_iter()
+            .filter(|row| row.kind == "artist")
+            .map(|row| row.primary)
+            .collect::<Vec<_>>();
+
+        assert_eq!(after, before);
     }
 
     #[test]
