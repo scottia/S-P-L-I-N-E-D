@@ -4024,17 +4024,17 @@ export component AppWindow inherits Window {
                     if root.backup-selected-type == "Backup SQLite Database Snapshots": PathSettingField { label: "Backup Directory"; value <=> root.snapshot-backup-directory; hint: "Authoritative reconciliation snapshot directory"; browse => root.browse-backup-directory("snapshot"); }
                     HorizontalLayout { height: (38px * AppTheme.ui-scale); spacing: (8px * AppTheme.ui-scale);
                         Label { text: "Schedule"; width: (230px * AppTheme.ui-scale); }
-                        ComboBox {
-                            horizontal-stretch: 1; model: ["Off", "Daily", "Weekly", "Monthly"];
-                            current-value: root.backup-selected-type == "Backup SQLite Database" ? root.database-backup-schedule : (root.backup-selected-type == "Backup .JSON Diagnostic Summaries" ? root.diagnostics-backup-schedule : (root.backup-selected-type == "Backup SQLite Database Snapshots" ? root.snapshot-backup-schedule : root.backup-schedule));
-                            selected(value) => { if (root.backup-selected-type == "Backup SQLite Database") { root.database-backup-schedule = value; } else if (root.backup-selected-type == "Backup .JSON Diagnostic Summaries") { root.diagnostics-backup-schedule = value; } else if (root.backup-selected-type == "Backup SQLite Database Snapshots") { root.snapshot-backup-schedule = value; } else { root.backup-schedule = value; } }
-                        }
+                        if root.backup-selected-type == "Backup Saved Settings": ComboBox { horizontal-stretch: 1; model: ["Off", "Daily", "Weekly", "Monthly"]; current-value <=> root.backup-schedule; }
+                        if root.backup-selected-type == "Backup SQLite Database": ComboBox { horizontal-stretch: 1; model: ["Off", "Daily", "Weekly", "Monthly"]; current-value <=> root.database-backup-schedule; }
+                        if root.backup-selected-type == "Backup .JSON Diagnostic Summaries": ComboBox { horizontal-stretch: 1; model: ["Off", "Daily", "Weekly", "Monthly"]; current-value <=> root.diagnostics-backup-schedule; }
+                        if root.backup-selected-type == "Backup SQLite Database Snapshots": ComboBox { horizontal-stretch: 1; model: ["Off", "Daily", "Weekly", "Monthly"]; current-value <=> root.snapshot-backup-schedule; }
                     }
                     HorizontalLayout { height: (38px * AppTheme.ui-scale); spacing: (8px * AppTheme.ui-scale);
                         Label { text: "Max Files"; width: (230px * AppTheme.ui-scale); }
-                        LineEdit { horizontal-stretch: 1; text: root.backup-selected-type == "Backup SQLite Database" ? root.max-database-backup-files : (root.backup-selected-type == "Backup .JSON Diagnostic Summaries" ? root.max-diagnostic-backup-files : (root.backup-selected-type == "Backup SQLite Database Snapshots" ? root.max-snapshot-backup-files : root.max-settings-backup-files)); placeholder-text: "0 = Keep All";
-                            edited(value) => { if (root.backup-selected-type == "Backup SQLite Database") { root.max-database-backup-files = value; } else if (root.backup-selected-type == "Backup .JSON Diagnostic Summaries") { root.max-diagnostic-backup-files = value; } else if (root.backup-selected-type == "Backup SQLite Database Snapshots") { root.max-snapshot-backup-files = value; } else { root.max-settings-backup-files = value; } }
-                        }
+                        if root.backup-selected-type == "Backup Saved Settings": LineEdit { horizontal-stretch: 1; text <=> root.max-settings-backup-files; placeholder-text: "0 = Keep All"; }
+                        if root.backup-selected-type == "Backup SQLite Database": LineEdit { horizontal-stretch: 1; text <=> root.max-database-backup-files; placeholder-text: "0 = Keep All"; }
+                        if root.backup-selected-type == "Backup .JSON Diagnostic Summaries": LineEdit { horizontal-stretch: 1; text <=> root.max-diagnostic-backup-files; placeholder-text: "0 = Keep All"; }
+                        if root.backup-selected-type == "Backup SQLite Database Snapshots": LineEdit { horizontal-stretch: 1; text <=> root.max-snapshot-backup-files; placeholder-text: "0 = Keep All"; }
                     }
                     SettingsHelpTip { summary: "How do independent schedules and retention work?"; detail: "Each type owns its directory, schedule and Max Files value. Zero keeps all matching files. Retention manages only timestamped SPLINED files of that type inside that directory and never removes unrelated files."; }
                     if root.backup-selected-type == "Backup Saved Settings": VerticalLayout { spacing: (7px * AppTheme.ui-scale);
