@@ -61,9 +61,20 @@ fn migrate_config_path(path: &Path) -> Result<MigrationReport, String> {
         .get("scan")
         .and_then(toml::Value::as_table)
         .is_some_and(|scan| scan.contains_key("cache_dir"));
+    let had_amazon_policy = current
+        .get("source_policies")
+        .and_then(toml::Value::as_table)
+        .is_some_and(|policies| policies.contains_key("amazon"));
 
     let mut added_keys = Vec::new();
     merge_missing(&mut current, &defaults, "", &mut added_keys)?;
+
+    // Amazon is enabled for a brand-new Setup, but an upgrade must not
+    // silently activate a provider that the existing installation never
+    // configured.
+    if from_version < CURRENT_CONFIG_VERSION && !had_amazon_policy {
+        current["source_policies"]["amazon"]["enabled"] = toml::Value::Boolean(false);
+    }
 
     if from_version < 3 {
         move_library_scan_to_scan(&mut current)?;

@@ -69,6 +69,26 @@ impl AmazonStore {
         }
         Ok(parsed.references)
     }
+
+    /// Amazon's public popular-music search can also return primary Artist
+    /// imagery. This remains best effort and uses the same guarded parser as
+    /// Album discovery.
+    pub async fn discover_artist(&self, artist: &str) -> Result<Vec<ArtworkReference>, String> {
+        let artist = artist.trim();
+        if artist.is_empty() {
+            return Ok(Vec::new());
+        }
+        let context = ProviderContext {
+            release_title: artist.to_string(),
+            ..ProviderContext::default()
+        };
+        let mut references = self.search(&context).await?;
+        for reference in &mut references {
+            reference.front = false;
+            reference.types = vec!["ArtistImage".to_string()];
+        }
+        Ok(references)
+    }
 }
 
 impl ArtworkProvider for AmazonStore {

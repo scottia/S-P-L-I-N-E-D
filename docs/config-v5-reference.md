@@ -21,11 +21,14 @@ WebGUI reads the file selected by `SPLINED_CONFIG`, normally
 `/config/config.toml` in a container. All WebGUI paths are server-visible paths;
 they are not paths on the browser computer. Relative values resolve from the
 directory containing the active Config v5 file. Windows stores the same
-validated document at `<portable root>/data/config.toml` and interface state at
-`<portable root>/data/ui.toml`. There is no Registry authority for either file.
+validated document at `<portable root>/config.toml` and interface state at
+`<portable root>/ui.toml` by default. An install-scoped
+`configuration-location.toml` can point to a user-selected Configuration Path,
+and legacy `<portable root>/data/config.toml` remains discoverable. There is no
+Registry authority for either file.
 
 Packaged Windows stores the same files beneath
-`%LOCALAPPDATA%\Packages\<package-family>\LocalState\SPLINED\data`. No Registry
+`%LOCALAPPDATA%\Packages\<package-family>\LocalState\SPLINED`. No Registry
 value or migration marker is an active configuration authority. If Config v5
 is missing or cannot be loaded, structured Setup opens; SPLINED does not
 substitute `Config::default()` and present an initialized workspace.
@@ -444,7 +447,7 @@ Legacy `[splineai]` remains a compatibility concern for existing installations;
 
 ## Windows portable interface settings
 
-Windows interface state is stored in `data/ui.toml` beside the portable Config
+Windows interface state is stored in `ui.toml` beside the active Config
 v5 record. It contains window dimensions and non-authoritative interface
 preferences such as the library view, status filter, and bypass visibility. It
 does not change provider policy, credentials, the media database, or
@@ -454,7 +457,7 @@ authority.
 ## Validation
 
 Windows structured Settings projects controls into the Rust Config model,
-validates the complete model, atomically replaces `data/config.toml`, and
+validates the complete model, atomically replaces the active `config.toml`, and
 reloads application state. Config v5 remains the sole configuration authority;
 Slint does not keep a parallel settings document. Native and WebGUI/container
 implementations also validate Config v5; use the container example for
@@ -462,5 +465,5 @@ container-specific paths.
 
 The Windows portable release contains one `splined.exe`. A user-approved
 production update uses the signed standard update package. Application updates
-never target `data/config.toml`, `data/ui.toml`, credentials, SQLite/history,
+never target the active `config.toml`, `ui.toml`, credentials, SQLite/history,
 caches, or logs.

@@ -29,9 +29,10 @@ choices are explicitly saved, the application creates:
 
 ```text
 SPLINED\
-  data\
-    config.toml
-    ui.toml
+  splined.exe
+  config.toml
+  ui.toml
+  configuration-location.toml  (only when Configuration Path is relocated)
 ```
 
 These files are the only Config v5 and interface-state authority. Process CWD
@@ -41,7 +42,7 @@ the complete directory carries portable settings. Deleting it removes
 SPLINED-owned settings.
 
 No Registry value is consulted as current or migration authority. An existing
-`data\config.toml` is discovered automatically; the user is never asked to
+legacy `data\config.toml` is discovered automatically; the user is never asked to
 browse to it. If that file is missing, invalid, or operationally incomplete,
 Setup displays the real error instead of silently continuing with defaults.
 
@@ -77,7 +78,7 @@ Setup displays the real error instead of silently continuing with defaults.
 
 As an alternative to typing an existing configuration, double-click an
 unprotected `.spl` backup. Portable SPLINED imports its Config v5 settings into
-`data\config.toml` before startup. When that archive has shared SQLite enabled
+the active `config.toml` before startup. When that archive has shared SQLite enabled
 but the optional Windows `.client-lock` disabled, SPLINED asks Yes/No whether
 to enable the extra lock; No leaves it off. An unavailable archive path opens
 Setup with the imported fields for correction rather than preventing the app
@@ -99,10 +100,11 @@ payload is the same x64 Rust/Slint `splined.exe`.
 
 Because an MSIX installation directory is read-only, Config v5 and interface
 state live under
-`%LOCALAPPDATA%\Packages\<package-family>\LocalState\SPLINED\data`. Configured
+`%LOCALAPPDATA%\Packages\<package-family>\LocalState\SPLINED`. Configured
 absolute, mapped, and UNC resources remain unchanged. This differs from the
 portable ZIP above, which requires no package installation and keeps its
-root-relative state under `<portable-root>\data`.
+root-relative state under `<portable-root>` unless Setup selects another
+Configuration Path.
 
 Maintainer packaging, validation, Store submission, and exact-tag recovery are
 documented in the [release automation guide](release-automation.md). See the

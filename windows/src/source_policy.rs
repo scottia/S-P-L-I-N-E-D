@@ -114,7 +114,7 @@ impl SourcePolicyConfig {
 pub fn default_artist_art_search(source: &str) -> bool {
     matches!(
         source.trim().to_ascii_lowercase().as_str(),
-        "local" | "navidrome" | "fanarttv" | "lastfm" | "deezer" | "discogs" | "itunes"
+        "local" | "navidrome" | "fanarttv" | "lastfm" | "deezer" | "discogs" | "itunes" | "amazon"
     )
 }
 
@@ -328,7 +328,7 @@ mod tests {
         let policy = SourcePolicyConfig::default();
         assert!(policy.includes_artist_art("itunes"));
         assert!(policy.includes_artist_art("navidrome"));
-        assert!(!policy.includes_artist_art("amazon"));
+        assert!(policy.includes_artist_art("amazon"));
         assert!(!policy.includes_artist_art("coverartarchive"));
     }
 

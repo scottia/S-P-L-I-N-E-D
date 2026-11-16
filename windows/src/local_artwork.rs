@@ -683,12 +683,12 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn embedded_preview_cache_is_owned_by_the_portable_data_directory() {
+    fn embedded_preview_cache_is_owned_by_the_active_configuration_directory() {
         let root = PathBuf::from(r"E:\SPLINED");
         let layout = crate::portable::AppLayout::from_root(root.clone());
         assert_eq!(
             layout.config_dir.join("preview-cache"),
-            root.join("data").join("preview-cache")
+            root.join("preview-cache")
         );
     }
 
