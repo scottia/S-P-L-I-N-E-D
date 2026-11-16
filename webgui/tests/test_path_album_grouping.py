@@ -1,4 +1,6 @@
 from pathlib import Path
+from contextlib import closing
+import sqlite3
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
@@ -127,6 +129,86 @@ class PathAlbumGroupingTests(unittest.TestCase):
                     "artist_name": "Various Artists",
                     "compilation": True,
                 }))
+
+    def test_album_override_wins_over_root_and_can_restore_automatic_grouping(self):
+        with TemporaryDirectory() as directory:
+            music = Path(directory) / "music"
+            various = music / "[Various Artists]"
+            album = various / "Artist Release"
+            album.mkdir(parents=True)
+            catalog = Catalog(
+                music,
+                Path(directory) / "unused.db",
+                Path(directory),
+                Path(directory),
+                various_artist_path=various,
+                soundtracks_path=music,
+                curated_compilations_path=music,
+            )
+            row = {
+                "album_key": "album-1",
+                "path": str(album),
+                "artist_name": "Actual Artist",
+                "compilation": False,
+            }
+
+            self.assertEqual(catalog.album_library_group(row), "various-artists")
+            catalog.category_overrides["album-1"] = "artist"
+            self.assertEqual(catalog.album_library_group(row), "artist")
+            self.assertTrue(catalog.artist_album_allowed(row))
+            catalog.category_overrides["album-1"] = "soundtracks"
+            self.assertEqual(catalog.album_library_group(row), "soundtracks")
+            catalog.category_overrides.pop("album-1")
+            self.assertEqual(catalog.album_library_group(row), "various-artists")
+
+    def test_album_override_is_persisted_without_scanning_media(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            music = root / "music"
+            various = music / "[Various Artists]"
+            album = various / "Artist Release"
+            album.mkdir(parents=True)
+            database = root / "catalog.db"
+            with closing(sqlite3.connect(database)) as db, db:
+                db.executescript(
+                    "CREATE TABLE artists(artist_key TEXT PRIMARY KEY,artist_name TEXT);"
+                    "CREATE TABLE albums(album_key TEXT PRIMARY KEY,artist_key TEXT,path TEXT,"
+                    "compilation INTEGER,musicbrainz_albumid TEXT);"
+                    "CREATE TABLE album_category_overrides(album_key TEXT PRIMARY KEY,"
+                    "category TEXT,updated_at TEXT);"
+                )
+                db.execute("INSERT INTO artists VALUES('artist-1','Actual Artist')")
+                db.execute(
+                    "INSERT INTO albums VALUES('album-1','artist-1',?,0,'release-id')",
+                    (str(album),),
+                )
+
+            def connect():
+                connection = sqlite3.connect(database)
+                connection.row_factory = sqlite3.Row
+                return connection
+
+            catalog = Catalog(
+                music, database, root, root,
+                various_artist_path=various,
+                soundtracks_path=music,
+                curated_compilations_path=music,
+            )
+            with patch.object(catalog, "connect", side_effect=connect):
+                result = catalog.set_album_category("album-1", "artist")
+            self.assertEqual(result["library_group"], "artist")
+
+            restarted = Catalog(
+                music, database, root, root,
+                various_artist_path=various,
+                soundtracks_path=music,
+                curated_compilations_path=music,
+            )
+            with patch.object(restarted, "connect", side_effect=connect):
+                restarted.reload_category_overrides()
+                restored = restarted.set_album_category("album-1", "")
+            self.assertEqual(restarted.category_overrides, {})
+            self.assertEqual(restored["library_group"], "various-artists")
 
 
 if __name__ == "__main__":

@@ -234,6 +234,7 @@ class Database:
             "catalog_index_state",
             "catalog_generations",
             "artist_album_appearances",
+            "album_category_overrides",
             "artist_profiles",
             "comp_track_write_coordination",
             "album_artwork_write_coordination",

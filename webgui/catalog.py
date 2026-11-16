@@ -340,6 +340,7 @@ class Catalog:
     various_artist_path: Path | None = None
     soundtracks_path: Path | None = None
     curated_compilations_path: Path | None = None
+    category_overrides: dict[str, str] = field(default_factory=dict)
     comp_thumbnail_side: int = 1200
     allow_comp_repairs: bool = False
     cover_stem: str = "cover"
@@ -414,6 +415,14 @@ class Catalog:
 
     def album_library_group(self, row) -> str:
         """Return the single top-level/category placement for one Album."""
+        keys = set(row.keys()) if hasattr(row, "keys") else set(row)
+        album_key = str(row["album_key"] or "") if "album_key" in keys else ""
+        override = self.category_overrides.get(album_key, "")
+        if override in {
+            "artist", "various-artists", "soundtracks", "fallback",
+            "misc-curated", "misc-undefined",
+        }:
+            return override
         if all(
             value is None
             for value in (
@@ -422,14 +431,12 @@ class Catalog:
                 self.curated_compilations_path,
             )
         ):
-            keys = set(row.keys()) if hasattr(row, "keys") else set(row)
             return (
                 "fallback"
                 if "musicbrainz_albumid" in keys
                 and not str(row["musicbrainz_albumid"] or "").strip()
                 else "artist"
             )
-        keys = set(row.keys()) if hasattr(row, "keys") else set(row)
         folder = Path(str(row["path"] or ""))
         explicit = []
         for priority, (group, configured) in enumerate((
@@ -454,6 +461,69 @@ class Catalog:
         if not artist or artist in {"unknown", "unknownartist"}:
             return "misc-undefined"
         return "artist"
+
+    def reload_category_overrides(self) -> dict[str, str]:
+        """Load the small operator exception map once, outside Album list loops."""
+        try:
+            with closing(self.connect()) as db:
+                rows = db.execute(
+                    "SELECT album_key,category FROM album_category_overrides"
+                ).fetchall()
+        except (sqlite3.OperationalError, sqlite3.DatabaseError):
+            rows = []
+        loaded = {
+            str(row["album_key"]): str(row["category"])
+            for row in rows
+        }
+        with self.lock:
+            self.category_overrides = loaded
+        return dict(loaded)
+
+    def set_album_category(self, album_id: str, category: str) -> dict[str, object]:
+        """Persist one explicit Album placement without changing tags or rescanning."""
+        album_id = str(album_id or "").strip()
+        category = str(category or "").strip().casefold()
+        allowed = {
+            "artist", "various-artists", "soundtracks", "fallback",
+            "misc-curated", "misc-undefined",
+        }
+        if not album_id:
+            raise ValueError("Choose an Album to categorize")
+        if category and category not in allowed:
+            raise ValueError("Choose a supported Album category")
+        with closing(self.connect()) as db, db:
+            row = db.execute(
+                "SELECT albums.album_key,albums.path,albums.compilation,"
+                "albums.musicbrainz_albumid,artists.artist_name "
+                "FROM albums JOIN artists ON artists.artist_key=albums.artist_key "
+                "WHERE albums.album_key=?",
+                (album_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError("Album not found")
+            if category:
+                db.execute(
+                    "INSERT INTO album_category_overrides(album_key,category,updated_at) "
+                    "VALUES(?,?,CURRENT_TIMESTAMP) "
+                    "ON CONFLICT(album_key) DO UPDATE SET "
+                    "category=excluded.category,updated_at=CURRENT_TIMESTAMP",
+                    (album_id, category),
+                )
+            else:
+                db.execute(
+                    "DELETE FROM album_category_overrides WHERE album_key=?",
+                    (album_id,),
+                )
+        with self.lock:
+            if category:
+                self.category_overrides[album_id] = category
+            else:
+                self.category_overrides.pop(album_id, None)
+        return {
+            "id": album_id,
+            "category_override": category,
+            "library_group": self.album_library_group(row),
+        }
 
     def artist_album_allowed(self, row) -> bool:
         """Artist cards contain only Artist releases and their track credits."""
@@ -955,6 +1025,7 @@ class Catalog:
             album_key = str(row["album_key"])
             if album_key not in allowed_albums:
                 allowed_albums[album_key] = self.artist_album_allowed({
+                    "album_key": album_key,
                     "path": row["album_path"],
                     "compilation": row["compilation"],
                     "artist_name": row["album_artist"],
@@ -1361,6 +1432,7 @@ class Catalog:
         eligible = [
             row for row in rows
             if self.artist_album_allowed({
+                "album_key": row["album_key"],
                 "path": row["path"],
                 "compilation": row["compilation"],
                 "artist_name": row["album_artist_name"],
@@ -1447,6 +1519,7 @@ class Catalog:
         normalized_names = {normalized_artist_identity(name) for name in names}
         for row in matches:
             if not self.artist_album_allowed({
+                "album_key": row["album_key"],
                 "path": row["album_path"],
                 "compilation": row["compilation"],
                 "artist_name": row["album_artist_name"],
@@ -2016,6 +2089,7 @@ class Catalog:
                 "status": row["status"], "compilation": bool(row["compilation"]),
                 "album_mbid": row["musicbrainz_albumid"] or "",
                 "library_group": group,
+                "category_override": self.category_overrides.get(album_key, ""),
                 "library_category": {
                     "various-artists": "Various Artists",
                     "soundtracks": "Soundtracks",
@@ -2154,6 +2228,7 @@ class Catalog:
             cover = self.album_cover_path(row)
             override = coordination.get(str(row["album_key"]), {})
             library_group = self.album_library_group({
+                "album_key": row["album_key"],
                 "path": row["path"],
                 "compilation": row["compilation"],
                 "artist_name": row["album_artist"],
@@ -2171,6 +2246,9 @@ class Catalog:
                     if "embedded_validation_status" in row else "unknown",
                 "album_mbid": row["musicbrainz_albumid"] or "",
                 "library_group": library_group,
+                "category_override": self.category_overrides.get(
+                    str(row["album_key"]), ""
+                ),
                 "fallback": library_group == "fallback",
                 "year": row["release_year"] or "",
                 "soundtrack": bool(row["musicbrainz_albumid"]) and (
@@ -2246,13 +2324,15 @@ class Catalog:
             for item in track_rows
             if inside(Path(item["path"]), folder)
         ]
+        library_group = self.album_library_group(row)
         return {
             "id": album_id, "name": row["album_name"], "status": row["status"],
             "artist_id": row["artist_key"], "artist_name": row["artist_name"],
             "tracks": row["track_count"], "compilation": bool(row["compilation"]),
             "album_mbid": row["musicbrainz_albumid"] or "", "year": row["release_year"] or "",
-            "library_group": self.album_library_group(row),
-            "fallback": self.album_library_group(row) == "fallback",
+            "library_group": library_group,
+            "category_override": self.category_overrides.get(album_id, ""),
+            "fallback": library_group == "fallback",
             "embedded": int(row["embedded_tracks"] or 0) if "embedded_tracks" in row.keys() else 0,
             "embedded_validation": str(row["embedded_validation_status"] or "unknown")
                 if "embedded_validation_status" in row else "unknown",
@@ -2269,7 +2349,7 @@ class Catalog:
     def fallback_tracks(self, album_id: str) -> list[dict[str, object]]:
         with closing(self.connect()) as db:
             album = db.execute(
-                "SELECT albums.path,albums.compilation,albums.musicbrainz_albumid,"
+                "SELECT albums.album_key,albums.path,albums.compilation,albums.musicbrainz_albumid,"
                 "artists.artist_name FROM albums JOIN artists ON "
                 "artists.artist_key=albums.artist_key WHERE albums.album_key=?",
                 (album_id,),
@@ -2345,7 +2425,7 @@ class Catalog:
         """Read one recorded embedded thumbnail for a lazy fallback album card."""
         with closing(self.connect()) as db:
             row = db.execute(
-                "SELECT albums.path AS album_path,albums.path,albums.compilation,"
+                "SELECT albums.album_key,albums.path AS album_path,albums.path,albums.compilation,"
                 "albums.musicbrainz_albumid,artists.artist_name,tracks.path AS track_path "
                 "FROM albums JOIN tracks ON tracks.album_key=albums.album_key "
                 "JOIN artists ON artists.artist_key=albums.artist_key "

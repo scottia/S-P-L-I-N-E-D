@@ -1004,6 +1004,22 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
         services = context.require()
         return services.catalog.album(id)
 
+    @app.post("/api/album/category")
+    def set_album_category(payload: dict):
+        services = context.require()
+        album_id = str(payload.get("id", ""))
+        category = str(payload.get("category", ""))
+        result = services.catalog.set_album_category(album_id, category)
+        services.audit(
+            "album-category-override",
+            album_id,
+            {"category": result["category_override"] or "automatic"},
+            scope={"album_id": album_id},
+            stage="catalog",
+            request_status="completed",
+        )
+        return result
+
     @app.get("/api/album/embedded-status")
     def album_embedded_status(id: str):
         return context.require().validate_album_embedding(id)

@@ -834,6 +834,70 @@ function compareAlbumTitles(left, right) {
     sensitivity: "base", numeric: true,
   });
 }
+const ALBUM_CATEGORY_CHOICES = [
+  ["", "Automatic (use configured roots)"],
+  ["artist", "Artist"],
+  ["various-artists", "Various Artists"],
+  ["soundtracks", "Soundtracks"],
+  ["fallback", "Curated Compilations"],
+  ["misc-curated", "Miscellaneous Curated"],
+  ["misc-undefined", "Miscellaneous Undefined"],
+];
+function albumCategoryLabel(value) {
+  return ALBUM_CATEGORY_CHOICES.find(([key]) => key === String(value || ""))?.[1]
+    || "Automatic (use configured roots)";
+}
+async function saveAlbumCategory(album, category, saveButton) {
+  saveButton.disabled = true;
+  setStatus("Moving " + album.name + "…", "busy");
+  try {
+    const result = await post("/api/album/category", {id: album.id, category});
+    for (const item of state.albumsIndex) if (item.id === album.id) Object.assign(item, result);
+    for (const item of state.artist?.albums || []) if (item.id === album.id) Object.assign(item, result);
+    if (state.album?.id === album.id) Object.assign(state.album, result);
+    $("workspaceDialog").close();
+    const query = state.libraryMode === "artists" ? $("artistSearch").value : $("albumSearch").value;
+    await loadLibrary(query);
+    if (state.libraryMode === "artists" && state.artist?.id) {
+      state.artist = await api("/api/artist?id=" + encodeURIComponent(state.artist.id));
+      renderAll();
+    }
+    setStatus(category
+      ? album.name + " moved to " + albumCategoryLabel(category)
+      : album.name + " restored to automatic root grouping");
+  } catch (error) {
+    saveButton.disabled = false;
+    setErrorStatus(error);
+  }
+}
+function openAlbumCategoryDialog(album) {
+  $("dialogTitle").textContent = "Move Album";
+  const body = $("dialogBody"); clear(body);
+  const form = node("form", "album-category-form");
+  form.append(
+    node("strong", "album-category-name", album.name),
+    node("p", "", "This Album will appear in one category only. Automatic uses the configured root paths."),
+  );
+  const label = node("label", "album-category-field");
+  label.append(node("span", "", "Category"));
+  const select = node("select", "");
+  for (const [value, text] of ALBUM_CATEGORY_CHOICES) {
+    const option = node("option", "", text); option.value = value;
+    option.selected = String(album.category_override || "") === value;
+    select.append(option);
+  }
+  label.append(select); form.append(label);
+  const actions = node("div", "album-category-actions");
+  const cancel = node("button", "", "Cancel"); cancel.type = "button";
+  cancel.addEventListener("click", () => $("workspaceDialog").close());
+  const save = node("button", "album-category-save", "Move Album"); save.type = "submit";
+  actions.append(cancel, save); form.append(actions);
+  form.addEventListener("submit", event => {
+    event.preventDefault();
+    void saveAlbumCategory(album, select.value, save);
+  });
+  body.append(form); $("workspaceDialog").showModal(); select.focus();
+}
 function renderCandidateTypeChips() {
   for (const [hostId, dimension, rows] of [["candidateTypeChips", "type", CANDIDATE_TYPES], ["candidatePolicyChips", "policy", [["Acceptable", "Acceptable"], ["Strict", "Strict"]]], ["candidateRangeChips", "range", CANDIDATE_RANGES]]) {
     const host = $(hostId); clear(host);
@@ -852,6 +916,7 @@ function renderCandidateTypeChips() {
   $("candidateDisregardSource").disabled = !sourceChosen || state.candidateFilterLocked;
 }
 function albumRow(album, child) {
+  const shell = node("div", "album-row-shell" + (child ? " album-child-shell" : ""));
   const button = node("button", "library-row album-row" + (child ? " album-child" : "")); button.type = "button";
   const orbit = node("span", "status-orbit" + (selectedMedia(album) ? " selected" : ""), selectedMedia(album) ? "●" : "○"); button.append(orbit);
   const overridden = opposingAlbumOverride(album);
@@ -859,7 +924,17 @@ function albumRow(album, child) {
   button.classList.toggle("opposing-override", overridden);
   button.append(albumArtworkNode(album, "library-thumb", ""));
   const copy = node("span", "row-copy"); copy.append(node("strong", "", album.name), node("small", "", child ? album.tracks + " tracks" : album.artist_name)); button.append(copy);
-  button.addEventListener("click", () => chooseAlbum(album.id)); return button;
+  button.addEventListener("click", () => chooseAlbum(album.id));
+  const categorize = node("button", "album-category-button" + (album.category_override ? " overridden" : ""), "⇄");
+  categorize.type = "button";
+  categorize.title = album.category_override
+    ? "Category override: " + albumCategoryLabel(album.category_override)
+    : "Move Album to another category";
+  categorize.setAttribute("aria-label", "Move " + album.name + " to another category");
+  categorize.addEventListener("click", event => {
+    event.stopPropagation(); openAlbumCategoryDialog(album);
+  });
+  shell.append(button, categorize); return shell;
 }
 
 function albumArtworkNode(album, className, alt, placeholderClass = className, eager = false) {

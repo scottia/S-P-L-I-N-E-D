@@ -301,6 +301,7 @@ class Services:
         )
         self.catalog.cache = runtime.cache
         self.catalog.artist_sources = tuple(core.resolve_artist_sources(runtime.cfg))
+        self.catalog.reload_category_overrides()
         self.lock = threading.RLock()
         self._audit_events_written = 0
         self.audit_session_id = uuid4().hex

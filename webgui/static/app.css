@@ -97,6 +97,12 @@ html[data-theme=light] .filter-chip.media-status .filter-dot,html[data-theme=lig
 .library-row{cursor:pointer}
 .library-row.library-category{min-height:48px;margin-top:3px;border:1px solid var(--line);background:var(--card)}
 .library-row.library-category.expanded{border-color:var(--cyan);background:var(--selected)}
+.album-row-shell{display:grid;grid-template-columns:minmax(0,1fr) 28px;align-items:center;gap:2px}
+.album-row-shell>.library-row{min-width:0}
+.album-category-button{width:26px;height:30px;padding:0;border:1px solid var(--line);border-radius:4px;background:var(--card);color:var(--cyan);font-weight:850;line-height:1}
+.album-category-button:hover,.album-category-button:focus-visible{border-color:var(--cyan);background:var(--selected)}
+.album-category-button.overridden{border-color:var(--green);color:var(--green)}
+.album-category-form{display:grid;gap:12px}.album-category-name{color:var(--yellow);font-size:15px}.album-category-field{display:grid;gap:5px;color:var(--muted);font-weight:750}.album-category-field select{width:100%;padding:8px;border:1px solid var(--line);border-radius:4px;background:var(--card);color:var(--text)}.album-category-actions{display:flex;justify-content:flex-end;gap:6px}.album-category-actions button{padding:7px 12px;border:1px solid var(--line);border-radius:4px;background:var(--card);color:var(--text)}.album-category-actions .album-category-save{border-color:var(--green);color:var(--green)}
 .library-subcategory{margin:4px 7px 2px 24px;padding:5px 7px;border-left:2px solid var(--line);color:var(--muted);font-size:var(--ui-font-xs);font-weight:700}
 .library-subcategory.pinned{border-left-color:var(--pink);color:var(--pink)}
 .setting-input-shell .setting-path-browse{flex:none;margin-left:6px}
