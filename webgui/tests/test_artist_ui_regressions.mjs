@@ -15,6 +15,12 @@ test("WebGUI biography uses bright copy and a complete five-line collapsed guard
   assert.match(appSource, /biography\.classList\.add\("collapsed"\)/);
 });
 
+test("Artist Overview renders the saved banner without a tint layer", () => {
+  assert.doesNotMatch(indexSource, /hero-shade/);
+  assert.doesNotMatch(cssSource, /\.hero-shade/);
+  assert.match(appSource, /\$\("hero"\)\.style\.backgroundImage = artist\?\.banner/);
+});
+
 function between(source, start, end) {
   const first = source.indexOf(start);
   const last = source.indexOf(end, first + start.length);
@@ -2590,7 +2596,7 @@ test("Album cards keep unknown validation separate from confirmed missing thumbn
   }
 
   const fallback = context.albumCardState({
-    album_mbid: "", status: "processed", fallback_complete: true,
+    album_mbid: "", library_group: "fallback", status: "processed", fallback_complete: true,
     tracks: 2, embedded: 0, embedded_validation: "unknown",
   }, artist);
   assert.equal(fallback.fullyComplete, true);
@@ -2909,13 +2915,24 @@ test("remote Artist thumbnails are visibility queued and critical artwork is eag
 
 test("Album search and Album overview use the global single-Album contract", () => {
   assert.match(appSource, /async function loadAlbumLibraryMatches/);
-  assert.match(appSource, /\/api\/albums\?view=albums&q=/);
+  assert.match(appSource, /\/api\/albums\?view=search&q=/);
   assert.match(appSource, /const matchesByArtist = new Map\(\)/);
   assert.match(appSource, /matchesByArtist\.has\(artist\.id\)/);
   assert.match(appSource, /matchingIds\.has\(item\.id\)/);
   assert.match(appSource, /const presentedAlbums = honorSingleAlbum && singleAlbumOverviewActive\(\)/);
   assert.match(appSource, /const albums = artistOverviewAlbums\(artist\)/);
   assert.match(appSource, /allAlbums\.find\(album => album\.id === state\.album\.id\)/);
+});
+
+test("Artist file-list membership and center-card presentation stay separate", () => {
+  assert.match(appSource, /state\.albumLibraryMatches\.filter\(artistFileListAlbum\)/);
+  assert.match(appSource, /state\.artist\.albums[\s\S]*\.filter\(artistFileListAlbum\)/);
+  assert.match(appSource, /return String\(album\?\.library_group \|\| ""\) !== "fallback"/);
+  assert.match(appSource, /albumPresentationGroup\(left, artist\) - albumPresentationGroup\(right, artist\)/);
+  assert.match(appSource, /parseInt\(right\.year, 10\)[\s\S]*parseInt\(left\.year, 10\)/);
+  assert.match(appSource, /group === "soundtracks" \|\| album\.soundtrack/);
+  assert.match(appSource, /group === "various-artists" \|\| album\.various_artists/);
+  assert.match(appSource, /node\("span", "album-card-foot", \(album\.year \|\| "—"\)/);
 });
 
 test("WebGUI renders native-parity overview sections and artwork footer", () => {

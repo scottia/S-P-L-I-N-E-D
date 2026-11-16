@@ -337,6 +337,10 @@ class Catalog:
     database: Database | Path
     artist_art: Path
     credentials: Path
+    various_artist_path: Path | None = None
+    soundtracks_path: Path | None = None
+    curated_compilations_path: Path | None = None
+    category_overrides: dict[str, str] = field(default_factory=dict)
     comp_thumbnail_side: int = 1200
     allow_comp_repairs: bool = False
     cover_stem: str = "cover"
@@ -363,6 +367,176 @@ class Catalog:
         default_factory=lambda: BoundedSemaphore(3), repr=False
     )
     image_key: bytes = field(default_factory=lambda: secrets.token_bytes(32),repr=False)
+
+    def _distinct_category_path(self, value: Path | None) -> Path | None:
+        """Return a category override only when it narrows Music Library.
+
+        The settings intentionally display Music Library as their inherited
+        default.  Treating that shared root as three active overrides would
+        classify every Album three times, so only a distinct descendant is a
+        path claim.
+        """
+        if value is None:
+            return None
+        candidate = self._portable_path_parts(value)
+        music = self._portable_path_parts(self.music)
+        if len(candidate) <= len(music) or candidate[:len(music)] != music:
+            return None
+        return value
+
+    @staticmethod
+    def _portable_path_parts(value: Path | str) -> tuple[str, ...]:
+        """Normalize Windows and container paths for category matching."""
+        return tuple(
+            part.casefold()
+            for part in str(value).replace("\\", "/").split("/")
+            if part and part != "."
+        )
+
+    def _category_claim_depth(
+        self, folder: Path, configured: Path | None
+    ) -> int | None:
+        """Match one configured root to native or imported catalog paths."""
+        root = self._distinct_category_path(configured)
+        if root is None:
+            return None
+        root_parts = self._portable_path_parts(root)
+        parts = self._portable_path_parts(folder)
+        if len(parts) >= len(root_parts) and parts[:len(root_parts)] == root_parts:
+            return len(root_parts)
+        music_parts = self._portable_path_parts(self.music)
+        claim = root_parts[len(music_parts):]
+        if not claim or len(parts) <= len(claim):
+            return None
+        for start in range(0, len(parts) - len(claim) + 1):
+            if parts[start:start + len(claim)] == claim:
+                return len(claim)
+        return None
+
+    def album_library_group(self, row) -> str:
+        """Return the single top-level/category placement for one Album."""
+        keys = set(row.keys()) if hasattr(row, "keys") else set(row)
+        album_key = str(row["album_key"] or "") if "album_key" in keys else ""
+        override = self.category_overrides.get(album_key, "")
+        if override in {
+            "artist", "various-artists", "soundtracks", "fallback",
+            "misc-curated", "misc-undefined",
+        }:
+            return override
+        if all(
+            value is None
+            for value in (
+                self.various_artist_path,
+                self.soundtracks_path,
+                self.curated_compilations_path,
+            )
+        ):
+            return (
+                "fallback"
+                if "musicbrainz_albumid" in keys
+                and not str(row["musicbrainz_albumid"] or "").strip()
+                else "artist"
+            )
+        folder = Path(str(row["path"] or ""))
+        explicit = []
+        for priority, (group, configured) in enumerate((
+            ("fallback", self.curated_compilations_path),
+            ("soundtracks", self.soundtracks_path),
+            ("various-artists", self.various_artist_path),
+        )):
+            depth = self._category_claim_depth(folder, configured)
+            if depth is not None:
+                explicit.append((depth, -priority, group))
+        if explicit:
+            return max(explicit)[2]
+
+        # Configured category roots are the sole automatic grouping authority.
+        # An Album outside those roots is an Artist Album. Operator exceptions
+        # are handled above by the durable per-Album override.
+        return "artist"
+
+    def reload_category_overrides(self) -> dict[str, str]:
+        """Load the small operator exception map once, outside Album list loops."""
+        try:
+            with closing(self.connect()) as db:
+                rows = db.execute(
+                    "SELECT album_key,category FROM album_category_overrides"
+                ).fetchall()
+        except (sqlite3.OperationalError, sqlite3.DatabaseError):
+            rows = []
+        loaded = {
+            str(row["album_key"]): str(row["category"])
+            for row in rows
+        }
+        with self.lock:
+            self.category_overrides = loaded
+        return dict(loaded)
+
+    def set_album_category(self, album_id: str, category: str) -> dict[str, object]:
+        """Persist one explicit Album placement without changing tags or rescanning."""
+        album_id = str(album_id or "").strip()
+        category = str(category or "").strip().casefold()
+        allowed = {
+            "artist", "various-artists", "soundtracks", "fallback",
+            "misc-curated", "misc-undefined",
+        }
+        if not album_id:
+            raise ValueError("Choose an Album to categorize")
+        if category and category not in allowed:
+            raise ValueError("Choose a supported Album category")
+        with closing(self.connect()) as db, db:
+            row = db.execute(
+                "SELECT albums.album_key,albums.path,albums.compilation,"
+                "albums.musicbrainz_albumid,artists.artist_name "
+                "FROM albums JOIN artists ON artists.artist_key=albums.artist_key "
+                "WHERE albums.album_key=?",
+                (album_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError("Album not found")
+            if category:
+                db.execute(
+                    "INSERT INTO album_category_overrides(album_key,category,updated_at) "
+                    "VALUES(?,?,CURRENT_TIMESTAMP) "
+                    "ON CONFLICT(album_key) DO UPDATE SET "
+                    "category=excluded.category,updated_at=CURRENT_TIMESTAMP",
+                    (album_id, category),
+                )
+            else:
+                db.execute(
+                    "DELETE FROM album_category_overrides WHERE album_key=?",
+                    (album_id,),
+                )
+        with self.lock:
+            if category:
+                self.category_overrides[album_id] = category
+            else:
+                self.category_overrides.pop(album_id, None)
+        return {
+            "id": album_id,
+            "category_override": category,
+            "library_group": self.album_library_group(row),
+        }
+
+    def artist_album_allowed(self, row) -> bool:
+        """Artist cards contain only Artist releases and their track credits."""
+        if not self.path_album_grouping_enabled():
+            keys = set(row.keys()) if hasattr(row, "keys") else set(row)
+            return not (
+                "musicbrainz_albumid" in keys
+                and not str(row["musicbrainz_albumid"] or "").strip()
+            )
+        return self.album_library_group(row) == "artist"
+
+    def path_album_grouping_enabled(self) -> bool:
+        return not all(
+            value is None
+            for value in (
+                self.various_artist_path,
+                self.soundtracks_path,
+                self.curated_compilations_path,
+            )
+        )
 
     @staticmethod
     def readable_image_path(path: Path) -> bool:
@@ -819,26 +993,49 @@ class Catalog:
         return groups
 
     def _projected_track_artists(self, db) -> dict[str, dict[str, object]]:
-        """Project every real per-track credit from identified Albums.
+        """Project selectable Artists from Artist-library Album credits.
 
-        These are selectable Artist identities, not Album owners. The Album
-        remains stored once under its tagged Album Artist while every credited
-        performer can receive a Featured/Soundtrack/Various card.
+        This projection owns membership in the left Artist file list.  The
+        selected Artist's overview uses the separate appearance projection so
+        its V/A, soundtrack, Featured, and curated Album cards remain visible.
         """
         try:
             rows = db.execute(
-                "SELECT albums.album_key,albums.status,tracks.artist_name,"
+                "SELECT albums.album_key,albums.status,albums.path AS album_path,albums.compilation,"
+                "albums.musicbrainz_albumid,"
+                "owners.artist_name AS album_artist,tracks.artist_name,"
                 "tracks.musicbrainz_artistid,tracks.title,tracks.path "
                 "FROM tracks JOIN albums "
                 "ON albums.album_key=tracks.album_key "
-                "WHERE TRIM(COALESCE(albums.musicbrainz_albumid,''))<>'' "
+                "JOIN artists owners ON owners.artist_key=albums.artist_key "
                 "ORDER BY albums.album_key,tracks.path COLLATE NOCASE"
             ).fetchall()
         except sqlite3.OperationalError:
-            return {}
-        result: dict[str, dict[str, object]] = {}
-        for row in rows:
-            credits = tuple(dict.fromkeys(
+            try:
+                # Reduced read-only fixtures can predate per-track MBIDs; the
+                # real Artist credit remains sufficient for card projection.
+                rows = db.execute(
+                    "SELECT albums.album_key,albums.status,"
+                    "albums.path AS album_path,albums.compilation,"
+                    "albums.musicbrainz_albumid,"
+                    "owners.artist_name AS album_artist,tracks.artist_name,"
+                    "'' AS musicbrainz_artistid,tracks.title,tracks.path "
+                    "FROM tracks JOIN albums ON albums.album_key=tracks.album_key "
+                    "JOIN artists owners ON owners.artist_key=albums.artist_key "
+                    "ORDER BY albums.album_key,tracks.path COLLATE NOCASE"
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return {}
+        album_groups: dict[str, str] = {}
+
+        def library_group(row) -> str:
+            album_key = str(row["album_key"])
+            if album_key not in album_groups:
+                album_groups[album_key] = self.album_library_group(row)
+            return album_groups[album_key]
+
+        def credits(row) -> tuple[str, ...]:
+            return tuple(dict.fromkeys(
                 credit
                 for value in indexed_track_credit_values(
                     str(row["artist_name"] or ""),
@@ -849,30 +1046,54 @@ class Catalog:
                 for credit in explicit_artist_credits(
                     value, self.artist_separator_regex
                 )
+                if not synthetic_album_artist(credit)
             ))
-            if not credits:
+
+        # Artist Albums establish selectable Artist identities. Categorized
+        # V/A and OST credits can enrich those identities, but cannot create a
+        # new top-level Artist by themselves.
+        eligible_identities: set[str] = set()
+        for row in rows:
+            if library_group(row) != "artist":
                 continue
+            owner = str(row["album_artist"] or "").strip()
+            if owner and not synthetic_album_artist(owner):
+                eligible_identities.add(normalized_artist_identity(owner))
+            eligible_identities.update(
+                normalized_artist_identity(credit) for credit in credits(row)
+            )
+
+        result: dict[str, dict[str, object]] = {}
+        for row in rows:
+            group = library_group(row)
+            if group == "fallback":
+                continue
+            row_credits = credits(row)
             mbids = re.findall(
                 r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
                 r"[0-9a-f]{4}-[0-9a-f]{12}\b",
                 str(row["musicbrainz_artistid"] or ""),
             )
-            for index, credit in enumerate(credits):
-                if synthetic_album_artist(credit):
-                    continue
+            for index, credit in enumerate(row_credits):
                 identity = normalized_artist_identity(credit)
+                if identity not in eligible_identities:
+                    continue
                 projection = result.setdefault(identity, {
                     "artist_key": projected_artist_id(credit),
                     "artist_name": credit,
                     "musicbrainz_artistid": "",
                     "primary_path": "",
                     "album_keys": set(),
+                    "artist_album_keys": set(),
                     "statuses": {},
                 })
-                if len(mbids) == len(credits):
+                if len(mbids) == len(row_credits):
                     projection["musicbrainz_artistid"] = mbids[index].casefold()
-                projection["album_keys"].add(str(row["album_key"]))
-                projection["statuses"][str(row["album_key"])] = str(
+                album_key = str(row["album_key"])
+                projection["album_keys"].add(album_key)
+                if group == "artist":
+                    projection["artist_album_keys"].add(album_key)
+                projection["statuses"][album_key] = str(
                     row["status"] or "unprocessed"
                 )
         return result
@@ -928,6 +1149,7 @@ class Catalog:
                 (
                     value for value in self._projected_track_artists(db).values()
                     if str(value["artist_key"]) == str(artist_id)
+                    and value.get("artist_album_keys")
                 ),
                 None,
             )
@@ -1220,6 +1442,7 @@ class Catalog:
             rows = db.execute(
                 "SELECT appearances.album_key,appearances.featured,"
                 "appearances.navidrome_album_id,appearances.song_paths_json,"
+                "albums.path,albums.compilation,"
                 "owners.artist_name AS album_artist_name "
                 "FROM artist_album_appearances appearances "
                 "LEFT JOIN albums ON albums.album_key=appearances.album_key "
@@ -1234,11 +1457,12 @@ class Catalog:
             ).fetchone() is not None:
                 raise
             return {"album_keys": set(), "featured_album_keys": set(), "song_paths": {}}
+        eligible = rows
         return {
-            "album_keys": {str(row["album_key"]) for row in rows},
+            "album_keys": {str(row["album_key"]) for row in eligible},
             "featured_album_keys": {
                 str(row["album_key"])
-                for row in rows
+                for row in eligible
                 if bool(row["featured"])
                 and (
                     row["album_artist_name"] is None
@@ -1247,7 +1471,7 @@ class Catalog:
             },
             "song_paths": {
                 str(row["album_key"]): json.loads(str(row["song_paths_json"] or "[]"))
-                for row in rows
+                for row in eligible
             },
         }
 
@@ -1280,11 +1504,11 @@ class Catalog:
         return result
 
     def _indexed_artist_appearances(self, db, artist, aliases) -> dict[str, object]:
-        """Project identified Featured releases from indexed PostgreSQL tracks.
+        """Project Featured releases from indexed PostgreSQL track credits.
 
         The candidate SQL is deliberately bounded by the selected display names;
-        Windows' exact multi-credit parser remains the final authority. COMP
-        albums stay in the separate track report and are never promoted here.
+        Windows' exact multi-credit parser remains the final authority. Category
+        ownership never suppresses the Rob-rule Artist Album card projection.
         """
         alias_ids = {str(row["artist_key"]) for row in aliases}
         names = list(dict.fromkeys(
@@ -1297,11 +1521,11 @@ class Catalog:
                 escaped = name.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
                 matches.extend(db.execute(
                     "SELECT albums.album_key,albums.artist_key,owner.artist_name AS album_artist_name,"
+                    "albums.path AS album_path,albums.compilation,"
                     "tracks.path,tracks.title,tracks.artist_name FROM tracks "
                     "JOIN albums ON albums.album_key=tracks.album_key "
                     "JOIN artists owner ON owner.artist_key=albums.artist_key "
-                    "WHERE TRIM(COALESCE(albums.musicbrainz_albumid,''))<>'' "
-                    "AND (tracks.artist_name LIKE ? ESCAPE '\\' "
+                    "WHERE (tracks.artist_name LIKE ? ESCAPE '\\' "
                     "OR tracks.title LIKE ? ESCAPE '\\' "
                     "OR tracks.path LIKE ? ESCAPE '\\')",
                     (("%" + escaped + "%",) * 3),
@@ -1570,10 +1794,14 @@ class Catalog:
             projected = self._projected_track_artists(db)
             try:
                 status_rows = db.execute(
-                    "SELECT * FROM albums "
+                    "SELECT albums.*,owners.artist_name FROM albums "
+                    "JOIN artists owners ON owners.artist_key=albums.artist_key "
                     "WHERE COALESCE(compilation,0)=0 "
                     "OR TRIM(COALESCE(musicbrainz_albumid,''))<>''"
                 ).fetchall()
+                status_rows = [
+                    row for row in status_rows if self.artist_album_allowed(row)
+                ]
                 coordination = self._album_write_coordination(db, status_rows)
                 projected_statuses = True
             except sqlite3.OperationalError:
@@ -1588,6 +1816,7 @@ class Catalog:
             self._virtual_artist_row(value)
             for identity, value in projected.items()
             if identity not in existing_identities
+            and value.get("artist_album_keys")
         )]
         statuses_by_artist: dict[str, list] = {}
         owned_album_keys: dict[str, set[str]] = {}
@@ -1615,7 +1844,12 @@ class Catalog:
                 for row in group
                 for key in owned_album_keys.get(str(row["artist_key"]), set())
             } | set(appearance.get("album_keys", set()))
-            if not album_keys and stored_album_count == 0:
+            effective_album_count = (
+                len(album_keys)
+                if self.path_album_grouping_enabled()
+                else len(album_keys) if album_keys else stored_album_count
+            )
+            if effective_album_count == 0:
                 continue
             status_group = [
                 status
@@ -1642,7 +1876,7 @@ class Catalog:
             result.append({
                 "id": canonical["artist_key"],
                 "name": canonical["artist_name"],
-                "albums": len(album_keys) if album_keys else stored_album_count,
+                "albums": effective_album_count,
                 "status": (
                     self._aggregate_album_status(status_group)
                     if projected_statuses
@@ -1673,6 +1907,15 @@ class Catalog:
                 "ORDER BY artists.artist_name COLLATE NOCASE"
             ).fetchall()
             projected = self._projected_track_artists(db)
+            eligible_owner_ids = {
+                str(row["artist_key"])
+                for row in db.execute(
+                    "SELECT albums.artist_key,albums.path,albums.compilation,"
+                    "owners.artist_name FROM albums "
+                    "JOIN artists owners ON owners.artist_key=albums.artist_key"
+                ).fetchall()
+                if self.artist_album_allowed(row)
+            }
         existing_identities = {
             normalized_artist_identity(row["artist_name"]) for row in rows
         }
@@ -1688,10 +1931,19 @@ class Catalog:
             if synthetic_album_artist(canonical["artist_name"]):
                 continue
             identity = normalized_artist_identity(canonical["artist_name"])
-            if (
-                sum(int(row["album_count"] or 0) for row in group) == 0
-                and not projected.get(identity, {}).get("album_keys")
-            ):
+            has_owner_album = any(
+                str(row["artist_key"]) in eligible_owner_ids for row in group
+            )
+            if self.path_album_grouping_enabled():
+                visible = has_owner_album or bool(
+                    projected.get(identity, {}).get("artist_album_keys")
+                )
+            else:
+                visible = bool(
+                    sum(int(row["album_count"] or 0) for row in group)
+                    or projected.get(identity, {}).get("album_keys")
+                )
+            if not visible:
                 continue
             portrait_path = None
             for row in [canonical, *(item for item in group if item is not canonical)]:
@@ -1806,11 +2058,9 @@ class Catalog:
         except Exception:
             return False
 
-    def albums(self, query: str, fallback_only: bool = False) -> list[dict[str, object]]:
-        identity_clause = (
-            "TRIM(COALESCE(albums.musicbrainz_albumid,''))=''"
-            if fallback_only
-            else "TRIM(COALESCE(albums.musicbrainz_albumid,''))<>''"
+    def albums(self, query: str, view: str | bool = "va-ost") -> list[dict[str, object]]:
+        requested_view = (
+            "fallback" if view is True else "legacy-albums" if view is False else str(view)
         )
         with closing(self.connect()) as db:
             rows = db.execute(
@@ -1819,16 +2069,26 @@ class Catalog:
                 "albums.status, albums.compilation, albums.musicbrainz_albumid FROM albums "
                 "JOIN artists ON artists.artist_key=albums.artist_key "
                 "WHERE (albums.album_name LIKE ? ESCAPE '\\' OR artists.artist_name LIKE ? ESCAPE '\\') "
-                f"AND {identity_clause} "
                 "ORDER BY albums.album_name COLLATE NOCASE ",
                 ("%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%",) * 2,
             ).fetchall()
             coordination = self._album_write_coordination(db, rows)
         items = []
         for row in rows:
+            group = self.album_library_group(row)
+            if requested_view == "fallback" and group != "fallback":
+                continue
+            if requested_view == "legacy-albums" and not str(
+                row["musicbrainz_albumid"] or ""
+            ).strip():
+                continue
+            if requested_view in {"albums", "va-ost"} and group not in {
+                "various-artists", "soundtracks", "misc-curated", "misc-undefined"
+            }:
+                continue
             album_key = str(row["album_key"])
             cover_url = self.album_thumbnail_url(album_key)
-            if fallback_only:
+            if requested_view == "fallback":
                 cover_url = self.image(self.album_cover_path(row))
             items.append({
                 "id": row["album_key"], "name": row["album_name"],
@@ -1841,6 +2101,16 @@ class Catalog:
                 "tracks": row["track_count"],
                 "status": row["status"], "compilation": bool(row["compilation"]),
                 "album_mbid": row["musicbrainz_albumid"] or "",
+                "library_group": group,
+                "category_override": self.category_overrides.get(album_key, ""),
+                "library_category": {
+                    "various-artists": "Various Artists",
+                    "soundtracks": "Soundtracks",
+                    "misc-curated": "Miscellaneous Curated",
+                    "misc-undefined": "Miscellaneous Undefined",
+                    "fallback": "Curated Compilations",
+                }.get(group, "Artist"),
+                "fallback": group == "fallback",
                 "override_writer": coordination.get(album_key, {}).get("writer", ""),
                 "override_operation": coordination.get(album_key, {}).get("operation", ""),
                 "override_revision": int(coordination.get(album_key, {}).get("revision", 0) or 0),
@@ -1874,6 +2144,9 @@ class Catalog:
                 "ORDER BY albums.album_name COLLATE NOCASE",
                 tuple(alias_ids),
             ).fetchall()
+            primary_rows = [
+                row for row in primary_rows if self.artist_album_allowed(row)
+            ]
             appearance = self._artist_appearance_context(artist, aliases, db)
             appearance_keys = set(appearance.get("album_keys", set()))
             if appearance_keys:
@@ -1881,8 +2154,7 @@ class Catalog:
                 appearance_rows = db.execute(
                     "SELECT albums.*,artists.artist_name AS album_artist "
                     "FROM albums JOIN artists ON artists.artist_key=albums.artist_key "
-                    f"WHERE albums.album_key IN ({appearance_placeholders}) "
-                    "AND TRIM(COALESCE(albums.musicbrainz_albumid,''))<>''",
+                    f"WHERE albums.album_key IN ({appearance_placeholders})",
                     tuple(sorted(appearance_keys)),
                 ).fetchall()
             else:
@@ -1901,10 +2173,10 @@ class Catalog:
             top_track_rows = db.execute(
                 "SELECT albums.artist_key,tracks.title,tracks.artist_name,tracks.path "
                 "FROM tracks JOIN albums ON albums.album_key=tracks.album_key "
-                f"WHERE (albums.artist_key IN ({placeholders})"
-                f"{appearance_track_clause}) "
+                f"WHERE ((albums.artist_key IN ({placeholders}) "
                 "AND (COALESCE(albums.compilation,0)=0 "
-                "OR TRIM(COALESCE(albums.musicbrainz_albumid,''))<>'') "
+                "OR TRIM(COALESCE(albums.musicbrainz_albumid,''))<>''))"
+                f"{appearance_track_clause}) "
                 "ORDER BY tracks.title COLLATE NOCASE",
                 tuple(top_track_parameters),
             ).fetchall()
@@ -1937,6 +2209,12 @@ class Catalog:
         featured_keys = set(appearance.get("featured_album_keys", set()))
         primary_keys = {str(row["album_key"]) for row in primary_rows}
         rows = [*primary_rows, *(row for row in appearance_rows if str(row["album_key"]) not in primary_keys)]
+        rows.sort(
+            key=lambda row: (
+                str(row["album_name"] or "").casefold(),
+                str(row["album_key"] or "").casefold(),
+            )
+        )
         targets = artist_targets(
             [ArtistAlbum(artist["artist_name"], Path(row["path"]),
                          row["musicbrainz_albumid"] or "", artist["musicbrainz_artistid"] or "")
@@ -1958,6 +2236,12 @@ class Catalog:
                 continue
             cover = self.album_cover_path(row)
             override = coordination.get(str(row["album_key"]), {})
+            library_group = self.album_library_group({
+                "album_key": row["album_key"],
+                "path": row["path"],
+                "compilation": row["compilation"],
+                "artist_name": row["album_artist"],
+            })
             albums.append({
                 "id": row["album_key"], "name": row["album_name"],
                 "tracks": row["track_count"], "status": row["status"],
@@ -1970,6 +2254,11 @@ class Catalog:
                 "embedded_validation": str(row["embedded_validation_status"] or "unknown")
                     if "embedded_validation_status" in row else "unknown",
                 "album_mbid": row["musicbrainz_albumid"] or "",
+                "library_group": library_group,
+                "category_override": self.category_overrides.get(
+                    str(row["album_key"]), ""
+                ),
+                "fallback": library_group == "fallback",
                 "year": row["release_year"] or "",
                 "soundtrack": bool(row["musicbrainz_albumid"]) and (
                     any(part.casefold() in {"[soundtracks]", "soundtracks"} for part in folder.parts)
@@ -1985,6 +2274,12 @@ class Catalog:
                 "override_operation": override.get("operation", ""),
                 "override_revision": int(override.get("revision", 0) or 0),
             })
+        albums.sort(
+            key=lambda album: (
+                str(album["name"] or "").casefold(),
+                str(album["id"] or "").casefold(),
+            )
+        )
         return {
             "id": artist["artist_key"], "name": artist["artist_name"],
             "mbid": artist["musicbrainz_artistid"] or "",
@@ -2038,11 +2333,15 @@ class Catalog:
             for item in track_rows
             if inside(Path(item["path"]), folder)
         ]
+        library_group = self.album_library_group(row)
         return {
             "id": album_id, "name": row["album_name"], "status": row["status"],
             "artist_id": row["artist_key"], "artist_name": row["artist_name"],
             "tracks": row["track_count"], "compilation": bool(row["compilation"]),
             "album_mbid": row["musicbrainz_albumid"] or "", "year": row["release_year"] or "",
+            "library_group": library_group,
+            "category_override": self.category_overrides.get(album_id, ""),
+            "fallback": library_group == "fallback",
             "embedded": int(row["embedded_tracks"] or 0) if "embedded_tracks" in row.keys() else 0,
             "embedded_validation": str(row["embedded_validation_status"] or "unknown")
                 if "embedded_validation_status" in row else "unknown",
@@ -2058,12 +2357,16 @@ class Catalog:
 
     def fallback_tracks(self, album_id: str) -> list[dict[str, object]]:
         with closing(self.connect()) as db:
-            album = db.execute("SELECT path, musicbrainz_albumid FROM albums WHERE album_key=?",
-                               (album_id,)).fetchone()
+            album = db.execute(
+                "SELECT albums.album_key,albums.path,albums.compilation,albums.musicbrainz_albumid,"
+                "artists.artist_name FROM albums JOIN artists ON "
+                "artists.artist_key=albums.artist_key WHERE albums.album_key=?",
+                (album_id,),
+            ).fetchone()
             if album is None:
                 raise KeyError("Album not found")
-            if str(album["musicbrainz_albumid"] or "").strip():
-                raise ValueError("This Album has a MusicBrainz Album ID and is not COMP fallback")
+            if self.album_library_group(album) != "fallback":
+                raise ValueError("This Album is not inside the Curated Compilations path")
             folder = Path(album["path"])
             if not inside(folder, self.music):
                 raise ValueError("Fallback Album is outside the configured music library")
@@ -2131,19 +2434,21 @@ class Catalog:
         """Read one recorded embedded thumbnail for a lazy fallback album card."""
         with closing(self.connect()) as db:
             row = db.execute(
-                "SELECT albums.path AS album_path,albums.musicbrainz_albumid,tracks.path "
+                "SELECT albums.album_key,albums.path AS album_path,albums.path,albums.compilation,"
+                "albums.musicbrainz_albumid,artists.artist_name,tracks.path AS track_path "
                 "FROM albums JOIN tracks ON tracks.album_key=albums.album_key "
+                "JOIN artists ON artists.artist_key=albums.artist_key "
                 "WHERE albums.album_key=? AND tracks.track_key=?",
                 (album_id, track_key),
             ).fetchone()
-            if row is None or str(row["musicbrainz_albumid"] or "").strip():
+            if row is None or self.album_library_group(row) != "fallback":
                 raise KeyError("Recorded COMP thumbnail not found")
             recorded = db.execute(
                 "SELECT 1 FROM compilation_track_artwork WHERE track_path=? "
                 "AND outcome IN ('embedded-replaced','embedded-existing')",
-                (str(row["path"]),),
+                (str(row["track_path"]),),
             ).fetchone()
-        folder, path = Path(row["album_path"]), Path(row["path"])
+        folder, path = Path(row["album_path"]), Path(row["track_path"])
         if not recorded or not inside(folder, self.music) or not inside(path, folder):
             raise KeyError("Recorded COMP thumbnail not found")
         artwork = embedded_track_image(path)
@@ -2181,11 +2486,11 @@ class Catalog:
                 + "%"
             )
             rows = db.execute(
-                "SELECT albums.album_key,albums.artist_key,tracks.artist_name,"
-                "tracks.title,tracks.path "
+                "SELECT albums.album_key,albums.artist_key,albums.path,"
+                "albums.musicbrainz_albumid,tracks.artist_name,tracks.title,"
+                "tracks.path AS track_path "
                 "FROM albums LEFT JOIN tracks ON tracks.album_key=albums.album_key "
-                "WHERE TRIM(COALESCE(albums.musicbrainz_albumid,''))='' "
-                f"AND (albums.artist_key IN ({placeholders}) "
+                f"WHERE (albums.artist_key IN ({placeholders}) "
                 "OR tracks.artist_name LIKE ? ESCAPE '\\' "
                 "OR tracks.title LIKE ? ESCAPE '\\' "
                 "OR tracks.path LIKE ? ESCAPE '\\' "
@@ -2194,6 +2499,8 @@ class Catalog:
             ).fetchall()
         matching = set()
         for row in rows:
+            if self.album_library_group(row) != "fallback":
+                continue
             if (
                 str(row["album_key"]) in appearance_ids
                 or str(row["artist_key"]) in alias_ids
@@ -2204,7 +2511,7 @@ class Catalog:
                     for credit in indexed_track_credit_values(
                         str(row["artist_name"] or ""),
                         str(row["title"] or ""),
-                        str(row["path"] or ""),
+                        str(row["track_path"] or ""),
                         self.artist_separator_regex,
                     )
                 )
@@ -2232,11 +2539,12 @@ class Catalog:
             escaped_name = name.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             rows = db.execute(
                 "SELECT albums.album_key, albums.album_name, albums.path AS album_path, "
-                "albums.cover_path, albums.release_year, albums.artist_key, tracks.track_key, tracks.path, "
+                "albums.path, albums.musicbrainz_albumid, albums.cover_path, "
+                "albums.release_year, albums.artist_key, tracks.track_key, "
+                "tracks.path AS track_path, "
                 "tracks.title, tracks.artist_name FROM albums "
                 "JOIN tracks ON tracks.album_key=albums.album_key "
-                "WHERE TRIM(COALESCE(albums.musicbrainz_albumid,''))='' "
-                "AND (tracks.artist_name LIKE ? ESCAPE '\\' "
+                "WHERE (tracks.artist_name LIKE ? ESCAPE '\\' "
                 "OR tracks.title LIKE ? ESCAPE '\\' "
                 "OR tracks.path LIKE ? ESCAPE '\\' "
                 f"OR (albums.artist_key IN ({placeholders}) AND TRIM(COALESCE(tracks.artist_name,''))='') "
@@ -2261,13 +2569,15 @@ class Catalog:
         seen: set[str] = set()
         appearance_paths = appearance.get("song_paths", {})
         for row in rows:
+            if self.album_library_group(row) != "fallback":
+                continue
             credits = indexed_track_credit_values(
                 str(row["artist_name"] or ""),
                 str(row["title"] or ""),
-                str(row["path"] or ""),
+                str(row["track_path"] or ""),
                 self.artist_separator_regex,
             )
-            row_path = str(row["path"]).replace("\\", "/").strip("/")
+            row_path = str(row["track_path"]).replace("\\", "/").strip("/")
             expected_paths = [
                 str(value).replace("\\", "/").strip("/")
                 for value in appearance_paths.get(str(row["album_key"]), [])
@@ -2286,7 +2596,7 @@ class Catalog:
                     or not credits and row["artist_key"] in alias_ids
                     or appearance_match):
                 continue
-            folder, track_path = Path(row["album_path"]), Path(row["path"])
+            folder, track_path = Path(row["album_path"]), Path(row["track_path"])
             if verify_tracks and (
                 not inside(folder, self.music)
                 or not inside(track_path, folder)
@@ -2305,7 +2615,9 @@ class Catalog:
                     # cover.* through the standard Album thumbnail endpoint.
                     # Embedded track art remains exclusive to COMP Report.
                     "cover": self.album_thumbnail_url(key),
-                    "compilation": True, "album_mbid": "", "tracks": [],
+                    "compilation": True,
+                    "album_mbid": row["musicbrainz_albumid"] or "",
+                    "tracks": [],
                 }
             completed_track = str(track_path).casefold() in completed
             groups[key]["tracks"].append({
@@ -2321,13 +2633,14 @@ class Catalog:
         """Check one COMP thumbnail lazily so a large Artist report opens quickly."""
         with closing(self.connect()) as db:
             row = db.execute(
-                "SELECT albums.path AS album_path, albums.musicbrainz_albumid, tracks.path "
+                "SELECT albums.album_key,albums.path AS album_path,albums.path,"
+                "albums.musicbrainz_albumid,tracks.path AS track_path "
                 "FROM albums JOIN tracks ON tracks.album_key=albums.album_key "
                 "WHERE albums.album_key=? AND tracks.track_key=?", (album_id, track_key),
             ).fetchone()
-            if row is None or str(row["musicbrainz_albumid"] or "").strip():
+            if row is None or self.album_library_group(row) != "fallback":
                 raise KeyError("COMP track not found")
-            path, folder = Path(row["path"]), Path(row["album_path"])
+            path, folder = Path(row["track_path"]), Path(row["album_path"])
             if not inside(folder, self.music) or not inside(path, folder) or not path.is_file():
                 raise ValueError("COMP track is outside the configured music library")
             has_ledger = db.execute(

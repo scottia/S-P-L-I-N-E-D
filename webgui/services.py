@@ -275,11 +275,19 @@ class Services:
         except (KeyError, TypeError, ValueError):
             active_artist_separator = configured_artist_separator
         image_key = image_signing_key or _web_image_signing_key()
+        library = runtime.cfg.get("library", {})
+        category_path = lambda name: core.resolve_path(
+            runtime.config_file,
+            str(library.get(name, "") or library.get("music_library", "")),
+        ).resolve()
         self.catalog = Catalog(
             runtime.music,
             runtime.database,
             runtime.artist_art,
             runtime.credentials,
+            various_artist_path=category_path("various_artist_path"),
+            soundtracks_path=category_path("soundtracks_path"),
+            curated_compilations_path=category_path("curated_compilations_path"),
             comp_thumbnail_side=int(
                 runtime.cfg.get("output", {}).get("embedded_thumbnail_size", 1200)
             ),
@@ -293,6 +301,7 @@ class Services:
         )
         self.catalog.cache = runtime.cache
         self.catalog.artist_sources = tuple(core.resolve_artist_sources(runtime.cfg))
+        self.catalog.reload_category_overrides()
         self.lock = threading.RLock()
         self._audit_events_written = 0
         self.audit_session_id = uuid4().hex
@@ -3418,6 +3427,10 @@ class Services:
     def stage_album(self, payload):
         self.runtime.require_write()
         row = self.album_row(str(payload.get("album_id", "")))
+        if self.catalog.album_library_group(row) == "fallback":
+            raise ValueError(
+                "Curated Compilations use the separate track-scoped EMBED Comp workflow"
+            )
         album_mbid = str(row["musicbrainz_albumid"] or "").strip()
         if not core.valid_mbid(album_mbid):
             raise ValueError(
@@ -3522,6 +3535,11 @@ class Services:
                 "The staged Album is no longer indexed; restore it or remove this job"
             ) from error
         current_mbid = str(row["musicbrainz_albumid"] or "").strip()
+        if self.catalog.album_library_group(row) == "fallback":
+            raise ValueError(
+                "The staged Album is now inside Curated Compilations; remove this "
+                "Album job and use track-scoped COMP work"
+            )
         if not current_mbid:
             raise ValueError(
                 "The staged Album is now COMP Fallback; remove this Album job "

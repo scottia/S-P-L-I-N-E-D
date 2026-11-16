@@ -82,6 +82,26 @@ CREATE TABLE IF NOT EXISTS albums (
         ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS album_category_overrides (
+    album_key TEXT PRIMARY KEY COLLATE NOCASE,
+    category TEXT NOT NULL CHECK(category IN (
+        'artist',
+        'various-artists',
+        'soundtracks',
+        'fallback',
+        'misc-curated',
+        'misc-undefined'
+    )),
+    updated_at TEXT NOT NULL,
+    splined_version TEXT NOT NULL,
+    FOREIGN KEY (album_key)
+        REFERENCES albums(album_key)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_album_category_overrides_category
+    ON album_category_overrides(category);
+
 CREATE TABLE IF NOT EXISTS tracks (
     track_key TEXT PRIMARY KEY COLLATE NOCASE,
     album_key TEXT NOT NULL,

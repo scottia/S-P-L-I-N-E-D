@@ -71,7 +71,19 @@ mounts.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `music_library` | empty | Main media-library root |
+| `various_artist_path` | Music Library | Optional single Various Artist root. Every descendant is included automatically. A Music Library-equivalent value is the inherited default; a narrower root places its Albums in **V/A OST → Various Artists**. |
+| `soundtracks_path` | Music Library | Optional single Soundtracks root. Every descendant appears in **V/A OST → Soundtracks**. |
+| `curated_compilations_path` | Music Library | Optional single Curated Compilations root. Every descendant uses track-scoped **Fallback**, regardless of Album MBID. A nested Curated root overrides a broader Various Artist root. |
 | `ignored_subs` | `[]` | Exact names or supported wildcard patterns excluded from scans and index refresh |
+
+These roots are the only automatic Album-category authority. An Album outside
+all three narrower roots is an Artist Album regardless of its stored Artist
+name, compilation flag, or MusicBrainz IDs. A saved per-Album category override
+wins over the roots and can be returned to path grouping with **Automatic**.
+Category ownership does not remove Artist Album cards: real indexed track
+credits still project V/A, Soundtrack, Featured, and Curated Compilation Albums
+under their credited Artists (the Rob rule), without manufacturing synthetic
+`Various Artists` or `Soundtracks` entries in the Artist list.
 
 ## `[scan]`
 

@@ -712,6 +712,37 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
     def save_settings(payload: dict):
         return context.configure((payload).get("config"))
 
+    @app.get("/api/settings/library-directories")
+    def library_directories(path: str = ""):
+        runtime = context.require().runtime
+        root = runtime.music.resolve()
+        requested = Path(path).resolve() if path.strip() else root
+        try:
+            requested.relative_to(root)
+        except ValueError as error:
+            raise HTTPException(400, "Directory must remain inside Music Library") from error
+        if not requested.is_dir() or requested.is_symlink():
+            raise HTTPException(404, "Library directory is unavailable")
+        try:
+            directories = sorted(
+                (
+                    child for child in requested.iterdir()
+                    if child.is_dir() and not child.is_symlink()
+                ),
+                key=lambda child: child.name.casefold(),
+            )
+        except OSError as error:
+            raise HTTPException(400, "Library directory cannot be read") from error
+        parent = requested.parent if requested != root else None
+        return {
+            "root": str(root),
+            "current": str(requested),
+            "parent": str(parent) if parent is not None else "",
+            "directories": [
+                {"name": child.name, "path": str(child)} for child in directories
+            ],
+        }
+
     @app.get("/api/database/reset-target")
     def database_reset_target():
         services = context.require()
@@ -874,7 +905,7 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
 
     @app.get("/api/albums")
     def albums(q: str = "", view: str = "albums"):
-        return context.require().catalog.albums(q, view == "fallback")
+        return context.require().catalog.albums(q, view)
 
     @app.get("/api/album/thumbnail")
     def album_thumbnail(id: str):
@@ -972,6 +1003,22 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
     def album(id: str):
         services = context.require()
         return services.catalog.album(id)
+
+    @app.post("/api/album/category")
+    def set_album_category(payload: dict):
+        services = context.require()
+        album_id = str(payload.get("id", ""))
+        category = str(payload.get("category", ""))
+        result = services.catalog.set_album_category(album_id, category)
+        services.audit(
+            "album-category-override",
+            album_id,
+            {"category": result["category_override"] or "automatic"},
+            scope={"album_id": album_id},
+            stage="catalog",
+            request_status="completed",
+        )
+        return result
 
     @app.get("/api/album/embedded-status")
     def album_embedded_status(id: str):

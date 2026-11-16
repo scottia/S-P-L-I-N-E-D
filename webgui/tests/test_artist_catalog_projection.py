@@ -233,20 +233,23 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             self.assertEqual(listed["albums"], 1)
             self.assertEqual(listed["status"], "complete")
             artist = app.artist("adele")
-            self.assertEqual([item["id"] for item in artist["albums"]], ["30"])
-            self.assertEqual(artist["status"], "complete")
-            self.assertEqual(artist["top_tracks"], ["Easy on Me"])
+            self.assertEqual(
+                [item["id"] for item in artist["albums"]],
+                ["30", "billboard"],
+            )
+            self.assertEqual(artist["status"], "partial")
+            self.assertEqual(set(artist["top_tracks"]), {"Easy on Me", "Unrelated"})
 
             with mock.patch.object(
                 app,
                 "album_cover_path",
                 side_effect=AssertionError("album index must not touch network artwork paths"),
             ):
-                albums = app.albums("")
+                albums = app.albums("", False)
             self.assertEqual({item["id"] for item in albums}, {"30"})
             self.assertTrue(all(item["cover"].startswith("/api/album/thumbnail?id=") for item in albums))
-            self.assertEqual({item["id"] for item in app.albums("Adele")}, {"30"})
-            self.assertEqual(app.albums("Billboard"), [])
+            self.assertEqual({item["id"] for item in app.albums("Adele", False)}, {"30"})
+            self.assertEqual(app.albums("Billboard", False), [])
             self.assertEqual(
                 [item["id"] for item in app.albums("Billboard", True)], ["billboard"]
             )
@@ -379,8 +382,14 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             app = PreviewApp(root, database, root, credentials, cache=root / "cache")
             self.assertEqual(app.artists("")[0]["albums"], 2)
             artist = app.artist("aaron")
-            self.assertEqual({item["id"] for item in artist["albums"]}, {"tour", "gold"})
-            self.assertEqual(set(artist["top_tracks"]), {"Tour Song", "Gold Song"})
+            self.assertEqual(
+                {item["id"] for item in artist["albums"]},
+                {"tour", "gold", "hidden"},
+            )
+            self.assertEqual(
+                set(artist["top_tracks"]),
+                {"Tour Song", "Gold Song", "Hidden Song"},
+            )
 
     def test_all_track_credits_project_identified_albums_into_real_artists(self):
         with TemporaryDirectory() as directory:
@@ -390,7 +399,9 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             credentials.mkdir()
             gold = root / "Aaron Neville" / "Gold"
             soundtrack = root / "[Soundtracks]" / "Film"
-            for folder in (gold, soundtrack):
+            various_album = root / "[Various Artists]" / "Collection"
+            curated_album = root / "[Various Artists]" / "Billboard" / "Hot 100"
+            for folder in (gold, soundtrack, various_album, curated_album):
                 folder.mkdir(parents=True)
                 (folder / "song.mp3").touch()
 
@@ -420,6 +431,8 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                     [
                         ("gold", "aaron", "Gold", str(gold), 2, "processed", "release-gold"),
                         ("film", "various", "Film", str(soundtrack), 1, "incomplete", "release-film"),
+                        ("collection", "various", "Collection", str(various_album), 1, "processed", "release-collection"),
+                        ("hot-100", "various", "Hot 100", str(curated_album), 1, "incomplete", ""),
                     ],
                 )
                 db.executemany(
@@ -437,27 +450,61 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                             "film-rob", "film", str(soundtrack / "1-01 - Rob Wasserman - Theme.mp3"),
                             "Theme", "Various Artists", "",
                         ),
+                        (
+                            "collection-rob", "collection", str(various_album / "song.mp3"),
+                            "Collection Song", "Rob Wasserman", "rob-mbid",
+                        ),
+                        (
+                            "collection-only", "collection", str(various_album / "guest.mp3"),
+                            "Guest Song", "V/A Only Performer", "guest-mbid",
+                        ),
+                        (
+                            "hot-100-rob", "hot-100", str(curated_album / "song.mp3"),
+                            "Compilation Song", "Rob Wasserman", "rob-mbid",
+                        ),
                     ],
                 )
                 db.commit()
 
-            app = PreviewApp(root, database, root, credentials, cache=root / "cache")
+            app = PreviewApp(
+                root,
+                database,
+                root,
+                credentials,
+                various_artist_path=root / "[Various Artists]",
+                soundtracks_path=root / "[Soundtracks]",
+                curated_compilations_path=root / "[Various Artists]" / "Billboard",
+                cache=root / "cache",
+            )
             artists = {item["name"]: item for item in app.artists("")}
             self.assertEqual(
                 set(artists), {"Aaron Neville", "Linda Ronstadt", "Rob Wasserman"}
             )
             self.assertNotIn("Rob Wasserman & Aaron Neville", artists)
             self.assertNotIn("Linda Ronstadt & Aaron Neville", artists)
-            self.assertEqual(artists["Rob Wasserman"]["albums"], 2)
+            self.assertNotIn("V/A Only Performer", artists)
+            # Rob qualifies through Gold, then keeps the non-Fallback V/A and
+            # soundtrack appearances in his expanded Artist file list.
+            self.assertEqual(artists["Rob Wasserman"]["albums"], 3)
             rob = app.artist(artists["Rob Wasserman"]["id"])
-            self.assertEqual({item["id"] for item in rob["albums"]}, {"gold", "film"})
+            self.assertEqual(
+                {item["id"] for item in rob["albums"]},
+                {"gold", "film", "collection", "hot-100"},
+            )
             gold_card = next(item for item in rob["albums"] if item["id"] == "gold")
             film_card = next(item for item in rob["albums"] if item["id"] == "film")
+            collection_card = next(item for item in rob["albums"] if item["id"] == "collection")
+            curated_card = next(item for item in rob["albums"] if item["id"] == "hot-100")
             self.assertTrue(gold_card["featured"])
             self.assertFalse(gold_card["various_artists"])
             self.assertFalse(film_card["featured"])
             self.assertTrue(film_card["various_artists"])
-            self.assertEqual(set(rob["top_tracks"]), {"Song", "Theme"})
+            self.assertEqual(collection_card["library_group"], "various-artists")
+            self.assertEqual(curated_card["library_group"], "fallback")
+            self.assertEqual(
+                set(rob["top_tracks"]),
+                {"Song", "Theme", "Collection Song", "Compilation Song"},
+            )
 
     def test_projected_featured_artist_does_not_merge_into_album_owner(self):
         with TemporaryDirectory() as directory:
@@ -714,7 +761,9 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
 
             listed = [item for item in app.artists("") if item["name"].casefold().endswith("nsync")]
             self.assertEqual(len(listed), 1)
-            self.assertEqual(listed[0]["albums"], 3)
+            # The center overview retains the COMP card, while the expanded
+            # Artist file list never counts Fallback.
+            self.assertEqual(listed[0]["albums"], 5)
             self.assertNotIn(
                 "Various Artists",
                 {item["name"] for item in app.artists("")},
@@ -724,7 +773,7 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                 {item["name"] for item in app.artists("")},
             )
             self.assertEqual(
-                {item["id"] for item in app.albums("")},
+                {item["id"] for item in app.albums("", False)},
                 {"artist-2001", "artist-2000", "artist-1998", "soundtrack", "various"},
             )
             self.assertEqual([item["id"] for item in app.albums("", True)], ["comp"])
@@ -732,7 +781,7 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             artist = app.artist("nsync-duplicate")
             self.assertEqual(artist["id"], "nsync-main")
             self.assertEqual({item["id"] for item in artist["albums"]}, {
-                "artist-2001", "artist-2000", "artist-1998", "soundtrack", "various"
+                "artist-2001", "artist-2000", "artist-1998", "soundtrack", "various", "comp"
             })
             self.assertTrue(next(item for item in artist["albums"] if item["id"] == "soundtrack")["soundtrack"])
             self.assertTrue(next(item for item in artist["albums"] if item["id"] == "various")["various_artists"])
@@ -829,10 +878,14 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             app = PreviewApp(root, database, root, credentials, cache=root / "cache")
             artist = app.artist("target")
             albums = {item["id"]: item for item in artist["albums"]}
-            self.assertEqual(set(albums), {"own", "featured", "filename-featured"})
+            self.assertEqual(
+                set(albums),
+                {"own", "featured", "filename-featured", "comp"},
+            )
             self.assertFalse(albums["own"]["featured"])
             self.assertTrue(albums["featured"]["featured"])
             self.assertTrue(albums["filename-featured"]["featured"])
+            self.assertFalse(albums["comp"]["featured"])
             self.assertEqual([group["id"] for group in app.artist_comp_albums("target")], ["comp"])
 
 
