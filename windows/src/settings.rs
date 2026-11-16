@@ -271,7 +271,7 @@ impl Default for UiPreferences {
             show_tracks: false,
             media_selector_expanded: true,
             media_filter_expanded: false,
-            candidate_filter_expanded: true,
+            candidate_filter_expanded: false,
             media_filter_locked: false,
             candidate_filter_locked: false,
             animate_webp_preview: false,
@@ -804,7 +804,7 @@ pub fn save_config_text(text: &str) -> Result<Config, String> {
 }
 
 pub fn save_config_text_at_root(text: &str, root: &Path) -> Result<Config, String> {
-    let path = root.join("data").join("config.toml");
+    let path = default_configuration_directory(root).join("config.toml");
     save_config_text_at_path(text, root, &path)
 }
 
@@ -830,7 +830,7 @@ pub fn save_config(config: &Config) -> Result<Config, String> {
 }
 
 pub fn save_config_at_root(config: &Config, root: &Path) -> Result<Config, String> {
-    let path = root.join("data").join("config.toml");
+    let path = default_configuration_directory(root).join("config.toml");
     save_config_at_path(config, root, &path)
 }
 
@@ -859,7 +859,7 @@ struct ConfigurationLocationDocument {
 }
 
 /// Save Config v5 into an operator-selected directory, move ui.toml beside
-/// it, switch the user-scoped locator, and only then remove the old copies.
+/// it, switch the installation-scoped locator, and only then remove old copies.
 /// Runtime paths continue to resolve against the stable application root.
 pub fn save_config_in_directory(
     config: &Config,
@@ -897,22 +897,21 @@ fn save_config_in_directory_at(
         )
     })?;
 
-    let destination = selected_directory
+    let destination = selected_directory.to_path_buf();
+    let canonical_destination = selected_directory
         .canonicalize()
         .unwrap_or_else(|_| selected_directory.to_path_buf());
     let current_directory = current
         .config_dir
         .canonicalize()
         .unwrap_or_else(|_| current.config_dir.clone());
-    if current_directory == destination {
-        return save_config_at_path(config, root, &current.config_file);
-    }
+    let same_physical_directory = current_directory == canonical_destination;
 
     let destination_config = destination.join("config.toml");
     let destination_ui = destination.join("ui.toml");
     save_config_at_path(config, root, &destination_config)?;
 
-    if current.ui_file.is_file() {
+    if current.ui_file.is_file() && current.ui_file != destination_ui {
         let ui_body = std::fs::read_to_string(&current.ui_file).map_err(|error| {
             format!(
                 "Unable to read Interface Settings {} before moving them: {error}",
@@ -929,13 +928,26 @@ fn save_config_in_directory_at(
                     .map_err(|error| format!("Invalid staged interface settings: {error}"))
             },
         )?;
+    } else if !destination_ui.is_file() {
+        let ui_body = toml::to_string_pretty(&UiPreferences::default())
+            .map_err(|error| format!("Unable to serialize Interface Settings: {error}"))?;
+        replace_text_file(
+            &destination_ui,
+            &ui_body,
+            "SPLINED interface settings",
+            |candidate| {
+                toml::from_str::<UiPreferences>(candidate)
+                    .map(|_| ())
+                    .map_err(|error| format!("Invalid staged interface settings: {error}"))
+            },
+        )?;
     }
 
     let default_directory = default_configuration_directory(root);
     let default_directory = default_directory
         .canonicalize()
         .unwrap_or(default_directory);
-    if destination == default_directory {
+    if canonical_destination == default_directory {
         if locator.is_file() {
             std::fs::remove_file(locator).map_err(|error| {
                 format!(
@@ -967,7 +979,14 @@ fn save_config_in_directory_at(
 
     let activated_directory = configuration_directory_from_locator(root, locator)?;
     let activated = AppLayout::from_root_and_config_dir(root.to_path_buf(), activated_directory);
-    if activated.config_file != destination_config {
+    let activated_config = activated
+        .config_file
+        .canonicalize()
+        .unwrap_or_else(|_| activated.config_file.clone());
+    let expected_config = destination_config
+        .canonicalize()
+        .unwrap_or_else(|_| destination_config.clone());
+    if activated_config != expected_config {
         return Err(format!(
             "Configuration Path activation failed; expected {}, got {}.",
             destination_config.display(),
@@ -977,7 +996,7 @@ fn save_config_in_directory_at(
     let verified = load_config_at_path(&activated.config_file, root)?;
 
     for old_file in [&current.config_file, &current.ui_file] {
-        if old_file.is_file() {
+        if !same_physical_directory && old_file.is_file() {
             std::fs::remove_file(old_file).map_err(|error| {
                 format!(
                     "Configuration Path changed, but the old file could not be removed {}: {error}",
@@ -986,7 +1005,8 @@ fn save_config_in_directory_at(
             })?;
         }
     }
-    if current.config_dir.is_dir()
+    if !same_physical_directory
+        && current.config_dir.is_dir()
         && std::fs::read_dir(&current.config_dir)
             .map(|mut entries| entries.next().is_none())
             .unwrap_or(false)
@@ -1192,7 +1212,7 @@ mod tests {
 
         let saved = save_config_at_root(&config, root.path()).unwrap();
 
-        assert!(root.path().join("data/config.toml").is_file());
+        assert!(root.path().join("config.toml").is_file());
         assert!(Path::new(&saved.scan.cache_dir).is_dir());
         assert!(Path::new(&saved.scan.temporary_cache_dir).is_dir());
         assert!(Path::new(&saved.scan.log_dir).is_dir());
@@ -1202,7 +1222,7 @@ mod tests {
     }
 
     #[test]
-    fn configuration_relocation_moves_config_and_ui_then_removes_old_data_dir() {
+    fn configuration_relocation_moves_config_and_ui_from_portable_root() {
         let temp = TempDir::new().unwrap();
         let root = temp.path().join("install");
         std::fs::create_dir_all(&root).unwrap();
@@ -1226,12 +1246,30 @@ mod tests {
         assert!(destination.join("ui.toml").is_file());
         assert!(!current.config_file.exists());
         assert!(!current.ui_file.exists());
-        assert!(!current.config_dir.exists());
+        assert!(current.config_dir.exists());
         assert_eq!(
             configuration_directory_from_locator(&root, &locator).unwrap(),
-            destination.canonicalize().unwrap()
+            destination
         );
         assert_eq!(saved.library.music_library, config.library.music_library);
+    }
+
+    #[test]
+    fn first_setup_save_creates_both_tomls_only_on_save() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().join("install");
+        std::fs::create_dir_all(&root).unwrap();
+        let config = test_config(&root);
+        let current = AppLayout::from_root(root.clone());
+        let locator = root.join("configuration-location.toml");
+
+        assert!(!current.config_file.exists());
+        assert!(!current.ui_file.exists());
+        save_config_in_directory_at(&config, &root, &current, &root, &locator).unwrap();
+
+        assert!(root.join("config.toml").is_file());
+        assert!(root.join("ui.toml").is_file());
+        assert!(!locator.exists());
     }
 
     #[test]
@@ -1339,6 +1377,11 @@ mod tests {
         let text = toml::to_string(&preferences).unwrap();
         let restored: UiPreferences = toml::from_str(&text).unwrap();
         assert_eq!(restored, preferences);
+    }
+
+    #[test]
+    fn new_interface_defaults_candidate_filter_collapsed() {
+        assert!(!UiPreferences::default().candidate_filter_expanded);
     }
 
     #[test]

@@ -1281,24 +1281,50 @@ component SettingField {
     in property <string> label;
     in-out property <string> value;
     in property <string> hint;
+    in property <bool> enabled: true;
     callback edited(string);
     height: (34px * AppTheme.ui-scale);
     HorizontalLayout { spacing: (8px * AppTheme.ui-scale);
-        Label { text: root.label; width: (230px * AppTheme.ui-scale); }
-        LineEdit { text <=> root.value; placeholder-text: root.hint; horizontal-stretch: 1; edited(value) => root.edited(value); }
+        Label { text: root.label; width: (230px * AppTheme.ui-scale); color: root.enabled ? AppTheme.foreground : AppTheme.secondary-foreground; }
+        LineEdit { text <=> root.value; placeholder-text: root.hint; horizontal-stretch: 1; enabled: root.enabled; edited(value) => root.edited(value); }
     }
 }
 component PathSettingField {
     in property <string> label;
     in-out property <string> value;
     in property <string> hint;
+    in property <bool> enabled: true;
     callback browse();
     callback edited(string);
     height: (36px * AppTheme.ui-scale);
     HorizontalLayout { spacing: (8px * AppTheme.ui-scale);
-        Label { text: root.label; width: (230px * AppTheme.ui-scale); }
-        LineEdit { text <=> root.value; placeholder-text: root.hint; horizontal-stretch: 1; edited(value) => root.edited(value); }
-        Button { text: "Browse…"; width: (88px * AppTheme.ui-scale); clicked => root.browse(); }
+        Label { text: root.label; width: (230px * AppTheme.ui-scale); color: root.enabled ? AppTheme.foreground : AppTheme.secondary-foreground; }
+        LineEdit { text <=> root.value; placeholder-text: root.hint; horizontal-stretch: 1; enabled: root.enabled; edited(value) => root.edited(value); }
+        Button { text: "Browse…"; width: (88px * AppTheme.ui-scale); enabled: root.enabled; clicked => root.browse(); }
+    }
+}
+component SetupPathField {
+    in property <string> label;
+    in-out property <string> value;
+    in property <string> hint;
+    in property <string> summary;
+    in property <bool> enabled: true;
+    callback browse();
+    callback guide();
+    callback edited(string);
+    height: (60px * AppTheme.ui-scale);
+    VerticalLayout { spacing: (2px * AppTheme.ui-scale);
+        HorizontalLayout { height: (36px * AppTheme.ui-scale); spacing: (8px * AppTheme.ui-scale);
+            Label { text: root.label; width: (230px * AppTheme.ui-scale); color: root.enabled ? AppTheme.foreground : AppTheme.secondary-foreground; }
+            LineEdit { text <=> root.value; placeholder-text: root.hint; horizontal-stretch: 1; enabled: root.enabled; edited(value) => root.edited(value); }
+            Button { text: "Browse…"; width: (88px * AppTheme.ui-scale); enabled: root.enabled; clicked => root.browse(); }
+            Button { text: "Guide ↗"; width: (84px * AppTheme.ui-scale); clicked => root.guide(); }
+        }
+        HorizontalLayout { height: (20px * AppTheme.ui-scale); spacing: (8px * AppTheme.ui-scale);
+            Rectangle { width: (230px * AppTheme.ui-scale); background: transparent; }
+            Text { text: root.summary; color: AppTheme.secondary-foreground; font-size: (12px * AppTheme.ui-scale) * AppTheme.font-scale; overflow: elide; horizontal-stretch: 1; }
+            Rectangle { width: (180px * AppTheme.ui-scale); background: transparent; }
+        }
     }
 }
 component SettingToggle {
@@ -1748,7 +1774,7 @@ export component AppWindow inherits Window {
     in-out property <bool> show-tracks: false;
     in-out property <bool> media-selector-expanded: true;
     in-out property <bool> media-filter-expanded: false;
-    in-out property <bool> candidate-filter-expanded: true;
+    in-out property <bool> candidate-filter-expanded: false;
     in-out property <bool> media-filter-locked: false;
     in-out property <bool> candidate-filter-locked: false;
     in-out property <bool> artwork-editing-expanded: true;
@@ -1827,6 +1853,7 @@ export component AppWindow inherits Window {
     in-out property <string> selected-source-name: "All";
     in-out property <bool> setup-required: false;
     in-out property <bool> setup-saving: false;
+    private property <bool> setup-library-ready: root.settings-music-library != "";
     in-out property <string> setup-loaded-archive-path: "";
     in-out property <bool> import-client-lock-prompt-visible: false;
     in property <string> setup-message;
@@ -2135,21 +2162,24 @@ export component AppWindow inherits Window {
                     if (root.settings-section == "Backup") { root.settings-section = "Library"; }
                 } }
                 HeaderAction { label: "?  Help ▾"; width: (94px * AppTheme.ui-scale); emphasized: root.help-menu-visible || root.page-index == 4; clicked => { root.theme-menu-visible = false; root.help-menu-visible = !root.help-menu-visible; } }
-                if root.setup-required: HeaderAction { label: "Setup"; width: (78px * AppTheme.ui-scale); enabled: false; }
+                if root.setup-required: HeaderAction {
+                    label: "Setup";
+                    width: (78px * AppTheme.ui-scale);
+                    enabled: root.setup-library-ready && !root.setup-saving && (!root.setup-database-network-path || root.settings-sqlite-shared) && (root.restore-path == "" || root.restore-path == root.setup-loaded-archive-path);
+                    clicked => root.save-setup();
+                }
             }
         }
 
         if root.setup-required && root.page-index != 4: Panel { vertical-stretch: 1;
             ScrollView { vertical-stretch: 1;
                 VerticalLayout { padding: (24px * AppTheme.ui-scale); spacing: (13px * AppTheme.ui-scale);
-                    HorizontalLayout { height: (58px * AppTheme.ui-scale); spacing: (12px * AppTheme.ui-scale);
-                        BrandMark { width: (330px * AppTheme.ui-scale); height: (52px * AppTheme.ui-scale); compact: true; }
-                        Rectangle { horizontal-stretch: 1; background: transparent; }
-                        Text { text: "WINDOWS SETUP"; color: AppTheme.yellow; font-size: (20px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 700; vertical-alignment: center; }
+                    HorizontalLayout { height: (42px * AppTheme.ui-scale); spacing: (12px * AppTheme.ui-scale);
+                        Heading { text: root.setup-saving ? "Preparing Your Artwork Workspace" : "Prepare This Windows Installation"; color: root.setup-progress-failed ? AppTheme.danger : (root.setup-saving ? AppTheme.yellow : AppTheme.cyan); font-size: (25px * AppTheme.ui-scale) * AppTheme.font-scale; horizontal-stretch: 1; }
+                        Text { text: "WINDOWS SETUP"; color: AppTheme.yellow; font-size: (16px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 700; vertical-alignment: center; }
                         Button { text: "Windows Setup Guide ↗"; width: (186px * AppTheme.ui-scale); clicked => root.open-about-link("guide"); }
                     }
-                    Heading { text: root.setup-saving ? "Preparing Your Artwork Workspace" : "Prepare This Windows Installation"; color: root.setup-progress-failed ? AppTheme.danger : (root.setup-saving ? AppTheme.yellow : AppTheme.cyan); font-size: (25px * AppTheme.ui-scale) * AppTheme.font-scale; height: (40px * AppTheme.ui-scale); }
-                    Text { text: "Choose the music library and storage locations this PC will use. Setup saves Config v5, opens an existing SQLite catalog when one is usable, or publishes the first index for a new local or shared database. Music and artwork files are not modified by Setup."; color: AppTheme.foreground; wrap: word-wrap; height: (58px * AppTheme.ui-scale); font-size: (15px * AppTheme.ui-scale) * AppTheme.font-scale; }
+                    Text { text: "Choose the music library and storage locations this PC will use. Setup saves Config v5, opens an existing SQLite catalog when one is usable, or publishes the first index for a new local or shared database. Music and artwork files are not modified by Setup."; color: AppTheme.foreground; wrap: word-wrap; height: (46px * AppTheme.ui-scale); font-size: (15px * AppTheme.ui-scale) * AppTheme.font-scale; }
 
                     Rectangle {
                         height: root.setup-saving ? (170px * AppTheme.ui-scale) : (root.setup-progress-failed ? (146px * AppTheme.ui-scale) : (104px * AppTheme.ui-scale));
@@ -2175,8 +2205,8 @@ export component AppWindow inherits Window {
                     }
 
                     Heading { text: "Configuration Storage"; color: AppTheme.cyan; height: (30px * AppTheme.ui-scale); }
-                    Text { text: "Config v5 and Interface Settings default to the installation data folder. Saving a different absolute folder moves config.toml and ui.toml there and removes the old copies."; color: AppTheme.secondary-foreground; wrap: word-wrap; height: (42px * AppTheme.ui-scale); }
-                    PathSettingField { label: "Configuration Path *"; value <=> root.settings-configuration-dir; hint: "Folder containing config.toml and ui.toml"; browse => root.browse-setting-directory("configuration"); }
+                    Text { text: "Before Save, Setup is held in memory and no TOML is created. Configuration defaults to the folder containing splined.exe; selecting another absolute folder stores both config.toml and ui.toml there."; color: AppTheme.secondary-foreground; wrap: word-wrap; height: (42px * AppTheme.ui-scale); }
+                    SetupPathField { label: "Configuration Path *"; value <=> root.settings-configuration-dir; hint: "Folder containing config.toml and ui.toml"; summary: "Owns Config v5 and Interface Settings; Portable defaults beside splined.exe."; browse => root.browse-setting-directory("configuration"); guide => root.open-about-link("setup-configuration"); }
 
                     Rectangle { height: (128px * AppTheme.ui-scale); border-radius: (8px * AppTheme.ui-scale); border-width: (1px * AppTheme.ui-scale); border-color: AppTheme.border; background: AppTheme.quiet-surface;
                         VerticalLayout { padding: (11px * AppTheme.ui-scale); spacing: (7px * AppTheme.ui-scale);
@@ -2195,12 +2225,12 @@ export component AppWindow inherits Window {
 
                     Heading { text: "Library and SQLite"; color: AppTheme.cyan; height: (30px * AppTheme.ui-scale); }
                     Text { text: "The Media Library must already exist. The database directory owns splined.db; Setup identifies an existing catalog before opening it. Scan Library defaults to Media Library when blank."; color: AppTheme.secondary-foreground; wrap: word-wrap; height: (42px * AppTheme.ui-scale); }
-                    PathSettingField { label: "Media Library *"; value <=> root.settings-music-library; hint: "Existing local or UNC music directory"; browse => root.browse-setting-directory("music"); }
-                    PathSettingField { label: "Various Artist"; value <=> root.settings-various-artist-path; hint: "Defaults to Media Library"; browse => root.browse-setting-directory("various-artist"); }
-                    PathSettingField { label: "Soundtracks"; value <=> root.settings-soundtracks-path; hint: "Defaults to Media Library"; browse => root.browse-setting-directory("soundtracks"); }
-                    PathSettingField { label: "Curated Compilations"; value <=> root.settings-curated-compilations-path; hint: "Defaults to Media Library"; browse => root.browse-setting-directory("curated-compilations"); }
-                    PathSettingField { label: "Scan Library (optional)"; value <=> root.settings-scan-library; hint: "Defaults to Media Library when blank"; browse => root.browse-setting-directory("scan"); }
-                    PathSettingField { label: "SQLite/database directory *"; value <=> root.settings-database-dir; hint: "Directory that owns splined.db"; browse => root.browse-setting-directory("database"); edited(value) => root.setup-database-path-edited(value); }
+                    SetupPathField { label: "Music Library *"; value <=> root.settings-music-library; hint: "Existing local or UNC music directory"; summary: "Collection root and Album authority; choosing it unlocks the remaining Setup paths."; browse => root.browse-setting-directory("music"); guide => root.open-about-link("setup-music"); }
+                    SetupPathField { label: "Various Artist"; value <=> root.settings-various-artist-path; hint: "Defaults to Media Library"; summary: "Optional root that groups its Albums under V/A OST without creating Artists."; enabled: root.setup-library-ready; browse => root.browse-setting-directory("various-artist"); guide => root.open-about-link("setup-various"); }
+                    SetupPathField { label: "Soundtracks"; value <=> root.settings-soundtracks-path; hint: "Defaults to Media Library"; summary: "Independent optional root for soundtrack Albums; it may be outside Various Artist."; enabled: root.setup-library-ready; browse => root.browse-setting-directory("soundtracks"); guide => root.open-about-link("setup-soundtracks"); }
+                    SetupPathField { label: "Curated Compilations"; value <=> root.settings-curated-compilations-path; hint: "Defaults to Media Library"; summary: "Highest-priority category root; Albums remain overview cards but leave Artist file lists."; enabled: root.setup-library-ready; browse => root.browse-setting-directory("curated-compilations"); guide => root.open-about-link("setup-curated"); }
+                    SetupPathField { label: "Scan Library (optional)"; value <=> root.settings-scan-library; hint: "Defaults to Media Library when blank"; summary: "Optional discovery boundary; blank scans the Music Library and never changes its authority."; enabled: root.setup-library-ready; browse => root.browse-setting-directory("scan"); guide => root.open-about-link("setup-scan"); }
+                    SetupPathField { label: "SQLite/database directory *"; value <=> root.settings-database-dir; hint: "Directory that owns splined.db"; summary: "Persistent catalog location; network shares require Shared/network SQLite mode."; enabled: root.setup-library-ready; browse => root.browse-setting-directory("database"); guide => root.open-about-link("setup-database"); edited(value) => root.setup-database-path-edited(value); }
 
                     Rectangle {
                         height: (170px * AppTheme.ui-scale); border-radius: (8px * AppTheme.ui-scale); border-width: (2px * AppTheme.ui-scale);
@@ -2213,7 +2243,7 @@ export component AppWindow inherits Window {
                                     color: root.setup-database-network-path && !root.settings-sqlite-shared ? AppTheme.danger : (root.settings-sqlite-shared && root.settings-windows-client-lock ? AppTheme.green : (root.settings-sqlite-shared ? AppTheme.yellow : AppTheme.cyan));
                                     font-size: (16px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 700; horizontal-stretch: 1; overflow: elide;
                                 }
-                                Button { text: "Shared DB Guide ↗"; width: (156px * AppTheme.ui-scale); clicked => root.open-about-link("shared-db"); }
+                                Button { text: "Shared DB Guide ↗"; width: (156px * AppTheme.ui-scale); enabled: root.setup-library-ready; clicked => root.open-about-link("shared-db"); }
                             }
                             Text { text: root.setup-database-summary; color: AppTheme.foreground; overflow: elide; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; }
                             Text {
@@ -2227,24 +2257,25 @@ export component AppWindow inherits Window {
                                 color: root.setup-database-network-path && !root.settings-sqlite-shared ? AppTheme.danger : (root.settings-sqlite-shared ? AppTheme.yellow : AppTheme.secondary-foreground); wrap: word-wrap; height: (43px * AppTheme.ui-scale); font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale;
                             }
                             HorizontalLayout { height: (34px * AppTheme.ui-scale); spacing: (16px * AppTheme.ui-scale);
-                                RadioToggle { label: "Shared/network SQLite (advanced)"; checked <=> root.settings-sqlite-shared; horizontal-stretch: 1; }
-                                RadioToggle { label: "Use extra .client-lock"; checked <=> root.settings-windows-client-lock; enabled: root.settings-sqlite-shared; horizontal-stretch: 1; }
+                                RadioToggle { label: "Shared/network SQLite (advanced)"; checked <=> root.settings-sqlite-shared; enabled: root.setup-library-ready; horizontal-stretch: 1; }
+                                RadioToggle { label: "Use extra .client-lock"; checked <=> root.settings-windows-client-lock; enabled: root.setup-library-ready && root.settings-sqlite-shared; horizontal-stretch: 1; }
                             }
                         }
                     }
 
                     Heading { text: "Supporting Storage"; color: AppTheme.cyan; height: (30px * AppTheme.ui-scale); }
                     Text { text: "Portable defaults are beside splined.exe and are created only after Setup is saved. Keep temporary cache local for best performance; credentials contain provider JSON files."; color: AppTheme.secondary-foreground; wrap: word-wrap; height: (40px * AppTheme.ui-scale); }
-                    PathSettingField { label: "V/A / OST Artist Images Directory *"; value <=> root.settings-shared-artist-art-dir; hint: "Materialized portrait/banner files for artists in shared album folders"; browse => root.browse-setting-directory("artist-art"); }
-                    PathSettingField { label: "Temporary cache *"; value <=> root.settings-temporary-cache-dir; hint: "Disposable candidate and preview files"; browse => root.browse-setting-directory("temporary"); }
-                    PathSettingField { label: "Log directory *"; value <=> root.settings-log-dir; hint: "Runtime diagnostics"; browse => root.browse-setting-directory("logs"); }
-                    PathSettingField { label: "Credential directory *"; value <=> root.settings-credential-dir; hint: "Provider JSON files"; browse => root.browse-setting-directory("credentials"); }
-                    SettingField { label: "Ignored subdirectories"; value <=> root.settings-ignored-subs; hint: "Comma-separated; optional"; }
+                    SetupPathField { label: "V/A / OST Artist Images Directory *"; value <=> root.settings-shared-artist-art-dir; hint: "Materialized portrait/banner files"; summary: "Shared portraits and banners for real Artists credited on V/A and soundtrack Albums."; enabled: root.setup-library-ready; browse => root.browse-setting-directory("artist-art"); guide => root.open-about-link("setup-artist-art"); }
+                    SetupPathField { label: "Temporary cache *"; value <=> root.settings-temporary-cache-dir; hint: "Disposable candidate and preview files"; summary: "Disposable downloads and previews; local storage avoids slow artwork searches."; enabled: root.setup-library-ready; browse => root.browse-setting-directory("temporary"); guide => root.open-about-link("setup-cache"); }
+                    SetupPathField { label: "Log directory *"; value <=> root.settings-log-dir; hint: "Runtime diagnostics"; summary: "Current per-run diagnostics are written below this root in run; no music is stored here."; enabled: root.setup-library-ready; browse => root.browse-setting-directory("logs"); guide => root.open-about-link("setup-logs"); }
+                    SetupPathField { label: "Credential directory *"; value <=> root.settings-credential-dir; hint: "Provider JSON files"; summary: "Provider connection JSON; secrets stay outside config.toml and ui.toml."; enabled: root.setup-library-ready; browse => root.browse-setting-directory("credentials"); guide => root.open-about-link("setup-credentials"); }
+                    SetupPathField { label: "Sample images directory"; value <=> root.settings-sample-dir; hint: "Optional Artist / Album Sample Library"; summary: "Optional Samples source images; this directory is never indexed as music."; enabled: root.setup-library-ready; browse => root.browse-sample-directory(); guide => root.open-about-link("setup-samples"); }
+                    SettingField { label: "Ignored subdirectories"; value <=> root.settings-ignored-subs; hint: "Comma-separated; optional"; enabled: root.setup-library-ready; }
 
                     Rectangle { height: (78px * AppTheme.ui-scale); border-radius: (8px * AppTheme.ui-scale); border-width: (1px * AppTheme.ui-scale); border-color: root.setup-database-network-path && !root.settings-sqlite-shared ? AppTheme.danger : AppTheme.border; background: AppTheme.quiet-surface;
                         HorizontalLayout { padding: (12px * AppTheme.ui-scale); spacing: (12px * AppTheme.ui-scale);
                             Text { text: root.setup-database-network-path && !root.settings-sqlite-shared ? "Select Shared/network SQLite above to continue safely." : "Setup may take several minutes for a large first index. Keep this window open; album counts, current path, errors, and publication progress will be shown here."; color: root.setup-database-network-path && !root.settings-sqlite-shared ? AppTheme.danger : AppTheme.secondary-foreground; wrap: word-wrap; vertical-alignment: center; horizontal-stretch: 1; }
-                            Button { text: root.setup-saving ? "Setup in Progress…" : (root.setup-database-network-path && !root.settings-sqlite-shared ? "Shared Mode Required" : "Save & Open Settings"); width: root.setup-saving ? (220px * AppTheme.ui-scale) : (210px * AppTheme.ui-scale); enabled: !root.setup-saving && (!root.setup-database-network-path || root.settings-sqlite-shared) && (root.restore-path == "" || root.restore-path == root.setup-loaded-archive-path); clicked => root.save-setup(); }
+                            Button { text: root.setup-saving ? "Setup in Progress…" : (root.setup-database-network-path && !root.settings-sqlite-shared ? "Shared Mode Required" : "Save & Open Settings"); width: root.setup-saving ? (220px * AppTheme.ui-scale) : (210px * AppTheme.ui-scale); enabled: root.setup-library-ready && !root.setup-saving && (!root.setup-database-network-path || root.settings-sqlite-shared) && (root.restore-path == "" || root.restore-path == root.setup-loaded-archive-path); clicked => root.save-setup(); }
                         }
                     }
                     Rectangle { height: (12px * AppTheme.ui-scale); background: transparent; }
@@ -3487,7 +3518,7 @@ export component AppWindow inherits Window {
                             VerticalLayout { spacing: (5px * AppTheme.ui-scale);
                                 SettingsHelpTip { summary: "Which folders does SPLINED use?"; detail: "The music library is read as your collection. The database directory contains splined.db, which records inventory and progress. Temporary cache holds disposable artwork and previews; logs contain diagnostics. Saving settings validates these paths and reloads the library, but does not write music files."; }
                                 Heading { text: "Library And Application Paths"; height: (27px * AppTheme.ui-scale); }
-                                PathSettingField { label: "Configuration Path *"; value <=> root.settings-configuration-dir; hint: "Folder containing config.toml and ui.toml"; browse => root.browse-setting-directory("configuration"); }
+                                PathSettingField { label: "Configuration Path *"; value <=> root.settings-configuration-dir; hint: root.settings-advanced-visible ? "Folder containing config.toml and ui.toml" : "Enable Advanced to relocate configuration"; enabled: root.settings-advanced-visible; browse => root.browse-setting-directory("configuration"); }
                                 PathSettingField { label: "Music Library *"; value <=> root.settings-music-library; hint: "Existing local or UNC directory"; browse => root.browse-setting-directory("music"); }
                                 PathSettingField { label: "Various Artist"; value <=> root.settings-various-artist-path; hint: "Defaults to Music Library"; browse => root.browse-setting-directory("various-artist"); }
                                 PathSettingField { label: "Soundtracks"; value <=> root.settings-soundtracks-path; hint: "Defaults to Music Library"; browse => root.browse-setting-directory("soundtracks"); }
@@ -4263,10 +4294,11 @@ export component AppWindow inherits Window {
     if root.backup-first-run-prompt-visible: Rectangle {
         x: (0px * AppTheme.ui-scale); y: (0px * AppTheme.ui-scale); width: root.width; height: root.height; background: #bf10080c;
         TouchArea { }
-        Rectangle { width: min((620px * AppTheme.ui-scale), root.width - (48px * AppTheme.ui-scale)); height: (210px * AppTheme.ui-scale); x: (root.width - self.width) / 2; y: (root.height - self.height) / 2; border-radius: (10px * AppTheme.ui-scale); background: AppTheme.panel-background; border-color: AppTheme.cyan; border-width: (2px * AppTheme.ui-scale);
+        Rectangle { width: min((720px * AppTheme.ui-scale), root.width - (48px * AppTheme.ui-scale)); height: (282px * AppTheme.ui-scale); x: (root.width - self.width) / 2; y: (root.height - self.height) / 2; border-radius: (10px * AppTheme.ui-scale); background: AppTheme.panel-background; border-color: AppTheme.cyan; border-width: (2px * AppTheme.ui-scale);
             VerticalLayout { padding: (18px * AppTheme.ui-scale); spacing: (12px * AppTheme.ui-scale);
                 Heading { text: "Create A First Settings Backup?"; color: AppTheme.cyan; height: (32px * AppTheme.ui-scale); }
-                Text { text: "A .spl backup preserves your settings path and chosen configuration. This creates only a backup file; it does not restore, reset, or modify music."; color: AppTheme.foreground; wrap: word-wrap; vertical-stretch: 1; }
+                Text { text: "Before Settings opens, save a .spl archive containing the configuration and interface defaults you just created. The selected directory is recorded in ui.toml and becomes the Settings Backup / Restore location. Music is not modified."; color: AppTheme.foreground; wrap: word-wrap; height: (62px * AppTheme.ui-scale); }
+                PathSettingField { label: "Settings Backup Directory"; value <=> root.settings-backup-directory; hint: "Directory for .spl Settings Archives"; browse => root.browse-backup-directory("settings"); }
                 HorizontalLayout { height: (38px * AppTheme.ui-scale); spacing: (10px * AppTheme.ui-scale);
                     NeonAction { width: (120px * AppTheme.ui-scale); label: "Later"; clicked => { root.backup-prompt-dismissed = true; root.backup-first-run-prompt-visible = false; } }
                     Rectangle { horizontal-stretch: 1; background: transparent; }

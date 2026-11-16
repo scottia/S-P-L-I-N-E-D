@@ -2,8 +2,8 @@
 //!
 //! This module deliberately performs no filesystem writes. Portable state is
 //! rooted beside `splined.exe`; packaged state is rooted under the package's
-//! LocalState directory. Configuration/setup code creates `data` and the
-//! operator-selected runtime directories only after an explicit save.
+//! LocalState directory. Configuration/setup code creates configuration and
+//! runtime files only after an explicit save.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -23,7 +23,7 @@ pub struct AppLayout {
 
 impl AppLayout {
     pub fn from_root(root: PathBuf) -> Self {
-        let config_dir = root.join("data");
+        let config_dir = root.clone();
         Self::from_root_and_config_dir(root, config_dir)
     }
 
@@ -125,24 +125,27 @@ struct ConfigurationLocation {
 }
 
 pub fn default_configuration_directory(root: &Path) -> PathBuf {
-    root.join("data")
+    root.to_path_buf()
 }
 
-/// The locator is deliberately user-scoped rather than stored beside the
-/// executable. That lets an operator move config.toml and ui.toml completely
-/// out of the install directory while preserving the selection across starts.
+/// The locator belongs to this installation. A portable copy cannot inherit a
+/// path selected by an unrelated test or installation under the same account.
 pub fn configuration_locator_path() -> Result<PathBuf, String> {
-    let local_app_data = std::env::var_os("LOCALAPPDATA").ok_or_else(|| {
-        "LOCALAPPDATA is unavailable for the SPLINED configuration locator.".to_string()
-    })?;
-    Ok(PathBuf::from(local_app_data)
-        .join("SPLINED")
-        .join("configuration-location.toml"))
+    Ok(state_root()?.join("configuration-location.toml"))
 }
 
 pub fn configuration_directory_for_root(root: &Path) -> Result<PathBuf, String> {
-    let locator = configuration_locator_path()?;
-    configuration_directory_from_locator(root, &locator)
+    let locator = root.join("configuration-location.toml");
+    if locator.is_file() {
+        return configuration_directory_from_locator(root, &locator);
+    }
+    // Existing portable releases stored both TOMLs under data/. Keep those
+    // installations loadable without manufacturing a locator during startup.
+    let legacy = root.join("data");
+    if legacy.join("config.toml").is_file() {
+        return Ok(legacy);
+    }
+    Ok(default_configuration_directory(root))
 }
 
 pub fn configuration_directory_from_locator(
@@ -268,9 +271,9 @@ mod tests {
     fn layout_contains_only_file_authorities() {
         let root = PathBuf::from("portable-root");
         let layout = AppLayout::from_root(root.clone());
-        assert_eq!(layout.config_dir, root.join("data"));
-        assert_eq!(layout.config_file, root.join("data").join("config.toml"));
-        assert_eq!(layout.ui_file, root.join("data").join("ui.toml"));
+        assert_eq!(layout.config_dir, root);
+        assert_eq!(layout.config_file, root.join("config.toml"));
+        assert_eq!(layout.ui_file, root.join("ui.toml"));
         assert!(!root.join("_cache").exists());
     }
 
@@ -301,8 +304,22 @@ mod tests {
         );
         assert_eq!(
             configuration_directory_from_locator(&root, &temp.path().join("missing.toml")).unwrap(),
+            root
+        );
+    }
+
+    #[test]
+    fn legacy_data_configuration_is_discovered_without_writing_a_locator() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().join("portable");
+        std::fs::create_dir_all(root.join("data")).unwrap();
+        std::fs::write(root.join("data/config.toml"), "config_version = 5\n").unwrap();
+
+        assert_eq!(
+            configuration_directory_for_root(&root).unwrap(),
             root.join("data")
         );
+        assert!(!root.join("configuration-location.toml").exists());
     }
 
     #[test]

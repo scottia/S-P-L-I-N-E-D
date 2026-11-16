@@ -75,8 +75,8 @@ use splined_core::source::navidrome::{
     NavidromeAlbum, NavidromeArtist, NavidromeCompanion, NavidromeCredential, match_companion_album,
 };
 use splined_core::source::{
-    ArtworkReference, deezer::Deezer, discogs::Discogs, fanarttv::FanartTv, itunes::ITunes,
-    lastfm::LastFm,
+    ArtworkReference, amazon::AmazonStore, deezer::Deezer, discogs::Discogs, fanarttv::FanartTv,
+    itunes::ITunes, lastfm::LastFm,
 };
 use splined_core::source_policy::{
     MinimumRangeType, SourcePolicyConfig, default_artist_art_search,
@@ -1595,6 +1595,19 @@ fn retain_saved_backup_preferences(current: &mut UiPreferences, saved: &UiPrefer
     current.restore_artist_images = saved.restore_artist_images;
     current.backup_interface = saved.backup_interface;
     current.backup_diagnostics = saved.backup_diagnostics;
+}
+
+fn retain_first_backup_prompt_selection(
+    current: &mut UiPreferences,
+    saved: &mut UiPreferences,
+    prompt_dismissed: bool,
+    directory: &str,
+) {
+    if !saved.backup_prompt_dismissed && prompt_dismissed {
+        saved.backup_directory = directory.to_string();
+        saved.settings_backup_directory = directory.to_string();
+    }
+    retain_saved_backup_preferences(current, saved);
 }
 
 fn apply_saved_message_preferences(
@@ -5995,6 +6008,7 @@ fn is_artist_art_source(source: &str) -> bool {
         "deezer",
         "discogs",
         "itunes",
+        "amazon",
     ]
     .iter()
     .any(|candidate| source.eq_ignore_ascii_case(candidate))
@@ -6017,6 +6031,7 @@ fn artist_art_query_sources(config: &Config, artist_mbid: &str) -> Vec<String> {
         "lastfm",
         "discogs",
         "itunes",
+        "amazon",
         "navidrome",
     ]
     .into_iter()
@@ -6063,6 +6078,8 @@ fn artist_art_candidate_source(label: &str) -> &'static str {
         "discogs"
     } else if label.starts_with("itunes") {
         "itunes"
+    } else if label.starts_with("amazon") {
+        "amazon"
     } else {
         "navidrome"
     }
@@ -6190,6 +6207,21 @@ fn discover_remote_artist_artwork(
                 Err(error) => {
                     warnings.push(error);
                     failed_sources.push("itunes".to_string());
+                }
+            }
+        }
+        if enabled("amazon") {
+            match AmazonStore::new() {
+                Ok(provider) => match provider.discover_artist(artist).await {
+                    Ok(found) => references.extend(found),
+                    Err(error) => {
+                        warnings.push(error);
+                        failed_sources.push("amazon".to_string());
+                    }
+                },
+                Err(error) => {
+                    warnings.push(error);
+                    failed_sources.push("amazon".to_string());
                 }
             }
         }
@@ -7360,12 +7392,12 @@ fn backup_default_directories() -> BackupDefaultDirectories {
     let root = splined_core::portable::app_layout()
         .map(|layout| layout.root)
         .unwrap_or_else(|_| PathBuf::from("."));
-    let test_state = root.join("test-state");
+    let backups = root.join("backups");
     BackupDefaultDirectories {
-        settings: test_state.join("settings"),
-        database: test_state.join("sqlite"),
-        diagnostics: test_state.join("_logs").join("_diagnostics"),
-        snapshots: test_state.join("sqlite").join("_backups").join("snapshots"),
+        settings: backups.join("settings"),
+        database: backups.join("sqlite"),
+        diagnostics: backups.join("diagnostics"),
+        snapshots: backups.join("snapshots"),
     }
 }
 
@@ -8094,25 +8126,12 @@ fn load_application_state() -> (ApplicationState, bool, Option<String>) {
         Err(error) => {
             record_startup_timing(format!("startup-config error={error}"));
             first_error.get_or_insert(error);
-            let mut setup = Config::default();
+            let root = splined_core::portable::state_root()
+                .expect("the Windows first-run state root must be initialized");
+            let mut setup = splined_core::config::first_run_config_at_root(&root)
+                .expect("windows/config.example.toml must remain a valid Config v5 draft");
             setup.library.music_library.clear();
             setup.scan.scan_library_dir.clear();
-            if let Ok(layout) = splined_core::portable::app_layout() {
-                setup.scan.cache_dir =
-                    splined_core::portable::display_path(&layout.root.join("_db"));
-                setup.scan.shared_artist_art_dir = splined_core::portable::display_path(
-                    &layout.root.join("_cache").join("artist-art"),
-                );
-                setup.scan.temporary_cache_dir =
-                    splined_core::portable::display_path(&layout.root.join("_cache"));
-                setup.scan.log_dir =
-                    splined_core::portable::display_path(&layout.root.join("_logs"));
-                setup.credentials.credential_dir =
-                    splined_core::portable::display_path(&layout.root.join("credentials"));
-                setup.samples.sample_dir = splined_core::portable::display_path(
-                    &layout.root.join("_cache").join("samples"),
-                );
-            }
             let snapshot = empty_snapshot(&setup);
             let mut state = ApplicationState::new(setup, snapshot)
                 .expect("the Rust first-run setup model must remain valid");
@@ -15069,6 +15088,7 @@ fn bind_callbacks(
         appearance,
         custom_window_state,
         interface_restore_pending_restart,
+        last_preferences,
     );
 }
 
@@ -15079,6 +15099,7 @@ fn bind_service_callbacks(
     appearance: Rc<RefCell<String>>,
     custom_window_state: CustomWindowState,
     interface_restore_pending_restart: Arc<AtomicBool>,
+    last_preferences: Rc<RefCell<UiPreferences>>,
 ) {
     let settings_draft = Arc::new(Mutex::new(
         state
@@ -15766,6 +15787,7 @@ fn bind_service_callbacks(
                                 ui.set_setup_required(false);
                                 ui.set_page_index(1);
                                 set_settings_ui(&ui, &config);
+                                ui.set_backup_first_run_prompt_visible(true);
                                 if let Ok(editor) = load_editor(&config, "Navidrome") {
                                     set_credential_ui(&ui, &editor);
                                 }
@@ -15912,6 +15934,7 @@ fn bind_service_callbacks(
         let backup_layout = Rc::clone(&workspace_layout);
         let backup_appearance = Rc::clone(&appearance);
         let backup_custom_window = custom_window_state.clone();
+        let backup_saved_preferences = Rc::clone(&last_preferences);
         ui.on_backup_action(
             move |action,
                   path,
@@ -15959,9 +15982,16 @@ fn bind_service_callbacks(
                     )
                     .ok_or_else(|| "Unable to snapshot the current Interface Settings.".to_string())
                     .and_then(|mut preferences| {
-                        let saved = splined_core::settings::load_ui_preferences()?;
-                        retain_saved_backup_preferences(&mut preferences, &saved);
-                        splined_core::settings::save_ui_preferences(&preferences)
+                        let mut saved = splined_core::settings::load_ui_preferences()?;
+                        retain_first_backup_prompt_selection(
+                            &mut preferences,
+                            &mut saved,
+                            ui.get_backup_prompt_dismissed(),
+                            ui.get_settings_backup_directory().as_str(),
+                        );
+                        splined_core::settings::save_ui_preferences(&preferences)?;
+                        *backup_saved_preferences.borrow_mut() = preferences;
+                        Ok(())
                     });
                     if let Err(error) = result {
                         ui.set_service_status(format!("Settings Archive not created: {error}").into());
@@ -16332,6 +16362,45 @@ fn bind_service_callbacks(
                 "guide" => {
                     Some("https://github.com/scottia/S-P-L-I-N-E-D/blob/main/docs/windows-guide.md")
                 }
+                "setup-paths" => Some(
+                    "https://github.com/scottia/S-P-L-I-N-E-D/blob/main/docs/windows-guide.md#setup-path-reference",
+                ),
+                "setup-configuration" => Some(
+                    "https://github.com/scottia/S-P-L-I-N-E-D/blob/main/docs/windows-guide.md#configuration-path",
+                ),
+                "setup-music" => Some(
+                    "https://github.com/scottia/S-P-L-I-N-E-D/blob/main/docs/windows-guide.md#music-library",
+                ),
+                "setup-various" => Some(
+                    "https://github.com/scottia/S-P-L-I-N-E-D/blob/main/docs/windows-guide.md#various-artist-category",
+                ),
+                "setup-soundtracks" => Some(
+                    "https://github.com/scottia/S-P-L-I-N-E-D/blob/main/docs/windows-guide.md#soundtracks-category",
+                ),
+                "setup-curated" => Some(
+                    "https://github.com/scottia/S-P-L-I-N-E-D/blob/main/docs/windows-guide.md#curated-compilations-category",
+                ),
+                "setup-scan" => Some(
+                    "https://github.com/scottia/S-P-L-I-N-E-D/blob/main/docs/windows-guide.md#scan-library",
+                ),
+                "setup-database" => Some(
+                    "https://github.com/scottia/S-P-L-I-N-E-D/blob/main/docs/windows-guide.md#sqlite-database-directory",
+                ),
+                "setup-artist-art" => Some(
+                    "https://github.com/scottia/S-P-L-I-N-E-D/blob/main/docs/windows-guide.md#va-ost-artist-images",
+                ),
+                "setup-cache" => Some(
+                    "https://github.com/scottia/S-P-L-I-N-E-D/blob/main/docs/windows-guide.md#temporary-cache",
+                ),
+                "setup-logs" => Some(
+                    "https://github.com/scottia/S-P-L-I-N-E-D/blob/main/docs/windows-guide.md#log-directory",
+                ),
+                "setup-credentials" => Some(
+                    "https://github.com/scottia/S-P-L-I-N-E-D/blob/main/docs/windows-guide.md#credential-directory",
+                ),
+                "setup-samples" => Some(
+                    "https://github.com/scottia/S-P-L-I-N-E-D/blob/main/docs/windows-guide.md#sample-images-directory",
+                ),
                 "shared-db" => Some(
                     "https://github.com/scottia/S-P-L-I-N-E-D/blob/main/docs/splined-media-database.md",
                 ),
@@ -24374,10 +24443,10 @@ mod tests {
     }
 
     #[test]
-    fn album_only_sources_are_disqualified_from_artist_art() {
+    fn source_capabilities_are_applied_to_artist_art() {
         assert!(!super::is_artist_art_source("musicbrainz"));
         assert!(!super::is_artist_art_source("coverartarchive"));
-        assert!(!super::is_artist_art_source("amazon"));
+        assert!(super::is_artist_art_source("amazon"));
         assert!(super::is_artist_art_source("fanarttv"));
         assert!(super::is_artist_art_source("deezer"));
     }
@@ -26436,12 +26505,20 @@ mod tests {
                 "lastfm",
                 "discogs",
                 "itunes",
+                "amazon",
                 "navidrome"
             ]
         );
         assert_eq!(
             artist_art_query_sources(&config, ""),
-            ["deezer", "lastfm", "discogs", "itunes", "navidrome"]
+            [
+                "deezer",
+                "lastfm",
+                "discogs",
+                "itunes",
+                "amazon",
+                "navidrome"
+            ]
         );
         let mut artist_only_policy = config;
         artist_only_policy.source_policies.insert(
@@ -26462,6 +26539,7 @@ mod tests {
             "discogs"
         );
         assert_eq!(artist_art_candidate_source("iTunes Artist Image"), "itunes");
+        assert_eq!(artist_art_candidate_source("Amazon Artist Image"), "amazon");
     }
 
     #[test]
@@ -29040,6 +29118,22 @@ mod tests {
         assert_eq!(current.settings_backup_directory, r"E:\saved\settings");
         assert_eq!(current.snapshot_backup_schedule, "Off");
         assert_eq!(current.max_snapshot_backup_files, "5");
+    }
+
+    #[test]
+    fn first_backup_prompt_persists_its_selected_directory() {
+        let mut current = UiPreferences {
+            backup_prompt_dismissed: true,
+            settings_backup_directory: "unsaved-backup".to_string(),
+            ..UiPreferences::default()
+        };
+        let mut saved = UiPreferences::default();
+
+        super::retain_first_backup_prompt_selection(&mut current, &mut saved, true, "first-backup");
+
+        assert!(current.backup_prompt_dismissed);
+        assert_eq!(current.backup_directory, "first-backup");
+        assert_eq!(current.settings_backup_directory, "first-backup");
     }
 
     #[test]
