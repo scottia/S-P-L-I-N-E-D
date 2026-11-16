@@ -15099,7 +15099,6 @@ fn bind_service_callbacks(
                         }
                         set_settings_ui(&ui, &app.config);
                         ui.set_settings_animate_webp_preview(app.animate_webp_preview);
-                        ui.set_settings_source_rows(ui.get_source_rows());
                         ui.set_settings_status_bar_intensity(ui.get_status_bar_intensity());
                         ui.set_settings_status_bar_position(ui.get_status_bar_position());
                         ui.set_settings_status_bar_size(ui.get_status_bar_size());
@@ -15357,7 +15356,8 @@ fn bind_service_callbacks(
             record_action_result(&state, result);
             refresh_weak(&weak, &state);
             if saved_sources && let Some(ui) = weak.upgrade() {
-                ui.set_settings_source_rows(ui.get_source_rows());
+                let order = split_values(ui.get_settings_source_order().as_str());
+                set_settings_source_order_and_cards(&ui, &order);
             }
         });
     }
@@ -15426,7 +15426,8 @@ fn bind_service_callbacks(
             record_action_result(&state, result);
             refresh_weak(&weak, &state);
             if let Some(ui) = weak.upgrade() {
-                ui.set_settings_source_rows(ui.get_source_rows());
+                let order = split_values(ui.get_settings_source_order().as_str());
+                set_settings_source_order_and_cards(&ui, &order);
             }
         });
     }
@@ -16882,7 +16883,7 @@ fn set_settings_ui(ui: &AppWindow, config: &Config) {
     ui.set_settings_range_ideal(config.range.ideal.to_string().into());
     ui.set_settings_range_max(config.range.max.to_string().into());
     ui.set_settings_range_ladder(config.range.ladder.to_string().into());
-    ui.set_settings_source_order(config.sources.cover_sources.join(", ").into());
+    set_settings_source_order_and_cards(ui, &config.sources.cover_sources);
     ui.set_settings_source_exclusions(config.sources.exclude_cover_sources.join(", ").into());
     ui.set_settings_history_enabled(config.history.enabled);
     ui.set_settings_history_retention(config.history.retention_days.to_string().into());
@@ -17324,7 +17325,10 @@ fn source_name_from_drag(data: &slint::DataTransfer) -> Option<String> {
 
 fn set_settings_source_order_and_cards(ui: &AppWindow, order: &[String]) {
     ui.set_settings_source_order(order.join(", ").into());
-    let mut rows = ui.get_settings_source_rows().iter().collect::<Vec<_>>();
+    // Settings owns a distinct model because its ordering is an editable draft.
+    // Hydrate it from the live workspace cards every time instead of depending
+    // on an earlier Settings visit having copied a non-empty model.
+    let mut rows = ui.get_source_rows().iter().collect::<Vec<_>>();
     rows.sort_by_key(|row| match row.name.as_str() {
         "samples" => 0,
         "local" => 1,
@@ -20054,6 +20058,9 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
         })
         .collect::<Vec<_>>();
     ui.set_source_rows(model(sources));
+    if ui.get_settings_source_rows().row_count() == 0 {
+        set_settings_source_order_and_cards(ui, &state.config.sources.cover_sources);
+    }
     ui.set_source_options(model(
         std::iter::once(SharedString::from("All"))
             .chain(

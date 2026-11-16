@@ -397,6 +397,30 @@ fn slint_surface_exposes_real_migrated_workflows() {
 }
 
 #[test]
+fn windows_settings_hydrates_source_cards_and_binds_backup_types_independently() {
+    let ui = source("windows/ui/app.slint");
+    let main = source("windows/src/main.rs");
+
+    assert!(main.contains("let mut rows = ui.get_source_rows().iter().collect::<Vec<_>>();"));
+    assert!(main.contains("set_settings_source_order_and_cards(ui, &config.sources.cover_sources);"));
+    assert!(!main.contains("ui.set_settings_source_rows(ui.get_source_rows())"));
+
+    for binding in [
+        "current-value <=> root.backup-schedule",
+        "current-value <=> root.database-backup-schedule",
+        "current-value <=> root.diagnostics-backup-schedule",
+        "current-value <=> root.snapshot-backup-schedule",
+        "text <=> root.max-settings-backup-files",
+        "text <=> root.max-database-backup-files",
+        "text <=> root.max-diagnostic-backup-files",
+        "text <=> root.max-snapshot-backup-files",
+    ] {
+        assert_eq!(ui.matches(binding).count(), 1, "missing unique binding: {binding}");
+    }
+    assert!(!ui.contains("current-value: root.backup-selected-type =="));
+}
+
+#[test]
 fn portable_and_packaged_state_authorities_are_distinct() {
     let portable = source("windows/src/portable.rs");
     let main = source("windows/src/main.rs");
