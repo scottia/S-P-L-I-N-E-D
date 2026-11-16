@@ -56,6 +56,74 @@ class PathAlbumGroupingTests(unittest.TestCase):
                 "various-artists",
             )
 
+    def test_single_roots_match_imported_windows_album_paths(self):
+        with TemporaryDirectory() as directory:
+            music = Path(directory) / "music"
+            various = music / "[Various Artists]"
+            soundtracks = music / "[Soundtracks]"
+            curated = various / "Billboard"
+            for path in (various, soundtracks, curated):
+                path.mkdir(parents=True, exist_ok=True)
+            catalog = Catalog(
+                music,
+                Path(directory) / "unused.db",
+                Path(directory),
+                Path(directory),
+                various_artist_path=various,
+                soundtracks_path=soundtracks,
+                curated_compilations_path=curated,
+            )
+
+            self.assertEqual(catalog.album_library_group({
+                "path": r"K:\Music\[Soundtracks]\2 Fast 2 Furious",
+                "artist_name": "Various Artists",
+                "compilation": True,
+            }), "soundtracks")
+            self.assertEqual(catalog.album_library_group({
+                "path": r"K:\Music\[Various Artists]\Billboard\Hot 100",
+                "artist_name": "Various Artists",
+                "compilation": True,
+            }), "fallback")
+            self.assertEqual(catalog.album_library_group({
+                "path": r"K:\Music\[Various Artists]\Collection",
+                "artist_name": "Various Artists",
+                "compilation": True,
+            }), "various-artists")
+
+    def test_root_owned_va_and_soundtrack_albums_do_not_become_artist_cards(self):
+        with TemporaryDirectory() as directory:
+            music = Path(directory) / "music"
+            various = music / "[Various Artists]"
+            soundtracks = music / "[Soundtracks]"
+            curated = various / "Billboard"
+            for path in (various, soundtracks, curated):
+                path.mkdir(parents=True, exist_ok=True)
+            catalog = Catalog(
+                music,
+                Path(directory) / "unused.db",
+                Path(directory),
+                Path(directory),
+                various_artist_path=various,
+                soundtracks_path=soundtracks,
+                curated_compilations_path=curated,
+            )
+
+            self.assertTrue(catalog.artist_album_allowed({
+                "path": str(music / "Aaron Neville" / "Gold"),
+                "artist_name": "Aaron Neville",
+                "compilation": False,
+            }))
+            for path in (
+                soundtracks / "2 Fast 2 Furious",
+                various / "Bass in Your Face",
+                curated / "Hot 100",
+            ):
+                self.assertFalse(catalog.artist_album_allowed({
+                    "path": str(path),
+                    "artist_name": "Various Artists",
+                    "compilation": True,
+                }))
+
 
 if __name__ == "__main__":
     unittest.main()

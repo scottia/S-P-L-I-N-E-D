@@ -669,14 +669,16 @@ function renderLibraryContents() {
       button.addEventListener("click", () => chooseArtist(artist.id)); list.append(button);
       if (state.artist?.id === artist.id) {
         const matchingIds = new Set(matchingAlbums.map(album => album.id));
-        for (const album of state.artist.albums.filter(item => !albumQuery || matchingIds.has(item.id))) {
+        for (const album of state.artist.albums
+          .filter(item => !albumQuery || matchingIds.has(item.id))
+          .sort(compareAlbumTitles)) {
           list.append(albumRow(album, true));
         }
       }
     }
   } else {
     $("artistCount").textContent = state.albumsIndex.filter(mediaMatches).length + " shown";
-    const visibleAlbums = state.albumsIndex.filter(mediaMatches);
+    const visibleAlbums = state.albumsIndex.filter(mediaMatches).sort(compareAlbumTitles);
     if (state.libraryMode === "albums") {
       const categoryRows = [
         ["various-artists", "Various Artists"],
@@ -823,10 +825,14 @@ function artistOverviewAlbums(artist = state.artist, honorSingleAlbum = true) {
     ? [{...(allAlbums.find(album => album.id === state.album.id) || {}), ...state.album,
         cover_found: !!state.album.cover}]
     : allAlbums;
-  return presentedAlbums.sort((a, b) =>
-    albumPresentationGroup(a, artist) - albumPresentationGroup(b, artist)
-    || (parseInt(b.year, 10) || 0) - (parseInt(a.year, 10) || 0)
-    || a.name.localeCompare(b.name));
+  return presentedAlbums.sort(compareAlbumTitles);
+}
+function compareAlbumTitles(left, right) {
+  return String(left?.name || "").localeCompare(String(right?.name || ""), undefined, {
+    sensitivity: "base", numeric: true,
+  }) || String(left?.id || "").localeCompare(String(right?.id || ""), undefined, {
+    sensitivity: "base", numeric: true,
+  });
 }
 function renderCandidateTypeChips() {
   for (const [hostId, dimension, rows] of [["candidateTypeChips", "type", CANDIDATE_TYPES], ["candidatePolicyChips", "policy", [["Acceptable", "Acceptable"], ["Strict", "Strict"]]], ["candidateRangeChips", "range", CANDIDATE_RANGES]]) {
