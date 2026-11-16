@@ -1460,9 +1460,9 @@ function setSettingValue(object, path, value) {
 }
 async function browseLibrarySetting(input) {
   const chooser = document.createElement("dialog"); chooser.className = "server-directory-dialog";
-  const heading = node("h3", "", "Choose Music Library folder"), current = node("code", "server-directory-current", "");
+  const heading = node("h3", "", "Choose category root"), current = node("code", "server-directory-current", "");
   const directories = node("div", "server-directory-list"), actions = node("div", "server-directory-actions");
-  const back = node("button", "minor-button", "Up"), cancel = node("button", "minor-button", "Cancel"), choose = node("button", "operation-button", "Choose this folder");
+  const back = node("button", "minor-button", "Up"), cancel = node("button", "minor-button", "Cancel"), choose = node("button", "operation-button", "Select this root");
   for (const button of [back, cancel, choose]) button.type = "button";
   actions.append(back, cancel, choose); chooser.append(heading, current, directories, actions); document.body.append(chooser);
   let selected = input.value.trim();
