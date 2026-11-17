@@ -25,6 +25,7 @@ foreach ($requiredPath in @($ExecutablePath, $ManifestPath, $IconPath)) {
 Remove-Item -LiteralPath $LayoutRoot -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $LayoutRoot | Out-Null
 Copy-Item -LiteralPath $ExecutablePath -Destination (Join-Path $LayoutRoot "splined.exe")
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\..\schema\media-state-classification.json') -Destination (Join-Path $LayoutRoot "media-state-classification.json")
 Copy-Item -LiteralPath $ManifestPath -Destination (Join-Path $LayoutRoot "Package.appxmanifest")
 winapp manifest update-assets $IconPath --manifest (Join-Path $LayoutRoot "Package.appxmanifest")
 winapp create-debug-identity (Join-Path $LayoutRoot "splined.exe") `

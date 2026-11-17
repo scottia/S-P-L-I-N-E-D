@@ -28,6 +28,8 @@ $targetRoot = [System.IO.Path]::GetFullPath(
 $releaseRoot = [System.IO.Path]::GetFullPath((Join-Path $targetRoot 'release'))
 $buildPath = Join-Path $releaseRoot 'splined.exe'
 $installDirectory = Split-Path -Parent $InstallPath
+$policySource = Join-Path $repositoryRoot 'schema\media-state-classification.json'
+$policyDestination = Join-Path $installDirectory 'media-state-classification.json'
 
 if (-not (Test-Path -LiteralPath $installDirectory -PathType Container)) {
     throw "The local SPLINED install directory does not exist: $installDirectory"
@@ -107,6 +109,9 @@ if ($signature[0] -ne 0x4D -or $signature[1] -ne 0x5A) {
 
 $builtHash = Get-Sha256 $resolvedBuildPath
 Copy-Item -LiteralPath $resolvedBuildPath -Destination $resolvedInstallPath -Force
+if (-not (Test-Path -LiteralPath $policyDestination -PathType Leaf)) {
+    Copy-Item -LiteralPath $policySource -Destination $policyDestination
+}
 $installedHash = Get-Sha256 $resolvedInstallPath
 if ($builtHash -ne $installedHash) {
     throw 'The installed executable does not match the completed local test build.'

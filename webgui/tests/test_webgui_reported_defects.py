@@ -91,8 +91,12 @@ class ReportedDefectTests(unittest.TestCase):
         dockerignore = (repository / ".dockerignore").read_text(encoding="utf-8")
         dockerfile = (repository / "webgui" / "Dockerfile").read_text(encoding="utf-8")
 
-        self.assertIn("COPY schema/media.sql schema/settings-ui.json /app/schema/", dockerfile)
+        self.assertIn(
+            "COPY schema/media.sql schema/settings-ui.json schema/media-state-classification.json /app/schema/",
+            dockerfile,
+        )
         self.assertIn("!schema/settings-ui.json", dockerignore.splitlines())
+        self.assertIn("!schema/media-state-classification.json", dockerignore.splitlines())
 
     def test_artist_metadata_projects_only_genuine_provider_similarity_with_local_image(self):
         with TemporaryDirectory() as directory:
@@ -302,18 +306,21 @@ class ReportedDefectTests(unittest.TestCase):
         self.assertIn('/api/artist/comp-report?id=', operations)
         self.assertIn('/api/fallback/tracks?id=', operations)
         self.assertIn(
-            ".album-card.windows-card.opposing-override .album-card-picture img"
-            "{filter:grayscale(1)}",
+            ".album-card.windows-card.opposing-override .album-card-picture "
+            ":is(img,.album-placeholder){filter:grayscale(1) saturate(0)}",
             styles,
         )
         self.assertNotIn(".opposing-override{filter:grayscale", styles)
-        self.assertIn('const frame = overridden ? "#6b737b"', application)
+        self.assertIn(
+            "const frame = overridden ? mediaPolicyColor(",
+            application,
+        )
         self.assertIn(
             'override: {name: "OVERRIDE", background: "#D3D3D3", frame: "#FFFFFF", letters: "#FF344F"}',
             application,
         )
         self.assertIn(
-            'albumOverride(album)?.writer === "windows" ? "override" : albumBannerKind(album, artist)',
+            'return opposingAlbumOverride(album) ? "override" : albumBannerKind(album, artist)',
             application,
         )
         self.assertNotIn('["Missing", "Missing or incomplete", "#ff5268"]', application)
@@ -324,11 +331,20 @@ class ReportedDefectTests(unittest.TestCase):
         self.assertIn("grid-template-columns:repeat(4,minmax(0,1fr))", styles)
         self.assertIn(": processed ? frames.in_process.color : mediaStatusColor(status)", application)
         self.assertIn('const staleUnprocessed = overridden && status === "unprocessed"', application)
-        self.assertIn('checkEmbedded || status === "partial" ? "partial"', application)
-        self.assertIn(': processed || validating ? "processed" : incomplete || missingCover ? "incomplete" : "unprocessed"', application)
+        self.assertIn(
+            'const stateKey = classifyMediaState("album", conditions).ui_status_key',
+            application,
+        )
         self.assertIn('embeddedValidation === "checking"', application)
         self.assertIn('cardState.stateKey === "albumsComplete" ? "complete" : cardState.stateKey', application)
-        self.assertIn('if (!staleUnprocessed && (missingCover || incomplete))', application)
+        self.assertIn(
+            'addDot("incomplete_tracks", !staleUnprocessed && incomplete',
+            application,
+        )
+        self.assertNotIn(
+            'if (!staleUnprocessed && (missingCover || incomplete))',
+            application,
+        )
 
     def test_comp_report_backfills_only_albums_in_selected_artist_scope(self):
         with TemporaryDirectory() as directory:

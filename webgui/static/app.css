@@ -111,6 +111,7 @@ html[data-theme=light] .filter-chip.media-status .filter-dot,html[data-theme=lig
 .server-directory-list{min-height:180px;max-height:52vh;overflow:auto;display:flex;flex-direction:column;gap:4px}
 .server-directory-row{padding:8px;text-align:left;background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:4px}
 .server-directory-actions{display:flex;justify-content:flex-end;gap:7px;margin-top:10px}
+.media-state-policy-editor{display:grid;gap:8px;margin-bottom:14px;padding:10px;border:1px solid var(--line);border-radius:6px;background:var(--quiet)}.media-state-policy-json{width:100%;min-height:320px;resize:vertical;padding:9px;border:1px solid var(--line);border-radius:4px;background:#0b0d0f;color:var(--text);font:12px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;tab-size:2}
 .library-row .status-orbit,.library-row.active .status-orbit{color:var(--danger)}
 .library-row .status-orbit.selected,.library-row.active .status-orbit.selected{color:var(--green)}
 .library-row .row-copy strong,.library-row.album-row .row-copy strong{color:var(--status-color)}
@@ -122,7 +123,7 @@ html[data-theme=light] .library-row .status-orbit.selected,html[data-theme=light
 /* Source-backed Windows album card structure. */
 .overview-meta{position:relative;z-index:5}
 .album-count-summary{display:inline-flex;align-items:center;gap:5px;font-weight:750;white-space:nowrap}.album-count-shown{color:var(--pink)}.album-count-completed{color:var(--album-complete-color,var(--green))}.album-count-process{color:var(--album-process-color,#efa54e)}.album-count-separator{color:var(--muted);font-weight:500}
-.album-count-overridden{color:#6b737b}.album-count-validating{color:#55c7d8}.override-notice{margin:4px 2px 0;color:#6b737b;font-size:11px;font-weight:800}.album-card.windows-card.opposing-override .album-card-picture img{filter:grayscale(1)}
+.album-count-overridden{color:var(--media-state-dark-grey,var(--muted))}.album-count-validating{color:#55c7d8}.override-notice{margin:4px 2px 0;color:var(--media-state-dark-grey,var(--muted));font-size:11px;font-weight:800}.album-card.windows-card.opposing-override .album-card-picture :is(img,.album-placeholder){filter:grayscale(1) saturate(0)}
 .album-status-help{width:22px;height:22px;flex:none;border:2px solid var(--cyan);border-radius:50%;background:var(--card);color:var(--cyan);font-size:14px;font-weight:900;line-height:16px;cursor:pointer}
 .album-status-help[aria-expanded=true]{background:var(--selected)}
 .album-grid{min-height:0}
@@ -134,7 +135,7 @@ html[data-theme=light] .library-row .status-orbit.selected,html[data-theme=light
 .album-card-picture{position:relative;display:block;width:100%;height:128px;flex:none;background:#050709;border-radius:4px;overflow:hidden}
 .album-card.windows-card .album-card-picture img{width:100%;height:100%;object-fit:contain;aspect-ratio:auto;margin:0}
 .album-card-picture .album-placeholder{height:100%;width:100%;aspect-ratio:auto}
-.album-status-dots{position:absolute;right:1px;top:0;display:flex;flex-direction:column;align-items:center;gap:0;font-size:13px;line-height:15px;text-shadow:0 0 2px #000}
+.album-status-dots{position:absolute;z-index:2;right:1px;top:0;display:flex;flex-direction:column;align-items:center;gap:0;font-size:13px;line-height:15px;text-shadow:0 0 2px #000}
 .album-type-banner .album-staged-indicator{position:absolute;left:50%;top:2px;transform:translateX(-50%);writing-mode:horizontal-tb;color:#ffad32;font-size:15px;line-height:15px;text-shadow:0 0 2px #000;animation:staged-blink 1s steps(2,start) infinite}
 .candidate-toolbar #bypassButton,.candidate-toolbar #uploadArtwork{min-width:58px;text-align:center}
 .review-actions #embedBatchButton.staged{background:#59616a;border-color:#77818c;color:#e3e7eb;filter:saturate(.25)}

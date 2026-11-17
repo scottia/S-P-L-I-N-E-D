@@ -456,7 +456,7 @@ component ArtistAlbumCard inherits Rectangle {
             clip: true;
             border-radius: (7px * AppTheme.ui-scale);
             border-width: self.mixed-embedded-outline ? (0px * AppTheme.ui-scale) : (2px * AppTheme.ui-scale);
-    border-color: root.item.overridden ? #6b737b : (root.item.state-key == "Bypassed" ? AppTheme.yellow : (root.item.comp-loading || root.item.validating ? AppTheme.cyan : (root.item.fully-complete ? root.item.complete-frame : (root.item.check-embedded ? root.item.attention-frame : (root.item.processed ? root.item.pending-frame : root.item.status-color)))));
+    border-color: root.item.overridden ? root.item.status-color : (root.item.state-key == "Bypassed" ? AppTheme.yellow : (root.item.comp-loading || root.item.validating ? AppTheme.cyan : (root.item.fully-complete ? root.item.complete-frame : (root.item.check-embedded ? root.item.attention-frame : (root.item.processed ? root.item.pending-frame : root.item.status-color)))));
             background: self.mixed-embedded-outline ? (self.green-purple-outline ? @linear-gradient(135deg, root.item.complete-frame, root.item.attention-frame, root.item.complete-frame) : @linear-gradient(135deg, root.item.attention-frame, root.item.pending-frame, root.item.attention-frame)) : (album-touch.has-hover ? AppTheme.card-hover : AppTheme.card);
             if self.mixed-embedded-outline: Rectangle {
                 x: (2px * AppTheme.ui-scale); y: (2px * AppTheme.ui-scale); width: parent.width - (4px * AppTheme.ui-scale); height: parent.height - (4px * AppTheme.ui-scale);
@@ -1940,6 +1940,15 @@ export component AppWindow inherits Window {
     in-out property <string> settings-ai-endpoint;
     in-out property <string> settings-ai-minimum: "600";
     in-out property <bool> settings-ai-allow-below: false;
+    in-out property <string> settings-media-state-policy-json;
+    in property <string> settings-media-state-policy-status: "Validated runtime policy";
+    in property <color> media-state-red: AppTheme.foreground;
+    in property <color> media-state-yellow: AppTheme.foreground;
+    in property <color> media-state-orange: AppTheme.foreground;
+    in property <color> media-state-purple: AppTheme.foreground;
+    in property <color> media-state-dark-grey: AppTheme.foreground;
+    in property <color> media-state-green: AppTheme.foreground;
+    in property <color> media-state-blue: AppTheme.foreground;
     in-out property <string> settings-section: "Library";
     in-out property <bool> settings-advanced-visible: false;
     in-out property <bool> settings-logging-expanded: false;
@@ -2797,11 +2806,11 @@ export component AppWindow inherits Window {
                                                         HorizontalLayout { height: (30px * AppTheme.ui-scale); spacing: (3px * AppTheme.ui-scale); horizontal-stretch: 0;
                                                             Text { text: root.artist-overview-legend-counts.shown + " shown"; color: AppTheme.cyan; font-size: (artist-scroll.visible-width < (520px * AppTheme.ui-scale) ? (12px * AppTheme.ui-scale) : (14px * AppTheme.ui-scale)) * AppTheme.font-scale; font-weight: 800; vertical-alignment: center; }
                                                             Text { text: "/"; color: AppTheme.foreground; font-size: (artist-scroll.visible-width < (520px * AppTheme.ui-scale) ? (12px * AppTheme.ui-scale) : (14px * AppTheme.ui-scale)) * AppTheme.font-scale; vertical-alignment: center; }
-                                                            Text { text: root.artist-overview-legend-counts.completed + " Completed"; color: AppTheme.green; font-size: (artist-scroll.visible-width < (520px * AppTheme.ui-scale) ? (12px * AppTheme.ui-scale) : (14px * AppTheme.ui-scale)) * AppTheme.font-scale; font-weight: 800; vertical-alignment: center; }
+                                                            Text { text: root.artist-overview-legend-counts.completed + " Completed"; color: root.media-state-green; font-size: (artist-scroll.visible-width < (520px * AppTheme.ui-scale) ? (12px * AppTheme.ui-scale) : (14px * AppTheme.ui-scale)) * AppTheme.font-scale; font-weight: 800; vertical-alignment: center; }
                                                             Text { text: "/"; color: AppTheme.foreground; font-size: (artist-scroll.visible-width < (520px * AppTheme.ui-scale) ? (12px * AppTheme.ui-scale) : (14px * AppTheme.ui-scale)) * AppTheme.font-scale; vertical-alignment: center; }
-                                                            Text { text: root.artist-overview-legend-counts.in-process + " in Process"; color: #efa54e; font-size: (artist-scroll.visible-width < (520px * AppTheme.ui-scale) ? (12px * AppTheme.ui-scale) : (14px * AppTheme.ui-scale)) * AppTheme.font-scale; font-weight: 800; vertical-alignment: center; }
+                                                            Text { text: root.artist-overview-legend-counts.in-process + " in Process"; color: root.media-state-orange; font-size: (artist-scroll.visible-width < (520px * AppTheme.ui-scale) ? (12px * AppTheme.ui-scale) : (14px * AppTheme.ui-scale)) * AppTheme.font-scale; font-weight: 800; vertical-alignment: center; }
                                                             Text { text: "/"; color: AppTheme.foreground; font-size: (artist-scroll.visible-width < (520px * AppTheme.ui-scale) ? (12px * AppTheme.ui-scale) : (14px * AppTheme.ui-scale)) * AppTheme.font-scale; vertical-alignment: center; }
-                                                            Text { text: root.artist-overview-legend-counts.overridden + " Overridden"; color: #6b737b; font-size: (artist-scroll.visible-width < (520px * AppTheme.ui-scale) ? (12px * AppTheme.ui-scale) : (14px * AppTheme.ui-scale)) * AppTheme.font-scale; font-weight: 800; vertical-alignment: center; }
+                                                            Text { text: root.artist-overview-legend-counts.overridden + " Overridden"; color: root.media-state-dark-grey; font-size: (artist-scroll.visible-width < (520px * AppTheme.ui-scale) ? (12px * AppTheme.ui-scale) : (14px * AppTheme.ui-scale)) * AppTheme.font-scale; font-weight: 800; vertical-alignment: center; }
                                                             if root.artist-overview-legend-counts.validating > 0: Text { text: "/"; color: AppTheme.foreground; font-size: (artist-scroll.visible-width < (520px * AppTheme.ui-scale) ? (12px * AppTheme.ui-scale) : (14px * AppTheme.ui-scale)) * AppTheme.font-scale; vertical-alignment: center; }
                                                             if root.artist-overview-legend-counts.validating > 0: Text { text: root.artist-overview-legend-counts.validating + " Validating"; color: AppTheme.cyan; font-size: (artist-scroll.visible-width < (520px * AppTheme.ui-scale) ? (12px * AppTheme.ui-scale) : (14px * AppTheme.ui-scale)) * AppTheme.font-scale; font-weight: 800; vertical-alignment: center; }
                                                         }
@@ -2814,44 +2823,44 @@ export component AppWindow inherits Window {
                                                             HorizontalLayout { spacing: (18px * AppTheme.ui-scale); horizontal-stretch: 1;
                                                                 VerticalLayout { spacing: (0px * AppTheme.ui-scale); horizontal-stretch: 1;
                                                                     Text { text: "STATUS DOTS"; color: AppTheme.secondary-foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800; height: (20px * AppTheme.ui-scale); }
-                                                                    ArtistLegendCountRow { label: "●  Red"; label-color: AppTheme.danger; count: root.artist-overview-legend-counts.red-dots; }
-                                                                    Text { text: "Missing art or unfinished tracks"; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; height: (17px * AppTheme.ui-scale); }
-                                                                    ArtistLegendCountRow { label: "●  Yellow"; label-color: AppTheme.yellow; count: root.artist-overview-legend-counts.yellow-dots; }
+                                                                    ArtistLegendCountRow { label: "●  Red"; label-color: root.media-state-red; count: root.artist-overview-legend-counts.red-dots; }
+                                                                    Text { text: "Incomplete album tracks"; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; height: (17px * AppTheme.ui-scale); }
+                                                                    ArtistLegendCountRow { label: "●  Yellow"; label-color: root.media-state-yellow; count: root.artist-overview-legend-counts.yellow-dots; }
                                                                     Text { text: "Artist/Album art missing/bypassed"; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; height: (17px * AppTheme.ui-scale); }
-                                                                    ArtistLegendCountRow { label: "●  Orange"; label-color: #efa54e; count: root.artist-overview-legend-counts.orange-dots; }
+                                                                    ArtistLegendCountRow { label: "●  Orange"; label-color: root.media-state-orange; count: root.artist-overview-legend-counts.orange-dots; }
                                                                     Text { text: "Processed, not yet complete"; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; height: (17px * AppTheme.ui-scale); }
-                                                                    ArtistLegendCountRow { label: "●  Green"; label-color: AppTheme.green; count: root.artist-overview-legend-counts.green-dots; }
+                                                                    ArtistLegendCountRow { label: "●  Green"; label-color: root.media-state-green; count: root.artist-overview-legend-counts.green-dots; }
                                                                     Text { text: "Artist's tracks complete"; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; height: (17px * AppTheme.ui-scale); }
-                                                                    ArtistLegendCountRow { label: "●  Purple"; label-color: AppTheme.violet; count: root.artist-overview-legend-counts.purple-dots; }
+                                                                    ArtistLegendCountRow { label: "●  Purple"; label-color: root.media-state-purple; count: root.artist-overview-legend-counts.purple-dots; }
                                                                     Text { text: "Embedded art needs attention"; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; height: (17px * AppTheme.ui-scale); }
-                                                                    ArtistLegendCountRow { label: "●  Dark Grey"; label-color: #6b737b; count: root.artist-overview-legend-counts.grey-dots; }
+                                                                    ArtistLegendCountRow { label: "●  Dark Grey"; label-color: root.media-state-dark-grey; count: root.artist-overview-legend-counts.grey-dots; }
                                                                     Text { text: "Opposing album override"; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; height: (17px * AppTheme.ui-scale); }
                                                                 }
                                                                 VerticalLayout { spacing: (0px * AppTheme.ui-scale); horizontal-stretch: 1;
                                                                     Text { text: "ALBUM CARD FRAMES"; color: AppTheme.secondary-foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800; height: (20px * AppTheme.ui-scale); }
                                                                      ArtistLegendCountRow { label: "Cyan"; label-color: AppTheme.cyan; count: root.artist-overview-legend-counts.validating; }
                                                                      Text { text: "Validating embedded thumbnails"; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; height: (17px * AppTheme.ui-scale); }
-                                                                    ArtistLegendCountRow { label: "Green"; label-color: AppTheme.green; count: root.artist-overview-legend-counts.green-frames; }
+                                                                    ArtistLegendCountRow { label: "Green"; label-color: root.media-state-green; count: root.artist-overview-legend-counts.green-frames; }
                                                                     Text { text: "Complete at preferred thumb size"; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; height: (17px * AppTheme.ui-scale); }
                                                                     HorizontalLayout { height: (18px * AppTheme.ui-scale); spacing: (0px * AppTheme.ui-scale);
-                                                                        Text { text: "Orange"; color: #efa54e; font-size: (14px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800; width: (59px * AppTheme.ui-scale); }
+                                                                        Text { text: "Orange"; color: root.media-state-orange; font-size: (14px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800; width: (59px * AppTheme.ui-scale); }
                                                                         Text { text: "/"; color: AppTheme.foreground; font-size: (14px * AppTheme.ui-scale) * AppTheme.font-scale; width: (10px * AppTheme.ui-scale); }
-                                                                        Text { text: "Purple"; color: AppTheme.violet; font-size: (14px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800; width: (57px * AppTheme.ui-scale); }
+                                                                        Text { text: "Purple"; color: root.media-state-purple; font-size: (14px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800; width: (57px * AppTheme.ui-scale); }
                                                                         Rectangle { horizontal-stretch: 1; background: transparent; }
                                                                         Text { text: root.artist-overview-legend-counts.orange-purple-frames; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; width: (32px * AppTheme.ui-scale); horizontal-alignment: right; }
                                                                     }
                                                                     Text { text: "Processed album; thumbnail check"; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; height: (17px * AppTheme.ui-scale); }
                                                                     HorizontalLayout { height: (18px * AppTheme.ui-scale); spacing: (0px * AppTheme.ui-scale);
-                                                                        Text { text: "Green"; color: AppTheme.green; font-size: (14px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800; width: (52px * AppTheme.ui-scale); }
+                                                                        Text { text: "Green"; color: root.media-state-green; font-size: (14px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800; width: (52px * AppTheme.ui-scale); }
                                                                         Text { text: "/"; color: AppTheme.foreground; font-size: (14px * AppTheme.ui-scale) * AppTheme.font-scale; width: (10px * AppTheme.ui-scale); }
-                                                                        Text { text: "Purple"; color: AppTheme.violet; font-size: (14px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800; width: (57px * AppTheme.ui-scale); }
+                                                                        Text { text: "Purple"; color: root.media-state-purple; font-size: (14px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800; width: (57px * AppTheme.ui-scale); }
                                                                         Rectangle { horizontal-stretch: 1; background: transparent; }
                                                                         Text { text: root.artist-overview-legend-counts.green-purple-frames; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; width: (32px * AppTheme.ui-scale); horizontal-alignment: right; }
                                                                     }
                                                                     Text { text: "COMP tracks done; thumbnail check"; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; height: (17px * AppTheme.ui-scale); }
-                                                                    ArtistLegendCountRow { label: "Yellow"; label-color: AppTheme.yellow; count: root.artist-overview-legend-counts.yellow-frames; }
+                                                                    ArtistLegendCountRow { label: "Yellow"; label-color: root.media-state-yellow; count: root.artist-overview-legend-counts.yellow-frames; }
                                                                     Text { text: "BYPASSED albums with custom art"; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; height: (17px * AppTheme.ui-scale); }
-                                                                    ArtistLegendCountRow { label: "Dark Grey"; label-color: #6b737b; count: root.artist-overview-legend-counts.grey-frames; }
+                                                                    ArtistLegendCountRow { label: "Dark Grey"; label-color: root.media-state-dark-grey; count: root.artist-overview-legend-counts.grey-frames; }
                                                                     Text { text: "Overridden by opposing application"; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; height: (17px * AppTheme.ui-scale); }
                                                                 }
                                                                 VerticalLayout { spacing: (0px * AppTheme.ui-scale); horizontal-stretch: 1;
@@ -2863,15 +2872,15 @@ export component AppWindow inherits Window {
                                                                 }
                                                                 VerticalLayout { spacing: (0px * AppTheme.ui-scale); horizontal-stretch: 1;
                                                                     Text { text: "COMP TRACK ROWS"; color: AppTheme.secondary-foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800; height: (20px * AppTheme.ui-scale); }
-                                                                    ArtistLegendCountRow { label: "Blue"; label-color: AppTheme.blue; count: root.artist-overview-legend-counts.track-blue; }
+                                                                    ArtistLegendCountRow { label: "Blue"; label-color: root.media-state-blue; count: root.artist-overview-legend-counts.track-blue; }
                                                                     Text { text: "Pending artwork"; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; height: (17px * AppTheme.ui-scale); }
-                                                                    ArtistLegendCountRow { label: "Green"; label-color: AppTheme.green; count: root.artist-overview-legend-counts.track-green; }
+                                                                    ArtistLegendCountRow { label: "Green"; label-color: root.media-state-green; count: root.artist-overview-legend-counts.track-green; }
                                                                     Text { text: "Artwork complete"; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; height: (17px * AppTheme.ui-scale); }
-                                                                    ArtistLegendCountRow { label: "Purple"; label-color: AppTheme.violet; count: root.artist-overview-legend-counts.track-purple; }
+                                                                    ArtistLegendCountRow { label: "Purple"; label-color: root.media-state-purple; count: root.artist-overview-legend-counts.track-purple; }
                                                                     Text { text: "Complete; thumb needs attention"; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; height: (17px * AppTheme.ui-scale); }
                                                                     Rectangle { height: (9px * AppTheme.ui-scale); background: transparent; }
                                                                     Text { text: "MISC STATUS"; color: AppTheme.secondary-foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800; height: (20px * AppTheme.ui-scale); }
-                                                                    ArtistLegendCountRow { label: "●  Animated"; label-color: AppTheme.blue; count: root.artist-overview-legend-counts.blue-dots; }
+                                                                    ArtistLegendCountRow { label: "●  Animated"; label-color: root.media-state-blue; count: root.artist-overview-legend-counts.blue-dots; }
                                                                     Text { text: "cover.webp present: review the still cover"; color: AppTheme.foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; height: (17px * AppTheme.ui-scale); }
                                                                 }
                                                             }
@@ -3994,6 +4003,13 @@ export component AppWindow inherits Window {
                                     Button { text: "Reload"; clicked => root.load-credential(root.credential-provider); }
                                     Button { text: "Test"; clicked => root.test-credential(root.credential-provider, root.credential-server-name, root.credential-server, root.credential-auth, root.credential-username, root.credential-identifier, root.credential-secret); }
                                     Button { text: "Save Connection"; clicked => root.save-credential(root.credential-provider, root.credential-server-name, root.credential-server, root.credential-auth, root.credential-username, root.credential-identifier, root.credential-secret); }
+                                }
+                                if root.settings-advanced-visible: VerticalLayout { spacing: (6px * AppTheme.ui-scale);
+                                    Heading { text: "Artist & Album State Policy · JSON"; height: (27px * AppTheme.ui-scale); }
+                                    Text { text: "Editable runtime authority for Artist-name rankings, independent Album-name/status rules, colors, and opposing-app override presentation."; color: AppTheme.secondary-foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; wrap: word-wrap; height: (38px * AppTheme.ui-scale); }
+                                    SettingsHelpTip { summary: "How is media-state-classification.json used?"; detail: "Standalone SQLite and PostgreSQL installs use the same policy schema. Album Coordination adds opposing-writer evidence but is not required. Save Connections validates this JSON and writes it beside the active config.toml. Reference: docs/media-state-classification-policy.md"; }
+                                    TextEdit { height: (300px * AppTheme.ui-scale); text <=> root.settings-media-state-policy-json; wrap: word-wrap; font-size: (12px * AppTheme.ui-scale) * AppTheme.font-scale; }
+                                    Text { text: root.settings-media-state-policy-status; color: AppTheme.green; font-size: (12px * AppTheme.ui-scale) * AppTheme.font-scale; height: (18px * AppTheme.ui-scale); overflow: elide; }
                                 }
                                 if root.settings-advanced-visible: VerticalLayout { spacing: (6px * AppTheme.ui-scale);
                                     SettingsHelpTip { summary: "Do I need AISPLINED for normal artwork work?"; detail: "No. AISPLINED is an optional, not-yet-complete provider. Keep it off unless you are specifically testing it. Its settings are saved separately from the credentials above."; }

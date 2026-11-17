@@ -452,7 +452,9 @@ fn windows_release_is_x64_single_executable_with_exact_portable_allowlist() {
     assert!(workflow.contains("WINDOWS_TARGET: \"x86_64-pc-windows-msvc\""));
     assert!(workflow.contains("Build clean x64 Rust/Slint executable"));
     assert!(workflow.contains("Assert-Amd64Pe \"$portableRoot/splined.exe\""));
-    assert!(workflow.contains("\"README-WINDOWS.txt\", \"splined.exe\""));
+    assert!(workflow.contains(
+        "\"README-WINDOWS.txt\", \"media-state-classification.json\", \"splined.exe\""
+    ));
     assert!(workflow.contains("--write-build-info"));
     assert!(workflow.contains("--native-smoke"));
     assert!(workflow.contains("splined-portable-smoke-state"));

@@ -60,9 +60,14 @@ Sections** is one workspace-wide state.
   `webgui_ui` in Config v5.
 - **Artwork Sources** owns provider order and source-policy controls.
 - **Connections** edits and tests the supported credential files. Saved secrets
-  are masked and blank secret fields retain their existing values.
+  are masked, separate from Config v5, and blank secret fields retain their
+  existing values. With Advanced enabled, the same section exposes
+  the shared [`media-state-classification.json`](media-state-classification-policy.md)
+  above Optional AISPLINED Provider; validation and save activate its Artist,
+  Album, status-dot, and override presentation rules without rebuilding WebGUI.
 - **Backup & Recovery** owns settings export/restore and deliberate catalog
-  maintenance.
+  maintenance. Both the Safe Settings JSON and Shared Settings Contract exports
+  include the active media-state policy.
 - **Processing & Logs** owns mode, history, diagnostic level, and retention.
 
 Container deployments normally supply PostgreSQL credentials through the

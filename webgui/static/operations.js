@@ -46,6 +46,8 @@ function dialog(title, kind = "") {
 }
 async function sessionStatus() {
   const status = await api("/api/status"); state.csrf = status.csrf; state.server = status;
+  state.mediaStatePolicy = status.media_state_policy || null;
+  applyMediaStatePolicyPalette();
   state.compRepairEnabled = !!status.comp_repair; return status;
 }
 async function initialize() {
@@ -1862,6 +1864,38 @@ async function renderConnectionSettings(host, initialProvider) {
   }
   select.addEventListener("change", () => load(select.value)); await load(initialProvider);
 }
+async function renderMediaStatePolicyEditor(host) {
+  const panel = node("section", "media-state-policy-editor");
+  panel.append(
+    node("h4", "settings-group-heading", "Artist & Album State Policy · JSON"),
+    node("p", "settings-subcopy", "Runtime authority for Artist-name rankings, independent Album-name/status rules, colors, and opposing-app override presentation. Standalone SQLite or PostgreSQL installs use the same schema; coordination adds only opposing-writer evidence."),
+  );
+  const link = node("a", "guide-link", "State policy reference");
+  link.href = "https://github.com/scottia/S-P-L-I-N-E-D/blob/main/docs/media-state-classification-policy.md";
+  link.target = "_blank"; link.rel = "noopener"; panel.append(link);
+  const editor = node("textarea", "media-state-policy-json");
+  editor.spellcheck = false; editor.setAttribute("aria-label", "Artist and Album state policy JSON");
+  editor.placeholder = "Loading media-state-classification.json…"; panel.append(editor);
+  const status = node("p", "settings-subcopy", "Loading active policy…");
+  const actions = node("div", "connection-actions"), reload = node("button", "operation-button", "Reload"), save = node("button", "operation-button", "Validate & Save Policy");
+  reload.type = save.type = "button"; actions.append(reload, save); panel.append(actions, status); host.append(panel);
+  const loadPolicy = async () => {
+    const value = await api("/api/settings/media-state-policy");
+    editor.value = JSON.stringify(value, null, 2) + "\n";
+    status.textContent = `${value.policy_id || "SPLINED policy"} · schema ${value.schema_version}`;
+  };
+  reload.addEventListener("click", () => runAction(loadPolicy));
+  save.addEventListener("click", () => runAction(async () => {
+    const value = JSON.parse(editor.value);
+    const saved = await post("/api/settings/media-state-policy", {policy: value});
+    state.mediaStatePolicy = saved;
+    applyMediaStatePolicyPalette();
+    editor.value = JSON.stringify(saved, null, 2) + "\n";
+    status.textContent = `${saved.policy_id} validated and active`;
+    renderAll(); setStatus("Artist & Album state policy validated and saved");
+  }));
+  try { await loadPolicy(); } catch (error) { status.className = "operation-error"; status.textContent = error.message; }
+}
 function downloadJsonFile(name, value) {
   const blob = new Blob([JSON.stringify(value, null, 2) + "\n"], {type: "application/json"});
   const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = name; link.click(); URL.revokeObjectURL(link.href);
@@ -1972,9 +2006,9 @@ function renderCatalogMaintenance(host, advanced = false) {
 }
 function renderBackupSettings(host, saved, contract, onRestored, advanced = false) {
   const layout = node("div", "backup-layout"), backup = node("section", "backup-column"), restore = node("section", "backup-column");
-  backup.append(node("h4", "", "↑ Backup"), node("p", "settings-subcopy", "WebGUI exports its safe Config v5 settings and interface palette. Provider secrets and PostgreSQL data are deliberately excluded."));
-  const contents = node("div", "archive-contents"); for (const label of ["Config V5 Settings", "Interface Settings", "Shared UI Contract"]) contents.append(node("span", "", "●  " + label)); backup.append(contents);
-  const safe = node("button", "operation-button full-action", "Back Up Safe Settings JSON"); safe.type = "button"; safe.addEventListener("click", () => downloadJsonFile("splined-settings-safe.json", saved.config));
+  backup.append(node("h4", "", "↑ Backup"), node("p", "settings-subcopy", "WebGUI exports its safe Config v5 settings, interface palette, and editable media-state classification policy. Provider secrets and PostgreSQL data are deliberately excluded."));
+  const contents = node("div", "archive-contents"); for (const label of ["Config V5 Settings", "Interface Settings", "Media State Classification Policy", "Shared UI Contract"]) contents.append(node("span", "", "●  " + label)); backup.append(contents);
+  const safe = node("button", "operation-button full-action", "Back Up Safe Settings JSON"); safe.type = "button"; safe.addEventListener("click", () => downloadJsonFile("splined-settings-safe.json", {config: saved.config, media_state_policy: state.mediaStatePolicy || contract.media_state_policy}));
   const shared = node("button", "operation-button full-action", "Download Shared Settings Contract"); shared.type = "button"; shared.addEventListener("click", () => downloadJsonFile("splined-settings-ui.json", contract));
   const backupActions = node("div", "backup-actions"); backupActions.append(safe, shared); backup.append(backupActions);
   settingsHelp(backup, "Will this preserve sliders, panes, and banner colors?", "Banner colors, frame colors, enhancement presets, and other WebGUI settings are included. Browser pane sizes remain device-local. Provider credentials remain in the credential volume and are not downloaded.");
@@ -1986,7 +2020,15 @@ function renderBackupSettings(host, saved, contract, onRestored, advanced = fals
     if (!file.files?.length) throw new Error("Choose a safe settings JSON file first");
     const value = JSON.parse(await file.files[0].text());
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("The selected file is not a SPLINED settings object");
-    const restored = await post("/api/settings", {config: value}); applyGraphicalEnhancement(restored.config.webgui_ui?.enhancement); setStatus("Safe WebGUI settings restored"); await onRestored(restored);
+    const config = value.config && typeof value.config === "object" && !Array.isArray(value.config) ? value.config : value;
+    const restored = await post("/api/settings", {config});
+    if (value.media_state_policy) {
+      state.mediaStatePolicy = await post("/api/settings/media-state-policy", {policy: value.media_state_policy});
+      applyMediaStatePolicyPalette();
+    }
+    applyGraphicalEnhancement(restored.config.webgui_ui?.enhancement);
+    setStatus(value.media_state_policy ? "Safe WebGUI settings and media-state policy restored" : "Safe WebGUI settings restored");
+    await onRestored(restored);
   })); restoreActions.append(button); restore.append(restoreActions);
   settingsHelp(restore, "Can I restore a Windows .spl file here?", "No. Windows .spl archives can contain Windows-only SQLite and interface state. Use the WebGUI safe JSON here, and restore PostgreSQL with PostgreSQL tools.");
   renderCatalogMaintenance(restore, advanced);
@@ -2136,6 +2178,7 @@ async function openSettings() {
       const groupFor = path => section.id === "library" ? (["library.music_library", "library.various_artist_path", "library.soundtracks_path", "library.curated_compilations_path", "scan.scan_mode", "scan.scan_library_dir"].includes(path) ? "Library And Application Paths" : path.startsWith("scan.artist_separator_") || path.startsWith("scan.index_") ? "Library Index" : path === "database.url" ? "Database" : "Persistent Folders")
         : section.id === "artwork" ? (path.startsWith("output.") ? "Output Files" : path === "scan.shared_artist_art_dir" ? "V/A / OST Artist Images Directory" : "Sample Images")
         : section.id === "enhancement" ? "Resolution Range" : "";
+      if (section.id === "connections" && advanced) void renderMediaStatePolicyEditor(fields);
       for (const descriptor of section.fields || []) {
         if (descriptor.runtimes && !descriptor.runtimes.includes("webgui") || descriptor.advanced && !advanced) continue;
         const group = groupFor(descriptor.path);

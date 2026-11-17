@@ -32,10 +32,10 @@ import requests
 
 from splined_artist_art import ArtistAlbum, ArtistArtTarget, artist_targets, local_candidates, saved_package
 from splined_compilation_authority_policy import replace_embedded_artwork
-from splined_media_database import aggregate_artist
 from interaction.artist_search import discover_artist_images, discover_artist_profile
 from webgui.database import Database
 from webgui import imaging
+from webgui.media_state_policy import classify_media_state
 from webgui.coordination import (
     catalog_relative_album_path,
     normalized_coordination_relative,
@@ -897,9 +897,68 @@ class Catalog:
 
     @staticmethod
     def _aggregate_album_status(rows) -> str:
-        return aggregate_artist(
-            [str(row["status"] or "unprocessed").casefold() for row in rows]
-        )
+        evidence: set[str] = set()
+        album_states = []
+        for row in rows:
+            conditions = set(row.get("conditions", ())) if hasattr(row, "get") else set()
+            if not conditions:
+                status = str(row["status"] or "unprocessed").casefold()
+                if status == "partial":
+                    conditions.add("embedding_issues")
+                if status in {"incomplete", "timeout", "error"}:
+                    conditions.add("incomplete_or_error")
+                if status == "overridden":
+                    conditions.add("opposing_override")
+                if status in {"complete", "processed", "overridden"}:
+                    conditions.add("complete_or_overridden")
+            evidence.update(conditions)
+            album_states.append(conditions)
+        if album_states and all(
+            "complete_or_overridden" in conditions for conditions in album_states
+        ):
+            evidence.add("all_albums_complete_or_overridden")
+        status = classify_media_state("artist", evidence)["ui_status_key"]
+        # Catalog APIs retain the established terminal label. The browser
+        # translates it to the shared albumsComplete UI key when filtering.
+        return "complete" if status == "albumsComplete" else status
+
+    @staticmethod
+    def _artist_album_state_conditions(
+        row, coordination: dict[str, object] | None = None
+    ) -> set[str]:
+        """Return Artist-rollup evidence without conflating missing cover art.
+
+        Missing Album art is an Album-name/dot condition. Artist yellow is
+        reserved for missing Artist Art and is applied by the presentation
+        after its lazy portrait/banner result is known.
+        """
+        keys = set(row.keys())
+        status = str(row["status"] or "unprocessed").casefold() if "status" in keys else "unprocessed"
+        writer = str((coordination or {}).get("writer", "")).casefold()
+        conditions: set[str] = set()
+        if writer == "windows" or status == "overridden":
+            # Opposing ownership is authoritative presentation evidence. Do
+            # not also inherit a stale pre-write incomplete label.
+            return {"opposing_override", "complete_or_overridden"}
+        if status == "partial":
+            conditions.add("embedding_issues")
+        if status in {"incomplete", "timeout", "error"}:
+            conditions.add("incomplete_or_error")
+        if {
+            "track_count",
+            "embedded_tracks",
+            "embedded_validation_status",
+        }.issubset(keys):
+            track_count = int(row["track_count"] or 0)
+            validation = str(row["embedded_validation_status"] or "").casefold()
+            embedded = int(row["embedded_tracks"] or 0)
+            if validation in {"retry", "error"} or (
+                validation == "verified" and track_count > 0 and embedded < track_count
+            ):
+                conditions.add("embedding_issues")
+            if validation == "verified" and track_count > 0 and embedded >= track_count:
+                conditions.add("complete_or_overridden")
+        return conditions
 
     @staticmethod
     def _effective_album_status(row, coordination: dict[str, object] | None = None) -> str:
@@ -1826,7 +1885,13 @@ class Catalog:
                 row, coordination.get(album_key, {})
             )
             statuses_by_artist.setdefault(str(row["artist_key"]), []).append(
-                {"album_key": album_key, "status": effective_status}
+                {
+                    "album_key": album_key,
+                    "status": effective_status,
+                    "conditions": self._artist_album_state_conditions(
+                        row, coordination.get(album_key, {})
+                    ),
+                }
             )
             owned_album_keys.setdefault(str(row["artist_key"]), set()).add(album_key)
         result = []
@@ -1864,7 +1929,13 @@ class Catalog:
                             if str(coordination.get(album_key, {}).get("writer", "")).casefold()
                             == "windows"
                             else status
-                        )
+                        ),
+                        "conditions": (
+                            {"opposing_override", "complete_or_overridden"}
+                            if str(coordination.get(album_key, {}).get("writer", "")).casefold()
+                            == "windows"
+                            else self._artist_album_state_conditions({"status": status})
+                        ),
                     }
                     for album_key, status in appearance.get("statuses", {}).items()
                 )
@@ -1897,8 +1968,14 @@ class Catalog:
             ),
         )
 
-    def artist_thumbnails(self) -> list[dict[str, str]]:
-        """Return local thumbnails immediately and Navidrome fallbacks lazily."""
+    def artist_thumbnails(self) -> list[dict[str, object]]:
+        """Resolve visible Artist Art without delaying the initial list projection.
+
+        Every visible Artist is returned, including Artists without usable Art.
+        That negative result lets the browser apply the shared yellow
+        ``missing_artist_art`` policy only after the lazy filesystem/provider
+        lookup completes, without restoring the former startup-wide NAS walk.
+        """
         maintenance_active = self.index_maintenance_active()
         with closing(self.connect()) as db:
             rows = db.execute(
@@ -1957,8 +2034,11 @@ class Catalog:
             portrait = self.image(portrait_path) if portrait_path is not None else ""
             if not portrait and normalized_artist_identity(canonical["artist_name"]) in remote_artists:
                 portrait = self.artist_thumbnail_url(str(canonical["artist_key"]))
-            if portrait:
-                result.append({"id": str(canonical["artist_key"]), "portrait": portrait})
+            result.append({
+                "id": str(canonical["artist_key"]),
+                "portrait": portrait,
+                "missing_artist_art": not bool(portrait),
+            })
         return result
 
     def artist_thumbnail_path(self, artist) -> Path | None:
@@ -2291,7 +2371,10 @@ class Catalog:
                 {
                     "status": self._effective_album_status(
                         row, coordination.get(str(row["album_key"]), {})
-                    )
+                    ),
+                    "conditions": self._artist_album_state_conditions(
+                        row, coordination.get(str(row["album_key"]), {})
+                    ),
                 }
                 for row in rows
             ]), "albums": albums,

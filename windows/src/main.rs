@@ -54,6 +54,11 @@ use splined_core::media_database::{
     record_album_outcome_from_runtime, save_album_category_override, save_artist_art_identity,
     upgrade_database_schema,
 };
+use splined_core::media_state_policy::{
+    album_status_dot, classify_album, classify_artist, named_color, policy as media_state_policy,
+    policy_json as media_state_policy_json, save_policy as save_media_state_policy,
+    status_color as media_status_color, validate_policy as validate_media_state_policy,
+};
 use splined_core::musicbrainz::{ArtistLookup, ArtistSearchHit, MusicBrainzClient};
 use splined_core::override_coordination::{
     AlbumWriteState, TrackWriteState, connect_pool, coordination_database_url,
@@ -15239,6 +15244,11 @@ fn bind_service_callbacks(
                         .clone();
                 }
                 apply_settings_section_ui(&ui, &mut config, &section)?;
+                if section == "Connections" {
+                    validate_media_state_policy(
+                        ui.get_settings_media_state_policy_json().as_str(),
+                    )?;
+                }
                 let config = if section == "Library" {
                     let configuration_directory =
                         PathBuf::from(ui.get_settings_configuration_dir().trim());
@@ -15250,6 +15260,28 @@ fn bind_service_callbacks(
                     splined_core::settings::save_config(&config)?
                 };
                 if section != "Library" {
+                    if section == "Connections" {
+                        let config_path = splined_core::config::config_path().ok_or_else(|| {
+                            "The active configuration path is unavailable.".to_string()
+                        })?;
+                        let policy_path = config_path
+                            .parent()
+                            .ok_or_else(|| {
+                                "The active configuration directory is unavailable.".to_string()
+                            })?
+                            .join("media-state-classification.json");
+                        save_media_state_policy(
+                            &policy_path,
+                            ui.get_settings_media_state_policy_json().as_str(),
+                        )?;
+                        set_media_state_policy_palette(&ui);
+                        ui.set_settings_media_state_policy_json(
+                            media_state_policy_json().into(),
+                        );
+                        ui.set_settings_media_state_policy_status(
+                            "Validated, saved, and active".into(),
+                        );
+                    }
                     {
                         let mut app = state.lock().map_err(|_| {
                             "The SPLINED application state is unavailable.".to_string()
@@ -16838,6 +16870,7 @@ fn apply_saved_non_library_settings(
 }
 
 fn set_settings_ui(ui: &AppWindow, config: &Config) {
+    set_media_state_policy_palette(ui);
     if let Ok(layout) = splined_core::portable::app_layout() {
         ui.set_settings_configuration_dir(
             splined_core::portable::display_path(&layout.config_dir).into(),
@@ -16961,6 +16994,15 @@ fn set_settings_ui(ui: &AppWindow, config: &Config) {
     ui.set_settings_ai_endpoint(config.aisplined.endpoint.clone().into());
     ui.set_settings_ai_minimum(config.aisplined.minimum_short_side.to_string().into());
     ui.set_settings_ai_allow_below(config.aisplined.allow_below_minimum_override);
+    ui.set_settings_media_state_policy_json(media_state_policy_json().into());
+    ui.set_settings_media_state_policy_status(
+        format!(
+            "{} · schema {} · validated",
+            media_state_policy().policy_id,
+            media_state_policy().schema_version
+        )
+        .into(),
+    );
     let source = ui.get_settings_policy_source().to_string();
     let source = if splined_core::config::SUPPORTED_SOURCE_POLICIES.contains(&source.as_str()) {
         source
@@ -21193,31 +21235,22 @@ fn library_ui_model_from_rows(
     state: &ApplicationState,
     mut rows: Vec<splined_core::application::LibraryRow>,
 ) -> ModelRc<UiLibraryRow> {
-    let completed_overrides = state
-        .album_override_writers
-        .iter()
-        .filter(|(_, writer)| writer.eq_ignore_ascii_case("webgui"))
-        .map(|(album_key, _)| album_key.to_ascii_lowercase())
-        .collect::<HashSet<_>>();
-    let artist_states = (!completed_overrides.is_empty()).then(|| {
-        state
-            .library
-            .artist_states_with_overrides(&completed_overrides)
-    });
-    if let Some(artist_states) = artist_states {
-        for row in &mut rows {
-            if row.kind == "artist" {
-                if let Some(status) = artist_states.get(&row.primary) {
-                    row.status = status.label().to_string();
-                }
-            } else if matches!(row.kind.as_str(), "album" | "album-child")
-                && completed_overrides.contains(&row.key.to_ascii_lowercase())
-            {
-                // Grey is the established opposing-client visual and owns an
-                // exclusive Overridden count. It must never inflate Bypassed
-                // or Albums Complete.
-                row.status = "Overridden".to_string();
-            }
+    for row in &mut rows {
+        if row.kind == "artist" {
+            row.status =
+                artist_file_list_policy_state(state, &row.primary, &row.artwork_path).ui_status_key;
+        } else if matches!(row.kind.as_str(), "album" | "album-child" | "folder")
+            && let Some(album) = state
+                .library
+                .albums
+                .iter()
+                .find(|album| album.snapshot.album_key.eq_ignore_ascii_case(&row.key))
+        {
+            let artist = (row.kind == "album-child")
+                .then(|| state.library.focused_artist.as_deref())
+                .flatten();
+            row.status =
+                classify_album(&album_policy_conditions(state, album, artist)).ui_status_key;
         }
     }
     Rc::new(LibraryUiModel {
@@ -21238,6 +21271,112 @@ fn library_ui_model_from_rows(
     .into()
 }
 
+fn album_policy_conditions<'a>(
+    state: &'a ApplicationState,
+    album: &'a AlbumEntry,
+    artist: Option<&str>,
+) -> Vec<&'static str> {
+    let fallback = state.library.is_curated_fallback(album);
+    let overridden = !fallback
+        && state
+            .album_override_writers
+            .get(&album.snapshot.album_key.to_ascii_lowercase())
+            .is_some_and(|writer| writer.eq_ignore_ascii_case("webgui"));
+    let artist_art_missing = artist.is_some_and(|artist| {
+        state
+            .library
+            .artist_artwork_paths
+            .get(&artist.trim().to_ascii_lowercase())
+            .is_none_or(|path| path.trim().is_empty())
+    });
+    let fallback_progress = artist.and_then(|artist| {
+        splined_core::application::LibraryState::artist_fallback_track_progress(album, artist)
+    });
+    let fallback_complete =
+        fallback_progress.is_some_and(|(done, total)| total > 0 && done == total);
+    let fallback_incomplete =
+        fallback_progress.is_some_and(|(done, total)| total > 0 && done < total);
+    let embedded_check = if fallback {
+        fallback_album_embedded_check_from_cache(
+            &album.snapshot,
+            state.config.output.embedded_thumbnail_size,
+        )
+    } else {
+        album_embedded_check_cache().lock().ok().and_then(|cache| {
+            cache
+                .get(&album_embedded_check_key(
+                    &album.snapshot.path,
+                    state.config.output.embedded_thumbnail_size,
+                ))
+                .copied()
+                .flatten()
+        })
+    };
+    let fully_complete = if fallback {
+        fallback_complete && embedded_check.is_none_or(|check| !check.needs_attention())
+    } else {
+        album.state == AlbumState::Processed
+            && album.snapshot.has_local_artwork
+            && embedded_check.is_some_and(|check| check.tracks > 0 && !check.needs_attention())
+    };
+    let mut conditions = Vec::new();
+    if artist_art_missing
+        || (!fallback && !album.snapshot.has_local_artwork)
+        || album.state == AlbumState::Bypassed
+    {
+        conditions.push("missing_art");
+    }
+    if album.state == AlbumState::TimeoutActive
+        || embedded_check.is_some_and(AlbumEmbeddedCheck::needs_attention)
+    {
+        conditions.push("embedding_issues");
+    }
+    if album.state == AlbumState::Incomplete || fallback_incomplete {
+        conditions.push("incomplete_tracks");
+    }
+    if overridden {
+        conditions.push("opposing_override");
+    }
+    if fully_complete {
+        conditions.push("tracks_complete");
+    }
+    if album.state == AlbumState::Processed {
+        conditions.push("processed");
+    }
+    conditions
+}
+
+fn artist_file_list_policy_state(
+    state: &ApplicationState,
+    artist: &str,
+    artwork_path: &str,
+) -> splined_core::media_state_policy::MediaStateClassification {
+    let indices = state.library.artist_state_album_indices(artist);
+    let mut evidence = HashSet::<&'static str>::new();
+    if artwork_path.trim().is_empty() {
+        evidence.insert("missing_artist_art");
+    }
+    let mut all_complete_or_overridden = !indices.is_empty();
+    for index in indices {
+        let conditions = album_policy_conditions(state, &state.library.albums[index], Some(artist));
+        if conditions.contains(&"embedding_issues") {
+            evidence.insert("embedding_issues");
+        }
+        if conditions.contains(&"incomplete_tracks") {
+            evidence.insert("incomplete_or_error");
+        }
+        if conditions.contains(&"opposing_override") {
+            evidence.insert("opposing_override");
+        }
+        all_complete_or_overridden &=
+            conditions.contains(&"tracks_complete") || conditions.contains(&"opposing_override");
+    }
+    if all_complete_or_overridden {
+        evidence.insert("all_albums_complete_or_overridden");
+    }
+    classify_artist(&evidence.into_iter().collect::<Vec<_>>())
+}
+
 fn artist_album_card_display_title(title: &str) -> String {
     const MAX_CHARS: usize = 12;
     if title.chars().count() <= MAX_CHARS {
@@ -21253,6 +21392,18 @@ fn artist_album_card_display_title(title: &str) -> String {
     display
 }
 
+fn media_ui_status_label(key: &str) -> &'static str {
+    match key {
+        "incomplete" => "Incomplete",
+        "processed" => "Processed",
+        "bypassed" => "Bypassed",
+        "partial" => "Embedding Review",
+        "overridden" | "override" => "Overridden",
+        "albumsComplete" => "Albums Complete",
+        _ => "Unprocessed",
+    }
+}
+
 fn rgb_from_hex(value: &str) -> [u8; 3] {
     let hex = value.trim().trim_start_matches('#');
     if hex.len() == 6
@@ -21266,6 +21417,11 @@ fn rgb_from_hex(value: &str) -> [u8; 3] {
         return [r, g, b];
     }
     [52, 120, 255]
+}
+
+fn media_policy_color(color_name: &str) -> Color {
+    let [red, green, blue] = rgb_from_hex(&named_color(color_name));
+    Color::from_rgb_u8(red, green, blue)
 }
 
 fn themed_color(value: &str, appearance: &str, background: bool) -> Color {
@@ -21806,8 +21962,6 @@ fn artist_overview_ui_model_with_show_all(
             // use its folder cover. Neither is an actionable red status for
             // the selected artist's track-scoped COMP workflow.
             let missing_album_art = !fallback && !snapshot.has_local_artwork;
-            let unprocessed =
-                !fallback && album.state == splined_core::application::AlbumState::New;
             let incomplete = !fallback
                 && matches!(
                     album.state,
@@ -21815,7 +21969,6 @@ fn artist_overview_ui_model_with_show_all(
                         | splined_core::application::AlbumState::TimeoutActive
                 );
             let processed = album.state == splined_core::application::AlbumState::Processed;
-            let complete_art = !fallback && processed && has_artist_art && !missing_album_art;
             let (soundtrack, various_artists) = artist_overview_release_banners(snapshot);
             let banner_key = if overridden {
                 "override"
@@ -21918,40 +22071,36 @@ fn artist_overview_ui_model_with_show_all(
                 embedded_check,
             );
             let mut bullets = Vec::new();
-            let mut add_bullet = |applicable: bool, color: Color, tip: String| {
-                if applicable {
+            let mut add_bullet = |condition: &str, applicable: bool, detail: String| {
+                if applicable && let Some(rule) = album_status_dot(condition) {
                     bullets.push(UiAlbumStatusBullet {
-                        color,
-                        tip: SharedString::from(tip),
+                        color: media_policy_color(&rule.color),
+                        tip: SharedString::from(if detail.is_empty() {
+                            rule.label.clone()
+                        } else {
+                            detail
+                        }),
                     });
                 }
             };
             add_bullet(
-                !has_artist_art,
-                Color::from_rgb_u8(244, 204, 77),
-                "Missing Artist Art".to_string(),
-            );
-            add_bullet(
-                bypassed,
-                Color::from_rgb_u8(244, 204, 77),
-                "Bypassed Album".to_string(),
-            );
-            add_bullet(
-                (missing_album_art || unprocessed) && !stale_unprocessed,
-                Color::from_rgb_u8(255, 82, 104),
-                if missing_album_art {
+                "missing_art",
+                !has_artist_art || missing_album_art || bypassed,
+                if !has_artist_art {
+                    "Missing Artist Art"
+                } else if missing_album_art {
                     "Missing Album Art"
                 } else {
-                    "Unprocessed Album"
+                    "Bypassed Album"
                 }
                 .to_string(),
             );
             add_bullet(
+                "incomplete_tracks",
                 !stale_unprocessed
                     && (incomplete
                         || (fallback
                             && fallback_progress.is_some_and(|(done, total)| done < total))),
-                Color::from_rgb_u8(255, 82, 104),
                 if fallback {
                     "Selected Artist's COMP tracks incomplete"
                 } else {
@@ -21960,24 +22109,24 @@ fn artist_overview_ui_model_with_show_all(
                 .to_string(),
             );
             add_bullet(
+                "processed",
                 processed && !fully_complete,
-                Color::from_rgb_u8(239, 165, 78),
                 "Processed Album".to_string(),
             );
             add_bullet(
-                complete_art || fallback_complete,
-                Color::from_rgb_u8(50, 221, 160),
-                if fallback_complete {
+                "tracks_complete",
+                fully_complete,
+                if fallback {
                     "Selected Artist's COMP tracks complete"
                 } else {
-                    "Completed Artist & Album Art"
+                    "Album tracks complete"
                 }
                 .to_string(),
             );
             if let Some(check) = embedded_check {
                 add_bullet(
+                    "embedding_issues",
                     check.needs_attention(),
-                    Color::from_rgb_u8(124, 77, 255),
                     format!(
                         "Check Embedded · {} missing, {} wrong size; preference {} × {}",
                         check.missing,
@@ -21989,8 +22138,8 @@ fn artist_overview_ui_model_with_show_all(
             }
             let (has_webp, needs_still) = canonical_webp_status(snapshot);
             add_bullet(
+                "animated_webp",
                 has_webp,
-                Color::from_rgb_u8(52, 120, 255),
                 if needs_still {
                     "cover.webp preserved · WRITE Cover to create cover.jpg and embed a still"
                 } else {
@@ -21999,29 +22148,41 @@ fn artist_overview_ui_model_with_show_all(
                 .to_string(),
             );
             add_bullet(
+                "opposing_override",
                 overridden,
-                Color::from_rgb_u8(107, 115, 123),
                 "Opposing Album override".to_string(),
             );
-            let artwork_path = artist_album_card_artwork_path(state, snapshot);
-            let artwork = load_album_card_image(&artwork_path, 192, overridden);
-            let state_key = if overridden {
-                "Overridden"
-            } else if bypassed {
-                "Bypassed"
-            } else if check_embedded
-                || album.state == splined_core::application::AlbumState::TimeoutActive
+            let mut classification_conditions = Vec::new();
+            if !has_artist_art || missing_album_art || bypassed {
+                classification_conditions.push("missing_art");
+            }
+            if check_embedded || album.state == AlbumState::TimeoutActive {
+                classification_conditions.push("embedding_issues");
+            }
+            if incomplete
+                || (fallback && fallback_progress.is_some_and(|(done, total)| done < total))
             {
-                "Embedding Review"
-            } else if fully_complete {
-                "Albums Complete"
-            } else if processed || validating {
-                "Processed"
-            } else if incomplete || missing_album_art {
-                "Incomplete"
-            } else {
-                "Unprocessed"
-            };
+                classification_conditions.push("incomplete_tracks");
+            }
+            if overridden {
+                classification_conditions.push("opposing_override");
+            }
+            if fully_complete {
+                classification_conditions.push("tracks_complete");
+            }
+            if processed || validating {
+                classification_conditions.push("processed");
+            }
+            let classification = classify_album(&classification_conditions);
+            let artwork_path = artist_album_card_artwork_path(state, snapshot);
+            let artwork = load_album_card_image(
+                &artwork_path,
+                192,
+                overridden
+                    && media_state_policy()
+                        .override_presentation
+                        .grayscale_thumbnail,
+            );
             UiArtistAlbumRow {
                 key: SharedString::from(snapshot.album_key.clone()),
                 title: SharedString::from(snapshot.title.clone()),
@@ -22029,14 +22190,8 @@ fn artist_overview_ui_model_with_show_all(
                 year: SharedString::from(snapshot.release_year.clone()),
                 has_artwork: artwork.size().width > 0,
                 artwork,
-                status_color: if fully_complete {
-                    Color::from_rgb_u8(50, 221, 160)
-                } else if featured && fallback_complete {
-                    Color::from_rgb_u8(255, 151, 56)
-                } else {
-                    library_status_color(album.state.label())
-                },
-                state_key: state_key.into(),
+                status_color: media_policy_color(&classification.color_name),
+                state_key: media_ui_status_label(&classification.ui_status_key).into(),
                 selected: album.selected
                     && !state
                         .embed_locked_album_paths
@@ -22104,13 +22259,13 @@ fn artist_overview_legend_counts(
                 continue;
             };
             match bullet.color {
-                color if color == Color::from_rgb_u8(255, 82, 104) => counts.red_dots += 1,
-                color if color == Color::from_rgb_u8(244, 204, 77) => counts.yellow_dots += 1,
-                color if color == Color::from_rgb_u8(239, 165, 78) => counts.orange_dots += 1,
-                color if color == Color::from_rgb_u8(50, 221, 160) => counts.green_dots += 1,
-                color if color == Color::from_rgb_u8(124, 77, 255) => counts.purple_dots += 1,
-                color if color == Color::from_rgb_u8(52, 120, 255) => counts.blue_dots += 1,
-                color if color == Color::from_rgb_u8(107, 115, 123) => counts.grey_dots += 1,
+                color if color == media_policy_color("red") => counts.red_dots += 1,
+                color if color == media_policy_color("yellow") => counts.yellow_dots += 1,
+                color if color == media_policy_color("orange") => counts.orange_dots += 1,
+                color if color == media_policy_color("green") => counts.green_dots += 1,
+                color if color == media_policy_color("purple") => counts.purple_dots += 1,
+                color if color == media_policy_color("blue") => counts.blue_dots += 1,
+                color if color == media_policy_color("dark_grey") => counts.grey_dots += 1,
                 _ => {}
             }
         }
@@ -22241,20 +22396,29 @@ fn artist_overview_is_fully_complete(
 }
 
 fn library_status_color(status: &str) -> Color {
-    match status.trim().to_ascii_lowercase().as_str() {
-        "overridden" => status_filter_color(StatusFilter::Overridden),
-        "processed" => status_filter_color(StatusFilter::Processed),
-        "bypassed" => status_filter_color(StatusFilter::Bypassed),
-        "embedding review" | "partial / error" | "partial / timeout" => {
-            status_filter_color(StatusFilter::PartialTimeout)
+    let status_key = match status.trim().to_ascii_lowercase().as_str() {
+        "overridden" | "override" => "overridden",
+        "processed" => "processed",
+        "bypassed"
+        | "artist bypass"
+        | "artist contains bypass"
+        | "missing artist art"
+        | "missing artist or album art" => "bypassed",
+        "embedding review"
+        | "embedding issues exist"
+        | "partial"
+        | "partial / error"
+        | "partial / timeout" => "partial",
+        "incomplete" | "incomplete / error" | "incomplete album tracks" => "incomplete",
+        "albums complete" | "album complete" | "artist complete" | "albumscomplete" => {
+            "albumsComplete"
         }
-        "incomplete" => status_filter_color(StatusFilter::Incomplete),
-        "albums complete" | "album complete" | "artist complete" => {
-            status_filter_color(StatusFilter::ArtistComplete)
-        }
-        "artist bypass" | "artist contains bypass" => status_filter_color(StatusFilter::Bypassed),
-        _ => status_filter_color(StatusFilter::Unprocessed),
-    }
+        "unprocessed" => "unprocessed",
+        _ => "unprocessed",
+    };
+    let [red, green, blue] =
+        rgb_from_hex(&splined_core::media_state_policy::status_color(status_key));
+    Color::from_rgb_u8(red, green, blue)
 }
 
 fn artist_is_secondary_credit(track_artist: &str, selected_artist: &str) -> bool {
@@ -24173,16 +24337,28 @@ fn candidate_filter_row(
 }
 
 fn status_filter_color(filter: StatusFilter) -> Color {
-    let (red, green, blue) = match filter {
-        StatusFilter::All | StatusFilter::Unprocessed => (238, 248, 255),
-        StatusFilter::Processed => (239, 165, 78),
-        StatusFilter::Bypassed => (244, 204, 77),
-        StatusFilter::PartialTimeout => (181, 92, 228),
-        StatusFilter::Incomplete => (255, 82, 104),
-        StatusFilter::Overridden => (107, 115, 123),
-        StatusFilter::ArtistComplete => (76, 217, 137),
+    let key = match filter {
+        StatusFilter::All => "all",
+        StatusFilter::Unprocessed => "unprocessed",
+        StatusFilter::Processed => "processed",
+        StatusFilter::Bypassed => "bypassed",
+        StatusFilter::PartialTimeout => "partial",
+        StatusFilter::Incomplete => "incomplete",
+        StatusFilter::Overridden => "overridden",
+        StatusFilter::ArtistComplete => "albumsComplete",
     };
+    let [red, green, blue] = rgb_from_hex(&media_status_color(key));
     Color::from_rgb_u8(red, green, blue)
+}
+
+fn set_media_state_policy_palette(ui: &AppWindow) {
+    ui.set_media_state_red(media_policy_color("red"));
+    ui.set_media_state_yellow(media_policy_color("yellow"));
+    ui.set_media_state_orange(media_policy_color("orange"));
+    ui.set_media_state_purple(media_policy_color("purple"));
+    ui.set_media_state_dark_grey(media_policy_color("dark_grey"));
+    ui.set_media_state_green(media_policy_color("green"));
+    ui.set_media_state_blue(media_policy_color("blue"));
 }
 
 fn adjustment_row(state: &ApplicationState, name: &str, value: i32, unit: &str) -> UiAdjustmentRow {

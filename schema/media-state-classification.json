@@ -1,0 +1,191 @@
+{
+  "schema_version": 1,
+  "policy_id": "splined-media-state-v1",
+  "colors": {
+    "white": "#eef8ff",
+    "red": "#ff5268",
+    "yellow": "#f4cc4d",
+    "orange": "#efa54e",
+    "purple": "#7c4dff",
+    "dark_grey": "#6b737b",
+    "green": "#32dda0",
+    "blue": "#3478ff"
+  },
+  "light_colors": {
+    "white": "#304b5b",
+    "red": "#a3273b",
+    "yellow": "#8a650a",
+    "orange": "#99600b",
+    "purple": "#8036a8",
+    "dark_grey": "#596168",
+    "green": "#176a3e",
+    "blue": "#245cbd"
+  },
+  "ui_status_colors": {
+    "all": "white",
+    "unprocessed": "white",
+    "incomplete": "red",
+    "processed": "orange",
+    "bypassed": "yellow",
+    "partial": "purple",
+    "overridden": "dark_grey",
+    "albumsComplete": "green",
+    "override": "dark_grey"
+  },
+  "override_presentation": {
+    "condition": "opposing_override",
+    "banner_kind": "override",
+    "grayscale_thumbnail": true,
+    "frame_color": "dark_grey",
+    "status_dot_color": "dark_grey",
+    "preserve_album_classification": true
+  },
+  "artist": {
+    "description": "Artist file-list names are an aggregate of Artist Art plus independently classified Album and COMP-track evidence.",
+    "ranked_states": [
+      {
+        "condition": "missing_artist_art",
+        "key": "missing_art",
+        "ui_status_key": "bypassed",
+        "label": "Missing Artist Art",
+        "color": "yellow"
+      },
+      {
+        "condition": "embedding_issues",
+        "key": "embedding_issues",
+        "ui_status_key": "partial",
+        "label": "Embedding Issues Exist",
+        "color": "purple"
+      },
+      {
+        "condition": "incomplete_or_error",
+        "key": "incomplete",
+        "ui_status_key": "incomplete",
+        "label": "Incomplete / Error",
+        "color": "red"
+      },
+      {
+        "condition": "opposing_override",
+        "key": "overridden",
+        "ui_status_key": "overridden",
+        "label": "Overridden in opposing app",
+        "color": "dark_grey"
+      },
+      {
+        "condition": "all_albums_complete_or_overridden",
+        "key": "complete",
+        "ui_status_key": "albumsComplete",
+        "label": "All Artist Albums Complete",
+        "color": "green"
+      },
+      {
+        "condition": "default",
+        "key": "unprocessed",
+        "ui_status_key": "unprocessed",
+        "label": "Unprocessed",
+        "color": "white"
+      }
+    ],
+    "forbidden_name_colors": [
+      "orange",
+      "gold",
+      "blue"
+    ]
+  },
+  "album": {
+    "description": "Album names and status dots are independent of the Artist aggregate. Multiple dots may apply; ranked_name_states selects the single Album file-list name color.",
+    "ranked_name_states": [
+      {
+        "condition": "opposing_override",
+        "key": "overridden",
+        "ui_status_key": "overridden",
+        "label": "Overridden in opposing app",
+        "color": "dark_grey"
+      },
+      {
+        "condition": "missing_art",
+        "key": "missing_art",
+        "ui_status_key": "bypassed",
+        "label": "Missing Artist or Album Art",
+        "color": "yellow"
+      },
+      {
+        "condition": "embedding_issues",
+        "key": "embedding_issues",
+        "ui_status_key": "partial",
+        "label": "Embedding Issues Exist",
+        "color": "purple"
+      },
+      {
+        "condition": "incomplete_tracks",
+        "key": "incomplete",
+        "ui_status_key": "incomplete",
+        "label": "Incomplete album tracks",
+        "color": "red"
+      },
+      {
+        "condition": "tracks_complete",
+        "key": "complete",
+        "ui_status_key": "albumsComplete",
+        "label": "Album tracks complete",
+        "color": "green"
+      },
+      {
+        "condition": "processed",
+        "key": "processed",
+        "ui_status_key": "processed",
+        "label": "Processed Album",
+        "color": "orange"
+      },
+      {
+        "condition": "default",
+        "key": "unprocessed",
+        "ui_status_key": "unprocessed",
+        "label": "Unprocessed",
+        "color": "white"
+      }
+    ],
+    "status_dots": [
+      {
+        "condition": "incomplete_tracks",
+        "label": "Incomplete album tracks",
+        "color": "red"
+      },
+      {
+        "condition": "missing_art",
+        "label": "Missing Artist or Album Art",
+        "color": "yellow"
+      },
+      {
+        "condition": "processed",
+        "label": "Processed, not yet complete",
+        "color": "orange"
+      },
+      {
+        "condition": "embedding_issues",
+        "label": "Embedded art needs attention",
+        "color": "purple"
+      },
+      {
+        "condition": "opposing_override",
+        "label": "Overridden in opposing app",
+        "color": "dark_grey"
+      },
+      {
+        "condition": "tracks_complete",
+        "label": "Album tracks complete",
+        "color": "green"
+      },
+      {
+        "condition": "animated_webp",
+        "label": "cover.webp present",
+        "color": "blue",
+        "auxiliary": true
+      }
+    ],
+    "red_definition": "Incomplete album tracks",
+    "forbidden_name_colors": [
+      "blue"
+    ]
+  }
+}

@@ -83,8 +83,13 @@ A fresh portable archive contains only:
 ```text
 SPLINED\
   splined.exe
+  media-state-classification.json
   README-WINDOWS.txt
 ```
+
+`media-state-classification.json` is the editable shared Artist/Album state
+policy used by both Windows and WebGUI. Windows does not embed a second
+classification fallback in the executable.
 
 Portable startup discovers `config.toml` and `ui.toml` beside the executable,
 or follows an install-scoped `configuration-location.toml` to an explicitly

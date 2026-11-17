@@ -56,8 +56,13 @@ mounts.
   bounded enlargement policy.
 - **Artwork Sources**: provider order, exclusions, and selected-provider policy.
 - **Connections**: provider credentials and connection tests.
+  With Advanced enabled, this section also edits and validates the external
+  [`media-state-classification.json`](media-state-classification-policy.md)
+  used by both runtimes. The policy is intentionally separate from Config v5
+  so name-color and status rules can change without recompiling an app.
 - **Backup & Recovery**: secret-free settings/reference export and catalog
-  maintenance controls.
+  maintenance controls. Safe Settings JSON and the Shared Settings Contract
+  both include the active media-state policy.
 - **Processing & Logs**: processing mode, completion history, Log Directory,
   diagnostic level, retention, and bounded WebGUI events.
 

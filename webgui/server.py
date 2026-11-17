@@ -32,6 +32,7 @@ from webgui.browser_sessions import BrowserSessionStore, SESSION_MAX_AGE_SECONDS
 from webgui.audit import sanitize, sanitize_text, utc_now
 from webgui.reconciliation import SQLiteReconciler
 from webgui import index_coordinator as indexer
+from webgui.media_state_policy import media_state_policy, save_media_state_policy
 
 
 SETTINGS_UI = Path(__file__).resolve().parents[1] / "schema/settings-ui.json"
@@ -591,6 +592,7 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
             "database": "PostgreSQL",
             "database_ready": bool(context.services),
             "database_migration": context.database_migration,
+            "media_state_policy": media_state_policy(),
         }
         if session["authenticated"]:
             result.update(
@@ -702,7 +704,9 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
 
     @app.get("/api/settings/contract")
     def settings_contract():
-        return json.loads(SETTINGS_UI.read_text(encoding="utf-8"))
+        contract = json.loads(SETTINGS_UI.read_text(encoding="utf-8"))
+        contract["media_state_policy"] = media_state_policy()
+        return contract
 
     @app.get("/api/settings")
     def settings():
@@ -711,6 +715,21 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
     @app.post("/api/settings")
     def save_settings(payload: dict):
         return context.configure((payload).get("config"))
+
+    @app.get("/api/settings/media-state-policy")
+    def get_media_state_policy():
+        return media_state_policy()
+
+    @app.post("/api/settings/media-state-policy")
+    def update_media_state_policy(payload: dict):
+        try:
+            policy = save_media_state_policy(payload.get("policy"))
+        except (OSError, ValueError, RuntimeError) as error:
+            raise HTTPException(400, str(error)) from error
+        context.services and context.services.audit(
+            "save-media-state-policy", "media-state-classification.json"
+        )
+        return policy
 
     @app.get("/api/settings/library-directories")
     def library_directories(path: str = ""):

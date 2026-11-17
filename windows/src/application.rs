@@ -1009,6 +1009,14 @@ impl LibraryState {
             .unwrap_or_default()
     }
 
+    /// Return every Album that contributes evidence to an Artist aggregate.
+    /// Unlike the sidebar's owned-Album projection, this deliberately retains
+    /// V/A, soundtrack, Featured, and curated COMP appearances so one shared
+    /// state policy can account for their track-scoped status.
+    pub fn artist_state_album_indices(&self, artist: &str) -> Vec<usize> {
+        self.artist_indices(artist)
+    }
+
     fn text_matches_for_artist(&self, artist: &str, album: &AlbumEntry) -> bool {
         let needle = self.text_filter.trim().to_ascii_lowercase();
         let global_matches = needle.is_empty()
