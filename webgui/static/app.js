@@ -824,10 +824,10 @@ function artistOverviewAlbums(artist = state.artist, honorSingleAlbum = true) {
     const validated = validatedCompById.get(group.id);
     return {
       id: group.id, name: group.name, year: group.year, cover: group.cover, cover_found: !!group.cover,
-      album_mbid: "", compilation: true, tracks: group.tracks.length,
+      album_mbid: "", compilation: true, fallback: true, library_group: "fallback", tracks: group.tracks.length,
       embedded: group.tracks.filter(track => track.completed).length,
       fallback_complete: group.tracks.length > 0 && group.tracks.every(track => track.completed),
-      comp_attention: !!validated?.tracks?.some(track => ["purple", "checking", "check-error"].includes(normalizedCompTrackStatus(track))),
+      comp_attention: !!validated?.tracks?.some(track => ["purple", "check-error"].includes(normalizedCompTrackStatus(track))),
       status: group.tracks.every(track => track.completed) ? "processed" : "incomplete",
     };
   });
@@ -840,7 +840,7 @@ function artistOverviewAlbums(artist = state.artist, honorSingleAlbum = true) {
       cover_found: !!(group.cover || album.cover), compilation: true,
       embedded: group.tracks.filter(track => track.completed).length,
       fallback_complete: group.tracks.length > 0 && group.tracks.every(track => track.completed),
-      comp_attention: !!validated?.tracks?.some(track => ["purple", "checking", "check-error"].includes(normalizedCompTrackStatus(track)))} : album;
+      comp_attention: !!validated?.tracks?.some(track => ["purple", "check-error"].includes(normalizedCompTrackStatus(track)))} : album;
   });
   const allAlbums = [...indexed, ...projected];
   const presentedAlbums = honorSingleAlbum && singleAlbumOverviewActive()
@@ -950,7 +950,10 @@ function albumRow(album, child) {
   const button = node("button", "library-row album-row" + (child ? " album-child" : "")); button.type = "button";
   const orbit = node("span", "status-orbit" + (selectedMedia(album) ? " selected" : ""), selectedMedia(album) ? "●" : "○"); button.append(orbit);
   const overridden = opposingAlbumOverride(album);
-  applyStatusPalette(button, overridden ? "override" : mediaStatusKey(album));
+  // A discovered cover.* is already processed material even when the stored
+  // catalog label predates the file. Use the same material-aware state as the
+  // Overview card instead of painting that Album white/unprocessed.
+  applyStatusPalette(button, overridden ? "override" : albumCardState(album, state.artist).stateKey);
   button.classList.toggle("opposing-override", overridden);
   button.append(albumArtworkNode(album, "library-thumb", ""));
   const copy = node("span", "row-copy"); copy.append(node("strong", "", album.name), node("small", "", child ? album.tracks + " tracks" : album.artist_name)); button.append(copy);
@@ -1085,7 +1088,11 @@ function albumCardState(album, artist) {
   const bypassed = status === "bypassed" || status === "artistBypass";
   const incomplete = fallback ? album.fallback_complete === false
     : status === "incomplete" || status === "partial";
-  const processed = status === "processed" || status === "artistComplete";
+  // cover_found is current filesystem evidence. It must outrank an old
+  // unprocessed database label, while verified embedded-track evidence still
+  // remains the only route to a green/complete Album.
+  const processed = status === "processed" || status === "artistComplete"
+    || (!fallback && status === "unprocessed" && Boolean(album.cover_found || album.cover));
   const embeddedValidation = String(album.embedded_validation || "unknown").toLowerCase();
   const embeddedKnown = embeddedValidation === "verified";
   const embeddedComplete = embeddedKnown && Number(album.tracks) > 0 && Number(album.embedded) >= Number(album.tracks);
@@ -1119,6 +1126,24 @@ function albumCardState(album, artist) {
   const frame = overridden ? "#6b737b" : bypassed ? "#f4cc4d" : validating ? "#55c7d8" : fullyComplete ? frames.complete.color
     : checkEmbedded ? frames.thumbnail.color : processed ? frames.in_process.color : mediaStatusColor(status);
   return {dots, frame, fullyComplete, checkEmbedded, embeddedPending, embeddedRetry, validating, mixedFrame, overridden, bypassed, stateKey};
+}
+function selectedArtistAggregateStatus(artist = state.artist) {
+  if (!artist) return "unprocessed";
+  const cards = artistOverviewAlbums(artist, false).map(album => albumCardState(album, artist));
+  if (cards.some(card => ["incomplete", "unprocessed"].includes(card.stateKey))) return "incomplete";
+  if (cards.some(card => card.stateKey === "partial")) return "partial";
+  if (cards.some(card => card.stateKey === "bypassed")) return "bypassed";
+  if (cards.length && cards.every(card => card.stateKey === "albumsComplete")) return "complete";
+  if (cards.length) return "processed";
+  return rawMediaStatusKey(artist);
+}
+function syncSelectedArtistStatus() {
+  if (!state.artist) return "unprocessed";
+  const status = selectedArtistAggregateStatus(state.artist);
+  state.artist.status = status;
+  const listed = state.artists.find(item => String(item.id) === String(state.artist.id));
+  if (listed) listed.status = status;
+  return status;
 }
 function renderAlbumCountSummary(albums, artist = state.artist) {
   const host = $("albumCount"); clear(host);
@@ -1615,7 +1640,9 @@ function renderArtistCompReport() {
 function closeArtistCompReport() {
   if (state.compBusy) return;
   ++state.compReportRequest; ++state.compStatusRequest; ++state.compTrackRequest;
-  state.compReportLoading = false; state.compReportVisible = false; state.compGroups = []; state.compTrack = null;
+  // Keep the validated track statuses as the Artist/Album color authority
+  // after the report closes; only the report presentation is being closed.
+  state.compReportLoading = false; state.compReportVisible = false; state.compTrack = null;
   state.upscalePreview = null; state.candidates = state.artist?.local_candidates || [];
   renderHero(); renderCandidates(); renderReview();
   setStatus("COMP report closed");
@@ -1644,9 +1671,13 @@ function requestArtistCompReport(artistId) {
 }
 async function precompileArtistCompReport(artistId, selectionRequest) {
   try {
-    await requestArtistCompReport(artistId);
-    if (selectionRequest === state.selectionRequest && artistId === state.artist?.id)
+    const groups = await requestArtistCompReport(artistId);
+    if (selectionRequest === state.selectionRequest && artistId === state.artist?.id) {
+      state.compGroups = groups;
+      if (typeof syncSelectedArtistStatus === "function") syncSelectedArtistStatus();
+      refreshLibraryArtistRow(artistId);
       renderCompReportButtonState();
+    }
   } catch { /* COMP Report reports a focused error only when explicitly opened. */ }
 }
 
@@ -1655,7 +1686,7 @@ async function openArtistCompReport(albumId = "") {
   if (state.compReportLoading) return;
   const request = ++state.compReportRequest, artistId = state.artist.id;
   ++state.compStatusRequest; ++state.compTrackRequest;
-  state.compReportLoading = true; state.compGroups = []; state.compTrack = null;
+  state.compReportLoading = true; state.compTrack = null;
   $("compReportButton").disabled = true;
   renderHero();
   setStatus("Loading COMP report…", "busy");
@@ -1712,6 +1743,9 @@ async function probeArtistCompStatuses() {
     renderArtistCompReport();
   }
   if (request !== state.compStatusRequest || artistId !== state.artist?.id || !state.compReportVisible) return;
+  if (typeof syncSelectedArtistStatus === "function") syncSelectedArtistStatus();
+  refreshLibraryArtistRow(artistId);
+  renderHero();
   const failures = targets.filter(({track}) => normalizedCompTrackStatus(track) === "check-error").length;
   setStatus(`COMP report ready · ${state.compGroups.length} albums · ${targets.length - failures} recorded thumbnails validated${failures ? ` · ${failures} retry needed` : ""}`, failures ? "error" : "ready");
 }
@@ -2711,7 +2745,10 @@ async function chooseArtist(id, select = true) {
   clearFocusCandidates(); resetFocusAdjustments();
   state.artist = null; state.artistMetadata = null; state.album = null; state.compAlbums = [];
   state.editorMode = "artist"; state.workspace = "find";
-  renderAll();
+  // Preserve the file-list DOM and its decoded thumbnails while the Overview
+  // loads. Rebuilding every Artist row here caused a visible image flash and
+  // restarted the viewport loading queue on every selection.
+  renderHero(); renderSources(); renderCandidates(); renderWorkspace();
   setStatus("Loading artist and existing artwork…", "busy");
   try {
     const overview = await api("/api/artist/overview?id=" + encodeURIComponent(id));
@@ -2726,13 +2763,19 @@ async function chooseArtist(id, select = true) {
     updateSourceCounts("artist", state.candidates);
     state.radioCurrent = true; state.radioArtist = false; state.radioBanner = false;
     state.artistInfoExpanded = false;
+    if (typeof syncSelectedArtistStatus === "function") syncSelectedArtistStatus();
     renderAll(); setStatus("Loaded " + state.artist.name + " · " + state.artist.albums.length + " albums");
     auditEvent("selection-change", "artist", {scope: {artist_id: artist.id}, details: {library_mode: state.libraryMode}});
     // Compile the Artist's track-scoped COMP projection in the background so
     // COMP Report remains closed until requested but opens immediately later.
     void precompileArtistCompReport(artist.id, request);
-    loadArtistMetadata(artist.id);
-    probeArtistAlbumStatuses(artist.id, request);
+    // The Overview response already carries the cached metadata seed. Start a
+    // provider refresh only after the selected Artist has painted instead of
+    // competing with the Overview and COMP projection for the first frame.
+    setTimeout(() => {
+      if (request === state.selectionRequest && state.artist?.id === artist.id)
+        void loadArtistMetadata(artist.id);
+    }, 0);
   } catch (error) { if (request === state.selectionRequest) setStatus(error.message, "error"); }
 }
 async function chooseAlbum(id) {
@@ -2783,7 +2826,6 @@ async function chooseAlbum(id) {
     setStatus(fallback ? `COMP ready · ${tracks.length} tracks · ${tracks.filter(item => !item.completed).length} pending · validating recorded thumbnails`
       : "Loaded " + album.artist_name + " · " + album.name + " · " + album.tracks + " tracks");
     if (fallback) probeFallbackStatuses();
-    else if (state.artist) probeArtistAlbumStatuses(state.artist.id, request);
   } catch (error) { if (request === state.selectionRequest) setStatus(error.message, "error"); }
 }
 async function selectFallbackTrack(key, previewOnly, autoLaunch = true) {
@@ -2820,6 +2862,7 @@ async function loadArtistMetadata(id, refresh = false) {
       if (listed && metadata.artist.portrait) listed.portrait = metadata.artist.portrait;
     }
     if (Array.isArray(metadata.comp_albums)) state.compAlbums = metadata.comp_albums;
+    if (typeof syncSelectedArtistStatus === "function") syncSelectedArtistStatus();
     state.artistMetadata = metadata; renderLibrary(); renderHero(); renderSources();
   } catch { /* The labeled sample layout remains available when Navidrome is offline. */ }
 }

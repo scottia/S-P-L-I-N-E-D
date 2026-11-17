@@ -82,6 +82,7 @@ class BrowserFallbackTests(unittest.TestCase):
         self.assertNotIn("Promise.all", choose_artist)
         self.assertNotIn('/api/artist?id=', choose_artist)
         self.assertNotIn('/api/artist/comp-albums?id=', choose_artist)
+        self.assertNotIn("probeArtistAlbumStatuses", choose_artist)
         self.assertIn("requestArtistCompReport", open_report)
         self.assertIn("/api/artist/comp-report", report_loader)
 

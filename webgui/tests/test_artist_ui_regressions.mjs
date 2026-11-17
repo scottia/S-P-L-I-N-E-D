@@ -216,7 +216,7 @@ test("opposing Album overrides use their own dark-grey filter and never inflate 
   assert.equal(context.rawMediaStatusKey(album), "partial");
   assert.equal(context.mediaStatusKey(album), "overridden");
   assert.equal(context.mediaStatusColor("override"), "#6b737b");
-  assert.match(appSource, /applyStatusPalette\(button, overridden \? "override" : mediaStatusKey\(album\)\)/);
+  assert.match(appSource, /applyStatusPalette\(button, overridden \? "override" : albumCardState\(album, state\.artist\)\.stateKey\)/);
   assert.doesNotMatch(appSource, /counts\.set\("bypassed", \(counts\.get\("bypassed"\) \|\| 0\) \+ overrideCount\)/);
 });
 
@@ -419,6 +419,11 @@ const albumSummaryFunctions = between(
   "function albumOverride",
   "function renderAlbumStatusKey",
 );
+const artistAggregateFunctions = between(
+  appSource,
+  "function artistOverviewAlbums",
+  "function artistFileListAlbum",
+) + "\n" + albumSummaryFunctions;
 
 test("uploaded Artist Art starts blue while retaining explicit pink role choice", () => {
   const state = {editorMode: "artist", candidates: [], radioBanner: true};
@@ -2641,6 +2646,44 @@ test("Album cards keep unknown validation separate from confirmed missing thumbn
   }, artist);
   assert.equal(fallback.fullyComplete, true);
   assert.equal(fallback.checkEmbedded, false);
+
+  const existingCover = context.albumCardState({
+    album_mbid: "release-local", status: "unprocessed", cover_found: true,
+    cover: "cover.webp", tracks: 2, embedded: 0, embedded_validation: "unknown",
+  }, artist);
+  assert.equal(existingCover.stateKey, "processed");
+  assert.equal(existingCover.fullyComplete, false);
+});
+
+test("selected Artist status includes its track-scoped COMP report", () => {
+  const state = {
+    graphicalEnhancement: {frame_styles: {
+      complete: {color: "green"}, in_process: {color: "orange"}, thumbnail: {color: "purple"},
+    }},
+    artist: {id: "112", portrait: "artist.jpg", albums: [{
+      id: "normal", album_mbid: "release-1", cover_found: true, cover: "cover.jpg",
+      status: "processed", tracks: 1, embedded: 1, embedded_validation: "verified",
+    }]},
+    artists: [{id: "112", status: "complete"}],
+    compAlbums: [{id: "comp", name: "Billboard", cover: "comp.jpg", tracks: [
+      {key: "done", completed: true}, {key: "pending", completed: false},
+    ]}],
+    compGroups: [],
+  };
+  const context = load(artistAggregateFunctions, {
+    state, rawMediaStatusKey: item => item.status === "complete" ? "albumsComplete" : item.status,
+    mediaStatusColor: status => status,
+    normalizedCompTrackStatus: track => track.status || (track.completed ? "checking" : "blue"),
+    singleAlbumOverviewActive: () => false,
+    albumPresentationGroup: () => 0,
+    compareAlbumTitles: () => 0,
+  });
+
+  assert.equal(context.syncSelectedArtistStatus(), "incomplete");
+  assert.equal(state.artist.status, "incomplete");
+  assert.equal(state.artists[0].status, "incomplete");
+  state.compAlbums[0].tracks[1].completed = true;
+  assert.equal(context.syncSelectedArtistStatus(), "complete");
 });
 
 test("Artist overview lazily verifies unresolved regular Albums without touching COMP fallback", async () => {

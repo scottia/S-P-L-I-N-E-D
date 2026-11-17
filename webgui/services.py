@@ -2584,7 +2584,7 @@ class Services:
             )
             media.update_artist_aggregate(db, row["artist_key"])
 
-    def preview(self, payload):
+    def preview(self, payload, *, publish=True):
         source = self.catalog.image_source(str(payload.get("image", "")))
         kind = str(payload.get("kind", "cover"))
         output = self.runtime.cfg.get("output", {})
@@ -2686,8 +2686,8 @@ class Services:
             reason = "The configured upscale ceiling prevents enlargement; source resolution preserved"
         else:
             reason = "Prepared preview; original artwork is unchanged until written"
-        return {
-            "image": self.catalog.image(body),
+        result = {
+            "image": self.catalog.image(body) if publish else None,
             "width": width,
             "height": height,
             "bytes": len(body),
@@ -2706,6 +2706,14 @@ class Services:
             ),
             "reason": reason,
         }
+        if not publish:
+            # COMP preparation consumes the rendered pixels in-process. Do not
+            # first publish an uncompressed, full-size PNG through the browser
+            # preview cache: a valid high-resolution candidate can exceed that
+            # cache's 25 MB transport guard before it is reduced to the
+            # configured embedded-thumbnail size.
+            result["_body"] = body
+        return result
 
     def _atomic_artwork(self, destination, body):
         with Image.open(BytesIO(body)) as opened:
@@ -3078,8 +3086,8 @@ class Services:
             prepared = self._load_prepared_comp(payload, normalized)
             if prepared is not None:
                 return prepared
-        rendered = self.preview(dict(payload, kind="comp"))
-        source = self.catalog.image_bytes(rendered["image"])
+        rendered = self.preview(dict(payload, kind="comp"), publish=False)
+        source = rendered.pop("_body")
         side = int(
             self.runtime.cfg.get("output", {}).get("embedded_thumbnail_size", 1200)
         )

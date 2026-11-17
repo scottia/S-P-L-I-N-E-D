@@ -2349,6 +2349,8 @@ class Catalog:
             "embedded": int(row["embedded_tracks"] or 0) if "embedded_tracks" in row.keys() else 0,
             "embedded_validation": str(row["embedded_validation_status"] or "unknown")
                 if "embedded_validation_status" in row else "unknown",
+            "cover_found": cover is not None,
+            "webp_found": bool(row["webp_found"]),
             "cover": self.image(cover), "cover_meta": image_metadata(cover) if cover else None,
             "embedded_meta": embedded_album_artwork_summary(
                 embedded_paths, self.comp_thumbnail_side

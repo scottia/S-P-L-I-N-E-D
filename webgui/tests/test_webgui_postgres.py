@@ -1105,14 +1105,29 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         candidate = self.runtime.temporary_cache / "selected-comp-candidate.png"
         candidate.parent.mkdir(parents=True, exist_ok=True)
         Image.new("RGB", (900, 600), "orange").save(candidate)
-        prepared = self.services.prepare_comp_thumbnail({
-            "artist_id": self.row["artist_key"],
-            "album_id": comp_row["album_key"],
-            "track_key": target_key,
-            "image": self.services.catalog.image(candidate),
-            "adjustments": {"Brightness": 8},
-            "upscale": True,
-        })
+        candidate_url = self.services.catalog.image(candidate)
+        with patch.object(
+            self.services.catalog,
+            "image",
+            wraps=self.services.catalog.image,
+        ) as publish:
+            prepared = self.services.prepare_comp_thumbnail({
+                "artist_id": self.row["artist_key"],
+                "album_id": comp_row["album_key"],
+                "track_key": target_key,
+                "image": candidate_url,
+                "adjustments": {"Brightness": 8},
+                "upscale": True,
+            })
+        # The full rendered preview stays in-process. Only the final bounded
+        # embedded thumbnail is published to the browser cache.
+        self.assertEqual(
+            len([
+                call for call in publish.call_args_list
+                if isinstance(call.args[0], bytes)
+            ]),
+            1,
+        )
         self.assertFalse(prepared["audio_written"])
         self.assertEqual((prepared["width"], prepared["height"]), (300, 300))
         self.assertIsNone(embedded_track_artwork_bytes(target_path))

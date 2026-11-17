@@ -467,7 +467,6 @@ def local_artwork_rows(
                 album_identity = str(album_path).casefold()
                 if (
                     not track_path.is_file()
-                    or str(track_path).casefold() == str(getattr(track, "path", "")).casefold()
                     or album_identity in covered_albums
                     or not (_mbids(str(embedded["artist_mbid"] or "")) & artists)
                 ):

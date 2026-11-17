@@ -339,6 +339,7 @@ async function writeArtwork() {
     setStatus("Embedding selected COMP artwork…", "busy");
     const result = await post(endpoint, componentPayload("comp", track.image, scope));
     assignVisibleCompTrackStatus(scope.album_id, scope.track_key, result);
+    if (typeof syncSelectedArtistStatus === "function") syncSelectedArtistStatus();
     if (result.image) Object.assign(track, {image: result.image, width: result.width, height: result.height, bytes: result.bytes});
     renderLibrary(); renderHero(); renderReview();
     await refreshQueuedAlbumAfterSave();
@@ -355,6 +356,12 @@ async function writeArtwork() {
     setStatus("Writing selected cover…", "busy");
     await post("/api/artwork/cover", coverPayload());
     state.album = await api("/api/album?id=" + encodeURIComponent(state.album.id));
+    if (state.artist?.albums) {
+      state.artist.albums = state.artist.albums.map(album =>
+        album.id === state.album.id ? {...album, ...state.album} : album);
+      if (typeof syncSelectedArtistStatus === "function") syncSelectedArtistStatus();
+      refreshLibraryArtistRow(state.artist.id);
+    }
     clearAlbumSearchSession(false);
     state.candidates = state.album.candidates || []; resetCandidateFilters();
     renderHero(); renderCandidates(); renderReview(); setStatus("Cover written · " + state.album.name); return;
@@ -376,6 +383,7 @@ async function writeArtwork() {
   setStatus("Writing selected Artist Art…", "busy");
   const result = await post("/api/artwork/artist", {artist_id: state.artist.id, components});
   state.artist = await api("/api/artist?id=" + encodeURIComponent(state.artist.id));
+  if (typeof syncSelectedArtistStatus === "function") syncSelectedArtistStatus();
   const listedArtist = state.artists.find(artist => artist.id === state.artist.id);
   if (listedArtist) {
     listedArtist.portrait = state.artist.portrait;
@@ -1058,6 +1066,7 @@ async function refreshCompletedAlbum(albumId) {
     if (state.artist?.id === album.artist_id) {
       state.artist = overview.artist;
       state.compAlbums = overview.comp_albums || [];
+      if (typeof syncSelectedArtistStatus === "function") syncSelectedArtistStatus();
     }
   }
   renderLibrary(); renderHero(); renderPanes(); renderReview();
@@ -1121,6 +1130,7 @@ async function refreshVisibleCompTrackStatuses(targets) {
         checkError: result.reason?.message || "Thumbnail validation failed",
       });
   });
+  if (typeof syncSelectedArtistStatus === "function") syncSelectedArtistStatus();
   renderLibrary(); renderHero(); renderCandidates(); renderReview();
 }
 async function refreshOpenCompReportAfterCoordination(changedPaths = []) {
@@ -1168,7 +1178,10 @@ async function refreshQueuedAlbumAfterSave(job = null) {
   const album = await api("/api/album?id=" + encodeURIComponent(albumId));
   if (state.album?.id !== albumId) return;
   state.album = album;
-  if (state.artist?.id === album.artist_id) state.artist = await api("/api/artist?id=" + encodeURIComponent(album.artist_id));
+  if (state.artist?.id === album.artist_id) {
+    state.artist = await api("/api/artist?id=" + encodeURIComponent(album.artist_id));
+    if (typeof syncSelectedArtistStatus === "function") syncSelectedArtistStatus();
+  }
   if (state.editorMode === "fallback") {
     const selectedKey = state.fallbackTrack?.key || "";
     state.fallbackTracks = await api("/api/fallback/tracks?id=" + encodeURIComponent(albumId));
