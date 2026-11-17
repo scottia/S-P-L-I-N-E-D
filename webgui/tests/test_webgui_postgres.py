@@ -1739,7 +1739,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertEqual(artists[0]["name"], "Test Artist")
             self.assertEqual(
                 artists[0]["portrait"],
-                "/api/artist/thumbnail?id=" + artists[0]["id"],
+                "/api/artist/thumbnail?id=" + quote(artists[0]["id"], safe=""),
             )
             thumbnails = client.get("/api/artists/thumbnails").json()
             portrait = next(

@@ -23001,9 +23001,11 @@ fn schedule_artist_compilation_report_preload(
             return None;
         }
         let artist = app.library.focused_artist.clone()?;
+        let selection_epoch = app.library.selection_epoch;
         if app
             .compilation_report_preloaded_artist
             .eq_ignore_ascii_case(&artist)
+            && app.compilation_report_preload_selection_epoch == selection_epoch
             && (app.compilation_report_preload_inflight || app.compilation_report_preload_ready)
         {
             return None;
@@ -23013,10 +23015,11 @@ fn schedule_artist_compilation_report_preload(
         app.compilation_report_preloaded_artist = artist.clone();
         app.compilation_report_preload_inflight = true;
         app.compilation_report_preload_ready = false;
+        app.compilation_report_preload_selection_epoch = selection_epoch;
         Some((
             artist,
             app.compilation_report_preload_generation,
-            app.library.selection_epoch,
+            selection_epoch,
             artist_compilation_report_inventory_requests(&app),
         ))
     });
@@ -23041,6 +23044,14 @@ fn schedule_artist_compilation_report_preload(
                     .compilation_report_preloaded_artist
                     .eq_ignore_ascii_case(&artist);
             if !current {
+                if app.compilation_report_preload_generation == generation
+                    && app
+                        .compilation_report_preloaded_artist
+                        .eq_ignore_ascii_case(&artist)
+                {
+                    app.compilation_report_preload_inflight = false;
+                    app.compilation_report_preload_ready = false;
+                }
                 return;
             }
             match result {
@@ -23091,6 +23102,14 @@ fn schedule_artist_compilation_report_preload(
                         .compilation_report_preloaded_artist
                         .eq_ignore_ascii_case(&artist);
                 if !current {
+                    if app.compilation_report_preload_generation == generation
+                        && app
+                            .compilation_report_preloaded_artist
+                            .eq_ignore_ascii_case(&artist)
+                    {
+                        app.compilation_report_preload_inflight = false;
+                        app.compilation_report_preload_ready = false;
+                    }
                     return;
                 }
                 app.compilation_report_preload_inflight = false;
@@ -23125,7 +23144,8 @@ fn hydrate_artist_compilation_report(
         let preload_for_artist = app.compilation_report_preload_inflight
             && app
                 .compilation_report_preloaded_artist
-                .eq_ignore_ascii_case(artist);
+                .eq_ignore_ascii_case(artist)
+            && app.compilation_report_preload_selection_epoch == app.library.selection_epoch;
         if !app.artist_overview_loading && !preload_for_artist {
             break artist_compilation_report_inventory_requests(&app);
         }
@@ -23630,7 +23650,8 @@ fn schedule_artist_album_embedded_checks(
         // representative audio file from every Album. A deliberate bulk
         // reprocess request may still validate its selected Albums before
         // launch, and an explicitly opened Album keeps its focused check.
-        if artist_mode && !app.artist_bulk_reprocess_requested {
+        let focused_artist_album = artist_mode && app.library.focused_album_key.is_some();
+        if artist_mode && !app.artist_bulk_reprocess_requested && !focused_artist_album {
             return;
         }
         // Artist overview hydration reads Navidrome and its image cache. Do not
@@ -23641,7 +23662,21 @@ fn schedule_artist_album_embedded_checks(
             return;
         }
         let side = app.config.output.embedded_thumbnail_size;
-        let mut indices = if artist_mode {
+        let mut indices = if focused_artist_album && !app.artist_bulk_reprocess_requested {
+            app.library
+                .focused_album_key
+                .as_deref()
+                .map(|key| {
+                    app.library
+                        .albums
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, album)| album.snapshot.album_key.eq_ignore_ascii_case(key))
+                        .map(|(index, _)| index)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        } else if artist_mode {
             app.library.artist_overview_album_indices(
                 &app.artist_overview_album_keys,
                 app.artist_overview_show_all,
@@ -25523,8 +25558,14 @@ mod tests {
             .unwrap()
             .insert(key.clone(), None);
         update_artist_bulk_completion(&shared);
+        assert!(!shared.lock().unwrap().artist_bulk_validation_pending);
+        assert_eq!(shared.lock().unwrap().launch_targets().len(), 1);
+
+        shared.lock().unwrap().artist_bulk_reprocess_requested = true;
+        update_artist_bulk_completion(&shared);
         assert!(shared.lock().unwrap().artist_bulk_validation_pending);
         assert!(shared.lock().unwrap().launch_targets().is_empty());
+        shared.lock().unwrap().artist_bulk_reprocess_requested = false;
 
         album_embedded_check_cache().lock().unwrap().insert(
             key.clone(),
