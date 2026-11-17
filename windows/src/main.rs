@@ -21899,21 +21899,16 @@ fn artist_overview_ui_model_with_show_all(
                 embedded_status.flatten()
             };
             let index_requires_embedded = !fallback || state.library.show_tracks;
-            let checking_embedded = index_requires_embedded
-                && embedded_check.is_none()
-                && (processed || fallback_progress.is_some_and(|(completed, _)| completed > 0));
-            // An unknown check is not evidence that an otherwise complete
-            // album has regressed. Keep it out of the In Process count until
-            // the background thumbnail validation returns a real result.
+            // Absence from the cache is persisted/unknown state, not proof
+            // that validation is running. Match WebGUI: restored processed
+            // Albums stay orange, and cyan is reserved for a cache entry
+            // explicitly inserted by an active embedded-thumbnail check.
+            let validation_active = !fallback && matches!(embedded_status, Some(None));
             let validating = index_requires_embedded
-                && embedded_check.is_none()
-                && if fallback {
-                    fallback_complete
-                } else {
-                    processed && snapshot.has_local_artwork
-                };
-            let check_embedded = embedded_check.is_some_and(AlbumEmbeddedCheck::needs_attention)
-                || (checking_embedded && !validating);
+                && validation_active
+                && processed
+                && snapshot.has_local_artwork;
+            let check_embedded = embedded_check.is_some_and(AlbumEmbeddedCheck::needs_attention);
             let fully_complete = artist_overview_is_fully_complete(
                 fallback,
                 fallback_complete,
@@ -21989,12 +21984,6 @@ fn artist_overview_ui_model_with_show_all(
                         state.config.output.embedded_thumbnail_size,
                         state.config.output.embedded_thumbnail_size
                     ),
-                );
-            } else if checking_embedded && !validating {
-                add_bullet(
-                    true,
-                    Color::from_rgb_u8(124, 77, 255),
-                    "Checking Embedded Art against the thumbnail preference…".to_string(),
                 );
             }
             let (has_webp, needs_still) = canonical_webp_status(snapshot);
@@ -26240,8 +26229,8 @@ mod tests {
         let counts = artist_overview_legend_counts(&cards, &[]);
         assert_eq!(counts.shown, 12);
         assert_eq!(counts.completed, 0);
-        assert_eq!(counts.in_process, 4);
-        assert_eq!(counts.validating, 8);
+        assert_eq!(counts.in_process, 12);
+        assert_eq!(counts.validating, 0);
         assert_eq!(counts.feat, 2);
         assert_eq!(counts.various, 2);
         assert_eq!(counts.ost, 2);
@@ -26325,9 +26314,9 @@ mod tests {
         let cards = artist_overview_ui_model(&app);
         let counts = artist_overview_legend_counts(&cards, &[]);
         assert_eq!(counts.shown, 4);
-        assert_eq!(counts.validating, 3);
+        assert_eq!(counts.validating, 0);
         assert_eq!(counts.completed, 1);
-        assert_eq!(counts.in_process, 0);
+        assert_eq!(counts.in_process, 3);
         assert_eq!(counts.orange_dots, 3);
         assert_eq!(counts.purple_dots, 0);
         assert!((0..cards.row_count()).all(|index| {
@@ -26336,10 +26325,29 @@ mod tests {
                     && if card.fallback {
                         card.fully_complete && !card.validating
                     } else {
-                        card.validating
+                        card.processed && !card.validating
                     }
             })
         }));
+        // A cache entry containing None is the active-validation sentinel.
+        // Only that transient state may paint restored processed Albums cyan.
+        for album in app
+            .library
+            .albums
+            .iter()
+            .filter(|album| !album.snapshot.album_mbid.is_empty())
+        {
+            let key = album_embedded_check_key(&album.snapshot.path, side);
+            album_embedded_check_cache()
+                .lock()
+                .unwrap()
+                .insert(key, None);
+        }
+        let cards = artist_overview_ui_model(&app);
+        let counts = artist_overview_legend_counts(&cards, &[]);
+        assert_eq!(counts.validating, 3);
+        assert_eq!(counts.completed, 1);
+        assert_eq!(counts.in_process, 0);
         for album in app
             .library
             .albums
