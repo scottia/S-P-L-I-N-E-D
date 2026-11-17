@@ -1903,7 +1903,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertEqual(status.status_code, 200, status.text)
             self.assertTrue(status.json()["authenticated"])
             self.assertEqual(status.json()["username"], "restart-admin")
-            self.assertEqual(status.json()["database_migration"]["current"], 24)
+            self.assertEqual(status.json()["database_migration"]["current"], 25)
             self.assertTrue(status.json()["database_migration"]["automatic"])
             self.assertEqual(restarted.get("/api/artists").status_code, 200)
             self.assertEqual(
@@ -5636,8 +5636,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     expect(artwork_info).to_contain_text("Upscale Preview")
                     expect(artwork_info).to_contain_text("Enhancement")
                     expect(page.locator("#writeNotice")).to_be_hidden()
-                    expect(page.locator("#selectedQuality")).to_have_text(
-                        "Thumb Ready"
+                    expect(page.locator("#selectedQuality")).to_have_text("Postgres")
+                    expect(page.locator("#selectedQuality")).to_have_attribute(
+                        "data-health", "good"
                     )
                     self.assertEqual(
                         embedded_track_artwork_bytes(target), initial_target_art
@@ -5787,7 +5788,10 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     self.assertEqual(embedded_track_artwork_bytes(target), initial_target_art)
                     page.locator("#upscaleButton").click()
                     expect(page.locator("#selectedDimensions")).to_have_text("300 × 300")
-                    expect(page.locator("#selectedQuality")).to_have_text("Thumb Ready")
+                    expect(page.locator("#selectedQuality")).to_have_text("Postgres")
+                    expect(page.locator("#selectedQuality")).to_have_attribute(
+                        "data-health", "good"
+                    )
                     with page.expect_response(
                         lambda response: response.url.endswith("/api/jobs/action")
                         and "webgui-embed-release" in (response.request.post_data or ""),

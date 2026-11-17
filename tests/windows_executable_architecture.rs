@@ -114,6 +114,33 @@ fn windows_setup_reports_network_sqlite_safety_and_index_progress() {
 }
 
 #[test]
+fn shared_sqlite_setup_stages_postgres_policy_without_blank_json_files() {
+    let ui = source("windows/ui/app.slint");
+    let main = source("windows/src/main.rs");
+    let settings = source("windows/src/settings.rs");
+
+    assert!(ui.contains("Yes · PostgreSQL"));
+    assert!(ui.contains("No · Shared SQLite only"));
+    assert!(ui.contains("test-setup-postgres"));
+    assert!(main.contains("test_album_coordination_policy"));
+    assert!(main.contains("install_setup_shared_policy"));
+    assert!(main.contains("Setup will not overwrite the different existing"));
+    assert!(!settings.contains("crate::media_state_policy::ensure_policy(&verified)"));
+}
+
+#[test]
+fn selected_artwork_database_monitor_is_bounded_and_manually_refreshable() {
+    let ui = source("windows/ui/app.slint");
+    let main = source("windows/src/main.rs");
+
+    assert!(ui.contains("database-monitor-text"));
+    assert!(ui.contains("refresh-database-monitor"));
+    assert!(main.contains("database_monitor_poll_seconds()"));
+    assert!(main.contains("PRAGMA schema_version"));
+    assert!(main.contains("database_monitor_presentation(\"current\", \"current\")"));
+}
+
+#[test]
 fn no_active_csharp_or_winforms_implementation_remains() {
     let mut files = Vec::new();
     repository_files(Path::new("windows"), &mut files);
@@ -453,6 +480,9 @@ fn windows_release_is_x64_single_executable_with_exact_portable_allowlist() {
     assert!(workflow.contains("Build clean x64 Rust/Slint executable"));
     assert!(workflow.contains("Assert-Amd64Pe \"$portableRoot/splined.exe\""));
     assert!(workflow.contains("\"README-WINDOWS.txt\", \"splined.exe\""));
+    assert!(!workflow.contains(
+        "Copy-Item schema/media-state-classification.json \"$portableRoot/media-state-classification.json\""
+    ));
     assert!(workflow.contains("--write-build-info"));
     assert!(workflow.contains("--native-smoke"));
     assert!(workflow.contains("splined-portable-smoke-state"));

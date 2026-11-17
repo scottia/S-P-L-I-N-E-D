@@ -86,6 +86,15 @@ SPLINED\
   README-WINDOWS.txt
 ```
 
+Standalone SQLite Setup creates neither shared-policy JSON. Shared SQLite only
+creates or adopts `media-state-classification.json` in the selected Provider
+Credential Directory. If the user also selects WebGUI PostgreSQL coordination,
+Test validates the connection, schema, and PostgreSQL policy without writing;
+Setup Save then creates `album-coordination.json` and the validated local policy
+mirror. Conflicting existing files block Setup and are never overwritten. The
+executable carries the repository policy as an unsaved first-run default only;
+Windows packages do not install a second copy beside `splined.exe`.
+
 Portable startup discovers `config.toml` and `ui.toml` beside the executable,
 or follows an install-scoped `configuration-location.toml` to an explicitly
 selected Configuration Path. A packaged MSIX launch discovers them beneath

@@ -6,6 +6,7 @@
 !schema/
 !schema/media.sql
 !schema/settings-ui.json
+!schema/media-state-classification.json
 webgui/tests/
 webgui/**/__pycache__/
 webgui/**/*.pyc
