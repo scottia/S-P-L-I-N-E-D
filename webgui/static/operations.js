@@ -989,7 +989,12 @@ async function presentQueuedMusicBrainz(job, prompt, options) {
   const track = [context.track_artist, context.track_title].filter(Boolean).join(" — ");
   const familyCount = new Set(options.map(option => String(option.family_id || option.release_group_id || option.id || "")).filter(Boolean)).size;
   const identity = context.identity || {};
-  const message = identity.status === "valid"
+  const artworkMiss = state.queuedDecision.diagnostics.map(item =>
+    String(Array.isArray(item) ? item[1] : item?.message || item || ""))
+    .find(message => message.includes("has no artwork candidates"));
+  const message = artworkMiss
+    ? `${artworkMiss} · ${options.length} MusicBrainz ${options.length === 1 ? "result remains" : "results remain"}${track ? ` for ${track}` : ""}`
+    : identity.status === "valid"
     ? "MusicBrainz Recording ID verified" + (identity.used_fuzzy_search ? " · same-artist title suggestions available" : "")
       + ` · ${familyCount} release ${familyCount === 1 ? "family" : "families"}`
     : "MusicBrainz identity review" + (track ? " · " + track : "")

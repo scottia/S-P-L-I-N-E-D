@@ -10,6 +10,24 @@ import splined_scan as scan
 
 
 class ManualCompilationDecisionTests(unittest.TestCase):
+    def test_coverless_selected_release_keeps_alternate_results_available(self) -> None:
+        selected = SimpleNamespace(release_mbid="selected")
+        alternate = SimpleNamespace(release_mbid="alternate")
+
+        self.assertTrue(
+            scan._selected_release_has_no_artwork(
+                [], [selected, alternate], selected
+            )
+        )
+        self.assertFalse(
+            scan._selected_release_has_no_artwork(
+                [SimpleNamespace()], [selected, alternate], selected
+            )
+        )
+        self.assertFalse(
+            scan._selected_release_has_no_artwork([], [], selected)
+        )
+
     def test_webgui_comp_opens_release_results_before_artwork_provider_work(self) -> None:
         track = SimpleNamespace(
             path=Path("Because the Night.flac"),

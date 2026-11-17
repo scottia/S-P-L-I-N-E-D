@@ -1887,6 +1887,40 @@ test("MusicBrainz release prompt stays on the Artist COMP track", async () => {
   assert.match(operationsSource, /async function useSelectedExistingMusicBrainzArtwork\(\)/);
 });
 
+test("a coverless MusicBrainz edition returns to the remaining COMP release results", async () => {
+  const statuses = [];
+  const state = {
+    queuedDecision: null, candidates: [], sourceDiagnostics: [],
+    activeSource: "", compare: new Set(), workspace: "find",
+  };
+  const options = [
+    {id: "westwood", family_id: "westwood-family"},
+    {id: "room-112", family_id: "room-family"},
+  ];
+  const job = {
+    id: "job-112", kind: "comp", payload: {track_keys: ["u-already-know"]},
+    progress: {current: {
+      fallback_authority: {artist: "112", track: "U Already Know"},
+      diagnostics: {items: [["musicbrainz", "Westwood: Heat has no artwork candidates; choose another MusicBrainz release."]]},
+    }},
+  };
+  const prompt = {nonce: "alternate-release", context: {kind: "musicbrainz-results"}};
+  const context = load(queuedMusicBrainzFunction, {
+    state,
+    $: () => ({open: false, close() {}}),
+    resetCandidateFilters() {}, focusQueuedAlbum: async () => {},
+    renderWorkspace() {}, renderSources() {}, renderCandidates() {}, renderReview() {},
+    setStatus: message => statuses.push(message),
+  });
+
+  await context.presentQueuedMusicBrainz(job, prompt, options);
+
+  assert.equal(state.queuedDecision.options.length, 2);
+  assert.match(statuses.at(-1), /Westwood: Heat has no artwork candidates/);
+  assert.match(statuses.at(-1), /2 MusicBrainz results remain for 112 — U Already Know/);
+  assert.doesNotMatch(statuses.at(-1), /^No artwork candidates are available/);
+});
+
 test("existing MusicBrainz library art becomes the active COMP candidate", async () => {
   const statuses = [];
   const state = {
