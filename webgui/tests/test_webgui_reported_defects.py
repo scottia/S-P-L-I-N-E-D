@@ -326,6 +326,8 @@ class ReportedDefectTests(unittest.TestCase):
         self.assertIn('const staleUnprocessed = overridden && status === "unprocessed"', application)
         self.assertIn('checkEmbedded || status === "partial" ? "partial"', application)
         self.assertIn(': processed || validating ? "processed" : incomplete || missingCover ? "incomplete" : "unprocessed"', application)
+        self.assertIn('embeddedValidation === "checking"', application)
+        self.assertIn('cardState.stateKey === "albumsComplete" ? "complete" : cardState.stateKey', application)
         self.assertIn('if (!staleUnprocessed && (missingCover || incomplete))', application)
 
     def test_comp_report_backfills_only_albums_in_selected_artist_scope(self):

@@ -1107,7 +1107,11 @@ function albumCardState(album, artist) {
   const checkEmbedded = fallback ? compAttention : processed && embeddedKnown && !embeddedComplete;
   const embeddedRetry = !fallback && processed && embeddedValidation === "retry";
   const embeddedPending = !fallback && processed && !embeddedKnown;
-  const validating = embeddedPending && !embeddedRetry && !missingCover;
+  // "unknown" is persisted catalog state, not an active validation job.  It
+  // must remain the orange processed state instead of leaving every restored
+  // Album permanently cyan.  Cyan is reserved for a request that is actually
+  // checking the embedded thumbnails now.
+  const validating = !fallback && processed && embeddedValidation === "checking" && !missingCover;
   const dots = [];
   if (missingArtist) dots.push(["#f4cc4d", "Artist artwork missing"]);
   if (bypassed) dots.push(["#f4cc4d", "Bypassed"]);
@@ -1415,7 +1419,8 @@ function renderHeroContents() {
       button.style.setProperty("--mixed-frame-a", cardState.mixedFrame === "green-purple" ? "#32dda0" : "#efa54e");
       button.style.setProperty("--mixed-frame-b", "#7c4dff");
     }
-    button.setAttribute("aria-label", album.name + ", " + (album.year || "year unknown") + ", " + (album.status || "unprocessed"));
+    const presentedStatus = cardState.stateKey === "albumsComplete" ? "complete" : cardState.stateKey;
+    button.setAttribute("aria-label", album.name + ", " + (album.year || "year unknown") + ", " + presentedStatus);
     const kind = albumDisplayBannerKind(album, artist), bannerStyle = albumBannerStyle(kind);
     const bannerNode = node("span", "album-type-banner", bannerStyle.name); bannerNode.style.setProperty("--banner-bg", bannerStyle.background); bannerNode.style.setProperty("--banner-ink", bannerStyle.letters); bannerNode.style.borderColor = bannerStyle.frame;
     const body = node("span", "album-card-body");

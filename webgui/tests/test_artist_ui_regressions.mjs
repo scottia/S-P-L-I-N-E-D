@@ -2618,8 +2618,14 @@ test("Album cards keep unknown validation separate from confirmed missing thumbn
     };
     const unknown = context.albumCardState({...base, embedded_validation: "unknown"}, artist);
     assert.equal(unknown.embeddedPending, true, `${type.name} remains pending`);
+    assert.equal(unknown.validating, false, `${type.name} is processed, not actively validating`);
     assert.equal(unknown.checkEmbedded, false, `${type.name} is not falsely purple`);
     assert.equal(unknown.dots.some(([color]) => color === "#7c4dff"), false);
+    assert.equal(unknown.frame, "theme-process", `${type.name} keeps the orange processed frame`);
+
+    const checking = context.albumCardState({...base, embedded_validation: "checking"}, artist);
+    assert.equal(checking.validating, true, `${type.name} uses cyan only during active validation`);
+    assert.equal(checking.frame, "#55c7d8");
 
     const retry = context.albumCardState({...base, embedded_validation: "retry"}, artist);
     assert.equal(retry.embeddedRetry, true, `${type.name} exposes retry`);
@@ -2646,6 +2652,7 @@ test("Album cards keep unknown validation separate from confirmed missing thumbn
   }, artist);
   assert.equal(fallback.fullyComplete, true);
   assert.equal(fallback.checkEmbedded, false);
+  assert.equal(fallback.stateKey, "albumsComplete");
 
   const existingCover = context.albumCardState({
     album_mbid: "release-local", status: "unprocessed", cover_found: true,
