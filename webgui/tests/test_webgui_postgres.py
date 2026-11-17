@@ -5788,7 +5788,10 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     self.assertEqual(embedded_track_artwork_bytes(target), initial_target_art)
                     page.locator("#upscaleButton").click()
                     expect(page.locator("#selectedDimensions")).to_have_text("300 × 300")
-                    expect(page.locator("#selectedQuality")).to_have_text("Thumb Ready")
+                    expect(page.locator("#selectedQuality")).to_have_text("Postgres")
+                    expect(page.locator("#selectedQuality")).to_have_attribute(
+                        "data-health", "good"
+                    )
                     with page.expect_response(
                         lambda response: response.url.endswith("/api/jobs/action")
                         and "webgui-embed-release" in (response.request.post_data or ""),
