@@ -425,8 +425,8 @@ class ReportedDefectTests(unittest.TestCase):
         initialize = operations.split("async function initialize", 1)[1].split(
             "function showAuthentication", 1
         )[0]
-        self.assertIn("requestLibraryChangeProbe", initialize)
-        self.assertIn("void requestLibraryChangeProbe().catch", initialize)
+        self.assertIn("scheduleHourlyLibraryChangeProbe", initialize)
+        self.assertNotIn("void requestLibraryChangeProbe().catch", initialize)
         self.assertIn("async function checkLibraryChanges", operations)
         self.assertIn(
             ".library-row.album-row .library-thumb,.library-row.album-child "

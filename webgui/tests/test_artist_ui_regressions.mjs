@@ -503,7 +503,7 @@ const compReportOrderFunction = between(
 );
 const artistCompReportFunction = compReportOrderFunction + "\n" + between(
   appSource,
-  "async function openArtistCompReport",
+  "let artistCompReportCache",
   "async function probeArtistCompStatuses",
 );
 const renderArtistCompReportFunction = compTrackStatusFunction + "\n" + between(

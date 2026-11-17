@@ -79,9 +79,10 @@ async function initialize() {
   }
   // Discover physical library changes after the workspace is usable. This
   // remains a read-only check; the operator explicitly chooses whether to run
-  // the incremental PostgreSQL refresh from the header notice.
+  // the incremental PostgreSQL refresh from the header notice. Do not start a
+  // complete NAS inventory walk during the first interactive Artist load.
+  // The hourly timer performs the same check once the workspace is settled.
   scheduleHourlyLibraryChangeProbe();
-  void requestLibraryChangeProbe().catch(libraryChangeProbeFailed);
 }
 function showAuthentication(status) {
   document.body.className = "auth-required";

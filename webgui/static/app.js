@@ -260,17 +260,19 @@ const LIBRARY_THUMBNAIL_CONCURRENCY = 3;
 let libraryThumbnailObserver = null;
 let libraryThumbnailActive = 0;
 const libraryThumbnailQueue = [];
+const libraryThumbnailResults = new Map();
 function pumpLibraryThumbnailQueue() {
   while (libraryThumbnailActive < LIBRARY_THUMBNAIL_CONCURRENCY && libraryThumbnailQueue.length) {
     const element = libraryThumbnailQueue.shift();
     if (!element || element.isConnected === false || element.getAttribute("src") || !element.dataset.thumbnailSrc) continue;
     libraryThumbnailActive += 1;
-    const finished = () => {
+    const finished = result => {
+      libraryThumbnailResults.set(element.dataset.thumbnailSrc, result);
       libraryThumbnailActive = Math.max(0, libraryThumbnailActive - 1);
       pumpLibraryThumbnailQueue();
     };
-    element.addEventListener("load", finished, {once: true});
-    element.addEventListener("error", finished, {once: true});
+    element.addEventListener("load", () => finished("loaded"), {once: true});
+    element.addEventListener("error", () => finished("missing"), {once: true});
     element.src = element.dataset.thumbnailSrc;
   }
 }
@@ -298,7 +300,11 @@ function resetLibraryThumbnailLoading() {
   libraryThumbnailQueue.length = 0;
 }
 function libraryThumbnail(src, className, alt, eager = false) {
-  if (eager || !String(src).startsWith("/api/artist/thumbnail")) return image(src, className, alt, eager);
+  const artistEndpoint = String(src).startsWith("/api/artist/thumbnail");
+  if (!artistEndpoint) return image(src, className, alt, eager);
+  const prior = libraryThumbnailResults.get(src);
+  if (prior === "missing") return node("span", className, String(alt || "?").slice(0, 1).toUpperCase());
+  if (eager || prior === "loaded") return image(src, className, alt, eager);
   const element = node("img", className);
   element.alt = alt; element.loading = "lazy"; element.draggable = false;
   element.addEventListener("error", () => {
@@ -1615,6 +1621,35 @@ function closeArtistCompReport() {
   setStatus("COMP report closed");
 }
 
+let artistCompReportCache = {artistId: "", groups: null, promise: null};
+function requestArtistCompReport(artistId) {
+  if (artistCompReportCache.artistId === artistId) {
+    if (artistCompReportCache.groups) return Promise.resolve(artistCompReportCache.groups);
+    if (artistCompReportCache.promise) return artistCompReportCache.promise;
+  }
+  const entry = {artistId, groups: null, promise: null};
+  entry.promise = api("/api/artist/comp-report?id=" + encodeURIComponent(artistId))
+    .then(groups => {
+      entry.groups = [...groups].sort(compareCompReportGroups);
+      entry.promise = null;
+      return entry.groups;
+    })
+    .catch(error => {
+      entry.promise = null;
+      if (artistCompReportCache === entry) artistCompReportCache = {artistId: "", groups: null, promise: null};
+      throw error;
+    });
+  artistCompReportCache = entry;
+  return entry.promise;
+}
+async function precompileArtistCompReport(artistId, selectionRequest) {
+  try {
+    await requestArtistCompReport(artistId);
+    if (selectionRequest === state.selectionRequest && artistId === state.artist?.id)
+      renderCompReportButtonState();
+  } catch { /* COMP Report reports a focused error only when explicitly opened. */ }
+}
+
 async function openArtistCompReport(albumId = "") {
   if (!state.artist) { setStatus("Choose an Artist before opening COMP Report", "error"); return; }
   if (state.compReportLoading) return;
@@ -1625,9 +1660,9 @@ async function openArtistCompReport(albumId = "") {
   renderHero();
   setStatus("Loading COMP report…", "busy");
   try {
-    const compGroups = await api("/api/artist/comp-report?id=" + encodeURIComponent(artistId));
+    const compGroups = await requestArtistCompReport(artistId);
     if (request !== state.compReportRequest || artistId !== state.artist?.id) return;
-    state.compGroups = [...compGroups].sort(compareCompReportGroups);
+    state.compGroups = compGroups;
     state.compReportLoading = false;
     if (!state.compGroups.length) { state.compReportVisible = false; setStatus("This Artist has no indexed COMP tracks", "error"); renderHero(); return; }
     // Opening COMP from an Album edit returns to the Artist-scoped report.
@@ -2693,6 +2728,9 @@ async function chooseArtist(id, select = true) {
     state.artistInfoExpanded = false;
     renderAll(); setStatus("Loaded " + state.artist.name + " · " + state.artist.albums.length + " albums");
     auditEvent("selection-change", "artist", {scope: {artist_id: artist.id}, details: {library_mode: state.libraryMode}});
+    // Compile the Artist's track-scoped COMP projection in the background so
+    // COMP Report remains closed until requested but opens immediately later.
+    void precompileArtistCompReport(artist.id, request);
     loadArtistMetadata(artist.id);
     probeArtistAlbumStatuses(artist.id, request);
   } catch (error) { if (request === state.selectionRequest) setStatus(error.message, "error"); }

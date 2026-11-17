@@ -73,12 +73,17 @@ class BrowserFallbackTests(unittest.TestCase):
         open_report = application.split("async function openArtistCompReport", 1)[1].split(
             "async function probeArtistCompStatuses", 1
         )[0]
+        report_loader = application.split("function requestArtistCompReport", 1)[1].split(
+            "async function precompileArtistCompReport", 1
+        )[0]
         self.assertIn("/api/artist/overview", choose_artist)
         self.assertNotIn("/api/artist/comp-report", choose_artist)
+        self.assertIn("precompileArtistCompReport", choose_artist)
         self.assertNotIn("Promise.all", choose_artist)
         self.assertNotIn('/api/artist?id=', choose_artist)
         self.assertNotIn('/api/artist/comp-albums?id=', choose_artist)
-        self.assertIn("/api/artist/comp-report", open_report)
+        self.assertIn("requestArtistCompReport", open_report)
+        self.assertIn("/api/artist/comp-report", report_loader)
 
         operations = (static / "operations.js").read_text(encoding="utf-8")
         self.assertIn('draft.scan.shared_artist_art_dir ??= ""', operations)
