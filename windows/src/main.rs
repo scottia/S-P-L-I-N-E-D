@@ -4765,11 +4765,10 @@ fn main() -> Result<(), slint::PlatformError> {
             if let Ok(mut checks) = album_embedded_check_cache().lock() {
                 checks.clear();
             }
-            if let Ok(app) = timer_state.lock()
-                && !app.current_compilation_track_path.is_empty()
-            {
-                invalidate_embedded_track_metadata(Path::new(&app.current_compilation_track_path));
-            }
+            // Successful COMP writes publish their already-verified dimensions
+            // from the runtime event. Keep that one-track cache entry so the
+            // report remains green immediately after the run; a later file
+            // size/mtime change still invalidates it naturally.
             let restart = timer_state.lock().is_ok_and(|mut app| {
                 let pending = std::mem::take(&mut app.pending_compilation_track_path);
                 if pending.is_empty()
@@ -19223,6 +19222,8 @@ fn refresh_weak(weak: &slint::Weak<AppWindow>, state: &Arc<Mutex<ApplicationStat
     let caller = std::panic::Location::caller();
     let started = Instant::now();
     schedule_preview_image_loads(weak, state);
+    cache_recent_runtime_compilation_track_completion(state);
+    schedule_artist_compilation_report_preload(weak, state);
     schedule_artist_album_embedded_checks(weak, state);
     update_artist_bulk_completion(state);
     schedule_visible_compilation_track_checks(weak, state);
@@ -22570,6 +22571,44 @@ fn cached_embedded_front_metadata(track: &Path) -> Option<(u32, u32, u64)> {
     }
 }
 
+/// Publish the verified dimensions carried by a completed COMP write directly
+/// into the UI cache. The runtime has already reopened and verified the audio
+/// file before emitting this event, so repeating that NAS read before painting
+/// green would make the report lag behind the completed operation.
+fn cache_recent_runtime_compilation_track_completion(state: &Arc<Mutex<ApplicationState>>) {
+    let completed = state
+        .lock()
+        .ok()
+        .and_then(|mut app| app.recent_completed_compilation_track.take());
+    let Some((path, width, height)) = completed else {
+        return;
+    };
+    let Ok(metadata) = fs::metadata(&path) else {
+        return;
+    };
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+        .map(|value| value.as_nanos())
+        .unwrap_or_default();
+    if let Ok(mut cache) = EMBEDDED_METADATA_CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
+        cache.insert(
+            path.clone(),
+            (metadata.len(), modified, Some((width, height, 0))),
+        );
+    }
+    if let Ok(mut errors) = EMBEDDED_METADATA_ERRORS
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+    {
+        errors.remove(&path);
+    }
+}
+
 fn invalidate_embedded_track_metadata(track: &Path) {
     let key = track.to_string_lossy();
     if let Some(cache) = EMBEDDED_METADATA_CACHE.get()
@@ -22930,6 +22969,14 @@ fn artist_compilation_report_inventory_requests(
         .into_iter()
         .filter_map(|index| app.library.albums.get(index))
         .filter(|album| app.library.is_curated_fallback(album))
+        // The SQLite track inventory is the same cheap authority used by the
+        // approved WebGUI report.  Reopen a folder only when its indexed
+        // inventory is genuinely incomplete; rereading every tag whenever a
+        // report opens is both redundant and especially expensive on a NAS.
+        .filter(|album| {
+            album.snapshot.track_count <= 0
+                || (album.snapshot.compilation_tracks.len() as i64) < album.snapshot.track_count
+        })
         .map(|album| {
             (
                 album.snapshot.album_key.clone(),
@@ -22938,6 +22985,125 @@ fn artist_compilation_report_inventory_requests(
             )
         })
         .collect()
+}
+
+fn schedule_artist_compilation_report_preload(
+    weak: &slint::Weak<AppWindow>,
+    state: &Arc<Mutex<ApplicationState>>,
+) {
+    let prepared = state.lock().ok().and_then(|mut app| {
+        if app.library.view != LibraryView::Artists
+            || app.library.show_tracks
+            || app.artist_overview_loading
+            || app.phase != RunPhase::Idle
+            || app.operation_busy
+        {
+            return None;
+        }
+        let artist = app.library.focused_artist.clone()?;
+        if app
+            .compilation_report_preloaded_artist
+            .eq_ignore_ascii_case(&artist)
+            && (app.compilation_report_preload_inflight || app.compilation_report_preload_ready)
+        {
+            return None;
+        }
+        app.compilation_report_preload_generation =
+            app.compilation_report_preload_generation.wrapping_add(1);
+        app.compilation_report_preloaded_artist = artist.clone();
+        app.compilation_report_preload_inflight = true;
+        app.compilation_report_preload_ready = false;
+        Some((
+            artist,
+            app.compilation_report_preload_generation,
+            app.library.selection_epoch,
+            artist_compilation_report_inventory_requests(&app),
+        ))
+    });
+    let Some((artist, generation, selection_epoch, requests)) = prepared else {
+        return;
+    };
+    let weak = weak.clone();
+    let state = Arc::clone(state);
+    std::thread::spawn(move || {
+        let mut inventory_errors = 0usize;
+        for (album_key, album_path, cached) in requests {
+            let result = fallback_tracks_from_folder(Path::new(&album_path), &cached);
+            let Ok(mut app) = state.lock() else { return };
+            let current = app.library.selection_epoch == selection_epoch
+                && app
+                    .library
+                    .focused_artist
+                    .as_deref()
+                    .is_some_and(|focused| focused.eq_ignore_ascii_case(&artist))
+                && app.compilation_report_preload_generation == generation
+                && app
+                    .compilation_report_preloaded_artist
+                    .eq_ignore_ascii_case(&artist);
+            if !current {
+                return;
+            }
+            match result {
+                Ok(tracks) => replace_fallback_tracks_and_invalidate(&mut app, &album_key, tracks),
+                Err(error) => {
+                    inventory_errors += 1;
+                    app.push_log(error);
+                }
+            }
+        }
+
+        let report = state
+            .lock()
+            .ok()
+            .filter(|app| {
+                app.library.selection_epoch == selection_epoch
+                    && app
+                        .library
+                        .focused_artist
+                        .as_deref()
+                        .is_some_and(|focused| focused.eq_ignore_ascii_case(&artist))
+                    && app.compilation_report_preload_generation == generation
+            })
+            .map(|app| artist_compilation_report_tracks(&app))
+            .unwrap_or_default();
+        // Match WebGUI's precompiled report: validate only tracks already in
+        // the durable completion ledger. Pending tracks remain blue without
+        // opening their audio files.
+        for track in report.iter().filter(|track| track.completed) {
+            cached_embedded_front_metadata(&track.path);
+        }
+        let album_count = report
+            .iter()
+            .map(|track| track.album_key.to_ascii_lowercase())
+            .collect::<HashSet<_>>()
+            .len();
+        let track_count = report.len();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Ok(mut app) = state.lock() {
+                let current = app.library.selection_epoch == selection_epoch
+                    && app
+                        .library
+                        .focused_artist
+                        .as_deref()
+                        .is_some_and(|focused| focused.eq_ignore_ascii_case(&artist))
+                    && app.compilation_report_preload_generation == generation
+                    && app
+                        .compilation_report_preloaded_artist
+                        .eq_ignore_ascii_case(&artist);
+                if !current {
+                    return;
+                }
+                app.compilation_report_preload_inflight = false;
+                app.compilation_report_preload_ready = true;
+                if let Some(log) = UI_DEBUG_LOG_HANDLE.get() {
+                    log.record(format!(
+                        "artist-comp-report preloaded artist={artist} generation={generation} albums={album_count} tracks={track_count} inventory_errors={inventory_errors}"
+                    ));
+                }
+            }
+            refresh_weak(&weak, &state);
+        });
+    });
 }
 
 fn hydrate_artist_compilation_report(
@@ -22956,7 +23122,11 @@ fn hydrate_artist_compilation_report(
         if !artist_compilation_report_request_is_current(&app, artist, generation) {
             return None;
         }
-        if !app.artist_overview_loading {
+        let preload_for_artist = app.compilation_report_preload_inflight
+            && app
+                .compilation_report_preloaded_artist
+                .eq_ignore_ascii_case(artist);
+        if !app.artist_overview_loading && !preload_for_artist {
             break artist_compilation_report_inventory_requests(&app);
         }
         drop(app);
@@ -23455,6 +23625,14 @@ fn schedule_artist_album_embedded_checks(
         if !artist_mode && !album_mode {
             return;
         }
+        // Routine Artist selection now follows the approved WebGUI cache
+        // model: paint from indexed status/cover evidence and do not open a
+        // representative audio file from every Album. A deliberate bulk
+        // reprocess request may still validate its selected Albums before
+        // launch, and an explicitly opened Album keeps its focused check.
+        if artist_mode && !app.artist_bulk_reprocess_requested {
+            return;
+        }
         // Artist overview hydration reads Navidrome and its image cache. Do not
         // simultaneously walk every audio file on the media share; completion
         // calls refresh_weak again and starts this validation immediately after
@@ -23576,7 +23754,8 @@ fn update_artist_bulk_completion(state: &Arc<Mutex<ApplicationState>>) {
             Some(check) if check.tracks > 0 && !check.needs_attention() => {
                 complete.insert(album.snapshot.album_key.to_ascii_lowercase());
             }
-            None => pending = true,
+            None if app.artist_bulk_reprocess_requested => pending = true,
+            None => {}
             _ => {}
         }
     }

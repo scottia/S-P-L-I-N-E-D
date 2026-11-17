@@ -3273,6 +3273,10 @@ pub struct ApplicationState {
     /// library selection set, this authority must survive harmless browsing
     /// while the controller is waiting for a decision.
     pub current_compilation_track_path: String,
+    /// Verified COMP completion waiting to be published into the executable's
+    /// embedded-artwork cache. Runtime events are handled by the Windows
+    /// library crate, while that cache is owned by the UI executable.
+    pub recent_completed_compilation_track: Option<(String, u32, u32)>,
     /// A new Fallback track selected while another review is stopping.
     pub pending_compilation_track_path: String,
     pub edit_preview_path: String,
@@ -3459,6 +3463,13 @@ pub struct ApplicationState {
     pub compilation_report_artist: String,
     pub compilation_report_summary: String,
     pub compilation_report_checking: bool,
+    /// Artist whose indexed COMP inventory and embedded-thumbnail metadata
+    /// have been prepared in the background.  This is deliberately separate
+    /// from `compilation_report_artist`: preloading must not open the report.
+    pub compilation_report_preloaded_artist: String,
+    pub compilation_report_preload_inflight: bool,
+    pub compilation_report_preload_ready: bool,
+    pub compilation_report_preload_generation: u64,
     pub compilation_report_preview_mode: bool,
     pub compilation_report_preview_album_key: String,
     pub compilation_report_preview_track_path: String,
@@ -3577,6 +3588,7 @@ impl ApplicationState {
             album_override_writers: HashMap::new(),
             comp_track_override_writers: HashMap::new(),
             current_compilation_track_path: String::new(),
+            recent_completed_compilation_track: None,
             pending_compilation_track_path: String::new(),
             edit_preview_path: String::new(),
             embedded_thumbnail_preview_path: String::new(),
@@ -3715,6 +3727,10 @@ impl ApplicationState {
             compilation_report_artist: String::new(),
             compilation_report_summary: String::new(),
             compilation_report_checking: false,
+            compilation_report_preloaded_artist: String::new(),
+            compilation_report_preload_inflight: false,
+            compilation_report_preload_ready: false,
+            compilation_report_preload_generation: 0,
             compilation_report_preview_mode: false,
             compilation_report_preview_album_key: String::new(),
             compilation_report_preview_track_path: String::new(),
@@ -5212,6 +5228,12 @@ impl ApplicationState {
                                 track.embedded_artwork_recorded = true;
                             }
                         }
+                    }
+                    let width = event.get("width").and_then(Value::as_u64).unwrap_or(0) as u32;
+                    let height = event.get("height").and_then(Value::as_u64).unwrap_or(0) as u32;
+                    if width > 0 && height > 0 {
+                        self.recent_completed_compilation_track =
+                            Some((track_path.clone(), width, height));
                     }
                 }
                 self.push_log(format!(

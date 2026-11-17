@@ -294,6 +294,10 @@ summary is:
   override state do not change this order.
 - COMP track rows use blue for artwork still needed, purple for thumbnail
   repair/validation trouble, and green for complete.
+- Selecting an Artist paints ordinary Album state from the SQLite catalog and
+  current cover evidence; it does not reopen a representative audio file from
+  every Album. Full embedded-thumbnail validation remains tied to an explicit
+  Album or bulk-processing action.
 - Artist Overview projects track-scoped COMP completion over the Album's raw
   database label. When every displayed COMP track for the selected Artist is
   complete, its card and presented status are green **Complete** even if the
@@ -485,6 +489,14 @@ that track's embedded artwork.
   folder cover.
 - **COMP Report** groups an Artist's fallback tracks by Album. Green is
   complete, purple needs repair/attention, and blue still needs artwork.
+
+Windows prepares the selected Artist's indexed COMP report in the background
+while leaving the report closed. Opening **COMP Report** reuses that prepared
+scope and validates only recorded tracks instead of rereading every Album
+folder. A successful COMP write publishes its already-verified dimensions to
+the visible report immediately; it does not wait for a complete report reload.
+MusicBrainz alternatives and matching **Existing** artwork remain available
+when one selected release has no usable cover.
 
 Artist-wide **LAUNCH COMP** repairs eligible purple tracks first, then processes
 remaining non-green tracks; completed green tracks are skipped. Every bulk
