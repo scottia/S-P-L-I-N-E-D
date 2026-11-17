@@ -7,6 +7,18 @@ const appSource = readFileSync(new URL("../static/app.js", import.meta.url), "ut
 const operationsSource = readFileSync(new URL("../static/operations.js", import.meta.url), "utf8");
 const indexSource = readFileSync(new URL("../static/index.html", import.meta.url), "utf8");
 const cssSource = readFileSync(new URL("../static/app.css", import.meta.url), "utf8");
+const mediaPolicy = JSON.parse(readFileSync(new URL("../../schema/media-state-classification.json", import.meta.url), "utf8"));
+
+test("safe settings and shared contract exports include the media-state policy", () => {
+  const backupSettings = between(
+    operationsSource,
+    "function renderBackupSettings",
+    "function renderRuntimeSettings",
+  );
+  assert.match(backupSettings, /media_state_policy: state\.mediaStatePolicy \|\| contract\.media_state_policy/);
+  assert.match(backupSettings, /\/api\/settings\/media-state-policy/);
+  assert.match(backupSettings, /const config = value\.config/);
+});
 
 test("WebGUI biography uses bright copy and a complete five-line collapsed guard", () => {
   assert.match(cssSource, /html:not\(\[data-theme=light\]\) \.hero-copy \.artist-biography\{color:#fff;font-weight:600\}/);
@@ -30,6 +42,7 @@ function between(source, start, end) {
 }
 
 function load(source, values) {
+  if (values.state && !values.state.mediaStatePolicy) values.state.mediaStatePolicy = mediaPolicy;
   const context = vm.createContext({...values});
   vm.runInContext(source, context);
   return context;
@@ -217,6 +230,8 @@ test("opposing Album overrides use their own dark-grey filter and never inflate 
   assert.equal(context.mediaStatusKey(album), "overridden");
   assert.equal(context.mediaStatusColor("override"), "#6b737b");
   assert.match(appSource, /applyStatusPalette\(button, overridden \? "override" : albumCardState\(album, state\.artist\)\.stateKey\)/);
+  assert.match(appSource, /classifyMediaState\("artist", \["missing_artist_art"\]\)\.ui_status_key/);
+  assert.match(appSource, /artist\.missing_artist_art = missing/);
   assert.doesNotMatch(appSource, /counts\.set\("bypassed", \(counts\.get\("bypassed"\) \|\| 0\) \+ overrideCount\)/);
 });
 
@@ -235,9 +250,10 @@ test("Artist State exposes six filters plus an Unprocessed heading and Album tot
   assert.doesNotMatch(appSource, /\["artistBypass", "Artist Bypass"\]/);
   assert.equal(context.mediaStatusColor("unprocessed"), "#eef8ff");
   assert.equal(context.mediaStatusColor("incomplete"), "#ff5268");
-  assert.match(appSource, /const incomplete = fallback \? album\.fallback_complete === false\s+: status === "incomplete" \|\| status === "partial";/);
-  assert.doesNotMatch(appSource, /status === "partial" \|\| \(!overridden && status === "unprocessed"\)/);
-  assert.match(appSource, /: processed \|\| validating \? "processed" : incomplete \|\| missingCover \? "incomplete" : "unprocessed";/);
+  assert.equal(context.classifyMediaState("artist", ["missing_artist_art", "embedding_issues"]).ui_status_key, "bypassed");
+  assert.equal(context.classifyMediaState("artist", ["embedding_issues", "incomplete_or_error"]).ui_status_key, "partial");
+  assert.equal(context.classifyMediaState("artist", ["incomplete_or_error", "opposing_override"]).ui_status_key, "incomplete");
+  assert.deepEqual(mediaPolicy.artist.forbidden_name_colors, ["orange", "gold", "blue"]);
 });
 
 test("Album Status Key separates animated WebP from mutually exclusive status dots", () => {
@@ -245,11 +261,15 @@ test("Album Status Key separates animated WebP from mutually exclusive status do
   assert.match(keySource, /\["Status dots", \[/);
   assert.doesNotMatch(keySource, /\[\["●", "#3478ff"\], \["Blue", "#3478ff"\]\]/);
   assert.match(keySource, /\{heading: "MISC STATUS"\}/);
-  assert.match(keySource, /\[\["● Animated", "#3478ff"\]\], detail: "cover\.webp present: review the still cover"/);
-  assert.match(keySource, /\[\["Yellow", "#f4cc4d"\]\], detail: "BYPASSED albums with custom art"/);
+  assert.match(keySource, /\[\["● Animated", mediaPolicyColor\("blue"\)\]\], detail: "cover\.webp present: review the still cover"/);
+  assert.match(keySource, /\[\["Yellow", mediaPolicyColor\("yellow"\)\]\], detail: "BYPASSED albums with custom art"/);
   assert.doesNotMatch(keySource, /Yellow · BYPASSED/);
 });
 const albumBannerFunctions = between(
+  appSource,
+  "function opposingAlbumOverride",
+  "function mediaStatusKey",
+) + between(
   appSource,
   "function albumBannerKind",
   "function applyAlbumCoordination",
@@ -414,7 +434,7 @@ const uploadedArtworkFunction = between(
   "function useUploadedArtwork",
   '$("uploadArtwork").addEventListener',
 );
-const albumSummaryFunctions = between(
+const albumSummaryFunctions = mediaStatusFunctions + "\n" + between(
   appSource,
   "function albumOverride",
   "function renderAlbumStatusKey",
@@ -2421,6 +2441,11 @@ test("OVERRIDE banner defaults migrate into saved palettes and follow opposing o
   assert.equal(context.albumDisplayBannerKind(album, {}), "override");
   state.albumOverrides.set("album-1", {writer: "webgui"});
   assert.equal(context.albumDisplayBannerKind(album, {}), "artist");
+
+  state.albumOverrides.set("fallback-1", {writer: "windows"});
+  assert.equal(context.albumDisplayBannerKind({id: "fallback-1", library_group: "fallback"}, {}), "compiled");
+  assert.equal(context.opposingAlbumOverride({id: "fallback-1", library_group: "fallback"}), false);
+  assert.match(cssSource, /opposing-override \.album-card-picture :is\(img,\.album-placeholder\)\{filter:grayscale\(1\) saturate\(0\)\}/);
 });
 
 test("coordination revision changes identify only affected Albums", () => {
@@ -2690,7 +2715,7 @@ test("selected Artist status includes its track-scoped COMP report", () => {
   assert.equal(state.artist.status, "incomplete");
   assert.equal(state.artists[0].status, "incomplete");
   state.compAlbums[0].tracks[1].completed = true;
-  assert.equal(context.syncSelectedArtistStatus(), "complete");
+  assert.equal(context.syncSelectedArtistStatus(), "albumsComplete");
 });
 
 test("Artist overview lazily verifies unresolved regular Albums without touching COMP fallback", async () => {

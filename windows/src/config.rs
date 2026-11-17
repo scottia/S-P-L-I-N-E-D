@@ -113,6 +113,10 @@ pub struct ScanConfig {
     /// Use rollback journaling for an intentionally shared/network SQLite file.
     #[serde(default)]
     pub sqlite_shared: bool,
+    /// Coordinate shared SQLite state and override evidence with WebGUI PostgreSQL.
+    /// This remains inactive unless shared SQLite is also enabled.
+    #[serde(default)]
+    pub postgres_coordination: bool,
     /// Optional coordination between Windows clients sharing one SQLite file.
     /// SQLite's own locking remains active when this is disabled.
     #[serde(default)]
@@ -410,6 +414,7 @@ impl Default for ScanConfig {
             shared_artist_art_dir: String::new(),
             temporary_cache_dir: DEFAULT_CACHE_DIR.to_string(),
             sqlite_shared: false,
+            postgres_coordination: false,
             windows_client_lock: false,
             log_dir: default_log_dir(),
             scan_library_dir: DEFAULT_SCAN_LIBRARY_DIR.to_string(),
@@ -862,6 +867,12 @@ pub fn load_config_at_path(path: &Path, runtime_root: &Path) -> Result<Config, S
         )
     })?;
 
+    let coordination_explicit = toml::from_str::<toml::Value>(&text).ok().and_then(|value| {
+        value
+            .get("scan")
+            .and_then(|scan| scan.get("postgres_coordination"))
+            .and_then(toml::Value::as_bool)
+    });
     let mut config = parse_config(&text).map_err(|error| {
         format!(
             "Config v5 could not be loaded from {}:\n{error}",
@@ -869,6 +880,14 @@ pub fn load_config_at_path(path: &Path, runtime_root: &Path) -> Result<Config, S
         )
     })?;
     resolve_runtime_paths(&mut config, runtime_root);
+    if coordination_explicit.is_none()
+        && config.scan.sqlite_shared
+        && Path::new(&config.credentials.credential_dir)
+            .join("album-coordination.json")
+            .is_file()
+    {
+        config.scan.postgres_coordination = true;
+    }
 
     Ok(config)
 }
@@ -1103,6 +1122,7 @@ mod tests {
         assert_eq!(config.verbosity, Verbosity::Info);
         assert!(config.scan.scan_mode);
         assert!(!config.scan.library_scan);
+        assert!(!config.scan.postgres_coordination);
         assert!(!config.scan.windows_client_lock);
         assert_eq!(config.scan.cache_dir, "_db");
         assert_eq!(config.scan.temporary_cache_dir, "_cache");
@@ -1175,7 +1195,7 @@ mod tests {
     }
 
     #[test]
-    fn older_shared_config_defaults_optional_windows_lock_off() {
+    fn older_shared_config_defaults_optional_coordination_controls_off() {
         let mut config = Config::default();
         config.scan.sqlite_shared = true;
         let mut value = toml::Value::try_from(&config).unwrap();
@@ -1183,9 +1203,35 @@ mod tests {
             .as_table_mut()
             .unwrap()
             .remove("windows_client_lock");
+        value["scan"]
+            .as_table_mut()
+            .unwrap()
+            .remove("postgres_coordination");
         let parsed: Config = toml::from_str(&toml::to_string(&value).unwrap()).unwrap();
         assert!(parsed.scan.sqlite_shared);
+        assert!(!parsed.scan.postgres_coordination);
         assert!(!parsed.scan.windows_client_lock);
+    }
+
+    #[test]
+    fn older_shared_config_preserves_existing_album_coordination_opt_in() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let mut config = Config::default();
+        config.scan.sqlite_shared = true;
+        let mut value = toml::Value::try_from(&config).unwrap();
+        value["scan"]
+            .as_table_mut()
+            .unwrap()
+            .remove("postgres_coordination");
+        let credentials = temp.path().join("credentials");
+        std::fs::create_dir_all(&credentials).unwrap();
+        std::fs::write(credentials.join("album-coordination.json"), "{}\n").unwrap();
+        let path = temp.path().join("config.toml");
+        std::fs::write(&path, toml::to_string(&value).unwrap()).unwrap();
+
+        let loaded = load_config_at_path(&path, temp.path()).unwrap();
+
+        assert!(loaded.scan.postgres_coordination);
     }
 
     #[test]

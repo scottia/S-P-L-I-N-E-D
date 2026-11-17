@@ -540,6 +540,13 @@ Settings uses task-based sections:
 | **Backup / Restore** | Independent Settings archives, restorable SQLite backups, diagnostics, authoritative reconciliation snapshots, and manual restore/load actions |
 | **Processing & Logs** | Read/Write default, history, timeouts, logging, retention, and status bar |
 
+With **Advanced** enabled, Connections also contains the editable
+[`media-state-classification.json`](media-state-classification-policy.md)
+above Optional AISPLINED Provider. **Save Connections** validates the JSON,
+writes it to the configured Provider Credential Directory, and activates it
+immediately. When Album Coordination is configured, PostgreSQL is updated
+first and the returned revision is mirrored locally.
+
 Each section saves its own draft into one validated Config v5 document. There
 is no separate Slint configuration authority and raw TOML is not the normal
 workflow. **Advanced** reveals specialist controls without changing their

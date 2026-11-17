@@ -15,14 +15,22 @@ FIRST RUN
 
 The fresh archive has no data directory. Launch does not create configuration,
 database, cache, log, credential, or obsolete bootstrap folders. A validated
-explicit first save creates:
+explicit first save creates these files in the selected Configuration Path:
 
-  data\config.toml
-  data\ui.toml
+  config.toml
+  ui.toml
 
-Move or copy the complete directory to carry portable settings with the app.
-Deleting it removes SPLINED-owned portable settings. Relative paths resolve from
-the directory containing splined.exe, independent of process CWD. Absolute,
+Standalone SQLite Setup creates neither shared-policy JSON. If Shared SQLite is
+selected, Setup asks whether it coordinates with WebGUI PostgreSQL. Shared-only
+Setup creates media-state-classification.json. Coordinated Setup first requires
+a successful PostgreSQL Test, then Save creates album-coordination.json and the
+validated PostgreSQL policy mirror. Setup never creates a blank JSON or
+overwrites a conflicting existing credential or policy.
+
+When Configuration Path is the portable directory, moving or copying the
+complete directory carries its settings with the app. An explicitly selected
+external Configuration Path remains external. Relative paths resolve from the
+directory containing splined.exe, independent of process CWD. Absolute,
 mapped-drive, and UNC paths remain unchanged.
 
 CONFIGURATION AND DATA

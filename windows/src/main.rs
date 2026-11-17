@@ -26,8 +26,9 @@ use splined_core::config::{
     Verbosity, configured_samples_dir, configured_shared_artist_art_dir,
 };
 use splined_core::credential_store::{
-    ALBUM_COORDINATION_PROVIDER, CredentialEditor, load_editor, resolve_masked_editor, save_editor,
-    test_editor,
+    ALBUM_COORDINATION_PROVIDER, CredentialEditor, credential_path,
+    load_album_coordination_database_url, load_editor, resolve_masked_editor, save_editor,
+    test_album_coordination_policy, test_editor,
 };
 use splined_core::download::DownloadCache;
 use splined_core::embed_queue;
@@ -53,6 +54,14 @@ use splined_core::media_database::{
     persist_opposing_album_artwork, persist_opposing_compilation_artwork, record_album_outcome,
     record_album_outcome_from_runtime, save_album_category_override, save_artist_art_identity,
     upgrade_database_schema,
+};
+use splined_core::media_state_policy::{
+    PostgresPolicySnapshot, activate_policy as activate_media_state_policy, album_status_dot,
+    classify_album, classify_artist, database_monitor_poll_seconds, database_monitor_presentation,
+    fetch_postgres_policy, named_color, policy as media_state_policy,
+    policy_json as media_state_policy_json, policy_path as media_state_policy_path,
+    save_policy as save_media_state_policy, save_postgres_policy,
+    status_color as media_status_color, validate_policy as validate_media_state_policy,
 };
 use splined_core::musicbrainz::{ArtistLookup, ArtistSearchHit, MusicBrainzClient};
 use splined_core::override_coordination::{
@@ -103,6 +112,12 @@ static CATALOG_INDEX_REFRESH_ACTIVE: AtomicBool = AtomicBool::new(false);
 static DEFERRED_THUMBNAIL_REQUESTS: OnceLock<Mutex<BTreeSet<(String, String)>>> = OnceLock::new();
 const NAVIDROME_ARTIST_DOWNLOAD_LIMIT: usize = 4;
 const NAVIDROME_ALBUM_DOWNLOAD_LIMIT: usize = 6;
+
+#[derive(Clone)]
+struct ValidatedSetupPostgres {
+    editor: CredentialEditor,
+    snapshot: PostgresPolicySnapshot,
+}
 
 fn album_category_label(category: &str) -> &'static str {
     match category.trim() {
@@ -5079,6 +5094,40 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     });
 
+    let database_monitor_busy = Arc::new(AtomicBool::new(false));
+    refresh_database_monitor_async(
+        ui.as_weak(),
+        Arc::clone(&state),
+        Arc::clone(&database_monitor_busy),
+    );
+    {
+        let weak = ui.as_weak();
+        let monitor_state = Arc::clone(&state);
+        let busy = Arc::clone(&database_monitor_busy);
+        ui.on_refresh_database_monitor(move || {
+            refresh_database_monitor_async(
+                weak.clone(),
+                Arc::clone(&monitor_state),
+                Arc::clone(&busy),
+            );
+        });
+    }
+    let database_monitor_timer = Timer::default();
+    let database_monitor_weak = ui.as_weak();
+    let database_monitor_state = Arc::clone(&state);
+    let database_monitor_timer_busy = Arc::clone(&database_monitor_busy);
+    database_monitor_timer.start(
+        TimerMode::Repeated,
+        Duration::from_secs(database_monitor_poll_seconds()),
+        move || {
+            refresh_database_monitor_async(
+                database_monitor_weak.clone(),
+                Arc::clone(&database_monitor_state),
+                Arc::clone(&database_monitor_timer_busy),
+            );
+        },
+    );
+
     let storage_timer = Timer::default();
     let storage_weak = ui.as_weak();
     let storage_state = Arc::clone(&state);
@@ -7500,6 +7549,221 @@ fn resolved_setup_directory(value: &str) -> PathBuf {
     }
 }
 
+fn database_monitor_for_config(
+    config: &Config,
+) -> splined_core::media_state_policy::DatabaseMonitorPresentation {
+    if !config.scan.sqlite_shared {
+        return database_monitor_presentation("current", "current");
+    }
+    let path = database_path(resolved_setup_directory(&config.scan.cache_dir));
+    if !path.is_file() {
+        return database_monitor_presentation("sqlite", "available");
+    }
+    let health = rusqlite::Connection::open_with_flags(
+        &path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .and_then(|connection| {
+        connection.busy_timeout(Duration::from_secs(2))?;
+        connection.query_row("PRAGMA schema_version", [], |_row| Ok(()))
+    })
+    .map(|_| "good")
+    .unwrap_or("broken");
+    database_monitor_presentation("sqlite", health)
+}
+
+fn apply_database_monitor_ui(
+    ui: &AppWindow,
+    monitor: &splined_core::media_state_policy::DatabaseMonitorPresentation,
+) {
+    let [red, green, blue] = rgb_from_hex(&monitor.color);
+    ui.set_database_monitor_text(monitor.text.clone().into());
+    ui.set_database_monitor_description(monitor.description.clone().into());
+    ui.set_database_monitor_health(monitor.health.clone().into());
+    ui.set_database_monitor_color(Color::from_rgb_u8(red, green, blue));
+}
+
+fn refresh_database_monitor_async(
+    weak: slint::Weak<AppWindow>,
+    state: Arc<Mutex<ApplicationState>>,
+    busy: Arc<AtomicBool>,
+) {
+    if busy.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let Some(config) = state.lock().ok().map(|app| app.config.clone()) else {
+        busy.store(false, Ordering::SeqCst);
+        return;
+    };
+    std::thread::spawn(move || {
+        let monitor = database_monitor_for_config(&config);
+        let reset = Arc::clone(&busy);
+        if slint::invoke_from_event_loop(move || {
+            if let Some(ui) = weak.upgrade() {
+                apply_database_monitor_ui(&ui, &monitor);
+            }
+            reset.store(false, Ordering::SeqCst);
+        })
+        .is_err()
+        {
+            busy.store(false, Ordering::SeqCst);
+        }
+    });
+}
+
+fn validate_setup_shared_policy_targets(
+    config: &Config,
+    postgres_choice: &str,
+    validated: Option<&ValidatedSetupPostgres>,
+) -> Result<(), String> {
+    if !config.scan.sqlite_shared {
+        return Ok(());
+    }
+    if postgres_choice == "no" {
+        let path = media_state_policy_path(config)?;
+        if path.is_file() {
+            let existing = fs::read_to_string(&path).map_err(|error| {
+                format!(
+                    "Unable to read existing media-state policy {}: {error}",
+                    path.display()
+                )
+            })?;
+            validate_media_state_policy(&existing)?;
+        }
+        return Ok(());
+    }
+    if postgres_choice != "yes" {
+        return Err("Choose whether shared SQLite coordinates with WebGUI PostgreSQL.".to_string());
+    }
+    let validated = validated.ok_or_else(|| {
+        "Test and validate the WebGUI PostgreSQL connection before saving Setup.".to_string()
+    })?;
+    validate_media_state_policy(&validated.snapshot.policy_json)?;
+
+    let policy_path = media_state_policy_path(config)?;
+    if policy_path.is_file() {
+        let existing = fs::read_to_string(&policy_path).map_err(|error| {
+            format!(
+                "Unable to read existing media-state policy {}: {error}",
+                policy_path.display()
+            )
+        })?;
+        validate_media_state_policy(&existing)?;
+        let existing_value = serde_json::from_str::<serde_json::Value>(&existing)
+            .map_err(|error| format!("Existing media-state policy is invalid: {error}"))?;
+        let validated_value =
+            serde_json::from_str::<serde_json::Value>(&validated.snapshot.policy_json)
+                .map_err(|error| format!("PostgreSQL media-state policy is invalid: {error}"))?;
+        if existing_value != validated_value {
+            return Err(format!(
+                "Setup will not overwrite the different existing media-state policy {}. Choose another Provider Credential Directory or reconcile it in Advanced Settings.",
+                policy_path.display()
+            ));
+        }
+    }
+
+    let coordination_path = credential_path(config, ALBUM_COORDINATION_PROVIDER)?;
+    if coordination_path.is_file() {
+        let existing = load_editor(config, ALBUM_COORDINATION_PROVIDER)?;
+        if existing.server_url.trim() != validated.editor.server_url.trim()
+            || existing.username.trim() != validated.editor.username.trim()
+            || existing.secret != validated.editor.secret
+        {
+            return Err(format!(
+                "Setup will not overwrite the different existing Album Coordination credential {}. Choose another Provider Credential Directory or test the saved connection in Settings.",
+                coordination_path.display()
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn install_setup_shared_policy(
+    config: &Config,
+    postgres_choice: &str,
+    validated: Option<&ValidatedSetupPostgres>,
+) -> Result<Option<i64>, String> {
+    validate_setup_shared_policy_targets(config, postgres_choice, validated)?;
+    if !config.scan.sqlite_shared {
+        return Ok(None);
+    }
+    if postgres_choice == "no" {
+        splined_core::media_state_policy::ensure_policy(config)?;
+        return Ok(None);
+    }
+    let validated = validated.expect("validated PostgreSQL setup checked by preflight");
+    let coordination_path = credential_path(config, ALBUM_COORDINATION_PROVIDER)?;
+    if !coordination_path.is_file() {
+        save_editor(config, &validated.editor)?;
+    }
+    let policy_path = media_state_policy_path(config)?;
+    if policy_path.is_file() {
+        activate_media_state_policy(&validated.snapshot.policy_json)?;
+    } else {
+        save_media_state_policy(&policy_path, &validated.snapshot.policy_json)?;
+    }
+    Ok(Some(validated.snapshot.revision))
+}
+
+fn save_media_state_policy_with_authority(
+    config: &Config,
+    text: &str,
+) -> Result<Option<i64>, String> {
+    validate_media_state_policy(text)?;
+    let policy_path = media_state_policy_path(config)?;
+    let database_url = if config.scan.sqlite_shared && config.scan.postgres_coordination {
+        load_album_coordination_database_url(config)?
+    } else {
+        None
+    };
+    let Some(database_url) = database_url else {
+        save_media_state_policy(&policy_path, text)?;
+        return Ok(None);
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("Unable to start PostgreSQL policy save: {error}"))?;
+    let snapshot = runtime.block_on(async {
+        tokio::time::timeout(Duration::from_secs(15), async {
+            let pool = connect_pool(&database_url).await?;
+            let result = save_postgres_policy(&pool, text).await;
+            pool.close().await;
+            result
+        })
+        .await
+        .map_err(|_| "PostgreSQL policy save timed out after 15 seconds.".to_string())?
+    })?;
+    save_media_state_policy(&policy_path, &snapshot.policy_json)?;
+    Ok(Some(snapshot.revision))
+}
+
+fn refresh_media_state_policy_from_postgres(config: &Config) -> Result<Option<i64>, String> {
+    if !config.scan.sqlite_shared || !config.scan.postgres_coordination {
+        return Ok(None);
+    }
+    let Some(database_url) = load_album_coordination_database_url(config)? else {
+        return Ok(None);
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("Unable to start PostgreSQL policy refresh: {error}"))?;
+    let snapshot = runtime.block_on(async {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let pool = connect_pool(&database_url).await?;
+            let result = fetch_postgres_policy(&pool).await;
+            pool.close().await;
+            result
+        })
+        .await
+        .map_err(|_| "PostgreSQL policy refresh timed out after 5 seconds.".to_string())?
+    })?;
+    save_media_state_policy(&media_state_policy_path(config)?, &snapshot.policy_json)?;
+    Ok(Some(snapshot.revision))
+}
+
 fn preview_setup_database_path_ui(ui: &AppWindow, value: &str) {
     let value = value.trim();
     if value.is_empty() {
@@ -8161,6 +8425,15 @@ fn load_application_state() -> (ApplicationState, bool, Option<String>) {
         state.last_error = Some(error.clone());
         state.push_log(format!("SETUP REQUIRED: {error}"));
         return (state, true, first_error);
+    }
+    match refresh_media_state_policy_from_postgres(&config) {
+        Ok(Some(revision)) => record_startup_timing(format!(
+            "startup-media-state-policy postgres_revision={revision}"
+        )),
+        Ok(None) => {}
+        Err(error) => record_startup_timing(format!(
+            "startup-media-state-policy using_local_mirror error={error}"
+        )),
     }
     let configured_cache = Path::new(&config.scan.temporary_cache_dir);
     let portable_cache = splined_core::portable::app_layout()
@@ -15106,6 +15379,7 @@ fn bind_service_callbacks(
             .map(|app| app.config.clone())
             .unwrap_or_default(),
     ));
+    let validated_setup_postgres = Arc::new(Mutex::new(None::<ValidatedSetupPostgres>));
     {
         let weak = ui.as_weak();
         let state = Arc::clone(&state);
@@ -15239,6 +15513,11 @@ fn bind_service_callbacks(
                         .clone();
                 }
                 apply_settings_section_ui(&ui, &mut config, &section)?;
+                if section == "Connections" {
+                    validate_media_state_policy(
+                        ui.get_settings_media_state_policy_json().as_str(),
+                    )?;
+                }
                 let config = if section == "Library" {
                     let configuration_directory =
                         PathBuf::from(ui.get_settings_configuration_dir().trim());
@@ -15250,6 +15529,23 @@ fn bind_service_callbacks(
                     splined_core::settings::save_config(&config)?
                 };
                 if section != "Library" {
+                    if section == "Connections" {
+                        let revision = save_media_state_policy_with_authority(
+                            &config,
+                            ui.get_settings_media_state_policy_json().as_str(),
+                        )?;
+                        set_media_state_policy_palette(&ui);
+                        ui.set_settings_media_state_policy_json(
+                            media_state_policy_json().into(),
+                        );
+                        ui.set_settings_media_state_policy_status(match revision {
+                            Some(revision) => format!(
+                                "Validated, saved to PostgreSQL revision {revision}, mirrored locally, and active"
+                            )
+                            .into(),
+                            None => "Validated, saved locally, and active".into(),
+                        });
+                    }
                     {
                         let mut app = state.lock().map_err(|_| {
                             "The SPLINED application state is unavailable.".to_string()
@@ -15373,11 +15669,17 @@ fn bind_service_callbacks(
                 && weak
                     .upgrade()
                     .is_some_and(|ui| ui.get_settings_section() == "Sources");
+            let saved = result.is_ok();
             record_action_result(&state, result);
             refresh_weak(&weak, &state);
-            if saved_sources && let Some(ui) = weak.upgrade() {
-                let order = split_values(ui.get_settings_source_order().as_str());
-                set_settings_source_order_and_cards(&ui, &order);
+            if let Some(ui) = weak.upgrade() {
+                if saved {
+                    ui.invoke_refresh_database_monitor();
+                }
+                if saved_sources {
+                    let order = split_values(ui.get_settings_source_order().as_str());
+                    set_settings_source_order_and_cards(&ui, &order);
+                }
             }
         });
     }
@@ -15606,6 +15908,100 @@ fn bind_service_callbacks(
         let weak = ui.as_weak();
         let state = Arc::clone(&state);
         let settings_draft = Arc::clone(&settings_draft);
+        let validated_setup_postgres = Arc::clone(&validated_setup_postgres);
+        ui.on_test_setup_postgres(move |server, username, password| {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let editor = CredentialEditor {
+                provider: ALBUM_COORDINATION_PROVIDER.to_string(),
+                server_url: server.trim().to_string(),
+                auth_method: "password".to_string(),
+                username: username.trim().to_string(),
+                secret: password.to_string(),
+                status: "Testing".to_string(),
+                ..CredentialEditor::default()
+            };
+            let editor = settings_draft
+                .lock()
+                .map_err(|_| "The structured Settings draft is unavailable.".to_string())
+                .and_then(|config| resolve_masked_editor(&config, &editor));
+            let editor = match editor {
+                Ok(editor) => editor,
+                Err(error) => {
+                    ui.set_setup_postgres_validated(false);
+                    ui.set_setup_postgres_status(error.clone().into());
+                    record_action_result(&state, Err(error));
+                    return;
+                }
+            };
+            ui.set_setup_postgres_validated(false);
+            ui.set_setup_postgres_status(
+                "Testing the PostgreSQL connection, coordination schema, and media-state policy…"
+                    .into(),
+            );
+            if let Ok(mut staged) = validated_setup_postgres.lock() {
+                *staged = None;
+            }
+            let weak = weak.clone();
+            let state = Arc::clone(&state);
+            let validated_setup_postgres = Arc::clone(&validated_setup_postgres);
+            std::thread::spawn(move || {
+                let result = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|error| format!("Unable to start the PostgreSQL test: {error}"))
+                    .and_then(|runtime| {
+                        runtime.block_on(async {
+                            tokio::time::timeout(
+                                Duration::from_secs(15),
+                                test_album_coordination_policy(&editor),
+                            )
+                            .await
+                            .map_err(|_| {
+                                "PostgreSQL validation timed out after 15 seconds.".to_string()
+                            })?
+                        })
+                    });
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = weak.upgrade() {
+                        match result {
+                            Ok(snapshot) => {
+                                let revision = snapshot.revision;
+                                if let Ok(mut staged) = validated_setup_postgres.lock() {
+                                    *staged = Some(ValidatedSetupPostgres {
+                                        editor,
+                                        snapshot,
+                                    });
+                                }
+                                ui.set_setup_postgres_validated(true);
+                                ui.set_setup_postgres_status(
+                                    format!(
+                                        "Validated PostgreSQL and media-state policy revision {revision}. Files will be created only when Setup is saved."
+                                    )
+                                    .into(),
+                                );
+                                if let Ok(mut app) = state.lock() {
+                                    app.last_error = None;
+                                }
+                            }
+                            Err(error) => {
+                                ui.set_setup_postgres_validated(false);
+                                ui.set_setup_postgres_status(error.clone().into());
+                                record_action_result(&state, Err(error));
+                            }
+                        }
+                    }
+                    refresh_weak(&weak, &state);
+                });
+            });
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        let settings_draft = Arc::clone(&settings_draft);
+        let validated_setup_postgres = Arc::clone(&validated_setup_postgres);
         ui.on_save_setup(move || {
             let Some(ui) = weak.upgrade() else {
                 return;
@@ -15631,9 +16027,74 @@ fn bind_service_callbacks(
                         "Configuration Path must be an absolute directory.".to_string(),
                     );
                 }
-                Ok::<_, String>((config, configuration_directory))
+                let postgres_choice = ui.get_setup_postgres_choice().trim().to_string();
+                config.scan.postgres_coordination =
+                    config.scan.sqlite_shared && postgres_choice == "yes";
+                let validated_postgres = if config.scan.sqlite_shared
+                    && postgres_choice == "yes"
+                {
+                    if !ui.get_setup_postgres_validated() {
+                        return Err(
+                            "Test and validate the PostgreSQL connection before saving Setup."
+                                .to_string(),
+                        );
+                    }
+                    let staged = validated_setup_postgres
+                        .lock()
+                        .map_err(|_| {
+                            "The validated PostgreSQL Setup connection is unavailable."
+                                .to_string()
+                        })?
+                        .clone()
+                        .ok_or_else(|| {
+                            "Test and validate the PostgreSQL connection before saving Setup."
+                                .to_string()
+                        })?;
+                    let current = resolve_masked_editor(
+                        &config,
+                        &CredentialEditor {
+                            provider: ALBUM_COORDINATION_PROVIDER.to_string(),
+                            server_url: ui.get_setup_postgres_server().trim().to_string(),
+                            auth_method: "password".to_string(),
+                            username: ui.get_setup_postgres_username().trim().to_string(),
+                            secret: ui.get_setup_postgres_password().to_string(),
+                            ..CredentialEditor::default()
+                        },
+                    )?;
+                    if staged.editor.server_url.trim() != current.server_url.trim()
+                        || staged.editor.username.trim() != current.username.trim()
+                        || staged.editor.secret != current.secret
+                    {
+                        return Err(
+                            "The PostgreSQL fields changed after validation. Test the connection again."
+                                .to_string(),
+                        );
+                    }
+                    Some(staged)
+                } else {
+                    None
+                };
+                if config.scan.sqlite_shared
+                    && !matches!(postgres_choice.as_str(), "yes" | "no")
+                {
+                    return Err(
+                        "Choose Yes or No for WebGUI PostgreSQL coordination.".to_string(),
+                    );
+                }
+                validate_setup_shared_policy_targets(
+                    &config,
+                    &postgres_choice,
+                    validated_postgres.as_ref(),
+                )?;
+                Ok::<_, String>((
+                    config,
+                    configuration_directory,
+                    postgres_choice,
+                    validated_postgres,
+                ))
             })();
-            let (config, configuration_directory) = match prepared {
+            let (config, configuration_directory, postgres_choice, validated_postgres) =
+                match prepared {
                 Ok(prepared) => prepared,
                 Err(error) => {
                     ui.set_setup_progress_failed(true);
@@ -15680,6 +16141,11 @@ fn bind_service_callbacks(
                     let config = splined_core::settings::save_config_in_directory(
                         &config,
                         &configuration_directory,
+                    )?;
+                    let policy_revision = install_setup_shared_policy(
+                        &config,
+                        &postgres_choice,
+                        validated_postgres.as_ref(),
                     )?;
                     let progress_weak = weak.clone();
                     let progress_batch =
@@ -15761,14 +16227,14 @@ fn bind_service_callbacks(
                     for diagnostic in diagnostics {
                         replacement.push_log(diagnostic);
                     }
-                    Ok::<_, String>((config, replacement))
+                    Ok::<_, String>((config, replacement, policy_revision))
                 })();
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = weak.upgrade() {
                         ui.set_setup_saving(false);
                         ui.set_setup_progress_indeterminate(false);
                         match result {
-                            Ok((config, replacement)) => {
+                            Ok((config, replacement, policy_revision)) => {
                                 ui.set_setup_progress_percent(100);
                                 ui.set_setup_progress_phase("Setup complete".into());
                                 ui.set_setup_progress_detail(
@@ -15786,6 +16252,15 @@ fn bind_service_callbacks(
                                 ui.set_setup_required(false);
                                 ui.set_page_index(1);
                                 set_settings_ui(&ui, &config);
+                                ui.invoke_refresh_database_monitor();
+                                if let Some(revision) = policy_revision {
+                                    ui.set_setup_postgres_status(
+                                        format!(
+                                            "PostgreSQL coordination and media-state policy revision {revision} saved."
+                                        )
+                                        .into(),
+                                    );
+                                }
                                 ui.set_backup_first_run_prompt_visible(true);
                                 if let Ok(editor) = load_editor(&config, "Navidrome") {
                                     set_credential_ui(&ui, &editor);
@@ -16838,6 +17313,7 @@ fn apply_saved_non_library_settings(
 }
 
 fn set_settings_ui(ui: &AppWindow, config: &Config) {
+    set_media_state_policy_palette(ui);
     if let Ok(layout) = splined_core::portable::app_layout() {
         ui.set_settings_configuration_dir(
             splined_core::portable::display_path(&layout.config_dir).into(),
@@ -16906,7 +17382,34 @@ fn set_settings_ui(ui: &AppWindow, config: &Config) {
     ui.set_settings_override_options(model(override_options));
     ui.set_settings_scan_timeout(override_label.into());
     ui.set_settings_sqlite_shared(config.scan.sqlite_shared);
+    ui.set_settings_postgres_coordination(config.scan.postgres_coordination);
     ui.set_settings_windows_client_lock(config.scan.windows_client_lock);
+    if ui.get_setup_required() {
+        if !config.scan.sqlite_shared {
+            ui.set_setup_postgres_choice(SharedString::default());
+            ui.set_setup_postgres_status(
+                "Standalone SQLite uses the built-in state policy.".into(),
+            );
+        } else if config.scan.postgres_coordination {
+            ui.set_setup_postgres_choice("yes".into());
+            ui.set_setup_postgres_validated(false);
+            ui.set_setup_postgres_status(
+                "Test the saved WebGUI PostgreSQL connection before Setup Save.".into(),
+            );
+            if let Ok(editor) = load_editor(config, ALBUM_COORDINATION_PROVIDER) {
+                let editor = editor.masked_for_display();
+                ui.set_setup_postgres_server(editor.server_url.into());
+                ui.set_setup_postgres_username(editor.username.into());
+                ui.set_setup_postgres_password(editor.secret.into());
+            }
+        } else {
+            ui.set_setup_postgres_choice("no".into());
+            ui.set_setup_postgres_validated(false);
+            ui.set_setup_postgres_status(
+                "Shared SQLite only will use its editable local media-state policy.".into(),
+            );
+        }
+    }
     ui.set_settings_sample_write(config.samples.sample_write);
     ui.set_settings_sample_dir(
         configured_samples_dir(config)
@@ -16961,6 +17464,15 @@ fn set_settings_ui(ui: &AppWindow, config: &Config) {
     ui.set_settings_ai_endpoint(config.aisplined.endpoint.clone().into());
     ui.set_settings_ai_minimum(config.aisplined.minimum_short_side.to_string().into());
     ui.set_settings_ai_allow_below(config.aisplined.allow_below_minimum_override);
+    ui.set_settings_media_state_policy_json(media_state_policy_json().into());
+    ui.set_settings_media_state_policy_status(
+        format!(
+            "{} · schema {} · validated",
+            media_state_policy().policy_id,
+            media_state_policy().schema_version
+        )
+        .into(),
+    );
     let source = ui.get_settings_policy_source().to_string();
     let source = if splined_core::config::SUPPORTED_SOURCE_POLICIES.contains(&source.as_str()) {
         source
@@ -17059,6 +17571,8 @@ fn apply_settings_ui(ui: &AppWindow, config: &mut Config) -> Result<(), String> 
     config.scan.scan_mode_timeout.0 =
         override_delay_hours(ui.get_settings_scan_timeout().as_str())?;
     config.scan.sqlite_shared = ui.get_settings_sqlite_shared();
+    config.scan.postgres_coordination =
+        config.scan.sqlite_shared && ui.get_settings_postgres_coordination();
     config.scan.windows_client_lock = ui.get_settings_windows_client_lock();
     if is_remote_path(&resolved_setup_directory(&config.scan.cache_dir))
         && !config.scan.sqlite_shared
@@ -17255,6 +17769,8 @@ fn apply_settings_section_ui(
             config.scan.scan_mode_timeout.0 =
                 override_delay_hours(ui.get_settings_scan_timeout().as_str())?;
             config.scan.sqlite_shared = ui.get_settings_sqlite_shared();
+            config.scan.postgres_coordination =
+                config.scan.sqlite_shared && ui.get_settings_postgres_coordination();
             config.scan.windows_client_lock = ui.get_settings_windows_client_lock();
             config.history.enabled = ui.get_settings_history_enabled();
             config.history.retention_days =
@@ -17298,6 +17814,7 @@ fn safe_reset_config(current: &Config) -> Config {
     reset.scan.temporary_cache_dir = current.scan.temporary_cache_dir.clone();
     reset.scan.log_dir = current.scan.log_dir.clone();
     reset.scan.sqlite_shared = current.scan.sqlite_shared;
+    reset.scan.postgres_coordination = current.scan.postgres_coordination;
     reset.scan.windows_client_lock = current.scan.windows_client_lock;
     reset.scan.artist_separator_regex = current.scan.artist_separator_regex.clone();
     reset.scan.artist_separator_profile = current.scan.artist_separator_profile.clone();
@@ -21193,31 +21710,22 @@ fn library_ui_model_from_rows(
     state: &ApplicationState,
     mut rows: Vec<splined_core::application::LibraryRow>,
 ) -> ModelRc<UiLibraryRow> {
-    let completed_overrides = state
-        .album_override_writers
-        .iter()
-        .filter(|(_, writer)| writer.eq_ignore_ascii_case("webgui"))
-        .map(|(album_key, _)| album_key.to_ascii_lowercase())
-        .collect::<HashSet<_>>();
-    let artist_states = (!completed_overrides.is_empty()).then(|| {
-        state
-            .library
-            .artist_states_with_overrides(&completed_overrides)
-    });
-    if let Some(artist_states) = artist_states {
-        for row in &mut rows {
-            if row.kind == "artist" {
-                if let Some(status) = artist_states.get(&row.primary) {
-                    row.status = status.label().to_string();
-                }
-            } else if matches!(row.kind.as_str(), "album" | "album-child")
-                && completed_overrides.contains(&row.key.to_ascii_lowercase())
-            {
-                // Grey is the established opposing-client visual and owns an
-                // exclusive Overridden count. It must never inflate Bypassed
-                // or Albums Complete.
-                row.status = "Overridden".to_string();
-            }
+    for row in &mut rows {
+        if row.kind == "artist" {
+            row.status =
+                artist_file_list_policy_state(state, &row.primary, &row.artwork_path).ui_status_key;
+        } else if matches!(row.kind.as_str(), "album" | "album-child" | "folder")
+            && let Some(album) = state
+                .library
+                .albums
+                .iter()
+                .find(|album| album.snapshot.album_key.eq_ignore_ascii_case(&row.key))
+        {
+            let artist = (row.kind == "album-child")
+                .then(|| state.library.focused_artist.as_deref())
+                .flatten();
+            row.status =
+                classify_album(&album_policy_conditions(state, album, artist)).ui_status_key;
         }
     }
     Rc::new(LibraryUiModel {
@@ -21238,6 +21746,112 @@ fn library_ui_model_from_rows(
     .into()
 }
 
+fn album_policy_conditions<'a>(
+    state: &'a ApplicationState,
+    album: &'a AlbumEntry,
+    artist: Option<&str>,
+) -> Vec<&'static str> {
+    let fallback = state.library.is_curated_fallback(album);
+    let overridden = !fallback
+        && state
+            .album_override_writers
+            .get(&album.snapshot.album_key.to_ascii_lowercase())
+            .is_some_and(|writer| writer.eq_ignore_ascii_case("webgui"));
+    let artist_art_missing = artist.is_some_and(|artist| {
+        state
+            .library
+            .artist_artwork_paths
+            .get(&artist.trim().to_ascii_lowercase())
+            .is_none_or(|path| path.trim().is_empty())
+    });
+    let fallback_progress = artist.and_then(|artist| {
+        splined_core::application::LibraryState::artist_fallback_track_progress(album, artist)
+    });
+    let fallback_complete =
+        fallback_progress.is_some_and(|(done, total)| total > 0 && done == total);
+    let fallback_incomplete =
+        fallback_progress.is_some_and(|(done, total)| total > 0 && done < total);
+    let embedded_check = if fallback {
+        fallback_album_embedded_check_from_cache(
+            &album.snapshot,
+            state.config.output.embedded_thumbnail_size,
+        )
+    } else {
+        album_embedded_check_cache().lock().ok().and_then(|cache| {
+            cache
+                .get(&album_embedded_check_key(
+                    &album.snapshot.path,
+                    state.config.output.embedded_thumbnail_size,
+                ))
+                .copied()
+                .flatten()
+        })
+    };
+    let fully_complete = if fallback {
+        fallback_complete && embedded_check.is_none_or(|check| !check.needs_attention())
+    } else {
+        album.state == AlbumState::Processed
+            && album.snapshot.has_local_artwork
+            && embedded_check.is_some_and(|check| check.tracks > 0 && !check.needs_attention())
+    };
+    let mut conditions = Vec::new();
+    if artist_art_missing
+        || (!fallback && !album.snapshot.has_local_artwork)
+        || album.state == AlbumState::Bypassed
+    {
+        conditions.push("missing_art");
+    }
+    if album.state == AlbumState::TimeoutActive
+        || embedded_check.is_some_and(AlbumEmbeddedCheck::needs_attention)
+    {
+        conditions.push("embedding_issues");
+    }
+    if album.state == AlbumState::Incomplete || fallback_incomplete {
+        conditions.push("incomplete_tracks");
+    }
+    if overridden {
+        conditions.push("opposing_override");
+    }
+    if fully_complete {
+        conditions.push("tracks_complete");
+    }
+    if album.state == AlbumState::Processed {
+        conditions.push("processed");
+    }
+    conditions
+}
+
+fn artist_file_list_policy_state(
+    state: &ApplicationState,
+    artist: &str,
+    artwork_path: &str,
+) -> splined_core::media_state_policy::MediaStateClassification {
+    let indices = state.library.artist_state_album_indices(artist);
+    let mut evidence = HashSet::<&'static str>::new();
+    if artwork_path.trim().is_empty() {
+        evidence.insert("missing_artist_art");
+    }
+    let mut all_complete_or_overridden = !indices.is_empty();
+    for index in indices {
+        let conditions = album_policy_conditions(state, &state.library.albums[index], Some(artist));
+        if conditions.contains(&"embedding_issues") {
+            evidence.insert("embedding_issues");
+        }
+        if conditions.contains(&"incomplete_tracks") {
+            evidence.insert("incomplete_or_error");
+        }
+        if conditions.contains(&"opposing_override") {
+            evidence.insert("opposing_override");
+        }
+        all_complete_or_overridden &=
+            conditions.contains(&"tracks_complete") || conditions.contains(&"opposing_override");
+    }
+    if all_complete_or_overridden {
+        evidence.insert("all_albums_complete_or_overridden");
+    }
+    classify_artist(&evidence.into_iter().collect::<Vec<_>>())
+}
+
 fn artist_album_card_display_title(title: &str) -> String {
     const MAX_CHARS: usize = 12;
     if title.chars().count() <= MAX_CHARS {
@@ -21253,6 +21867,18 @@ fn artist_album_card_display_title(title: &str) -> String {
     display
 }
 
+fn media_ui_status_label(key: &str) -> &'static str {
+    match key {
+        "incomplete" => "Incomplete",
+        "processed" => "Processed",
+        "bypassed" => "Bypassed",
+        "partial" => "Embedding Review",
+        "overridden" | "override" => "Overridden",
+        "albumsComplete" => "Albums Complete",
+        _ => "Unprocessed",
+    }
+}
+
 fn rgb_from_hex(value: &str) -> [u8; 3] {
     let hex = value.trim().trim_start_matches('#');
     if hex.len() == 6
@@ -21266,6 +21892,11 @@ fn rgb_from_hex(value: &str) -> [u8; 3] {
         return [r, g, b];
     }
     [52, 120, 255]
+}
+
+fn media_policy_color(color_name: &str) -> Color {
+    let [red, green, blue] = rgb_from_hex(&named_color(color_name));
+    Color::from_rgb_u8(red, green, blue)
 }
 
 fn themed_color(value: &str, appearance: &str, background: bool) -> Color {
@@ -21806,8 +22437,6 @@ fn artist_overview_ui_model_with_show_all(
             // use its folder cover. Neither is an actionable red status for
             // the selected artist's track-scoped COMP workflow.
             let missing_album_art = !fallback && !snapshot.has_local_artwork;
-            let unprocessed =
-                !fallback && album.state == splined_core::application::AlbumState::New;
             let incomplete = !fallback
                 && matches!(
                     album.state,
@@ -21815,7 +22444,6 @@ fn artist_overview_ui_model_with_show_all(
                         | splined_core::application::AlbumState::TimeoutActive
                 );
             let processed = album.state == splined_core::application::AlbumState::Processed;
-            let complete_art = !fallback && processed && has_artist_art && !missing_album_art;
             let (soundtrack, various_artists) = artist_overview_release_banners(snapshot);
             let banner_key = if overridden {
                 "override"
@@ -21918,40 +22546,36 @@ fn artist_overview_ui_model_with_show_all(
                 embedded_check,
             );
             let mut bullets = Vec::new();
-            let mut add_bullet = |applicable: bool, color: Color, tip: String| {
-                if applicable {
+            let mut add_bullet = |condition: &str, applicable: bool, detail: String| {
+                if applicable && let Some(rule) = album_status_dot(condition) {
                     bullets.push(UiAlbumStatusBullet {
-                        color,
-                        tip: SharedString::from(tip),
+                        color: media_policy_color(&rule.color),
+                        tip: SharedString::from(if detail.is_empty() {
+                            rule.label.clone()
+                        } else {
+                            detail
+                        }),
                     });
                 }
             };
             add_bullet(
-                !has_artist_art,
-                Color::from_rgb_u8(244, 204, 77),
-                "Missing Artist Art".to_string(),
-            );
-            add_bullet(
-                bypassed,
-                Color::from_rgb_u8(244, 204, 77),
-                "Bypassed Album".to_string(),
-            );
-            add_bullet(
-                (missing_album_art || unprocessed) && !stale_unprocessed,
-                Color::from_rgb_u8(255, 82, 104),
-                if missing_album_art {
+                "missing_art",
+                !has_artist_art || missing_album_art || bypassed,
+                if !has_artist_art {
+                    "Missing Artist Art"
+                } else if missing_album_art {
                     "Missing Album Art"
                 } else {
-                    "Unprocessed Album"
+                    "Bypassed Album"
                 }
                 .to_string(),
             );
             add_bullet(
+                "incomplete_tracks",
                 !stale_unprocessed
                     && (incomplete
                         || (fallback
                             && fallback_progress.is_some_and(|(done, total)| done < total))),
-                Color::from_rgb_u8(255, 82, 104),
                 if fallback {
                     "Selected Artist's COMP tracks incomplete"
                 } else {
@@ -21960,24 +22584,24 @@ fn artist_overview_ui_model_with_show_all(
                 .to_string(),
             );
             add_bullet(
+                "processed",
                 processed && !fully_complete,
-                Color::from_rgb_u8(239, 165, 78),
                 "Processed Album".to_string(),
             );
             add_bullet(
-                complete_art || fallback_complete,
-                Color::from_rgb_u8(50, 221, 160),
-                if fallback_complete {
+                "tracks_complete",
+                fully_complete,
+                if fallback {
                     "Selected Artist's COMP tracks complete"
                 } else {
-                    "Completed Artist & Album Art"
+                    "Album tracks complete"
                 }
                 .to_string(),
             );
             if let Some(check) = embedded_check {
                 add_bullet(
+                    "embedding_issues",
                     check.needs_attention(),
-                    Color::from_rgb_u8(124, 77, 255),
                     format!(
                         "Check Embedded · {} missing, {} wrong size; preference {} × {}",
                         check.missing,
@@ -21989,8 +22613,8 @@ fn artist_overview_ui_model_with_show_all(
             }
             let (has_webp, needs_still) = canonical_webp_status(snapshot);
             add_bullet(
+                "animated_webp",
                 has_webp,
-                Color::from_rgb_u8(52, 120, 255),
                 if needs_still {
                     "cover.webp preserved · WRITE Cover to create cover.jpg and embed a still"
                 } else {
@@ -21999,29 +22623,41 @@ fn artist_overview_ui_model_with_show_all(
                 .to_string(),
             );
             add_bullet(
+                "opposing_override",
                 overridden,
-                Color::from_rgb_u8(107, 115, 123),
                 "Opposing Album override".to_string(),
             );
-            let artwork_path = artist_album_card_artwork_path(state, snapshot);
-            let artwork = load_album_card_image(&artwork_path, 192, overridden);
-            let state_key = if overridden {
-                "Overridden"
-            } else if bypassed {
-                "Bypassed"
-            } else if check_embedded
-                || album.state == splined_core::application::AlbumState::TimeoutActive
+            let mut classification_conditions = Vec::new();
+            if !has_artist_art || missing_album_art || bypassed {
+                classification_conditions.push("missing_art");
+            }
+            if check_embedded || album.state == AlbumState::TimeoutActive {
+                classification_conditions.push("embedding_issues");
+            }
+            if incomplete
+                || (fallback && fallback_progress.is_some_and(|(done, total)| done < total))
             {
-                "Embedding Review"
-            } else if fully_complete {
-                "Albums Complete"
-            } else if processed || validating {
-                "Processed"
-            } else if incomplete || missing_album_art {
-                "Incomplete"
-            } else {
-                "Unprocessed"
-            };
+                classification_conditions.push("incomplete_tracks");
+            }
+            if overridden {
+                classification_conditions.push("opposing_override");
+            }
+            if fully_complete {
+                classification_conditions.push("tracks_complete");
+            }
+            if processed || validating {
+                classification_conditions.push("processed");
+            }
+            let classification = classify_album(&classification_conditions);
+            let artwork_path = artist_album_card_artwork_path(state, snapshot);
+            let artwork = load_album_card_image(
+                &artwork_path,
+                192,
+                overridden
+                    && media_state_policy()
+                        .override_presentation
+                        .grayscale_thumbnail,
+            );
             UiArtistAlbumRow {
                 key: SharedString::from(snapshot.album_key.clone()),
                 title: SharedString::from(snapshot.title.clone()),
@@ -22029,14 +22665,8 @@ fn artist_overview_ui_model_with_show_all(
                 year: SharedString::from(snapshot.release_year.clone()),
                 has_artwork: artwork.size().width > 0,
                 artwork,
-                status_color: if fully_complete {
-                    Color::from_rgb_u8(50, 221, 160)
-                } else if featured && fallback_complete {
-                    Color::from_rgb_u8(255, 151, 56)
-                } else {
-                    library_status_color(album.state.label())
-                },
-                state_key: state_key.into(),
+                status_color: media_policy_color(&classification.color_name),
+                state_key: media_ui_status_label(&classification.ui_status_key).into(),
                 selected: album.selected
                     && !state
                         .embed_locked_album_paths
@@ -22104,13 +22734,13 @@ fn artist_overview_legend_counts(
                 continue;
             };
             match bullet.color {
-                color if color == Color::from_rgb_u8(255, 82, 104) => counts.red_dots += 1,
-                color if color == Color::from_rgb_u8(244, 204, 77) => counts.yellow_dots += 1,
-                color if color == Color::from_rgb_u8(239, 165, 78) => counts.orange_dots += 1,
-                color if color == Color::from_rgb_u8(50, 221, 160) => counts.green_dots += 1,
-                color if color == Color::from_rgb_u8(124, 77, 255) => counts.purple_dots += 1,
-                color if color == Color::from_rgb_u8(52, 120, 255) => counts.blue_dots += 1,
-                color if color == Color::from_rgb_u8(107, 115, 123) => counts.grey_dots += 1,
+                color if color == media_policy_color("red") => counts.red_dots += 1,
+                color if color == media_policy_color("yellow") => counts.yellow_dots += 1,
+                color if color == media_policy_color("orange") => counts.orange_dots += 1,
+                color if color == media_policy_color("green") => counts.green_dots += 1,
+                color if color == media_policy_color("purple") => counts.purple_dots += 1,
+                color if color == media_policy_color("blue") => counts.blue_dots += 1,
+                color if color == media_policy_color("dark_grey") => counts.grey_dots += 1,
                 _ => {}
             }
         }
@@ -22241,20 +22871,29 @@ fn artist_overview_is_fully_complete(
 }
 
 fn library_status_color(status: &str) -> Color {
-    match status.trim().to_ascii_lowercase().as_str() {
-        "overridden" => status_filter_color(StatusFilter::Overridden),
-        "processed" => status_filter_color(StatusFilter::Processed),
-        "bypassed" => status_filter_color(StatusFilter::Bypassed),
-        "embedding review" | "partial / error" | "partial / timeout" => {
-            status_filter_color(StatusFilter::PartialTimeout)
+    let status_key = match status.trim().to_ascii_lowercase().as_str() {
+        "overridden" | "override" => "overridden",
+        "processed" => "processed",
+        "bypassed"
+        | "artist bypass"
+        | "artist contains bypass"
+        | "missing artist art"
+        | "missing artist or album art" => "bypassed",
+        "embedding review"
+        | "embedding issues exist"
+        | "partial"
+        | "partial / error"
+        | "partial / timeout" => "partial",
+        "incomplete" | "incomplete / error" | "incomplete album tracks" => "incomplete",
+        "albums complete" | "album complete" | "artist complete" | "albumscomplete" => {
+            "albumsComplete"
         }
-        "incomplete" => status_filter_color(StatusFilter::Incomplete),
-        "albums complete" | "album complete" | "artist complete" => {
-            status_filter_color(StatusFilter::ArtistComplete)
-        }
-        "artist bypass" | "artist contains bypass" => status_filter_color(StatusFilter::Bypassed),
-        _ => status_filter_color(StatusFilter::Unprocessed),
-    }
+        "unprocessed" => "unprocessed",
+        _ => "unprocessed",
+    };
+    let [red, green, blue] =
+        rgb_from_hex(&splined_core::media_state_policy::status_color(status_key));
+    Color::from_rgb_u8(red, green, blue)
 }
 
 fn artist_is_secondary_credit(track_artist: &str, selected_artist: &str) -> bool {
@@ -24173,16 +24812,28 @@ fn candidate_filter_row(
 }
 
 fn status_filter_color(filter: StatusFilter) -> Color {
-    let (red, green, blue) = match filter {
-        StatusFilter::All | StatusFilter::Unprocessed => (238, 248, 255),
-        StatusFilter::Processed => (239, 165, 78),
-        StatusFilter::Bypassed => (244, 204, 77),
-        StatusFilter::PartialTimeout => (181, 92, 228),
-        StatusFilter::Incomplete => (255, 82, 104),
-        StatusFilter::Overridden => (107, 115, 123),
-        StatusFilter::ArtistComplete => (76, 217, 137),
+    let key = match filter {
+        StatusFilter::All => "all",
+        StatusFilter::Unprocessed => "unprocessed",
+        StatusFilter::Processed => "processed",
+        StatusFilter::Bypassed => "bypassed",
+        StatusFilter::PartialTimeout => "partial",
+        StatusFilter::Incomplete => "incomplete",
+        StatusFilter::Overridden => "overridden",
+        StatusFilter::ArtistComplete => "albumsComplete",
     };
+    let [red, green, blue] = rgb_from_hex(&media_status_color(key));
     Color::from_rgb_u8(red, green, blue)
+}
+
+fn set_media_state_policy_palette(ui: &AppWindow) {
+    ui.set_media_state_red(media_policy_color("red"));
+    ui.set_media_state_yellow(media_policy_color("yellow"));
+    ui.set_media_state_orange(media_policy_color("orange"));
+    ui.set_media_state_purple(media_policy_color("purple"));
+    ui.set_media_state_dark_grey(media_policy_color("dark_grey"));
+    ui.set_media_state_green(media_policy_color("green"));
+    ui.set_media_state_blue(media_policy_color("blue"));
 }
 
 fn adjustment_row(state: &ApplicationState, name: &str, value: i32, unit: &str) -> UiAdjustmentRow {
@@ -25233,6 +25884,7 @@ mod tests {
         current.scan.temporary_cache_dir = r"E:\SPLINED\temp".to_string();
         current.scan.log_dir = r"E:\SPLINED\logs".to_string();
         current.scan.sqlite_shared = true;
+        current.scan.postgres_coordination = true;
         current.scan.windows_client_lock = true;
         current.credentials.credential_dir = r"E:\SPLINED\credentials".to_string();
         current.output.file_name = "custom-cover".to_string();
@@ -25248,6 +25900,7 @@ mod tests {
         );
         assert_eq!(reset.scan.log_dir, current.scan.log_dir);
         assert!(reset.scan.sqlite_shared);
+        assert!(reset.scan.postgres_coordination);
         assert!(reset.scan.windows_client_lock);
         assert_eq!(reset.credentials, current.credentials);
     }
@@ -26116,7 +26769,7 @@ mod tests {
     }
 
     #[test]
-    fn opposing_write_replaces_stale_unprocessed_red_dot() {
+    fn opposing_write_replaces_white_unprocessed_state_without_a_red_dot() {
         let snapshot = MediaSnapshot {
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: "splined.db".to_string(),
@@ -26162,12 +26815,7 @@ mod tests {
         let normal = artist_overview_ui_model(&app).row_data(0).unwrap();
         assert!(!normal.overridden);
         assert_eq!(normal.state_key, "Unprocessed");
-        assert!((0..normal.bullets.row_count()).any(|index| {
-            normal
-                .bullets
-                .row_data(index)
-                .is_some_and(|bullet| bullet.tip == "Unprocessed Album")
-        }));
+        assert_eq!(normal.bullets.row_count(), 0);
 
         app.album_override_writers
             .insert("arrival".to_string(), "webgui".to_string());
@@ -26186,7 +26834,7 @@ mod tests {
             .filter_map(|index| library_model.row_data(index))
             .find(|row| row.kind == "album-child")
             .expect("expanded Artist exposes its Album row");
-        assert_eq!(child.status, "Overridden");
+        assert_eq!(child.status, "overridden");
         assert_eq!(child.status_color, Color::from_rgb_u8(107, 115, 123));
         let filters = super::status_filter_ui_rows(&app);
         assert_eq!(

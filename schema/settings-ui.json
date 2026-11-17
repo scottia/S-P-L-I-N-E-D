@@ -148,6 +148,7 @@
         {"path": "logging.retention_days", "label": "Log Retention (Days)", "type": "integer", "min": 0, "runtimes": ["windows", "webgui"]},
         {"path": "logging.database_audit", "label": "Database Audit Log", "type": "boolean", "advanced": true, "runtimes": ["webgui"]},
         {"path": "scan.sqlite_shared", "label": "Shared / Network SQLite", "type": "boolean", "advanced": true, "runtimes": ["windows"]},
+        {"path": "scan.postgres_coordination", "label": "Coordinate with WebGUI PostgreSQL", "type": "boolean", "advanced": true, "runtimes": ["windows"]},
         {"path": "scan.windows_client_lock", "label": "Use extra .client-lock for shared SQLite", "type": "boolean", "advanced": true, "runtimes": ["windows"]}
       ]
     },

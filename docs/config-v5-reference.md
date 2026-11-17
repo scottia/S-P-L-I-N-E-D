@@ -56,8 +56,14 @@ mounts.
   bounded enlargement policy.
 - **Artwork Sources**: provider order, exclusions, and selected-provider policy.
 - **Connections**: provider credentials and connection tests.
+  With Advanced enabled, this section also edits and validates the shared
+  [Artist & Album state policy](media-state-classification-policy.md). WebGUI
+  stores the authority in PostgreSQL; coordinated Windows keeps a validated
+  local JSON mirror. The policy remains separate from Config v5 so rules can
+  change without recompiling an app.
 - **Backup & Recovery**: secret-free settings/reference export and catalog
-  maintenance controls.
+  maintenance controls. Safe Settings JSON and the Shared Settings Contract
+  both include the active media-state policy.
 - **Processing & Logs**: processing mode, completion history, Log Directory,
   diagnostic level, retention, and bounded WebGUI events.
 
@@ -103,6 +109,7 @@ under their credited Artists (the Rob rule), without manufacturing synthetic
 | `temporary_cache_dir` | WebGUI `"/_cache/_tmp"`; Windows `"_cache"` | **Temporary Cache Directory** for disposable previews, downloaded candidates, uploads, and COMP work; an older Config v5 file that omits it falls back to `cache_dir` |
 | `shared_artist_art_dir` | empty | **V/A / OST Artist Images Directory** for shared Soundtrack or Various Artists portrait/banner files; blank uses Persistent Cache Directory itself, while any other persistent server-visible directory or preferred folder name may be selected |
 | `sqlite_shared` | `false` | Opt in when one physical `splined.db` is opened through multiple OS/filesystem views; native-client shared-file behavior; WebGUI uses PostgreSQL instead |
+| `postgres_coordination` | `false` | Windows-only explicit opt in to the tested `album-coordination.json` PostgreSQL connection; inactive unless `sqlite_shared` is also true |
 | `windows_client_lock` | `false` | Windows-only optional `.client-lock` coordination for shared SQLite. Has no effect unless `sqlite_shared` is true; older Config v5 files default to off |
 | `log_dir` | `"/_logs"` in WebGUI | **Log Directory**, edited under **Processing & Logs → Logging** |
 
@@ -306,7 +313,10 @@ credential_dir = "credentials"
 ```
 
 This is the only normal credential setting. Standard provider JSON filenames
-are resolved internally. API keys, OAuth tokens, shared secrets, and provider
+are resolved internally. A shared SQLite installation can also store the
+non-secret `media-state-classification.json` policy in this directory. A
+standalone Windows SQLite installation uses the built-in policy and creates no
+external policy JSON. API keys, OAuth tokens, shared secrets, and provider
 filenames do not belong in `config.toml`.
 
 WebGUI Settings labels this path **Provider Credential Directory**. It must be

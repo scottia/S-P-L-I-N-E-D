@@ -8,6 +8,7 @@ use crate::config::Config;
 use crate::credentials::{
     DiscogsCredential, FANARTTV_API_VERSION, FanartTvCredential, LastFmCredential,
 };
+use crate::media_state_policy::{PostgresPolicySnapshot, fetch_postgres_policy};
 use crate::override_coordination::connect_pool;
 use crate::safe_write::replace_text_file;
 use crate::source::navidrome::{self, NavidromeCredential};
@@ -281,26 +282,11 @@ pub async fn test_editor(editor: &CredentialEditor) -> Result<String, String> {
             navidrome::test_credential(&credential).await
         }
         ALBUM_COORDINATION_PROVIDER => {
-            let database_url = album_coordination_database_url(editor)?;
-            let pool = connect_pool(&database_url).await?;
-            sqlx::query_scalar::<_, i32>("SELECT 1")
-                .fetch_one(&pool)
-                .await
-                .map_err(|error| format!("Album coordination PostgreSQL test failed: {error}"))?;
-            let coordination_table = sqlx::query_scalar::<_, Option<String>>(
-                "SELECT to_regclass('album_artwork_write_coordination')::text",
-            )
-            .fetch_one(&pool)
-            .await
-            .map_err(|error| format!("Album coordination schema test failed: {error}"))?;
-            pool.close().await;
-            if coordination_table.is_none() {
-                return Err(
-                    "Album Coordination migration is not present in this PostgreSQL database."
-                        .to_string(),
-                );
-            }
-            Ok("Connected to Album Coordination PostgreSQL.".to_string())
+            let snapshot = test_album_coordination_policy(editor).await?;
+            Ok(format!(
+                "Connected to Album Coordination PostgreSQL · media-state policy revision {}.",
+                snapshot.revision
+            ))
         }
         provider => {
             validate_editor_locally(editor)?;
@@ -309,6 +295,35 @@ pub async fn test_editor(editor: &CredentialEditor) -> Result<String, String> {
             ))
         }
     }
+}
+
+pub async fn test_album_coordination_policy(
+    editor: &CredentialEditor,
+) -> Result<PostgresPolicySnapshot, String> {
+    let database_url = album_coordination_database_url(editor)?;
+    let pool = connect_pool(&database_url).await?;
+    let result = async {
+        sqlx::query_scalar::<_, i32>("SELECT 1")
+            .fetch_one(&pool)
+            .await
+            .map_err(|error| format!("Album coordination PostgreSQL test failed: {error}"))?;
+        let coordination_table = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT to_regclass('album_artwork_write_coordination')::text",
+        )
+        .fetch_one(&pool)
+        .await
+        .map_err(|error| format!("Album coordination schema test failed: {error}"))?;
+        if coordination_table.is_none() {
+            return Err(
+                "Album Coordination migration is not present in this PostgreSQL database."
+                    .to_string(),
+            );
+        }
+        fetch_postgres_policy(&pool).await
+    }
+    .await;
+    pool.close().await;
+    result
 }
 
 pub fn validate_editor_locally(editor: &CredentialEditor) -> Result<(), String> {
@@ -357,7 +372,7 @@ pub fn load_album_coordination_database_url(config: &Config) -> Result<Option<St
         .map(Some)
 }
 
-fn album_coordination_database_url(editor: &CredentialEditor) -> Result<String, String> {
+pub fn album_coordination_database_url(editor: &CredentialEditor) -> Result<String, String> {
     let mut url = Url::parse(editor.server_url.trim())
         .map_err(|_| "Album Coordination requires a valid postgresql:// server URL.".to_string())?;
     if !matches!(url.scheme(), "postgres" | "postgresql") {

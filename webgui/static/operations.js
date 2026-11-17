@@ -46,7 +46,54 @@ function dialog(title, kind = "") {
 }
 async function sessionStatus() {
   const status = await api("/api/status"); state.csrf = status.csrf; state.server = status;
+  state.mediaStatePolicy = status.media_state_policy || null;
+  applyMediaStatePolicyPalette();
+  applyDatabaseMonitor(status.database_monitor);
   state.compRepairEnabled = !!status.comp_repair; return status;
+}
+function applyDatabaseMonitor(monitor = null) {
+  const resolved = monitor || {backend: "current", health: "current", text: "Current", description: "Standalone database", color: "#32dda0"};
+  state.databaseMonitor = resolved;
+  const badge = $("selectedQuality");
+  if (!badge) return;
+  badge.textContent = resolved.text || "Current";
+  badge.title = resolved.description || "Database status";
+  badge.dataset.backend = resolved.backend || "current";
+  badge.dataset.health = resolved.health || "current";
+  badge.style.setProperty("--database-monitor-color", resolved.color || "#32dda0");
+  badge.classList.add("database-monitor");
+  badge.classList.toggle("database-monitor-refreshable", ["available", "broken"].includes(resolved.health));
+  badge.classList.remove("comp-thumb-ready");
+  scheduleDatabaseMonitorPoll();
+}
+async function refreshDatabaseMonitor() {
+  if (!["available", "broken"].includes(state.databaseMonitor?.health)) return;
+  const status = await api("/api/status?refresh_database_monitor=1");
+  state.server = {...(state.server || {}), ...status};
+  applyDatabaseMonitor(status.database_monitor);
+}
+let databaseMonitorTimer = null;
+let databaseMonitorPollMilliseconds = 0;
+let databaseMonitorClickBound = false;
+function scheduleDatabaseMonitorPoll() {
+  const pollMilliseconds = Number(state.databaseMonitor?.poll_seconds) * 1000;
+  if (!Number.isFinite(pollMilliseconds) || pollMilliseconds <= 0) return;
+  if (!databaseMonitorClickBound) {
+    $("selectedQuality")?.addEventListener("click", () => runAction(refreshDatabaseMonitor));
+    databaseMonitorClickBound = true;
+  }
+  if (databaseMonitorTimer !== null && databaseMonitorPollMilliseconds === pollMilliseconds) return;
+  if (databaseMonitorTimer !== null) window.clearInterval(databaseMonitorTimer);
+  databaseMonitorPollMilliseconds = pollMilliseconds;
+  databaseMonitorTimer = window.setInterval(async () => {
+    try {
+      const status = await api("/api/status");
+      state.server = {...(state.server || {}), ...status};
+      applyDatabaseMonitor(status.database_monitor);
+    } catch (_error) {
+      applyDatabaseMonitor({backend: "postgres", health: "broken", text: "Postgres", description: "Connection broken", color: "#ff5268"});
+    }
+  }, pollMilliseconds);
 }
 async function initialize() {
   const status = await sessionStatus();
@@ -65,6 +112,7 @@ async function initialize() {
   state.artistSourceEnabled = Array.from(ARTIST_IMAGE_SOURCES).filter(key => artistSourceConfigured(key));
   state.enabledSources = state.sourceOrder.filter(key=>!settings.config.sources?.exclude_cover_sources?.includes(key) && settings.config.source_policies?.[key]?.enabled!==false);
   renderAll();
+  scheduleDatabaseMonitorPoll();
   // The workspace is display:none until authentication succeeds.  Restore
   // saved panel dimensions only after it has measurable width and height.
   requestAnimationFrame(() => { restoreLayout(); fitReviewToViewport(); });
@@ -1862,6 +1910,38 @@ async function renderConnectionSettings(host, initialProvider) {
   }
   select.addEventListener("change", () => load(select.value)); await load(initialProvider);
 }
+async function renderMediaStatePolicyEditor(host) {
+  const panel = node("section", "media-state-policy-editor");
+  panel.append(
+    node("h4", "settings-group-heading", "Artist & Album State Policy · JSON"),
+    node("p", "settings-subcopy", "PostgreSQL runtime authority for Artist-name rankings, independent Album-name/status rules, database-monitor presentation, colors, and opposing-app override presentation. Coordinated Windows uses a validated local mirror of this revision."),
+  );
+  const link = node("a", "guide-link", "State policy reference");
+  link.href = "https://github.com/scottia/S-P-L-I-N-E-D/blob/main/docs/media-state-classification-policy.md";
+  link.target = "_blank"; link.rel = "noopener"; panel.append(link);
+  const editor = node("textarea", "media-state-policy-json");
+  editor.spellcheck = false; editor.setAttribute("aria-label", "Artist and Album state policy JSON");
+  editor.placeholder = "Loading the PostgreSQL media-state policy…"; panel.append(editor);
+  const status = node("p", "settings-subcopy", "Loading active policy…");
+  const actions = node("div", "connection-actions"), reload = node("button", "operation-button", "Reload"), save = node("button", "operation-button", "Validate & Save Policy");
+  reload.type = save.type = "button"; actions.append(reload, save); panel.append(actions, status); host.append(panel);
+  const loadPolicy = async () => {
+    const value = await api("/api/settings/media-state-policy");
+    editor.value = JSON.stringify(value, null, 2) + "\n";
+    status.textContent = `${value.policy_id || "SPLINED policy"} · schema ${value.schema_version}`;
+  };
+  reload.addEventListener("click", () => runAction(loadPolicy));
+  save.addEventListener("click", () => runAction(async () => {
+    const value = JSON.parse(editor.value);
+    const saved = await post("/api/settings/media-state-policy", {policy: value});
+    state.mediaStatePolicy = saved;
+    applyMediaStatePolicyPalette();
+    editor.value = JSON.stringify(saved, null, 2) + "\n";
+    status.textContent = `${saved.policy_id} validated and active`;
+    renderAll(); setStatus("Artist & Album state policy validated and saved");
+  }));
+  try { await loadPolicy(); } catch (error) { status.className = "operation-error"; status.textContent = error.message; }
+}
 function downloadJsonFile(name, value) {
   const blob = new Blob([JSON.stringify(value, null, 2) + "\n"], {type: "application/json"});
   const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = name; link.click(); URL.revokeObjectURL(link.href);
@@ -1972,9 +2052,9 @@ function renderCatalogMaintenance(host, advanced = false) {
 }
 function renderBackupSettings(host, saved, contract, onRestored, advanced = false) {
   const layout = node("div", "backup-layout"), backup = node("section", "backup-column"), restore = node("section", "backup-column");
-  backup.append(node("h4", "", "↑ Backup"), node("p", "settings-subcopy", "WebGUI exports its safe Config v5 settings and interface palette. Provider secrets and PostgreSQL data are deliberately excluded."));
-  const contents = node("div", "archive-contents"); for (const label of ["Config V5 Settings", "Interface Settings", "Shared UI Contract"]) contents.append(node("span", "", "●  " + label)); backup.append(contents);
-  const safe = node("button", "operation-button full-action", "Back Up Safe Settings JSON"); safe.type = "button"; safe.addEventListener("click", () => downloadJsonFile("splined-settings-safe.json", saved.config));
+  backup.append(node("h4", "", "↑ Backup"), node("p", "settings-subcopy", "WebGUI exports its safe Config v5 settings, interface palette, and editable media-state classification policy. Provider secrets and PostgreSQL data are deliberately excluded."));
+  const contents = node("div", "archive-contents"); for (const label of ["Config V5 Settings", "Interface Settings", "Media State Classification Policy", "Shared UI Contract"]) contents.append(node("span", "", "●  " + label)); backup.append(contents);
+  const safe = node("button", "operation-button full-action", "Back Up Safe Settings JSON"); safe.type = "button"; safe.addEventListener("click", () => downloadJsonFile("splined-settings-safe.json", {config: saved.config, media_state_policy: state.mediaStatePolicy || contract.media_state_policy}));
   const shared = node("button", "operation-button full-action", "Download Shared Settings Contract"); shared.type = "button"; shared.addEventListener("click", () => downloadJsonFile("splined-settings-ui.json", contract));
   const backupActions = node("div", "backup-actions"); backupActions.append(safe, shared); backup.append(backupActions);
   settingsHelp(backup, "Will this preserve sliders, panes, and banner colors?", "Banner colors, frame colors, enhancement presets, and other WebGUI settings are included. Browser pane sizes remain device-local. Provider credentials remain in the credential volume and are not downloaded.");
@@ -1986,7 +2066,15 @@ function renderBackupSettings(host, saved, contract, onRestored, advanced = fals
     if (!file.files?.length) throw new Error("Choose a safe settings JSON file first");
     const value = JSON.parse(await file.files[0].text());
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("The selected file is not a SPLINED settings object");
-    const restored = await post("/api/settings", {config: value}); applyGraphicalEnhancement(restored.config.webgui_ui?.enhancement); setStatus("Safe WebGUI settings restored"); await onRestored(restored);
+    const config = value.config && typeof value.config === "object" && !Array.isArray(value.config) ? value.config : value;
+    const restored = await post("/api/settings", {config});
+    if (value.media_state_policy) {
+      state.mediaStatePolicy = await post("/api/settings/media-state-policy", {policy: value.media_state_policy});
+      applyMediaStatePolicyPalette();
+    }
+    applyGraphicalEnhancement(restored.config.webgui_ui?.enhancement);
+    setStatus(value.media_state_policy ? "Safe WebGUI settings and media-state policy restored" : "Safe WebGUI settings restored");
+    await onRestored(restored);
   })); restoreActions.append(button); restore.append(restoreActions);
   settingsHelp(restore, "Can I restore a Windows .spl file here?", "No. Windows .spl archives can contain Windows-only SQLite and interface state. Use the WebGUI safe JSON here, and restore PostgreSQL with PostgreSQL tools.");
   renderCatalogMaintenance(restore, advanced);
@@ -2083,9 +2171,6 @@ async function openSettings() {
   function addSpecialSection(section, fields) {
     if (section.id === "enhancement") renderGraphicalEnhancement(fields, draft, () => renderSection(active, true));
     if (section.id === "sources") renderSourceOrderSettings(fields, draft, sourceProvider, value => sourceProvider = value, () => renderSection(active, true));
-    if (section.id === "connections") {
-      void renderConnectionSettings(fields, credentialProvider);
-    }
     if (section.id === "backup") {
       renderBackupSettings(fields, saved, contract, async restored => { saved = restored; await sessionStatus(); renderAll(); renderSection("backup"); }, advanced);
     }
@@ -2117,7 +2202,7 @@ async function openSettings() {
     draft.library ||= {};
     for (const key of ["various_artist_path", "soundtracks_path", "curated_compilations_path"])
       draft.library[key] ||= draft.library.music_library || "";
-    draft.scan ||= {}; draft.scan.shared_artist_art_dir ??= ""; draft.scan.temporary_cache_dir ??= draft.scan.cache_dir || ""; draft.scan.artist_separator_regex ??= DEFAULT_ARTIST_SEPARATOR_REGEX; draft.scan.artist_separator_profile ??= "Navidrome default"; delete draft.scan.sqlite_shared; delete draft.scan.windows_client_lock;
+    draft.scan ||= {}; draft.scan.shared_artist_art_dir ??= ""; draft.scan.temporary_cache_dir ??= draft.scan.cache_dir || ""; draft.scan.artist_separator_regex ??= DEFAULT_ARTIST_SEPARATOR_REGEX; draft.scan.artist_separator_profile ??= "Navidrome default"; delete draft.scan.sqlite_shared; delete draft.scan.postgres_coordination; delete draft.scan.windows_client_lock;
     draft.samples ||= {}; draft.aisplined ||= {};
     const section = available.find(item => item.id === id); clear(content); renderNav();
     const header = node("header", "settings-content-header"), copy = node("div");
@@ -2136,6 +2221,11 @@ async function openSettings() {
       const groupFor = path => section.id === "library" ? (["library.music_library", "library.various_artist_path", "library.soundtracks_path", "library.curated_compilations_path", "scan.scan_mode", "scan.scan_library_dir"].includes(path) ? "Library And Application Paths" : path.startsWith("scan.artist_separator_") || path.startsWith("scan.index_") ? "Library Index" : path === "database.url" ? "Database" : "Persistent Folders")
         : section.id === "artwork" ? (path.startsWith("output.") ? "Output Files" : path === "scan.shared_artist_art_dir" ? "V/A / OST Artist Images Directory" : "Sample Images")
         : section.id === "enhancement" ? "Resolution Range" : "";
+      if (section.id === "connections") {
+        void renderConnectionSettings(fields, credentialProvider);
+        if (advanced) void renderMediaStatePolicyEditor(fields);
+        fields.append(node("h4", "settings-group-heading future-scope-heading", "Optional / Future Scope"));
+      }
       for (const descriptor of section.fields || []) {
         if (descriptor.runtimes && !descriptor.runtimes.includes("webgui") || descriptor.advanced && !advanced) continue;
         const group = groupFor(descriptor.path);

@@ -86,13 +86,16 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                 )
                 db.execute(
                     "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,"
-                    "compilation INTEGER,musicbrainz_albumid TEXT)"
+                    "path TEXT,compilation INTEGER,musicbrainz_albumid TEXT)"
                 )
                 db.execute(
                     "INSERT INTO artists VALUES ('artist-1','Artist','',?,'unprocessed')",
                     (str(root / "Artist"),),
                 )
-                db.execute("INSERT INTO albums VALUES ('album-1','artist-1',0,'')")
+                db.execute(
+                    "INSERT INTO albums VALUES ('album-1','artist-1',?,0,'')",
+                    (str(root / "Artist" / "Album"),),
+                )
                 db.commit()
             app = PreviewApp(root, database, root, root)
             with mock.patch.object(
@@ -103,6 +106,39 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                 self.assertEqual(
                     app.artists("")[0]["portrait"],
                     "/api/artist/thumbnail?id=artist-1",
+                )
+
+    def test_lazy_thumbnail_result_reports_missing_artist_art(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "index.sqlite"
+            with closing(connect(database)) as db:
+                db.execute(
+                    "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,"
+                    "musicbrainz_artistid TEXT,primary_path TEXT,status TEXT)"
+                )
+                db.execute(
+                    "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,"
+                    "path TEXT,compilation INTEGER,musicbrainz_albumid TEXT)"
+                )
+                db.execute(
+                    "INSERT INTO artists VALUES ('artist-1','Artist','',?,'unprocessed')",
+                    (str(root / "Artist"),),
+                )
+                db.execute(
+                    "INSERT INTO albums VALUES ('album-1','artist-1',?,0,'')",
+                    (str(root / "Artist" / "Album"),),
+                )
+                db.commit()
+            app = PreviewApp(root, database, root, root)
+            with mock.patch.object(app, "_navidrome_artists_by_name", return_value={}):
+                self.assertEqual(
+                    app.artist_thumbnails(),
+                    [{
+                        "id": "artist-1",
+                        "portrait": "",
+                        "missing_artist_art": True,
+                    }],
                 )
 
     def test_musicbrainz_identity_is_canonical_when_name_only_duplicate_is_larger(self):
@@ -180,10 +216,10 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
 
             app = PreviewApp(root, database, root, root)
             listed = app.artists("")[0]
-            self.assertEqual(listed["status"], "complete")
+            self.assertEqual(listed["status"], "overridden")
             self.assertEqual(listed["albums"], 2)
             detail = app.artist("band")
-            self.assertEqual(detail["status"], "complete")
+            self.assertEqual(detail["status"], "overridden")
             self.assertEqual(
                 next(item for item in detail["albums"] if item["id"] == "windows-grey")["override_writer"],
                 "windows",
@@ -240,7 +276,7 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                 [item["id"] for item in artist["albums"]],
                 ["30", "billboard"],
             )
-            self.assertEqual(artist["status"], "partial")
+            self.assertEqual(artist["status"], "incomplete")
             self.assertEqual(set(artist["top_tracks"]), {"Easy on Me", "Unrelated"})
 
             with mock.patch.object(
@@ -301,7 +337,14 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             app = PreviewApp(root, database, root, credentials, cache=root / "cache")
             self.assertEqual([item["name"] for item in app.artists("")], ["Adele"])
             with mock.patch.object(app, "_navidrome_artists_by_name", return_value={}):
-                self.assertEqual(app.artist_thumbnails(), [])
+                self.assertEqual(
+                    app.artist_thumbnails(),
+                    [{
+                        "id": "adele",
+                        "portrait": "",
+                        "missing_artist_art": True,
+                    }],
+                )
 
     def test_persisted_artist_aggregate_excludes_unidentified_comp_fallback(self):
         with closing(connect(":memory:")) as db:

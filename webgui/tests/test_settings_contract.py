@@ -153,6 +153,21 @@ class SettingsContractTests(unittest.TestCase):
         for key in ("compiled", "featuring", "soundtrack", "various", "artist"):
             self.assertIn(f"{key}: {{name:", app)
 
+    def test_connections_order_and_database_monitor_contract(self) -> None:
+        operations = (REPOSITORY / "webgui/static/operations.js").read_text(
+            encoding="utf-8"
+        )
+        server = (REPOSITORY / "webgui/server.py").read_text(encoding="utf-8")
+        credentials = operations.index("renderConnectionSettings(fields")
+        policy = operations.index("renderMediaStatePolicyEditor(fields")
+        future = operations.index('"Optional / Future Scope"')
+        self.assertLess(credentials, policy)
+        self.assertLess(policy, future)
+        self.assertIn("database-monitor-refreshable", operations)
+        self.assertIn("refresh_database_monitor=1", operations)
+        self.assertIn("state.databaseMonitor?.poll_seconds", operations)
+        self.assertIn("now - self._database_monitor_checked_at < poll_seconds", server)
+
     def test_webgui_persists_navidrome_in_artwork_source_order(self) -> None:
         app = (REPOSITORY / "webgui/static/app.js").read_text(encoding="utf-8")
         operations = (REPOSITORY / "webgui/static/operations.js").read_text(
