@@ -5636,8 +5636,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     expect(artwork_info).to_contain_text("Upscale Preview")
                     expect(artwork_info).to_contain_text("Enhancement")
                     expect(page.locator("#writeNotice")).to_be_hidden()
-                    expect(page.locator("#selectedQuality")).to_have_text(
-                        "Thumb Ready"
+                    expect(page.locator("#selectedQuality")).to_have_text("Postgres")
+                    expect(page.locator("#selectedQuality")).to_have_attribute(
+                        "data-health", "good"
                     )
                     self.assertEqual(
                         embedded_track_artwork_bytes(target), initial_target_art
