@@ -7552,6 +7552,28 @@ fn resolved_setup_directory(value: &str) -> PathBuf {
 fn database_monitor_for_config(
     config: &Config,
 ) -> splined_core::media_state_policy::DatabaseMonitorPresentation {
+    match database_monitor_backend(config) {
+        "current" => database_monitor_presentation("current", "current"),
+        "postgres" => {
+            database_monitor_presentation("postgres", postgres_database_monitor_health(config))
+        }
+        _ => sqlite_database_monitor_for_config(config),
+    }
+}
+
+fn database_monitor_backend(config: &Config) -> &'static str {
+    if !config.scan.sqlite_shared {
+        "current"
+    } else if config.scan.postgres_coordination {
+        "postgres"
+    } else {
+        "sqlite"
+    }
+}
+
+fn sqlite_database_monitor_for_config(
+    config: &Config,
+) -> splined_core::media_state_policy::DatabaseMonitorPresentation {
     if !config.scan.sqlite_shared {
         return database_monitor_presentation("current", "current");
     }
@@ -7570,6 +7592,30 @@ fn database_monitor_for_config(
     .map(|_| "good")
     .unwrap_or("broken");
     database_monitor_presentation("sqlite", health)
+}
+
+fn postgres_database_monitor_health(config: &Config) -> &'static str {
+    let url = match coordination_database_url(config) {
+        Ok(Some(url)) => url,
+        Ok(None) | Err(_) => return "available",
+    };
+    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return "broken";
+    };
+    let result: Result<(), String> = runtime.block_on(async move {
+        let pool = connect_pool(&url).await?;
+        let query = sqlx::query_scalar::<_, i32>("SELECT 1")
+            .fetch_one(&pool)
+            .await
+            .map(|_| ())
+            .map_err(|error| format!("PostgreSQL monitor check failed: {error}"));
+        pool.close().await;
+        query
+    });
+    if result.is_ok() { "good" } else { "broken" }
 }
 
 fn apply_database_monitor_ui(
@@ -30312,6 +30358,24 @@ mod tests {
         assert_ne!(first.1, first.2);
         let synced = super::banner_harmony("#D8A321", 43, false, true);
         assert_eq!(synced.1, synced.2);
+    }
+
+    #[test]
+    fn database_monitor_uses_postgres_for_coordinated_shared_sqlite() {
+        let mut config = Config::default();
+        config.scan.sqlite_shared = true;
+        config.scan.postgres_coordination = true;
+
+        assert_eq!(super::database_monitor_backend(&config), "postgres");
+    }
+
+    #[test]
+    fn database_monitor_keeps_standalone_and_sqlite_only_modes_distinct() {
+        let mut config = Config::default();
+        assert_eq!(super::database_monitor_backend(&config), "current");
+
+        config.scan.sqlite_shared = true;
+        assert_eq!(super::database_monitor_backend(&config), "sqlite");
     }
 }
 
