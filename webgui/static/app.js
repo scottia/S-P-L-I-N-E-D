@@ -301,6 +301,10 @@ function libraryThumbnail(src, className, alt, eager = false) {
   if (eager || !String(src).startsWith("/api/artist/thumbnail")) return image(src, className, alt, eager);
   const element = node("img", className);
   element.alt = alt; element.loading = "lazy"; element.draggable = false;
+  element.addEventListener("error", () => {
+    if (!element.isConnected) return;
+    element.replaceWith(node("span", className, String(alt || "?").slice(0, 1).toUpperCase()));
+  }, {once: true});
   element.dataset.thumbnailSrc = src;
   observeLibraryThumbnail(element);
   return element;
@@ -2587,7 +2591,9 @@ async function loadLibrary(query = "") {
     if (request !== state.listRequest) return;
     state.libraryLoading = false;
     renderLibrary();
-    if (state.libraryMode === "artists") hydrateArtistThumbnails(request);
+    // Artist rows already carry lazy, authenticated thumbnail URLs. Resolving
+    // all Artist folders in a second bulk request defeats the viewport queue
+    // and blocks large libraries on NAS metadata I/O.
     if (state.libraryMode === "artists" && !state.artist && state.artists.length) await chooseArtist(state.artists[0].id, false);
     else setStatus(state.libraryMode === "fallback" && !state.albumsIndex.length ? "No Albums are inside the Curated Compilations path" : "Library ready · WebGUI ready");
   } catch (error) { if (request === state.listRequest) { state.libraryLoading = false; renderLibrary(); setStatus(error.message, "error"); } }

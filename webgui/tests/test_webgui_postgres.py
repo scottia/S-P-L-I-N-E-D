@@ -1722,7 +1722,10 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertFalse(client.get("/api/status").json()["admin_setup_required"])
             artists = client.get("/api/artists").json()
             self.assertEqual(artists[0]["name"], "Test Artist")
-            self.assertIsNone(artists[0]["portrait"])
+            self.assertEqual(
+                artists[0]["portrait"],
+                "/api/artist/thumbnail?id=" + artists[0]["id"],
+            )
             thumbnails = client.get("/api/artists/thumbnails").json()
             portrait = next(
                 item["portrait"]

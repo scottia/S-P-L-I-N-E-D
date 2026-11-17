@@ -1868,11 +1868,15 @@ class Catalog:
                     }
                     for album_key, status in appearance.get("statuses", {}).items()
                 )
-            # Initial catalog loading is PostgreSQL-only. Local/Navidrome
-            # artwork is hydrated by the dedicated lazy endpoint so hundreds
-            # of artist folders never block the first useful render.
-            portrait = self.portrait_cache.get(str(canonical["artist_key"]))
-            portrait_url = self.image(portrait) if portrait is not None and portrait.is_file() else None
+            # The list projection must remain PostgreSQL-only. Give the
+            # browser a stable authenticated URL without resolving the file
+            # here; its visibility queue requests only the portraits close to
+            # the viewport. Walking every Artist Art directory (and the
+            # Navidrome fallback directory) made an otherwise complete Artist
+            # list wait tens of seconds on large NAS libraries.
+            portrait_url = self.artist_thumbnail_url(
+                str(canonical["artist_key"])
+            )
             result.append({
                 "id": canonical["artist_key"],
                 "name": canonical["artist_name"],

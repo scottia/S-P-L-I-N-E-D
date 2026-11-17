@@ -2367,6 +2367,73 @@ class Services:
             )
         return count
 
+    def refresh_comp_track_baseline(self, row):
+        """Publish a COMP write without reopening every track in its Album.
+
+        Queued COMP work already verifies and reindexes each selected track at
+        the write boundary. A full Album refresh immediately afterwards used
+        to reopen every audio file in a large compilation, serializing the
+        next interactive decision behind unrelated media reads. Rebuild the
+        filesystem-change baseline from indexed stat values and the durable
+        per-track completion ledger instead.
+        """
+        album_id = str(row["album_key"])
+        with closing(self.runtime.database.connect()) as db, db:
+            tracks = list(
+                db.execute(
+                    "SELECT path,file_size,file_mtime_ns FROM tracks "
+                    "WHERE album_key=? ORDER BY path COLLATE NOCASE",
+                    (album_id,),
+                )
+            )
+            if not tracks:
+                return
+            paths = [Path(item["path"]) for item in tracks]
+            metadata = {
+                str(item["path"]): (
+                    int(item["file_size"] or 0),
+                    int(item["file_mtime_ns"] or 0),
+                )
+                for item in tracks
+            }
+            album = core.AlbumDir(Path(row["path"]), paths)
+            album.audio_metadata = metadata
+            fingerprint = _album_inventory_fingerprint(album)
+            total_size = sum(value[0] for value in metadata.values())
+            newest_mtime_ns = max(value[1] for value in metadata.values())
+            representative = paths[0]
+            representative_size, representative_mtime_ns = metadata[
+                str(representative)
+            ]
+            completed = db.execute(
+                "SELECT count(DISTINCT tracks.track_key) FROM tracks "
+                "JOIN compilation_track_artwork artwork "
+                "ON lower(artwork.track_path)=lower(tracks.path) "
+                "WHERE tracks.album_key=? AND artwork.outcome IN "
+                "('embedded-replaced','embedded-existing')",
+                (album_id,),
+            ).fetchone()[0]
+            now = tags.utc_now()
+            db.execute(
+                "UPDATE albums SET representative_file=?,representative_size=?,"
+                "representative_mtime_ns=?,track_count=?,inventory_fingerprint=?,"
+                "embedded_tracks=?,updated_at=? WHERE album_key=?",
+                (
+                    str(representative), representative_size,
+                    representative_mtime_ns, len(paths), fingerprint,
+                    int(completed or 0), now, album_id,
+                ),
+            )
+            db.raw.execute(
+                "UPDATE catalog_change_manifest SET inventory_signature=%s,"
+                "track_count=%s,total_size=%s,newest_mtime_ns=%s,updated_at=now() "
+                "WHERE album_path=%s",
+                (
+                    fingerprint, len(paths), total_size,
+                    newest_mtime_ns, str(row["path"]),
+                ),
+            )
+
     @serialized
     def validate_album_embedding(self, album_id: str) -> dict[str, object]:
         """Verify one mapped Album without converting a read failure into missing art."""
@@ -3665,7 +3732,10 @@ class Services:
         )
         artist_id = str(payload.get("artist_id", "")).strip()
         if artist_id:
-            report = self.catalog.artist_comp_report(artist_id)
+            # Validate only the Album carried by this explicit job. Rebuilding
+            # the selected Artist's complete COMP report here rechecked every
+            # track in every compilation before each queued Album could start.
+            report = self.catalog.artist_comp_report(artist_id, [album_id])
             group = next((item for item in report if item["id"] == album_id), None)
             scoped = {track["key"] for track in group["tracks"]} if group else set()
             if any(key not in scoped for key in requested):
@@ -3834,8 +3904,7 @@ class Services:
                 publish_verified_write=publish_verified_track_write,
                 musicbrainz_results_first=True,
             )
-        self.refresh_album(row["album_key"])
-        self.refresh_embedding_stats(row)
+        self.refresh_comp_track_baseline(row)
         return asdict(summary)
 
     def run_scan(self, payload, adapter):
