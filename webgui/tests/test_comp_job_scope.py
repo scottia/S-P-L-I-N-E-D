@@ -23,9 +23,11 @@ from webgui.services import Services
 
 
 class _Catalog:
-    def artist_comp_report(self, artist_id):
+    def artist_comp_report(self, artist_id, album_ids=None):
         if artist_id != "artist-1":
             raise KeyError("Artist not found")
+        if album_ids != ["comp-1"]:
+            raise AssertionError("COMP validation must remain Album-scoped")
         return [{"id": "comp-1", "tracks": [{"key": "artist-track"}]}]
 
     def artist(self, artist_id):
@@ -187,8 +189,7 @@ class CompJobScopeTests(unittest.TestCase):
                 item for item in self.services.hydrate_tracks(_album_id)
                 if item["track_key"] in keys
             ]
-            self.services.refresh_album = lambda _album_id: None
-            self.services.refresh_embedding_stats = lambda _row: None
+            self.services.refresh_comp_track_baseline = lambda _row: None
             self.services.hydrate_selected_tracks = lambda _album_id, keys: [
                 item for item in self.services.hydrate_tracks(_album_id)
                 if item["track_key"] in keys

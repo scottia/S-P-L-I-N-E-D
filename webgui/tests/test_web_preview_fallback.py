@@ -73,12 +73,18 @@ class BrowserFallbackTests(unittest.TestCase):
         open_report = application.split("async function openArtistCompReport", 1)[1].split(
             "async function probeArtistCompStatuses", 1
         )[0]
+        report_loader = application.split("function requestArtistCompReport", 1)[1].split(
+            "async function precompileArtistCompReport", 1
+        )[0]
         self.assertIn("/api/artist/overview", choose_artist)
         self.assertNotIn("/api/artist/comp-report", choose_artist)
+        self.assertIn("precompileArtistCompReport", choose_artist)
         self.assertNotIn("Promise.all", choose_artist)
         self.assertNotIn('/api/artist?id=', choose_artist)
         self.assertNotIn('/api/artist/comp-albums?id=', choose_artist)
-        self.assertIn("/api/artist/comp-report", open_report)
+        self.assertNotIn("probeArtistAlbumStatuses", choose_artist)
+        self.assertIn("requestArtistCompReport", open_report)
+        self.assertIn("/api/artist/comp-report", report_loader)
 
         operations = (static / "operations.js").read_text(encoding="utf-8")
         self.assertIn('draft.scan.shared_artist_art_dir ??= ""', operations)
@@ -264,6 +270,7 @@ class BrowserFallbackTests(unittest.TestCase):
                 )
             summary = app.artist_comp_albums("target")
             report = app.artist_comp_report("target")
+            scoped_report = app.artist_comp_report("target", ["two"])
             full_fallback = app.fallback_tracks("two")
             self.assertEqual(set(app.artist_comp_album_ids("target")), {"one", "two", "three"})
             self.assertEqual({group["id"] for group in summary}, {"one", "two", "three"})
@@ -292,6 +299,11 @@ class BrowserFallbackTests(unittest.TestCase):
             self.assertEqual(
                 {track["key"] for track in report_by_id["three"]["tracks"]},
                 {"appearance"},
+            )
+            self.assertEqual([group["id"] for group in scoped_report], ["two"])
+            self.assertEqual(
+                {track["key"] for track in scoped_report[0]["tracks"]},
+                {"second", "blue", "untagged"},
             )
 
             # Path-defined Curated Compilations remain Artist-scoped COMP

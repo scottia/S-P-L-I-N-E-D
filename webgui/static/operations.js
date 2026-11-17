@@ -79,9 +79,10 @@ async function initialize() {
   }
   // Discover physical library changes after the workspace is usable. This
   // remains a read-only check; the operator explicitly chooses whether to run
-  // the incremental PostgreSQL refresh from the header notice.
+  // the incremental PostgreSQL refresh from the header notice. Do not start a
+  // complete NAS inventory walk during the first interactive Artist load.
+  // The hourly timer performs the same check once the workspace is settled.
   scheduleHourlyLibraryChangeProbe();
-  void requestLibraryChangeProbe().catch(libraryChangeProbeFailed);
 }
 function showAuthentication(status) {
   document.body.className = "auth-required";
@@ -337,7 +338,10 @@ async function writeArtwork() {
     if (prepared) state.pendingCompWrite = {preview: prepared, owner: prepared.owner};
     setStatus("Embedding selected COMP artwork…", "busy");
     const result = await post(endpoint, componentPayload("comp", track.image, scope));
+    assignVisibleCompTrackStatus(scope.album_id, scope.track_key, result);
+    if (typeof syncSelectedArtistStatus === "function") syncSelectedArtistStatus();
     if (result.image) Object.assign(track, {image: result.image, width: result.width, height: result.height, bytes: result.bytes});
+    renderLibrary(); renderHero(); renderReview();
     await refreshQueuedAlbumAfterSave();
     state.upscalePreview = null; state.renderedPreview.comp = null; state.fx.comp = {};
     state.compThumbnailPreview = null; state.pendingCompWrite = null;
@@ -352,6 +356,12 @@ async function writeArtwork() {
     setStatus("Writing selected cover…", "busy");
     await post("/api/artwork/cover", coverPayload());
     state.album = await api("/api/album?id=" + encodeURIComponent(state.album.id));
+    if (state.artist?.albums) {
+      state.artist.albums = state.artist.albums.map(album =>
+        album.id === state.album.id ? {...album, ...state.album} : album);
+      if (typeof syncSelectedArtistStatus === "function") syncSelectedArtistStatus();
+      refreshLibraryArtistRow(state.artist.id);
+    }
     clearAlbumSearchSession(false);
     state.candidates = state.album.candidates || []; resetCandidateFilters();
     renderHero(); renderCandidates(); renderReview(); setStatus("Cover written · " + state.album.name); return;
@@ -373,6 +383,7 @@ async function writeArtwork() {
   setStatus("Writing selected Artist Art…", "busy");
   const result = await post("/api/artwork/artist", {artist_id: state.artist.id, components});
   state.artist = await api("/api/artist?id=" + encodeURIComponent(state.artist.id));
+  if (typeof syncSelectedArtistStatus === "function") syncSelectedArtistStatus();
   const listedArtist = state.artists.find(artist => artist.id === state.artist.id);
   if (listedArtist) {
     listedArtist.portrait = state.artist.portrait;
@@ -987,7 +998,12 @@ async function presentQueuedMusicBrainz(job, prompt, options) {
   const track = [context.track_artist, context.track_title].filter(Boolean).join(" — ");
   const familyCount = new Set(options.map(option => String(option.family_id || option.release_group_id || option.id || "")).filter(Boolean)).size;
   const identity = context.identity || {};
-  const message = identity.status === "valid"
+  const artworkMiss = state.queuedDecision.diagnostics.map(item =>
+    String(Array.isArray(item) ? item[1] : item?.message || item || ""))
+    .find(message => message.includes("has no artwork candidates"));
+  const message = artworkMiss
+    ? `${artworkMiss} · ${options.length} MusicBrainz ${options.length === 1 ? "result remains" : "results remain"}${track ? ` for ${track}` : ""}`
+    : identity.status === "valid"
     ? "MusicBrainz Recording ID verified" + (identity.used_fuzzy_search ? " · same-artist title suggestions available" : "")
       + ` · ${familyCount} release ${familyCount === 1 ? "family" : "families"}`
     : "MusicBrainz identity review" + (track ? " · " + track : "")
@@ -1050,6 +1066,7 @@ async function refreshCompletedAlbum(albumId) {
     if (state.artist?.id === album.artist_id) {
       state.artist = overview.artist;
       state.compAlbums = overview.comp_albums || [];
+      if (typeof syncSelectedArtistStatus === "function") syncSelectedArtistStatus();
     }
   }
   renderLibrary(); renderHero(); renderPanes(); renderReview();
@@ -1074,86 +1091,86 @@ async function refreshOpposingAlbumThumbnails(albumIds) {
     if (Array.isArray(state.albumsIndex)) state.albumsIndex = state.albumsIndex.map(update);
   }
 }
-async function refreshOpenCompReportAfterCoordination() {
-  if (state.editorMode === "artist" && state.compReportVisible && state.artist) {
-    const artistId = state.artist.id;
-    const selected = state.compTrack
-      ? {albumId: state.compTrack.albumId, key: state.compTrack.key}
-      : null;
-    const groups = await api("/api/artist/comp-report?id=" + encodeURIComponent(artistId));
-    if (state.artist?.id !== artistId || !state.compReportVisible) return;
-    state.compGroups = [...groups].sort(compareCompReportGroups);
-    applyCompTrackCoordination([...state.compTrackOverrides.values()]);
-    if (selected) {
-      const group = state.compGroups.find(item => item.id === selected.albumId);
-      const track = group?.tracks.find(item => item.key === selected.key);
-      if (track && state.compTrack) Object.assign(state.compTrack, {
-        completed: track.completed,
-        status: track.status,
-        repairable: track.repairable,
-        coordination_path: track.coordination_path,
+function assignVisibleCompTrackStatus(albumId, trackKey, value) {
+  const status = normalizedCompTrackStatus(value);
+  const update = track => {
+    if (!track || track.key !== trackKey) return;
+    const completed = status === "green" || status === "purple"
+      ? true
+      : status === "blue"
+        ? false
+        : Boolean(track.completed);
+    Object.assign(track, value, {
+      status,
+      completed,
+    });
+  };
+  for (const groups of [state.compGroups, state.compAlbums]) {
+    const group = (groups || []).find(item => item.id === albumId);
+    for (const track of group?.tracks || []) update(track);
+  }
+  if (state.album?.id === albumId) {
+    for (const track of state.fallbackTracks || []) update(track);
+  }
+  if (state.compTrack?.albumId === albumId) update(state.compTrack);
+  if (state.album?.id === albumId) update(state.fallbackTrack);
+}
+async function refreshVisibleCompTrackStatuses(targets) {
+  const unique = [...new Map((targets || []).filter(target => target?.albumId && target?.trackKey)
+    .map(target => [target.albumId + "\u0000" + target.trackKey, target])).values()];
+  if (!unique.length) return;
+  const results = await Promise.allSettled(unique.map(target =>
+    api("/api/fallback/track-status?id=" + encodeURIComponent(target.albumId)
+      + "&key=" + encodeURIComponent(target.trackKey))));
+  results.forEach((result, index) => {
+    const target = unique[index];
+    assignVisibleCompTrackStatus(target.albumId, target.trackKey,
+      result.status === "fulfilled" ? result.value : {
+        status: "check-error", repairable: false,
+        checkError: result.reason?.message || "Thumbnail validation failed",
       });
-    }
-    renderHero(); renderCandidates(); renderReview();
-    await probeArtistCompStatuses();
+  });
+  if (typeof syncSelectedArtistStatus === "function") syncSelectedArtistStatus();
+  renderLibrary(); renderHero(); renderCandidates(); renderReview();
+}
+async function refreshOpenCompReportAfterCoordination(changedPaths = []) {
+  const changed = new Set((changedPaths || []).map(normalizedCoordinationPath));
+  // The coordination map already owns the grey override presentation. Paint
+  // that transition immediately, then validate only the affected tracks;
+  // never block it behind a complete Artist report reload.
+  renderLibrary(); renderHero(); renderCandidates(); renderReview();
+  if (state.editorMode === "artist" && state.compReportVisible && state.artist) {
+    const targets = state.compGroups.flatMap(group => (group.tracks || [])
+      .filter(track => !changed.size || changed.has(normalizedCoordinationPath(track.coordination_path)))
+      .map(track => ({albumId: group.id, trackKey: track.key})));
+    await refreshVisibleCompTrackStatuses(targets);
     return;
   }
   if (state.editorMode === "fallback" && state.album) {
-    const albumId = state.album.id;
-    const selectedKey = state.fallbackTrack?.key || "";
-    const tracks = await api("/api/fallback/tracks?id=" + encodeURIComponent(albumId));
-    if (state.editorMode !== "fallback" || state.album?.id !== albumId) return;
-    state.fallbackTracks = tracks;
-    applyCompTrackCoordination([...state.compTrackOverrides.values()]);
-    const selected = selectedKey && state.fallbackTracks.find(track => track.key === selectedKey);
-    if (selected && state.fallbackTrack) Object.assign(state.fallbackTrack, {
-      completed: selected.completed,
-      status: selected.status,
-      repairable: selected.repairable,
-      coordination_path: selected.coordination_path,
-    });
-    renderLibrary(); renderHero(); renderCandidates(); renderReview();
-    await probeFallbackStatuses();
+    const targets = state.fallbackTracks
+      .filter(track => !changed.size || changed.has(normalizedCoordinationPath(track.coordination_path)))
+      .map(track => ({albumId: state.album.id, trackKey: track.key}));
+    await refreshVisibleCompTrackStatuses(targets);
     return;
   }
-  renderHero(); renderReview();
 }
 async function refreshQueuedAlbumAfterSave(job = null) {
   const scopeArtistId = job?.kind === "comp" ? String(job.payload?.artist_id || "") : "";
   if (scopeArtistId) {
     if (state.artist?.id !== scopeArtistId) return;
-    const artistId = scopeArtistId;
-    const fallbackKey = job.payload?.track_keys?.length === 1 ? job.payload.track_keys[0] : "";
-    const selected = state.compTrack ? {albumId: state.compTrack.albumId, key: state.compTrack.key}
-      : fallbackKey ? {albumId: job.payload?.album_id, key: fallbackKey} : null;
-    const [compGroups, compAlbums] = await Promise.all([
-      api("/api/artist/comp-report?id=" + encodeURIComponent(artistId)),
-      api("/api/artist/comp-albums?id=" + encodeURIComponent(artistId)),
-    ]);
-    if (state.artist?.id !== artistId) return;
-    state.album = null; state.editorMode = "artist"; state.compReportVisible = true;
-    state.compGroups = [...compGroups].sort(compareCompReportGroups); state.compAlbums = compAlbums;
-    const selectedStillVisible = selected && compGroups.some(group => group.id === selected.albumId
-      && group.tracks.some(track => track.key === selected.key));
-    if (selectedStillVisible) await selectArtistCompTrack(selected.albumId, selected.key, false);
-    else { renderHero(); renderCandidates(); renderReview(); }
-    await probeArtistCompStatuses();
-    return;
+    const albumId = String(job.payload?.album_id || "");
+    const trackKeys = [...new Set(job.payload?.track_keys || [])];
+    if (albumId && trackKeys.length) {
+      await refreshVisibleCompTrackStatuses(trackKeys.map(trackKey => ({albumId, trackKey})));
+      return;
+    }
   }
   if (state.editorMode === "artist" && state.compReportVisible && state.artist) {
-    const artistId = state.artist.id;
-    const selected = state.compTrack ? {albumId: state.compTrack.albumId, key: state.compTrack.key} : null;
-    const [compGroups, compAlbums] = await Promise.all([
-      api("/api/artist/comp-report?id=" + encodeURIComponent(artistId)),
-      api("/api/artist/comp-albums?id=" + encodeURIComponent(artistId)),
-    ]);
-    if (state.artist?.id !== artistId || !state.compReportVisible) return;
-    state.compGroups = [...compGroups].sort(compareCompReportGroups); state.compAlbums = compAlbums;
-    const selectedStillVisible = selected && compGroups.some(group => group.id === selected.albumId
-      && group.tracks.some(track => track.key === selected.key));
-    if (selectedStillVisible) await selectArtistCompTrack(selected.albumId, selected.key, false);
+    if (state.compTrack?.albumId && state.compTrack?.key)
+      await refreshVisibleCompTrackStatuses([{
+        albumId: state.compTrack.albumId, trackKey: state.compTrack.key,
+      }]);
     else { renderHero(); renderCandidates(); renderReview(); }
-    await probeArtistCompStatuses();
     return;
   }
   const albumId = state.album?.id;
@@ -1161,7 +1178,10 @@ async function refreshQueuedAlbumAfterSave(job = null) {
   const album = await api("/api/album?id=" + encodeURIComponent(albumId));
   if (state.album?.id !== albumId) return;
   state.album = album;
-  if (state.artist?.id === album.artist_id) state.artist = await api("/api/artist?id=" + encodeURIComponent(album.artist_id));
+  if (state.artist?.id === album.artist_id) {
+    state.artist = await api("/api/artist?id=" + encodeURIComponent(album.artist_id));
+    if (typeof syncSelectedArtistStatus === "function") syncSelectedArtistStatus();
+  }
   if (state.editorMode === "fallback") {
     const selectedKey = state.fallbackTrack?.key || "";
     state.fallbackTracks = await api("/api/fallback/tracks?id=" + encodeURIComponent(albumId));
@@ -1303,7 +1323,7 @@ async function performJobsPoll() {
       renderLibrary(); renderHero(); renderReview();
     }
     if (changedTrackOverrides.length) {
-      await refreshOpenCompReportAfterCoordination();
+      await refreshOpenCompReportAfterCoordination(changedTrackOverrides);
     }
     const stagedChanged = priorStaged.size !== state.embedQueue.length
       || state.embedQueue.some(item => !priorStaged.has(item.id));

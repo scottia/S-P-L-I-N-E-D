@@ -75,7 +75,7 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             normalized_artist_identity("AC/DC"),
         )
 
-    def test_artist_list_is_database_only_until_lazy_thumbnail_hydration(self):
+    def test_artist_list_returns_lazy_thumbnail_url_without_resolving_artwork(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             database = root / "index.sqlite"
@@ -100,7 +100,10 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                 "artist_thumbnail_path",
                 side_effect=AssertionError("initial list must not resolve artwork paths"),
             ):
-                self.assertEqual(app.artists("")[0]["portrait"], None)
+                self.assertEqual(
+                    app.artists("")[0]["portrait"],
+                    "/api/artist/thumbnail?id=artist-1",
+                )
 
     def test_musicbrainz_identity_is_canonical_when_name_only_duplicate_is_larger(self):
         rows = [

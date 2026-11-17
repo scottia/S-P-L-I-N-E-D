@@ -1122,6 +1122,19 @@ def _manual_discovery_options(
     )
 
 
+def _selected_release_has_no_artwork(
+    candidates: list[Any],
+    discovery_results: list[Any],
+    selected_release_item: Any | None,
+) -> bool:
+    """Keep alternate MusicBrainz releases available after an artwork miss."""
+    return (
+        not candidates
+        and bool(discovery_results)
+        and selected_release_item is not None
+    )
+
+
 def _manual_choose_release(
     items: list[Any],
     *,
@@ -1599,6 +1612,9 @@ def run_manual_compilation_album(
                 discovery_started = core.time.perf_counter()
                 options = _manual_musicbrainz_options(config_file, cfg, state)
                 search_error = ""
+                release_artwork_error = str(
+                    state.pop("mb_release_artwork_error", "") or ""
+                )
                 cache_key = (
                     str(track.artist or "").strip().casefold(),
                     str(track.title or "").strip().casefold(),
@@ -1691,6 +1707,11 @@ def run_manual_compilation_album(
                             [
                                 *(getattr(discovery_identity, "warnings", ()) or ()),
                                 *([search_error] if search_error else []),
+                                *(
+                                    [release_artwork_error]
+                                    if release_artwork_error
+                                    else []
+                                ),
                             ]
                         )
                     ],
@@ -2096,6 +2117,33 @@ def run_manual_compilation_album(
                     0, ("musicbrainz", lookup_error)
                 )
             core.emit_ui("diagnostics", items=visible_diagnostics)
+            if _selected_release_has_no_artwork(
+                candidates, discovery_results, selected_release_item
+            ):
+                # This exact release has no usable cover, but the Recording
+                # search still owns the other valid release choices. Returning
+                # to that list prevents one coverless edition from becoming a
+                # false track-wide "no candidates" result or a dead end in a
+                # multi-track COMP run.
+                release_title = str(
+                    getattr(selected_release_item, "release_title", "")
+                    or friendly["album"]
+                    or "Selected release"
+                )
+                state["mb_release_artwork_error"] = (
+                    f'{release_title} has no artwork candidates; '
+                    "choose another MusicBrainz release."
+                )
+                core.debug_log(
+                    "compilation.manual.release_artwork_miss "
+                    f"file={str(track.path)!r} release={release_title!r} "
+                    f"alternates={len(discovery_results)}"
+                )
+                selected_release_item = None
+                authority["release_id"] = ""
+                show_discovery = True
+                interactive_retry = True
+                continue
             if not candidates and not interactive_retry:
                 show_discovery = True
                 interactive_retry = True

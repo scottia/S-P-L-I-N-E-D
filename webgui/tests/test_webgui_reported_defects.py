@@ -290,8 +290,14 @@ class ReportedDefectTests(unittest.TestCase):
         self.assertIn('"Overridden"', application)
         self.assertIn('albumOverrides: new Map()', application)
         self.assertIn('/api/coordination/album-overrides', operations)
-        self.assertIn("async function refreshOpenCompReportAfterCoordination()", operations)
-        self.assertIn("await refreshOpenCompReportAfterCoordination();", operations)
+        self.assertIn(
+            "async function refreshOpenCompReportAfterCoordination(changedPaths = [])",
+            operations,
+        )
+        self.assertIn(
+            "await refreshOpenCompReportAfterCoordination(changedTrackOverrides);",
+            operations,
+        )
         self.assertIn('/api/coordination/comp-track-overrides', operations)
         self.assertIn('/api/artist/comp-report?id=', operations)
         self.assertIn('/api/fallback/tracks?id=', operations)
@@ -320,6 +326,8 @@ class ReportedDefectTests(unittest.TestCase):
         self.assertIn('const staleUnprocessed = overridden && status === "unprocessed"', application)
         self.assertIn('checkEmbedded || status === "partial" ? "partial"', application)
         self.assertIn(': processed || validating ? "processed" : incomplete || missingCover ? "incomplete" : "unprocessed"', application)
+        self.assertIn('embeddedValidation === "checking"', application)
+        self.assertIn('cardState.stateKey === "albumsComplete" ? "complete" : cardState.stateKey', application)
         self.assertIn('if (!staleUnprocessed && (missingCover || incomplete))', application)
 
     def test_comp_report_backfills_only_albums_in_selected_artist_scope(self):
@@ -336,7 +344,8 @@ class ReportedDefectTests(unittest.TestCase):
                     self.requested = artist_id
                     return ["target"]
 
-                def artist_comp_report(self, artist_id):
+                def artist_comp_report(self, artist_id, album_ids=None):
+                    self.report_album_ids = album_ids
                     return [{"id": "target", "tracks": []}]
 
             services = Services.__new__(Services)
@@ -349,6 +358,7 @@ class ReportedDefectTests(unittest.TestCase):
 
             self.assertEqual(report, [{"id": "target", "tracks": []}])
             self.assertEqual(hydrated, ["target"])
+            self.assertEqual(services.catalog.report_album_ids, ["target"])
 
     def test_scan_skip_advances_batch_and_reports_progress_without_writing_in_read_mode(self):
         services = Services.__new__(Services)
@@ -417,8 +427,8 @@ class ReportedDefectTests(unittest.TestCase):
         initialize = operations.split("async function initialize", 1)[1].split(
             "function showAuthentication", 1
         )[0]
-        self.assertIn("requestLibraryChangeProbe", initialize)
-        self.assertIn("void requestLibraryChangeProbe().catch", initialize)
+        self.assertIn("scheduleHourlyLibraryChangeProbe", initialize)
+        self.assertNotIn("void requestLibraryChangeProbe().catch", initialize)
         self.assertIn("async function checkLibraryChanges", operations)
         self.assertIn(
             ".library-row.album-row .library-thumb,.library-row.album-child "
@@ -477,6 +487,32 @@ class ReportedDefectTests(unittest.TestCase):
             '"similar-artists-unavailable"',
             (Path(__file__).parents[1] / "server.py").read_text(encoding="utf-8"),
         )
+
+    def test_comp_report_live_status_uses_targeted_refresh_and_shared_counts(self):
+        static = Path(__file__).parents[1] / "static"
+        application = (static / "app.js").read_text(encoding="utf-8")
+        operations = (static / "operations.js").read_text(encoding="utf-8")
+
+        self.assertIn("function normalizedCompTrackStatus(track)", application)
+        self.assertIn(
+            'tracks.filter(track => normalizedCompTrackStatus(track) === "purple").length',
+            application,
+        )
+        self.assertIn("async function refreshVisibleCompTrackStatuses(targets)", operations)
+        self.assertIn(
+            "assignVisibleCompTrackStatus(scope.album_id, scope.track_key, result)",
+            operations,
+        )
+        coordination = operations.split(
+            "async function refreshOpenCompReportAfterCoordination", 1
+        )[1].split("async function refreshQueuedAlbumAfterSave", 1)[0]
+        self.assertIn("refreshVisibleCompTrackStatuses(targets)", coordination)
+        self.assertNotIn("/api/artist/comp-report", coordination)
+        completed = operations.split(
+            "async function refreshQueuedAlbumAfterSave", 1
+        )[1].split("let jobsPolling", 1)[0]
+        self.assertIn("refreshVisibleCompTrackStatuses", completed)
+        self.assertNotIn("/api/artist/comp-report", completed)
 
     def test_explicit_cover_replacement_preserves_old_file_but_updates_canonical_name(self):
         with TemporaryDirectory() as directory:

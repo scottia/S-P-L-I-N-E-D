@@ -270,6 +270,12 @@ summary is:
   embedded-thumbnail conditions.
 - Card frames distinguish validation, completion, and confirmed embedded-art
   problems.
+- A restored processed Album whose embedded-thumbnail state has not been
+  checked in the current session remains orange **Processed**. Unknown saved
+  state is not an active operation and is never painted cyan. Cyan
+  **Validating** is shown only while Windows is actually checking that Album's
+  embedded thumbnails. A verified complete check becomes green; a verified
+  missing or wrong-size thumbnail uses the purple attention state.
 - A red frame with a grayscale Album thumbnail means WebGUI performed the last
   verified artwork write. For an otherwise unprocessed Album, this verified
   write replaces the stale red Missing dot; all other independent status dots,
@@ -288,6 +294,10 @@ summary is:
   override state do not change this order.
 - COMP track rows use blue for artwork still needed, purple for thumbnail
   repair/validation trouble, and green for complete.
+- Artist Overview projects track-scoped COMP completion over the Album's raw
+  database label. When every displayed COMP track for the selected Artist is
+  complete, its card and presented status are green **Complete** even if the
+  folder-wide Album row remains `unprocessed` for unrelated tracks.
 
 More than one condition can be visible at once. For example, a completed COMP
 Album can retain a missing-Album-ID indicator because that missing ID is what

@@ -523,11 +523,33 @@ class Services:
             track_path = Path(track["path"])
             if not inside(track_path, self.runtime.music) or not track_path.is_file():
                 return False
+            expected = str(event.get("artwork_sha256") or "").strip().casefold()
+            # Coordination rows are durable. Once this exact Windows event has
+            # been verified and projected into PostgreSQL, polling must not
+            # reopen and hash the audio file on every browser heartbeat. That
+            # turns a cheap status read into repeated NAS I/O and can delay the
+            # visible COMP result by tens of seconds. A new Windows write has a
+            # new digest/event and therefore still takes the verified path
+            # below before it can be presented as readable.
+            projected = db.execute(
+                "SELECT artwork_sha256,outcome,source_kind FROM compilation_track_artwork "
+                "WHERE lower(track_path)=lower(?)",
+                (str(track_path),),
+            ).fetchone()
+            if (
+                expected
+                and projected is not None
+                and str(projected["artwork_sha256"] or "").strip().casefold()
+                == expected
+                and str(projected["outcome"] or "")
+                in {"embedded-replaced", "embedded-existing"}
+                and str(projected["source_kind"] or "") == "coordination-windows"
+            ):
+                return True
             try:
                 artwork = embedded_track_artwork_bytes(track_path, strict=True)
             except (OSError, ValueError):
                 return False
-            expected = str(event.get("artwork_sha256") or "").strip().casefold()
             if not artwork or hashlib.sha256(artwork).hexdigest() != expected:
                 return False
             now = tags.utc_now()
@@ -2345,6 +2367,73 @@ class Services:
             )
         return count
 
+    def refresh_comp_track_baseline(self, row):
+        """Publish a COMP write without reopening every track in its Album.
+
+        Queued COMP work already verifies and reindexes each selected track at
+        the write boundary. A full Album refresh immediately afterwards used
+        to reopen every audio file in a large compilation, serializing the
+        next interactive decision behind unrelated media reads. Rebuild the
+        filesystem-change baseline from indexed stat values and the durable
+        per-track completion ledger instead.
+        """
+        album_id = str(row["album_key"])
+        with closing(self.runtime.database.connect()) as db, db:
+            tracks = list(
+                db.execute(
+                    "SELECT path,file_size,file_mtime_ns FROM tracks "
+                    "WHERE album_key=? ORDER BY path COLLATE NOCASE",
+                    (album_id,),
+                )
+            )
+            if not tracks:
+                return
+            paths = [Path(item["path"]) for item in tracks]
+            metadata = {
+                str(item["path"]): (
+                    int(item["file_size"] or 0),
+                    int(item["file_mtime_ns"] or 0),
+                )
+                for item in tracks
+            }
+            album = core.AlbumDir(Path(row["path"]), paths)
+            album.audio_metadata = metadata
+            fingerprint = _album_inventory_fingerprint(album)
+            total_size = sum(value[0] for value in metadata.values())
+            newest_mtime_ns = max(value[1] for value in metadata.values())
+            representative = paths[0]
+            representative_size, representative_mtime_ns = metadata[
+                str(representative)
+            ]
+            completed = db.execute(
+                "SELECT count(DISTINCT tracks.track_key) FROM tracks "
+                "JOIN compilation_track_artwork artwork "
+                "ON lower(artwork.track_path)=lower(tracks.path) "
+                "WHERE tracks.album_key=? AND artwork.outcome IN "
+                "('embedded-replaced','embedded-existing')",
+                (album_id,),
+            ).fetchone()[0]
+            now = tags.utc_now()
+            db.execute(
+                "UPDATE albums SET representative_file=?,representative_size=?,"
+                "representative_mtime_ns=?,track_count=?,inventory_fingerprint=?,"
+                "embedded_tracks=?,updated_at=? WHERE album_key=?",
+                (
+                    str(representative), representative_size,
+                    representative_mtime_ns, len(paths), fingerprint,
+                    int(completed or 0), now, album_id,
+                ),
+            )
+            db.raw.execute(
+                "UPDATE catalog_change_manifest SET inventory_signature=%s,"
+                "track_count=%s,total_size=%s,newest_mtime_ns=%s,updated_at=now() "
+                "WHERE album_path=%s",
+                (
+                    fingerprint, len(paths), total_size,
+                    newest_mtime_ns, str(row["path"]),
+                ),
+            )
+
     @serialized
     def validate_album_embedding(self, album_id: str) -> dict[str, object]:
         """Verify one mapped Album without converting a read failure into missing art."""
@@ -2393,7 +2482,10 @@ class Services:
         )
         for row in pending:
             self.hydrate_tracks(row["album_key"])
-        report = self.catalog.artist_comp_report(artist_id)
+        # Reuse the already-resolved Album scope. Repeating the global
+        # Artist/title/path discovery query here made every COMP report pay for
+        # the same identity search twice before it could render.
+        report = self.catalog.artist_comp_report(artist_id, album_ids)
         LOGGER.info(
             "COMP report ready for artist %s: %d albums, %d matching tracks",
             artist_id,
@@ -2492,7 +2584,7 @@ class Services:
             )
             media.update_artist_aggregate(db, row["artist_key"])
 
-    def preview(self, payload):
+    def preview(self, payload, *, publish=True):
         source = self.catalog.image_source(str(payload.get("image", "")))
         kind = str(payload.get("kind", "cover"))
         output = self.runtime.cfg.get("output", {})
@@ -2594,8 +2686,8 @@ class Services:
             reason = "The configured upscale ceiling prevents enlargement; source resolution preserved"
         else:
             reason = "Prepared preview; original artwork is unchanged until written"
-        return {
-            "image": self.catalog.image(body),
+        result = {
+            "image": self.catalog.image(body) if publish else None,
             "width": width,
             "height": height,
             "bytes": len(body),
@@ -2614,6 +2706,14 @@ class Services:
             ),
             "reason": reason,
         }
+        if not publish:
+            # COMP preparation consumes the rendered pixels in-process. Do not
+            # first publish an uncompressed, full-size PNG through the browser
+            # preview cache: a valid high-resolution candidate can exceed that
+            # cache's 25 MB transport guard before it is reduced to the
+            # configured embedded-thumbnail size.
+            result["_body"] = body
+        return result
 
     def _atomic_artwork(self, destination, body):
         with Image.open(BytesIO(body)) as opened:
@@ -2986,8 +3086,8 @@ class Services:
             prepared = self._load_prepared_comp(payload, normalized)
             if prepared is not None:
                 return prepared
-        rendered = self.preview(dict(payload, kind="comp"))
-        source = self.catalog.image_bytes(rendered["image"])
+        rendered = self.preview(dict(payload, kind="comp"), publish=False)
+        source = rendered.pop("_body")
         side = int(
             self.runtime.cfg.get("output", {}).get("embedded_thumbnail_size", 1200)
         )
@@ -3640,7 +3740,10 @@ class Services:
         )
         artist_id = str(payload.get("artist_id", "")).strip()
         if artist_id:
-            report = self.catalog.artist_comp_report(artist_id)
+            # Validate only the Album carried by this explicit job. Rebuilding
+            # the selected Artist's complete COMP report here rechecked every
+            # track in every compilation before each queued Album could start.
+            report = self.catalog.artist_comp_report(artist_id, [album_id])
             group = next((item for item in report if item["id"] == album_id), None)
             scoped = {track["key"] for track in group["tracks"]} if group else set()
             if any(key not in scoped for key in requested):
@@ -3809,8 +3912,7 @@ class Services:
                 publish_verified_write=publish_verified_track_write,
                 musicbrainz_results_first=True,
             )
-        self.refresh_album(row["album_key"])
-        self.refresh_embedding_stats(row)
+        self.refresh_comp_track_baseline(row)
         return asdict(summary)
 
     def run_scan(self, payload, adapter):
