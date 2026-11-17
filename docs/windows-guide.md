@@ -498,6 +498,21 @@ the visible report immediately; it does not wait for a complete report reload.
 MusicBrainz alternatives and matching **Existing** artwork remain available
 when one selected release has no usable cover.
 
+This behavior is the Windows implementation of the approved WebGUI Artist/COMP
+contract from `a922128`:
+
+- restored regular Albums remain orange **Processed** until an explicit
+  validation is active; unknown cached state is not painted cyan;
+- cyan **Validating** is limited to an actual focused-Album or requested bulk
+  validation, and a focused Artist Album validates only that Album;
+- selected-Artist COMP cards and rows update from track-scoped completion and
+  verified dimensions immediately after each successful write;
+- Artist selection prepares the indexed COMP scope without opening the report
+  or rescanning every Album, and a changed selection cancels stale preload
+  authority instead of leaving the report waiting;
+- MusicBrainz release alternatives and matching existing embedded artwork stay
+  available when one release has no usable cover.
+
 Artist-wide **LAUNCH COMP** repairs eligible purple tracks first, then processes
 remaining non-green tracks; completed green tracks are skipped. Every bulk
 repair or write still requires its confirmation. Track progress remains in

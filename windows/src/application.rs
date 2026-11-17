@@ -3470,6 +3470,10 @@ pub struct ApplicationState {
     pub compilation_report_preload_inflight: bool,
     pub compilation_report_preload_ready: bool,
     pub compilation_report_preload_generation: u64,
+    /// Selection epoch that owns the current preload. Artist selection can
+    /// remain unchanged while an Album/track radio changes, so Artist name
+    /// alone is not sufficient cancellation authority.
+    pub compilation_report_preload_selection_epoch: u64,
     pub compilation_report_preview_mode: bool,
     pub compilation_report_preview_album_key: String,
     pub compilation_report_preview_track_path: String,
@@ -3731,6 +3735,7 @@ impl ApplicationState {
             compilation_report_preload_inflight: false,
             compilation_report_preload_ready: false,
             compilation_report_preload_generation: 0,
+            compilation_report_preload_selection_epoch: 0,
             compilation_report_preview_mode: false,
             compilation_report_preview_album_key: String::new(),
             compilation_report_preview_track_path: String::new(),
