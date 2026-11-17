@@ -829,6 +829,13 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             (progress["total_tracks"], progress["completed_tracks"], progress["status"]),
             (2, 1, "incomplete"),
         )
+        # Browser polling reuses the durable projection for the unchanged
+        # Windows event instead of reopening and hashing the NAS audio file.
+        with patch(
+            "webgui.services.embedded_track_artwork_bytes",
+            side_effect=AssertionError("durable coordination was re-read"),
+        ):
+            self.assertTrue(self.services._persist_opposing_comp_track(event))
 
     def test_failed_album_write_does_not_claim_coordination(self):
         with patch(

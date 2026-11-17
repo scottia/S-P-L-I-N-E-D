@@ -622,13 +622,24 @@ function editableArtworkSource() {
 function renderLibrary() {
   renderWithScrollMemory(["artistList"], state.libraryLoading ? "" : state.libraryMode, renderLibraryContents);
 }
-function compTrackStatusClass(track) {
+function normalizedCompTrackStatus(track) {
   const status = String(track?.status || "blue").toLowerCase();
+  return ["green", "purple", "checking", "check-error"].includes(status)
+    ? status : "blue";
+}
+function compTrackStatusClass(track) {
+  const status = normalizedCompTrackStatus(track);
   if (status === "green") return "complete";
   if (status === "purple") return "purple";
   if (status === "checking") return "checking";
   if (status === "check-error") return "error";
   return "pending";
+}
+function compTrackStatusLabel(track) {
+  const status = normalizedCompTrackStatus(track);
+  return status === "green" ? "complete"
+    : status === "purple" ? "thumbnail repair"
+    : status === "checking" ? "checking thumbnail" : "needs artwork";
 }
 function renderLibraryContents() {
   $("artistsTab").classList.toggle("active", state.libraryMode === "artists");
@@ -806,7 +817,7 @@ function artistOverviewAlbums(artist = state.artist, honorSingleAlbum = true) {
       album_mbid: "", compilation: true, tracks: group.tracks.length,
       embedded: group.tracks.filter(track => track.completed).length,
       fallback_complete: group.tracks.length > 0 && group.tracks.every(track => track.completed),
-      comp_attention: !!validated?.tracks?.some(track => ["purple", "checking", "check-error"].includes(track.status)),
+      comp_attention: !!validated?.tracks?.some(track => ["purple", "checking", "check-error"].includes(normalizedCompTrackStatus(track))),
       status: group.tracks.every(track => track.completed) ? "processed" : "incomplete",
     };
   });
@@ -819,7 +830,7 @@ function artistOverviewAlbums(artist = state.artist, honorSingleAlbum = true) {
       cover_found: !!(group.cover || album.cover), compilation: true,
       embedded: group.tracks.filter(track => track.completed).length,
       fallback_complete: group.tracks.length > 0 && group.tracks.every(track => track.completed),
-      comp_attention: !!validated?.tracks?.some(track => ["purple", "checking", "check-error"].includes(track.status))} : album;
+      comp_attention: !!validated?.tracks?.some(track => ["purple", "checking", "check-error"].includes(normalizedCompTrackStatus(track)))} : album;
   });
   const allAlbums = [...indexed, ...projected];
   const presentedAlbums = honorSingleAlbum && singleAlbumOverviewActive()
@@ -1156,9 +1167,9 @@ function renderAlbumStatusKey(albums, artist) {
       count: countBanner(key),
     }))],
     ["COMP track rows", [
-      {parts: [["Blue", "#3478ff"]], detail: "Pending artwork", count: compTracks.filter(track => !track.completed && track.status !== "purple").length},
-      {parts: [["Green", "#32dda0"]], detail: "Artwork complete", count: compTracks.filter(track => track.completed && track.status !== "purple").length},
-      {parts: [["Purple", "#7c4dff"]], detail: "Complete; thumb needs attention", count: compTracks.filter(track => track.status === "purple").length},
+      {parts: [["Blue", "#3478ff"]], detail: "Pending artwork", count: compTracks.filter(track => normalizedCompTrackStatus(track) === "blue").length},
+      {parts: [["Green", "#32dda0"]], detail: "Artwork complete", count: compTracks.filter(track => normalizedCompTrackStatus(track) === "green").length},
+      {parts: [["Purple", "#7c4dff"]], detail: "Complete; thumb needs attention", count: compTracks.filter(track => normalizedCompTrackStatus(track) === "purple").length},
       {heading: "MISC STATUS"},
       {parts: [["● Animated", "#3478ff"]], detail: "cover.webp present: review the still cover", count: countDot("#3478ff")},
     ]],
@@ -1388,11 +1399,11 @@ function renderFallbackOverview() {
   const album = state.album, track = state.fallbackTrack;
   clear($("topGenres"));
   const total = state.fallbackTracks.length;
-  const green = state.fallbackTracks.filter(item => item.status === "green").length;
-  const purple = state.fallbackTracks.filter(item => item.status === "purple").length;
-  const blue = state.fallbackTracks.filter(item => item.status === "blue").length;
-  const checking = state.fallbackTracks.filter(item => item.status === "checking").length;
-  const checkErrors = state.fallbackTracks.filter(item => item.status === "check-error").length;
+  const green = state.fallbackTracks.filter(item => normalizedCompTrackStatus(item) === "green").length;
+  const purple = state.fallbackTracks.filter(item => normalizedCompTrackStatus(item) === "purple").length;
+  const blue = state.fallbackTracks.filter(item => normalizedCompTrackStatus(item) === "blue").length;
+  const checking = state.fallbackTracks.filter(item => normalizedCompTrackStatus(item) === "checking").length;
+  const checkErrors = state.fallbackTracks.filter(item => normalizedCompTrackStatus(item) === "check-error").length;
   const complete = state.fallbackTracks.filter(item => item.completed).length;
   const pending = blue;
   const reprocessable = state.fallbackTracks.filter(compTrackIsReprocessable).length;
@@ -1445,7 +1456,7 @@ function renderFallbackOverview() {
   preview.addEventListener("click", () => { state.fallbackPreviewMode = !state.fallbackPreviewMode; renderHero(); renderReview(); });
   const heading = node("strong", "", "COMP Report · " + (album?.name || ""));
   const repair = node("button", "fallback-repair", "REPAIR COMP"); repair.type = "button";
-  repair.disabled = !state.compRepairEnabled || !state.fallbackTracks.some(item => item.status === "purple" && item.repairable);
+  repair.disabled = !state.compRepairEnabled || !state.fallbackTracks.some(item => normalizedCompTrackStatus(item) === "purple" && item.repairable);
   repair.title = !state.compRepairEnabled ? "COMP repairs are disabled in this test service" : purple ? "Repair readable purple thumbnails in this full Fallback album" : "No purple thumbnails identified";
   repair.addEventListener("click", () => runAction(repairFallback));
   const processing = state.launchActive || (typeof activeLaunchJobs === "function" && activeLaunchJobs().length > 0);
@@ -1480,9 +1491,9 @@ function renderFallbackOverview() {
     row.disabled = processing;
     if (processing) row.title = "This COMP track is already processing";
     row.classList.add(compTrackStatusClass(item));
-    if (item.status === "check-error") row.title = item.checkError || "Thumbnail validation could not be completed; reload the album to retry";
+    if (normalizedCompTrackStatus(item) === "check-error") row.title = item.checkError || "Thumbnail validation could not be completed; reload the album to retry";
     row.append(node("span", "fallback-track-spacer"), node("span", "fallback-track-file", item.file),
-      node("span", "fallback-track-status", "COMP status · " + (item.status === "green" ? "complete" : item.status === "purple" ? "thumbnail repair" : item.status === "checking" ? "checking thumbnail" : "needs artwork")));
+      node("span", "fallback-track-status", "COMP status · " + compTrackStatusLabel(item)));
     row.addEventListener("click", () => selectFallbackTrack(item.key, state.fallbackPreviewMode, !state.fallbackPreviewMode)); report.append(row);
   }
   if (!total) report.append(node("p", "empty-copy", "No indexed audio tracks in this fallback album."));
@@ -1509,7 +1520,7 @@ async function probeFallbackStatuses() {
     renderLibrary(); renderHero();
   }
   if (request !== state.fallbackStatusRequest || albumId !== state.album?.id || state.editorMode !== "fallback") return;
-  const failures = targets.filter(track => track.status === "check-error").length;
+  const failures = targets.filter(track => normalizedCompTrackStatus(track) === "check-error").length;
   setStatus(`COMP report ready · ${state.fallbackTracks.length} tracks · ${targets.length - failures} recorded thumbnails validated${failures ? ` · ${failures} retry needed` : ""}`, failures ? "error" : "ready");
 }
 
@@ -1520,13 +1531,13 @@ function renderArtistCompReport() {
   }
   clear(report); report.hidden = false;
   const tracks = state.compGroups.flatMap(group => group.tracks.map(track => ({...track, albumId: group.id})));
-  const green = tracks.filter(track => track.status === "green").length;
-  const purple = tracks.filter(track => track.status === "purple").length;
-  const blue = tracks.filter(track => track.status === "blue").length;
+  const green = tracks.filter(track => normalizedCompTrackStatus(track) === "green").length;
+  const purple = tracks.filter(track => normalizedCompTrackStatus(track) === "purple").length;
+  const blue = tracks.filter(track => normalizedCompTrackStatus(track) === "blue").length;
   const overridden = tracks.filter(track => compTrackOverride(track)?.writer === "windows").length;
   const reprocessable = tracks.filter(compTrackIsReprocessable).length;
-  const checking = tracks.filter(track => track.status === "checking").length;
-  const checkErrors = tracks.filter(track => track.status === "check-error").length;
+  const checking = tracks.filter(track => normalizedCompTrackStatus(track) === "checking").length;
+  const checkErrors = tracks.filter(track => normalizedCompTrackStatus(track) === "check-error").length;
   const toolbar = node("div", "fallback-toolbar");
   const preview = node("button", "fallback-preview-radio" + (state.compPreviewMode ? " active" : ""));
   preview.type = "button"; preview.title = "Preview existing embedded track art";
@@ -1535,7 +1546,7 @@ function renderArtistCompReport() {
   preview.addEventListener("click", () => { state.compPreviewMode = !state.compPreviewMode; renderArtistCompReport(); setStatus(state.compPreviewMode ? "COMP preview on · choose any green track" : "COMP preview off"); });
   const heading = node("strong", "", "COMP Report · " + (state.artist?.name || "Artist"));
   const repair = node("button", "fallback-repair", "REPAIR COMP"); repair.type = "button";
-  repair.disabled = state.compBusy || !state.compRepairEnabled || !tracks.some(track => track.status === "purple" && track.repairable);
+  repair.disabled = state.compBusy || !state.compRepairEnabled || !tracks.some(track => normalizedCompTrackStatus(track) === "purple" && track.repairable);
   repair.title = !state.compRepairEnabled ? "COMP repairs are disabled in this test service" : purple ? "Repair readable purple thumbnails across this Artist's COMP albums" : "No purple thumbnails identified";
   repair.addEventListener("click", repairArtistComp);
   const processing = state.launchActive || (typeof activeLaunchJobs === "function" && activeLaunchJobs().length > 0);
@@ -1560,7 +1571,7 @@ function renderArtistCompReport() {
   const columns = node("div", "fallback-report-columns"); columns.append(node("span", "", "ALBUM"), node("span", "", "TRACK FILE")); report.append(columns);
   for (const group of state.compGroups) {
     const collapsed = state.compCollapsed.has(group.id);
-    const groupBlue = group.tracks.filter(track => track.status === "blue").length;
+    const groupBlue = group.tracks.filter(track => normalizedCompTrackStatus(track) === "blue").length;
     const groupRecorded = group.tracks.length - groupBlue;
     const albumRow = node("button", "fallback-report-album"); albumRow.type = "button";
     albumRow.dataset.compAlbumId = group.id;
@@ -1580,9 +1591,9 @@ function renderArtistCompReport() {
       if (processing) row.title = "This COMP track is already processing";
       row.classList.toggle("opposing-track-override", compTrackOverride(track)?.writer === "windows");
       row.classList.add(compTrackStatusClass(track));
-      if (track.status === "check-error") row.title = track.checkError || "Thumbnail validation could not be completed; reopen the report to retry";
+      if (normalizedCompTrackStatus(track) === "check-error") row.title = track.checkError || "Thumbnail validation could not be completed; reopen the report to retry";
       row.append(node("span", "fallback-track-spacer"), node("span", "fallback-track-file", track.file),
-        node("span", "fallback-track-status", "COMP status · " + (track.status === "green" ? "complete" : track.status === "purple" ? "thumbnail repair" : track.status === "checking" ? "checking thumbnail" : "needs artwork")));
+        node("span", "fallback-track-status", "COMP status · " + compTrackStatusLabel(track)));
       const thumbnail = selected && state.compPreviewMode
         ? state.compTrack?.image || track.thumbnail : null;
       if (thumbnail) row.append(image(thumbnail, "fallback-inline-thumb", "Existing track art"));
@@ -1662,7 +1673,7 @@ async function probeArtistCompStatuses() {
     renderArtistCompReport();
   }
   if (request !== state.compStatusRequest || artistId !== state.artist?.id || !state.compReportVisible) return;
-  const failures = targets.filter(({track}) => track.status === "check-error").length;
+  const failures = targets.filter(({track}) => normalizedCompTrackStatus(track) === "check-error").length;
   setStatus(`COMP report ready · ${state.compGroups.length} albums · ${targets.length - failures} recorded thumbnails validated${failures ? ` · ${failures} retry needed` : ""}`, failures ? "error" : "ready");
 }
 
@@ -1694,7 +1705,7 @@ async function selectArtistCompTrack(albumId, key, autoLaunch = true) {
 async function repairArtistComp() {
   if (state.compBusy || !state.compRepairEnabled || !state.artist) return;
   const artistId = state.artist.id;
-  const targets = state.compGroups.flatMap(group => group.tracks.filter(track => track.status === "purple" && track.repairable)
+  const targets = state.compGroups.flatMap(group => group.tracks.filter(track => normalizedCompTrackStatus(track) === "purple" && track.repairable)
     .map(track => ({group, track})));
   if (!targets.length) { setStatus("No readable purple COMP thumbnails need repair"); return; }
   if (!window.confirm(`Repair ${targets.length} purple COMP thumbnail${targets.length === 1 ? "" : "s"} in the configured music library? Original embedded images will be backed up.`)) return;

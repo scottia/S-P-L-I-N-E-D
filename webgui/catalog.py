@@ -2458,7 +2458,10 @@ class Catalog:
 
     def artist_comp_albums(self, artist_id: str) -> list[dict[str, object]]:
         """Return indexed COMP cards without touching every track on disk."""
-        return self._artist_comp_groups(artist_id, verify_tracks=False)
+        album_ids = self.artist_comp_album_ids(artist_id)
+        return self._artist_comp_groups(
+            artist_id, verify_tracks=False, album_ids=album_ids
+        )
 
     def artist_comp_album_ids(self, artist_id: str) -> list[str]:
         """Return only fallback albums that can belong to the selected Artist.
@@ -2519,24 +2522,34 @@ class Catalog:
                 matching.add(str(row["album_key"]))
         return sorted(matching)
 
-    def artist_comp_report(self, artist_id: str) -> list[dict[str, object]]:
+    def artist_comp_report(
+        self, artist_id: str, album_ids: list[str] | None = None
+    ) -> list[dict[str, object]]:
         """Project a focused artist's verified tracks for an opened COMP report."""
-        return self._artist_comp_groups(artist_id, verify_tracks=True)
+        selected = (
+            self.artist_comp_album_ids(artist_id)
+            if album_ids is None
+            else list(dict.fromkeys(str(value) for value in album_ids if str(value)))
+        )
+        return self._artist_comp_groups(
+            artist_id, verify_tracks=True, album_ids=selected
+        )
 
-    def _artist_comp_groups(self, artist_id: str, *, verify_tracks: bool) -> list[dict[str, object]]:
+    def _artist_comp_groups(
+        self,
+        artist_id: str,
+        *,
+        verify_tracks: bool,
+        album_ids: list[str],
+    ) -> list[dict[str, object]]:
+        if not album_ids:
+            return []
         with closing(self.connect()) as db:
             artist, aliases = self._artist_identity_rows(db, artist_id)
             name = str(artist["artist_name"]).strip()
             alias_ids = [str(row["artist_key"]) for row in aliases]
-            placeholders = ",".join("?" for _ in alias_ids)
             appearance = self._artist_appearance_context(artist, aliases, db)
-            appearance_ids = sorted(set(appearance.get("album_keys", set())))
-            appearance_clause = ""
-            if appearance_ids:
-                appearance_clause = (
-                    "OR albums.album_key IN (" + ",".join("?" for _ in appearance_ids) + ") "
-                )
-            escaped_name = name.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            album_placeholders = ",".join("?" for _ in album_ids)
             rows = db.execute(
                 "SELECT albums.album_key, albums.album_name, albums.path AS album_path, "
                 "albums.path, albums.musicbrainz_albumid, albums.cover_path, "
@@ -2544,19 +2557,9 @@ class Catalog:
                 "tracks.path AS track_path, "
                 "tracks.title, tracks.artist_name FROM albums "
                 "JOIN tracks ON tracks.album_key=albums.album_key "
-                "WHERE (tracks.artist_name LIKE ? ESCAPE '\\' "
-                "OR tracks.title LIKE ? ESCAPE '\\' "
-                "OR tracks.path LIKE ? ESCAPE '\\' "
-                f"OR (albums.artist_key IN ({placeholders}) AND TRIM(COALESCE(tracks.artist_name,''))='') "
-                f"{appearance_clause}) "
+                f"WHERE albums.album_key IN ({album_placeholders}) "
                 "ORDER BY albums.album_name COLLATE NOCASE, tracks.path COLLATE NOCASE",
-                (
-                    "%" + escaped_name + "%",
-                    "%" + escaped_name + "%",
-                    "%" + escaped_name + "%",
-                    *alias_ids,
-                    *appearance_ids,
-                ),
+                tuple(album_ids),
             ).fetchall()
             has_ledger = db.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='compilation_track_artwork'"

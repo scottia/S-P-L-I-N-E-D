@@ -264,6 +264,7 @@ class BrowserFallbackTests(unittest.TestCase):
                 )
             summary = app.artist_comp_albums("target")
             report = app.artist_comp_report("target")
+            scoped_report = app.artist_comp_report("target", ["two"])
             full_fallback = app.fallback_tracks("two")
             self.assertEqual(set(app.artist_comp_album_ids("target")), {"one", "two", "three"})
             self.assertEqual({group["id"] for group in summary}, {"one", "two", "three"})
@@ -292,6 +293,11 @@ class BrowserFallbackTests(unittest.TestCase):
             self.assertEqual(
                 {track["key"] for track in report_by_id["three"]["tracks"]},
                 {"appearance"},
+            )
+            self.assertEqual([group["id"] for group in scoped_report], ["two"])
+            self.assertEqual(
+                {track["key"] for track in scoped_report[0]["tracks"]},
+                {"second", "blue", "untagged"},
             )
 
             # Path-defined Curated Compilations remain Artist-scoped COMP

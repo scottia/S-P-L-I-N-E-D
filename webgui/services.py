@@ -523,11 +523,33 @@ class Services:
             track_path = Path(track["path"])
             if not inside(track_path, self.runtime.music) or not track_path.is_file():
                 return False
+            expected = str(event.get("artwork_sha256") or "").strip().casefold()
+            # Coordination rows are durable. Once this exact Windows event has
+            # been verified and projected into PostgreSQL, polling must not
+            # reopen and hash the audio file on every browser heartbeat. That
+            # turns a cheap status read into repeated NAS I/O and can delay the
+            # visible COMP result by tens of seconds. A new Windows write has a
+            # new digest/event and therefore still takes the verified path
+            # below before it can be presented as readable.
+            projected = db.execute(
+                "SELECT artwork_sha256,outcome,source_kind FROM compilation_track_artwork "
+                "WHERE lower(track_path)=lower(?)",
+                (str(track_path),),
+            ).fetchone()
+            if (
+                expected
+                and projected is not None
+                and str(projected["artwork_sha256"] or "").strip().casefold()
+                == expected
+                and str(projected["outcome"] or "")
+                in {"embedded-replaced", "embedded-existing"}
+                and str(projected["source_kind"] or "") == "coordination-windows"
+            ):
+                return True
             try:
                 artwork = embedded_track_artwork_bytes(track_path, strict=True)
             except (OSError, ValueError):
                 return False
-            expected = str(event.get("artwork_sha256") or "").strip().casefold()
             if not artwork or hashlib.sha256(artwork).hexdigest() != expected:
                 return False
             now = tags.utc_now()
@@ -2393,7 +2415,10 @@ class Services:
         )
         for row in pending:
             self.hydrate_tracks(row["album_key"])
-        report = self.catalog.artist_comp_report(artist_id)
+        # Reuse the already-resolved Album scope. Repeating the global
+        # Artist/title/path discovery query here made every COMP report pay for
+        # the same identity search twice before it could render.
+        report = self.catalog.artist_comp_report(artist_id, album_ids)
         LOGGER.info(
             "COMP report ready for artist %s: %d albums, %d matching tracks",
             artist_id,
