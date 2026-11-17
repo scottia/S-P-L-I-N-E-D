@@ -1020,6 +1020,9 @@ fn save_config_in_directory_at(
 /// schema; this adds the operational path contract required before the GUI may
 /// enter its normal workspace.
 pub fn validate_operational_config(config: &Config) -> Result<(), String> {
+    if config.scan.postgres_coordination && !config.scan.sqlite_shared {
+        return Err("WebGUI PostgreSQL coordination requires Shared / Network SQLite.".to_string());
+    }
     for (label, value) in [
         ("Music Library", config.library.music_library.as_str()),
         ("SQLite/database directory", config.scan.cache_dir.as_str()),
@@ -1244,6 +1247,12 @@ mod tests {
 
         assert!(destination.join("config.toml").is_file());
         assert!(destination.join("ui.toml").is_file());
+        assert!(
+            !root
+                .join("credentials")
+                .join("media-state-classification.json")
+                .exists()
+        );
         assert!(!current.config_file.exists());
         assert!(!current.ui_file.exists());
         assert!(current.config_dir.exists());
@@ -1255,13 +1264,21 @@ mod tests {
     }
 
     #[test]
-    fn first_setup_save_creates_both_tomls_only_on_save() {
+    fn first_setup_save_creates_tomls_but_no_shared_policy_for_standalone_sqlite() {
         let temp = TempDir::new().unwrap();
         let root = temp.path().join("install");
         std::fs::create_dir_all(&root).unwrap();
         let config = test_config(&root);
         let current = AppLayout::from_root(root.clone());
         let locator = root.join("configuration-location.toml");
+        let credentials = root.join("credentials");
+        std::fs::create_dir_all(&credentials).unwrap();
+        let coordination = credentials.join("album-coordination.json");
+        std::fs::write(
+            &coordination,
+            r#"{"server_url":"postgresql://example.test/splined"}"#,
+        )
+        .unwrap();
 
         assert!(!current.config_file.exists());
         assert!(!current.ui_file.exists());
@@ -1269,6 +1286,11 @@ mod tests {
 
         assert!(root.join("config.toml").is_file());
         assert!(root.join("ui.toml").is_file());
+        assert!(!credentials.join("media-state-classification.json").exists());
+        assert_eq!(
+            std::fs::read_to_string(coordination).unwrap(),
+            r#"{"server_url":"postgresql://example.test/splined"}"#
+        );
         assert!(!locator.exists());
     }
 

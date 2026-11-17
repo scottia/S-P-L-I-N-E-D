@@ -1705,6 +1705,10 @@ export component AppWindow inherits Window {
     in property <string> selected-artwork-type;
     in property <string> selected-artwork-dimensions;
     in property <string> selected-artwork-quality;
+    in property <string> database-monitor-text: "Current";
+    in property <string> database-monitor-description: "Standalone database";
+    in property <string> database-monitor-health: "current";
+    in property <color> database-monitor-color: AppTheme.green;
     in property <string> selected-artwork-size;
     in property <string> selected-artwork-embedded-source;
     in property <string> selected-artwork-embedded-type;
@@ -1859,6 +1863,12 @@ export component AppWindow inherits Window {
     in property <string> setup-message;
     in property <bool> setup-database-network-path: false;
     in property <string> setup-database-summary: "Choose the directory that owns splined.db.";
+    in-out property <string> setup-postgres-choice: "";
+    in-out property <string> setup-postgres-server;
+    in-out property <string> setup-postgres-username;
+    in-out property <string> setup-postgres-password;
+    in-out property <bool> setup-postgres-validated: false;
+    in-out property <string> setup-postgres-status: "Choose Yes or No after enabling shared SQLite.";
     in-out property <bool> setup-progress-failed: false;
     in-out property <string> setup-progress-phase: "Review setup paths";
     in-out property <string> setup-progress-detail: "Nothing is written until Save & Open Settings is selected.";
@@ -1891,6 +1901,7 @@ export component AppWindow inherits Window {
     in-out property <string> settings-scan-timeout: "1 Day Override";
     in property <[string]> settings-override-options: ["Always Override", "1 Hour Override", "3 Hour Override", "6 Hour Override", "12 Hour Override", "1 Day Override", "1 Week Override", "1 Month Override"];
     in-out property <bool> settings-sqlite-shared: false;
+    in-out property <bool> settings-postgres-coordination: false;
     in-out property <bool> settings-windows-client-lock: false;
     in-out property <bool> settings-sample-write: false;
     in-out property <string> settings-sample-dir;
@@ -2103,6 +2114,8 @@ export component AppWindow inherits Window {
     callback embed-panel-retry(int); callback embed-panel-remove(int); callback embed-panel-remove-all();
     callback apply-enhancement-defaults(); callback browse-setting-directory(string); callback browse-sample-directory(); callback browse-artist-separator-profile();
     callback setup-database-path-edited(string);
+    callback test-setup-postgres(string, string, string);
+    callback refresh-database-monitor();
     callback browse-backup-directory(string); callback browse-restore-file(); callback browse-setup-settings-file(); callback load-setup-settings-file();
     callback refresh-archived-backups();
     callback completion-acknowledged(); callback apply-selected-sample();
@@ -2174,7 +2187,7 @@ export component AppWindow inherits Window {
                 if root.setup-required: HeaderAction {
                     label: "Setup";
                     width: (78px * AppTheme.ui-scale);
-                    enabled: root.setup-library-ready && !root.setup-saving && (!root.setup-database-network-path || root.settings-sqlite-shared) && (root.restore-path == "" || root.restore-path == root.setup-loaded-archive-path);
+                    enabled: root.setup-library-ready && !root.setup-saving && (!root.setup-database-network-path || root.settings-sqlite-shared) && (!root.settings-sqlite-shared || root.setup-postgres-choice == "no" || (root.setup-postgres-choice == "yes" && root.setup-postgres-validated)) && (root.restore-path == "" || root.restore-path == root.setup-loaded-archive-path);
                     clicked => root.save-setup();
                 }
             }
@@ -2266,9 +2279,33 @@ export component AppWindow inherits Window {
                                 color: root.setup-database-network-path && !root.settings-sqlite-shared ? AppTheme.danger : (root.settings-sqlite-shared ? AppTheme.yellow : AppTheme.secondary-foreground); wrap: word-wrap; height: (43px * AppTheme.ui-scale); font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale;
                             }
                             HorizontalLayout { height: (34px * AppTheme.ui-scale); spacing: (16px * AppTheme.ui-scale);
-                                RadioToggle { label: "Shared/network SQLite (advanced)"; checked <=> root.settings-sqlite-shared; enabled: root.setup-library-ready; horizontal-stretch: 1; }
+                                RadioToggle { label: "Shared/network SQLite (advanced)"; checked <=> root.settings-sqlite-shared; enabled: root.setup-library-ready; horizontal-stretch: 1; toggled(value) => { root.setup-postgres-validated = false; root.setup-postgres-choice = ""; root.settings-postgres-coordination = false; root.setup-postgres-status = value ? "Choose whether this shared SQLite installation coordinates with WebGUI PostgreSQL." : "Standalone SQLite uses the built-in state policy."; } }
                                 RadioToggle { label: "Use extra .client-lock"; checked <=> root.settings-windows-client-lock; enabled: root.setup-library-ready && root.settings-sqlite-shared; horizontal-stretch: 1; }
                             }
+                        }
+                    }
+
+                    if root.settings-sqlite-shared: Rectangle {
+                        height: root.setup-postgres-choice == "yes" ? (300px * AppTheme.ui-scale) : (126px * AppTheme.ui-scale);
+                        border-radius: (8px * AppTheme.ui-scale); border-width: (1px * AppTheme.ui-scale);
+                        border-color: root.setup-postgres-choice == "yes" && root.setup-postgres-validated ? AppTheme.green : AppTheme.yellow;
+                        background: AppTheme.quiet-surface;
+                        VerticalLayout { padding: (11px * AppTheme.ui-scale); spacing: (7px * AppTheme.ui-scale);
+                            Text { text: "Coordinate with a separate WebGUI PostgreSQL instance?"; color: AppTheme.yellow; font-size: (15px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 700; height: (26px * AppTheme.ui-scale); }
+                            HorizontalLayout { height: (36px * AppTheme.ui-scale); spacing: (8px * AppTheme.ui-scale);
+                                Button { text: "Yes · PostgreSQL"; enabled: !root.setup-saving; clicked => { root.setup-postgres-choice = "yes"; root.settings-postgres-coordination = true; root.setup-postgres-validated = false; root.setup-postgres-status = "Enter and test the WebGUI PostgreSQL connection. No JSON is written until Setup Save."; } }
+                                Button { text: "No · Shared SQLite only"; enabled: !root.setup-saving; clicked => { root.setup-postgres-choice = "no"; root.settings-postgres-coordination = false; root.setup-postgres-validated = false; root.setup-postgres-status = "Setup Save will create the editable SQLite media-state policy only."; } }
+                            }
+                            if root.setup-postgres-choice == "yes": VerticalLayout { spacing: (6px * AppTheme.ui-scale);
+                                SettingField { label: "PostgreSQL Server URL"; value: root.setup-postgres-server; hint: "postgresql://host:5432/database"; edited(value) => { root.setup-postgres-server = value; root.setup-postgres-validated = false; } }
+                                SettingField { label: "PostgreSQL Username"; value: root.setup-postgres-username; hint: "WebGUI database user"; edited(value) => { root.setup-postgres-username = value; root.setup-postgres-validated = false; } }
+                                HorizontalLayout { height: (36px * AppTheme.ui-scale); spacing: (8px * AppTheme.ui-scale);
+                                    Label { text: "PostgreSQL Password"; width: (230px * AppTheme.ui-scale); }
+                                    LineEdit { text: root.setup-postgres-password; input-type: InputType.password; horizontal-stretch: 1; edited(value) => { root.setup-postgres-password = value; root.setup-postgres-validated = false; } }
+                                    Button { text: root.setup-postgres-validated ? "Validated" : "Test"; width: (110px * AppTheme.ui-scale); enabled: !root.setup-saving && !root.setup-postgres-validated; clicked => root.test-setup-postgres(root.setup-postgres-server, root.setup-postgres-username, root.setup-postgres-password); }
+                                }
+                            }
+                            Text { text: root.setup-postgres-status; color: root.setup-postgres-validated ? AppTheme.green : AppTheme.yellow; wrap: word-wrap; height: (36px * AppTheme.ui-scale); font-size: (12px * AppTheme.ui-scale) * AppTheme.font-scale; }
                         }
                     }
 
@@ -2277,14 +2314,14 @@ export component AppWindow inherits Window {
                     SetupPathField { label: "V/A / OST Artist Images Directory *"; value <=> root.settings-shared-artist-art-dir; hint: "Materialized portrait/banner files"; summary: "Shared portraits and banners for real Artists credited on V/A and soundtrack Albums."; enabled: root.setup-library-ready; browse => root.browse-setting-directory("artist-art"); guide => root.open-about-link("setup-artist-art"); }
                     SetupPathField { label: "Temporary cache *"; value <=> root.settings-temporary-cache-dir; hint: "Disposable candidate and preview files"; summary: "Disposable downloads and previews; local storage avoids slow artwork searches."; enabled: root.setup-library-ready; browse => root.browse-setting-directory("temporary"); guide => root.open-about-link("setup-cache"); }
                     SetupPathField { label: "Log directory *"; value <=> root.settings-log-dir; hint: "Runtime diagnostics"; summary: "Current per-run diagnostics are written below this root in run; no music is stored here."; enabled: root.setup-library-ready; browse => root.browse-setting-directory("logs"); guide => root.open-about-link("setup-logs"); }
-                    SetupPathField { label: "Credential directory *"; value <=> root.settings-credential-dir; hint: "Provider JSON files"; summary: "Provider connection JSON; secrets stay outside config.toml and ui.toml."; enabled: root.setup-library-ready; browse => root.browse-setting-directory("credentials"); guide => root.open-about-link("setup-credentials"); }
+                    SetupPathField { label: "Credential directory *"; value <=> root.settings-credential-dir; hint: "Provider and shared policy JSON files"; summary: "Provider credentials plus media-state-classification.json; existing files are never replaced by Setup."; enabled: root.setup-library-ready; browse => root.browse-setting-directory("credentials"); guide => root.open-about-link("setup-credentials"); }
                     SetupPathField { label: "Sample images directory"; value <=> root.settings-sample-dir; hint: "Optional Artist / Album Sample Library"; summary: "Optional Samples source images; this directory is never indexed as music."; enabled: root.setup-library-ready; browse => root.browse-sample-directory(); guide => root.open-about-link("setup-samples"); }
                     SettingField { label: "Ignored subdirectories"; value <=> root.settings-ignored-subs; hint: "Comma-separated; optional"; enabled: root.setup-library-ready; }
 
                     Rectangle { height: (78px * AppTheme.ui-scale); border-radius: (8px * AppTheme.ui-scale); border-width: (1px * AppTheme.ui-scale); border-color: root.setup-database-network-path && !root.settings-sqlite-shared ? AppTheme.danger : AppTheme.border; background: AppTheme.quiet-surface;
                         HorizontalLayout { padding: (12px * AppTheme.ui-scale); spacing: (12px * AppTheme.ui-scale);
                             Text { text: root.setup-database-network-path && !root.settings-sqlite-shared ? "Select Shared/network SQLite above to continue safely." : "Setup may take several minutes for a large first index. Keep this window open; album counts, current path, errors, and publication progress will be shown here."; color: root.setup-database-network-path && !root.settings-sqlite-shared ? AppTheme.danger : AppTheme.secondary-foreground; wrap: word-wrap; vertical-alignment: center; horizontal-stretch: 1; }
-                            Button { text: root.setup-saving ? "Setup in Progress…" : (root.setup-database-network-path && !root.settings-sqlite-shared ? "Shared Mode Required" : "Save & Open Settings"); width: root.setup-saving ? (220px * AppTheme.ui-scale) : (210px * AppTheme.ui-scale); enabled: root.setup-library-ready && !root.setup-saving && (!root.setup-database-network-path || root.settings-sqlite-shared) && (root.restore-path == "" || root.restore-path == root.setup-loaded-archive-path); clicked => root.save-setup(); }
+                            Button { text: root.setup-saving ? "Setup in Progress…" : (root.setup-database-network-path && !root.settings-sqlite-shared ? "Shared Mode Required" : "Save & Open Settings"); width: root.setup-saving ? (220px * AppTheme.ui-scale) : (210px * AppTheme.ui-scale); enabled: root.setup-library-ready && !root.setup-saving && (!root.setup-database-network-path || root.settings-sqlite-shared) && (!root.settings-sqlite-shared || root.setup-postgres-choice == "no" || (root.setup-postgres-choice == "yes" && root.setup-postgres-validated)) && (root.restore-path == "" || root.restore-path == root.setup-loaded-archive-path); clicked => root.save-setup(); }
                         }
                     }
                     Rectangle { height: (12px * AppTheme.ui-scale); background: transparent; }
@@ -3248,8 +3285,9 @@ export component AppWindow inherits Window {
                                     Text { text: "●"; color: AppTheme.green; font-size: (20px * AppTheme.ui-scale) * AppTheme.font-scale; vertical-alignment: center; }
                                     Heading { text: "Selected Artwork"; font-size: (16px * AppTheme.ui-scale) * AppTheme.font-scale; }
                                     Rectangle { horizontal-stretch: 1; background: transparent; }
-                                    Rectangle { width: (81px * AppTheme.ui-scale); height: (25px * AppTheme.ui-scale); border-radius: (12px * AppTheme.ui-scale); background: #0b3a35; border-color: AppTheme.green; border-width: (1px * AppTheme.ui-scale);
-                                        Text { text: root.selected-artwork-quality; color: AppTheme.green; font-size: (14px * AppTheme.ui-scale) * AppTheme.font-scale; horizontal-alignment: center; vertical-alignment: center; overflow: elide; }
+                                    Rectangle { width: (81px * AppTheme.ui-scale); height: (25px * AppTheme.ui-scale); border-radius: (12px * AppTheme.ui-scale); background: AppTheme.quiet-surface; border-color: root.database-monitor-color; border-width: (1px * AppTheme.ui-scale);
+                                        Text { text: root.database-monitor-text; color: root.database-monitor-color; font-size: (14px * AppTheme.ui-scale) * AppTheme.font-scale; horizontal-alignment: center; vertical-alignment: center; overflow: elide; }
+                                        TouchArea { enabled: root.database-monitor-health == "available" || root.database-monitor-health == "broken"; mouse-cursor: pointer; clicked => root.refresh-database-monitor(); }
                                     }
                                 }
                                 Rectangle { vertical-stretch: 1; background: AppTheme.image-surface; border-radius: (8px * AppTheme.ui-scale); border-color: AppTheme.border; border-width: (1px * AppTheme.ui-scale); clip: true;
@@ -3578,7 +3616,7 @@ export component AppWindow inherits Window {
                                     SettingsHelpTip { summary: "How is the Artist separator applied?"; detail: "Advanced: applied only to one joined Artist/TPE1 value and strict numbered filename credits. A real multi-value tag remains authoritative. JSON may contain artist_separator_regex (and optional artist_separator_profile) or a separators array. After changing and saving this setting, Reset SQLite Database before Refresh DB so one index never mixes identity rules."; }
                                 }
                                 PathSettingField { label: "Temporary Cache Directory *"; value <=> root.settings-temporary-cache-dir; hint: "Disposable run files"; browse => root.browse-setting-directory("temporary"); }
-                                PathSettingField { label: "Provider Credential Directory *"; value <=> root.settings-credential-dir; hint: "Provider JSON files"; browse => root.browse-setting-directory("credentials"); }
+                                PathSettingField { label: "Provider Credential Directory *"; value <=> root.settings-credential-dir; hint: "Provider and shared policy JSON files"; browse => root.browse-setting-directory("credentials"); }
                                 SettingField { label: "Ignored Folders"; value <=> root.settings-ignored-subs; hint: "Comma-separated"; }
                                 Heading { text: "Confirmation Messages"; height: (27px * AppTheme.ui-scale); }
                                 SettingToggle { label: "Disable Intro Message"; value <=> root.settings-disable-intro-message; }
@@ -3658,6 +3696,7 @@ export component AppWindow inherits Window {
                                     if root.settings-advanced-visible: VerticalLayout { spacing: (6px * AppTheme.ui-scale);
                                         Heading { text: "Database Access"; height: (29px * AppTheme.ui-scale); color: AppTheme.cyan; }
                                         SettingToggle { label: "Shared/Network SQLite"; value <=> root.settings-sqlite-shared; }
+                                        if root.settings-sqlite-shared: SettingToggle { label: "Coordinate with WebGUI PostgreSQL"; value <=> root.settings-postgres-coordination; }
                                         RadioToggle { label: "Use extra .client-lock for shared SQLite"; checked <=> root.settings-windows-client-lock; enabled: root.settings-sqlite-shared; height: (30px * AppTheme.ui-scale); }
                                         SettingsHelpTip { summary: "What must I check before sharing SQLite?"; detail: "Advanced: every client must point to the same database on a share with reliable cross-host locking. Shared mode uses SQLite rollback journaling and a 30-second busy timeout. The extra .client-lock is recommended only when every client participates and can acquire it; otherwise coordinate writes yourself. Read the Shared DB Guide before enabling."; }
                                         NeonAction { label: "Shared DB Guide ↗"; clicked => root.open-about-link("shared-db"); }
@@ -3980,7 +4019,7 @@ export component AppWindow inherits Window {
                                 }
                                 if root.settings-section == "Connections": VerticalLayout { spacing: (6px * AppTheme.ui-scale);
                                 SettingsHelpTip { summary: "Does Test enable artwork search?"; detail: "No. Test checks the provider connection (Navidrome uses a live OpenSubsonic ping). Credentials are stored in separate provider JSON files. To include a connected service in candidate search, also enable it and save Artwork Sources."; }
-                                Heading { text: "Provider & Album Coordination Credentials"; height: (27px * AppTheme.ui-scale); }
+                                Heading { text: "Source Provider Credentials"; height: (27px * AppTheme.ui-scale); }
                                 HorizontalLayout { height: (36px * AppTheme.ui-scale); spacing: (8px * AppTheme.ui-scale);
                                     Label { text: "Provider"; width: (220px * AppTheme.ui-scale); }
                                     ComboBox { horizontal-stretch: 1; model: ["Navidrome", "Fanart.tv", "Last.fm", "Discogs", "MusicBrainz OAuth", "Album Coordination"]; current-value <=> root.credential-provider; selected(value) => root.load-credential(value); }
@@ -4007,13 +4046,14 @@ export component AppWindow inherits Window {
                                 if root.settings-advanced-visible: VerticalLayout { spacing: (6px * AppTheme.ui-scale);
                                     Heading { text: "Artist & Album State Policy · JSON"; height: (27px * AppTheme.ui-scale); }
                                     Text { text: "Editable runtime authority for Artist-name rankings, independent Album-name/status rules, colors, and opposing-app override presentation."; color: AppTheme.secondary-foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; wrap: word-wrap; height: (38px * AppTheme.ui-scale); }
-                                    SettingsHelpTip { summary: "How is media-state-classification.json used?"; detail: "Standalone SQLite and PostgreSQL installs use the same policy schema. Album Coordination adds opposing-writer evidence but is not required. Save Connections validates this JSON and writes it beside the active config.toml. Reference: docs/media-state-classification-policy.md"; }
+                                    SettingsHelpTip { summary: "How is media-state-classification.json used?"; detail: "Standalone SQLite uses the built-in policy without creating a JSON. Shared SQLite creates an editable local policy; coordinated Setup first validates PostgreSQL, then Save creates album-coordination.json and its policy mirror without overwriting different existing files. PostgreSQL remains authoritative for coordinated edits. Reference: docs/media-state-classification-policy.md"; }
                                     TextEdit { height: (300px * AppTheme.ui-scale); text <=> root.settings-media-state-policy-json; wrap: word-wrap; font-size: (12px * AppTheme.ui-scale) * AppTheme.font-scale; }
                                     Text { text: root.settings-media-state-policy-status; color: AppTheme.green; font-size: (12px * AppTheme.ui-scale) * AppTheme.font-scale; height: (18px * AppTheme.ui-scale); overflow: elide; }
                                 }
                                 if root.settings-advanced-visible: VerticalLayout { spacing: (6px * AppTheme.ui-scale);
+                                    Heading { text: "Optional / Future Scope"; height: (27px * AppTheme.ui-scale); color: AppTheme.yellow; }
                                     SettingsHelpTip { summary: "Do I need AISPLINED for normal artwork work?"; detail: "No. AISPLINED is an optional, not-yet-complete provider. Keep it off unless you are specifically testing it. Its settings are saved separately from the credentials above."; }
-                                    Heading { text: "Optional AISPLINED Provider"; height: (27px * AppTheme.ui-scale); }
+                                    Heading { text: "AISPLINED Provider"; height: (27px * AppTheme.ui-scale); }
                                     RadioToggle { label: "AISPLINED provider (t.b.d)"; label-color: #7c8993; label-italic: true; checked <=> root.settings-ai-enabled; }
                                     SettingField { label: "Endpoint"; value <=> root.settings-ai-endpoint; hint: "Optional endpoint"; }
                                     SettingField { label: "Minimum Short Side"; value <=> root.settings-ai-minimum; hint: "600"; }

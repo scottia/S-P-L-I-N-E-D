@@ -752,6 +752,9 @@ pub fn coordination_database_url(config: &Config) -> Result<Option<String>, Stri
     if let Ok(value) = std::env::var("SPLINED_COORDINATION_DATABASE_URL") {
         let value = value.trim().to_string();
         if value.is_empty() {
+            if !config.scan.sqlite_shared || !config.scan.postgres_coordination {
+                return Ok(None);
+            }
             return load_album_coordination_database_url(config);
         }
         if !value.starts_with("postgres://") && !value.starts_with("postgresql://") {
@@ -761,6 +764,9 @@ pub fn coordination_database_url(config: &Config) -> Result<Option<String>, Stri
             );
         }
         return Ok(Some(value));
+    }
+    if !config.scan.sqlite_shared || !config.scan.postgres_coordination {
+        return Ok(None);
     }
     load_album_coordination_database_url(config)
 }

@@ -22,12 +22,37 @@ directory; `credential_file` and `token_file` are not Config v5 settings.
 | Discogs | `discogs.json` | Personal access token required |
 | MusicBrainz / Cover Art Archive | `musicbrainz.json` | Anonymous release authority and artwork; OAuth optional |
 | Navidrome / OpenSubsonic | `navidrome.json` | Server URL plus either a dedicated API key or username/password |
+| Album Coordination | `album-coordination.json` | Optional shared-SQLite connection to the WebGUI PostgreSQL instance |
 | iTunes / Apple | none | Anonymous |
 | Cover Art Archive | none | Anonymous |
 | Deezer | none | Anonymous |
 | Amazon Store | none | Anonymous, opt-in best-effort search |
 
 Credential JSON is sensitive. Never commit it, attach it to an issue, or copy secrets into `config.toml`.
+
+## Windows shared SQLite and Album Coordination
+
+Windows first-run keeps standalone SQLite simple: no coordination credential or
+external media-state policy is created. Enabling **Shared/network SQLite** adds
+an inline choice:
+
+- **No · Shared SQLite only** creates the editable local
+  `media-state-classification.json` on Setup Save.
+- **Yes · PostgreSQL** requires the PostgreSQL URL, username, and password. Test
+  performs a read-only connection, coordination-schema, and policy-revision
+  check. It creates no files. Setup Save creates `album-coordination.json` and
+  the validated policy mirror only after that successful Test.
+
+Existing different files are never replaced by Setup. Use **Advanced →
+Connections → Artist & Album State Policy · JSON** for deliberate later policy
+changes. PostgreSQL is authoritative when Album Coordination is configured.
+The local JSON is a bounded startup/runtime mirror, not a second competing
+authority.
+
+Config v5 persists the choice as `scan.postgres_coordination`. For upgrade
+compatibility only, an older shared-SQLite config that lacks this field but
+already has `album-coordination.json` is treated as previously opted in. New
+configs never infer coordination from an unused credential file.
 
 ## Filesystem protection
 
@@ -203,8 +228,10 @@ commands expose the corresponding `--mb-oauth-login` option.
 ## Moving or backing up credentials
 
 Changing `credential_dir` does not move existing JSON files. Close SPLINED,
-move the five standard files deliberately, update Config v5, verify filesystem
-permissions, then test provider status before deleting the old copy.
+move the standard provider files plus the non-secret
+`media-state-classification.json` policy deliberately, update Config v5,
+verify filesystem permissions, then test provider status before deleting the
+old copy.
 
 On Windows, use selective `.spl` export to include credentials, internal
 settings, and SQLite as needed. On file-backed runtimes, back up the credential

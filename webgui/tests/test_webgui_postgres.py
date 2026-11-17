@@ -1903,7 +1903,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertEqual(status.status_code, 200, status.text)
             self.assertTrue(status.json()["authenticated"])
             self.assertEqual(status.json()["username"], "restart-admin")
-            self.assertEqual(status.json()["database_migration"]["current"], 24)
+            self.assertEqual(status.json()["database_migration"]["current"], 25)
             self.assertTrue(status.json()["database_migration"]["automatic"])
             self.assertEqual(restarted.get("/api/artists").status_code, 200)
             self.assertEqual(

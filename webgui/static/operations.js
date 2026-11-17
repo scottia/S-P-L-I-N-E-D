@@ -48,7 +48,52 @@ async function sessionStatus() {
   const status = await api("/api/status"); state.csrf = status.csrf; state.server = status;
   state.mediaStatePolicy = status.media_state_policy || null;
   applyMediaStatePolicyPalette();
+  applyDatabaseMonitor(status.database_monitor);
   state.compRepairEnabled = !!status.comp_repair; return status;
+}
+function applyDatabaseMonitor(monitor = null) {
+  const resolved = monitor || {backend: "current", health: "current", text: "Current", description: "Standalone database", color: "#32dda0"};
+  state.databaseMonitor = resolved;
+  const badge = $("selectedQuality");
+  if (!badge) return;
+  badge.textContent = resolved.text || "Current";
+  badge.title = resolved.description || "Database status";
+  badge.dataset.backend = resolved.backend || "current";
+  badge.dataset.health = resolved.health || "current";
+  badge.style.setProperty("--database-monitor-color", resolved.color || "#32dda0");
+  badge.classList.add("database-monitor");
+  badge.classList.toggle("database-monitor-refreshable", ["available", "broken"].includes(resolved.health));
+  badge.classList.remove("comp-thumb-ready");
+  scheduleDatabaseMonitorPoll();
+}
+async function refreshDatabaseMonitor() {
+  if (!["available", "broken"].includes(state.databaseMonitor?.health)) return;
+  const status = await api("/api/status?refresh_database_monitor=1");
+  state.server = {...(state.server || {}), ...status};
+  applyDatabaseMonitor(status.database_monitor);
+}
+let databaseMonitorTimer = null;
+let databaseMonitorPollMilliseconds = 0;
+let databaseMonitorClickBound = false;
+function scheduleDatabaseMonitorPoll() {
+  const pollMilliseconds = Number(state.databaseMonitor?.poll_seconds) * 1000;
+  if (!Number.isFinite(pollMilliseconds) || pollMilliseconds <= 0) return;
+  if (!databaseMonitorClickBound) {
+    $("selectedQuality")?.addEventListener("click", () => runAction(refreshDatabaseMonitor));
+    databaseMonitorClickBound = true;
+  }
+  if (databaseMonitorTimer !== null && databaseMonitorPollMilliseconds === pollMilliseconds) return;
+  if (databaseMonitorTimer !== null) window.clearInterval(databaseMonitorTimer);
+  databaseMonitorPollMilliseconds = pollMilliseconds;
+  databaseMonitorTimer = window.setInterval(async () => {
+    try {
+      const status = await api("/api/status");
+      state.server = {...(state.server || {}), ...status};
+      applyDatabaseMonitor(status.database_monitor);
+    } catch (_error) {
+      applyDatabaseMonitor({backend: "postgres", health: "broken", text: "Postgres", description: "Connection broken", color: "#ff5268"});
+    }
+  }, pollMilliseconds);
 }
 async function initialize() {
   const status = await sessionStatus();
@@ -67,6 +112,7 @@ async function initialize() {
   state.artistSourceEnabled = Array.from(ARTIST_IMAGE_SOURCES).filter(key => artistSourceConfigured(key));
   state.enabledSources = state.sourceOrder.filter(key=>!settings.config.sources?.exclude_cover_sources?.includes(key) && settings.config.source_policies?.[key]?.enabled!==false);
   renderAll();
+  scheduleDatabaseMonitorPoll();
   // The workspace is display:none until authentication succeeds.  Restore
   // saved panel dimensions only after it has measurable width and height.
   requestAnimationFrame(() => { restoreLayout(); fitReviewToViewport(); });
@@ -1868,14 +1914,14 @@ async function renderMediaStatePolicyEditor(host) {
   const panel = node("section", "media-state-policy-editor");
   panel.append(
     node("h4", "settings-group-heading", "Artist & Album State Policy · JSON"),
-    node("p", "settings-subcopy", "Runtime authority for Artist-name rankings, independent Album-name/status rules, colors, and opposing-app override presentation. Standalone SQLite or PostgreSQL installs use the same schema; coordination adds only opposing-writer evidence."),
+    node("p", "settings-subcopy", "PostgreSQL runtime authority for Artist-name rankings, independent Album-name/status rules, database-monitor presentation, colors, and opposing-app override presentation. Coordinated Windows uses a validated local mirror of this revision."),
   );
   const link = node("a", "guide-link", "State policy reference");
   link.href = "https://github.com/scottia/S-P-L-I-N-E-D/blob/main/docs/media-state-classification-policy.md";
   link.target = "_blank"; link.rel = "noopener"; panel.append(link);
   const editor = node("textarea", "media-state-policy-json");
   editor.spellcheck = false; editor.setAttribute("aria-label", "Artist and Album state policy JSON");
-  editor.placeholder = "Loading media-state-classification.json…"; panel.append(editor);
+  editor.placeholder = "Loading the PostgreSQL media-state policy…"; panel.append(editor);
   const status = node("p", "settings-subcopy", "Loading active policy…");
   const actions = node("div", "connection-actions"), reload = node("button", "operation-button", "Reload"), save = node("button", "operation-button", "Validate & Save Policy");
   reload.type = save.type = "button"; actions.append(reload, save); panel.append(actions, status); host.append(panel);
@@ -2125,9 +2171,6 @@ async function openSettings() {
   function addSpecialSection(section, fields) {
     if (section.id === "enhancement") renderGraphicalEnhancement(fields, draft, () => renderSection(active, true));
     if (section.id === "sources") renderSourceOrderSettings(fields, draft, sourceProvider, value => sourceProvider = value, () => renderSection(active, true));
-    if (section.id === "connections") {
-      void renderConnectionSettings(fields, credentialProvider);
-    }
     if (section.id === "backup") {
       renderBackupSettings(fields, saved, contract, async restored => { saved = restored; await sessionStatus(); renderAll(); renderSection("backup"); }, advanced);
     }
@@ -2159,7 +2202,7 @@ async function openSettings() {
     draft.library ||= {};
     for (const key of ["various_artist_path", "soundtracks_path", "curated_compilations_path"])
       draft.library[key] ||= draft.library.music_library || "";
-    draft.scan ||= {}; draft.scan.shared_artist_art_dir ??= ""; draft.scan.temporary_cache_dir ??= draft.scan.cache_dir || ""; draft.scan.artist_separator_regex ??= DEFAULT_ARTIST_SEPARATOR_REGEX; draft.scan.artist_separator_profile ??= "Navidrome default"; delete draft.scan.sqlite_shared; delete draft.scan.windows_client_lock;
+    draft.scan ||= {}; draft.scan.shared_artist_art_dir ??= ""; draft.scan.temporary_cache_dir ??= draft.scan.cache_dir || ""; draft.scan.artist_separator_regex ??= DEFAULT_ARTIST_SEPARATOR_REGEX; draft.scan.artist_separator_profile ??= "Navidrome default"; delete draft.scan.sqlite_shared; delete draft.scan.postgres_coordination; delete draft.scan.windows_client_lock;
     draft.samples ||= {}; draft.aisplined ||= {};
     const section = available.find(item => item.id === id); clear(content); renderNav();
     const header = node("header", "settings-content-header"), copy = node("div");
@@ -2178,7 +2221,11 @@ async function openSettings() {
       const groupFor = path => section.id === "library" ? (["library.music_library", "library.various_artist_path", "library.soundtracks_path", "library.curated_compilations_path", "scan.scan_mode", "scan.scan_library_dir"].includes(path) ? "Library And Application Paths" : path.startsWith("scan.artist_separator_") || path.startsWith("scan.index_") ? "Library Index" : path === "database.url" ? "Database" : "Persistent Folders")
         : section.id === "artwork" ? (path.startsWith("output.") ? "Output Files" : path === "scan.shared_artist_art_dir" ? "V/A / OST Artist Images Directory" : "Sample Images")
         : section.id === "enhancement" ? "Resolution Range" : "";
-      if (section.id === "connections" && advanced) void renderMediaStatePolicyEditor(fields);
+      if (section.id === "connections") {
+        void renderConnectionSettings(fields, credentialProvider);
+        if (advanced) void renderMediaStatePolicyEditor(fields);
+        fields.append(node("h4", "settings-group-heading future-scope-heading", "Optional / Future Scope"));
+      }
       for (const descriptor of section.fields || []) {
         if (descriptor.runtimes && !descriptor.runtimes.includes("webgui") || descriptor.advanced && !advanced) continue;
         const group = groupFor(descriptor.path);

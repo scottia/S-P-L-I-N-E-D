@@ -543,7 +543,9 @@ Settings uses task-based sections:
 With **Advanced** enabled, Connections also contains the editable
 [`media-state-classification.json`](media-state-classification-policy.md)
 above Optional AISPLINED Provider. **Save Connections** validates the JSON,
-writes it beside the active `config.toml`, and activates it immediately.
+writes it to the configured Provider Credential Directory, and activates it
+immediately. When Album Coordination is configured, PostgreSQL is updated
+first and the returned revision is mirrored locally.
 
 Each section saves its own draft into one validated Config v5 document. There
 is no separate Slint configuration authority and raw TOML is not the normal

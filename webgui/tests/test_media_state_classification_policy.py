@@ -1,11 +1,35 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
+import tempfile
 import unittest
+from unittest.mock import patch
 
-from webgui.media_state_policy import classify_media_state, media_state_policy
+from webgui.media_state_policy import (
+    POLICY_FILENAME,
+    classify_media_state,
+    database_monitor_presentation,
+    editable_policy_path,
+    media_state_policy,
+)
 
 
 class MediaStateClassificationPolicyTests(unittest.TestCase):
+    def test_editable_policy_uses_configured_credential_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_root:
+            root = Path(raw_root)
+            config_file = root / "config.toml"
+            config_file.write_text(
+                '[credentials]\ncredential_dir = "private-credentials"\n',
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"SPLINED_CONFIG": str(config_file)}, clear=False):
+                self.assertEqual(
+                    editable_policy_path(),
+                    root / "private-credentials" / POLICY_FILENAME,
+                )
+
     def test_artist_name_priority_and_forbidden_colors_are_shared_policy(self) -> None:
         policy = media_state_policy()
 
@@ -74,3 +98,21 @@ class MediaStateClassificationPolicyTests(unittest.TestCase):
             classify_media_state("album", {"opposing_override"})["ui_status_key"],
             "overridden",
         )
+
+    def test_database_monitor_uses_policy_labels_and_colors(self) -> None:
+        self.assertEqual(
+            database_monitor_presentation("current", "current"),
+            {
+                "backend": "current",
+                "health": "current",
+                "text": "Current",
+                "description": "Current",
+                "color_name": "green",
+                "color": "#32dda0",
+                "poll_seconds": 180,
+            },
+        )
+        broken = database_monitor_presentation("postgres", "broken")
+        self.assertEqual(broken["text"], "Postgres")
+        self.assertEqual(broken["color_name"], "red")
+        self.assertEqual(broken["poll_seconds"], 180)

@@ -2534,8 +2534,7 @@ function selectedImage() {
     originSource: state.upscalePreview ? "Enhancement" : decision?.selected?.source || (existing?.image ? "Embedded track" : source),
     metric: metadata,
   });
-  $("selectedQuality").textContent = quality;
-  $("selectedQuality").classList.toggle("comp-thumb-ready", !!preparedComp && !state.pendingCompWrite);
+  applyDatabaseMonitor(state.databaseMonitor);
   $("review").classList.toggle("comp-thumbnail-ready", !!preparedComp && !state.pendingCompWrite);
   const extra = $("reviewExtra"); clear(extra); extra.classList.remove("embedded-metadata-row");
   const ribbon = $("embeddedRibbon");

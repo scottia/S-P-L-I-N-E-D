@@ -62,9 +62,9 @@ Sections** is one workspace-wide state.
 - **Connections** edits and tests the supported credential files. Saved secrets
   are masked, separate from Config v5, and blank secret fields retain their
   existing values. With Advanced enabled, the same section exposes
-  the shared [`media-state-classification.json`](media-state-classification-policy.md)
-  above Optional AISPLINED Provider; validation and save activate its Artist,
-  Album, status-dot, and override presentation rules without rebuilding WebGUI.
+  the shared [Artist & Album state policy](media-state-classification-policy.md)
+  above Optional AISPLINED Provider; validation and save update its revisioned
+  PostgreSQL authority without rebuilding WebGUI.
 - **Backup & Recovery** owns settings export/restore and deliberate catalog
   maintenance. Both the Safe Settings JSON and Shared Settings Contract exports
   include the active media-state policy.

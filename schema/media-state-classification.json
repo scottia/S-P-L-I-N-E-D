@@ -32,6 +32,32 @@
     "albumsComplete": "green",
     "override": "dark_grey"
   },
+  "database_monitor": {
+    "poll_seconds": 180,
+    "backends": {
+      "current": "Current",
+      "sqlite": "SQLite",
+      "postgres": "Postgres"
+    },
+    "states": {
+      "current": {
+        "label": "Current",
+        "color": "green"
+      },
+      "good": {
+        "label": "Operational",
+        "color": "green"
+      },
+      "available": {
+        "label": "Available but missing or invalid",
+        "color": "yellow"
+      },
+      "broken": {
+        "label": "Connection broken",
+        "color": "red"
+      }
+    }
+  },
   "override_presentation": {
     "condition": "opposing_override",
     "banner_kind": "override",

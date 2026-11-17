@@ -27,6 +27,8 @@ cache_dir = "_db"
 temporary_cache_dir = "_cache"
 # Enable only for an intentional shared/network splined.db (for example a UNC cache).
 sqlite_shared = false
+# Enable only after testing WebGUI PostgreSQL from Setup or Connections.
+postgres_coordination = false
 # Per-run diagnostic logs are created under log_dir/run and pruned by retention.
 log_dir = "_logs"
 

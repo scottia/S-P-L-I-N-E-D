@@ -32,7 +32,12 @@ from webgui.browser_sessions import BrowserSessionStore, SESSION_MAX_AGE_SECONDS
 from webgui.audit import sanitize, sanitize_text, utc_now
 from webgui.reconciliation import SQLiteReconciler
 from webgui import index_coordinator as indexer
-from webgui.media_state_policy import media_state_policy, save_media_state_policy
+from webgui.media_state_policy import (
+    database_media_state_policy,
+    database_monitor_presentation,
+    media_state_policy,
+    save_database_media_state_policy,
+)
 
 
 SETTINGS_UI = Path(__file__).resolve().parents[1] / "schema/settings-ui.json"
@@ -70,6 +75,10 @@ class Context:
         self.url = ""
         self.error = ""
         self.database_migration = {"current": 0, "applied": [], "automatic": True}
+        self.media_state_policy_revision = 0
+        self._database_monitor_lock = threading.Lock()
+        self._database_monitor_checked_at = 0.0
+        self._database_monitor_result: dict[str, object] | None = None
         self.lifecycle_lock = threading.RLock()
         try:
             cfg = (
@@ -91,9 +100,12 @@ class Context:
             self.error = "The database connection or saved configuration needs attention in Settings"
 
     def open(self, url):
+        self.invalidate_database_monitor()
         database = Database(url)
         self.database_migration = database.migrate()
         self.database_migration.update(database.upgrade_status(core.VERSION))
+        policy_record = database_media_state_policy(database)
+        self.media_state_policy_revision = int(policy_record["revision"])
         self.runtime = Runtime(self.config_file, database)
         self.services = Services(
             self.runtime, image_signing_key=self.image_signing_key
@@ -112,6 +124,38 @@ class Context:
             self.jobs = JobQueue(self.services)
         self.url = url
         self.error = ""
+
+    def database_monitor(self) -> dict[str, object]:
+        with self._database_monitor_lock:
+            now = time.monotonic()
+            poll_seconds = float(
+                media_state_policy()["database_monitor"]["poll_seconds"]
+            )
+            if (
+                self._database_monitor_result is not None
+                and now - self._database_monitor_checked_at < poll_seconds
+            ):
+                return dict(self._database_monitor_result)
+            if not self.url:
+                result = database_monitor_presentation("postgres", "available")
+            elif self.runtime is None or self.services is None:
+                result = database_monitor_presentation("postgres", "broken")
+            else:
+                try:
+                    with self.runtime.database.connect() as db:
+                        db.raw.execute("SELECT 1").fetchone()
+                except Exception:
+                    result = database_monitor_presentation("postgres", "broken")
+                else:
+                    result = database_monitor_presentation("postgres", "good")
+            self._database_monitor_checked_at = now
+            self._database_monitor_result = dict(result)
+            return result
+
+    def invalidate_database_monitor(self) -> None:
+        with self._database_monitor_lock:
+            self._database_monitor_checked_at = 0.0
+            self._database_monitor_result = None
 
     def require(self):
         if not self.services:
@@ -143,6 +187,7 @@ class Context:
             return self._configure(cfg)
 
     def _configure(self, cfg):
+        self.invalidate_database_monitor()
         if not isinstance(cfg, dict):
             raise ValueError("Settings must be an object")
         url = (
@@ -177,6 +222,8 @@ class Context:
             database = Database(url)
             self.database_migration = database.migrate()
             self.database_migration.update(database.upgrade_status(core.VERSION))
+            policy_record = database_media_state_policy(database)
+            self.media_state_policy_revision = int(policy_record["revision"])
             Runtime.validate(cfg)
             core.validate_filename(str(cfg.get("output", {}).get("file_name", "cover")))
             if not core.resolve_path(
@@ -577,6 +624,8 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
 
     @app.get("/api/status")
     def status(request: Request):
+        if request.query_params.get("refresh_database_monitor") == "1":
+            context.invalidate_database_monitor()
         session = request.state.session
         r = context.runtime
         result = {
@@ -591,6 +640,7 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
             ),
             "database": "PostgreSQL",
             "database_ready": bool(context.services),
+            "database_monitor": context.database_monitor(),
             "database_migration": context.database_migration,
             "media_state_policy": media_state_policy(),
         }
@@ -718,18 +768,27 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
 
     @app.get("/api/settings/media-state-policy")
     def get_media_state_policy():
-        return media_state_policy()
+        context.require()
+        record = database_media_state_policy(context.runtime.database, seed_if_missing=False)
+        context.media_state_policy_revision = int(record["revision"])
+        return record["policy"]
 
     @app.post("/api/settings/media-state-policy")
     def update_media_state_policy(payload: dict):
         try:
-            policy = save_media_state_policy(payload.get("policy"))
+            context.require()
+            record = save_database_media_state_policy(
+                context.runtime.database,
+                payload.get("policy"),
+                updated_by="webgui-settings",
+            )
+            context.media_state_policy_revision = int(record["revision"])
         except (OSError, ValueError, RuntimeError) as error:
             raise HTTPException(400, str(error)) from error
         context.services and context.services.audit(
-            "save-media-state-policy", "media-state-classification.json"
+            "save-media-state-policy", "postgresql-policy"
         )
-        return policy
+        return record["policy"]
 
     @app.get("/api/settings/library-directories")
     def library_directories(path: str = ""):

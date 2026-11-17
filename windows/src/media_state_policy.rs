@@ -2,18 +2,20 @@
 //!
 //! A standalone SQLite installation and a coordinated PostgreSQL installation
 //! both use the same JSON policy. `SPLINED_MEDIA_STATE_POLICY` may point both
-//! runtimes at one external file. Release and Store packages ship that file
-//! beside the executable; classification behavior is never compiled into the
-//! application.
+//! runtimes at one external file. Windows carries the repository policy only
+//! as an unsaved first-run seed; Setup writes the editable runtime authority
+//! in the selected Provider Credential Directory beside
+//! `album-coordination.json`.
 
 use serde::{Deserialize, Serialize};
+use sqlx::{PgPool, Row};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, RwLock};
 
-#[cfg(test)]
-const TEST_POLICY: &str = include_str!("../../schema/media-state-classification.json");
+const DEFAULT_POLICY: &str = include_str!("../../schema/media-state-classification.json");
 pub const POLICY_ENV: &str = "SPLINED_MEDIA_STATE_POLICY";
+pub const POLICY_FILENAME: &str = "media-state-classification.json";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MediaStatePolicy {
@@ -22,9 +24,39 @@ pub struct MediaStatePolicy {
     pub colors: BTreeMap<String, String>,
     pub light_colors: BTreeMap<String, String>,
     pub ui_status_colors: BTreeMap<String, String>,
+    pub database_monitor: DatabaseMonitorPolicy,
     pub artist: RankedPolicy,
     pub album: AlbumPolicy,
     pub override_presentation: OverridePresentation,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DatabaseMonitorPolicy {
+    pub poll_seconds: u64,
+    pub backends: BTreeMap<String, String>,
+    pub states: BTreeMap<String, DatabaseMonitorState>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DatabaseMonitorState {
+    pub label: String,
+    pub color: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DatabaseMonitorPresentation {
+    pub backend: String,
+    pub health: String,
+    pub text: String,
+    pub description: String,
+    pub color_name: String,
+    pub color: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PostgresPolicySnapshot {
+    pub policy_json: String,
+    pub revision: i64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -126,6 +158,38 @@ pub fn named_color(color_name: &str) -> String {
         .unwrap_or_else(|| "#eef8ff".to_string())
 }
 
+pub fn database_monitor_presentation(backend: &str, health: &str) -> DatabaseMonitorPresentation {
+    let policy = policy();
+    let backend = if policy.database_monitor.backends.contains_key(backend) {
+        backend
+    } else {
+        "current"
+    };
+    let health = if policy.database_monitor.states.contains_key(health) {
+        health
+    } else {
+        "available"
+    };
+    let state = &policy.database_monitor.states[health];
+    let color = policy
+        .colors
+        .get(&state.color)
+        .cloned()
+        .expect("database monitor color must be defined");
+    DatabaseMonitorPresentation {
+        backend: backend.to_string(),
+        health: health.to_string(),
+        text: policy.database_monitor.backends[backend].clone(),
+        description: state.label.clone(),
+        color_name: state.color.clone(),
+        color,
+    }
+}
+
+pub fn database_monitor_poll_seconds() -> u64 {
+    policy().database_monitor.poll_seconds
+}
+
 pub fn album_status_dot(condition: &str) -> Option<StatusDotRule> {
     policy()
         .album
@@ -160,6 +224,99 @@ pub fn save_policy(path: &Path, text: &str) -> Result<(), String> {
     Ok(())
 }
 
+pub fn activate_policy(text: &str) -> Result<(), String> {
+    let parsed = parse_policy(text)?;
+    *POLICY
+        .write()
+        .map_err(|_| "media-state policy lock is unavailable".to_string())? = parsed;
+    Ok(())
+}
+
+pub async fn fetch_postgres_policy(pool: &PgPool) -> Result<PostgresPolicySnapshot, String> {
+    let row = sqlx::query(
+        "SELECT policy::text AS policy_json,revision FROM media_state_classification_policy WHERE singleton=TRUE",
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(|error| format!("PostgreSQL media-state policy is unavailable: {error}"))?
+    .ok_or_else(|| "PostgreSQL media-state policy has not been initialized by WebGUI.".to_string())?;
+    let raw = row
+        .try_get::<String, _>("policy_json")
+        .map_err(|error| format!("PostgreSQL media-state policy is unreadable: {error}"))?;
+    let value = serde_json::from_str::<serde_json::Value>(&raw)
+        .map_err(|error| format!("PostgreSQL media-state policy JSON is invalid: {error}"))?;
+    let canonical = serde_json::to_string_pretty(&value)
+        .map_err(|error| format!("PostgreSQL media-state policy cannot be serialized: {error}"))?
+        + "\n";
+    parse_policy(&canonical)?;
+    Ok(PostgresPolicySnapshot {
+        policy_json: canonical,
+        revision: row.try_get::<i64, _>("revision").map_err(|error| {
+            format!("PostgreSQL media-state policy revision is unreadable: {error}")
+        })?,
+    })
+}
+
+pub async fn save_postgres_policy(
+    pool: &PgPool,
+    text: &str,
+) -> Result<PostgresPolicySnapshot, String> {
+    parse_policy(text)?;
+    let row = sqlx::query(
+        "INSERT INTO media_state_classification_policy(singleton,policy,revision,updated_by) VALUES(TRUE,$1::jsonb,1,'windows-settings') ON CONFLICT(singleton) DO UPDATE SET policy=excluded.policy,revision=media_state_classification_policy.revision+1,updated_at=now(),updated_by=excluded.updated_by RETURNING policy::text AS policy_json,revision",
+    )
+    .bind(text)
+    .fetch_one(pool)
+    .await
+    .map_err(|error| format!("Unable to save PostgreSQL media-state policy: {error}"))?;
+    let raw = row
+        .try_get::<String, _>("policy_json")
+        .map_err(|error| format!("Saved PostgreSQL media-state policy is unreadable: {error}"))?;
+    let value = serde_json::from_str::<serde_json::Value>(&raw)
+        .map_err(|error| format!("Saved PostgreSQL media-state policy JSON is invalid: {error}"))?;
+    let canonical = serde_json::to_string_pretty(&value)
+        .map_err(|error| format!("Saved PostgreSQL policy cannot be serialized: {error}"))?
+        + "\n";
+    parse_policy(&canonical)?;
+    Ok(PostgresPolicySnapshot {
+        policy_json: canonical,
+        revision: row
+            .try_get::<i64, _>("revision")
+            .map_err(|error| format!("Saved PostgreSQL policy revision is unreadable: {error}"))?,
+    })
+}
+
+pub fn policy_path(config: &crate::config::Config) -> Result<PathBuf, String> {
+    let directory = config.credentials.credential_dir.trim();
+    if directory.is_empty() {
+        return Err(
+            "Provider Credential Directory is required for the media-state policy.".to_string(),
+        );
+    }
+    Ok(PathBuf::from(directory).join(POLICY_FILENAME))
+}
+
+/// Adopt an existing policy without rewriting it, or create the first policy
+/// when Setup saves into an otherwise empty Provider Credential Directory.
+pub fn ensure_policy(config: &crate::config::Config) -> Result<PathBuf, String> {
+    let path = policy_path(config)?;
+    if path.is_file() {
+        let text = std::fs::read_to_string(&path).map_err(|error| {
+            format!(
+                "Unable to read existing media-state policy {}: {error}",
+                path.display()
+            )
+        })?;
+        let parsed = parse_policy(&text)?;
+        *POLICY
+            .write()
+            .map_err(|_| "media-state policy lock is unavailable".to_string())? = parsed;
+        return Ok(path);
+    }
+    save_policy(&path, &policy_json())?;
+    Ok(path)
+}
+
 fn classify(
     policy: &MediaStatePolicy,
     rules: &[StateRule],
@@ -190,20 +347,23 @@ fn classify(
 }
 
 fn load_policy() -> MediaStatePolicy {
-    let mut errors = Vec::new();
     for path in policy_candidates() {
         match std::fs::read_to_string(&path) {
             Ok(text) => match parse_policy(&text) {
                 Ok(value) => return value,
-                Err(error) => errors.push(format!("{}: {error}", path.display())),
+                Err(error) => panic!(
+                    "invalid external media-state-classification.json {}: {error}",
+                    path.display()
+                ),
             },
-            Err(error) => errors.push(format!("{}: {error}", path.display())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!(
+                "unable to read external media-state-classification.json {}: {error}",
+                path.display()
+            ),
         }
     }
-    panic!(
-        "external media-state-classification.json is required: {}",
-        errors.join("; ")
-    )
+    parse_policy(DEFAULT_POLICY).expect("repository media-state policy seed must be valid")
 }
 
 fn policy_candidates() -> Vec<PathBuf> {
@@ -211,30 +371,11 @@ fn policy_candidates() -> Vec<PathBuf> {
     if let Some(path) = std::env::var_os(POLICY_ENV).filter(|value| !value.is_empty()) {
         result.push(PathBuf::from(path));
     }
-    if let Some(path) = std::env::var_os("SPLINED_CONFIG")
-        .filter(|value| !value.is_empty())
-        .and_then(|value| Path::new(&value).parent().map(Path::to_path_buf))
+    if let Ok(config) = crate::config::load_config()
+        && let Ok(path) = policy_path(&config)
     {
-        result.push(path.join("media-state-classification.json"));
+        result.push(path);
     }
-    if let Ok(layout) = crate::portable::app_layout()
-        && let Some(directory) = layout.config_file.parent()
-    {
-        result.push(directory.join("media-state-classification.json"));
-    }
-    if let Ok(executable) = std::env::current_exe()
-        && let Some(root) = executable.parent()
-    {
-        result.push(root.join("media-state-classification.json"));
-        result.push(root.join("data").join("media-state-classification.json"));
-    }
-    #[cfg(debug_assertions)]
-    result.push(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("schema")
-            .join("media-state-classification.json"),
-    );
     result
 }
 
@@ -291,6 +432,36 @@ fn parse_policy(text: &str) -> Result<MediaStatePolicy, String> {
             ));
         }
     }
+    for backend in ["current", "sqlite", "postgres"] {
+        if value
+            .database_monitor
+            .backends
+            .get(backend)
+            .is_none_or(|label| label.trim().is_empty())
+        {
+            return Err(format!(
+                "media-state policy requires database monitor backend {backend}"
+            ));
+        }
+    }
+    if !(30..=3600).contains(&value.database_monitor.poll_seconds) {
+        return Err(
+            "media-state policy database monitor poll_seconds must be from 30 through 3600"
+                .to_string(),
+        );
+    }
+    for health in ["current", "good", "available", "broken"] {
+        let Some(state) = value.database_monitor.states.get(health) else {
+            return Err(format!(
+                "media-state policy requires database monitor state {health}"
+            ));
+        };
+        if state.label.trim().is_empty() || !value.colors.contains_key(&state.color) {
+            return Err(format!(
+                "media-state policy has an invalid database monitor state {health}"
+            ));
+        }
+    }
     for dot in &value.album.status_dots {
         if dot.condition.trim().is_empty()
             || dot.label.trim().is_empty()
@@ -330,6 +501,7 @@ fn validate_colors(colors: &BTreeMap<String, String>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn artist_policy_never_selects_album_only_colors() {
@@ -365,12 +537,36 @@ mod tests {
     }
 
     #[test]
+    fn database_monitor_uses_policy_labels_and_semantic_colors() {
+        let local = database_monitor_presentation("current", "current");
+        assert_eq!(local.text, "Current");
+        assert_eq!(local.color_name, "green");
+        let broken = database_monitor_presentation("postgres", "broken");
+        assert_eq!(broken.text, "Postgres");
+        assert_eq!(broken.color_name, "red");
+        assert_eq!(database_monitor_poll_seconds(), 180);
+    }
+
+    #[test]
     fn editor_validation_rejects_an_unknown_color() {
-        let invalid = TEST_POLICY.replace("\"color\": \"yellow\"", "\"color\": \"not-defined\"");
+        let invalid = DEFAULT_POLICY.replace("\"color\": \"yellow\"", "\"color\": \"not-defined\"");
         assert!(
             validate_policy(&invalid)
                 .expect_err("unknown color must fail")
                 .contains("unknown color")
         );
+    }
+
+    #[test]
+    fn setup_adopts_existing_credential_directory_policy_without_rewriting_it() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join(POLICY_FILENAME);
+        let existing = format!("\n{DEFAULT_POLICY}\n");
+        std::fs::write(&path, &existing).unwrap();
+        let mut config = crate::config::Config::default();
+        config.credentials.credential_dir = temp.path().to_string_lossy().into_owned();
+
+        assert_eq!(ensure_policy(&config).unwrap(), path);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), existing);
     }
 }

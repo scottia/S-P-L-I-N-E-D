@@ -50,7 +50,6 @@ Remove-Item -LiteralPath $LayoutRoot, $UnpackedRoot -Recurse -Force -ErrorAction
 New-Item -ItemType Directory -Force -Path $LayoutRoot | Out-Null
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $OutputPath) | Out-Null
 Copy-Item -LiteralPath $ExecutablePath -Destination (Join-Path $LayoutRoot "splined.exe")
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\..\schema\media-state-classification.json') -Destination (Join-Path $LayoutRoot "media-state-classification.json")
 Copy-Item -LiteralPath $ManifestPath -Destination (Join-Path $LayoutRoot "Package.appxmanifest")
 winapp manifest update-assets $IconPath --manifest (Join-Path $LayoutRoot "Package.appxmanifest")
 
