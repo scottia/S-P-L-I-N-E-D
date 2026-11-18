@@ -4,6 +4,8 @@
 # No runtime TOML is created until the operator saves Setup.
 
 config_version = 5
+# Filled with the selected Configuration Path when Setup is saved.
+configuration_path = ""
 mode = "read"
 verbosity = "info"
 

@@ -22,27 +22,29 @@ The Cargo-built executable contains the Rust application and Slint GUI. Normal
 startup and scans do not extract executable code, load an application bridge,
 or launch a SPLINED processing child; the application runs as one process.
 
-Before first save, launching the executable creates none of the configuration,
-database, cache, log, credential, or obsolete bootstrap directories. The
-ordinary workspace stays unavailable and structured Setup opens. After valid
-choices are explicitly saved, the application creates:
+Before first save, launching the executable creates only a disposable
+`splined-setup.tmp` draft beside `splined.exe`; it creates none of the
+configuration, database, cache, log, credential, or obsolete bootstrap
+directories. The ordinary workspace stays unavailable and structured Setup
+opens. After valid choices are explicitly saved, the application deletes that
+draft and creates, in the selected Configuration Path:
 
 ```text
 SPLINED\
   splined.exe
   config.toml
   ui.toml
-  configuration-location.toml  (only when Configuration Path is relocated)
 ```
 
-These files are the only Config v5 and interface-state authority. Process CWD
-does not affect resolution. Relative paths resolve from the directory containing
-`splined.exe`; absolute, mapped-drive, and UNC paths remain unchanged. Copying
-the complete directory carries portable settings. Deleting it removes
-SPLINED-owned settings.
+The two TOMLs are the only Config v5 and interface-state authority. Config v5
+records the absolute `configuration_path`; a per-install Windows bootstrap
+contains only the path required to find a relocated Config v5. Process CWD does
+not affect resolution. Relative paths resolve from the directory containing
+`splined.exe`; absolute, mapped-drive, and UNC paths remain unchanged.
 
-No Registry value is consulted as current or migration authority. An existing
-legacy `data\config.toml` is discovered automatically; the user is never asked to
+The per-install bootstrap is not a settings authority and contains no secrets.
+An existing v3.0.10 locator is migrated once and removed. An existing legacy
+`data\config.toml` is discovered automatically; the user is never asked to
 browse to it. If that file is missing, invalid, or operationally incomplete,
 Setup displays the real error instead of silently continuing with defaults.
 

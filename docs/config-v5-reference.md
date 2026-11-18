@@ -22,18 +22,22 @@ WebGUI reads the file selected by `SPLINED_CONFIG`, normally
 they are not paths on the browser computer. Relative values resolve from the
 directory containing the active Config v5 file. Windows stores the same
 validated document at `<portable root>/config.toml` and interface state at
-`<portable root>/ui.toml` by default. An install-scoped
-`configuration-location.toml` can point to a user-selected Configuration Path,
-and legacy `<portable root>/data/config.toml` remains discoverable. There is no
-Registry authority for either file.
+`<portable root>/ui.toml` by default. Saved Config v5 records its own absolute
+`configuration_path`. When that directory is relocated, an installation-scoped
+Windows bootstrap remembers where to find Config v5; it contains no settings or
+credentials and is not a second configuration authority. Legacy
+`<portable root>/data/config.toml` remains discoverable. A v3.0.10 or earlier
+`configuration-location.toml` is imported once and then removed.
 
 Packaged Windows stores the same files beneath
 `%LOCALAPPDATA%\Packages\<package-family>\LocalState\SPLINED`. No Registry
-value or migration marker is an active configuration authority. If Config v5
+value or migration marker is a configuration authority. If Config v5
 is missing or cannot be loaded, structured Setup opens; SPLINED does not
 substitute `Config::default()` and present an initialized workspace.
 
-On first Windows launch the library, SQL database, temporary run cache, log,
+On first Windows launch a disposable `splined-setup.tmp` beside the portable
+executable holds only the unsaved Setup draft. It is deleted after both TOMLs
+and the Configuration Path bootstrap are verified. The library, SQL database, temporary run cache, log,
 and credential directories are mandatory choices. SPLINED creates only the
 selected database, run-cache, log, and credential directories after explicit,
 validated **Save & Open Settings**. The ZIP and an ordinary pre-save launch do not

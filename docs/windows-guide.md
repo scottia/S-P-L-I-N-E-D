@@ -54,7 +54,8 @@ separate PostgreSQL database. See
 1. Start `splined.exe`. Missing or invalid Config v5 opens **Welcome to
    S.P.L.I.N.E.D.** instead of an initialized workspace.
 2. Keep the default Configuration Path beside `splined.exe`, or deliberately
-   choose another persistent directory. No TOML exists yet.
+   choose another persistent directory. No TOML exists yet; the local
+   `splined-setup.tmp` file is only a disposable Setup draft.
 3. Optionally load an existing Settings Archive and enter its password.
 4. Choose the Music Library. This unlocks the remaining Setup paths.
 5. Choose a persistent database directory for `splined.db`. New local
@@ -73,8 +74,10 @@ separate PostgreSQL database. See
 
 ### Setup path reference
 
-Setup keeps the repository's Windows example configuration in memory until
-**Save & Open Settings**. Each path has a separate responsibility:
+Setup loads the repository's Windows example configuration through a disposable
+`splined-setup.tmp` beside the portable executable until **Save & Open
+Settings**. The draft is deleted after the saved TOMLs and Configuration Path
+are verified. Each path has a separate responsibility:
 
 | Setup path | Purpose |
 | --- | --- |
@@ -97,7 +100,7 @@ Each **Guide ↗** control in Setup opens the matching explanation below.
 
 This folder owns `config.toml` and `ui.toml`. Portable starts with the folder
 containing `splined.exe`; Setup remains in memory and writes neither TOML until
-**Save & Open Settings** succeeds.
+**Save & Open Settings** succeeds. Saved Config v5 records this absolute path.
 
 #### Music Library
 
@@ -175,7 +178,6 @@ Portable mode discovers current state at the executable folder by default:
 ```text
 <portable folder>\config.toml              Config v5
 <portable folder>\ui.toml                  interface preferences
-<portable folder>\configuration-location.toml  optional pointer to a different Configuration Path
 <credential directory>\*.json             provider credentials
 <database directory>\splined.db            media and workflow database
 <temporary cache directory>\...            disposable candidates and previews
@@ -188,9 +190,12 @@ Store mode keeps `config.toml` and `ui.toml` below:
 ```
 
 Configured absolute, mapped-drive, and UNC paths remain unchanged. Relative
-paths resolve from the active Portable or Store state root. SPLINED does not
-use the Windows Registry as configuration authority. Existing portable
-`data\config.toml` and `data\ui.toml` remain discoverable for compatibility.
+paths resolve from the active Portable or Store state root. A per-install
+Windows bootstrap stores only the selected Configuration Path needed to locate
+relocated TOMLs; it is not configuration authority and stores no credentials.
+Config v5 also records that path. Existing portable `data\config.toml` and
+`data\ui.toml` remain discoverable for compatibility. An older
+`configuration-location.toml` is migrated once and removed.
 
 ### Move or restore existing settings
 

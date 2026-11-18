@@ -7,11 +7,12 @@ configuration.
 
 ## Accepted behavior
 
-- A clean Portable launch holds the repository's Windows Config v5 example in
-  memory. It creates neither `config.toml` nor `ui.toml` until **Save & Open
-  Settings** succeeds.
+- A clean Portable launch copies the repository's Windows Config v5 example to
+  a disposable local `splined-setup.tmp` draft. It creates neither `config.toml`
+  nor `ui.toml` until **Save & Open Settings** succeeds, then removes the draft.
 - Configuration defaults to the folder containing `splined.exe`. A deliberate
-  alternate Configuration Path is recorded by an installation-scoped locator;
+  alternate Configuration Path is recorded in Config v5 and by a path-only,
+  installation-scoped Windows bootstrap;
   a different Portable copy cannot inherit a path selected by another test or
   installation.
 - Setup initially enables Configuration Path, optional Settings Archive and

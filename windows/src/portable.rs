@@ -1,17 +1,25 @@
 //! Windows application and configuration-state root discovery.
 //!
-//! This module deliberately performs no filesystem writes. Portable state is
-//! rooted beside `splined.exe`; packaged state is rooted under the package's
-//! LocalState directory. Configuration/setup code creates configuration and
-//! runtime files only after an explicit save.
+//! Portable state is rooted beside `splined.exe`; packaged state is rooted
+//! under the package's LocalState directory. Normal discovery is read-only.
+//! The sole exception is one-time retirement of the v3.0.10 configuration
+//! locator after its path has been transferred to the per-install bootstrap.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 static APP_ROOT_OVERRIDE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
 static STATE_ROOT_OVERRIDE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+static SESSION_CONFIGURATION_BOOTSTRAP: OnceLock<Mutex<HashMap<PathBuf, PathBuf>>> =
+    OnceLock::new();
+
+const CONFIGURATION_BOOTSTRAP_ROOT: &str = r"Software\SPLINED\Installations";
+const CONFIGURATION_DIRECTORY_VALUE: &str = "ConfigurationDirectory";
+const APPLICATION_ROOT_VALUE: &str = "ApplicationRoot";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppLayout {
@@ -128,16 +136,21 @@ pub fn default_configuration_directory(root: &Path) -> PathBuf {
     root.to_path_buf()
 }
 
-/// The locator belongs to this installation. A portable copy cannot inherit a
-/// path selected by an unrelated test or installation under the same account.
-pub fn configuration_locator_path() -> Result<PathBuf, String> {
-    Ok(state_root()?.join("configuration-location.toml"))
-}
-
 pub fn configuration_directory_for_root(root: &Path) -> Result<PathBuf, String> {
+    // v3.0.10 and earlier used a portable sidecar to locate remote TOMLs. Read
+    // it once, transfer the selection to the installation-scoped bootstrap,
+    // and remove the sidecar only after that transfer succeeds.
     let locator = root.join("configuration-location.toml");
     if locator.is_file() {
-        return configuration_directory_from_locator(root, &locator);
+        let directory = configuration_directory_from_locator(root, &locator)?;
+        write_configuration_bootstrap(root, &directory)?;
+        let config_migration = persist_configuration_path_in_existing_config(&directory);
+        retire_configuration_locator(root)?;
+        config_migration?;
+        return Ok(directory);
+    }
+    if let Some(directory) = configuration_directory_from_bootstrap(root)? {
+        return Ok(directory);
     }
     // Existing portable releases stored both TOMLs under data/. Keep those
     // installations loadable without manufacturing a locator during startup.
@@ -146,6 +159,181 @@ pub fn configuration_directory_for_root(root: &Path) -> Result<PathBuf, String> 
         return Ok(legacy);
     }
     Ok(default_configuration_directory(root))
+}
+
+/// Persist the selected Configuration Path without manufacturing a portable
+/// file beside `splined.exe`. The key is scoped to the executable directory,
+/// so separate portable installations cannot inherit each other's settings.
+pub fn save_configuration_directory_bootstrap(root: &Path, directory: &Path) -> Result<(), String> {
+    if !root.is_absolute() {
+        return Err(format!(
+            "The SPLINED application root must be absolute: {}",
+            root.display()
+        ));
+    }
+    if !directory.is_absolute() {
+        return Err(format!(
+            "The SPLINED configuration directory must be absolute: {}",
+            directory.display()
+        ));
+    }
+    write_configuration_bootstrap(root, directory)?;
+    retire_configuration_locator(root)
+}
+
+fn retire_configuration_locator(root: &Path) -> Result<(), String> {
+    let retired_locator = root.join("configuration-location.toml");
+    if retired_locator.is_file() {
+        std::fs::remove_file(&retired_locator).map_err(|error| {
+            format!(
+                "The Configuration Path was saved, but the retired locator could not be removed {}: {error}",
+                retired_locator.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn persist_configuration_path_in_existing_config(directory: &Path) -> Result<(), String> {
+    let path = directory.join("config.toml");
+    if !path.is_file() {
+        return Ok(());
+    }
+    let body = std::fs::read_to_string(&path).map_err(|error| {
+        format!(
+            "Unable to read Config v5 while migrating its Configuration Path {}: {error}",
+            path.display()
+        )
+    })?;
+    let mut document: toml::Value = toml::from_str(&body).map_err(|error| {
+        format!(
+            "Unable to migrate the Configuration Path in {}: {error}",
+            path.display()
+        )
+    })?;
+    let table = document
+        .as_table_mut()
+        .ok_or_else(|| format!("Config v5 must be a TOML table: {}", path.display()))?;
+    let expected = display_path(directory);
+    if table
+        .get("configuration_path")
+        .and_then(toml::Value::as_str)
+        == Some(expected.as_str())
+    {
+        return Ok(());
+    }
+    table.insert(
+        "configuration_path".to_string(),
+        toml::Value::String(expected.clone()),
+    );
+    let migrated = toml::to_string_pretty(&document)
+        .map_err(|error| format!("Unable to serialize migrated Config v5: {error}"))?;
+    crate::safe_write::replace_text_file(&path, &migrated, "SPLINED configuration", |candidate| {
+        let parsed: toml::Value = toml::from_str(candidate)
+            .map_err(|error| format!("Invalid migrated Config v5: {error}"))?;
+        if parsed
+            .get("configuration_path")
+            .and_then(toml::Value::as_str)
+            == Some(expected.as_str())
+        {
+            Ok(())
+        } else {
+            Err("Migrated Config v5 did not retain its Configuration Path.".to_string())
+        }
+    })
+}
+
+pub fn configuration_directory_from_bootstrap(root: &Path) -> Result<Option<PathBuf>, String> {
+    let Some(directory) = read_configuration_bootstrap(root)? else {
+        return Ok(None);
+    };
+    if !directory.is_absolute() {
+        return Err(format!(
+            "The saved SPLINED Configuration Path is not absolute: {}",
+            directory.display()
+        ));
+    }
+    Ok(Some(directory))
+}
+
+fn installation_bootstrap_key(root: &Path) -> String {
+    let normalized = display_path(root)
+        .trim_end_matches(['\\', '/'])
+        .to_ascii_lowercase();
+    let digest = Sha256::digest(normalized.as_bytes());
+    format!(r"{CONFIGURATION_BOOTSTRAP_ROOT}\{digest:x}")
+}
+
+#[cfg(all(windows, not(test)))]
+fn read_configuration_bootstrap(root: &Path) -> Result<Option<PathBuf>, String> {
+    if let Some(directory) = session_configuration_bootstrap(root)? {
+        return Ok(Some(directory));
+    }
+    if std::env::var_os("SPLINED_INTERNAL_STATE_ROOT").is_some() {
+        return Ok(None);
+    }
+    let key_path = installation_bootstrap_key(root);
+    let Ok(key) = windows_registry::CURRENT_USER.open(&key_path) else {
+        return Ok(None);
+    };
+    let Ok(directory) = key.get_string(CONFIGURATION_DIRECTORY_VALUE) else {
+        return Ok(None);
+    };
+    Ok(Some(PathBuf::from(directory)))
+}
+
+#[cfg(all(windows, not(test)))]
+fn write_configuration_bootstrap(root: &Path, directory: &Path) -> Result<(), String> {
+    remember_session_configuration_bootstrap(root, directory)?;
+    if std::env::var_os("SPLINED_INTERNAL_STATE_ROOT").is_some() {
+        return Ok(());
+    }
+    let key_path = installation_bootstrap_key(root);
+    let key = windows_registry::CURRENT_USER
+        .create(&key_path)
+        .map_err(|error| {
+            format!("Unable to open the SPLINED Configuration Path bootstrap: {error}")
+        })?;
+    key.set_string(APPLICATION_ROOT_VALUE, display_path(root))
+        .and_then(|_| key.set_string(CONFIGURATION_DIRECTORY_VALUE, display_path(directory)))
+        .map_err(|error| format!("Unable to save the SPLINED Configuration Path: {error}"))
+}
+
+#[cfg(all(not(windows), not(test)))]
+fn read_configuration_bootstrap(root: &Path) -> Result<Option<PathBuf>, String> {
+    session_configuration_bootstrap(root)
+}
+
+#[cfg(all(not(windows), not(test)))]
+fn write_configuration_bootstrap(root: &Path, directory: &Path) -> Result<(), String> {
+    remember_session_configuration_bootstrap(root, directory)
+}
+
+#[cfg(test)]
+fn read_configuration_bootstrap(root: &Path) -> Result<Option<PathBuf>, String> {
+    session_configuration_bootstrap(root)
+}
+
+#[cfg(test)]
+fn write_configuration_bootstrap(root: &Path, directory: &Path) -> Result<(), String> {
+    remember_session_configuration_bootstrap(root, directory)
+}
+
+fn session_configuration_bootstrap(root: &Path) -> Result<Option<PathBuf>, String> {
+    let values = SESSION_CONFIGURATION_BOOTSTRAP
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|_| "The Configuration Path session bootstrap is unavailable.".to_string())?;
+    Ok(values.get(root).cloned())
+}
+
+fn remember_session_configuration_bootstrap(root: &Path, directory: &Path) -> Result<(), String> {
+    SESSION_CONFIGURATION_BOOTSTRAP
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|_| "The Configuration Path session bootstrap is unavailable.".to_string())?
+        .insert(root.to_path_buf(), directory.to_path_buf());
+    Ok(())
 }
 
 pub fn configuration_directory_from_locator(
@@ -305,6 +493,53 @@ mod tests {
         assert_eq!(
             configuration_directory_from_locator(&root, &temp.path().join("missing.toml")).unwrap(),
             root
+        );
+    }
+
+    #[test]
+    fn legacy_locator_is_migrated_once_then_removed() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().join("portable");
+        let selected = temp.path().join("settings");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&selected).unwrap();
+        std::fs::write(selected.join("config.toml"), "config_version = 5\n").unwrap();
+        let locator = root.join("configuration-location.toml");
+        std::fs::write(
+            &locator,
+            format!("directory = {:?}\n", selected.to_string_lossy()),
+        )
+        .unwrap();
+
+        assert_eq!(configuration_directory_for_root(&root).unwrap(), selected);
+        assert!(!locator.exists());
+        assert_eq!(
+            configuration_directory_from_bootstrap(&root).unwrap(),
+            Some(selected)
+        );
+        let migrated = std::fs::read_to_string(
+            configuration_directory_from_bootstrap(&root)
+                .unwrap()
+                .unwrap()
+                .join("config.toml"),
+        )
+        .unwrap();
+        assert!(migrated.contains("configuration_path"));
+    }
+
+    #[test]
+    fn bootstrap_identity_is_stable_and_installation_scoped() {
+        let first = Path::new(r"E:\Apps\SPLINED");
+        let same = Path::new(r"e:\apps\splined\");
+        let other = Path::new(r"E:\Apps\SPLINED-Test");
+
+        assert_eq!(
+            installation_bootstrap_key(first),
+            installation_bootstrap_key(same)
+        );
+        assert_ne!(
+            installation_bootstrap_key(first),
+            installation_bootstrap_key(other)
         );
     }
 

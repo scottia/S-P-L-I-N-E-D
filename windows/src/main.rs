@@ -16139,7 +16139,7 @@ fn bind_service_callbacks(
                     validated_postgres,
                 ))
             })();
-            let (config, configuration_directory, postgres_choice, validated_postgres) =
+            let (mut config, configuration_directory, postgres_choice, validated_postgres) =
                 match prepared {
                 Ok(prepared) => prepared,
                 Err(error) => {
@@ -16155,6 +16155,8 @@ fn bind_service_callbacks(
                     return;
                 }
             };
+            config.configuration_path =
+                splined_core::portable::display_path(&configuration_directory);
             inspect_setup_database_path_ui(&ui, &config.scan.cache_dir);
             ui.set_setup_saving(true);
             ui.set_setup_progress_failed(false);
@@ -16184,10 +16186,13 @@ fn bind_service_callbacks(
             let settings_draft = Arc::clone(&settings_draft);
             std::thread::spawn(move || {
                 let result = (|| {
+                    let setup_root = splined_core::portable::state_root()?;
+                    splined_core::config::save_first_run_draft_at_root(&config, &setup_root)?;
                     let config = splined_core::settings::save_config_in_directory(
                         &config,
                         &configuration_directory,
                     )?;
+                    splined_core::config::remove_first_run_draft_at_root(&setup_root)?;
                     let policy_revision = install_setup_shared_policy(
                         &config,
                         &postgres_choice,
