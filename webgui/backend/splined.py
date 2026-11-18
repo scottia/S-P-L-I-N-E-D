@@ -4735,7 +4735,12 @@ def install_canonical_cover(
     outputs = canonical_cover_outputs(canonical, content, file_name)
     staged: list[tuple[Path, Path, bytes]] = []
     published: list[Path] = []
-    quarantined: list[tuple[Path, Path]] = []
+    # The final flag records whether the original was moved into quarantine.
+    # Some NAS exports permit an existing file to be opened for writing but
+    # deny rename/delete to a container client. In that case a same-directory,
+    # byte-verified backup still gives us a safe rollback path for an in-place
+    # replacement of that exact canonical destination.
+    quarantined: list[tuple[Path, Path, bool]] = []
     try:
         # Stage, fsync, and decode every output before moving any prior cover.
         for destination, body in outputs:
@@ -4774,26 +4779,81 @@ def install_canonical_cover(
             os.close(descriptor)
             quarantine = Path(temporary)
             quarantine.unlink()
-            os.replace(path, quarantine)
-            quarantined.append((path, quarantine))
+            try:
+                os.replace(path, quarantine)
+                quarantined.append((path, quarantine, True))
+            except OSError:
+                # A copy-only fallback is safe solely when the existing file
+                # is also an output destination. Superseded cross-format files
+                # still require rename/delete permission so the Album cannot
+                # be left with competing canonical covers.
+                if path.resolve(strict=False) not in output_paths:
+                    raise
+                with path.open("rb") as source, quarantine.open("wb") as backup:
+                    shutil.copyfileobj(source, backup)
+                    backup.flush()
+                    os.fsync(backup.fileno())
+                if quarantine.read_bytes() != path.read_bytes():
+                    raise SplinedError("Rollback cover failed byte-for-byte verification.")
+                quarantined.append((path, quarantine, False))
 
         for destination, temporary, body in staged:
-            os.replace(temporary, destination)
+            try:
+                os.replace(temporary, destination)
+            except OSError:
+                copy_backup = next(
+                    (
+                        backup
+                        for original, backup, moved in quarantined
+                        if not moved
+                        and original.resolve(strict=False)
+                        == destination.resolve(strict=False)
+                    ),
+                    None,
+                )
+                if copy_backup is None:
+                    raise
+                # The NAS denied rename of the existing canonical file. Keep
+                # its inode and replace the bytes only after a verified backup
+                # exists. A later verification failure restores those bytes.
+                with destination.open("wb") as handle:
+                    handle.write(body)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                temporary.unlink(missing_ok=True)
             published.append(destination)
             if destination.read_bytes() != body:
                 raise SplinedError("Written cover failed byte-for-byte readback verification.")
             with Image.open(destination) as verified:
                 verified.verify()
     except Exception:
+        backed_up = {
+            original.resolve(strict=False): (original, quarantine, moved)
+            for original, quarantine, moved in quarantined
+        }
         for destination in reversed(published):
-            destination.unlink(missing_ok=True)
-        for original, quarantine in reversed(quarantined):
-            if quarantine.exists() and not original.exists():
-                os.replace(quarantine, original)
+            if destination.resolve(strict=False) not in backed_up:
+                destination.unlink(missing_ok=True)
+        for original, quarantine, moved in reversed(quarantined):
+            if not quarantine.exists():
+                continue
+            if moved and not original.exists():
+                try:
+                    os.replace(quarantine, original)
+                    continue
+                except OSError:
+                    pass
+            body = quarantine.read_bytes()
+            with original.open("wb") as handle:
+                handle.write(body)
+                handle.flush()
+                os.fsync(handle.fileno())
+            if original.read_bytes() != body:
+                raise SplinedError("Original cover could not be restored after failure.")
         for _, temporary, _ in staged:
             temporary.unlink(missing_ok=True)
         raise
-    for _, quarantine in quarantined:
+    for _, quarantine, _ in quarantined:
         try:
             quarantine.unlink(missing_ok=True)
         except OSError:
@@ -4802,7 +4862,7 @@ def install_canonical_cover(
             pass
     return [
         path
-        for path, _ in quarantined
+        for path, _, _ in quarantined
         if path.resolve(strict=False) not in output_paths
     ]
 
