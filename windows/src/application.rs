@@ -1017,6 +1017,14 @@ impl LibraryState {
         self.artist_indices(artist)
     }
 
+    /// Build the Artist-to-Album projection once for callers that need to
+    /// classify every visible Artist. Calling `artist_state_album_indices`
+    /// for each sidebar row would rebuild the complete projection once per
+    /// Artist, which is especially expensive for a shared/network catalog.
+    pub fn artist_state_album_index_map(&self) -> BTreeMap<String, Vec<usize>> {
+        self.artists()
+    }
+
     fn text_matches_for_artist(&self, artist: &str, album: &AlbumEntry) -> bool {
         let needle = self.text_filter.trim().to_ascii_lowercase();
         let global_matches = needle.is_empty()

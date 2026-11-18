@@ -3923,63 +3923,55 @@ fn start_album_coordination_worker(
     state: Arc<Mutex<ApplicationState>>,
 ) -> Arc<AtomicBool> {
     let stop = Arc::new(AtomicBool::new(false));
-    let Some((database, database_url, coordination_root, mut known_states, mut known_track_states)) =
-        state.lock().ok().and_then(|mut app| {
-            let database = splined_core::media_database::database_path(&app.config.scan.cache_dir);
-            let coordination_root = if app.library.local_root.trim().is_empty() {
-                app.config.library.music_library.clone()
-            } else {
-                app.library.local_root.clone()
-            };
-            let mut known_states = HashMap::new();
-            let mut known_track_states = HashMap::new();
-            if database.is_file()
-                && let Ok(states) =
-                    effective_write_states_for_catalog(&database, &coordination_root)
-            {
-                let (_, invalidated) =
-                    apply_album_coordination_states(&mut app, &states, &mut known_states);
-                invalidate_cached_image_paths(&invalidated);
-            }
-            if database.is_file()
-                && let Ok(states) = effective_track_write_states(&database)
-            {
-                apply_track_coordination_states(&mut app, &states, &mut known_track_states);
-            }
-            match coordination_database_url(&app.config) {
-                Ok(Some(url)) => {
-                    match backfill_windows_comp_track_coordination(&app.config) {
-                        Ok(count) if count > 0 => app.push_log(format!(
-                            "Queued {count} verified historical Windows COMP write{} for coordination.",
-                            if count == 1 { "" } else { "s" }
-                        )),
-                        Ok(_) => {}
-                        Err(error) => app.push_log(format!(
-                            "Unable to rebuild historical COMP coordination notifications: {error}"
-                        )),
-                    }
-                    Some((
-                        database,
-                        url,
-                        coordination_root,
-                        known_states,
-                        known_track_states,
-                    ))
-                }
-                Ok(None) => None,
-                Err(error) => {
-                    app.push_log(error);
-                    None
-                }
-            }
-        })
-    else {
+    let Some((database, coordination_root, config)) = state.lock().ok().map(|app| {
+        let database = splined_core::media_database::database_path(&app.config.scan.cache_dir);
+        let coordination_root = if app.library.local_root.trim().is_empty() {
+            app.config.library.music_library.clone()
+        } else {
+            app.library.local_root.clone()
+        };
+        (database, coordination_root, app.config.clone())
+    }) else {
         return stop;
     };
     let weak = ui.as_weak();
     let worker_state = Arc::clone(&state);
     let worker_stop = Arc::clone(&stop);
     std::thread::spawn(move || {
+        // All database, credential, and filesystem work belongs on this
+        // worker. The previous implementation completed the initial SQLite
+        // projection and historical COMP backfill before the Slint event loop
+        // started, freezing the window for minutes on network storage.
+        let database_url = match coordination_database_url(&config) {
+            Ok(Some(url)) => url,
+            Ok(None) => return,
+            Err(error) => {
+                if let Ok(mut app) = worker_state.lock() {
+                    app.push_log(error);
+                }
+                return;
+            }
+        };
+        match backfill_windows_comp_track_coordination(&config) {
+            Ok(count) if count > 0 => {
+                if let Ok(mut app) = worker_state.lock() {
+                    app.push_log(format!(
+                        "Queued {count} verified historical Windows COMP write{} for coordination.",
+                        if count == 1 { "" } else { "s" }
+                    ));
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                if let Ok(mut app) = worker_state.lock() {
+                    app.push_log(format!(
+                        "Unable to rebuild historical COMP coordination notifications: {error}"
+                    ));
+                }
+            }
+        }
+        let mut known_states = HashMap::new();
+        let mut known_track_states = HashMap::new();
         let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -21761,10 +21753,23 @@ fn library_ui_model_from_rows(
     state: &ApplicationState,
     mut rows: Vec<splined_core::application::LibraryRow>,
 ) -> ModelRc<UiLibraryRow> {
+    // `LibraryState::artists` is the complete projection across owned,
+    // featured, V/A, soundtrack, and curated appearances. Build it once for
+    // this model publication; rebuilding it for every Artist row caused the
+    // Windows startup to appear hung for minutes on a shared catalog.
+    let artist_album_indices = state.library.artist_state_album_index_map();
     for row in &mut rows {
         if row.kind == "artist" {
-            row.status =
-                artist_file_list_policy_state(state, &row.primary, &row.artwork_path).ui_status_key;
+            row.status = artist_file_list_policy_state(
+                state,
+                &row.primary,
+                &row.artwork_path,
+                artist_album_indices
+                    .get(&row.primary)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default(),
+            )
+            .ui_status_key;
         } else if matches!(row.kind.as_str(), "album" | "album-child" | "folder")
             && let Some(album) = state
                 .library
@@ -21876,14 +21881,14 @@ fn artist_file_list_policy_state(
     state: &ApplicationState,
     artist: &str,
     artwork_path: &str,
+    indices: &[usize],
 ) -> splined_core::media_state_policy::MediaStateClassification {
-    let indices = state.library.artist_state_album_indices(artist);
     let mut evidence = HashSet::<&'static str>::new();
     if artwork_path.trim().is_empty() {
         evidence.insert("missing_artist_art");
     }
     let mut all_complete_or_overridden = !indices.is_empty();
-    for index in indices {
+    for &index in indices {
         let conditions = album_policy_conditions(state, &state.library.albums[index], Some(artist));
         if conditions.contains(&"embedding_issues") {
             evidence.insert("embedding_issues");
