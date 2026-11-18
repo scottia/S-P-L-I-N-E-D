@@ -852,7 +852,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 "INSERT INTO compilation_track_artwork"
                 "(track_path,recording_mbid,artist_mbid,source_kind,source_locator,"
                 "release_mbid,artwork_sha256,outcome,applied_at,splined_version) "
-                "VALUES(%s,'','','itunes','provider-result',NULL,%s,"
+                "VALUES(?,'','','itunes','provider-result',NULL,?,"
                 "'embedded-existing',now(),'test')",
                 (str(self.files[0]), digest),
             )
@@ -867,7 +867,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertTrue(self.services._persist_opposing_comp_track(event))
         with closing(self.db.connect()) as db:
             source = db.execute(
-                "SELECT source_kind FROM compilation_track_artwork WHERE track_path=%s",
+                "SELECT source_kind FROM compilation_track_artwork WHERE track_path=?",
                 (str(self.files[0]),),
             ).fetchone()[0]
         self.assertEqual(source, "itunes")
