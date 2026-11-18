@@ -261,7 +261,14 @@ fn installation_bootstrap_key(root: &Path) -> String {
         .trim_end_matches(['\\', '/'])
         .to_ascii_lowercase();
     let digest = Sha256::digest(normalized.as_bytes());
-    format!(r"{CONFIGURATION_BOOTSTRAP_ROOT}\{digest:x}")
+    // sha2 0.11 returns a generic cipher Array that intentionally does not
+    // implement LowerHex. Encode the bytes explicitly so the per-install
+    // registry key remains identical across sha2 releases.
+    let digest_hex = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!(r"{CONFIGURATION_BOOTSTRAP_ROOT}\{digest_hex}")
 }
 
 #[cfg(all(windows, not(test)))]
