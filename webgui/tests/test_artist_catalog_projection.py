@@ -270,7 +270,9 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             app = PreviewApp(root, database, root, credentials, cache=root / "cache")
             listed = app.artists("")[0]
             self.assertEqual(listed["albums"], 1)
-            self.assertEqual(listed["status"], "complete")
+            # The fallback Album remains excluded from the Album count, but
+            # its incomplete Artist-scoped COMP track must make Adele red.
+            self.assertEqual(listed["status"], "incomplete")
             artist = app.artist("adele")
             self.assertEqual(
                 [item["id"] for item in artist["albums"]],
@@ -922,6 +924,11 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                 db.commit()
 
             app = PreviewApp(root, database, root, credentials, cache=root / "cache")
+            target_list_row = next(
+                item for item in app.artists("") if item["name"] == "Target Artist"
+            )
+            self.assertEqual(target_list_row["status"], "incomplete")
+
             artist = app.artist("target")
             albums = {item["id"]: item for item in artist["albums"]}
             self.assertEqual(
@@ -933,6 +940,17 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             self.assertTrue(albums["filename-featured"]["featured"])
             self.assertFalse(albums["comp"]["featured"])
             self.assertEqual([group["id"] for group in app.artist_comp_albums("target")], ["comp"])
+
+            with closing(connect(database)) as db:
+                db.execute(
+                    "INSERT INTO compilation_track_artwork VALUES (?,?)",
+                    (str(folders["comp"] / "song.mp3"), "embedded-existing"),
+                )
+                db.commit()
+            target_list_row = next(
+                item for item in app.artists("") if item["name"] == "Target Artist"
+            )
+            self.assertEqual(target_list_row["status"], "unprocessed")
 
 
 if __name__ == "__main__":

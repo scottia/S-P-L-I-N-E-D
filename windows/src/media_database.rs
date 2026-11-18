@@ -7302,7 +7302,7 @@ fn casefold(value: &str) -> String {
 /// durable Album/Artist keys stored in SQLite. Folder-safe filename evidence
 /// such as `AC-DC` must not create a second selectable Artist beside the
 /// authoritative tagged owner `AC/DC`.
-pub(crate) fn artist_projection_identity(value: &str) -> String {
+pub fn artist_projection_identity(value: &str) -> String {
     value
         .nfkc()
         .case_fold()

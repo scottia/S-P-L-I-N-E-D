@@ -122,7 +122,14 @@ class Connection:
         return self
 
     def __exit__(self, exception_type, exception, traceback):
-        self.rollback() if exception_type else self.commit()
+        try:
+            self.rollback() if exception_type else self.commit()
+        finally:
+            # ``Database.connect()`` is intentionally usable as a normal
+            # context manager.  Always return its raw session to the bounded
+            # pool here; otherwise periodic health checks permanently consume
+            # one slot until WebGUI eventually times out and is restarted.
+            self.close()
 
 
 class Database:

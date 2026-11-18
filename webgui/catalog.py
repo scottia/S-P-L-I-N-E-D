@@ -1063,7 +1063,11 @@ class Catalog:
                 "SELECT albums.album_key,albums.status,albums.path AS album_path,albums.compilation,"
                 "albums.musicbrainz_albumid,"
                 "owners.artist_name AS album_artist,tracks.artist_name,"
-                "tracks.musicbrainz_artistid,tracks.title,tracks.path "
+                "tracks.musicbrainz_artistid,tracks.title,tracks.path,"
+                "EXISTS(SELECT 1 FROM compilation_track_artwork artwork "
+                "WHERE lower(artwork.track_path)=lower(tracks.path) "
+                "AND artwork.outcome IN ('embedded-replaced','embedded-existing')) "
+                "AS comp_complete "
                 "FROM tracks JOIN albums "
                 "ON albums.album_key=tracks.album_key "
                 "JOIN artists owners ON owners.artist_key=albums.artist_key "
@@ -1078,13 +1082,33 @@ class Catalog:
                     "albums.path AS album_path,albums.compilation,"
                     "albums.musicbrainz_albumid,"
                     "owners.artist_name AS album_artist,tracks.artist_name,"
-                    "'' AS musicbrainz_artistid,tracks.title,tracks.path "
+                    "'' AS musicbrainz_artistid,tracks.title,tracks.path,"
+                    "EXISTS(SELECT 1 FROM compilation_track_artwork artwork "
+                    "WHERE lower(artwork.track_path)=lower(tracks.path) "
+                    "AND artwork.outcome IN ('embedded-replaced','embedded-existing')) "
+                    "AS comp_complete "
                     "FROM tracks JOIN albums ON albums.album_key=tracks.album_key "
                     "JOIN artists owners ON owners.artist_key=albums.artist_key "
                     "ORDER BY albums.album_key,tracks.path COLLATE NOCASE"
                 ).fetchall()
             except sqlite3.OperationalError:
-                return {}
+                try:
+                    # The oldest reduced fixtures also predate the COMP
+                    # artwork ledger. Treat their projected COMP tracks as
+                    # incomplete instead of dropping established Artists.
+                    rows = db.execute(
+                        "SELECT albums.album_key,albums.status,"
+                        "albums.path AS album_path,albums.compilation,"
+                        "albums.musicbrainz_albumid,"
+                        "owners.artist_name AS album_artist,tracks.artist_name,"
+                        "'' AS musicbrainz_artistid,tracks.title,tracks.path,"
+                        "0 AS comp_complete "
+                        "FROM tracks JOIN albums ON albums.album_key=tracks.album_key "
+                        "JOIN artists owners ON owners.artist_key=albums.artist_key "
+                        "ORDER BY albums.album_key,tracks.path COLLATE NOCASE"
+                    ).fetchall()
+                except sqlite3.OperationalError:
+                    return {}
         album_groups: dict[str, str] = {}
 
         def library_group(row) -> str:
@@ -1125,8 +1149,6 @@ class Catalog:
         result: dict[str, dict[str, object]] = {}
         for row in rows:
             group = library_group(row)
-            if group == "fallback":
-                continue
             row_credits = credits(row)
             mbids = re.findall(
                 r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
@@ -1145,16 +1167,27 @@ class Catalog:
                     "album_keys": set(),
                     "artist_album_keys": set(),
                     "statuses": {},
+                    "comp_track_states": {},
                 })
                 if len(mbids) == len(row_credits):
                     projection["musicbrainz_artistid"] = mbids[index].casefold()
                 album_key = str(row["album_key"])
+                if group == "fallback":
+                    projection["comp_track_states"].setdefault(album_key, []).append(
+                        bool(row["comp_complete"])
+                    )
+                    continue
                 projection["album_keys"].add(album_key)
                 if group == "artist":
                     projection["artist_album_keys"].add(album_key)
                 projection["statuses"][album_key] = str(
                     row["status"] or "unprocessed"
                 )
+        for projection in result.values():
+            projection["comp_statuses"] = {
+                album_key: "complete" if states and all(states) else "incomplete"
+                for album_key, states in projection.pop("comp_track_states", {}).items()
+            }
         return result
 
     @staticmethod
@@ -1938,6 +1971,17 @@ class Catalog:
                         ),
                     }
                     for album_key, status in appearance.get("statuses", {}).items()
+                )
+                status_group.extend(
+                    {
+                        "status": status,
+                        "conditions": (
+                            {"complete_or_overridden"}
+                            if status == "complete"
+                            else {"incomplete_or_error"}
+                        ),
+                    }
+                    for status in appearance.get("comp_statuses", {}).values()
                 )
             # The list projection must remain PostgreSQL-only. Give the
             # browser a stable authenticated URL without resolving the file

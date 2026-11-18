@@ -176,6 +176,23 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             indexing.close()
         database.close()
 
+    def test_database_connection_context_returns_session_to_pool(self):
+        database = Database(self.url, pool_max_size=1, pool_timeout=1.0)
+        try:
+            # The database monitor uses this direct context-manager form every
+            # few minutes. Repeating it must never exhaust the bounded pool.
+            for _ in range(3):
+                with database.connect() as db:
+                    self.assertEqual(
+                        db.execute("SELECT 1 AS ready").fetchone()["ready"], 1
+                    )
+            stats = database.pool_stats()
+            self.assertEqual(stats["pool_size"], 1)
+            self.assertEqual(stats["pool_available"], 1)
+            self.assertEqual(stats["requests_waiting"], 0)
+        finally:
+            database.close()
+
     def test_catalog_refresh_performs_no_remote_provider_requests(self):
         with patch.object(core.Http, "get") as get:
             result = self.services.refresh_index()

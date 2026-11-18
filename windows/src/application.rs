@@ -1742,13 +1742,20 @@ impl LibraryState {
         let Some(artist) = self.focused_artist.as_deref() else {
             return Vec::new();
         };
+        let artist_identity = artist_projection_identity(artist);
+        let projected_appearance_keys = self
+            .artist_appearance_album_keys
+            .iter()
+            .find(|(name, _)| artist_projection_identity(name) == artist_identity)
+            .map(|(_, keys)| keys);
         let mut result = self
             .albums
             .iter()
             .enumerate()
             .filter(|(_, album)| {
-                let appearance =
-                    appearance_keys.contains(&album.snapshot.album_key.to_ascii_lowercase());
+                let album_key = album.snapshot.album_key.to_ascii_lowercase();
+                let appearance = appearance_keys.contains(&album_key)
+                    || projected_appearance_keys.is_some_and(|keys| keys.contains(&album_key));
                 let matching_fallback_track = self.is_curated_fallback(album)
                     && album
                         .snapshot
@@ -1758,7 +1765,7 @@ impl LibraryState {
                 let fallback_appearance =
                     self.is_curated_fallback(album) && (appearance || matching_fallback_track);
                 let in_artist_scope = artist_projection_identity(&album.snapshot.artist)
-                    == artist_projection_identity(artist)
+                    == artist_identity
                     || appearance
                     || matching_fallback_track;
 
@@ -6660,6 +6667,14 @@ mod tests {
                     .position(|album| album.snapshot.album_key == "a")
                     .unwrap()
             ]
+        );
+        assert_eq!(
+            state
+                .artist_overview_album_indices(&BTreeSet::new(), true)
+                .into_iter()
+                .map(|index| state.albums[index].snapshot.album_key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a"]
         );
     }
 

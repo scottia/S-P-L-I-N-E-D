@@ -47,7 +47,7 @@ use splined_core::local_artwork::{
 };
 use splined_core::media_database::{
     MediaAlbumSnapshot, MediaIndexChanges, MediaSnapshot, MediaTrackSnapshot,
-    RuntimeArtworkMaterial, backfill_windows_comp_track_coordination,
+    RuntimeArtworkMaterial, artist_projection_identity, backfill_windows_comp_track_coordination,
     clear_album_bypass_from_runtime, database_path, detect_media_index_changes,
     fallback_tracks_from_folder, indexed_artist_appearances, load_artist_art_profile,
     media_snapshot, media_snapshot_for_setup_with_progress, pending_database_schema_upgrade,
@@ -1260,9 +1260,29 @@ fn publish_thumbnail_paths(
     let mut changed = false;
     if let Ok(mut app) = state.lock() {
         changed = apply_thumbnail_path_updates(&mut app, artist_paths, album_paths, artist_ids);
-        if let Some(metadata) = artist_metadata {
+        if let Some(mut metadata) = artist_metadata {
             changed = true;
             changed |= apply_album_year_updates(&mut app, &metadata.album_years);
+            // The SQLite catalog projection is the identity boundary for the
+            // Rob rule. Provider hydration may legitimately return no Album
+            // appearances for a projected track credit; it must enrich, never
+            // erase, the locally indexed release such as Aaron Neville's Gold
+            // from Rob Wasserman's overview.
+            let projected_keys = projected_artist_album_keys(&app, &metadata.artist_key);
+            let artist_identity = artist_projection_identity(&metadata.artist_key);
+            for key in &projected_keys {
+                if let Some(album) = app
+                    .library
+                    .albums
+                    .iter()
+                    .find(|album| album.snapshot.album_key.eq_ignore_ascii_case(key))
+                    && !app.library.is_curated_fallback(album)
+                    && artist_projection_identity(&album.snapshot.artist) != artist_identity
+                {
+                    metadata.featured_album_keys.insert(key.clone());
+                }
+            }
+            metadata.album_keys.extend(projected_keys);
             if let Some(log) = UI_DEBUG_LOG_HANDLE.get() {
                 let hydrated_tracks = metadata
                     .fallback_tracks
@@ -6946,6 +6966,11 @@ fn load_cached_artist_overview(app: &mut ApplicationState, artist: &str) {
         app.artist_overview_artwork_candidates.clear();
         app.artist_overview_top_songs.clear();
     }
+    let projected_keys = projected_artist_album_keys(app, artist);
+    let projected_featured = projected_artist_featured_album_keys(app, artist, &projected_keys);
+    app.artist_overview_album_keys.extend(projected_keys);
+    app.artist_overview_featured_album_keys
+        .extend(projected_featured);
     app.artist_overview_top_songs_loading = false;
 }
 
@@ -7004,6 +7029,11 @@ fn select_adjacent_artist_for_overview(
         app.artist_overview_artwork_candidates.clear();
         app.artist_overview_top_songs.clear();
     }
+    let projected_keys = projected_artist_album_keys(app, &artist);
+    let projected_featured = projected_artist_featured_album_keys(app, &artist, &projected_keys);
+    app.artist_overview_album_keys.extend(projected_keys);
+    app.artist_overview_featured_album_keys
+        .extend(projected_featured);
     Some(artist)
 }
 
@@ -21824,11 +21854,7 @@ fn album_policy_conditions<'a>(
     artist: Option<&str>,
 ) -> Vec<&'static str> {
     let fallback = state.library.is_curated_fallback(album);
-    let overridden = !fallback
-        && state
-            .album_override_writers
-            .get(&album.snapshot.album_key.to_ascii_lowercase())
-            .is_some_and(|writer| writer.eq_ignore_ascii_case("webgui"));
+    let overridden = album_has_opposing_override(state, album);
     let artist_art_missing = artist.is_some_and(|artist| {
         state
             .library
@@ -21891,6 +21917,56 @@ fn album_policy_conditions<'a>(
         conditions.push("processed");
     }
     conditions
+}
+
+fn album_has_opposing_override(state: &ApplicationState, album: &AlbumEntry) -> bool {
+    // COMP/Curated cards are track-scoped and are never greyed as a whole.
+    // Ordinary Album cards must retain their durable SQLite override
+    // presentation even while PostgreSQL is temporarily unavailable.
+    !state.library.is_curated_fallback(album)
+        && (album.opposing_override
+            || state
+                .album_override_writers
+                .get(&album.snapshot.album_key.to_ascii_lowercase())
+                .is_some_and(|writer| writer.eq_ignore_ascii_case("webgui")))
+}
+
+fn projected_artist_album_keys(state: &ApplicationState, artist: &str) -> BTreeSet<String> {
+    let identity = artist_projection_identity(artist);
+    state
+        .library
+        .artist_appearance_album_keys
+        .iter()
+        .find(|(name, _)| artist_projection_identity(name) == identity)
+        .map(|(_, keys)| {
+            keys.iter()
+                .map(|key| key.to_ascii_lowercase())
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn projected_artist_featured_album_keys(
+    state: &ApplicationState,
+    artist: &str,
+    album_keys: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let identity = artist_projection_identity(artist);
+    album_keys
+        .iter()
+        .filter(|key| {
+            state
+                .library
+                .albums
+                .iter()
+                .find(|album| album.snapshot.album_key.eq_ignore_ascii_case(key))
+                .is_some_and(|album| {
+                    !state.library.is_curated_fallback(album)
+                        && artist_projection_identity(&album.snapshot.artist) != identity
+                })
+        })
+        .cloned()
+        .collect()
 }
 
 fn artist_file_list_policy_state(
@@ -22471,11 +22547,7 @@ fn artist_overview_ui_model_with_show_all(
         .map(|album| {
             let snapshot = &album.snapshot;
             let fallback = state.library.is_curated_fallback(album);
-            let overridden = !fallback
-                && state
-                    .album_override_writers
-                    .get(&snapshot.album_key.to_ascii_lowercase())
-                    .is_some_and(|writer| writer.eq_ignore_ascii_case("webgui"));
+            let overridden = album_has_opposing_override(state, album);
             // An opposing successful write proves that a local New/no-cover
             // presentation is stale. It replaces only that red Missing dot;
             // every other independent status indicator remains authoritative.
@@ -26889,8 +26961,9 @@ mod tests {
         assert_eq!(normal.state_key, "Unprocessed");
         assert_eq!(normal.bullets.row_count(), 0);
 
-        app.album_override_writers
-            .insert("arrival".to_string(), "webgui".to_string());
+        // The persisted projection remains authoritative when the live
+        // PostgreSQL writer map is temporarily unavailable.
+        app.library.albums[0].opposing_override = true;
         let overridden_model = artist_overview_ui_model(&app);
         let overridden = overridden_model.row_data(0).unwrap();
         assert!(overridden.overridden);
@@ -26952,6 +27025,62 @@ mod tests {
                     || bullet.tip == "Incomplete / timed-out Album"
             })
         }));
+    }
+
+    #[test]
+    fn curated_comp_album_never_inherits_whole_album_override_presentation() {
+        let mut config = Config::default();
+        config.library.music_library = r"C:\Music".to_string();
+        config.library.various_artist_path = r"C:\Music\Various Artists".to_string();
+        config.library.curated_compilations_path =
+            r"C:\Music\Various Artists\Billboard".to_string();
+        let snapshot = MediaSnapshot {
+            schema_version: splined_core::media_database::SCHEMA_VERSION,
+            database_path: "splined.db".to_string(),
+            canonical_root: "/music".to_string(),
+            local_root: r"C:\Music".to_string(),
+            albums: vec![MediaAlbumSnapshot {
+                album_key: "billboard".to_string(),
+                artist: "Various Artists".to_string(),
+                tagged_artist: "Various Artists".to_string(),
+                title: "Billboard Hot 100".to_string(),
+                path: r"C:\Music\Various Artists\Billboard\Hot 100".to_string(),
+                representative_file: String::new(),
+                status: "processed".to_string(),
+                compilation: true,
+                compilation_track_art_eligible: true,
+                compilation_tracks: Vec::new(),
+                track_count: 1,
+                compilation_completed_tracks: 1,
+                release_year: "2000".to_string(),
+                artist_mbid: String::new(),
+                album_mbid: String::new(),
+                release_group_mbid: String::new(),
+                has_local_artwork: true,
+                local_artwork_files: Vec::new(),
+                cover_path: String::new(),
+                cover_name: String::new(),
+                cover_format: String::new(),
+                cover_width: 0,
+                cover_height: 0,
+                root_files: 0,
+                cover_files: 0,
+                processed_at: None,
+                timeout_until: None,
+                selected_source: None,
+            }],
+        };
+        let mut app = ApplicationState::new(config.clone(), snapshot).unwrap();
+        app.library.configure_library_categories(&config);
+        app.library.albums[0].opposing_override = true;
+        app.album_override_writers
+            .insert("billboard".to_string(), "webgui".to_string());
+
+        assert!(app.library.is_curated_fallback(&app.library.albums[0]));
+        assert!(!super::album_has_opposing_override(
+            &app,
+            &app.library.albums[0]
+        ));
     }
 
     #[test]
