@@ -354,6 +354,11 @@ impl Default for AiSplinedConfig {
 pub struct Config {
     #[serde(default = "default_config_version")]
     pub config_version: u32,
+    /// Self-description of the directory containing config.toml and ui.toml.
+    /// Startup discovery uses an installation-scoped Windows bootstrap because
+    /// a remote configuration file cannot locate itself.
+    #[serde(default)]
+    pub configuration_path: String,
     pub mode: Mode,
     pub verbosity: Verbosity,
     #[serde(default)]
@@ -551,6 +556,7 @@ impl Default for Config {
 
         Self {
             config_version: CURRENT_CONFIG_VERSION,
+            configuration_path: String::new(),
             mode: Mode::Read,
             verbosity: Verbosity::Info,
             scan: ScanConfig::default(),
@@ -584,11 +590,64 @@ pub fn default_toml() -> Result<String, toml::ser::Error> {
     toml::to_string_pretty(&Config::default())
 }
 
-/// Parse the repository's shipped Windows example as the unsaved first-run
-/// draft. `include_str!` makes a release executable use the exact source that
-/// was reviewed and built, without copying or creating a TOML at startup.
+pub fn first_run_draft_path(root: &Path) -> PathBuf {
+    root.join("splined-setup.tmp")
+}
+
+/// Load the disposable first-run draft beside the portable executable. The
+/// file is deliberately not a TOML authority and is removed after Setup has
+/// written and verified config.toml and ui.toml.
 pub fn first_run_config_at_root(root: &Path) -> Result<Config, String> {
-    load_config_text_at_root(include_str!("../config.example.toml"), root)
+    let path = first_run_draft_path(root);
+    let embedded = include_str!("../config.example.toml");
+    let text = if path.is_file() {
+        std::fs::read_to_string(&path).unwrap_or_else(|_| embedded.to_string())
+    } else {
+        embedded.to_string()
+    };
+    if load_config_text_at_root(&text, root).is_err() {
+        std::fs::write(&path, embedded).map_err(|error| {
+            format!(
+                "Unable to reset the disposable Setup draft {}: {error}",
+                path.display()
+            )
+        })?;
+        return load_config_text_at_root(embedded, root);
+    }
+    if !path.is_file() {
+        std::fs::write(&path, &text).map_err(|error| {
+            format!(
+                "Unable to create the disposable Setup draft {}: {error}",
+                path.display()
+            )
+        })?;
+    }
+    load_config_text_at_root(&text, root)
+}
+
+pub fn save_first_run_draft_at_root(config: &Config, root: &Path) -> Result<(), String> {
+    let path = first_run_draft_path(root);
+    let text = toml::to_string_pretty(config)
+        .map_err(|error| format!("Unable to serialize the disposable Setup draft: {error}"))?;
+    std::fs::write(&path, text).map_err(|error| {
+        format!(
+            "Unable to update the disposable Setup draft {}: {error}",
+            path.display()
+        )
+    })
+}
+
+pub fn remove_first_run_draft_at_root(root: &Path) -> Result<(), String> {
+    let path = first_run_draft_path(root);
+    if path.is_file() {
+        std::fs::remove_file(&path).map_err(|error| {
+            format!(
+                "Setup was saved, but its disposable draft could not be removed {}: {error}",
+                path.display()
+            )
+        })?;
+    }
+    Ok(())
 }
 
 pub fn parse_config(text: &str) -> Result<Config, String> {
@@ -749,6 +808,11 @@ pub fn parse_config(text: &str) -> Result<Config, String> {
             };
     }
 
+    config.configuration_path = normalize_optional_directory(&config.configuration_path);
+    if !config.configuration_path.is_empty() && !path_is_absolute_or_unc(&config.configuration_path)
+    {
+        return Err("SPLINED configuration_path must be an absolute directory.".to_string());
+    }
     config.library.music_library = normalize_optional_directory(&config.library.music_library);
     config.library.various_artist_path =
         normalize_optional_directory(&config.library.various_artist_path);
@@ -879,6 +943,10 @@ pub fn load_config_at_path(path: &Path, runtime_root: &Path) -> Result<Config, S
             path.display()
         )
     })?;
+    config.configuration_path = path
+        .parent()
+        .map(display_path)
+        .unwrap_or_else(|| display_path(runtime_root));
     resolve_runtime_paths(&mut config, runtime_root);
     if coordination_explicit.is_none()
         && config.scan.sqlite_shared
@@ -1118,6 +1186,7 @@ mod tests {
         let config = Config::default();
 
         assert_eq!(config.config_version, 5);
+        assert!(config.configuration_path.is_empty());
         assert_eq!(config.mode, Mode::Read);
         assert_eq!(config.verbosity, Verbosity::Info);
         assert!(config.scan.scan_mode);
@@ -1160,6 +1229,25 @@ mod tests {
             config.sources.cover_sources.len(),
             SUPPORTED_COVER_SOURCES.len()
         );
+    }
+
+    #[test]
+    fn first_run_uses_and_retires_a_disposable_local_draft() {
+        let root = tempfile::TempDir::new().unwrap();
+        let draft = first_run_draft_path(root.path());
+
+        let mut config = first_run_config_at_root(root.path()).unwrap();
+        assert!(draft.is_file());
+        assert!(!root.path().join("config.toml").exists());
+        assert!(!root.path().join("ui.toml").exists());
+
+        config.configuration_path = root.path().to_string_lossy().into_owned();
+        save_first_run_draft_at_root(&config, root.path()).unwrap();
+        let saved = std::fs::read_to_string(&draft).unwrap();
+        assert!(saved.contains("configuration_path"));
+
+        remove_first_run_draft_at_root(root.path()).unwrap();
+        assert!(!draft.exists());
     }
 
     #[test]

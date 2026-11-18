@@ -96,12 +96,16 @@ executable carries the repository policy as an unsaved first-run default only;
 Windows packages do not install a second copy beside `splined.exe`.
 
 Portable startup discovers `config.toml` and `ui.toml` beside the executable,
-or follows an install-scoped `configuration-location.toml` to an explicitly
-selected Configuration Path. A packaged MSIX launch discovers them beneath
+or uses an installation-scoped Windows bootstrap to locate an explicitly
+selected Configuration Path. Config v5 records that selected path as
+`configuration_path`; the bootstrap stores only the path and is not another
+settings authority. A v3.0.10 or earlier `configuration-location.toml` is
+migrated once and removed. A packaged MSIX launch discovers the TOMLs beneath
 the current package family's `LocalState\SPLINED` directory. Legacy portable
-`data\config.toml` remains discoverable. Discovery is read-only: a clean
-launch creates no configuration, database, cache, log, credential, or obsolete
-bootstrap directories. Missing, invalid, or operationally incomplete Config v5
+`data\config.toml` remains discoverable. A clean first launch creates only the
+disposable `splined-setup.tmp` draft beside the executable, and no configuration,
+database, cache, log, credential, or obsolete bootstrap directories. Missing,
+invalid, or operationally incomplete Config v5
 opens structured Setup. Only explicit validated **Save & Open Settings** creates
 the configured application-owned directories and writes Config v5 atomically.
 The executable and read-only package assets remain separate from writable
@@ -109,7 +113,8 @@ state.
 
 Config v5 remains authoritative. Structured Slint Settings maps directly onto
 the Rust Config model; it does not use raw TOML or a separate settings
-authority. The active `config.toml`, `ui.toml`, provider credential JSON files,
+authority. The Setup draft is deleted after both TOMLs and Configuration Path
+bootstrap are verified. The active `config.toml`, `ui.toml`, provider credential JSON files,
 and `<scan.cache_dir>\splined.db` keep their established responsibilities.
 Credentials are not written into Config v5, SQLite, logs, or backups unless the
 operator explicitly selects credentials for a protected `.spl` export.
