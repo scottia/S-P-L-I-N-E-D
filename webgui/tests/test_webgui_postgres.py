@@ -5766,18 +5766,20 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     )
                     with page.expect_request(
                         lambda request: request.method == "POST"
-                        and request.url.endswith("/api/jobs")
+                        and request.url.endswith("/api/jobs/comp-batch")
                     ) as launch_request:
                         page.locator("#fallbackReport .fallback-launch").click()
                     launch_payload = launch_request.value.post_data_json
-                    self.assertEqual(launch_payload["kind"], "comp")
                     self.assertEqual(
-                        launch_payload["payload"]["artist_id"],
+                        launch_payload["artist_id"],
                         target_artist_key,
                     )
                     self.assertEqual(
-                        launch_payload["payload"]["track_keys"],
-                        [target_track_key],
+                        launch_payload["groups"],
+                        [{
+                            "album_id": comp_row["album_key"],
+                            "track_keys": [target_track_key],
+                        }],
                     )
                     expect(page.locator("#musicbrainzReview")).to_be_visible(
                         timeout=15000
