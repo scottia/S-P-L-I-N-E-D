@@ -145,7 +145,7 @@ fn store_workflows_preserve_their_distinct_review_and_submission_modes() {
 }
 
 #[test]
-fn full_release_always_builds_the_manual_msix_but_publishes_only_when_selected() {
+fn full_release_builds_the_manual_msix_only_when_a_store_mode_is_selected() {
     let workflow = source(FULL);
     let build_windows = workflow
         .split("  build-windows:")
@@ -168,8 +168,10 @@ fn full_release_always_builds_the_manual_msix_but_publishes_only_when_selected()
             .next()
             .unwrap();
         assert!(
-            !body.contains("store_submit_update") && !body.contains("store_submit_draft"),
-            "manual MSIX step is incorrectly gated by Store publication mode: {step}"
+            body.contains(
+                "if: ${{ inputs.store_submit_update == true || inputs.store_submit_draft == true }}"
+            ),
+            "manual MSIX step must be gated by an explicit Store mode: {step}"
         );
     }
     assert!(build_windows.contains("name: splined-windows-store-package"));
@@ -181,7 +183,9 @@ fn full_release_always_builds_the_manual_msix_but_publishes_only_when_selected()
         .split("  release-summary:")
         .next()
         .expect("Partner Center publication job body");
-    assert!(publish_store.contains("(inputs.store_submit_update || inputs.store_submit_draft)"));
+    assert!(publish_store.contains(
+        "(inputs.store_submit_update == true || inputs.store_submit_draft == true)"
+    ));
     assert!(!publish_store.contains("-DraftOnly"));
     assert!(publish_store.contains("Download exact Store package"));
     for file in [
@@ -200,7 +204,7 @@ fn full_release_always_builds_the_manual_msix_but_publishes_only_when_selected()
         .expect("automatic submission step");
     assert!(upload < submit);
     let submit_body = &publish_store[submit..];
-    assert!(submit_body.contains("if: ${{ inputs.store_submit_update }}"));
+    assert!(submit_body.contains("if: ${{ inputs.store_submit_update == true }}"));
 
     let release_summary = workflow
         .split("  release-summary:")

@@ -389,7 +389,7 @@ jobs:
           rustup target add "$WINDOWS_TARGET" --toolchain "$RUST_TOOLCHAIN"
 
       - name: Install Rust quality components
-        if: ${{ inputs.extended_windows_validation }}
+        if: ${{ inputs.extended_windows_validation == true }}
         shell: bash
         run: rustup component add rustfmt clippy --toolchain "$RUST_TOOLCHAIN"
 
@@ -420,7 +420,7 @@ jobs:
             ${{ runner.os }}-splined-windows-dependencies-v2-${{ env.RUST_TOOLCHAIN }}-
 
       - name: Run extended Windows regression suite
-        if: ${{ inputs.extended_windows_validation }}
+        if: ${{ inputs.extended_windows_validation == true }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -519,6 +519,7 @@ jobs:
           $manifest | ConvertTo-Json | Set-Content -Encoding utf8 release-assets/windows-update.json
 
       - name: Install pinned upstream WinAppCli for Store packaging
+        if: ${{ inputs.store_submit_update == true || inputs.store_submit_draft == true }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -534,6 +535,7 @@ jobs:
 
       - name: Build and strictly validate unsigned production Store MSIX from release binaries
         id: store-package
+        if: ${{ inputs.store_submit_update == true || inputs.store_submit_draft == true }}
         shell: pwsh
         env:
           RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
@@ -556,6 +558,7 @@ jobs:
           "path=$storePackage" | Add-Content $env:GITHUB_OUTPUT
 
       - name: Development-sign, install, activate, native-smoke, and uninstall isolated Store QA package
+        if: ${{ inputs.store_submit_update == true || inputs.store_submit_draft == true }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -577,6 +580,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload manual Store submission MSIX artifact
+        if: ${{ inputs.store_submit_update == true || inputs.store_submit_draft == true }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: splined-windows-store-package
@@ -966,7 +970,7 @@ jobs:
     if: >-
       ${{
         always() &&
-        (inputs.store_submit_update || inputs.store_submit_draft) &&
+        (inputs.store_submit_update == true || inputs.store_submit_draft == true) &&
         (inputs.platform == 'Windows' || inputs.platform == 'All') &&
         needs.prepare-release.result == 'success' &&
         needs.generate-release-notes.result == 'success' &&
@@ -1092,7 +1096,7 @@ jobs:
           if-no-files-found: error
 
       - name: Stage package and Highlights and submit the selected Store update
-        if: ${{ inputs.store_submit_update }}
+        if: ${{ inputs.store_submit_update == true }}
         shell: pwsh
         env:
           AZURE_AD_APPLICATION_CLIENT_ID: ${{ secrets.AZURE_AD_APPLICATION_CLIENT_ID }}

@@ -53,7 +53,9 @@ class WindowsAdvisoryTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("extended_windows_validation:", workflow)
-        self.assertIn("if: ${{ inputs.extended_windows_validation }}", workflow)
+        self.assertIn(
+            "if: ${{ inputs.extended_windows_validation == true }}", workflow
+        )
         self.assertIn("cargo fmt --manifest-path windows/Cargo.toml -- --check", workflow)
         self.assertIn("cargo clippy", workflow)
         self.assertIn("-D warnings", workflow)
