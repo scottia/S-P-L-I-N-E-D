@@ -3877,8 +3877,24 @@ fn apply_track_coordination_states(
                 )),
             }
         } else {
+            let state_changed = previous.get(relative) != Some(state);
+            let track =
+                &mut app.library.albums[*album_index].snapshot.compilation_tracks[*track_index];
+            let projection_changed = !track.embedded_artwork_recorded;
+            // A durable Windows event is this client's own successful write
+            // evidence.  It can repopulate an in-memory snapshot after an
+            // index refresh without manufacturing an opposing override or
+            // forcing a second NAS read.  The report's lazy thumbnail check
+            // still distinguishes preferred-size green from purple/blue.
+            track.embedded_artwork_recorded = true;
             accepted.insert(relative.clone(), state.clone());
-            changed = true;
+            // A Windows-authored event is local completion evidence, not an
+            // opposing override that needs to be projected back into the
+            // same audio file.  Publish the UI only when the durable event
+            // actually changed; treating every three-minute poll as a new
+            // change made the file list continually refresh and prevented
+            // stable status/focus.
+            changed |= state_changed || projection_changed;
         }
     }
     let writers = accepted
@@ -25367,13 +25383,13 @@ mod tests {
         EMBEDDED_METADATA_ERRORS, EmbedQueueSource, EmbedQueueTarget,
         LARGE_RENDERED_IMAGE_CACHE_LIMIT, MEDIUM_IMAGE_CACHE_LIMIT, MaximizeGuard,
         NAVIDROME_ALBUM_DOWNLOAD_LIMIT, NAVIDROME_ARTIST_DOWNLOAD_LIMIT, PREVIEW_CACHE_DIMENSION,
-        SMALL_IMAGE_CACHE_LIMIT, ThumbnailAlbumTarget, UiCompilationReportRow, UiMusicBrainzRow,
-        WorkspaceLayout, add_embedded_thumbnail_decision, add_uploaded_artist_artwork,
-        album_embedded_check, album_embedded_check_cache, album_embedded_check_key,
-        album_overview_queue_target, apply_album_coordination_states, apply_ui_preferences,
-        artist_album_card_artwork_path, artist_album_card_display_title,
-        artist_album_queue_targets, artist_art_candidate_source, artist_art_query_sources,
-        artist_art_targets_for_albums, artist_banner_for_overview,
+        SMALL_IMAGE_CACHE_LIMIT, ThumbnailAlbumTarget, TrackWriteState, UiCompilationReportRow,
+        UiMusicBrainzRow, WorkspaceLayout, add_embedded_thumbnail_decision,
+        add_uploaded_artist_artwork, album_embedded_check, album_embedded_check_cache,
+        album_embedded_check_key, album_overview_queue_target, apply_album_coordination_states,
+        apply_track_coordination_states, apply_ui_preferences, artist_album_card_artwork_path,
+        artist_album_card_display_title, artist_album_queue_targets, artist_art_candidate_source,
+        artist_art_query_sources, artist_art_targets_for_albums, artist_banner_for_overview,
         artist_compilation_thumb_repair_plan, artist_fallback_embedded_track_paths,
         artist_is_secondary_credit, artist_overview_is_fully_complete,
         artist_overview_legend_counts, artist_overview_release_banners,
@@ -28205,6 +28221,88 @@ mod tests {
         assert!(app.library.albums[0].snapshot.cover_path.is_empty());
         assert!(app.current_cover_path.is_empty());
         assert!(!app.library.album_artwork_paths.contains_key("release-id"));
+    }
+
+    #[test]
+    fn repeated_windows_comp_coordination_is_stable_completion_evidence() {
+        let root = PathBuf::from(r"C:\Music");
+        let track_path = root.join("Various Artists").join("COMP").join("01.flac");
+        let snapshot = MediaSnapshot {
+            schema_version: splined_core::media_database::SCHEMA_VERSION,
+            database_path: "splined.db".to_string(),
+            canonical_root: root.to_string_lossy().into_owned(),
+            local_root: root.to_string_lossy().into_owned(),
+            albums: vec![MediaAlbumSnapshot {
+                album_key: "comp".to_string(),
+                artist: "Various Artists".to_string(),
+                tagged_artist: "Various Artists".to_string(),
+                title: "COMP".to_string(),
+                path: track_path.parent().unwrap().to_string_lossy().into_owned(),
+                representative_file: track_path.to_string_lossy().into_owned(),
+                status: "processed".to_string(),
+                compilation: true,
+                compilation_track_art_eligible: true,
+                compilation_tracks: vec![MediaTrackSnapshot {
+                    path: track_path.to_string_lossy().into_owned(),
+                    title: "Track".to_string(),
+                    artist: "Artist".to_string(),
+                    embedded_artwork_recorded: false,
+                }],
+                track_count: 1,
+                compilation_completed_tracks: 0,
+                release_year: "2026".to_string(),
+                artist_mbid: String::new(),
+                album_mbid: String::new(),
+                release_group_mbid: String::new(),
+                has_local_artwork: false,
+                local_artwork_files: Vec::new(),
+                cover_path: String::new(),
+                cover_name: String::new(),
+                cover_format: String::new(),
+                cover_width: 0,
+                cover_height: 0,
+                root_files: 0,
+                cover_files: 0,
+                processed_at: None,
+                timeout_until: None,
+                selected_source: None,
+            }],
+        };
+        let mut app = ApplicationState::new(Config::default(), snapshot).unwrap();
+        let relative = "various artists/comp/01.flac".to_string();
+        let states = HashMap::from([(
+            relative.clone(),
+            TrackWriteState {
+                album_key: "comp".to_string(),
+                relative_track_path: relative,
+                writer: "windows".to_string(),
+                event_id: "windows-1".to_string(),
+                artwork_sha256: "digest".to_string(),
+                revision: 1,
+            },
+        )]);
+        let mut previous = HashMap::new();
+
+        assert!(apply_track_coordination_states(
+            &mut app,
+            &states,
+            &mut previous
+        ));
+        assert!(app.library.albums[0].snapshot.compilation_tracks[0].embedded_artwork_recorded);
+        assert_eq!(
+            app.comp_track_override_writers
+                .get(&track_path.to_string_lossy().to_ascii_lowercase())
+                .map(String::as_str),
+            Some("windows")
+        );
+
+        // The same durable row on the next coordination poll must not force
+        // another UI rebuild or move the file-list scroll position.
+        assert!(!apply_track_coordination_states(
+            &mut app,
+            &states,
+            &mut previous
+        ));
     }
 
     #[test]

@@ -232,6 +232,8 @@ test("opposing Album overrides use their own dark-grey filter and never inflate 
   assert.match(appSource, /applyStatusPalette\(button, overridden \? "override" : albumCardState\(album, state\.artist\)\.stateKey\)/);
   assert.match(appSource, /classifyMediaState\("artist", \["missing_artist_art"\]\)\.ui_status_key/);
   assert.match(appSource, /artist\.missing_artist_art = missing/);
+  assert.match(cssSource, /\.fallback-library-track\.opposing-track-override\{color:var\(--media-state-dark-grey/);
+  assert.match(cssSource, /\.fallback-track\.opposing-track-override\{border-color:var\(--media-state-dark-grey/);
   assert.doesNotMatch(appSource, /counts\.set\("bypassed", \(counts\.get\("bypassed"\) \|\| 0\) \+ overrideCount\)/);
 });
 

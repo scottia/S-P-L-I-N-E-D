@@ -59,6 +59,20 @@ The policy synchronizes definitions, priorities, labels, and colors. It does
 not copy a database or manufacture evidence that is absent from a standalone
 catalog.
 
+Album and COMP coordination records are the cross-client ownership evidence.
+Their `writer` decides whether the other application presents a dark-grey
+override. Artwork-source provenance remains independent: a track written by
+Windows may still retain `itunes`, `local`, `existing`, or another provider as
+its `source_kind`. A matching durable artwork digest is sufficient to apply
+the opposing override, and neither application rewrites the provider merely
+to change a status color.
+
+Windows-authored COMP coordination also restores Windows' in-memory completed
+track state after an index reload. Re-reading the same unchanged coordination
+revision is a no-op; it does not refresh the file list, move scroll focus, or
+re-open the music file. The COMP report's lazy artwork inspection remains the
+authority for preferred-size green versus attention-required purple/blue.
+
 ## Database connection badge
 
 `database_monitor` maps backend names and connection states to badge labels and

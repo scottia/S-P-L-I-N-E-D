@@ -543,8 +543,14 @@ class Services:
                 == expected
                 and str(projected["outcome"] or "")
                 in {"embedded-replaced", "embedded-existing"}
-                and str(projected["source_kind"] or "") == "coordination-windows"
             ):
+                # The coordination row is the opposing-client ownership
+                # authority.  ``source_kind`` is independent artwork-source
+                # provenance (iTunes, local, existing, and so on) and must
+                # not be rewritten merely to make the status grey.  Older
+                # projections legitimately retain that original provider;
+                # the matching durable digest proves this exact Windows
+                # event is already represented in PostgreSQL.
                 return True
             try:
                 artwork = embedded_track_artwork_bytes(track_path, strict=True)
