@@ -1345,6 +1345,33 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
         payload["_audit"] = audit_context
         return context.jobs.enqueue(str(kind), payload, staged=kind == "embed-album")
 
+    @app.post("/api/jobs/comp-batch")
+    def stage_comp_batch(request: Request, payload: dict):
+        services = context.require()
+        if not context.jobs:
+            raise ValueError("The job worker is unavailable")
+        context.runtime.require_write()
+        artist_id = str(payload.get("artist_id", "")).strip()
+        groups = payload.get("groups")
+        if not artist_id or not isinstance(groups, list) or not groups:
+            raise ValueError("Choose an Artist COMP Report with explicit albums")
+        audit_context = {
+            "action_id": request.state.action_id,
+            "trace_id": request.state.trace_id,
+        }
+        jobs = []
+        for group in groups:
+            if not isinstance(group, dict):
+                raise ValueError("Invalid Artist COMP album selection")
+            job = services.validate_comp_payload({
+                "artist_id": artist_id,
+                "album_id": group.get("album_id"),
+                "track_keys": group.get("track_keys"),
+            })
+            job["_audit"] = audit_context
+            jobs.append(job)
+        return context.jobs.enqueue_comp_batch(jobs)
+
     @app.post("/api/jobs/action")
     def queue_action(payload: dict):
         context.require()

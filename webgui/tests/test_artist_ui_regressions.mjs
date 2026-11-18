@@ -841,9 +841,9 @@ test("Artist and full-album COMP launches submit independent explicit scopes", a
   await context.launchFallback(signal);
 
   const submitted = JSON.parse(JSON.stringify(calls));
-  assert.deepEqual(submitted[0].slice(0, 2), ["/api/jobs", {kind: "comp", payload: {
-    artist_id: "artist-1", album_id: "comp-1", track_keys: ["artist-track"],
-  }}]);
+  assert.deepEqual(submitted[0].slice(0, 2), ["/api/jobs/comp-batch", {
+    artist_id: "artist-1", groups: [{album_id: "comp-1", track_keys: ["artist-track"]}],
+  }]);
   assert.deepEqual(submitted[1].slice(0, 2), ["/api/jobs", {kind: "comp", payload: {
     album_id: "comp-1", track_keys: ["artist-track", "other-track"],
   }}]);
@@ -870,9 +870,12 @@ test("completed and Windows-overridden COMP tracks remain bulk reprocessable", a
   await context.launchArtistComp();
   await context.launchFallback();
 
-  assert.deepEqual(JSON.parse(JSON.stringify(calls.map(call => call[1].payload))), [
-    {artist_id: "artist-1", album_id: "comp-1", track_keys: ["windows-track", "finished"]},
-    {album_id: "comp-1", track_keys: ["windows-track", "finished"]},
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.map(call => call[1]))), [
+    {
+      artist_id: "artist-1",
+      groups: [{album_id: "comp-1", track_keys: ["windows-track", "finished"]}],
+    },
+    {kind: "comp", payload: {album_id: "comp-1", track_keys: ["windows-track", "finished"]}},
   ]);
   assert.match(appSource, /state\.fallbackPreviewMode \|\| !reprocessable/);
   assert.match(operationsSource, /function fallbackCompLaunchTargets\(trackKey = ""\)/);
@@ -934,12 +937,8 @@ test("both Artist COMP launch controls route through the scoped COMP action", as
   assert.match(appSource, /if \(processing\)[\s\S]*?"STOP PROCESS"[\s\S]*?stopCandidateWork/);
 });
 
-test("Artist COMP reviews the first job before later Album enqueue back-pressure", async () => {
-  let releaseSecond;
-  const blockedSecond = new Promise(resolve => { releaseSecond = resolve; });
-  let markReviewed;
-  const firstReviewed = new Promise(resolve => { markReviewed = resolve; });
-  let posts = 0;
+test("Artist COMP durably submits the complete Album batch before review", async () => {
+  const posts = [];
   const reviewed = [];
   const state = {
     artist: {id: "artist-1"}, compReportVisible: true, compPreviewMode: false,
@@ -950,23 +949,24 @@ test("Artist COMP reviews the first job before later Album enqueue back-pressure
   };
   const context = load(launchCompFunctions, {
     state,
-    post: async () => {
-      posts += 1;
-      if (posts === 1) return {id: "job-first"};
-      return blockedSecond;
+    post: async (path, body) => {
+      posts.push([path, body]);
+      return {id: "job-first", ids: ["job-first", "job-second"]};
     },
-    reviewJob: async (id, quiet) => { reviewed.push([id, quiet]); markReviewed(); },
+    reviewJob: async (id, quiet) => { reviewed.push([id, quiet]); },
     setStatus() {},
   });
 
-  const launch = context.launchArtistComp();
-  await firstReviewed;
-  await Promise.resolve();
+  await context.launchArtistComp();
 
-  assert.equal(JSON.stringify(reviewed), JSON.stringify([["job-first", true]]));
-  releaseSecond({id: "job-second"});
-  await launch;
-  assert.equal(posts, 2);
+  assert.deepEqual(JSON.parse(JSON.stringify(posts)), [["/api/jobs/comp-batch", {
+    artist_id: "artist-1",
+    groups: [
+      {album_id: "comp-1", track_keys: ["first"]},
+      {album_id: "comp-2", track_keys: ["second"]},
+    ],
+  }]]);
+  assert.deepEqual(reviewed, [["job-first", true]]);
 });
 
 test("repeated selection of an active COMP track cannot enqueue another job", async () => {

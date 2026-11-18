@@ -610,26 +610,24 @@ async function launchArtistComp(signal = null, target = null) {
   state.compPreviewMode = false;
   const trackCount = groups.reduce((total, group) => total + group.keys.length, 0);
   setStatus(`Opening Artist COMP review · ${groups.length} album${groups.length === 1 ? "" : "s"} · ${trackCount} track${trackCount === 1 ? "" : "s"}`, "busy");
-  let first;
-  for (const group of groups) {
-    if (signal?.aborted) throw new DOMException("Processing stopped", "AbortError");
-    const result = await post(
+  if (signal?.aborted) throw new DOMException("Processing stopped", "AbortError");
+  const result = target
+    ? await post(
       "/api/jobs",
-      {kind: "comp", payload: {artist_id: artistId, album_id: group.id, track_keys: group.keys}},
-    );
-    if (signal?.aborted) {
-      if (result?.id) await post("/api/jobs/action", {action: "cancel", id: result.id}).catch(() => {});
-      throw new DOMException("Processing stopped", "AbortError");
-    }
-    if (!first) {
-      first = result.id;
-      // Assign and poll the first job before queuing every remaining Album.
-      // The server intentionally back-pressures a full COMP queue; waiting
-      // until the loop ends can therefore deadlock the browser before it ever
-      // renders the first MusicBrainz decision.
-      await reviewJob(first, true);
-    }
+      {kind: "comp", payload: {artist_id: artistId, album_id: groups[0].id, track_keys: groups[0].keys}},
+    )
+    : await post("/api/jobs/comp-batch", {
+      artist_id: artistId,
+      groups: groups.map(group => ({album_id: group.id, track_keys: group.keys})),
+    });
+  if (signal?.aborted) {
+    if (target && result?.id)
+      await post("/api/jobs/action", {action: "cancel", id: result.id}).catch(() => {});
+    else
+      await post("/api/jobs/action", {action: "cancel", kind: "comp"}).catch(() => {});
+    throw new DOMException("Processing stopped", "AbortError");
   }
+  await reviewJob(result.id, true);
 };
 async function launchCandidateWork(signal = null) {
   if (state.queuedDecision?.jobKind === "scan") return skipQueuedAlbum();
