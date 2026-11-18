@@ -159,6 +159,36 @@ class CanonicalCoverOverwriteTests(unittest.TestCase):
                 self.assertEqual(path.read_bytes(), contents)
             self.assertFalse((album / "cover.png").exists())
 
+    def test_same_format_write_falls_back_when_nas_denies_existing_file_rename(self) -> None:
+        with TemporaryDirectory(dir=ISOLATED_FIXTURE_ROOT) as directory:
+            album = Path(directory)
+            cover = album / "cover.jpg"
+            cover.write_bytes(image_bytes("JPEG", "red"))
+            replacement = image_bytes("JPEG", "blue")
+            replace = core.os.replace
+
+            def deny_existing_cover_rename(
+                source: str | Path, destination: str | Path
+            ) -> None:
+                source_path = Path(source)
+                destination_path = Path(destination)
+                if source_path == cover or (
+                    ".splined-stage-" in source_path.name
+                    and destination_path == cover
+                ):
+                    raise OSError(5, "NAS rename denied")
+                replace(source, destination)
+
+            with mock.patch.object(
+                core.os, "replace", side_effect=deny_existing_cover_rename
+            ):
+                core.install_canonical_cover(cover, replacement, "cover")
+
+            self.assertEqual(cover.read_bytes(), replacement)
+            self.assertFalse(
+                any(".splined-" in path.name for path in album.iterdir())
+            )
+
     def test_custom_basename_cleanup_does_not_touch_cover_or_other_artwork(self) -> None:
         with TemporaryDirectory(dir=ISOLATED_FIXTURE_ROOT) as directory:
             album = Path(directory)
