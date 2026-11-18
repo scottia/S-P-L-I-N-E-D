@@ -143,7 +143,10 @@ pub fn configuration_directory_for_root(root: &Path) -> Result<PathBuf, String> 
     let locator = root.join("configuration-location.toml");
     if locator.is_file() {
         let directory = configuration_directory_from_locator(root, &locator)?;
-        save_configuration_directory_bootstrap(root, &directory)?;
+        write_configuration_bootstrap(root, &directory)?;
+        let config_migration = persist_configuration_path_in_existing_config(&directory);
+        retire_configuration_locator(root)?;
+        config_migration?;
         return Ok(directory);
     }
     if let Some(directory) = configuration_directory_from_bootstrap(root)? {
@@ -175,7 +178,10 @@ pub fn save_configuration_directory_bootstrap(root: &Path, directory: &Path) -> 
         ));
     }
     write_configuration_bootstrap(root, directory)?;
+    retire_configuration_locator(root)
+}
 
+fn retire_configuration_locator(root: &Path) -> Result<(), String> {
     let retired_locator = root.join("configuration-location.toml");
     if retired_locator.is_file() {
         std::fs::remove_file(&retired_locator).map_err(|error| {
@@ -186,6 +192,55 @@ pub fn save_configuration_directory_bootstrap(root: &Path, directory: &Path) -> 
         })?;
     }
     Ok(())
+}
+
+fn persist_configuration_path_in_existing_config(directory: &Path) -> Result<(), String> {
+    let path = directory.join("config.toml");
+    if !path.is_file() {
+        return Ok(());
+    }
+    let body = std::fs::read_to_string(&path).map_err(|error| {
+        format!(
+            "Unable to read Config v5 while migrating its Configuration Path {}: {error}",
+            path.display()
+        )
+    })?;
+    let mut document: toml::Value = toml::from_str(&body).map_err(|error| {
+        format!(
+            "Unable to migrate the Configuration Path in {}: {error}",
+            path.display()
+        )
+    })?;
+    let table = document
+        .as_table_mut()
+        .ok_or_else(|| format!("Config v5 must be a TOML table: {}", path.display()))?;
+    let expected = display_path(directory);
+    if table
+        .get("configuration_path")
+        .and_then(toml::Value::as_str)
+        == Some(expected.as_str())
+    {
+        return Ok(());
+    }
+    table.insert(
+        "configuration_path".to_string(),
+        toml::Value::String(expected.clone()),
+    );
+    let migrated = toml::to_string_pretty(&document)
+        .map_err(|error| format!("Unable to serialize migrated Config v5: {error}"))?;
+    crate::safe_write::replace_text_file(&path, &migrated, "SPLINED configuration", |candidate| {
+        let parsed: toml::Value = toml::from_str(candidate)
+            .map_err(|error| format!("Invalid migrated Config v5: {error}"))?;
+        if parsed
+            .get("configuration_path")
+            .and_then(toml::Value::as_str)
+            == Some(expected.as_str())
+        {
+            Ok(())
+        } else {
+            Err("Migrated Config v5 did not retain its Configuration Path.".to_string())
+        }
+    })
 }
 
 pub fn configuration_directory_from_bootstrap(root: &Path) -> Result<Option<PathBuf>, String> {
@@ -447,6 +502,8 @@ mod tests {
         let root = temp.path().join("portable");
         let selected = temp.path().join("settings");
         std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&selected).unwrap();
+        std::fs::write(selected.join("config.toml"), "config_version = 5\n").unwrap();
         let locator = root.join("configuration-location.toml");
         std::fs::write(
             &locator,
@@ -460,6 +517,14 @@ mod tests {
             configuration_directory_from_bootstrap(&root).unwrap(),
             Some(selected)
         );
+        let migrated = std::fs::read_to_string(
+            configuration_directory_from_bootstrap(&root)
+                .unwrap()
+                .unwrap()
+                .join("config.toml"),
+        )
+        .unwrap();
+        assert!(migrated.contains("configuration_path"));
     }
 
     #[test]
