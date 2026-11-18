@@ -837,6 +837,41 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         ):
             self.assertTrue(self.services._persist_opposing_comp_track(event))
 
+    def test_matching_opposing_comp_event_preserves_artwork_source_provenance(self):
+        self.set_flac_embedded_cover(self.files[0], 300)
+        artwork = embedded_track_artwork_bytes(self.files[0])
+        self.assertIsNotNone(artwork)
+        digest = hashlib.sha256(artwork).hexdigest()
+        event = {
+            "album_key": self.row["album_key"],
+            "relative_track_path": "test artist/test album/1.flac",
+            "artwork_sha256": digest,
+        }
+        with closing(self.db.connect()) as db, db:
+            db.execute(
+                "INSERT INTO compilation_track_artwork"
+                "(track_path,recording_mbid,artist_mbid,source_kind,source_locator,"
+                "release_mbid,artwork_sha256,outcome,applied_at,splined_version) "
+                "VALUES(?,'','','itunes','provider-result',NULL,?,"
+                "'embedded-existing',now(),'test')",
+                (str(self.files[0]), digest),
+            )
+
+        # Coordination owns the cross-client override presentation.  The
+        # original provider remains artwork provenance and no NAS re-read is
+        # necessary when the durable digest already matches.
+        with patch(
+            "webgui.services.embedded_track_artwork_bytes",
+            side_effect=AssertionError("matching durable artwork was re-read"),
+        ):
+            self.assertTrue(self.services._persist_opposing_comp_track(event))
+        with closing(self.db.connect()) as db:
+            source = db.execute(
+                "SELECT source_kind FROM compilation_track_artwork WHERE track_path=?",
+                (str(self.files[0]),),
+            ).fetchone()[0]
+        self.assertEqual(source, "itunes")
+
     def test_failed_album_write_does_not_claim_coordination(self):
         with patch(
             "webgui.services.core.install_canonical_cover",
