@@ -7,7 +7,7 @@ import tomllib
 import unittest
 from pathlib import Path
 
-REPOSITORY = Path(__file__).resolve().parents[2]
+REPOSITORY = Path(__file__).resolve().parents[4]
 
 
 class SettingsContractTests(unittest.TestCase):
@@ -78,7 +78,7 @@ class SettingsContractTests(unittest.TestCase):
         self.assertEqual(fields["output.file_formats"]["type"], "statement")
         self.assertIn("banner.*", fields["output.preserve_file"]["label"])
         self.assertTrue(fields["output.upscale_below_ideal"]["default"])
-        operations = (REPOSITORY / "webgui/static/operations.js").read_text(encoding="utf-8")
+        operations = (REPOSITORY / "build/WEBGui/webgui/static/operations.js").read_text(encoding="utf-8")
         self.assertIn("Settings HELP", operations)
         self.assertIn(
             "https://github.com/scottia/S-P-L-I-N-E-D/blob/main/docs/config-v5-reference.md",
@@ -113,7 +113,7 @@ class SettingsContractTests(unittest.TestCase):
             fields["verbosity"]["choices"],
             ["none", "info", "debug", "warning", "error"],
         )
-        operations = (REPOSITORY / "webgui/static/operations.js").read_text(
+        operations = (REPOSITORY / "build/WEBGui/webgui/static/operations.js").read_text(
             encoding="utf-8"
         )
         self.assertIn('scanDirectory.placeholder = "Optional"', operations)
@@ -122,22 +122,22 @@ class SettingsContractTests(unittest.TestCase):
             'draft.scan.temporary_cache_dir ??= draft.scan.cache_dir || ""',
             operations,
         )
-        entrypoint = (REPOSITORY / "webgui/__main__.py").read_text(encoding="utf-8")
+        entrypoint = (REPOSITORY / "build/WEBGui/webgui/__main__.py").read_text(encoding="utf-8")
         self.assertIn('"none": "critical"', entrypoint)
         self.assertIn('access_log=verbosity != "none"', entrypoint)
 
     def test_windows_labels_remain_present(self) -> None:
-        slint = (REPOSITORY / "windows/ui/app.slint").read_text(encoding="utf-8")
+        slint = (REPOSITORY / "build/Windows/ui/app.slint").read_text(encoding="utf-8")
         for label in ("Upscale Below Ideal", "Max Upscale Percent", "Evaluate Final Image"):
             self.assertIn(f'label: "{label}"', slint)
         self.assertIn('["None", "Current", "Verbose", "Debugger", "Error"]', slint)
         self.assertNotIn('label: "Full Library Scan"', slint)
 
     def test_webgui_settings_workspace_keeps_windows_parity_sections(self) -> None:
-        operations = (REPOSITORY / "webgui/static/operations.js").read_text(
+        operations = (REPOSITORY / "build/WEBGui/webgui/static/operations.js").read_text(
             encoding="utf-8"
         )
-        app = (REPOSITORY / "webgui/static/app.js").read_text(encoding="utf-8")
+        app = (REPOSITORY / "build/WEBGui/webgui/static/app.js").read_text(encoding="utf-8")
         for label in (
             "OLED Chroma Wheel",
             "Album Card Frames",
@@ -154,10 +154,10 @@ class SettingsContractTests(unittest.TestCase):
             self.assertIn(f"{key}: {{name:", app)
 
     def test_connections_order_and_database_monitor_contract(self) -> None:
-        operations = (REPOSITORY / "webgui/static/operations.js").read_text(
+        operations = (REPOSITORY / "build/WEBGui/webgui/static/operations.js").read_text(
             encoding="utf-8"
         )
-        server = (REPOSITORY / "webgui/server.py").read_text(encoding="utf-8")
+        server = (REPOSITORY / "build/WEBGui/webgui/server.py").read_text(encoding="utf-8")
         credentials = operations.index("renderConnectionSettings(fields")
         policy = operations.index("renderMediaStatePolicyEditor(fields")
         future = operations.index('"Optional / Future Scope"')
@@ -169,8 +169,8 @@ class SettingsContractTests(unittest.TestCase):
         self.assertIn("now - self._database_monitor_checked_at < poll_seconds", server)
 
     def test_webgui_persists_navidrome_in_artwork_source_order(self) -> None:
-        app = (REPOSITORY / "webgui/static/app.js").read_text(encoding="utf-8")
-        operations = (REPOSITORY / "webgui/static/operations.js").read_text(
+        app = (REPOSITORY / "build/WEBGui/webgui/static/app.js").read_text(encoding="utf-8")
+        operations = (REPOSITORY / "build/WEBGui/webgui/static/operations.js").read_text(
             encoding="utf-8"
         )
         self.assertIn('if (!configured.includes("navidrome"))', operations)
@@ -183,8 +183,8 @@ class SettingsContractTests(unittest.TestCase):
         self.assertIn("state.sourceOrder = [...(settings.config.sources?.cover_sources", operations)
 
     def test_direct_album_search_can_be_skipped_without_selecting_another_album(self) -> None:
-        app = (REPOSITORY / "webgui/static/app.js").read_text(encoding="utf-8")
-        operations = (REPOSITORY / "webgui/static/operations.js").read_text(
+        app = (REPOSITORY / "build/WEBGui/webgui/static/app.js").read_text(encoding="utf-8")
+        operations = (REPOSITORY / "build/WEBGui/webgui/static/operations.js").read_text(
             encoding="utf-8"
         )
         self.assertIn("albumSearchActive", app)
@@ -193,8 +193,8 @@ class SettingsContractTests(unittest.TestCase):
         self.assertIn("return skipAlbumSearch()", operations)
 
     def test_direct_musicbrainz_uses_persistent_main_workspace(self) -> None:
-        app = (REPOSITORY / "webgui/static/app.js").read_text(encoding="utf-8")
-        operations = (REPOSITORY / "webgui/static/operations.js").read_text(
+        app = (REPOSITORY / "build/WEBGui/webgui/static/app.js").read_text(encoding="utf-8")
+        operations = (REPOSITORY / "build/WEBGui/webgui/static/operations.js").read_text(
             encoding="utf-8"
         )
         self.assertIn('jobKind: "direct-musicbrainz"', operations)
@@ -204,8 +204,8 @@ class SettingsContractTests(unittest.TestCase):
         self.assertIn('directAlbum ? "ALBUM" : "TRACK"', app)
 
     def test_selected_artwork_omits_redundant_write_warning(self) -> None:
-        app = (REPOSITORY / "webgui/static/app.js").read_text(encoding="utf-8")
-        operations = (REPOSITORY / "webgui/static/operations.js").read_text(
+        app = (REPOSITORY / "build/WEBGui/webgui/static/app.js").read_text(encoding="utf-8")
+        operations = (REPOSITORY / "build/WEBGui/webgui/static/operations.js").read_text(
             encoding="utf-8"
         )
         self.assertNotIn("Live Write · WRITE saves artwork", operations)
@@ -214,8 +214,8 @@ class SettingsContractTests(unittest.TestCase):
         self.assertIn('overrideNotice.textContent = override?.writer === "windows"', app)
 
     def test_windows_candidate_filter_exposes_every_resolution_range(self) -> None:
-        main = (REPOSITORY / "windows/src/main.rs").read_text(encoding="utf-8")
-        slint = (REPOSITORY / "windows/ui/app.slint").read_text(encoding="utf-8")
+        main = (REPOSITORY / "build/Windows/src/main.rs").read_text(encoding="utf-8")
+        slint = (REPOSITORY / "build/Windows/ui/app.slint").read_text(encoding="utf-8")
         for key in (
             '"Ideal"',
             '"UpperRange"',
@@ -228,8 +228,8 @@ class SettingsContractTests(unittest.TestCase):
         self.assertIn("height: (520px * AppTheme.ui-scale)", slint)
 
     def test_windows_selected_album_shows_processing_and_embedding_facts(self) -> None:
-        main = (REPOSITORY / "windows/src/main.rs").read_text(encoding="utf-8")
-        slint = (REPOSITORY / "windows/ui/app.slint").read_text(encoding="utf-8")
+        main = (REPOSITORY / "build/Windows/src/main.rs").read_text(encoding="utf-8")
+        slint = (REPOSITORY / "build/Windows/ui/app.slint").read_text(encoding="utf-8")
         self.assertIn("selected-album-processing-state", slint)
         self.assertIn("selected-album-track-count", slint)
         self.assertIn("selected-album-embedded-count", slint)

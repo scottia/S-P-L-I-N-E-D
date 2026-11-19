@@ -7,7 +7,7 @@ import splined_compilation_authority_policy as policy
 
 
 FIXTURE = json.loads(
-    (Path(__file__).parents[2] / "fixtures" / "cross-runtime-album-policy.json")
+    (Path(__file__).parents[4] / "fixtures" / "cross-runtime-album-policy.json")
     .read_text(encoding="utf-8")
 )
 

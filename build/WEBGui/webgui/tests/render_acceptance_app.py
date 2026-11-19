@@ -16,8 +16,8 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 
-REPOSITORY = Path(__file__).resolve().parents[2]
-STATIC = REPOSITORY / "webgui" / "static"
+REPOSITORY = Path(__file__).resolve().parents[4]
+STATIC = REPOSITORY / "build" / "WEBGui" / "webgui" / "static"
 CONTRACT = json.loads((REPOSITORY / "schema" / "settings-ui.json").read_text(encoding="utf-8"))
 CONFIG = tomllib.loads((REPOSITORY / "docker" / "config.example.toml").read_text(encoding="utf-8"))
 CONFIG["library"]["music_library"] = r"E:\Disposable SPLINED Acceptance\Music"

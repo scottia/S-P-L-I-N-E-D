@@ -70,7 +70,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.db = Database(self.url)
         self.db.migrate()
         self.cfg = tomllib.loads(
-            (Path(__file__).parents[2] / "docker/config.example.toml").read_text(
+            (Path(__file__).parents[4] / "docker/config.example.toml").read_text(
                 encoding="utf-8"
             )
         )
@@ -4224,7 +4224,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             }
 
         schema_sql = (
-            Path(__file__).parents[2] / "schema" / "media.sql"
+            Path(__file__).parents[4] / "schema" / "media.sql"
         ).read_text(encoding="utf-8")
         with closing(sqlite3.connect(snapshot)) as source, source:
             source.executescript(schema_sql)
@@ -4332,7 +4332,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             }
 
         schema_sql = (
-            Path(__file__).parents[2] / "schema" / "media.sql"
+            Path(__file__).parents[4] / "schema" / "media.sql"
         ).read_text(encoding="utf-8")
 
         def write_snapshot(path, *, processed=False):

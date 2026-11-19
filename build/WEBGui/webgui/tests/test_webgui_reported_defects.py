@@ -87,9 +87,9 @@ class ReportedDefectTests(unittest.TestCase):
         self.assertEqual([result["source"] for result in results], ["fixture", "fixture"])
 
     def test_container_context_includes_settings_contract(self):
-        repository = Path(__file__).parents[2]
+        repository = Path(__file__).parents[4]
         dockerignore = (repository / ".dockerignore").read_text(encoding="utf-8")
-        dockerfile = (repository / "webgui" / "Dockerfile").read_text(encoding="utf-8")
+        dockerfile = (repository / "build" / "WEBGui" / "Dockerfile").read_text(encoding="utf-8")
 
         self.assertIn(
             "COPY schema/media.sql schema/settings-ui.json schema/media-state-classification.json schema/comp-report-policy.json /app/schema/",
@@ -265,10 +265,10 @@ class ReportedDefectTests(unittest.TestCase):
         self.assertEqual(banner.getpixel((599, 128))[3], 0)
 
     def test_webgui_formatting_uses_visible_settings_and_configured_artwork_range(self):
-        repository = Path(__file__).parents[2]
-        stylesheet = (repository / "webgui" / "static" / "app.css").read_text(encoding="utf-8")
-        application = (repository / "webgui" / "static" / "app.js").read_text(encoding="utf-8")
-        operations = (repository / "webgui" / "static" / "operations.js").read_text(encoding="utf-8")
+        repository = Path(__file__).parents[4]
+        stylesheet = (repository / "build" / "WEBGui" / "webgui" / "static" / "app.css").read_text(encoding="utf-8")
+        application = (repository / "build" / "WEBGui" / "webgui" / "static" / "app.js").read_text(encoding="utf-8")
+        operations = (repository / "build" / "WEBGui" / "webgui" / "static" / "operations.js").read_text(encoding="utf-8")
 
         self.assertIn("top:64px", stylesheet)
         self.assertIn("resize:both", stylesheet)
@@ -282,8 +282,8 @@ class ReportedDefectTests(unittest.TestCase):
         self.assertNotIn('"Artist " + state.artist.portrait_meta.width', application)
 
     def test_cross_client_override_visual_contract_is_presentation_only(self):
-        repository = Path(__file__).parents[2]
-        static = repository / "webgui" / "static"
+        repository = Path(__file__).parents[4]
+        static = repository / "build" / "WEBGui" / "webgui" / "static"
         document = (static / "index.html").read_text(encoding="utf-8")
         application = (static / "app.js").read_text(encoding="utf-8")
         operations = (static / "operations.js").read_text(encoding="utf-8")
@@ -428,7 +428,7 @@ class ReportedDefectTests(unittest.TestCase):
         application = (static / "app.js").read_text(encoding="utf-8")
         operations = (static / "operations.js").read_text(encoding="utf-8")
         styles = (static / "app.css").read_text(encoding="utf-8")
-        native = (Path(__file__).parents[2] / "windows" / "ui" / "app.slint").read_text(
+        native = (Path(__file__).parents[4] / "build" / "Windows" / "ui" / "app.slint").read_text(
             encoding="utf-8"
         )
         for identity in (

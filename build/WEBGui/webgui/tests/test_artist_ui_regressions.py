@@ -8,7 +8,7 @@ import subprocess
 import unittest
 
 
-REPOSITORY = Path(__file__).resolve().parents[2]
+REPOSITORY = Path(__file__).resolve().parents[4]
 NODE_SUITE = Path(__file__).with_suffix(".mjs")
 NODE_TIMEOUT_SECONDS = 60
 

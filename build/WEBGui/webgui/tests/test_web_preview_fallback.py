@@ -184,7 +184,7 @@ class BrowserFallbackTests(unittest.TestCase):
         self.assertIn("renderedPreview", application)
         self.assertIn("compReportLoading", application)
 
-        contract = (Path(__file__).parents[2] / "schema" / "settings-ui.json").read_text(
+        contract = (Path(__file__).parents[4] / "schema" / "settings-ui.json").read_text(
             encoding="utf-8"
         )
         self.assertIn('"label": "Include in Album Art Search"', contract)

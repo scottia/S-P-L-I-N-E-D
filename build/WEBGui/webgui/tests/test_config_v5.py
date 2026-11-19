@@ -9,7 +9,7 @@ from pathlib import Path
 import splined
 from webgui.runtime import Runtime
 
-REPOSITORY = Path(__file__).resolve().parents[2]
+REPOSITORY = Path(__file__).resolve().parents[4]
 
 
 def load_example(relative: str) -> dict:
@@ -134,7 +134,7 @@ class ConfigV5ParityTests(unittest.TestCase):
     def test_all_public_examples_validate_as_v5(self) -> None:
         for relative in (
             "config.example.toml",
-            "windows/config.example.toml",
+            "build/Windows/config.example.toml",
             "docker/config.example.toml",
         ):
             with self.subTest(relative=relative):

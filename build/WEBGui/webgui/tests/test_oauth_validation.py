@@ -18,7 +18,7 @@ import splined_oauth_validation as validation
 import splined_scan
 
 
-REPOSITORY = Path(__file__).resolve().parents[2]
+REPOSITORY = Path(__file__).resolve().parents[4]
 
 
 class FakeResponse:

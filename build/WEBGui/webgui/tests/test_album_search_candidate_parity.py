@@ -13,7 +13,7 @@ import splined as core
 from webgui.services import Services
 
 
-REPOSITORY = Path(__file__).resolve().parents[2]
+REPOSITORY = Path(__file__).resolve().parents[4]
 
 
 class AlbumSearchCandidateParityTests(unittest.TestCase):
