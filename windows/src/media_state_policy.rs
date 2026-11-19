@@ -16,6 +16,8 @@ use std::sync::{LazyLock, RwLock};
 const DEFAULT_POLICY: &str = include_str!("../../schema/media-state-classification.json");
 pub const POLICY_ENV: &str = "SPLINED_MEDIA_STATE_POLICY";
 pub const POLICY_FILENAME: &str = "media-state-classification.json";
+const CURRENT_POLICY_ID: &str = "splined-media-state-v2";
+const LEGACY_POLICY_ID: &str = "splined-media-state-v1";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MediaStatePolicy {
@@ -142,20 +144,21 @@ pub fn status_color(status_key: &str) -> String {
         .ui_status_colors
         .get(status_key)
         .map(String::as_str)
-        .unwrap_or("white");
+        .unwrap_or("red");
     policy
         .colors
         .get(color_name)
         .cloned()
-        .unwrap_or_else(|| "#eef8ff".to_string())
+        .unwrap_or_else(|| policy.colors["red"].clone())
 }
 
 pub fn named_color(color_name: &str) -> String {
-    policy()
+    let policy = policy();
+    policy
         .colors
         .get(color_name)
         .cloned()
-        .unwrap_or_else(|| "#eef8ff".to_string())
+        .unwrap_or_else(|| policy.colors["red"].clone())
 }
 
 pub fn database_monitor_presentation(backend: &str, health: &str) -> DatabaseMonitorPresentation {
@@ -208,11 +211,8 @@ pub fn validate_policy(text: &str) -> Result<(), String> {
 
 pub fn save_policy(path: &Path, text: &str) -> Result<(), String> {
     let parsed = parse_policy(text)?;
-    let canonical = serde_json::to_vec_pretty(
-        &serde_json::from_str::<serde_json::Value>(text)
-            .map_err(|error| format!("invalid media-state policy JSON: {error}"))?,
-    )
-    .map_err(|error| format!("unable to serialize media-state policy: {error}"))?;
+    let canonical = serde_json::to_vec_pretty(&parsed)
+        .map_err(|error| format!("unable to serialize media-state policy: {error}"))?;
     crate::safe_write::replace_binary_file(path, &canonical, "media-state policy", |staged| {
         let value = std::fs::read_to_string(staged)
             .map_err(|error| format!("unable to verify media-state policy: {error}"))?;
@@ -243,9 +243,8 @@ pub async fn fetch_postgres_policy(pool: &PgPool) -> Result<PostgresPolicySnapsh
     let raw = row
         .try_get::<String, _>("policy_json")
         .map_err(|error| format!("PostgreSQL media-state policy is unreadable: {error}"))?;
-    let value = serde_json::from_str::<serde_json::Value>(&raw)
-        .map_err(|error| format!("PostgreSQL media-state policy JSON is invalid: {error}"))?;
-    let canonical = serde_json::to_string_pretty(&value)
+    let parsed = parse_policy(&raw)?;
+    let canonical = serde_json::to_string_pretty(&parsed)
         .map_err(|error| format!("PostgreSQL media-state policy cannot be serialized: {error}"))?
         + "\n";
     parse_policy(&canonical)?;
@@ -261,11 +260,13 @@ pub async fn save_postgres_policy(
     pool: &PgPool,
     text: &str,
 ) -> Result<PostgresPolicySnapshot, String> {
-    parse_policy(text)?;
+    let parsed = parse_policy(text)?;
+    let canonical_input = serde_json::to_string(&parsed)
+        .map_err(|error| format!("Unable to serialize media-state policy: {error}"))?;
     let row = sqlx::query(
         "INSERT INTO media_state_classification_policy(singleton,policy,revision,updated_by) VALUES(TRUE,$1::jsonb,1,'windows-settings') ON CONFLICT(singleton) DO UPDATE SET policy=excluded.policy,revision=media_state_classification_policy.revision+1,updated_at=now(),updated_by=excluded.updated_by RETURNING policy::text AS policy_json,revision",
     )
-    .bind(text)
+    .bind(canonical_input)
     .fetch_one(pool)
     .await
     .map_err(|error| format!("Unable to save PostgreSQL media-state policy: {error}"))?;
@@ -308,6 +309,22 @@ pub fn ensure_policy(config: &crate::config::Config) -> Result<PathBuf, String> 
             )
         })?;
         let parsed = parse_policy(&text)?;
+        let stored_id = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("policy_id")
+                    .and_then(|id| id.as_str())
+                    .map(str::to_string)
+            });
+        if stored_id.as_deref() == Some(LEGACY_POLICY_ID) {
+            save_policy(
+                &path,
+                &serde_json::to_string_pretty(&parsed)
+                    .map_err(|error| format!("Unable to migrate media-state policy: {error}"))?,
+            )?;
+            return Ok(path);
+        }
         *POLICY
             .write()
             .map_err(|_| "media-state policy lock is unavailable".to_string())? = parsed;
@@ -380,8 +397,20 @@ fn policy_candidates() -> Vec<PathBuf> {
 }
 
 fn parse_policy(text: &str) -> Result<MediaStatePolicy, String> {
-    let value = serde_json::from_str::<MediaStatePolicy>(text)
+    let mut value = serde_json::from_str::<MediaStatePolicy>(text)
         .map_err(|error| format!("invalid media-state policy JSON: {error}"))?;
+    if value.policy_id == LEGACY_POLICY_ID {
+        let current = serde_json::from_str::<MediaStatePolicy>(DEFAULT_POLICY)
+            .map_err(|error| format!("invalid repository media-state policy: {error}"))?;
+        value.policy_id = CURRENT_POLICY_ID.to_string();
+        value.artist = current.artist;
+        value.album = current.album;
+        if let Some(unprocessed) = current.ui_status_colors.get("unprocessed") {
+            value
+                .ui_status_colors
+                .insert("unprocessed".to_string(), unprocessed.clone());
+        }
+    }
     if value.schema_version != 1 {
         return Err(format!(
             "unsupported media-state policy schema {}",
@@ -405,6 +434,30 @@ fn parse_policy(text: &str) -> Result<MediaStatePolicy, String> {
     {
         return Err("media-state policy requires default Artist and Album rules".to_string());
     }
+    for required in ["white", "dark_grey", "orange", "gold", "blue"] {
+        if !value
+            .artist
+            .forbidden_name_colors
+            .iter()
+            .any(|color| color == required)
+        {
+            return Err(format!(
+                "media-state policy Artist forbidden_name_colors must include {required}"
+            ));
+        }
+    }
+    for required in ["white", "blue"] {
+        if !value
+            .album
+            .forbidden_name_colors
+            .iter()
+            .any(|color| color == required)
+        {
+            return Err(format!(
+                "media-state policy Album forbidden_name_colors must include {required}"
+            ));
+        }
+    }
     for rule in value
         .artist
         .ranked_states
@@ -423,6 +476,26 @@ fn parse_policy(text: &str) -> Result<MediaStatePolicy, String> {
                 "media-state policy references unknown color {}",
                 rule.color
             ));
+        }
+    }
+    for rule in &value.artist.ranked_states {
+        if value
+            .artist
+            .forbidden_name_colors
+            .iter()
+            .any(|color| color == &rule.color)
+        {
+            return Err(format!("Artist names may not use {}", rule.color));
+        }
+    }
+    for rule in &value.album.ranked_name_states {
+        if value
+            .album
+            .forbidden_name_colors
+            .iter()
+            .any(|color| color == &rule.color)
+        {
+            return Err(format!("Album names may not use {}", rule.color));
         }
     }
     for (status, color) in &value.ui_status_colors {
@@ -516,7 +589,7 @@ mod tests {
             let state = classify_artist(&conditions);
             assert!(!matches!(
                 state.color_name.as_str(),
-                "orange" | "gold" | "blue"
+                "white" | "dark_grey" | "orange" | "gold" | "blue"
             ));
         }
     }
@@ -526,7 +599,9 @@ mod tests {
         let artist = classify_artist(&["missing_artist_art", "embedding_issues"]);
         assert_eq!(artist.color_name, "yellow");
         let album = classify_album(&["embedding_issues", "incomplete_tracks", "processed"]);
-        assert_eq!(album.color_name, "purple");
+        assert_eq!(album.color_name, "red");
+        assert_eq!(classify_artist(&[]).color_name, "red");
+        assert_eq!(classify_album(&[]).color_name, "red");
     }
 
     #[test]
@@ -568,5 +643,20 @@ mod tests {
 
         assert_eq!(ensure_policy(&config).unwrap(), path);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), existing);
+    }
+
+    #[test]
+    fn setup_migrates_the_shipped_v1_classification_without_white_names() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join(POLICY_FILENAME);
+        let legacy = DEFAULT_POLICY.replace(CURRENT_POLICY_ID, LEGACY_POLICY_ID);
+        std::fs::write(&path, legacy).unwrap();
+        let mut config = crate::config::Config::default();
+        config.credentials.credential_dir = temp.path().to_string_lossy().into_owned();
+
+        assert_eq!(ensure_policy(&config).unwrap(), path);
+        let migrated = std::fs::read_to_string(path).unwrap();
+        assert!(migrated.contains(CURRENT_POLICY_ID));
+        assert!(!migrated.contains("\"color\": \"white\""));
     }
 }

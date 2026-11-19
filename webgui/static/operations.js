@@ -1243,14 +1243,14 @@ async function refreshQueuedAlbumAfterSave(job = null) {
   renderLibrary(); renderHero(); renderSources(); renderCandidates(); renderWorkspace();
 }
 let jobsPolling = null, jobsPollAgain = false, lastPrompt = "";
-async function pollJobs() {
+async function pollJobs(requestFollowUp = true) {
   if (!state.server?.authenticated || state.server?.setup_required) return;
   if (jobsPolling) {
     // A launch or write can finish its POST while the periodic poll still
     // carries the pre-action queue snapshot.  Queue one authoritative
     // follow-up read and let every caller await the same drain instead of
     // silently dropping the action-triggered refresh.
-    jobsPollAgain = true;
+    if (requestFollowUp) jobsPollAgain = true;
     return jobsPolling;
   }
   const task = (async () => {
@@ -2491,7 +2491,12 @@ $("passwordRecoveryForm").addEventListener("submit", event => {
     token: $("recoveryToken").value,
   });
 });
-setInterval(() => { if (!document.hidden) runAction(pollJobs); }, 1500);
+setInterval(() => {
+  // A slow NAS/database poll can legitimately take longer than this timer.
+  // Periodic ticks must never extend the shared poll promise indefinitely:
+  // action-triggered callers await that promise before releasing UI locks.
+  if (!document.hidden && !jobsPolling) runAction(() => pollJobs(false));
+}, 1500);
 initialize().catch(error => { document.body.className = "auth-required"; $("authError").textContent = error.message; });
 
 async function repairFallback() {

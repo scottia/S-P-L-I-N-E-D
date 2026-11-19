@@ -31,6 +31,14 @@ credential or policy. Never put credentials, media paths, or database URLs in
 the classification policy. `album-coordination.json` contains only the optional
 PostgreSQL connection credential; it does not contain classification rules.
 
+The v2 classification removes white Artist/Album names. On first load, the
+shipped `splined-media-state-v1` classification is migrated to
+`splined-media-state-v2` while retaining its custom palette, database-monitor,
+and override-presentation settings. WebGUI stores that migration as a new
+PostgreSQL policy revision. Coordinated Windows normalizes the PostgreSQL
+revision before activating and mirroring it; shared-SQLite-only Setup rewrites
+only the recognized v1 policy, never an unrelated/custom policy identifier.
+
 At coordinated Windows startup, the PostgreSQL policy is checked once with a
 five-second bound. A successful read refreshes the local validated mirror. An
 unavailable PostgreSQL server leaves the last valid mirror active. Classification
@@ -90,18 +98,20 @@ red. Clicking it clears the cached result and performs one immediate re-check.
 
 ## Artist file-list name rules
 
-Artist names aggregate Artist Art plus every Album and Artist-scoped COMP track
-associated with that real Artist. The default priority is first-match wins:
+Artist names aggregate Artist Art, Album art, and every Album and Artist-scoped
+COMP track associated with that real Artist. The default priority is first-match
+wins:
 
-1. `missing_artist_art` → yellow (`bypassed` UI key)
-2. `embedding_issues` → purple
-3. `incomplete_or_error` → red
-4. `opposing_override` → dark grey
-5. `all_albums_complete_or_overridden` → green
-6. `default` → white
+1. `incomplete_or_error` → red
+2. `missing_artist_art` (Artist or associated Album art is missing) → yellow
+3. `embedding_issues` → purple
+4. `all_albums_complete_or_overridden` → green
+5. `default` → red
 
-Orange, gold, and blue are forbidden Artist-name colors. Missing Album cover
-art is Album evidence; it does not by itself turn an Artist name yellow.
+White, dark grey, orange, gold, and blue are forbidden Artist-name colors.
+Opposing overrides remain Album evidence: when every Album is complete or
+overridden, the Artist is green. A purple Album or COMP track makes the Artist
+purple unless red or yellow evidence has higher priority.
 
 ## Album name and status rules
 
@@ -109,19 +119,22 @@ Album state is independent of the Artist aggregate. The default Album name
 priority is:
 
 1. `opposing_override` → dark grey
-2. `missing_art` → yellow
-3. `embedding_issues` → purple
-4. `incomplete_tracks` → red
-5. `tracks_complete` → green
-6. `processed` → orange
-7. `default` → white
+2. `incomplete_tracks` → red
+3. `missing_art` → yellow
+4. `embedding_issues` → purple
+5. `processed` → orange
+6. `tracks_complete` → green
+7. `default` → red
 
 Red means **Incomplete album tracks**. Missing Artist or Album art is yellow,
-not red. Blue is auxiliary status for an animated `cover.webp`; it is never an
-Album name color.
+not red unless independent incomplete/error evidence is also present. Blue is
+auxiliary status for an animated `cover.webp`; it is never an Album name color.
+White and blue are forbidden Album-name colors.
 
 Status dots are independent and multiple dots may be visible at once. Their
-conditions, labels, and colors are in `album.status_dots`.
+conditions, labels, and colors are in `album.status_dots`. Their default display
+order is dark grey, red, yellow, purple, orange, green, then the auxiliary blue
+animated-cover dot.
 
 ## Opposing-application presentation
 
