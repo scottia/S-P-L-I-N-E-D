@@ -338,7 +338,11 @@ class ReportedDefectTests(unittest.TestCase):
         self.assertIn('embeddedValidation === "checking"', application)
         self.assertIn('cardState.stateKey === "albumsComplete" ? "complete" : cardState.stateKey', application)
         self.assertIn(
-            'addDot("incomplete_tracks", !staleUnprocessed && incomplete',
+            '["incomplete_tracks", [incompleteEvidence, fallback ?',
+            application,
+        )
+        self.assertIn(
+            "for (const rule of activeMediaStatePolicy().album?.status_dots || [])",
             application,
         )
         self.assertNotIn(

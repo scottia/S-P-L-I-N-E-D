@@ -250,12 +250,14 @@ test("Artist State exposes six filters plus an Unprocessed heading and Album tot
   assert.equal(context.rawMediaStatusKey({status: "complete"}), "albumsComplete");
   assert.doesNotMatch(appSource, /\["all", "All"\], \.\.\.MEDIA_STATUSES/);
   assert.doesNotMatch(appSource, /\["artistBypass", "Artist Bypass"\]/);
-  assert.equal(context.mediaStatusColor("unprocessed"), "#eef8ff");
+  assert.equal(context.mediaStatusColor("unprocessed"), "#ff5268");
   assert.equal(context.mediaStatusColor("incomplete"), "#ff5268");
   assert.equal(context.classifyMediaState("artist", ["missing_artist_art", "embedding_issues"]).ui_status_key, "bypassed");
-  assert.equal(context.classifyMediaState("artist", ["embedding_issues", "incomplete_or_error"]).ui_status_key, "partial");
+  assert.equal(context.classifyMediaState("artist", ["embedding_issues", "incomplete_or_error"]).ui_status_key, "incomplete");
   assert.equal(context.classifyMediaState("artist", ["incomplete_or_error", "opposing_override"]).ui_status_key, "incomplete");
-  assert.deepEqual(mediaPolicy.artist.forbidden_name_colors, ["orange", "gold", "blue"]);
+  assert.deepEqual(mediaPolicy.artist.forbidden_name_colors, ["white", "dark_grey", "orange", "gold", "blue"]);
+  assert.equal(context.classifyMediaState("artist", []).ui_status_key, "incomplete");
+  assert.equal(context.classifyMediaState("album", []).ui_status_key, "incomplete");
 });
 
 test("Album Status Key separates animated WebP from mutually exclusive status dots", () => {
@@ -1109,13 +1111,49 @@ test("an action-triggered job refresh is not dropped behind a periodic poll", as
     $: () => ({open: false, value: ""}),
   });
 
-  const periodic = context.pollJobs();
+  const periodic = context.pollJobs(false);
   await new Promise(resolve => setImmediate(resolve));
   const actionRefresh = context.pollJobs();
   releaseFirst([]);
   await Promise.all([periodic, actionRefresh]);
 
   assert.equal(jobsCalls, 2);
+});
+
+test("periodic job ticks do not perpetually extend a slow poll", async () => {
+  let releaseFirst;
+  let jobsCalls = 0;
+  const firstJobs = new Promise(resolve => { releaseFirst = resolve; });
+  const state = {
+    server: {authenticated: true, setup_required: false}, jobs: [], embedQueue: [],
+    queueControls: {}, reviewJobId: null, reviewJobState: "",
+    albumOverrides: new Map(), compTrackOverrides: new Map(),
+  };
+  const context = load(pollJobsFunction, {
+    state,
+    api: async path => {
+      if (path === "/api/jobs") {
+        jobsCalls += 1;
+        return jobsCalls === 1 ? firstJobs : [];
+      }
+      if (path === "/api/jobs/control-state") return {};
+      return [];
+    },
+    renderQueue() {}, renderCandidateLaunchControl() {},
+    applyAlbumCoordination: () => [], applyCompTrackCoordination: () => [],
+    refreshOpposingAlbumThumbnails: async () => {}, refreshOpenCompReportAfterCoordination: async () => {},
+    refreshCompletedAlbum: async () => {}, renderHero() {}, renderReview() {}, renderLibrary() {},
+    refreshQueuedAlbumAfterSave: async () => {}, setStatus() {}, renderJob: async () => {},
+    $: () => ({open: false, value: ""}),
+  });
+
+  const poll = context.pollJobs(false);
+  await new Promise(resolve => setImmediate(resolve));
+  const skippedTick = context.pollJobs(false);
+  releaseFirst([]);
+  await Promise.all([poll, skippedTick]);
+
+  assert.equal(jobsCalls, 1);
 });
 
 test("ordinary queued scan work also stays in the status area without a modal", async () => {
