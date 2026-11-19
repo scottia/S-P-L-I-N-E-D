@@ -253,7 +253,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          & .splined-release-engine/release/Resolve-StoreBaseline.ps1" `
+          & .splined-release-engine/release/Resolve-StoreBaseline.ps1 `
             -TargetVersion $env:RELEASE_VERSION `
             -RepositoryRoot . `
             -ProductId 9P8G4GMBBVBS `
@@ -264,7 +264,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          & .splined-release-engine/release/Generate-StoreHighlights.ps1" `
+          & .splined-release-engine/release/Generate-StoreHighlights.ps1 `
             -Version $env:RELEASE_VERSION `
             -BaselineMetadataPath store-notes/STORE-BASELINE.json `
             -RepositoryRoot . `
