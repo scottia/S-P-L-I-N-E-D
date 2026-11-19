@@ -22,7 +22,7 @@ explicit first save creates these files in the selected Configuration Path:
 
 Standalone SQLite Setup creates neither shared-policy JSON. If Shared SQLite is
 selected, Setup asks whether it coordinates with WebGUI PostgreSQL. Shared-only
-Setup creates media-state-classification.json. Coordinated Setup first requires
+Setup creates media-state-classification.json and comp-report-policy.json. Coordinated Setup first requires
 a successful PostgreSQL Test, then Save creates album-coordination.json and the
 validated PostgreSQL policy mirror. Setup never creates a blank JSON or
 overwrites a conflicting existing credential or policy.

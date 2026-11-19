@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{LazyLock, RwLock};
 
 const DEFAULT_POLICY: &str = include_str!("../../schema/media-state-classification.json");
@@ -113,6 +114,7 @@ pub struct MediaStateClassification {
 }
 
 static POLICY: LazyLock<RwLock<MediaStatePolicy>> = LazyLock::new(|| RwLock::new(load_policy()));
+static ACTIVE_POSTGRES_REVISION: AtomicI64 = AtomicI64::new(0);
 
 pub fn policy() -> MediaStatePolicy {
     POLICY.read().expect("media-state policy lock").clone()
@@ -230,6 +232,16 @@ pub fn activate_policy(text: &str) -> Result<(), String> {
         .write()
         .map_err(|_| "media-state policy lock is unavailable".to_string())? = parsed;
     Ok(())
+}
+
+pub fn activate_policy_revision(text: &str, revision: i64) -> Result<(), String> {
+    activate_policy(text)?;
+    ACTIVE_POSTGRES_REVISION.store(revision.max(0), Ordering::SeqCst);
+    Ok(())
+}
+
+pub fn active_revision() -> i64 {
+    ACTIVE_POSTGRES_REVISION.load(Ordering::SeqCst)
 }
 
 pub async fn fetch_postgres_policy(pool: &PgPool) -> Result<PostgresPolicySnapshot, String> {

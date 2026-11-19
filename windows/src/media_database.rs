@@ -1184,6 +1184,7 @@ pub struct CompilationArtworkApplication<'a> {
     pub outcome: &'a str,
     pub total_tracks: usize,
     pub completed_tracks: usize,
+    pub publish_coordination: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3514,9 +3515,12 @@ pub fn completed_compilation_track_paths(
         else {
             continue;
         };
-        let identity_matches = saved_recording.eq_ignore_ascii_case(recording)
+        let authoritative_identity =
+            extract_mbids(recording).len() == 1 && !extract_mbids(artists).is_empty();
+        let identity_matches = authoritative_identity
+            && saved_recording.eq_ignore_ascii_case(recording)
             && saved_artists.eq_ignore_ascii_case(artists);
-        let artwork_matches = if identity_matches {
+        let artwork_matches = if identity_matches || !authoritative_identity {
             false
         } else {
             embedded_front_sha256s(path).is_ok_and(|hashes| {
@@ -3771,15 +3775,17 @@ pub fn record_compilation_artwork_application(
         application.completed_tracks,
     )?;
     let (album_key, _) = resolve_outcome_identity(&transaction, None, &canonical_album)?;
-    queue_windows_comp_track_write(
-        &transaction,
-        &album_key,
-        mapper.canonical_root(),
-        &track_path,
-        &artwork_sha256,
-        "embed-comp-track",
-        &now,
-    )?;
+    if application.publish_coordination {
+        queue_windows_comp_track_write(
+            &transaction,
+            &album_key,
+            mapper.canonical_root(),
+            &track_path,
+            &artwork_sha256,
+            "embed-comp-track",
+            &now,
+        )?;
+    }
     transaction
         .commit()
         .map_err(db_error("commit compilation artwork transaction"))

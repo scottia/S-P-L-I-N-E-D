@@ -1715,6 +1715,17 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             [queued[job_id]["album_id"] for job_id in result["ids"]],
             ["comp-batch-1", "comp-batch-2"],
         )
+        self.assertEqual(
+            len({
+                queued[job_id]["comp_report_policy_revision"]
+                for job_id in result["ids"]
+            }),
+            1,
+        )
+        self.assertTrue(all(
+            queued[job_id]["comp_report_policy"]["batch"]["pin_policy_revision"]
+            for job_id in result["ids"]
+        ))
 
         repeated = queue.enqueue_comp_batch(payloads)
         self.assertEqual(repeated["ids"], result["ids"])
@@ -1992,7 +2003,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertEqual(status.status_code, 200, status.text)
             self.assertTrue(status.json()["authenticated"])
             self.assertEqual(status.json()["username"], "restart-admin")
-            self.assertEqual(status.json()["database_migration"]["current"], 25)
+            self.assertEqual(status.json()["database_migration"]["current"], 26)
             self.assertTrue(status.json()["database_migration"]["automatic"])
             self.assertEqual(restarted.get("/api/artists").status_code, 200)
             self.assertEqual(

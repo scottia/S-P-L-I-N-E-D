@@ -33,21 +33,21 @@ Credential JSON is sensitive. Never commit it, attach it to an issue, or copy se
 ## Windows shared SQLite and Album Coordination
 
 Windows first-run keeps standalone SQLite simple: no coordination credential or
-external media-state policy is created. Enabling **Shared/network SQLite** adds
+external shared policy is created. Enabling **Shared/network SQLite** adds
 an inline choice:
 
 - **No · Shared SQLite only** creates the editable local
-  `media-state-classification.json` on Setup Save.
+  `media-state-classification.json` and `comp-report-policy.json` on Setup Save.
 - **Yes · PostgreSQL** requires the PostgreSQL URL, username, and password. Test
   performs a read-only connection, coordination-schema, and policy-revision
   check. It creates no files. Setup Save creates `album-coordination.json` and
-  the validated policy mirror only after that successful Test.
+  both validated policy mirrors only after that successful Test.
 
 Existing different files are never replaced by Setup. Use **Advanced →
-Connections → Artist & Album State Policy · JSON** for deliberate later policy
-changes. PostgreSQL is authoritative when Album Coordination is configured.
-The local JSON is a bounded startup/runtime mirror, not a second competing
-authority.
+Connections → Artist & Album State Policy · JSON** and **Artist COMP Report
+Policy · JSON** for deliberate later policy changes. PostgreSQL is authoritative
+when Album Coordination is configured. The local JSON documents are bounded
+startup/runtime mirrors, not competing authorities.
 
 Config v5 persists the choice as `scan.postgres_coordination`. For upgrade
 compatibility only, an older shared-SQLite config that lacks this field but

@@ -4,11 +4,18 @@
 //! v5, SQLite, or diagnostic logs. Writes use the same atomic replacement and
 //! user-only ACL policy as the processing engine.
 
+use crate::comp_report_policy::{
+    PostgresPolicySnapshot as CompReportPolicySnapshot,
+    fetch_postgres_policy as fetch_comp_report_policy,
+};
 use crate::config::Config;
 use crate::credentials::{
     DiscogsCredential, FANARTTV_API_VERSION, FanartTvCredential, LastFmCredential,
 };
-use crate::media_state_policy::{PostgresPolicySnapshot, fetch_postgres_policy};
+use crate::media_state_policy::{
+    PostgresPolicySnapshot as MediaStatePolicySnapshot,
+    fetch_postgres_policy as fetch_media_state_policy,
+};
 use crate::override_coordination::connect_pool;
 use crate::safe_write::replace_text_file;
 use crate::source::navidrome::{self, NavidromeCredential};
@@ -284,8 +291,8 @@ pub async fn test_editor(editor: &CredentialEditor) -> Result<String, String> {
         ALBUM_COORDINATION_PROVIDER => {
             let snapshot = test_album_coordination_policy(editor).await?;
             Ok(format!(
-                "Connected to Album Coordination PostgreSQL · media-state policy revision {}.",
-                snapshot.revision
+                "Connected to Album Coordination PostgreSQL · media-state revision {} · COMP report revision {}.",
+                snapshot.media_state.revision, snapshot.comp_report.revision
             ))
         }
         provider => {
@@ -299,7 +306,7 @@ pub async fn test_editor(editor: &CredentialEditor) -> Result<String, String> {
 
 pub async fn test_album_coordination_policy(
     editor: &CredentialEditor,
-) -> Result<PostgresPolicySnapshot, String> {
+) -> Result<CoordinatedPolicySnapshot, String> {
     let database_url = album_coordination_database_url(editor)?;
     let pool = connect_pool(&database_url).await?;
     let result = async {
@@ -319,7 +326,10 @@ pub async fn test_album_coordination_policy(
                     .to_string(),
             );
         }
-        fetch_postgres_policy(&pool).await
+        Ok(CoordinatedPolicySnapshot {
+            media_state: fetch_media_state_policy(&pool).await?,
+            comp_report: fetch_comp_report_policy(&pool).await?,
+        })
     }
     .await;
     pool.close().await;
@@ -576,4 +586,9 @@ mod tests {
         editor.server_url = "postgresql://example.test".into();
         assert!(album_coordination_database_url(&editor).is_err());
     }
+}
+#[derive(Debug, Clone)]
+pub struct CoordinatedPolicySnapshot {
+    pub media_state: MediaStatePolicySnapshot,
+    pub comp_report: CompReportPolicySnapshot,
 }
