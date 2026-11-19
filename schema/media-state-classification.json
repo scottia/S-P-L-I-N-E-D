@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "policy_id": "splined-media-state-v1",
+  "policy_id": "splined-media-state-v2",
   "colors": {
     "white": "#eef8ff",
     "red": "#ff5268",
@@ -23,7 +23,7 @@
   },
   "ui_status_colors": {
     "all": "white",
-    "unprocessed": "white",
+    "unprocessed": "red",
     "incomplete": "red",
     "processed": "orange",
     "bypassed": "yellow",
@@ -70,6 +70,13 @@
     "description": "Artist file-list names are an aggregate of Artist Art plus independently classified Album and COMP-track evidence.",
     "ranked_states": [
       {
+        "condition": "incomplete_or_error",
+        "key": "incomplete",
+        "ui_status_key": "incomplete",
+        "label": "Incomplete / Error",
+        "color": "red"
+      },
+      {
         "condition": "missing_artist_art",
         "key": "missing_art",
         "ui_status_key": "bypassed",
@@ -84,20 +91,6 @@
         "color": "purple"
       },
       {
-        "condition": "incomplete_or_error",
-        "key": "incomplete",
-        "ui_status_key": "incomplete",
-        "label": "Incomplete / Error",
-        "color": "red"
-      },
-      {
-        "condition": "opposing_override",
-        "key": "overridden",
-        "ui_status_key": "overridden",
-        "label": "Overridden in opposing app",
-        "color": "dark_grey"
-      },
-      {
         "condition": "all_albums_complete_or_overridden",
         "key": "complete",
         "ui_status_key": "albumsComplete",
@@ -106,13 +99,15 @@
       },
       {
         "condition": "default",
-        "key": "unprocessed",
-        "ui_status_key": "unprocessed",
-        "label": "Unprocessed",
-        "color": "white"
+        "key": "incomplete",
+        "ui_status_key": "incomplete",
+        "label": "Incomplete / Error",
+        "color": "red"
       }
     ],
     "forbidden_name_colors": [
+      "white",
+      "dark_grey",
       "orange",
       "gold",
       "blue"
@@ -129,6 +124,13 @@
         "color": "dark_grey"
       },
       {
+        "condition": "incomplete_tracks",
+        "key": "incomplete",
+        "ui_status_key": "incomplete",
+        "label": "Incomplete album tracks",
+        "color": "red"
+      },
+      {
         "condition": "missing_art",
         "key": "missing_art",
         "ui_status_key": "bypassed",
@@ -143,11 +145,11 @@
         "color": "purple"
       },
       {
-        "condition": "incomplete_tracks",
-        "key": "incomplete",
-        "ui_status_key": "incomplete",
-        "label": "Incomplete album tracks",
-        "color": "red"
+        "condition": "processed",
+        "key": "processed",
+        "ui_status_key": "processed",
+        "label": "Processed Album",
+        "color": "orange"
       },
       {
         "condition": "tracks_complete",
@@ -157,21 +159,19 @@
         "color": "green"
       },
       {
-        "condition": "processed",
-        "key": "processed",
-        "ui_status_key": "processed",
-        "label": "Processed Album",
-        "color": "orange"
-      },
-      {
         "condition": "default",
-        "key": "unprocessed",
-        "ui_status_key": "unprocessed",
-        "label": "Unprocessed",
-        "color": "white"
+        "key": "incomplete",
+        "ui_status_key": "incomplete",
+        "label": "Incomplete / Error",
+        "color": "red"
       }
     ],
     "status_dots": [
+      {
+        "condition": "opposing_override",
+        "label": "Overridden in opposing app",
+        "color": "dark_grey"
+      },
       {
         "condition": "incomplete_tracks",
         "label": "Incomplete album tracks",
@@ -183,19 +183,14 @@
         "color": "yellow"
       },
       {
-        "condition": "processed",
-        "label": "Processed, not yet complete",
-        "color": "orange"
-      },
-      {
         "condition": "embedding_issues",
         "label": "Embedded art needs attention",
         "color": "purple"
       },
       {
-        "condition": "opposing_override",
-        "label": "Overridden in opposing app",
-        "color": "dark_grey"
+        "condition": "processed",
+        "label": "Processed, not yet complete",
+        "color": "orange"
       },
       {
         "condition": "tracks_complete",
@@ -211,6 +206,7 @@
     ],
     "red_definition": "Incomplete album tracks",
     "forbidden_name_colors": [
+      "white",
       "blue"
     ]
   }

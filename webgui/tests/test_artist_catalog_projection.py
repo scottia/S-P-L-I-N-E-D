@@ -216,10 +216,10 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
 
             app = PreviewApp(root, database, root, root)
             listed = app.artists("")[0]
-            self.assertEqual(listed["status"], "overridden")
+            self.assertEqual(listed["status"], "complete")
             self.assertEqual(listed["albums"], 2)
             detail = app.artist("band")
-            self.assertEqual(detail["status"], "overridden")
+            self.assertEqual(detail["status"], "complete")
             self.assertEqual(
                 next(item for item in detail["albums"] if item["id"] == "windows-grey")["override_writer"],
                 "windows",
@@ -950,7 +950,7 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             target_list_row = next(
                 item for item in app.artists("") if item["name"] == "Target Artist"
             )
-            self.assertEqual(target_list_row["status"], "unprocessed")
+            self.assertEqual(target_list_row["status"], "incomplete")
 
 
 if __name__ == "__main__":

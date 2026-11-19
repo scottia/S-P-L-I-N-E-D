@@ -1683,6 +1683,43 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.assertEqual(repeated["id"], scoped["id"])
         self.assertTrue(repeated["already_queued"])
 
+    def test_artist_comp_batch_queues_every_album_in_one_commit(self):
+        queue = JobQueue(self.services)
+        queue.close()
+        payloads = [
+            {
+                "artist_id": "artist-batch",
+                "album_id": "comp-batch-1",
+                "track_keys": ["track-1"],
+            },
+            {
+                "artist_id": "artist-batch",
+                "album_id": "comp-batch-2",
+                "track_keys": ["track-2", "track-3"],
+            },
+        ]
+
+        result = queue.enqueue_comp_batch(payloads)
+
+        self.assertEqual(result["id"], result["ids"][0])
+        self.assertEqual(len(result["ids"]), 2)
+        self.assertTrue(all(not job["already_queued"] for job in result["jobs"]))
+        with closing(self.db.connect()) as db:
+            rows = db.raw.execute(
+                "SELECT id,payload FROM web_jobs WHERE id=ANY(%s)",
+                (result["ids"],),
+            ).fetchall()
+        queued = {row["id"]: row["payload"] for row in rows}
+        self.assertEqual(set(queued), set(result["ids"]))
+        self.assertEqual(
+            [queued[job_id]["album_id"] for job_id in result["ids"]],
+            ["comp-batch-1", "comp-batch-2"],
+        )
+
+        repeated = queue.enqueue_comp_batch(payloads)
+        self.assertEqual(repeated["ids"], result["ids"])
+        self.assertTrue(all(job["already_queued"] for job in repeated["jobs"]))
+
     def test_scan_queue_resumes_the_active_interactive_review(self):
         queue = JobQueue(self.services)
         queue.close()
@@ -5729,18 +5766,20 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                     )
                     with page.expect_request(
                         lambda request: request.method == "POST"
-                        and request.url.endswith("/api/jobs")
+                        and request.url.endswith("/api/jobs/comp-batch")
                     ) as launch_request:
                         page.locator("#fallbackReport .fallback-launch").click()
                     launch_payload = launch_request.value.post_data_json
-                    self.assertEqual(launch_payload["kind"], "comp")
                     self.assertEqual(
-                        launch_payload["payload"]["artist_id"],
+                        launch_payload["artist_id"],
                         target_artist_key,
                     )
                     self.assertEqual(
-                        launch_payload["payload"]["track_keys"],
-                        [target_track_key],
+                        launch_payload["groups"],
+                        [{
+                            "album_id": comp_row["album_key"],
+                            "track_keys": [target_track_key],
+                        }],
                     )
                     expect(page.locator("#musicbrainzReview")).to_be_visible(
                         timeout=15000

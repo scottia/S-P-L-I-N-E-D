@@ -435,6 +435,100 @@ class JobQueue:
         )
         return {"id": job_id, "state": "staged" if staged else "queued"}
 
+    def enqueue_comp_batch(self, payloads):
+        """Atomically queue every Album in one Artist COMP report launch."""
+        if not isinstance(payloads, list) or not payloads:
+            raise ValueError("Choose explicit Artist COMP albums")
+        prepared = []
+        for payload in payloads:
+            if not isinstance(payload, dict):
+                raise ValueError("Invalid Artist COMP work request")
+            item = dict(payload)
+            item.setdefault("library_root", str(self.services.runtime.music))
+            prepared.append(item)
+
+        results = []
+        with closing(self.db.connect()) as db, db:
+            for payload in prepared:
+                album_id = str(payload.get("album_id", ""))
+                db.raw.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
+                    ("comp:" + album_id,),
+                )
+                active = db.raw.execute(
+                    "SELECT id,state,payload FROM web_jobs WHERE kind='comp' "
+                    "AND payload->>'album_id'=%s "
+                    "AND state NOT IN ('done','failed','cancelled') "
+                    "ORDER BY created_at",
+                    (album_id,),
+                ).fetchall()
+                old = next(
+                    (
+                        row for row in active
+                        if row["payload"].get("artist_id") == payload.get("artist_id")
+                        and row["payload"].get("track_keys") == payload.get("track_keys")
+                    ),
+                    None,
+                )
+                if old:
+                    results.append({
+                        "id": old["id"],
+                        "state": old["state"],
+                        "already_queued": True,
+                        "payload": payload,
+                    })
+                    continue
+                job_id = uuid4().hex
+                db.raw.execute(
+                    "INSERT INTO web_jobs(id,kind,state,payload,created_at,updated_at) "
+                    "VALUES(%s,'comp','queued',%s,clock_timestamp(),clock_timestamp())",
+                    (job_id, Jsonb(payload)),
+                )
+                results.append({
+                    "id": job_id,
+                    "state": "queued",
+                    "already_queued": False,
+                    "payload": payload,
+                })
+
+        if any(not result["already_queued"] for result in results):
+            self.wake.set()
+        for result in results:
+            if result["already_queued"]:
+                correlation = result["payload"].get("_audit", {})
+                self.services.audit(
+                    "job-deduplicated",
+                    "comp",
+                    {"already_queued": True, "batch": True},
+                    action_id=str(correlation.get("action_id") or ""),
+                    trace_id=str(correlation.get("trace_id") or ""),
+                    job_id=result["id"],
+                    scope={"album_id": result["payload"].get("album_id", "")},
+                    stage="queue",
+                    request_status="existing",
+                )
+            else:
+                self.audit_job(
+                    result["id"],
+                    "job-transition",
+                    stage="queue",
+                    details={"batch": True, "batch_size": len(results)},
+                    state_to="queued",
+                    request_status="queued",
+                )
+        return {
+            "id": results[0]["id"],
+            "ids": [result["id"] for result in results],
+            "jobs": [
+                {
+                    "id": result["id"],
+                    "state": result["state"],
+                    "already_queued": result["already_queued"],
+                }
+                for result in results
+            ],
+        }
+
     def action(self, action, job_id=None, value=None, nonce=None, kind=None):
         kind = str(kind or "").strip()
         if kind and kind not in {

@@ -21,6 +21,8 @@ from typing import Iterable
 POLICY_ENV = "SPLINED_MEDIA_STATE_POLICY"
 DEFAULT_POLICY = Path(__file__).resolve().parents[1] / "schema" / "media-state-classification.json"
 POLICY_FILENAME = "media-state-classification.json"
+CURRENT_POLICY_ID = "splined-media-state-v2"
+LEGACY_POLICY_IDS = {"splined-media-state-v1"}
 _DATABASE_POLICY: dict | None = None
 _DATABASE_POLICY_LOCK = threading.RLock()
 
@@ -55,9 +57,24 @@ def _candidate_paths() -> tuple[Path, ...]:
     return tuple(dict.fromkeys(values))
 
 
+def _upgrade_media_state_policy(value: dict) -> dict:
+    """Migrate the shipped v1 classification while retaining user palette/monitor choices."""
+    if str(value.get("policy_id", "")) not in LEGACY_POLICY_IDS:
+        return value
+    current = json.loads(DEFAULT_POLICY.read_text(encoding="utf-8"))
+    upgraded = json.loads(json.dumps(value))
+    upgraded["policy_id"] = CURRENT_POLICY_ID
+    upgraded["artist"] = current["artist"]
+    upgraded["album"] = current["album"]
+    statuses = upgraded.setdefault("ui_status_colors", {})
+    statuses["unprocessed"] = current["ui_status_colors"]["unprocessed"]
+    return upgraded
+
+
 def validate_media_state_policy(value: object) -> dict:
     if not isinstance(value, dict):
         raise ValueError("Media-state policy must be a JSON object")
+    value = _upgrade_media_state_policy(value)
     if int(value.get("schema_version", 0)) != 1:
         raise ValueError("unsupported schema_version")
     colors = value.get("colors")
@@ -77,11 +94,21 @@ def validate_media_state_policy(value: object) -> dict:
             raise ValueError(f"{scope} {rule_name} are required")
         if not any(isinstance(rule, dict) and rule.get("condition") == "default" for rule in rules):
             raise ValueError(f"{scope} policy requires a default rule")
+        forbidden = set(section.get("forbidden_name_colors", []))
+        required_forbidden = (
+            {"white", "dark_grey", "orange", "gold", "blue"}
+            if scope == "artist"
+            else {"white", "blue"}
+        )
+        if not required_forbidden.issubset(forbidden):
+            raise ValueError(f"{scope} forbidden_name_colors must include {sorted(required_forbidden)}")
         for rule in rules:
             if not isinstance(rule, dict) or not all(rule.get(key) for key in ("condition", "key", "ui_status_key", "label", "color")):
                 raise ValueError(f"{scope} contains an incomplete state rule")
             if rule["color"] not in colors:
                 raise ValueError(f"{scope} rule references unknown color {rule['color']}")
+            if rule["color"] in forbidden:
+                raise ValueError(f"{scope} names may not use {rule['color']}")
     status_colors = value.get("ui_status_colors")
     if not isinstance(status_colors, dict) or any(color not in colors for color in status_colors.values()):
         raise ValueError("ui_status_colors must reference named colors")
@@ -183,6 +210,16 @@ def database_media_state_policy(database, *, seed_if_missing: bool = True) -> di
                 "RETURNING policy,revision,updated_at,updated_by",
                 (json.dumps(seed),),
             ).fetchone()
+        else:
+            upgraded = validate_media_state_policy(row["policy"])
+            if upgraded != row["policy"]:
+                row = db.raw.execute(
+                    "UPDATE media_state_classification_policy SET "
+                    "policy=%s::jsonb,revision=revision+1,updated_at=now(),"
+                    "updated_by='webgui-policy-v2' WHERE singleton=TRUE "
+                    "RETURNING policy,revision,updated_at,updated_by",
+                    (json.dumps(upgraded),),
+                ).fetchone()
     policy = activate_media_state_policy(row["policy"])
     return {
         "policy": policy,
@@ -277,5 +314,5 @@ def classify_media_state(scope: str, conditions: Iterable[str]) -> dict[str, str
 
 def status_color(status_key: str) -> str:
     policy = media_state_policy()
-    color_name = policy["ui_status_colors"].get(status_key, "white")
+    color_name = policy["ui_status_colors"].get(status_key, "red")
     return str(policy["colors"][color_name])

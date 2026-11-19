@@ -37,13 +37,13 @@ class MediaStateClassificationPolicyTests(unittest.TestCase):
             classify_media_state(
                 "artist", {"missing_artist_art", "embedding_issues", "incomplete_or_error"}
             )["color_name"],
-            "yellow",
+            "red",
         )
         self.assertEqual(
             classify_media_state(
                 "artist", {"embedding_issues", "incomplete_or_error", "opposing_override"}
             )["color_name"],
-            "purple",
+            "red",
         )
         self.assertEqual(
             classify_media_state("artist", {"incomplete_or_error", "opposing_override"})[
@@ -52,7 +52,8 @@ class MediaStateClassificationPolicyTests(unittest.TestCase):
             "red",
         )
         self.assertEqual(
-            policy["artist"]["forbidden_name_colors"], ["orange", "gold", "blue"]
+            policy["artist"]["forbidden_name_colors"],
+            ["white", "dark_grey", "orange", "gold", "blue"],
         )
 
 
@@ -86,18 +87,27 @@ class MediaStateClassificationPolicyTests(unittest.TestCase):
 
 
     def test_policy_supports_standalone_and_optional_cross_client_evidence(self) -> None:
-        self.assertEqual(classify_media_state("artist", set())["ui_status_key"], "unprocessed")
+        self.assertEqual(classify_media_state("artist", set())["ui_status_key"], "incomplete")
         self.assertEqual(
             classify_media_state("album", {"processed"})["ui_status_key"], "processed"
         )
         self.assertEqual(
             classify_media_state("artist", {"opposing_override"})["ui_status_key"],
-            "overridden",
+            "incomplete",
         )
         self.assertEqual(
             classify_media_state("album", {"opposing_override"})["ui_status_key"],
             "overridden",
         )
+
+    def test_names_never_fall_back_to_white(self) -> None:
+        policy = media_state_policy()
+        self.assertEqual(policy["policy_id"], "splined-media-state-v2")
+        self.assertEqual(policy["ui_status_colors"]["unprocessed"], "red")
+        self.assertEqual(classify_media_state("artist", set())["color_name"], "red")
+        self.assertEqual(classify_media_state("album", set())["color_name"], "red")
+        self.assertIn("white", policy["artist"]["forbidden_name_colors"])
+        self.assertIn("white", policy["album"]["forbidden_name_colors"])
 
     def test_database_monitor_uses_policy_labels_and_colors(self) -> None:
         self.assertEqual(

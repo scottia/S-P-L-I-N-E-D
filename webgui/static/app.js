@@ -426,7 +426,7 @@ function mediaPolicyColor(colorName, light = false) {
 }
 function mediaStatusColor(key, light = false) {
   const policy = activeMediaStatePolicy();
-  const colorName = policy.ui_status_colors?.[key] || "white";
+  const colorName = policy.ui_status_colors?.[key] || "red";
   return mediaPolicyColor(colorName, light);
 }
 function classifyMediaState(scope, conditions) {
@@ -435,14 +435,9 @@ function classifyMediaState(scope, conditions) {
   const rules = section[scope === "artist" ? "ranked_states" : "ranked_name_states"] || [];
   const evidence = new Set(conditions || []);
   const rule = rules.find(item => item.condition === "default" || evidence.has(item.condition));
-  if (!rule) return {key: "unprocessed", ui_status_key: "unprocessed", label: "Unprocessed", color: "white"};
+  if (!rule) return {key: "incomplete", ui_status_key: "incomplete", label: "Incomplete / Error", color: "red", hex: mediaPolicyColor("red")};
   if ((section.forbidden_name_colors || []).includes(rule.color)) throw new Error(scope + " policy selected forbidden name color " + rule.color);
   return {...rule, hex: mediaPolicyColor(rule.color)};
-}
-function albumPolicyDot(condition) {
-  const policy = activeMediaStatePolicy();
-  const rule = (policy.album?.status_dots || []).find(item => item.condition === condition);
-  return rule ? {...rule, hex: mediaPolicyColor(rule.color)} : null;
 }
 function applyMediaStatePolicyPalette() {
   const root = document.documentElement;
@@ -461,7 +456,8 @@ function rawMediaStatusKey(item) {
   const raw = String(item.status || "unprocessed").toLowerCase();
   if (raw === "complete" || raw === "artistcomplete" || raw === "albums complete") return "albumsComplete";
   if (raw.includes("bypass")) return "bypassed";
-  if (raw.includes("partial") || raw.includes("error") || raw.includes("timeout")) return "partial";
+  if (raw.includes("error") || raw.includes("timeout") || raw.includes("incomplete")) return "incomplete";
+  if (raw.includes("partial")) return "partial";
   return MEDIA_STATUSES.some(([key]) => key === raw) ? raw : "unprocessed";
 }
 function opposingAlbumOverride(item) {
@@ -1117,14 +1113,16 @@ function albumCardState(album, artist) {
   const overridden = !fallback && albumOverride(album)?.writer === "windows";
   // A successful opposing write proves that an otherwise-unprocessed local
   // presentation is stale. Preserve every other independent status dot, but
-  // replace this white-frame/red-dot state with the override presentation.
+  // replace that stale incomplete state with the override presentation.
   const staleUnprocessed = overridden && status === "unprocessed";
-  const missingCover = !fallback && (!album.cover_found || !album.cover);
+  const missingCover = !fallback && !overridden && (!album.cover_found || !album.cover);
   const missingArtist = !artist?.portrait && !artist?.banner;
   const missingArt = missingCover || missingArtist;
   const bypassed = status === "bypassed" || status === "artistBypass";
-  const incomplete = fallback ? album.fallback_complete === false
-    : ["incomplete", "timeout", "error"].includes(rawStatus);
+  const incomplete = fallback ? album.fallback_complete !== true
+    : ["incomplete", "timeout", "error"].includes(rawStatus)
+      || (rawStatus === "unprocessed" && !Boolean(album.cover_found || album.cover));
+  const incompleteEvidence = !staleUnprocessed && incomplete;
   // cover_found is current filesystem evidence. It must outrank an old
   // unprocessed database label, while verified embedded-track evidence still
   // remains the only route to a green/complete Album.
@@ -1149,46 +1147,47 @@ function albumCardState(album, artist) {
   // Album permanently cyan.  Cyan is reserved for a request that is actually
   // checking the embedded thumbnails now.
   const validating = !fallback && processed && embeddedValidation === "checking" && !missingCover;
+  const dotEvidence = new Map([
+    ["opposing_override", [overridden, "Opposing Album override"]],
+    ["incomplete_tracks", [incompleteEvidence, fallback ? "Selected Artist's COMP tracks incomplete" : "Incomplete album tracks"]],
+    ["missing_art", [missingArt || bypassed, missingArtist ? "Artist artwork missing" : missingCover ? "Album artwork missing" : "Bypassed"]],
+    ["embedding_issues", [checkEmbedded || explicitReview, "Embedded thumbnail needs attention"]],
+    ["processed", [processed && !fullyComplete, embeddedRetry ? "Embedded thumbnail validation needs retry" : embeddedPending ? "Embedded thumbnail validation pending" : "Processed; track artwork review pending"]],
+    ["tracks_complete", [fullyComplete, fallback ? "Selected Artist's COMP tracks complete" : "Album tracks complete"]],
+    ["animated_webp", [!!album.webp_found, "cover.webp present"]],
+  ]);
   const dots = [];
-  const addDot = (condition, applicable, detail = "") => {
-    const rule = albumPolicyDot(condition);
-    if (applicable && rule) dots.push([rule.hex, detail || rule.label]);
-  };
-  addDot("missing_art", missingArt || bypassed, missingArtist ? "Artist artwork missing" : missingCover ? "Album artwork missing" : "Bypassed");
-  addDot("incomplete_tracks", !staleUnprocessed && incomplete, fallback ? "Selected Artist's COMP tracks incomplete" : "Incomplete album tracks");
-  addDot("processed", processed && !fullyComplete, embeddedRetry ? "Embedded thumbnail validation needs retry" : embeddedPending ? "Embedded thumbnail validation pending" : "Processed; track artwork review pending");
-  addDot("tracks_complete", fullyComplete, fallback ? "Selected Artist's COMP tracks complete" : "Album tracks complete");
-  addDot("embedding_issues", checkEmbedded || explicitReview, "Embedded thumbnail needs attention");
-  addDot("animated_webp", !!album.webp_found, "cover.webp present");
-  addDot("opposing_override", overridden, "Opposing Album override");
+  for (const rule of activeMediaStatePolicy().album?.status_dots || []) {
+    const [applicable, detail] = dotEvidence.get(rule.condition) || [false, ""];
+    if (applicable) dots.push([mediaPolicyColor(rule.color), detail || rule.label]);
+  }
   const conditions = [];
   if (missingArt || bypassed) conditions.push("missing_art");
   if (checkEmbedded || explicitReview) conditions.push("embedding_issues");
-  if (incomplete) conditions.push("incomplete_tracks");
+  if (incompleteEvidence) conditions.push("incomplete_tracks");
   if (overridden) conditions.push("opposing_override");
   if (fullyComplete) conditions.push("tracks_complete");
-  if (processed || validating) conditions.push("processed");
+  if ((processed || validating) && !fullyComplete) conditions.push("processed");
   const stateKey = classifyMediaState("album", conditions).ui_status_key;
   const frames = state.graphicalEnhancement.frame_styles;
   const mixedFrame = !overridden && !fullyComplete && checkEmbedded && (processed || (fallback && album.fallback_complete === true))
     ? fallback ? "green-purple" : "orange-purple" : "";
   const frame = overridden ? mediaPolicyColor(activeMediaStatePolicy().override_presentation?.frame_color || "dark_grey") : bypassed ? mediaPolicyColor("yellow") : validating ? "#55c7d8" : fullyComplete ? frames.complete.color
     : checkEmbedded ? frames.thumbnail.color : processed ? frames.in_process.color : mediaStatusColor(status);
-  return {dots, frame, fullyComplete, checkEmbedded, embeddedPending, embeddedRetry, validating, mixedFrame, overridden, bypassed, missingArt, incomplete, stateKey};
+  return {dots, frame, fullyComplete, checkEmbedded, embeddedPending, embeddedRetry, validating, mixedFrame, overridden, bypassed, missingArt, incomplete: incompleteEvidence, stateKey};
 }
 function selectedArtistAggregateStatus(artist = state.artist) {
-  if (!artist) return "unprocessed";
+  if (!artist) return "incomplete";
   const cards = artistOverviewAlbums(artist, false).map(album => albumCardState(album, artist));
   const conditions = [];
-  if (!artist.portrait && !artist.banner) conditions.push("missing_artist_art");
+  if ((!artist.portrait && !artist.banner) || cards.some(card => card.missingArt)) conditions.push("missing_artist_art");
   if (cards.some(card => card.checkEmbedded || card.stateKey === "partial")) conditions.push("embedding_issues");
-  if (cards.some(card => card.incomplete)) conditions.push("incomplete_or_error");
-  if (cards.some(card => card.overridden)) conditions.push("opposing_override");
+  if (cards.some(card => card.incomplete || card.stateKey === "incomplete")) conditions.push("incomplete_or_error");
   if (cards.length && cards.every(card => card.fullyComplete || card.overridden)) conditions.push("all_albums_complete_or_overridden");
   return classifyMediaState("artist", conditions).ui_status_key;
 }
 function syncSelectedArtistStatus() {
-  if (!state.artist) return "unprocessed";
+  if (!state.artist) return "incomplete";
   const status = selectedArtistAggregateStatus(state.artist);
   state.artist.status = status;
   const listed = state.artists.find(item => String(item.id) === String(state.artist.id));
@@ -1228,12 +1227,12 @@ function renderAlbumStatusKey(albums, artist) {
   const compTracks = state.compGroups.flatMap(group => group.tracks || []);
   const sections = [
     ["Status dots", [
+      {parts: [["●", mediaPolicyColor("dark_grey")], ["Dark Grey", mediaPolicyColor("dark_grey")]], detail: "Opposing album override", count: countDot(mediaPolicyColor("dark_grey"))},
       {parts: [["●", mediaPolicyColor("red")], ["Red", mediaPolicyColor("red")]], detail: activeMediaStatePolicy().album?.red_definition || "Incomplete album tracks", count: countDot(mediaPolicyColor("red"))},
       {parts: [["●", mediaPolicyColor("yellow")], ["Yellow", mediaPolicyColor("yellow")]], detail: "Artist/Album art missing/bypassed", count: countDot(mediaPolicyColor("yellow"))},
+      {parts: [["●", mediaPolicyColor("purple")], ["Purple", mediaPolicyColor("purple")]], detail: "Embedded art needs attention", count: countDot(mediaPolicyColor("purple"))},
       {parts: [["●", mediaPolicyColor("orange")], ["Orange", mediaPolicyColor("orange")]], detail: "Processed, not yet complete", count: countDot(mediaPolicyColor("orange"))},
       {parts: [["●", mediaPolicyColor("green")], ["Green", mediaPolicyColor("green")]], detail: "Artist's tracks complete", count: countDot(mediaPolicyColor("green"))},
-      {parts: [["●", mediaPolicyColor("purple")], ["Purple", mediaPolicyColor("purple")]], detail: "Embedded art needs attention", count: countDot(mediaPolicyColor("purple"))},
-      {parts: [["●", mediaPolicyColor("dark_grey")], ["Dark Grey", mediaPolicyColor("dark_grey")]], detail: "Opposing album override", count: countDot(mediaPolicyColor("dark_grey"))},
     ]],
     ["Album card frames", [
       {parts: [["Cyan", "#55c7d8"]], detail: "Validating embedded thumbnails", count: cards.filter(card => card.state.validating && !card.state.overridden).length},

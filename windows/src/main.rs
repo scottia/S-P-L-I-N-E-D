@@ -56,8 +56,8 @@ use splined_core::media_database::{
     upgrade_database_schema,
 };
 use splined_core::media_state_policy::{
-    PostgresPolicySnapshot, activate_policy as activate_media_state_policy, album_status_dot,
-    classify_album, classify_artist, database_monitor_poll_seconds, database_monitor_presentation,
+    PostgresPolicySnapshot, activate_policy as activate_media_state_policy, classify_album,
+    classify_artist, database_monitor_poll_seconds, database_monitor_presentation,
     fetch_postgres_policy, named_color, policy as media_state_policy,
     policy_json as media_state_policy_json, policy_path as media_state_policy_path,
     save_policy as save_media_state_policy, save_postgres_policy,
@@ -21894,17 +21894,21 @@ fn album_policy_conditions<'a>(
     };
     let mut conditions = Vec::new();
     if artist_art_missing
-        || (!fallback && !album.snapshot.has_local_artwork)
+        || (!fallback && !overridden && !album.snapshot.has_local_artwork)
         || album.state == AlbumState::Bypassed
     {
         conditions.push("missing_art");
     }
-    if album.state == AlbumState::TimeoutActive
-        || embedded_check.is_some_and(AlbumEmbeddedCheck::needs_attention)
-    {
+    if embedded_check.is_some_and(AlbumEmbeddedCheck::needs_attention) {
         conditions.push("embedding_issues");
     }
-    if album.state == AlbumState::Incomplete || fallback_incomplete {
+    if (!overridden
+        && matches!(
+            album.state,
+            AlbumState::New | AlbumState::Incomplete | AlbumState::TimeoutActive
+        ))
+        || fallback_incomplete
+    {
         conditions.push("incomplete_tracks");
     }
     if overridden {
@@ -21913,7 +21917,7 @@ fn album_policy_conditions<'a>(
     if fully_complete {
         conditions.push("tracks_complete");
     }
-    if album.state == AlbumState::Processed {
+    if album.state == AlbumState::Processed && !fully_complete {
         conditions.push("processed");
     }
     conditions
@@ -21980,19 +21984,28 @@ fn artist_file_list_policy_state(
         evidence.insert("missing_artist_art");
     }
     let mut all_complete_or_overridden = !indices.is_empty();
+    let mut has_unclassified_incomplete = indices.is_empty();
     for &index in indices {
         let conditions = album_policy_conditions(state, &state.library.albums[index], Some(artist));
+        if conditions.contains(&"missing_art") {
+            evidence.insert("missing_artist_art");
+        }
         if conditions.contains(&"embedding_issues") {
             evidence.insert("embedding_issues");
         }
         if conditions.contains(&"incomplete_tracks") {
             evidence.insert("incomplete_or_error");
         }
-        if conditions.contains(&"opposing_override") {
-            evidence.insert("opposing_override");
-        }
-        all_complete_or_overridden &=
+        let complete_or_overridden =
             conditions.contains(&"tracks_complete") || conditions.contains(&"opposing_override");
+        let specifically_classified = conditions.contains(&"missing_art")
+            || conditions.contains(&"embedding_issues")
+            || conditions.contains(&"incomplete_tracks");
+        has_unclassified_incomplete |= !complete_or_overridden && !specifically_classified;
+        all_complete_or_overridden &= complete_or_overridden;
+    }
+    if has_unclassified_incomplete {
+        evidence.insert("incomplete_or_error");
     }
     if all_complete_or_overridden {
         evidence.insert("all_albums_complete_or_overridden");
@@ -22580,11 +22593,13 @@ fn artist_overview_ui_model_with_show_all(
             // A fallback album intentionally has no Release ID and does not
             // use its folder cover. Neither is an actionable red status for
             // the selected artist's track-scoped COMP workflow.
-            let missing_album_art = !fallback && !snapshot.has_local_artwork;
+            let missing_album_art = !fallback && !overridden && !snapshot.has_local_artwork;
             let incomplete = !fallback
+                && !overridden
                 && matches!(
                     album.state,
-                    splined_core::application::AlbumState::Incomplete
+                    splined_core::application::AlbumState::New
+                        | splined_core::application::AlbumState::Incomplete
                         | splined_core::application::AlbumState::TimeoutActive
                 );
             let processed = album.state == splined_core::application::AlbumState::Processed;
@@ -22689,93 +22704,109 @@ fn artist_overview_ui_model_with_show_all(
                 snapshot.has_local_artwork,
                 embedded_check,
             );
-            let mut bullets = Vec::new();
-            let mut add_bullet = |condition: &str, applicable: bool, detail: String| {
-                if applicable && let Some(rule) = album_status_dot(condition) {
-                    bullets.push(UiAlbumStatusBullet {
-                        color: media_policy_color(&rule.color),
-                        tip: SharedString::from(if detail.is_empty() {
-                            rule.label.clone()
-                        } else {
-                            detail
-                        }),
-                    });
-                }
-            };
-            add_bullet(
-                "missing_art",
-                !has_artist_art || missing_album_art || bypassed,
-                if !has_artist_art {
-                    "Missing Artist Art"
-                } else if missing_album_art {
-                    "Missing Album Art"
-                } else {
-                    "Bypassed Album"
-                }
-                .to_string(),
-            );
-            add_bullet(
-                "incomplete_tracks",
-                !stale_unprocessed
-                    && (incomplete
-                        || (fallback
-                            && fallback_progress.is_some_and(|(done, total)| done < total))),
-                if fallback {
-                    "Selected Artist's COMP tracks incomplete"
-                } else {
-                    "Incomplete / timed-out Album"
-                }
-                .to_string(),
-            );
-            add_bullet(
-                "processed",
-                processed && !fully_complete,
-                "Processed Album".to_string(),
-            );
-            add_bullet(
-                "tracks_complete",
-                fully_complete,
-                if fallback {
-                    "Selected Artist's COMP tracks complete"
-                } else {
-                    "Album tracks complete"
-                }
-                .to_string(),
-            );
-            if let Some(check) = embedded_check {
-                add_bullet(
-                    "embedding_issues",
-                    check.needs_attention(),
+            let (has_webp, needs_still) = canonical_webp_status(snapshot);
+            let embedding_detail = embedded_check
+                .filter(|check| check.needs_attention())
+                .map(|check| {
                     format!(
                         "Check Embedded · {} missing, {} wrong size; preference {} × {}",
                         check.missing,
                         check.wrong_size,
                         state.config.output.embedded_thumbnail_size,
                         state.config.output.embedded_thumbnail_size
+                    )
+                })
+                .unwrap_or_default();
+            let mut bullet_evidence = HashMap::from([
+                (
+                    "opposing_override",
+                    (overridden, "Opposing Album override".to_string()),
+                ),
+                (
+                    "incomplete_tracks",
+                    (
+                        !stale_unprocessed
+                            && (incomplete
+                                || (fallback
+                                    && fallback_progress
+                                        .is_some_and(|(done, total)| done < total))),
+                        if fallback {
+                            "Selected Artist's COMP tracks incomplete"
+                        } else {
+                            "Incomplete / timed-out Album"
+                        }
+                        .to_string(),
                     ),
-                );
-            }
-            let (has_webp, needs_still) = canonical_webp_status(snapshot);
-            add_bullet(
-                "animated_webp",
-                has_webp,
-                if needs_still {
-                    "cover.webp preserved · WRITE Cover to create cover.jpg and embed a still"
-                } else {
-                    "cover.webp preserved alongside a still cover"
+                ),
+                (
+                    "missing_art",
+                    (
+                        !has_artist_art || missing_album_art || bypassed,
+                        if !has_artist_art {
+                            "Missing Artist Art"
+                        } else if missing_album_art {
+                            "Missing Album Art"
+                        } else {
+                            "Bypassed Album"
+                        }
+                        .to_string(),
+                    ),
+                ),
+                (
+                    "embedding_issues",
+                    (!embedding_detail.is_empty(), embedding_detail),
+                ),
+                (
+                    "processed",
+                    (processed && !fully_complete, "Processed Album".to_string()),
+                ),
+                (
+                    "tracks_complete",
+                    (
+                        fully_complete,
+                        if fallback {
+                            "Selected Artist's COMP tracks complete"
+                        } else {
+                            "Album tracks complete"
+                        }
+                        .to_string(),
+                    ),
+                ),
+                (
+                    "animated_webp",
+                    (
+                        has_webp,
+                        if needs_still {
+                            "cover.webp preserved · WRITE Cover to create cover.jpg and embed a still"
+                        } else {
+                            "cover.webp preserved alongside a still cover"
+                        }
+                        .to_string(),
+                    ),
+                ),
+            ]);
+            let mut bullets = Vec::new();
+            for rule in media_state_policy().album.status_dots {
+                let Some((applicable, detail)) = bullet_evidence.remove(rule.condition.as_str())
+                else {
+                    continue;
+                };
+                if applicable {
+                    bullets.push(UiAlbumStatusBullet {
+                        color: media_policy_color(&rule.color),
+                        tip: SharedString::from(if detail.is_empty() {
+                            rule.label
+                        } else {
+                            detail
+                        }),
+                    });
                 }
-                .to_string(),
-            );
-            add_bullet(
-                "opposing_override",
-                overridden,
-                "Opposing Album override".to_string(),
-            );
+            }
             let mut classification_conditions = Vec::new();
             if !has_artist_art || missing_album_art || bypassed {
                 classification_conditions.push("missing_art");
             }
-            if check_embedded || album.state == AlbumState::TimeoutActive {
+            if check_embedded {
                 classification_conditions.push("embedding_issues");
             }
             if incomplete
@@ -22789,7 +22820,7 @@ fn artist_overview_ui_model_with_show_all(
             if fully_complete {
                 classification_conditions.push("tracks_complete");
             }
-            if processed || validating {
+            if (processed || validating) && !fully_complete {
                 classification_conditions.push("processed");
             }
             let classification = classify_album(&classification_conditions);
@@ -26913,7 +26944,7 @@ mod tests {
     }
 
     #[test]
-    fn opposing_write_replaces_white_unprocessed_state_without_a_red_dot() {
+    fn opposing_write_replaces_incomplete_new_state_without_a_stale_red_dot() {
         let snapshot = MediaSnapshot {
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: "splined.db".to_string(),
@@ -26958,8 +26989,12 @@ mod tests {
 
         let normal = artist_overview_ui_model(&app).row_data(0).unwrap();
         assert!(!normal.overridden);
-        assert_eq!(normal.state_key, "Unprocessed");
-        assert_eq!(normal.bullets.row_count(), 0);
+        assert_eq!(normal.state_key, "Incomplete");
+        assert_eq!(normal.bullets.row_count(), 1);
+        assert_eq!(
+            normal.bullets.row_data(0).unwrap().tip,
+            "Incomplete / timed-out Album"
+        );
 
         // The persisted projection remains authoritative when the live
         // PostgreSQL writer map is temporarily unavailable.
