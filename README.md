@@ -50,8 +50,6 @@ save covers, Artist Art, or embedded track artwork.
   portable ZIP, with Windows-owned settings and SQLite backup tools.
 - 🌐 **Ubuntu WebGUI** — provides browser-based review and Docker deployment,
   with PostgreSQL-backed catalog and queue state.
-- 💻 **Native Linux CLI** — remains a separate root Rust implementation;
-  artifact availability follows the selected release targets.
 
 ---
 
@@ -66,7 +64,6 @@ following its portable instructions.
 | **Microsoft Store** | Native Windows application; Store-managed installation and updates; SQLite | [Install SPLINED](https://apps.microsoft.com/detail/9p8g4gmbbvbs?hl=en-US&gl=US) · [Store guide](docs/windows-store.md) |
 | **Windows Portable** | Native Windows application in an extracted folder; portable settings; SQLite | [Windows portable instructions](release/README-WINDOWS.txt) · [Releases](https://github.com/scottia/S-P-L-I-N-E-D/releases) |
 | **Ubuntu WebGUI / Docker** | Python/browser application; PostgreSQL and persistent mounted files | [Docker deployment](docker/README.md) · [WebGUI guide](docs/browser-workspace-guide.md) |
-| **Native Linux** | Separate root Rust command-line implementation built deliberately from source | [Linux source-build instructions](release/README-LINUX.txt) · [Installation guide](docs/installation-first-run.md) |
 
 After installation, configure the runtime's music-library view, persistent
 state, cache, and provider credentials. Build or refresh the catalog, then
@@ -94,12 +91,14 @@ references, maintainer procedures, and historical audits:
 
 SPLINED keeps its supported implementations separate:
 
-- [`windows/`](windows/README.md) contains the native Rust/Slint Windows
-  application, its processing core, and Windows packaging.
-- Root [`Cargo.toml`](Cargo.toml), [`Cargo.lock`](Cargo.lock), and [`src/`](src/)
-  contain the separate native command-line implementation for Linux.
-- [`webgui/`](webgui/) contains the Python server and browser interface;
-  [`docker/`](docker/README.md) contains its PostgreSQL deployment.
+- [`build/Windows/`](build/Windows/) contains the native Rust/Slint Windows
+  crate, Slint source, resources, and packaging. See the [build guide](docs/windows-build-guide.md).
+- [`build/WEBGui/`](build/WEBGui/) contains the GHCR Dockerfile and the
+  [`webgui/`](build/WEBGui/webgui/) Python/browser package, including its CI tests.
+- [`schema/`](schema/) remains the single source of shared runtime JSON/SQL
+  contracts. [`docker/`](docker/README.md) contains deployment configuration.
+- Unused legacy root-native CLI sources are retained only in
+  [`dev-archive`](https://github.com/scottia/S-P-L-I-N-E-D/tree/dev-archive).
 
 They share configuration and artwork-policy concepts, but do not guarantee
 identical interfaces or use one shared live database.
@@ -226,22 +225,6 @@ checked-in [native](config.example.toml) or
 
 ---
 
-## ▶️ Native Linux command-line usage
-
-The root Rust project is a separate native command-line implementation. When a
-matching artifact or source build is available, begin with:
-
-```text
-splined --help
-splined --scan-dir
-```
-
-Supply the intended Config v5 file and verify its paths before scanning. These
-commands do not describe Windows GUI or WebGUI operation. See
-[Installation and first run](docs/installation-first-run.md).
-
----
-
 ## 🔐 Credentials
 
 Provider credentials use fixed JSON filenames beneath the configured credential
@@ -257,10 +240,9 @@ supported provider files, safe tests, relocation, and backup guidance.
 
 ## 🧭 Project status
 
-The source tree contains the native Windows application, Ubuntu WebGUI, and the
-separate root-native command-line implementation. Distribution targets are
-selected per release, so the presence of source or instructions does not mean
-every release contains every platform artifact.
+The production source tree contains two build targets: Windows and WebGUI.
+Workflow 01 selects the validated release target(s); historic root-native CLI
+work is archived and is not a current release target.
 
 Use [GitHub Releases](https://github.com/scottia/S-P-L-I-N-E-D/releases) for
 published versions and change history. Current behavior is documented in the

@@ -2,7 +2,7 @@
 
 This is the maintainer guide for building and packaging the native Windows
 application. Installation, everyday use, backup, and troubleshooting belong in
-the [Windows user guide](../docs/windows-guide.md).
+the [Windows user guide](windows-guide.md).
 
 The Windows application is one native Rust executable built by Cargo. Rust owns
 the application state, media-library model, SQLite access, provider pipeline,
@@ -18,16 +18,16 @@ runtime application DLL.
 From the repository root:
 
 ```powershell
-cargo fmt --manifest-path windows/Cargo.toml -- --check
-cargo check --locked --manifest-path windows/Cargo.toml --all-targets
-cargo test --locked --manifest-path windows/Cargo.toml --lib
-cargo build --locked --release --manifest-path windows/Cargo.toml --target x86_64-pc-windows-msvc
+cargo fmt --manifest-path build/Windows/Cargo.toml -- --check
+cargo check --locked --manifest-path build/Windows/Cargo.toml --all-targets
+cargo test --locked --manifest-path build/Windows/Cargo.toml --lib
+cargo build --locked --release --manifest-path build/Windows/Cargo.toml --target x86_64-pc-windows-msvc
 ```
 
 The release executable is:
 
 ```text
-windows\target\x86_64-pc-windows-msvc\release\splined.exe
+build\Windows\target\x86_64-pc-windows-msvc\release\splined.exe
 ```
 
 ### Production-equivalent local PC test build
@@ -36,7 +36,7 @@ For routine local iterations, close SPLINED and double-click
 `E:\apps\SPLINED\Apply Quick Local Update.cmd`, or run:
 
 ```powershell
-.\windows\scripts\Install-LocalTestBuild.ps1 -Quick
+.\build\Windows\scripts\Install-LocalTestBuild.ps1 -Quick
 ```
 
 Quick mode reuses unchanged optimized Cargo objects, verifies and replaces the
@@ -47,7 +47,7 @@ Before repository promotion or Microsoft Store preparation, close SPLINED and
 double-click `E:\apps\SPLINED\Apply Local Test Build.cmd`, or run:
 
 ```powershell
-.\windows\scripts\Install-LocalTestBuild.ps1
+.\build\Windows\scripts\Install-LocalTestBuild.ps1
 ```
 
 The production-equivalent path clears the target-specific release output, disables Cargo incremental
@@ -73,8 +73,8 @@ versioned `main` source, using that same executable for portable and Store
 packaging. Owner policy requires Extended Windows validation before a Microsoft
 Store submission.
 
-`windows/build.rs` compiles `windows/ui/app.slint` and embeds build identity.
-The executable links directly to the Rust library modules in `windows/src`.
+`build/Windows/build.rs` compiles `build/Windows/ui/app.slint` and embeds build identity.
+The executable links directly to the Rust library modules in `build/Windows/src`.
 
 ## Runtime layout
 
@@ -153,7 +153,7 @@ access.
 ## Packaging
 
 The portable ZIP and Store MSIX are produced from the same x64 Cargo-built
-`splined.exe`. `windows/package/Build-StorePackage.ps1` verifies Partner Center
+`splined.exe`. `build/Windows/package/Build-StorePackage.ps1` verifies Partner Center
 identity, Store version, x64 PE architecture, file association, full-trust
 declaration, and absence of extra DLL host artifacts. The development package
 script installs an isolated signed MSIX, activates it through the registered
@@ -169,9 +169,9 @@ splined.exe --write-build-info build-info.json
 
 ## Validation
 
-The repository architecture tests verify the single-executable Rust/Slint
-contract, absence of C# sources and compiler paths, exact portable allowlist,
-Store package inputs, state-root separation, and update-channel selection.
+The historic root-crate architecture test sources are retained in `dev-archive`;
+Workflow 01's portable allowlist and native smoke checks remain active. Reestablish
+current-layout architecture coverage before treating past test claims as current.
 Controller and library unit tests cover real state transitions without placing
 business authority in Slint callbacks.
 

@@ -82,7 +82,7 @@ The repository's Compose definition is the simplest source deployment. It:
 
 1. starts `postgres:17` with the named `catalog` volume;
 2. waits for `pg_isready` to report a healthy database;
-3. builds `webgui/Dockerfile` as `splined-webgui:local`;
+3. builds `build/WEBGui/Dockerfile` as `splined-webgui:local`;
 4. starts WebGUI with `PGHOST=postgres` on Compose's private network; and
 5. publishes only WebGUI port 8080. PostgreSQL has no host port.
 
@@ -339,11 +339,11 @@ restore changed music tags.
 
 ## Maintainer validation
 
-Install `webgui/requirements-test.txt`, point `SPLINED_TEST_DATABASE_URL` at
+Install `build/WEBGui/webgui/requirements-test.txt`, point `SPLINED_TEST_DATABASE_URL` at
 a disposable PostgreSQL database, and run:
 
 ```sh
-python -m unittest discover -s webgui/tests -v
+python -m unittest discover -s build/WEBGui/webgui/tests -v
 ```
 
 The integration suite creates and removes its own schemas and uses generated
