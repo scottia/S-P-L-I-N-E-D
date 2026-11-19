@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "policy_id": "splined-comp-report-v1",
+  "artist_identity": {
+    "selected_artist_precedence": true,
+    "credit_separators": [
+      "\\u0000",
+      ";",
+      "/",
+      " feat. ",
+      " featuring ",
+      " with ",
+      " vs. "
+    ],
+    "normalization": {
+      "case_fold": true,
+      "unicode_nfkd": true,
+      "collapse_whitespace": true,
+      "strip_leading_symbols": [
+        "*"
+      ],
+      "remove_leading_articles": [
+        "the"
+      ],
+      "word_equivalents": {
+        "&": "and"
+      }
+    },
+    "local_artist_alias": {
+      "minimum_score": 85,
+      "exact_score": 100,
+      "limit": 10
+    },
+    "musicbrainz_artist_search": {
+      "enabled": true,
+      "minimum_score": 70,
+      "limit": 10
+    }
+  },
+  "recording_search": {
+    "minimum_score": 55,
+    "exact_recording_score": 100,
+    "related_work_score": 95,
+    "maximum_non_exact_score": 94,
+    "limit": 50,
+    "detail_lookup_limit": 8
+  },
+  "result_grouping": {
+    "percentage_bands": [
+      95,
+      90,
+      80,
+      70,
+      55
+    ],
+    "release_family_order": [
+      "album",
+      "single",
+      "ep",
+      "soundtrack",
+      "compilation",
+      "broadcast",
+      "other"
+    ],
+    "official_releases_only": true
+  },
+  "existing_artwork": {
+    "show_before_remote_search": true,
+    "reuse_if_identity_pending": true,
+    "completion_requires_authoritative_ids": true
+  },
+  "batch": {
+    "completion_states": [
+      "completed",
+      "unresolved",
+      "failed"
+    ],
+    "pin_policy_revision": true,
+    "refresh_report_after_each_track": true
+  },
+  "coordination": {
+    "publish_verified_artwork_write": true,
+    "publish_unresolved_identity_write": true,
+    "completion_requires_authoritative_ids": true
+  },
+  "synchronization": {
+    "startup_source": "local_mirror",
+    "async_revision_check": true,
+    "activate_only_when_idle": true
+  }
+}

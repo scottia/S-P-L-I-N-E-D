@@ -249,6 +249,10 @@ pub async fn run_scan_library_read_report(
     };
 
     let mut compilation_match_cache = CompilationMatchCache::default();
+    gui_events::emit(json!({
+        "event": "comp_report_policy_pinned",
+        "revision": compilation_match_cache.policy_revision()
+    }));
     'album_loop: for (index, album) in inventory.albums.iter().enumerate() {
         if gui_events::cancelled() {
             return Err("SPLINED scan stopped by user.".to_string());
@@ -2279,19 +2283,8 @@ fn focused_track_artist(track_artist: &str) -> String {
 }
 
 fn focused_track_artist_name(track_artist: &str, focused: Option<&str>) -> String {
-    if let Some(focused) = focused.filter(|focused| {
-        track_artist
-            .split(['\0', ';'])
-            .any(|credit| credit.trim().eq_ignore_ascii_case(focused.trim()))
-    }) {
-        return focused.to_string();
-    }
-    track_artist
-        .split(['\0', ';'])
-        .find(|credit| !credit.trim().is_empty())
-        .unwrap_or(track_artist)
-        .trim()
-        .to_string()
+    let policy = crate::comp_report_policy::policy();
+    crate::comp_report_policy::focused_artist_name(track_artist, focused, &policy)
 }
 
 fn normal_album_existing_artwork(
@@ -2753,6 +2746,7 @@ async fn run_compilation_album(
     album: &AlbumDirectory,
     tracks: &[LocalTrackEvidence],
 ) -> Result<CompilationRunResult, String> {
+    let comp_policy = match_cache.policy();
     let CompilationRunContext {
         config,
         resolved_sources,
@@ -3521,6 +3515,7 @@ async fn run_compilation_album(
             let track_artists = authority.artist_mbids.join(",");
             let already_has_artwork = effective_mode == Mode::Write
                 && embedded_front_matches(&track.path, &embedded_bytes).unwrap_or(false);
+            let mut batch_state = &comp_policy.batch.completion_states[0];
             if effective_mode == Mode::Write {
                 if !already_has_artwork {
                     replace_embedded_front(&track.path, &embedded_bytes)?;
@@ -3540,7 +3535,22 @@ async fn run_compilation_album(
                         embedding_output.embedded_thumbnail_size
                     ));
                 }
-                completed += 1;
+                let has_authoritative_identity =
+                    crate::compilation::extract_mbids(&track_recording).len() == 1
+                        && !crate::compilation::extract_mbids(&track_artists).is_empty();
+                let authoritative_identity = !(comp_policy
+                    .coordination
+                    .completion_requires_authoritative_ids
+                    || comp_policy
+                        .existing_artwork
+                        .completion_requires_authoritative_ids)
+                    || has_authoritative_identity;
+                if authoritative_identity {
+                    completed += 1;
+                } else {
+                    result.unresolved += 1;
+                    batch_state = &comp_policy.batch.completion_states[1];
+                }
                 record_compilation_artwork_application(
                     &final_config,
                     CompilationArtworkApplication {
@@ -3552,13 +3562,20 @@ async fn run_compilation_album(
                         source_locator: &chosen.reference.url,
                         release_mbid: selected_release,
                         artwork: &embedded_bytes,
-                        outcome: if already_has_artwork {
+                        outcome: if !authoritative_identity {
+                            "embedded-unresolved"
+                        } else if already_has_artwork {
                             "embedded-existing"
                         } else {
                             "embedded-replaced"
                         },
                         total_tracks: tracks.len(),
                         completed_tracks: completed,
+                        publish_coordination: comp_policy
+                            .coordination
+                            .publish_verified_artwork_write
+                            && (authoritative_identity
+                                || comp_policy.coordination.publish_unresolved_identity_write),
                     },
                 )?;
                 result.installed += 1;
@@ -3575,6 +3592,7 @@ async fn run_compilation_album(
                 "source": chosen.downloaded.candidate.source, "release_mbid": selected_release,
                 "width": embedding_output.embedded_thumbnail_size,
                 "height": embedding_output.embedded_thumbnail_size,
+                "batch_state": batch_state,
                 "embed_thumbnails": true,
                 "upscale_backend": prepared.info.upscale_backend.as_str() }),
             );

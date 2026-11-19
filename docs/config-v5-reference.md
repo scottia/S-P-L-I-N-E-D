@@ -63,11 +63,12 @@ mounts.
   With Advanced enabled, this section also edits and validates the shared
   [Artist & Album state policy](media-state-classification-policy.md). WebGUI
   stores the authority in PostgreSQL; coordinated Windows keeps a validated
-  local JSON mirror. The policy remains separate from Config v5 so rules can
-  change without recompiling an app.
+  local JSON mirror. The same section owns the shared
+  [Artist COMP report policy](comp-report-policy.md). Both remain separate from
+  Config v5 so rules can change without recompiling an app.
 - **Backup & Recovery**: secret-free settings/reference export and catalog
   maintenance controls. Safe Settings JSON and the Shared Settings Contract
-  both include the active media-state policy.
+  both include the active media-state and COMP report policies.
 - **Processing & Logs**: processing mode, completion history, Log Directory,
   diagnostic level, retention, and bounded WebGUI events.
 
@@ -318,9 +319,9 @@ credential_dir = "credentials"
 
 This is the only normal credential setting. Standard provider JSON filenames
 are resolved internally. A shared SQLite installation can also store the
-non-secret `media-state-classification.json` policy in this directory. A
-standalone Windows SQLite installation uses the built-in policy and creates no
-external policy JSON. API keys, OAuth tokens, shared secrets, and provider
+non-secret `media-state-classification.json` and `comp-report-policy.json`
+policies in this directory. A standalone Windows SQLite installation uses the
+built-in policies and creates no external policy JSON. API keys, OAuth tokens, shared secrets, and provider
 filenames do not belong in `config.toml`.
 
 WebGUI Settings labels this path **Provider Credential Directory**. It must be

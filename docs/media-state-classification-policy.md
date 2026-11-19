@@ -39,10 +39,12 @@ PostgreSQL policy revision. Coordinated Windows normalizes the PostgreSQL
 revision before activating and mirroring it; shared-SQLite-only Setup rewrites
 only the recognized v1 policy, never an unrelated/custom policy identifier.
 
-At coordinated Windows startup, the PostgreSQL policy is checked once with a
-five-second bound. A successful read refreshes the local validated mirror. An
-unavailable PostgreSQL server leaves the last valid mirror active. Classification
-is never fetched during rendering.
+Coordinated Windows opens from its local validated mirrors. After the window is
+ready, a background five-second check reads both the media-state and
+[Artist COMP report](comp-report-policy.md) revisions. A newer validated
+revision activates only after processing is idle. An unavailable PostgreSQL
+server leaves the last valid mirrors active. Classification is never fetched
+during rendering or changed during an active COMP batch.
 
 Use **Settings → Advanced ON → Connections → Artist & Album State Policy ·
 JSON** to edit it. Windows writes PostgreSQL first when Album Coordination is
@@ -162,6 +164,7 @@ The order of each `ranked_*` array is behavior: the first matching condition
 wins. Album `status_dots` are not mutually exclusive and their array order is
 their display order.
 
-WebGUI includes the active policy in both **Back Up Safe Settings JSON** and
-**Download Shared Settings Contract**. Restore accepts the wrapped safe-settings
-format and remains compatible with older config-only exports.
+WebGUI includes this policy and the active COMP report policy in both **Back Up
+Safe Settings JSON** and **Download Shared Settings Contract**. Restore accepts
+the wrapped safe-settings format and remains compatible with older config-only
+exports.

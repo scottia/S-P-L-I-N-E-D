@@ -21,6 +21,7 @@ from PIL import Image
 import splined as core
 import splined_strict_source_policy as strict_policy
 from interaction.aispline import validated_enhanced_results
+from webgui.comp_report_policy import comp_report_policy, pinned_comp_report_batch
 
 
 APP_NAME = core.APP_NAME
@@ -1389,12 +1390,13 @@ def _manual_track_authority(
     *,
     artist_id: str,
     recording_id: str,
+    selected_artist: str = "",
 ) -> core.Track:
     """Build a session-only authority view; never alter the file's tags."""
     return core.Track(
         track.path,
         str(track.title or ""),
-        str(track.artist or ""),
+        str(selected_artist or track.artist or ""),
         getattr(track, "album", None),
         getattr(track, "album_artist", None),
         getattr(track, "album_mbid", None),
@@ -1458,6 +1460,7 @@ def _manual_progress(
     )
 
 
+@pinned_comp_report_batch
 def run_manual_compilation_album(
     album: core.AlbumDir,
     tracks: list[Any],
@@ -1479,6 +1482,7 @@ def run_manual_compilation_album(
     verify_embedded_artwork: Any | None = None,
     publish_verified_write: Any | None = None,
     musicbrainz_results_first: bool = False,
+    selected_artist_name: str = "",
 ) -> bool:
     """Resolve and approve embedded artwork independently for every track."""
     if not core.compilation_manual_album_eligible(tracks):
@@ -1632,6 +1636,7 @@ def run_manual_compilation_album(
                     track,
                     artist_id=authority["artist_id"],
                     recording_id=authority["recording_id"],
+                    selected_artist=selected_artist_name,
                 )
                 discovery_existing_rows = core.compilation_local_artwork_rows(
                     config_file,
@@ -1883,6 +1888,7 @@ def run_manual_compilation_album(
                         recording_id=discovered_item.recording_mbid,
                         release_id=discovered_item.release_mbid,
                     )
+                    authority_edit_pending = True
                     friendly.update(
                         artist=discovered_item.recording_artist,
                         track=discovered_item.recording_title,
@@ -1903,6 +1909,7 @@ def run_manual_compilation_album(
                 track,
                 artist_id=authority["artist_id"],
                 recording_id=authority["recording_id"],
+                selected_artist=selected_artist_name,
             )
             exact_release = (
                 authority["release_id"]
@@ -2282,8 +2289,6 @@ def run_manual_compilation_album(
                 )
                 if completion_recorded:
                     completed_paths = next_completed
-                    if publish_verified_write is not None:
-                        publish_verified_write(track, artwork)
                 else:
                     summary.unresolved += 1
                     _manual_unresolved(
@@ -2292,6 +2297,16 @@ def run_manual_compilation_album(
                         "Recording and Artist IDs were not saved; the track remains pending",
                         unresolved_items,
                     )
+                coordination_policy = comp_report_policy()["coordination"]
+                if (
+                    publish_verified_write is not None
+                    and coordination_policy["publish_verified_artwork_write"]
+                    and (
+                        completion_recorded
+                        or coordination_policy["publish_unresolved_identity_write"]
+                    )
+                ):
+                    publish_verified_write(track, artwork)
                 summary.installed += 1
                 action = (
                     "EMBEDDED ART REPLACED"

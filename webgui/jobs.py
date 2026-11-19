@@ -12,6 +12,7 @@ from psycopg.types.json import Jsonb
 import splined as core
 from interaction.status import use_adapter
 from webgui import index_coordinator as indexer
+from webgui.comp_report_policy import active_policy_revision, comp_report_policy
 
 
 TERMINAL_STATES = {"done", "failed", "cancelled"}
@@ -440,11 +441,15 @@ class JobQueue:
         if not isinstance(payloads, list) or not payloads:
             raise ValueError("Choose explicit Artist COMP albums")
         prepared = []
+        pinned_policy = comp_report_policy()
+        pinned_revision = active_policy_revision()
         for payload in payloads:
             if not isinstance(payload, dict):
                 raise ValueError("Invalid Artist COMP work request")
             item = dict(payload)
             item.setdefault("library_root", str(self.services.runtime.music))
+            item["comp_report_policy"] = pinned_policy
+            item["comp_report_policy_revision"] = pinned_revision
             prepared.append(item)
 
         results = []

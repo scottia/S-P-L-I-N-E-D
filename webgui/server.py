@@ -38,6 +38,11 @@ from webgui.media_state_policy import (
     media_state_policy,
     save_database_media_state_policy,
 )
+from webgui.comp_report_policy import (
+    comp_report_policy,
+    database_comp_report_policy,
+    save_database_comp_report_policy,
+)
 
 
 SETTINGS_UI = Path(__file__).resolve().parents[1] / "schema/settings-ui.json"
@@ -76,6 +81,7 @@ class Context:
         self.error = ""
         self.database_migration = {"current": 0, "applied": [], "automatic": True}
         self.media_state_policy_revision = 0
+        self.comp_report_policy_revision = 0
         self._database_monitor_lock = threading.Lock()
         self._database_monitor_checked_at = 0.0
         self._database_monitor_result: dict[str, object] | None = None
@@ -106,6 +112,8 @@ class Context:
         self.database_migration.update(database.upgrade_status(core.VERSION))
         policy_record = database_media_state_policy(database)
         self.media_state_policy_revision = int(policy_record["revision"])
+        comp_policy_record = database_comp_report_policy(database)
+        self.comp_report_policy_revision = int(comp_policy_record["revision"])
         self.runtime = Runtime(self.config_file, database)
         self.services = Services(
             self.runtime, image_signing_key=self.image_signing_key
@@ -224,6 +232,8 @@ class Context:
             self.database_migration.update(database.upgrade_status(core.VERSION))
             policy_record = database_media_state_policy(database)
             self.media_state_policy_revision = int(policy_record["revision"])
+            comp_policy_record = database_comp_report_policy(database)
+            self.comp_report_policy_revision = int(comp_policy_record["revision"])
             Runtime.validate(cfg)
             core.validate_filename(str(cfg.get("output", {}).get("file_name", "cover")))
             if not core.resolve_path(
@@ -643,6 +653,7 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
             "database_monitor": context.database_monitor(),
             "database_migration": context.database_migration,
             "media_state_policy": media_state_policy(),
+            "comp_report_policy": comp_report_policy(),
         }
         if session["authenticated"]:
             result.update(
@@ -756,6 +767,7 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
     def settings_contract():
         contract = json.loads(SETTINGS_UI.read_text(encoding="utf-8"))
         contract["media_state_policy"] = media_state_policy()
+        contract["comp_report_policy"] = comp_report_policy()
         return contract
 
     @app.get("/api/settings")
@@ -787,6 +799,32 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
             raise HTTPException(400, str(error)) from error
         context.services and context.services.audit(
             "save-media-state-policy", "postgresql-policy"
+        )
+        return record["policy"]
+
+    @app.get("/api/settings/comp-report-policy")
+    def get_comp_report_policy():
+        context.require()
+        record = database_comp_report_policy(
+            context.runtime.database, seed_if_missing=False
+        )
+        context.comp_report_policy_revision = int(record["revision"])
+        return record["policy"]
+
+    @app.post("/api/settings/comp-report-policy")
+    def update_comp_report_policy(payload: dict):
+        try:
+            context.require()
+            record = save_database_comp_report_policy(
+                context.runtime.database,
+                payload.get("policy"),
+                updated_by="webgui-settings",
+            )
+            context.comp_report_policy_revision = int(record["revision"])
+        except (OSError, ValueError, RuntimeError) as error:
+            raise HTTPException(400, str(error)) from error
+        context.services and context.services.audit(
+            "save-comp-report-policy", "postgresql-policy"
         )
         return record["policy"]
 

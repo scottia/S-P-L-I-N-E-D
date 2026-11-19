@@ -21,12 +21,21 @@ use splined_core::backup::{
     validate_reconciliation_snapshot,
 };
 use splined_core::candidate::{Candidate, StaticFormat};
+use splined_core::comp_report_policy::{
+    PostgresPolicySnapshot as CompReportPostgresPolicySnapshot,
+    activate_policy as activate_comp_report_policy,
+    active_revision as active_comp_report_policy_revision,
+    fetch_postgres_policy as fetch_postgres_comp_report_policy,
+    policy_path as comp_report_policy_path, save_policy as save_comp_report_policy,
+    save_postgres_policy as save_postgres_comp_report_policy,
+    validate_policy as validate_comp_report_policy,
+};
 use splined_core::config::{
     Config, DEFAULT_ARTIST_SEPARATOR_PROFILE, DEFAULT_ARTIST_SEPARATOR_REGEX, Mode, ScanTimeout,
     Verbosity, configured_samples_dir, configured_shared_artist_art_dir,
 };
 use splined_core::credential_store::{
-    ALBUM_COORDINATION_PROVIDER, CredentialEditor, credential_path,
+    ALBUM_COORDINATION_PROVIDER, CoordinatedPolicySnapshot, CredentialEditor, credential_path,
     load_album_coordination_database_url, load_editor, resolve_masked_editor, save_editor,
     test_album_coordination_policy, test_editor,
 };
@@ -56,12 +65,15 @@ use splined_core::media_database::{
     upgrade_database_schema,
 };
 use splined_core::media_state_policy::{
-    PostgresPolicySnapshot, activate_policy as activate_media_state_policy, classify_album,
-    classify_artist, database_monitor_poll_seconds, database_monitor_presentation,
-    fetch_postgres_policy, named_color, policy as media_state_policy,
-    policy_json as media_state_policy_json, policy_path as media_state_policy_path,
-    save_policy as save_media_state_policy, save_postgres_policy,
-    status_color as media_status_color, validate_policy as validate_media_state_policy,
+    PostgresPolicySnapshot as MediaStatePostgresPolicySnapshot,
+    activate_policy as activate_media_state_policy,
+    activate_policy_revision as activate_media_state_policy_revision,
+    active_revision as active_media_state_policy_revision, classify_album, classify_artist,
+    database_monitor_poll_seconds, database_monitor_presentation, fetch_postgres_policy,
+    named_color, policy as media_state_policy, policy_json as media_state_policy_json,
+    policy_path as media_state_policy_path, save_policy as save_media_state_policy,
+    save_postgres_policy, status_color as media_status_color,
+    validate_policy as validate_media_state_policy,
 };
 use splined_core::musicbrainz::{ArtistLookup, ArtistSearchHit, MusicBrainzClient};
 use splined_core::override_coordination::{
@@ -116,7 +128,12 @@ const NAVIDROME_ALBUM_DOWNLOAD_LIMIT: usize = 6;
 #[derive(Clone)]
 struct ValidatedSetupPostgres {
     editor: CredentialEditor,
-    snapshot: PostgresPolicySnapshot,
+    snapshot: CoordinatedPolicySnapshot,
+}
+
+struct SharedPolicySnapshots {
+    media_state: MediaStatePostgresPolicySnapshot,
+    comp_report: CompReportPostgresPolicySnapshot,
 }
 
 fn album_category_label(category: &str) -> &'static str {
@@ -5426,6 +5443,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 }
             });
         }
+        schedule_shared_policy_refresh(ui.as_weak(), Arc::clone(&state));
     }
 
     record_startup_timing("startup-event-loop begin".to_string());
@@ -7714,6 +7732,16 @@ fn validate_setup_shared_policy_targets(
             })?;
             validate_media_state_policy(&existing)?;
         }
+        let comp_path = comp_report_policy_path(config)?;
+        if comp_path.is_file() {
+            let existing = fs::read_to_string(&comp_path).map_err(|error| {
+                format!(
+                    "Unable to read existing COMP report policy {}: {error}",
+                    comp_path.display()
+                )
+            })?;
+            validate_comp_report_policy(&existing)?;
+        }
         return Ok(());
     }
     if postgres_choice != "yes" {
@@ -7722,7 +7750,8 @@ fn validate_setup_shared_policy_targets(
     let validated = validated.ok_or_else(|| {
         "Test and validate the WebGUI PostgreSQL connection before saving Setup.".to_string()
     })?;
-    validate_media_state_policy(&validated.snapshot.policy_json)?;
+    validate_media_state_policy(&validated.snapshot.media_state.policy_json)?;
+    validate_comp_report_policy(&validated.snapshot.comp_report.policy_json)?;
 
     let policy_path = media_state_policy_path(config)?;
     if policy_path.is_file() {
@@ -7736,12 +7765,34 @@ fn validate_setup_shared_policy_targets(
         let existing_value = serde_json::from_str::<serde_json::Value>(&existing)
             .map_err(|error| format!("Existing media-state policy is invalid: {error}"))?;
         let validated_value =
-            serde_json::from_str::<serde_json::Value>(&validated.snapshot.policy_json)
+            serde_json::from_str::<serde_json::Value>(&validated.snapshot.media_state.policy_json)
                 .map_err(|error| format!("PostgreSQL media-state policy is invalid: {error}"))?;
         if existing_value != validated_value {
             return Err(format!(
                 "Setup will not overwrite the different existing media-state policy {}. Choose another Provider Credential Directory or reconcile it in Advanced Settings.",
                 policy_path.display()
+            ));
+        }
+    }
+
+    let comp_path = comp_report_policy_path(config)?;
+    if comp_path.is_file() {
+        let existing = fs::read_to_string(&comp_path).map_err(|error| {
+            format!(
+                "Unable to read existing COMP report policy {}: {error}",
+                comp_path.display()
+            )
+        })?;
+        validate_comp_report_policy(&existing)?;
+        let existing_value = serde_json::from_str::<serde_json::Value>(&existing)
+            .map_err(|error| format!("Existing COMP report policy is invalid: {error}"))?;
+        let validated_value =
+            serde_json::from_str::<serde_json::Value>(&validated.snapshot.comp_report.policy_json)
+                .map_err(|error| format!("PostgreSQL COMP report policy is invalid: {error}"))?;
+        if existing_value != validated_value {
+            return Err(format!(
+                "Setup will not overwrite the different existing COMP report policy {}. Choose another Provider Credential Directory or reconcile it before saving Setup.",
+                comp_path.display()
             ));
         }
     }
@@ -7774,6 +7825,7 @@ fn install_setup_shared_policy(
     }
     if postgres_choice == "no" {
         splined_core::media_state_policy::ensure_policy(config)?;
+        splined_core::comp_report_policy::ensure_policy(config)?;
         return Ok(None);
     }
     let validated = validated.expect("validated PostgreSQL setup checked by preflight");
@@ -7783,11 +7835,24 @@ fn install_setup_shared_policy(
     }
     let policy_path = media_state_policy_path(config)?;
     if policy_path.is_file() {
-        activate_media_state_policy(&validated.snapshot.policy_json)?;
+        activate_media_state_policy(&validated.snapshot.media_state.policy_json)?;
     } else {
-        save_media_state_policy(&policy_path, &validated.snapshot.policy_json)?;
+        save_media_state_policy(&policy_path, &validated.snapshot.media_state.policy_json)?;
     }
-    Ok(Some(validated.snapshot.revision))
+    let comp_path = comp_report_policy_path(config)?;
+    if comp_path.is_file() {
+        activate_comp_report_policy(
+            &validated.snapshot.comp_report.policy_json,
+            validated.snapshot.comp_report.revision,
+        )?;
+    } else {
+        save_comp_report_policy(
+            &comp_path,
+            &validated.snapshot.comp_report.policy_json,
+            validated.snapshot.comp_report.revision,
+        )?;
+    }
+    Ok(Some(validated.snapshot.media_state.revision))
 }
 
 fn save_media_state_policy_with_authority(
@@ -7823,7 +7888,40 @@ fn save_media_state_policy_with_authority(
     Ok(Some(snapshot.revision))
 }
 
-fn refresh_media_state_policy_from_postgres(config: &Config) -> Result<Option<i64>, String> {
+fn save_comp_report_policy_with_authority(
+    config: &Config,
+    text: &str,
+) -> Result<Option<i64>, String> {
+    validate_comp_report_policy(text)?;
+    let policy_path = comp_report_policy_path(config)?;
+    let database_url = if config.scan.sqlite_shared && config.scan.postgres_coordination {
+        load_album_coordination_database_url(config)?
+    } else {
+        None
+    };
+    let Some(database_url) = database_url else {
+        save_comp_report_policy(&policy_path, text, 0)?;
+        return Ok(None);
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("Unable to start PostgreSQL COMP policy save: {error}"))?;
+    let snapshot = runtime.block_on(async {
+        tokio::time::timeout(Duration::from_secs(15), async {
+            let pool = connect_pool(&database_url).await?;
+            let result = save_postgres_comp_report_policy(&pool, text).await;
+            pool.close().await;
+            result
+        })
+        .await
+        .map_err(|_| "PostgreSQL COMP report policy save timed out after 15 seconds.".to_string())?
+    })?;
+    save_comp_report_policy(&policy_path, &snapshot.policy_json, snapshot.revision)?;
+    Ok(Some(snapshot.revision))
+}
+
+fn fetch_shared_policy_snapshots(config: &Config) -> Result<Option<SharedPolicySnapshots>, String> {
     if !config.scan.sqlite_shared || !config.scan.postgres_coordination {
         return Ok(None);
     }
@@ -7837,15 +7935,109 @@ fn refresh_media_state_policy_from_postgres(config: &Config) -> Result<Option<i6
     let snapshot = runtime.block_on(async {
         tokio::time::timeout(Duration::from_secs(5), async {
             let pool = connect_pool(&database_url).await?;
-            let result = fetch_postgres_policy(&pool).await;
+            let result: Result<SharedPolicySnapshots, String> = async {
+                Ok(SharedPolicySnapshots {
+                    media_state: fetch_postgres_policy(&pool).await?,
+                    comp_report: fetch_postgres_comp_report_policy(&pool).await?,
+                })
+            }
+            .await;
             pool.close().await;
             result
         })
         .await
-        .map_err(|_| "PostgreSQL policy refresh timed out after 5 seconds.".to_string())?
+        .map_err(|_| "PostgreSQL shared-policy check timed out after 5 seconds.".to_string())?
     })?;
-    save_media_state_policy(&media_state_policy_path(config)?, &snapshot.policy_json)?;
-    Ok(Some(snapshot.revision))
+    Ok(Some(snapshot))
+}
+
+fn schedule_shared_policy_refresh(
+    weak: slint::Weak<AppWindow>,
+    state: Arc<Mutex<ApplicationState>>,
+) {
+    let config = state.lock().ok().and_then(|app| {
+        (app.config.scan.sqlite_shared && app.config.scan.postgres_coordination)
+            .then(|| app.config.clone())
+    });
+    let Some(config) = config else {
+        return;
+    };
+    std::thread::spawn(move || {
+        let snapshots = match fetch_shared_policy_snapshots(&config) {
+            Ok(Some(snapshots)) => snapshots,
+            Ok(None) => return,
+            Err(error) => {
+                if let Ok(mut app) = state.lock() {
+                    app.push_log(format!(
+                        "WARNING: PostgreSQL shared-policy check failed; continuing with validated local mirrors: {error}"
+                    ));
+                }
+                let _ = slint::invoke_from_event_loop(move || refresh_weak(&weak, &state));
+                return;
+            }
+        };
+
+        loop {
+            let ready = state
+                .lock()
+                .ok()
+                .is_some_and(|app| app.phase == RunPhase::Idle && !app.operation_busy);
+            if ready {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+
+        let result = (|| -> Result<String, String> {
+            let mut app = state
+                .lock()
+                .map_err(|_| "Windows application state is unavailable".to_string())?;
+            if app.phase != RunPhase::Idle || app.operation_busy {
+                return Err("processing resumed before shared policies could activate".to_string());
+            }
+            let mut activated = Vec::new();
+            if snapshots.media_state.revision > active_media_state_policy_revision() {
+                let path = media_state_policy_path(&app.config)?;
+                save_media_state_policy(&path, &snapshots.media_state.policy_json)?;
+                activate_media_state_policy_revision(
+                    &snapshots.media_state.policy_json,
+                    snapshots.media_state.revision,
+                )?;
+                activated.push(format!("media-state r{}", snapshots.media_state.revision));
+            }
+            if snapshots.comp_report.revision > active_comp_report_policy_revision() {
+                let path = comp_report_policy_path(&app.config)?;
+                save_comp_report_policy(
+                    &path,
+                    &snapshots.comp_report.policy_json,
+                    snapshots.comp_report.revision,
+                )?;
+                activated.push(format!("COMP report r{}", snapshots.comp_report.revision));
+            }
+            let message = if activated.is_empty() {
+                format!(
+                    "PostgreSQL shared policies are current (media-state r{}, COMP report r{}).",
+                    snapshots.media_state.revision, snapshots.comp_report.revision
+                )
+            } else {
+                format!(
+                    "Activated PostgreSQL shared policy after processing became idle: {}.",
+                    activated.join(" · ")
+                )
+            };
+            app.push_log(message.clone());
+            Ok(message)
+        })();
+
+        if let Err(error) = result
+            && let Ok(mut app) = state.lock()
+        {
+            app.push_log(format!(
+                "WARNING: PostgreSQL shared policies were fetched but not activated; local mirrors remain active: {error}"
+            ));
+        }
+        let _ = slint::invoke_from_event_loop(move || refresh_weak(&weak, &state));
+    });
 }
 
 fn preview_setup_database_path_ui(ui: &AppWindow, value: &str) {
@@ -8510,15 +8702,9 @@ fn load_application_state() -> (ApplicationState, bool, Option<String>) {
         state.push_log(format!("SETUP REQUIRED: {error}"));
         return (state, true, first_error);
     }
-    match refresh_media_state_policy_from_postgres(&config) {
-        Ok(Some(revision)) => record_startup_timing(format!(
-            "startup-media-state-policy postgres_revision={revision}"
-        )),
-        Ok(None) => {}
-        Err(error) => record_startup_timing(format!(
-            "startup-media-state-policy using_local_mirror error={error}"
-        )),
-    }
+    record_startup_timing(
+        "startup-shared-policy local_mirrors_active async_check_deferred".to_string(),
+    );
     let configured_cache = Path::new(&config.scan.temporary_cache_dir);
     let portable_cache = splined_core::portable::app_layout()
         .ok()
@@ -15601,6 +15787,9 @@ fn bind_service_callbacks(
                     validate_media_state_policy(
                         ui.get_settings_media_state_policy_json().as_str(),
                     )?;
+                    validate_comp_report_policy(
+                        ui.get_settings_comp_report_policy_json().as_str(),
+                    )?;
                 }
                 let config = if section == "Library" {
                     let configuration_directory =
@@ -15623,6 +15812,20 @@ fn bind_service_callbacks(
                             media_state_policy_json().into(),
                         );
                         ui.set_settings_media_state_policy_status(match revision {
+                            Some(revision) => format!(
+                                "Validated, saved to PostgreSQL revision {revision}, mirrored locally, and active"
+                            )
+                            .into(),
+                            None => "Validated, saved locally, and active".into(),
+                        });
+                        let revision = save_comp_report_policy_with_authority(
+                            &config,
+                            ui.get_settings_comp_report_policy_json().as_str(),
+                        )?;
+                        ui.set_settings_comp_report_policy_json(
+                            splined_core::comp_report_policy::policy_json().into(),
+                        );
+                        ui.set_settings_comp_report_policy_status(match revision {
                             Some(revision) => format!(
                                 "Validated, saved to PostgreSQL revision {revision}, mirrored locally, and active"
                             )
@@ -16021,7 +16224,7 @@ fn bind_service_callbacks(
             };
             ui.set_setup_postgres_validated(false);
             ui.set_setup_postgres_status(
-                "Testing the PostgreSQL connection, coordination schema, and media-state policy…"
+                "Testing PostgreSQL, coordination schema, media-state policy, and COMP report policy…"
                     .into(),
             );
             if let Ok(mut staged) = validated_setup_postgres.lock() {
@@ -16051,7 +16254,8 @@ fn bind_service_callbacks(
                     if let Some(ui) = weak.upgrade() {
                         match result {
                             Ok(snapshot) => {
-                                let revision = snapshot.revision;
+                                let media_revision = snapshot.media_state.revision;
+                                let comp_revision = snapshot.comp_report.revision;
                                 if let Ok(mut staged) = validated_setup_postgres.lock() {
                                     *staged = Some(ValidatedSetupPostgres {
                                         editor,
@@ -16061,7 +16265,7 @@ fn bind_service_callbacks(
                                 ui.set_setup_postgres_validated(true);
                                 ui.set_setup_postgres_status(
                                     format!(
-                                        "Validated PostgreSQL and media-state policy revision {revision}. Files will be created only when Setup is saved."
+                                        "Validated PostgreSQL · media-state revision {media_revision} · COMP report revision {comp_revision}. Files will be created only when Setup is saved."
                                     )
                                     .into(),
                                 );
@@ -16345,7 +16549,7 @@ fn bind_service_callbacks(
                                 if let Some(revision) = policy_revision {
                                     ui.set_setup_postgres_status(
                                         format!(
-                                            "PostgreSQL coordination and media-state policy revision {revision} saved."
+                                            "PostgreSQL coordination, media-state policy, and COMP report policy revision {revision} saved."
                                         )
                                         .into(),
                                     );
@@ -17495,7 +17699,7 @@ fn set_settings_ui(ui: &AppWindow, config: &Config) {
             ui.set_setup_postgres_choice("no".into());
             ui.set_setup_postgres_validated(false);
             ui.set_setup_postgres_status(
-                "Shared SQLite only will use its editable local media-state policy.".into(),
+                "Shared SQLite only will use its editable local media-state and COMP report policies.".into(),
             );
         }
     }
@@ -17559,6 +17763,17 @@ fn set_settings_ui(ui: &AppWindow, config: &Config) {
             "{} · schema {} · validated",
             media_state_policy().policy_id,
             media_state_policy().schema_version
+        )
+        .into(),
+    );
+    let comp_policy = splined_core::comp_report_policy::policy();
+    ui.set_settings_comp_report_policy_json(splined_core::comp_report_policy::policy_json().into());
+    ui.set_settings_comp_report_policy_status(
+        format!(
+            "{} · schema {} · revision {} · validated",
+            comp_policy.policy_id,
+            comp_policy.schema_version,
+            active_comp_report_policy_revision()
         )
         .into(),
     );
