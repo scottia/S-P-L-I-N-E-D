@@ -7,7 +7,7 @@ const appSource = readFileSync(new URL("../static/app.js", import.meta.url), "ut
 const operationsSource = readFileSync(new URL("../static/operations.js", import.meta.url), "utf8");
 const indexSource = readFileSync(new URL("../static/index.html", import.meta.url), "utf8");
 const cssSource = readFileSync(new URL("../static/app.css", import.meta.url), "utf8");
-const mediaPolicy = JSON.parse(readFileSync(new URL("../../schema/media-state-classification.json", import.meta.url), "utf8"));
+const mediaPolicy = JSON.parse(readFileSync(new URL("../../../../schema/media-state-classification.json", import.meta.url), "utf8"));
 
 test("safe settings and shared contract exports include the media-state policy", () => {
   const backupSettings = between(

@@ -8,3 +8,11 @@ import sys
 _backend = str(Path(__file__).with_name("backend"))
 if _backend not in sys.path:
     sys.path.insert(0, _backend)
+
+
+def source_root() -> Path:
+    """Locate shared repository contracts in source and /app in GHCR."""
+    base = Path(__file__).resolve().parents[1]
+    if base.name == "WEBGui" and base.parent.name == "build":
+        return base.parents[1]
+    return base

@@ -1,6 +1,7 @@
 """SPLINED HTTP application: browser setup, operations, and PostgreSQL jobs."""
 
 from __future__ import annotations
+from webgui import source_root
 
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -45,7 +46,7 @@ from webgui.comp_report_policy import (
 )
 
 
-SETTINGS_UI = Path(__file__).resolve().parents[1] / "schema/settings-ui.json"
+SETTINGS_UI = source_root() / "schema/settings-ui.json"
 
 
 def _sqlite_snapshot_roots() -> tuple[Path, ...]:
@@ -178,7 +179,7 @@ class Context:
         else:
             cfg = tomllib.loads(
                 (
-                    Path(__file__).resolve().parents[1] / "docker/config.example.toml"
+                    source_root() / "docker/config.example.toml"
                 ).read_text(encoding="utf-8")
             )
         cfg.setdefault("output", {}).setdefault("embedded_thumbnail_size", 1200)

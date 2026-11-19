@@ -699,7 +699,7 @@ mod tests {
     fn database() -> Connection {
         let connection = Connection::open_in_memory().expect("memory database");
         connection
-            .execute_batch(include_str!("../../schema/media.sql"))
+            .execute_batch(include_str!("../../../schema/media.sql"))
             .expect("catalog schema");
         connection
             .execute(
@@ -847,7 +847,7 @@ mod tests {
         {
             let mut connection = Connection::open(&path).unwrap();
             connection
-                .execute_batch(include_str!("../../schema/media.sql"))
+                .execute_batch(include_str!("../../../schema/media.sql"))
                 .unwrap();
             connection
                 .execute(

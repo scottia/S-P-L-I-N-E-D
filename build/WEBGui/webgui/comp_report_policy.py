@@ -7,6 +7,7 @@ database; this document contains only deterministic workflow rules.
 """
 
 from __future__ import annotations
+from webgui import source_root
 
 from contextlib import closing, contextmanager
 from contextvars import ContextVar
@@ -23,7 +24,7 @@ from typing import Iterator
 
 
 POLICY_ENV = "SPLINED_COMP_REPORT_POLICY"
-DEFAULT_POLICY = Path(__file__).resolve().parents[1] / "schema" / "comp-report-policy.json"
+DEFAULT_POLICY = source_root() / "schema" / "comp-report-policy.json"
 POLICY_FILENAME = "comp-report-policy.json"
 CURRENT_POLICY_ID = "splined-comp-report-v1"
 _DATABASE_POLICY: dict | None = None

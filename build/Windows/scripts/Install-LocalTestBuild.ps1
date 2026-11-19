@@ -20,10 +20,10 @@ function Get-Sha256([string]$Path) {
     }
 }
 
-$repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
-$manifestPath = Join-Path $repositoryRoot 'windows\Cargo.toml'
+$repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..\..')).Path
+$manifestPath = Join-Path $repositoryRoot 'build\Windows\Cargo.toml'
 $targetRoot = [System.IO.Path]::GetFullPath(
-    (Join-Path $repositoryRoot 'windows\target\x86_64-pc-windows-msvc')
+    (Join-Path $repositoryRoot 'build\Windows\target\x86_64-pc-windows-msvc')
 ).TrimEnd('\')
 $releaseRoot = [System.IO.Path]::GetFullPath((Join-Path $targetRoot 'release'))
 $buildPath = Join-Path $releaseRoot 'splined.exe'

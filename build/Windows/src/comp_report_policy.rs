@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, RwLock};
 use unicode_normalization::UnicodeNormalization;
 
-const DEFAULT_POLICY: &str = include_str!("../../schema/comp-report-policy.json");
+const DEFAULT_POLICY: &str = include_str!("../../../schema/comp-report-policy.json");
 pub const POLICY_ENV: &str = "SPLINED_COMP_REPORT_POLICY";
 pub const POLICY_FILENAME: &str = "comp-report-policy.json";
 const CURRENT_POLICY_ID: &str = "splined-comp-report-v1";

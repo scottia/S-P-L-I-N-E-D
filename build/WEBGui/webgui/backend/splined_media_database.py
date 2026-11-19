@@ -1,6 +1,7 @@
 """Persistent SQLite media store for SPLINED Select Media."""
 
 from __future__ import annotations
+from webgui import source_root
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -108,7 +109,7 @@ class IndexContext:
 
 
 def schema_path() -> Path:
-    return Path(__file__).resolve().parents[2] / "schema" / "media.sql"
+    return source_root() / "schema" / "media.sql"
 
 
 def database_path(cache_dir: Path) -> Path:

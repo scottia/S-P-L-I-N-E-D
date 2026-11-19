@@ -6,6 +6,7 @@ opposing-writer evidence; it is not required to classify local catalog state.
 """
 
 from __future__ import annotations
+from webgui import source_root
 
 from contextlib import closing
 from functools import lru_cache
@@ -19,7 +20,7 @@ from typing import Iterable
 
 
 POLICY_ENV = "SPLINED_MEDIA_STATE_POLICY"
-DEFAULT_POLICY = Path(__file__).resolve().parents[1] / "schema" / "media-state-classification.json"
+DEFAULT_POLICY = source_root() / "schema" / "media-state-classification.json"
 POLICY_FILENAME = "media-state-classification.json"
 CURRENT_POLICY_ID = "splined-media-state-v2"
 LEGACY_POLICY_IDS = {"splined-media-state-v1"}

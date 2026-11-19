@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{LazyLock, RwLock};
 
-const DEFAULT_POLICY: &str = include_str!("../../schema/media-state-classification.json");
+const DEFAULT_POLICY: &str = include_str!("../../../schema/media-state-classification.json");
 pub const POLICY_ENV: &str = "SPLINED_MEDIA_STATE_POLICY";
 pub const POLICY_FILENAME: &str = "media-state-classification.json";
 const CURRENT_POLICY_ID: &str = "splined-media-state-v2";

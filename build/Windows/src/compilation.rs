@@ -1410,7 +1410,7 @@ mod tests {
     #[test]
     fn shared_cross_runtime_album_policy_fixture_matches_rust() {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
-            "../../fixtures/cross-runtime-album-policy.json"
+            "../../../fixtures/cross-runtime-album-policy.json"
         ))
         .unwrap();
         for item in fixture["albums"].as_array().unwrap() {

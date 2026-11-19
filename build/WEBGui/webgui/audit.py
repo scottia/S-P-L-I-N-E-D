@@ -1,6 +1,7 @@
 """Structured, secret-safe WebGUI audit event helpers."""
 
 from __future__ import annotations
+from webgui import source_root
 
 import json
 import os
@@ -148,7 +149,7 @@ def application_revision(repository: Path | None = None) -> str:
     ).strip()
     if re.fullmatch(r"[0-9a-fA-F]{7,64}", configured):
         return configured.casefold()
-    root = (repository or Path(__file__).resolve().parents[1]).resolve()
+    root = (repository or source_root()).resolve()
     try:
         result = subprocess.run(
             ["git", "-C", str(root), "rev-parse", "HEAD"],
