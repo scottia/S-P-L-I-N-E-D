@@ -92,11 +92,12 @@ class ReportedDefectTests(unittest.TestCase):
         dockerfile = (repository / "webgui" / "Dockerfile").read_text(encoding="utf-8")
 
         self.assertIn(
-            "COPY schema/media.sql schema/settings-ui.json schema/media-state-classification.json /app/schema/",
+            "COPY schema/media.sql schema/settings-ui.json schema/media-state-classification.json schema/comp-report-policy.json /app/schema/",
             dockerfile,
         )
         self.assertIn("!schema/settings-ui.json", dockerignore.splitlines())
         self.assertIn("!schema/media-state-classification.json", dockerignore.splitlines())
+        self.assertIn("!schema/comp-report-policy.json", dockerignore.splitlines())
 
     def test_artist_metadata_projects_only_genuine_provider_similarity_with_local_image(self):
         with TemporaryDirectory() as directory:

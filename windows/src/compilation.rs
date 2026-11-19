@@ -5,6 +5,10 @@
 //! Recording/Artist IDs are the only fallback identity. Filename, Artist text,
 //! and Track Title text are never used to invent MusicBrainz matches.
 
+use crate::comp_report_policy::{
+    CompReportPolicy, PolicySnapshot, artist_names_compatible as policy_artist_names_compatible,
+    artist_similarity_score, policy_snapshot,
+};
 use crate::config::Config;
 use crate::media_database::{RecordingReleaseCacheRow, cache_recording_releases};
 use crate::musicbrainz::{MusicBrainzClient, RecordingRelease, WorkRecording};
@@ -15,8 +19,6 @@ use std::sync::{Mutex, OnceLock};
 
 const MAX_WORK_RECORDING_LOOKUPS: usize = 8;
 const MUSICBRAINZ_EMBEDDED_RELEASE_LIMIT: usize = 25;
-const MAX_FUZZY_DETAIL_LOOKUPS: usize = 8;
-const MIN_FUZZY_SCORE: u16 = 55;
 const MAX_INTERACTIVE_RECORDING_RELEASES: usize = 500;
 const MAX_INTERACTIVE_RESOLUTION_CACHE: usize = 128;
 
@@ -105,13 +107,31 @@ impl MusicBrainzResolution {
     }
 }
 
-#[derive(Default)]
 pub struct CompilationMatchCache {
     recording: HashMap<String, Vec<MusicBrainzMatch>>,
     browser: HashMap<String, Vec<MusicBrainzMatch>>,
+    policy_snapshot: PolicySnapshot,
+}
+
+impl Default for CompilationMatchCache {
+    fn default() -> Self {
+        Self {
+            recording: HashMap::new(),
+            browser: HashMap::new(),
+            policy_snapshot: policy_snapshot(),
+        }
+    }
 }
 
 impl CompilationMatchCache {
+    pub fn policy_revision(&self) -> i64 {
+        self.policy_snapshot.revision
+    }
+
+    pub fn policy(&self) -> CompReportPolicy {
+        self.policy_snapshot.policy.clone()
+    }
+
     pub async fn automatic_matches(
         &mut self,
         client: &MusicBrainzClient,
@@ -142,7 +162,7 @@ impl CompilationMatchCache {
         title: &str,
     ) -> MusicBrainzResolution {
         let cache_key = format!(
-            "{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}",
             if config.is_some() {
                 "automatic"
             } else {
@@ -152,6 +172,7 @@ impl CompilationMatchCache {
             artist_key(local_artist_mbids),
             artist.trim().to_ascii_lowercase(),
             title.trim().to_ascii_lowercase(),
+            self.policy_snapshot.revision,
         );
         if let Some(cached) = INTERACTIVE_RESOLUTION_CACHE
             .get_or_init(|| Mutex::new(HashMap::new()))
@@ -194,25 +215,12 @@ impl CompilationMatchCache {
         artist: &str,
         title: &str,
     ) -> MusicBrainzResolution {
-        if local_artist_mbids.is_empty() {
-            return MusicBrainzResolution::failed(
-                "A valid MusicBrainz Artist ID is required before SPLINED can search this fallback track.",
-                if recording_mbid.is_some() {
-                    "pending"
-                } else {
-                    "invalid"
-                },
-                "invalid",
-                artist,
-                title,
-            );
-        }
-
+        let policy = self.policy_snapshot.policy.clone();
         let mut validated_artist = None;
         let mut last_lookup_error = None;
         for artist_mbid in local_artist_mbids {
             match client.lookup_artist(artist_mbid).await {
-                Ok(lookup) if artist_names_compatible(artist, &lookup.name) => {
+                Ok(lookup) if policy_artist_names_compatible(artist, &lookup.name, &policy) => {
                     validated_artist = Some((artist_mbid.clone(), lookup.name));
                     break;
                 }
@@ -220,12 +228,51 @@ impl CompilationMatchCache {
                 Err(error) => last_lookup_error = Some(error),
             }
         }
+        let mut artist_recovery_warning = None;
+        if validated_artist.is_none() && policy.artist_identity.musicbrainz_artist_search.enabled {
+            match client
+                .search_artists(
+                    artist,
+                    policy.artist_identity.musicbrainz_artist_search.limit,
+                )
+                .await
+            {
+                Ok(mut hits) => {
+                    hits.retain(|hit| {
+                        hit.score
+                            >= policy
+                                .artist_identity
+                                .musicbrainz_artist_search
+                                .minimum_score
+                            && artist_similarity_score(artist, &hit.name, &policy)
+                                >= policy.artist_identity.local_artist_alias.minimum_score
+                    });
+                    hits.sort_by(|left, right| {
+                        right
+                            .score
+                            .cmp(&left.score)
+                            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+                            .then_with(|| left.id.cmp(&right.id))
+                    });
+                    if let Some(hit) = hits
+                        .into_iter()
+                        .take(policy.artist_identity.local_artist_alias.limit)
+                        .next()
+                    {
+                        artist_recovery_warning = Some(format!(
+                            "Tagged Artist identity was missing or mismatched; recovered {} by selected-Artist name search.",
+                            hit.name
+                        ));
+                        validated_artist = Some((hit.id, hit.name));
+                    }
+                }
+                Err(error) => last_lookup_error = Some(error),
+            }
+        }
         let Some((focused_artist_mbid, friendly_artist)) = validated_artist else {
             return MusicBrainzResolution::failed(
                 last_lookup_error.unwrap_or_else(|| {
-                    format!(
-                        "None of the tagged Artist IDs resolves to the selected artist {artist}."
-                    )
+                    format!("No MusicBrainz Artist name matched the selected artist {artist}.")
                 }),
                 if recording_mbid.is_some() {
                     "pending"
@@ -265,6 +312,7 @@ impl CompilationMatchCache {
                             &focused_artist_mbid,
                             &friendly_artist,
                             title,
+                            &policy,
                         )
                         .await
                         {
@@ -276,7 +324,9 @@ impl CompilationMatchCache {
                                         .recording_mbid
                                         .eq_ignore_ascii_case(recording_mbid)
                                     {
-                                        alternative.score = alternative.score.min(94);
+                                        alternative.score = alternative
+                                            .score
+                                            .min(policy.recording_search.maximum_non_exact_score);
                                     }
                                 }
                                 matches.extend(alternatives);
@@ -294,6 +344,7 @@ impl CompilationMatchCache {
                             &focused_artist_mbid,
                             &friendly_artist,
                             title,
+                            &policy,
                         )
                         .await
                         {
@@ -314,7 +365,10 @@ impl CompilationMatchCache {
                         .unwrap_or_else(|| title.to_string());
                     return MusicBrainzResolution {
                         matches,
-                        warnings: supplemental_warning.into_iter().collect(),
+                        warnings: artist_recovery_warning
+                            .into_iter()
+                            .chain(supplemental_warning)
+                            .collect(),
                         identity_status: "valid".to_string(),
                         identity_message: if has_alternatives {
                             format!(
@@ -369,15 +423,25 @@ impl CompilationMatchCache {
             "The track has no valid MusicBrainz Recording ID.".to_string()
         };
 
-        match fuzzy_artist_title_matches(client, &focused_artist_mbid, &friendly_artist, title)
-            .await
+        match fuzzy_artist_title_matches(
+            client,
+            &focused_artist_mbid,
+            &friendly_artist,
+            title,
+            &policy,
+        )
+        .await
         {
             Ok(mut matches) if !matches.is_empty() => {
                 finalize_interactive_matches(&mut matches);
                 let warning = exact_error.clone();
                 MusicBrainzResolution {
                     matches,
-                    warnings: vec![warning.clone()],
+                    warnings: artist_recovery_warning
+                        .clone()
+                        .into_iter()
+                        .chain(std::iter::once(warning.clone()))
+                        .collect(),
                     identity_status: if verified_recording_without_release {
                         "valid"
                     } else {
@@ -418,6 +482,9 @@ impl CompilationMatchCache {
                     friendly_artist,
                     title,
                 );
+                if let Some(warning) = artist_recovery_warning.clone() {
+                    result.warnings.insert(0, warning);
+                }
                 if verified_recording_without_release {
                     result.identity_status = "valid".to_string();
                 }
@@ -439,6 +506,9 @@ impl CompilationMatchCache {
                     friendly_artist,
                     title,
                 );
+                if let Some(warning) = artist_recovery_warning.clone() {
+                    result.warnings.insert(0, warning);
+                }
                 if verified_recording_without_release {
                     result.identity_status = "valid".to_string();
                 }
@@ -744,6 +814,7 @@ async fn fuzzy_artist_title_matches(
     artist_mbid: &str,
     artist_name: &str,
     title: &str,
+    policy: &CompReportPolicy,
 ) -> Result<Vec<MusicBrainzMatch>, String> {
     let title = title.trim();
     if title.is_empty() {
@@ -754,12 +825,14 @@ async fn fuzzy_artist_title_matches(
         escape_lucene_phrase(title),
         artist_mbid
     );
-    let hits = client.search_recordings(&query, 50).await?;
+    let hits = client
+        .search_recordings(&query, policy.recording_search.limit)
+        .await?;
     let mut matches = Vec::new();
     let mut detailed_lookups = 0usize;
     for hit in hits
         .into_iter()
-        .filter(|hit| hit.score >= MIN_FUZZY_SCORE)
+        .filter(|hit| hit.score >= policy.recording_search.minimum_score)
         .filter(|hit| {
             ids_subset(
                 std::slice::from_ref(&artist_mbid.to_string()),
@@ -769,7 +842,7 @@ async fn fuzzy_artist_title_matches(
     {
         let score = hit.score;
         if hit.releases.is_empty() {
-            if detailed_lookups >= MAX_FUZZY_DETAIL_LOOKUPS {
+            if detailed_lookups >= policy.recording_search.detail_lookup_limit {
                 continue;
             }
             detailed_lookups += 1;
@@ -818,6 +891,7 @@ async fn same_title_artist_album_matches(
     artist_mbid: &str,
     artist_name: &str,
     title: &str,
+    policy: &CompReportPolicy,
 ) -> Result<Vec<MusicBrainzMatch>, String> {
     let query = format!(
         "recording:\"{}\" AND arid:{} AND release:\"{}\"",
@@ -829,7 +903,7 @@ async fn same_title_artist_album_matches(
     let mut matches = Vec::new();
     for hit in hits
         .into_iter()
-        .filter(|hit| hit.score >= MIN_FUZZY_SCORE)
+        .filter(|hit| hit.score >= policy.recording_search.minimum_score)
         .filter(|hit| ids_subset(&[artist_mbid.to_string()], &hit.artist_mbids))
         .take(4)
     {
@@ -853,7 +927,8 @@ async fn same_title_artist_album_matches(
                 &hit.artist_credit,
                 &hit.artist_mbids,
                 releases,
-                hit.score.min(94),
+                hit.score
+                    .min(policy.recording_search.maximum_non_exact_score),
                 true,
             )
             .into_iter()
@@ -894,18 +969,8 @@ fn escape_lucene_phrase(value: &str) -> String {
 }
 
 fn artist_names_compatible(local: &str, musicbrainz: &str) -> bool {
-    fn normalized(value: &str) -> String {
-        let expanded = value.replace('&', "and");
-        let compact = expanded
-            .chars()
-            .flat_map(char::to_lowercase)
-            .filter(|character| character.is_alphanumeric())
-            .collect::<String>();
-        compact.strip_prefix("the").unwrap_or(&compact).to_string()
-    }
-    let local = normalized(local);
-    let musicbrainz = normalized(musicbrainz);
-    !local.is_empty() && local == musicbrainz
+    let policy = crate::comp_report_policy::policy();
+    policy_artist_names_compatible(local, musicbrainz, &policy)
 }
 
 fn matching_work_recordings(
@@ -1223,7 +1288,7 @@ mod tests {
         let credits = vec![jason.clone(), chainz.clone()];
         assert!(ids_subset(&[chainz], &credits));
         assert!(artist_names_compatible("2 Chainz", "2 Chainz"));
-        assert!(!artist_names_compatible(
+        assert!(artist_names_compatible(
             "Jason Derulo\x002 Chainz",
             "2 Chainz"
         ));

@@ -51,6 +51,7 @@ from webgui.tempfiles import discard_committed_conversion, mark_conversion_backu
 from webgui import imaging
 from webgui import index_coordinator as indexer
 from webgui import index_batch_policy
+from webgui.comp_report_policy import comp_report_policy, pin_comp_report_policy
 from webgui.audit import (
     application_revision,
     normalize_severity,
@@ -3767,6 +3768,13 @@ class Services:
 
     @serialized
     def run_comp(self, payload, adapter):
+        with pin_comp_report_policy(
+            payload.get("comp_report_policy"),
+            payload.get("comp_report_policy_revision"),
+        ):
+            return self._run_comp_with_pinned_policy(payload, adapter)
+
+    def _run_comp_with_pinned_policy(self, payload, adapter):
         self.runtime.require_write()
         r = self.runtime
         payload = self.validate_comp_payload(payload)
@@ -3917,9 +3925,20 @@ class Services:
                 verify_embedded_artwork=verify_selected_artwork,
                 publish_verified_write=publish_verified_track_write,
                 musicbrainz_results_first=True,
+                selected_artist_name=str(payload.get("artist_name", "")),
             )
         self.refresh_comp_track_baseline(row)
-        return asdict(summary)
+        result = asdict(summary)
+        states = comp_report_policy()["batch"]["completion_states"]
+        result["batch_state"] = (
+            states[2] if summary.failed
+            else states[1] if summary.unresolved
+            else states[0]
+        )
+        result["comp_report_policy_revision"] = payload.get(
+            "comp_report_policy_revision", 0
+        )
+        return result
 
     def run_scan(self, payload, adapter):
         album_ids = payload.get("album_ids")

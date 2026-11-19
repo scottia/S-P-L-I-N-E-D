@@ -87,7 +87,7 @@ SPLINED\
 ```
 
 Standalone SQLite Setup creates neither shared-policy JSON. Shared SQLite only
-creates or adopts `media-state-classification.json` in the selected Provider
+creates or adopts `media-state-classification.json` and `comp-report-policy.json` in the selected Provider
 Credential Directory. If the user also selects WebGUI PostgreSQL coordination,
 Test validates the connection, schema, and PostgreSQL policy without writing;
 Setup Save then creates `album-coordination.json` and the validated local policy

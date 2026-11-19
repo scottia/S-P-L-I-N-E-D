@@ -1953,6 +1953,8 @@ export component AppWindow inherits Window {
     in-out property <bool> settings-ai-allow-below: false;
     in-out property <string> settings-media-state-policy-json;
     in property <string> settings-media-state-policy-status: "Validated runtime policy";
+    in-out property <string> settings-comp-report-policy-json;
+    in property <string> settings-comp-report-policy-status: "Validated runtime policy";
     in property <color> media-state-red: AppTheme.foreground;
     in property <color> media-state-yellow: AppTheme.foreground;
     in property <color> media-state-orange: AppTheme.foreground;
@@ -2294,7 +2296,7 @@ export component AppWindow inherits Window {
                             Text { text: "Coordinate with a separate WebGUI PostgreSQL instance?"; color: AppTheme.yellow; font-size: (15px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 700; height: (26px * AppTheme.ui-scale); }
                             HorizontalLayout { height: (36px * AppTheme.ui-scale); spacing: (8px * AppTheme.ui-scale);
                                 Button { text: "Yes · PostgreSQL"; enabled: !root.setup-saving; clicked => { root.setup-postgres-choice = "yes"; root.settings-postgres-coordination = true; root.setup-postgres-validated = false; root.setup-postgres-status = "Enter and test the WebGUI PostgreSQL connection. No JSON is written until Setup Save."; } }
-                                Button { text: "No · Shared SQLite only"; enabled: !root.setup-saving; clicked => { root.setup-postgres-choice = "no"; root.settings-postgres-coordination = false; root.setup-postgres-validated = false; root.setup-postgres-status = "Setup Save will create the editable SQLite media-state policy only."; } }
+                                Button { text: "No · Shared SQLite only"; enabled: !root.setup-saving; clicked => { root.setup-postgres-choice = "no"; root.settings-postgres-coordination = false; root.setup-postgres-validated = false; root.setup-postgres-status = "Setup Save will create editable SQLite media-state and COMP report policies."; } }
                             }
                             if root.setup-postgres-choice == "yes": VerticalLayout { spacing: (6px * AppTheme.ui-scale);
                                 SettingField { label: "PostgreSQL Server URL"; value: root.setup-postgres-server; hint: "postgresql://host:5432/database"; edited(value) => { root.setup-postgres-server = value; root.setup-postgres-validated = false; } }
@@ -2314,7 +2316,7 @@ export component AppWindow inherits Window {
                     SetupPathField { label: "V/A / OST Artist Images Directory *"; value <=> root.settings-shared-artist-art-dir; hint: "Materialized portrait/banner files"; summary: "Shared portraits and banners for real Artists credited on V/A and soundtrack Albums."; enabled: root.setup-library-ready; browse => root.browse-setting-directory("artist-art"); guide => root.open-about-link("setup-artist-art"); }
                     SetupPathField { label: "Temporary cache *"; value <=> root.settings-temporary-cache-dir; hint: "Disposable candidate and preview files"; summary: "Disposable downloads and previews; local storage avoids slow artwork searches."; enabled: root.setup-library-ready; browse => root.browse-setting-directory("temporary"); guide => root.open-about-link("setup-cache"); }
                     SetupPathField { label: "Log directory *"; value <=> root.settings-log-dir; hint: "Runtime diagnostics"; summary: "Current per-run diagnostics are written below this root in run; no music is stored here."; enabled: root.setup-library-ready; browse => root.browse-setting-directory("logs"); guide => root.open-about-link("setup-logs"); }
-                    SetupPathField { label: "Credential directory *"; value <=> root.settings-credential-dir; hint: "Provider and shared policy JSON files"; summary: "Provider credentials plus media-state-classification.json; existing files are never replaced by Setup."; enabled: root.setup-library-ready; browse => root.browse-setting-directory("credentials"); guide => root.open-about-link("setup-credentials"); }
+                    SetupPathField { label: "Credential directory *"; value <=> root.settings-credential-dir; hint: "Provider and shared policy JSON files"; summary: "Provider credentials plus media-state-classification.json and comp-report-policy.json; existing files are never replaced by Setup."; enabled: root.setup-library-ready; browse => root.browse-setting-directory("credentials"); guide => root.open-about-link("setup-credentials"); }
                     SetupPathField { label: "Sample images directory"; value <=> root.settings-sample-dir; hint: "Optional Artist / Album Sample Library"; summary: "Optional Samples source images; this directory is never indexed as music."; enabled: root.setup-library-ready; browse => root.browse-sample-directory(); guide => root.open-about-link("setup-samples"); }
                     SettingField { label: "Ignored subdirectories"; value <=> root.settings-ignored-subs; hint: "Comma-separated; optional"; enabled: root.setup-library-ready; }
 
@@ -4049,6 +4051,11 @@ export component AppWindow inherits Window {
                                     SettingsHelpTip { summary: "How is media-state-classification.json used?"; detail: "Standalone SQLite uses the built-in policy without creating a JSON. Shared SQLite creates an editable local policy; coordinated Setup first validates PostgreSQL, then Save creates album-coordination.json and its policy mirror without overwriting different existing files. PostgreSQL remains authoritative for coordinated edits. Reference: docs/media-state-classification-policy.md"; }
                                     TextEdit { height: (300px * AppTheme.ui-scale); text <=> root.settings-media-state-policy-json; wrap: word-wrap; font-size: (12px * AppTheme.ui-scale) * AppTheme.font-scale; }
                                     Text { text: root.settings-media-state-policy-status; color: AppTheme.green; font-size: (12px * AppTheme.ui-scale) * AppTheme.font-scale; height: (18px * AppTheme.ui-scale); overflow: elide; }
+                                    Heading { text: "Artist COMP Report Policy · JSON"; height: (27px * AppTheme.ui-scale); }
+                                    Text { text: "Shared matching, grouping, existing-artwork reuse, batch completion, coordination publishing, refresh, and pinned-revision rules."; color: AppTheme.secondary-foreground; font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale; wrap: word-wrap; height: (38px * AppTheme.ui-scale); }
+                                    SettingsHelpTip { summary: "How is comp-report-policy.json used?"; detail: "Every COMP batch pins one validated policy revision. Coordinated Windows starts from its local mirror, checks PostgreSQL asynchronously, and activates a newer revision only after processing is idle. Reference: docs/comp-report-policy.md"; }
+                                    TextEdit { height: (300px * AppTheme.ui-scale); text <=> root.settings-comp-report-policy-json; wrap: word-wrap; font-size: (12px * AppTheme.ui-scale) * AppTheme.font-scale; }
+                                    Text { text: root.settings-comp-report-policy-status; color: AppTheme.green; font-size: (12px * AppTheme.ui-scale) * AppTheme.font-scale; height: (18px * AppTheme.ui-scale); overflow: elide; }
                                 }
                                 if root.settings-advanced-visible: VerticalLayout { spacing: (6px * AppTheme.ui-scale);
                                     Heading { text: "Optional / Future Scope"; height: (27px * AppTheme.ui-scale); color: AppTheme.yellow; }

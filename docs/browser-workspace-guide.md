@@ -63,11 +63,12 @@ Sections** is one workspace-wide state.
   are masked, separate from Config v5, and blank secret fields retain their
   existing values. With Advanced enabled, the same section exposes
   the shared [Artist & Album state policy](media-state-classification-policy.md)
-  above Optional AISPLINED Provider; validation and save update its revisioned
-  PostgreSQL authority without rebuilding WebGUI.
+  and [Artist COMP report policy](comp-report-policy.md) above Optional
+  AISPLINED Provider; validation and save update their revisioned PostgreSQL
+  authorities without rebuilding WebGUI.
 - **Backup & Recovery** owns settings export/restore and deliberate catalog
   maintenance. Both the Safe Settings JSON and Shared Settings Contract exports
-  include the active media-state policy.
+  include the active media-state and COMP report policies.
 - **Processing & Logs** owns mode, history, diagnostic level, and retention.
 
 Container deployments normally supply PostgreSQL credentials through the

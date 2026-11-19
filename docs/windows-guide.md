@@ -503,6 +503,14 @@ the visible report immediately; it does not wait for a complete report reload.
 MusicBrainz alternatives and matching **Existing** artwork remain available
 when one selected release has no usable cover.
 
+Artist COMP behavior is controlled by the shared
+[`comp-report-policy.json`](comp-report-policy.md). Multi-Artist separators,
+selected-Artist precedence, local alias and MusicBrainz thresholds, percentage
+groups, release-family ordering, existing-art reuse, and completion outcomes
+are therefore identical to WebGUI. One revision is pinned for an entire
+**LAUNCH COMP** batch; a newer PostgreSQL revision waits until processing is
+idle.
+
 This behavior is the Windows implementation of the approved WebGUI Artist/COMP
 contract from `a922128`:
 
@@ -547,10 +555,11 @@ Settings uses task-based sections:
 
 With **Advanced** enabled, Connections also contains the editable
 [`media-state-classification.json`](media-state-classification-policy.md)
-above Optional AISPLINED Provider. **Save Connections** validates the JSON,
-writes it to the configured Provider Credential Directory, and activates it
-immediately. When Album Coordination is configured, PostgreSQL is updated
-first and the returned revision is mirrored locally.
+and [`comp-report-policy.json`](comp-report-policy.md) above Optional AISPLINED
+Provider. **Save Connections** validates both JSON documents, writes them to
+the configured Provider Credential Directory, and activates them immediately
+when idle. When Album Coordination is configured, PostgreSQL is updated first
+and the returned revisions are mirrored locally.
 
 Each section saves its own draft into one validated Config v5 document. There
 is no separate Slint configuration authority and raw TOML is not the normal

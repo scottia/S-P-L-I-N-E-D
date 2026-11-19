@@ -328,7 +328,7 @@ class CompilationAuthorityPolicyTests(unittest.TestCase):
         self.assertEqual(result.candidates[0].match_basis, "same-artist-title")
         self.assertIn(f"arid:{ARTIST_ID}", http.get.call_args.kwargs["params"]["query"])
 
-    def test_interactive_identity_rejects_artist_name_mismatch_without_title_search(self) -> None:
+    def test_interactive_identity_rejects_mismatch_after_artist_name_recovery(self) -> None:
         http = SimpleNamespace(
             last_mb_request=None,
             get=Mock(return_value=FakeResponse(200, {
@@ -350,7 +350,51 @@ class CompilationAuthorityPolicyTests(unittest.TestCase):
         self.assertEqual(result.artist_status, "invalid")
         self.assertEqual(result.recording_status, "unresolved")
         self.assertEqual(result.candidates, ())
-        self.assertEqual(http.get.call_count, 1)
+        self.assertEqual(http.get.call_count, 2)
+        self.assertTrue(http.get.call_args_list[-1].args[0].endswith("/artist/"))
+
+    def test_interactive_identity_recovers_missing_artist_id_by_name(self) -> None:
+        credit = [{"artist": {"id": ARTIST_ID, "name": "10,000 Maniacs"}}]
+        suggestion = {
+            "id": OTHER_RECORDING_ID,
+            "score": 91,
+            "title": "Because the Night",
+            "artist-credit": credit,
+            "releases": [{
+                "id": RELEASE_ID,
+                "title": "Campfire Songs",
+                "status": "Official",
+                "artist-credit": credit,
+                "release-group": {
+                    "id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+                    "title": "Campfire Songs",
+                    "primary-type": "Album",
+                    "secondary-types": ["Compilation"],
+                },
+            }],
+        }
+        http = SimpleNamespace(last_mb_request=None, get=Mock(side_effect=[
+            FakeResponse(200, {"artists": [{
+                "id": ARTIST_ID, "name": "10,000 Maniacs", "score": 100,
+            }]}),
+            FakeResponse(200, {"recordings": [suggestion]}),
+        ]))
+        result = policy.resolve_interactive_identity_matches(
+            SimpleNamespace(
+                mb_headers=lambda *_args: ({}, "oauth"),
+                MB_BASE="https://musicbrainz.test/ws/2",
+            ),
+            http, Path("config.toml"), {},
+            SimpleNamespace(
+                artist="10,000 Maniacs", title="Because the Night",
+                artist_mbid="", recording_mbid="",
+            ),
+            policy.MusicBrainzOptions(1, 0.001, 7.0),
+        )
+        self.assertEqual(result.artist_status, "valid")
+        self.assertEqual(result.focused_artist_mbid, ARTIST_ID)
+        self.assertEqual(result.candidates[0].release_group_title, "Campfire Songs")
+        self.assertTrue(any("recovered" in warning for warning in result.warnings))
 
     def test_interactive_identity_accepts_focused_id_from_multi_artist_credit(self) -> None:
         artist_credit = [

@@ -31,6 +31,9 @@ The current guides have distinct ownership:
 - [Windows SQLite schema upgrade preparedness](windows-schema-upgrade-preparedness.md)
   — operator confirmation, verified pre-upgrade backup, exclusive migration,
   one-way downgrade recovery, and the PostgreSQL boundary.
+- [Artist COMP report policy](comp-report-policy.md) — shared Artist/alias
+  matching, MusicBrainz thresholds, release grouping, existing-art reuse,
+  batch outcomes, coordination publication, and revision pinning.
 
 ## Authoritative technical references
 
