@@ -78,20 +78,25 @@ enforcing both. Do not edit other contracts without task authorization.
 diagnostic may identify evidence and propose alternatives, but it must not
 choose a new domain rule for the owner.
 
-## Explicit owner-approved cross-client invariants
+## Owner-directed requirements and evidence-bound safeguards
 
-The following requirements are owner-directed policy; they are not claims
-that existing source passes validation. Where a scoped document conflicts,
-record the conflict and honor the explicit owner direction without inventing
-additional rules.
+The owner expressly directed Artist-name grouping with Album-level MBID
+associations, physical Artist-Art discovery, JSON/status distinction, immediate
+progress publication, and policy-first verification. The entries below pair
+those directions with established scoped repository contracts. **Do not treat
+technical elaborations or inferred exceptions as separately owner-approved.**
+Where the owner's exact requirement, a scoped contract, and observed behavior
+diverge or leave scope uncertain, record an unresolved policy question before
+correcting source. These entries are behavioral targets, **not** findings that
+either client passes validation.
 
 - **ART-001 — Artist presentation:** in the Artist listing, duplicate
-  normalized Artist names collapse to one visible Artist presentation in the
-  applicable physical-folder/collection scope. Different, duplicate, missing,
-  or conflicting MusicBrainz Artist IDs on associated Albums do **not** create
-  additional visible Artist rows. Verify the existing presentation grouping
-  boundaries and keep Featured, Soundtrack, and Various Artists appearances
-  correctly categorized.
+  normalized Artist names collapse to one visible Artist presentation.
+  Different, duplicate, missing, or conflicting MusicBrainz Artist IDs on
+  associated Albums do **not** create additional visible Artist rows. Keep
+  physical folder ownership and underlying Album associations independent of
+  the display grouping. Verify Featured, Soundtrack, Various Artists, and
+  other scoped presentation exceptions against approved policy before edits.
 - **ART-002 — Album associations:** the Artist display grouping is not an
   Artist-MBID rewrite rule. Preserve distinct underlying Album associations,
   per-Album identities, and legitimate Artist credits. Display each distinct
@@ -108,9 +113,9 @@ additional rules.
   and release metadata, inventory, and processing/bypass/timeout fields, as
   scoped by `docs/catalog-authority.md`. WebGUI PostgreSQL retains its own
   jobs, audit, authentication, validation and browser-specific state. Ownership
-  transfers for shared catalog projection only through the existing explicit,
-  safe reconciliation protocol; a PostgreSQL connection or Full Refresh is
-  not a transfer of catalog authority.
+  projections into PostgreSQL must follow the existing explicit, safe
+  reconciliation protocol; a PostgreSQL connection or Full Refresh never
+  transfers synchronized-field catalog authority away from SQLite.
 - **DB-002 — Coordination versus reconciliation:** writer coordination is
   durable provenance, not a catalog overwrite or identity merge. Apply
   opposing COMP-track writes at track scope only; never inflate them into an
@@ -201,8 +206,13 @@ AGENTS.md instructions. For every entry identify policy provenance
 authority, tests, exceptions, and discrepancies. Provisional observations
 must not become mandatory policy merely because they are documented.
 
-**Do not assert complete coverage because the original 38 entries were filled.**
-Unreviewed subsystems and missing evidence are explicit gaps. Do not alter
+**A historical 38-row WebGUI/Windows comparison is an assessment, not an
+approved AGENTS.md register.** It may contain stale source observations,
+incorrect parity classifications, implementation histories mislabeled as
+policy differences, or unapproved prescriptions. Never import, enforce, or
+count its rows as accepted policy without independently verifying each against
+owner decisions, current scoped contracts, and current source. Unreviewed
+subsystems and missing evidence are explicit gaps. Do not alter
 other source files or run full regression suites for a documentation-only
 policy inventory unless separately requested.
 
