@@ -15,6 +15,66 @@ from webgui.services import Services
 
 
 class BrowserFallbackTests(unittest.TestCase):
+    def test_comp_report_membership_uses_shared_artist_identity_policy(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            folder = root / "Billboard Hot 100 Singles of 2000"
+            folder.mkdir()
+            tracks = {
+                "starred": (folder / "1-21 - NSYNC - Bye Bye Bye.mp3", "*NSYNC"),
+                "alias": (folder / "1-27 - NSYNC - It's Gonna Be Me.mp3", "NSYNC"),
+                "shared": (
+                    folder / "1-30 - Blaque & NSYNC - Bring It All to Me.mp3",
+                    "Blaque/*NSYNC",
+                ),
+                "other": (folder / "1-31 - Blaque - Other.mp3", "Blaque"),
+            }
+            for path, _artist in tracks.values():
+                path.touch()
+            database = root / "catalog.db"
+            with closing(connect(database)) as db:
+                db.execute("CREATE TABLE artists (artist_key TEXT PRIMARY KEY, artist_name TEXT)")
+                db.execute(
+                    "CREATE TABLE albums (album_key TEXT PRIMARY KEY, album_name TEXT, "
+                    "path TEXT, cover_path TEXT, release_year TEXT, musicbrainz_albumid TEXT, "
+                    "artist_key TEXT, compilation INTEGER)"
+                )
+                db.execute(
+                    "CREATE TABLE tracks (track_key TEXT PRIMARY KEY, album_key TEXT, "
+                    "path TEXT, title TEXT, artist_name TEXT)"
+                )
+                db.execute(
+                    "CREATE TABLE compilation_track_artwork (track_path TEXT, outcome TEXT)"
+                )
+                db.execute(
+                    "CREATE TABLE artist_album_appearances (artist_key TEXT, album_key TEXT, "
+                    "featured INTEGER, navidrome_album_id TEXT, song_paths_json TEXT)"
+                )
+                db.execute("INSERT INTO artists VALUES ('target', '*NSYNC')")
+                db.execute("INSERT INTO artists VALUES ('various', 'Various Artists')")
+                db.execute(
+                    "INSERT INTO albums VALUES "
+                    "('year-2000','Billboard Hot 100 Singles of 2000',?,NULL,'2000','',"
+                    "'various',1)",
+                    (str(folder),),
+                )
+                db.executemany(
+                    "INSERT INTO tracks VALUES (?, 'year-2000', ?, ?, ?)",
+                    [
+                        (key, str(path), path.stem, artist)
+                        for key, (path, artist) in tracks.items()
+                    ],
+                )
+                db.commit()
+
+            app = PreviewApp(root, database, root, root)
+            report = app.artist_comp_report("target")
+            self.assertEqual([group["year"] for group in report], ["2000"])
+            self.assertEqual(
+                {track["key"] for track in report[0]["tracks"]},
+                {"starred", "alias", "shared"},
+            )
+
     def test_animated_webp_cover_is_preserved_for_write_and_staging(self) -> None:
         class Catalog:
             def __init__(self, source: Path):

@@ -378,6 +378,23 @@ pub fn artist_names_compatible(local: &str, musicbrainz: &str, policy: &CompRepo
                 .any(|part| normalize_artist_name(part, policy) == right))
 }
 
+pub fn artist_credit_position(
+    track_credit: &str,
+    selected_artist: &str,
+    policy: &CompReportPolicy,
+) -> Option<usize> {
+    let selected = normalize_artist_name(selected_artist, policy);
+    if selected.is_empty() {
+        return None;
+    }
+    if normalize_artist_name(track_credit, policy) == selected {
+        return Some(0);
+    }
+    split_artist_credit(track_credit, policy)
+        .iter()
+        .position(|credit| normalize_artist_name(credit, policy) == selected)
+}
+
 pub fn artist_similarity_score(left: &str, right: &str, policy: &CompReportPolicy) -> u16 {
     let left = normalize_artist_name(left, policy)
         .chars()
