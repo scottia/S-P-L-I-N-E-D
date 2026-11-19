@@ -1438,6 +1438,12 @@ impl LibraryState {
     }
 
     fn artist_credit_position(track_artist: &str, artist: &str) -> Option<usize> {
+        let policy = crate::comp_report_policy::policy();
+        if let Some(position) =
+            crate::comp_report_policy::artist_credit_position(track_artist, artist, &policy)
+        {
+            return Some(position);
+        }
         let selected = artist.trim().to_lowercase();
         if selected.is_empty() {
             return None;
@@ -7317,6 +7323,43 @@ mod tests {
             LibraryState::artist_fallback_track_progress(album, "Merle Haggard"),
             Some((1, 1))
         );
+    }
+
+    #[test]
+    fn comp_report_membership_uses_shared_artist_identity_policy() {
+        let mut state = library();
+        let album = state
+            .albums
+            .iter_mut()
+            .find(|album| album.snapshot.album_key == "a")
+            .unwrap();
+        album.snapshot.album_mbid.clear();
+        album.snapshot.compilation_tracks = vec![
+            MediaTrackSnapshot {
+                path: r"C:\Music\Various Artists\Billboard 2000\01.mp3".to_string(),
+                title: "It's Gonna Be Me".to_string(),
+                artist: "NSYNC".to_string(),
+                embedded_artwork_recorded: true,
+            },
+            MediaTrackSnapshot {
+                path: r"C:\Music\Various Artists\Billboard 2000\02.mp3".to_string(),
+                title: "Bring It All to Me".to_string(),
+                artist: "Blaque/*NSYNC".to_string(),
+                embedded_artwork_recorded: true,
+            },
+            MediaTrackSnapshot {
+                path: r"C:\Music\Various Artists\Billboard 2000\03.mp3".to_string(),
+                title: "Other".to_string(),
+                artist: "Blaque".to_string(),
+                embedded_artwork_recorded: true,
+            },
+        ];
+
+        assert_eq!(
+            LibraryState::artist_fallback_track_progress(album, "*NSYNC"),
+            Some((2, 2))
+        );
+        assert!(LibraryState::artist_fallback_is_featured(album, "*NSYNC"));
     }
 
     #[test]

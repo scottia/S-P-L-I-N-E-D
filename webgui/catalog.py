@@ -35,6 +35,7 @@ from splined_compilation_authority_policy import replace_embedded_artwork
 from interaction.artist_search import discover_artist_images, discover_artist_profile
 from webgui.database import Database
 from webgui import imaging
+from webgui.comp_report_policy import artist_names_compatible, normalize_artist_name
 from webgui.media_state_policy import classify_media_state
 from webgui.coordination import (
     catalog_relative_album_path,
@@ -2616,10 +2617,31 @@ class Catalog:
                 appearance_clause = (
                     "OR albums.album_key IN (" + ",".join("?" for _ in appearance_ids) + ") "
                 )
-            escaped_name = (
+            # The SQL predicate is only a bounded candidate lookup.  Include
+            # the shared-policy identity beside the display spelling so a
+            # selected Artist such as ``*NSYNC`` can retrieve an indexed
+            # ``NSYNC`` credit.  Exact membership is still decided below by
+            # the shared COMP policy, so this cannot turn a substring hit into
+            # an Artist appearance.
+            search_names = list(dict.fromkeys(
+                value for value in (name, normalize_artist_name(name)) if value
+            ))
+            escaped_names = [
                 "%"
-                + name.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                + value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
                 + "%"
+                for value in search_names
+            ]
+            credit_clause = " OR ".join(
+                "tracks.artist_name LIKE ? ESCAPE '\\' "
+                "OR tracks.title LIKE ? ESCAPE '\\' "
+                "OR tracks.path LIKE ? ESCAPE '\\'"
+                for _ in escaped_names
+            )
+            credit_parameters = tuple(
+                parameter
+                for escaped in escaped_names
+                for parameter in (escaped, escaped, escaped)
             )
             rows = db.execute(
                 "SELECT albums.album_key,albums.artist_key,albums.path,"
@@ -2627,11 +2649,9 @@ class Catalog:
                 "tracks.path AS track_path "
                 "FROM albums LEFT JOIN tracks ON tracks.album_key=albums.album_key "
                 f"WHERE (albums.artist_key IN ({placeholders}) "
-                "OR tracks.artist_name LIKE ? ESCAPE '\\' "
-                "OR tracks.title LIKE ? ESCAPE '\\' "
-                "OR tracks.path LIKE ? ESCAPE '\\' "
+                f"OR {credit_clause} "
                 f"{appearance_clause})",
-                (*alias_ids, escaped_name, escaped_name, escaped_name, *appearance_ids),
+                (*alias_ids, *credit_parameters, *appearance_ids),
             ).fetchall()
         matching = set()
         for row in rows:
@@ -2641,9 +2661,7 @@ class Catalog:
                 str(row["album_key"]) in appearance_ids
                 or str(row["artist_key"]) in alias_ids
                 or any(
-                    artist_credit_position(
-                        credit, name, self.artist_separator_regex
-                    ) is not None
+                    artist_names_compatible(credit, name)
                     for credit in indexed_track_credit_values(
                         str(row["artist_name"] or ""),
                         str(row["title"] or ""),
@@ -2724,9 +2742,7 @@ class Catalog:
                 for expected in expected_paths if expected
             )
             if not (any(
-                    artist_credit_position(
-                        credit, name, self.artist_separator_regex
-                    ) is not None
+                    artist_names_compatible(credit, name)
                     for credit in credits
                 )
                     or not credits and row["artist_key"] in alias_ids
