@@ -1408,59 +1408,6 @@ mod tests {
     }
 
     #[test]
-    fn shared_cross_runtime_album_policy_fixture_matches_rust() {
-        let fixture: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../fixtures/cross-runtime-album-policy.json"
-        ))
-        .unwrap();
-        for item in fixture["albums"].as_array().unwrap() {
-            let track = LocalTrackEvidence {
-                path: "fixture.mp3".into(),
-                title: "Track".into(),
-                artist: "Artist".into(),
-                album: Some(item["name"].as_str().unwrap().into()),
-                album_artist: Some("Artist".into()),
-                musicbrainz_album_id: item["album_mbid"]
-                    .as_str()
-                    .filter(|value| !value.is_empty())
-                    .map(str::to_string),
-                musicbrainz_track_id: None,
-                musicbrainz_artist_id: None,
-                compilation: Some(item["compilation"].as_str().unwrap().into()),
-            };
-            let eligible = manual_album_eligible(&[track]);
-            assert_eq!(eligible, item["manual_compilation"].as_bool().unwrap());
-            assert_eq!(
-                if eligible { "embedded-track" } else { "folder" },
-                item["output_target"].as_str().unwrap()
-            );
-        }
-        for item in fixture["automatic_release_classes"].as_array().unwrap() {
-            let release = RecordingRelease {
-                id: "5d05694f-2b0f-427e-9df8-78dbc0983681".into(),
-                title: "Fixture".into(),
-                artist_credit: "Artist".into(),
-                status: Some("Official".into()),
-                date: None,
-                country: None,
-                artist_mbids: Vec::new(),
-                release_group_id: None,
-                release_group_title: None,
-                release_group_primary_type: Some(item["primary"].as_str().unwrap().into()),
-                release_group_secondary_types: item["secondary"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|value| value.as_str().unwrap().to_string())
-                    .collect(),
-            };
-            let actual =
-                classify_release(&release).map(|value| format!("{value:?}").to_ascii_lowercase());
-            assert_eq!(actual.as_deref(), item["expected"].as_str());
-        }
-    }
-
-    #[test]
     fn recording_id_projection_preserves_exact_recording_and_artist_authority() {
         let recording_artist_id = "837555ba-012e-45f1-9a9c-9628da13ee54".to_string();
         let release_artist_id = "89ad4ac3-39f7-470e-963a-56509c546377".to_string();

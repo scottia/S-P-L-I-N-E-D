@@ -33,20 +33,6 @@ All four remain single-sourced in `/schema`. Do not move or copy
 them into independent `/build` variants. The Workflow 01/GHCR and
 Windows dependencies are described by [build-layout.md](build-layout.md).
 
-## Cross-runtime Album test fixture (not a behavioral-policy JSON)
-
-[`fixtures/cross-runtime-album-policy.json`](../fixtures/cross-runtime-album-policy.json)
-is intentionally retained at the **repository root** because it supplies
-test cases to both
-[`build/Windows/src/compilation.rs`](../build/Windows/src/compilation.rs)
-and
-[`build/WEBGui/webgui/tests/test_cross_runtime_album_policy.py`](../build/WEBGui/webgui/tests/test_cross_runtime_album_policy.py).
-It exercises Album output-target and MusicBrainz release-classification
-expectations. It is neither a separately editable production policy nor a
-substitute for the two protected canonical JSONs in `schema/`.
-Fixture values are regression evidence and may not override explicit
-owner-approved behavioral requirements.
-
 ## Approved requirements indexed
 
 | Group | IDs | Implementation / evidence |

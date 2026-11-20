@@ -40,10 +40,6 @@ These four shared contracts are referenced together in
 [POLICY-INDEX.md](POLICY-INDEX.md) but do **not** require separate
 copies inside the Windows and WebGUI build roots.
 
-The root [`fixtures/cross-runtime-album-policy.json`](../fixtures/cross-runtime-album-policy.json)
-is **test input**, not a third runtime policy or deployable schema. Windows
-and WebGUI both test their Album/compilation classification against it.
-
 ## Active release boundary
 
 Unsupported root-native Rust/CLI sources are not Workflow 01 release

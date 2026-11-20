@@ -39,7 +39,7 @@ class RenderAcceptanceContractTests(unittest.TestCase):
         sample = json.loads(
             (
                 Path(__file__).resolve().parent
-                / "fixtures"
+                / "data"
                 / "audit-export-sample.json"
             ).read_text(encoding="utf-8")
         )

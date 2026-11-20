@@ -33,8 +33,8 @@ checkpoint**, not a declaration that the present application code is correct.
 - Workflow 01 release source consists of `build/WEBGui/` and
   `build/Windows/` only. Treat the exact Workflow 01 checkout, build,
   Dockerfile, Cargo, migrations, and test dependencies as the source map.
-- `schema/`, `release/`, `fixtures/` and `.github/` contain shared,
-  cross-runtime test, or release-wide inputs outside the two application roots.
+- `schema/`, `release/` and `.github/` contain shared-policy and
+  release-wide inputs outside the two application roots.
   WebGUI-only Docker deployment sources belong in `build/WEBGui/docker/`.
   Operator/developer Markdown guides belong in `docs/`, not `build/`.
 - Do not put operator manuals, historical policy Markdown, or build
@@ -155,7 +155,7 @@ their approval again merely because runtime parity remains unverified.
 `docs/POLICY-INDEX.md` links all four shared `schema/` contracts.
 The COMP policy is an accepted working baseline (do not speculate or
 rewrite its matching rules), while SQLite DDL and Settings UI received
-structural inspection. Outstanding runtime/fixture checks are
+structural inspection. Outstanding runtime validation checks are
 **implementation validation**, not pending approval of the owner's
 established color policy. See `docs/SCHEMA-VALIDATION.md`.
 
