@@ -68,6 +68,53 @@ Configure GitHub rulesets to require **Canonical policy JSON — review gate**
 on `dev` and, when approved for promotion, `main`. A failing check alone
 does not guarantee merge prevention without the required-check rule.
 
+## Mandatory Codex Pull Request workflow
+
+- For every repository change, Codex must work on a **short-lived topic
+  branch** from the approved base and open or update a **Draft Pull Request**.
+  The default target is `dev`; changes scoped to `dev-macos` use that
+  approved base. Work for `main` requires the owner's explicit direction.
+- Codex must **not push directly to `main`, `dev`, or `dev-macos`**,
+  merge a PR, publish a release, or bypass a required check by default.
+- The PR must state its target, changed files, purpose, applicable
+  `docs/POLICY-REGISTER.md` entries, policy/schema impact, executed and
+  unexecuted validation, unresolved risks, and requested owner action.
+  When a matching PR already exists, update it rather than open a duplicate.
+- If branch creation or PR submission is unavailable, stop and report the
+  blocker; direct pushes are **not** an automatic fallback. Temporary PR
+  branches are removed only after the owner approves the PR disposition.
+
+### Owner-authorized exception — current PR only
+
+The repository owner **may override a specific instruction above**, but
+Codex must **request the exception first**. Its request must identify:
+
+1. The **current PR number/URL** and base/head branches;
+2. The exact restricted action or procedure needing an exception;
+3. Why normal PR review cannot be used, the affected files or checks,
+   expected effect, risk, and proposed validation;
+4. The precise action it requests permission to perform.
+
+Only the owner's **explicit, affirmative approval** for that **identified
+PR and specified action** grants that exception. Record the approval in
+the PR discussion (or, if initially given in chat, quote or summarize it
+accurately in the PR before acting). Silence, an earlier approval, a
+merged PR, or the mere existence of this clause are **not** permission.
+
+The exception **expires when that PR is merged, closed, or cancelled**;
+it cannot transfer to another PR, scope, branch, or future change.
+Codex must not expand the approved action or silently interpret it as
+permission to skip unrelated checks, modify policy JSON, or publish.
+
+**GitHub remains an independent enforcement boundary.** Owner approval
+does not make a failed policy check pass, disable branch protection, or
+authorize Codex to forge a status. If GitHub itself prevents an approved
+exception, stop and explain what the owner must separately authorize or
+perform through GitHub's supported controls. In particular, the two
+protected behavioral JSON files retain their mandatory owner-review
+procedure and failing PR gate until an explicitly reviewed authorization
+mechanism is installed.
+
 ## Mandatory Codex preflight
 
 1. Read this file, `docs/build-layout.md`, `docs/POLICY-REGISTER.md`,
