@@ -35,7 +35,7 @@ The current guides have distinct ownership:
   matching, MusicBrainz thresholds, release grouping, existing-art reuse,
   batch outcomes, coordination publication, and revision pinning.
 
-## Authoritative technical references
+## Technical references requiring policy reconciliation
 
 - [Config v5 reference](config-v5-reference.md) owns configuration fields,
   defaults, path rules, and validation.
@@ -73,7 +73,7 @@ diagnostic reports.
   disposable-state scope for promotion through `dev` to `main`.
 - [Release automation](release-automation.md) — numbered release/recovery
   workflows, validation selection, Store handling, and release-note authority.
-- [Windows source/build guide](../windows/README.md) — native Rust/Slint build,
+- [Windows source/build guide](windows-build-guide.md) — native Rust/Slint build,
   runtime layout, packaging, and source validation.
 - [Docker deployment](../docker/README.md) — Compose, PostgreSQL, persistent
   mounts, backup, and container validation.
@@ -87,9 +87,8 @@ diagnostic reports.
   — current single-executable architecture and retired implementation boundary.
 
 The [Windows portable instructions](../release/README-WINDOWS.txt) ship with
-the supported Windows archive. The
-[Linux instructions](../release/README-LINUX.txt) describe a deliberate source
-build; the numbered release workflow does not publish a Linux archive. macOS is
+the supported Windows archive. The old root-native CLI source and its Linux
+instructions are retained on `dev-archive` only. macOS is
 unsupported on `main` and `dev`; experimental work is isolated on
 [`dev-macos`](https://github.com/scottia/S-P-L-I-N-E-D/tree/dev-macos).
 
@@ -115,9 +114,8 @@ Do not use them in place of the current guides above:
 - [Windows 1.0.88 functional-parity audit](windows-functional-parity-1.0.88.md)
   and [Windows graphical-workspace QA](windows-gui-redesign-qa.md).
 
-Future design ideas live in
-[project notes](../project-notes/artwork-composition.md) and are not supported
-behavior until implemented, validated, and documented in a current guide.
+Historical project design ideas are retained on the `dev-archive` branch,
+not as current implementation requirements.
 
 ## Platform boundaries and safety
 
@@ -125,7 +123,6 @@ behavior until implemented, validated, and documented in a current guide.
 | --- | --- | --- |
 | Windows | Native Rust/Slint application | SQLite plus Windows-owned Config/UI state |
 | Ubuntu WebGUI | Python/browser application deployed with Docker | PostgreSQL plus mounted config, credentials, cache, and artwork state |
-| Root-native Linux | Separate Rust command-line implementation | Runtime-selected native configuration and cache/database paths |
 
 The runtimes share concepts, not a live database or guaranteed interface
 parity. Avoid simultaneous writers to the same music files.

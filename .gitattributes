@@ -1,7 +1,7 @@
-webgui/** text eol=lf
+build/WEBGui/webgui/** text eol=lf
 schema/*.sql text eol=lf
 docker/*.yaml text eol=lf
-webgui/**/*.png binary
-webgui/**/*.jpg binary
-webgui/**/*.webp binary
-webgui/**/*.ico binary
+build/WEBGui/webgui/**/*.png binary
+build/WEBGui/webgui/**/*.jpg binary
+build/WEBGui/webgui/**/*.webp binary
+build/WEBGui/webgui/**/*.ico binary
