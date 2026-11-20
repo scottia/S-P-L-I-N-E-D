@@ -9,8 +9,8 @@
 
 # S:P:L:I:N:E:D
 
-Cross-platform music artwork and library management, with a native Windows
-application and a Python/browser WebGUI.
+S:P:L:I:N:E:D is a music artwork and library management application with
+a native Windows client and a Python/browser WebGUI.
 
 ## Active release-source layout
 
@@ -27,15 +27,19 @@ build/
     gui/          Windows GUI resources
     package/      Store/portable packaging
 schema/           Shared SQL and JSON runtime contracts
-fixtures/         Cross-runtime regression fixtures
 release/          Release automation support
 .github/workflows/01-full-release.yml
 ```
 
 Workflow 01 uses `build/WEBGui/Dockerfile` for the published
 [GHCR image](https://github.com/scottia/S-P-L-I-N-E-D/pkgs/container/splined)
-and `build/Windows/Cargo.toml` for Windows. Production artifacts and
-release history are available under [GitHub Releases](https://github.com/scottia/S-P-L-I-N-E-D/releases).
+and `build/Windows/Cargo.toml` for the native Windows executable.
+Windows uses its configured `splined.db` SQLite catalog as authority for
+synchronized Artist, Album and Track fields; standalone or shared SQLite
+is a storage/coordination choice, **not a separate media-state policy**.
+The WebGUI uses its own PostgreSQL catalog and operational queues. It does
+not replace the authoritative Windows SQLite catalog. Production artifacts
+and release history are available under [GitHub Releases](https://github.com/scottia/S-P-L-I-N-E-D/releases).
 
 ## Documentation status
 

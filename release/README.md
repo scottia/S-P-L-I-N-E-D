@@ -25,9 +25,8 @@ published history belongs in Git tags and GitHub Releases.
 ## Current guidance
 
 - `README-WINDOWS.txt` ships with the supported Windows portable archive.
-- Workflow 01 separately builds and publishes the WebGUI/Python GHCR image
-  and can attach a WebGUI source archive. There is **no supported native Linux
-  README or root-native Linux release target** in the two-target `/dev` layout.
+- Workflow 01 publishes the supported Windows and WebGUI distribution
+  outputs; the WebGUI source archive and GHCR image are separate artifacts.
 - macOS is not a release target in the current `/dev` Workflow 01 source.
 
 Windows release notes are generated from `cliff.toml` and

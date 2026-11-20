@@ -1,85 +1,167 @@
-# Release automation — current Workflow 01/02/03
+# Release automation — current Workflow 01–03 reference
 
-This guide describes the **checked-in release workflow controls** on
-`dev`. It is a source-verified release reference, **not** authorization
-to publish or modify `main`. The supported application targets are
-`build/WEBGui/` (Python/browser image and
-PostgreSQL integration) and `build/Windows/` (Rust/Slint,
-portable Windows and Microsoft Store packaging). There is no separate
-root-native Linux CLI release target.
+**Scope:** The active `dev` source paths and numbered GitHub Actions
+workflows. This is a technical runbook derived from their current definitions;
+it is **not** authorization to publish a release or evidence that a complete
+Windows/WebGUI release was tested. Published releases require the owner's
+separate approval. The approved behavioral policy remains in
+[POLICY-REGISTER.md](POLICY-REGISTER.md).
 
-## Entrypoints and outcomes
+## Where release sources live
 
-| Workflow | Intent | Important limits |
+| Component | Authoritative repository path |
+| --- | --- |
+| Workflow 01, full release | [`.github/workflows/01-full-release.yml`](../.github/workflows/01-full-release.yml) |
+| Workflow 02, Store recovery | [`.github/workflows/02-store-recovery.yml`](../.github/workflows/02-store-recovery.yml) |
+| Workflow 03, GHCR recovery | [`.github/workflows/03-ghcr-recovery.yml`](../.github/workflows/03-ghcr-recovery.yml) |
+| Windows source and packaging | [`build/Windows/`](../build/Windows/) |
+| GHCR WebGUI Dockerfile | [`build/WEBGui/Dockerfile`](../build/WEBGui/Dockerfile) |
+| WebGUI Compose/env/config | [`build/WEBGui/docker/`](../build/WEBGui/docker/) |
+| Shared runtime JSON/SQL | [`schema/`](../schema/) |
+| Release scripts, notes templates and Store regression data | [`release/`](../release/) and [`cliff.toml`](../cliff.toml) |
+
+Workflow 01 is the normal publisher. Workflow 02 does not create new release
+tags or GHCR images. Workflow 03 only repairs a missing GHCR tag using a
+verified existing registry image. They must not be used as read-only status
+queries or triggered as a side effect of documentation edits.
+
+## Workflow 01 — full versioned release
+
+**Entry:** Manually dispatch from `main` with explicit
+`Create release now` confirmation. Supported platform selections are
+`All`, `Windows`, and `WebGUI / Python`. The release version can be
+omitted to select the next numeric patch, or supplied as a new `X.Y.Z`
+greater than the active source and numeric tags on the `main` release line.
+
+The workflow prepares the exact release commit and builds selected targets
+before publishing a numeric tag and GitHub Release. It separately publishes
+GHCR version and `latest` tags. Store processing, when selected, follows
+the existing Windows package and GitHub Release preparation gates.
+
+- **Windows / All:** Builds the native optimized Rust/Slint executable from
+  `build/Windows/Cargo.toml`; creates the Windows portable and Store
+  package artifacts. The optional `extended_windows_validation` adds strict
+  Rust format, Clippy and library regression checks. The ordinary build is
+  not proof that the extended suite ran.
+- **WebGUI / Python / All:** Runs Python tests, browser JavaScript syntax
+  checks, and builds/smoke-tests the container against PostgreSQL. It creates
+  a WebGUI source archive containing `build/WEBGui/`, canonical
+  `schema/`, `docs/` and root release-support metadata.
+- **Store modes:** Workflow 01 has mutually exclusive
+  `Submit Update/No Draft` and `Review Bundle/No Submit` options. The
+  latter produces review artifacts without a Partner Center submission.
+  Store options require a Windows-capable target and applicable credentials.
+  Never infer permission to submit from a successful build alone.
+
+**Extended Windows validation is opt-in, including Store modes.**
+Workflow 01 does **not** automatically enable or require
+`extended_windows_validation` when either Store mode is selected. Unless
+explicitly enabled, the native build and package checks run without the
+separate strict `cargo fmt`, Clippy and library-test suite. Earlier
+claims that Store selection itself enforces these extended checks are
+not supported by the current workflow inputs.
+
+**Current workflow validation concern:** For `platform = Windows`,
+`build-webgui` is skipped (as confirmed by `finalize-tag` and the
+`release-success` gate), but the GHCR publication stage still executes.
+Thus a Windows-only release **does not provide the same container test
+evidence** as `WebGUI / Python` or `All`. This is an implementation
+gap to review separately before considering the release gate complete.
+Do not change the workflow without an authorized PR and focused tests.
+
+Version stamping and manifests are under `build/Windows/`; the release
+workflow does not build the withdrawn root-native CLI as a third target.
+The current WebGUI Docker build context is the repository root, not the
+nested Compose directory.
+
+## Workflow 02 — Store recovery from an existing tag
+
+**Entry:** Manually dispatch from `main` with an existing numeric
+`X.Y.Z` release tag, and exactly one Store mode:
+`Submit Update/No Draft` or `Submit Draft/No Update`.
+
+This workflow checks out the exact existing tag, verifies release version
+and Windows package manifest, rebuilds and smoke-tests the Windows MSIX,
+then resolves the last-published Microsoft Store baseline and generates
+cumulative Highlights. It uses release automation scripts from the
+current approved release engine but builds tagged Windows source.
+
+Workflow 02 does **not** mint a new numeric tag, create a GitHub Release or
+publish GHCR. Store modes can affect Partner Center; no recovery dispatch
+is authorized by this document.
+
+**Compatibility observation:** The current Store-recovery workflow
+retains a legacy fallback for older tags containing
+`windows/Cargo.toml`. This is a tagged-source compatibility branch,
+not a supported current `dev` source root. Do not relocate old source
+back into active `dev` because of it.
+
+## Workflow 03 — recovery of an existing published GHCR release
+
+**Entry:** Manually dispatch from `main` for the **latest existing
+published** numeric `X.Y.Z` GitHub Release. The workflow shares the
+normal release concurrency group with Workflow 01.
+
+It inspects `ghcr.io/scottia/splined:vX.Y.Z` and
+`ghcr.io/scottia/splined:latest`:
+
+- Both present, with matching digest and expected provenance: no-op.
+- Exactly one missing: reuse the verified image and publish **only the
+  missing tag**.
+- Both missing, conflicting digest/labels, or unprovable absence: fail
+  closed. It does **not** rebuild an unknown-equivalence image.
+
+Workflow 03 neither creates/edits release tags or GitHub Releases nor
+touches Store submissions or existing release assets.
+
+## Test roles and source-retention review
+
+| Check | When it runs | Disposition |
 | --- | --- | --- |
-| [01 — Full Release](../.github/workflows/01-full-release.yml) | Explicitly confirmed, versioned release from `main`. Builds the selected Windows/WebGUI targets; creates the numeric release tag and GitHub Release only after required selected builds succeed. Publishes GHCR through the WebGUI release path. | Must be dispatched from `main`. Normal release provisioning is not a read-only status check. The Windows Store actions have separate inputs and safeguards. |
-| [02 — Store Recovery](../.github/workflows/02-store-recovery.yml) | Rebuild and process a Microsoft Store package from an **existing published numeric Git release tag**, using the current reviewed release tooling. | Exactly one Store mode must be selected; it cannot create a new Git tag, GitHub Release, or GHCR image. |
-| [03 — GHCR Recovery](../.github/workflows/03-ghcr-recovery.yml) | Verify and, where provably safe, recover a **missing** `vX.Y.Z` or `latest` GHCR tag for the latest published release. | Never creates/edits a GitHub Release, Store submission, release asset or Git tag; never rebuilds when both GHCR tags are absent. |
+| WebGUI Python policy/Album tests | Workflow 01 `WebGUI / Python` or `All`, and applicable PR validation | Retain independent active source tests |
+| WebGUI JavaScript checks and Docker/PostgreSQL health | Same WebGUI build and selected PR validation | Retain as application release gates |
+| Native Windows Cargo format/Clippy/library tests | Workflow 01 Windows/All **only** with extended validation enabled | Retain; do not claim the PR advisory executed them |
+| Native optimized Windows application and package validation | Workflow 01 Windows/All release build | Retain |
+| Release-note/Store baseline regression scripts and historic synthetic JSON | Workflow 01/02 release support and applicable packaging checks | Retain; historical version numbers are deliberate |
+| Repository layout, scope and protected JSON guards | PR validation, separate from the release engine | Retain as controls for Workflow 01 source/layout and owner policy |
 
-**Workflow 01** exposes target selection (`All`, `Windows`,
-`WebGUI / Python`), explicit **Create release now** confirmation,
-optional **Extended Windows validation**, and mutually exclusive
-Store choices. Its versioning updates the selected release source
-metadata only after validating the current main tag history.
+Duplicated root-level Album example data was retired from active
+`dev` after confirming that local Windows and WebGUI tests already
+covered the cases. A WebGUI-specific audit example remains with the
+WebGUI test suite. Do not preserve an obsolete root path simply to
+satisfy an outdated test, and do not remove active release evidence
+because its sample version is older.
 
-**Workflow 02** requires an existing numeric version and a single
-Store mode: create a Store draft for review, or stage and submit
-for certification. Both are controlled by the Microsoft Store
-submission safeguards.
+## Active `/release` content
 
-**Workflow 03** verifies published-release identity, OCI
-source/version/commit labels and registry digests. It re-tags
-only a verified surviving image if exactly one tag is missing.
-Unexpected provenance, digest conflicts, and both-tags-missing
-conditions fail closed; do not silently overwrite existing tags.
+[Release support files](../release/README.md) and the checked-in scripts
+remain in service. `Generate-ReleaseNotes.ps1`,
+`Generate-StoreHighlights.ps1`, `Resolve-StoreBaseline.ps1`,
+`StoreHighlightsPolicy.ps1` and `Install-GitCliff.ps1` support the
+numbered workflows. Git-cliff is pinned to **2.14.2**.
+`templates/` contains release-note and Store Tera templates; the
+`Test-*.ps1` scripts and `tests/` hold regression cases, including
+deliberately old **synthetic** Store-version JSON fixtures. Old fixture
+versions are **not** grounds for deleting those test files.
 
-## Build and package boundaries
+The Windows portable `release/README-WINDOWS.txt` is a packaged
+operator instruction, not a separate media-state policy. Standalone and
+Shared SQLite use the same canonical policy defined in the register.
 
-The WebGUI build uses
-[`build/WEBGui/Dockerfile`](../build/WEBGui/Dockerfile) with the
-**repository root build context**, because it packages both
-`build/WEBGui/webgui/` and canonical `schema/` files. Local
-development Compose and the Config v5 example are under
-[`build/WEBGui/docker/`](../build/WEBGui/docker);
-see [WebGUI Docker deployment](webgui-docker-deployment.md).
+## Review and promotion safeguards
 
-Windows packages use the native
-[`build/Windows/Cargo.toml`](../build/Windows/Cargo.toml)
-source and Windows package manifests. The portable archive includes
-[`release/README-WINDOWS.txt`](../release/README-WINDOWS.txt).
-Neither deployment mode defines an independent Artist/Album state
-policy: both consume the approved contracts in `schema/`.
+1. Changes are prepared through a temporary branch and reviewed in a
+   Draft PR against `dev`; `main` is not automatically updated.
+2. Test claims must name the workflow or fixture actually executed.
+   Source-path inspection and PR advisory checks do not establish full
+   Windows release acceptance.
+3. Protect both `schema/media-state-classification.json` and
+   `schema/comp-report-policy.json` through their existing PR gate.
+   Neither a packaging change nor a saved runtime revision approves a
+   behavioral policy change.
+4. Do not activate Workflow 01, Workflow 02, Workflow 03, Partner Center
+   submission, or GHCR publication without a new explicit owner decision.
 
-The [release-support inventory](../release/README.md) lists the
-active scripts, pinned git-cliff 2.14.2 installer, Tera templates,
-Store-baseline processing and synthetic regression fixtures. Those
-historic fixture versions are deliberate test cases—not stale
-public release content—and must not be deleted by age alone.
-
-## Validation and approval boundary
-
-- Run code and PR checks before requesting any change to `main`;
-  owner approval for a development PR is **not** approval to
-  publish a release.
-- The ordinary PR Windows check is **advisory**, not a native
-  Windows build. Workflow 01 can run optional extended Windows
-  Rust/Slint validation against the proposed release source.
-- Workflow 01's actual inputs do **not** programmatically require
-  Extended Windows validation merely because a Store mode is
-  selected. Earlier descriptions of that extra requirement
-  must **not** be presented as an enforced gate without a
-  separate explicit owner decision and matching source change.
-- The two behavioral JSON contracts in `schema/` remain
-  protected by the independent **Canonical policy JSON —
-  review gate**. Release configuration must never silently
-  bypass its approved process.
-- Production publication or `main` promotion requires
-  its **own explicit owner instruction**, followed by applicable
-  Windows/WebGUI/Store evidence. This document grants no
-  such instruction.
-
-**Source-checkpoint note:** This guide supersedes obsolete source
-paths and historical status narratives for active `dev` only.
-The authoritative behavior requirements remain in
-[POLICY-REGISTER.md](POLICY-REGISTER.md), with implementation
-status in [SCHEMA-VALIDATION.md](SCHEMA-VALIDATION.md).
+**Documentation restoration rule:** Relevant current guides can be
+reconstructed from source and owner-approved policy one at a time. Do not
+restore obsolete paths, discarded policies, or unverified instructions.

@@ -1,10 +1,10 @@
 # S:P:L:I:N:E:D — policy/source index
 
-**Checkpoint:** November 19, 2026 · development base
-`9be357951f0ccb4f2a624a7baf9307699d700e8a`.
-The owner's color and visual rules are **APPROVED** and have already
-been discussed and corrected in `dev` source. Deployment/runtime
-acceptance is **not** implied by that approval.
+**Source review:** Active two-application development layout, including
+merged Docker consolidation and the current protected policy contracts.
+The owner's color and visual rules are **APPROVED**; installed-client behavior
+and the documented technical source remain subject to independent validation.
+This index is not a new request for owner policy approval.
 
 ## Status vocabulary
 
@@ -33,19 +33,29 @@ All four remain single-sourced in `/schema`. Do not move or copy
 them into independent `/build` variants. The Workflow 01/GHCR and
 Windows dependencies are described by [build-layout.md](build-layout.md).
 
-## Cross-runtime Album test fixture (not a behavioral-policy JSON)
+## Test ownership and release validation
 
-[`fixtures/cross-runtime-album-policy.json`](../fixtures/cross-runtime-album-policy.json)
-is intentionally retained at the **repository root** because it supplies
-test cases to both
-[`build/Windows/src/compilation.rs`](../build/Windows/src/compilation.rs)
-and
-[`build/WEBGui/webgui/tests/test_cross_runtime_album_policy.py`](../build/WEBGui/webgui/tests/test_cross_runtime_album_policy.py).
-It exercises Album output-target and MusicBrainz release-classification
-expectations. It is neither a separately editable production policy nor a
-substitute for the two protected canonical JSONs in `schema/`.
-Fixture values are regression evidence and may not override explicit
-owner-approved behavioral requirements.
+The former root-level example data is not a production configuration or
+additional schema authority. Its redundant cross-runtime tests were
+retired after confirming existing independent checks:
+
+- [Windows compilation tests](../build/Windows/src/compilation.rs)
+  already exercise Album eligibility and MusicBrainz release
+  classification. Workflow 01 runs native Rust tests **only** when
+  `extended_windows_validation` is explicitly enabled for a Windows
+  build; ordinary Windows packaging still compiles the executable.
+- [WebGUI compilation policy tests](../build/WEBGui/webgui/tests/test_splined_compilation_authority_policy.py)
+  cover corresponding eligibility and release ranking in the WebGUI
+  Python suite, discovered by Workflow 01's WebGUI job and the
+  repository's WebGUI PR check.
+- [WebGUI rendering acceptance tests](../build/WEBGui/webgui/tests/test_render_acceptance_contract.py)
+  use local test data, not root-level configuration or a third
+  behavioral-policy JSON.
+
+GitHub PR scope/layout checks run separately from Workflow 01; they
+remain necessary to keep the two application build roots and the
+canonical `schema/` intact. Preserve source regression coverage
+only where it serves current supported application or release gates.
 
 ## Approved requirements indexed
 
@@ -74,9 +84,10 @@ owner-approved behavioral requirements.
 
 Both protected policy JSONs are checked in the separate **Canonical
 policy JSON — review gate**. This gate has been introduced on `dev`
-and exercised successfully on PR #217's earlier documentation-only
-checkpoint. Its later WebGUI Docker relocation requires fresh WebGUI,
-Docker image and packaging validation. A proposal
+and exercised on [merged PR #217](https://github.com/scottia/S-P-L-I-N-E-D/pull/217).
+That PR's Python/JavaScript/container validation passed for its updated
+Docker source layout; it does not certify Windows release or saved runtime
+policy revisions. A proposal
 changing either protected JSON fails with instructions referencing
 `AGENTS.md` and this register. It **does not auto-revert or
 authorize** the change.
@@ -88,8 +99,10 @@ branch-ruleset protection remains unverified because the available
 GitHub integration cannot inspect that setting.
 
 Mandatory Codex Draft PRs and current-PR-only owner exceptions are
-**proposed in PR #217**, not yet merged. PR #216 is the divergent
-`dev` → `main` release-layout/policy draft and must remain on hold.
+**active in `AGENTS.md`** following merged PR #217. PR #216 was **closed
+without merging to `main`** because its development changes were already
+on `dev`. Any subsequent `main` promotion needs a new, separately
+validated and owner-approved PR.
 
 ## Next engineering validation (not policy re-approval)
 

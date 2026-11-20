@@ -40,9 +40,19 @@ These four shared contracts are referenced together in
 [POLICY-INDEX.md](POLICY-INDEX.md) but do **not** require separate
 copies inside the Windows and WebGUI build roots.
 
-The root [`fixtures/cross-runtime-album-policy.json`](../fixtures/cross-runtime-album-policy.json)
-is **test input**, not a third runtime policy or deployable schema. Windows
-and WebGUI both test their Album/compilation classification against it.
+## Test and release validation ownership
+
+Workflow 01 runs WebGUI Python tests, JavaScript syntax and container
+checks when the WebGUI target is selected. Windows Rust/Slint build
+and MSIX/portable packaging are Windows release tasks; optional
+extended Windows tests are a distinct explicit selection.
+The PR validation workflow checks source paths and policy protection
+independently. Regressions covered by existing native/WebGUI tests
+need not rely on a shared, root-level example file.
+
+The root `release/` scripts/templates and Store history test data
+remain active workflow support; they are not a third application
+release target. See [release-automation.md](release-automation.md).
 
 ## Active release boundary
 
@@ -50,9 +60,9 @@ Unsupported root-native Rust/CLI sources are not Workflow 01 release
 targets. Only the two designated `build/` application roots are active;
 policy and design documentation belong under `docs/`.
 
-The two-source layout is on `dev` within
-[draft PR #216](https://github.com/scottia/S-P-L-I-N-E-D/pull/216).
-Do not promote to `main` or publish before resolving branch
-divergence, policy-review authorization and complete Windows/WebGUI
-validation. Public app Help must point only to reviewed `main` docs;
+The two-source layout is established on `dev`. The earlier
+[PR #216](https://github.com/scottia/S-P-L-I-N-E-D/pull/216) was
+closed without a `main` merge. Further promotion requires a new,
+owner-approved PR and complete Windows/WebGUI validation.
+Public app Help must point only to reviewed `main` docs;
 `dev` documentation is for implementation and owner review.

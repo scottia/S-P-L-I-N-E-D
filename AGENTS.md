@@ -1,8 +1,10 @@
-# SPLINED repository instructions — structure-first checkpoint
+# SPLINED repository instructions — active development governance
 
-These instructions apply to the repository until the owner approves a new,
-source-verified policy register. This is a **governance and restructuring
-checkpoint**, not a declaration that the present application code is correct.
+These instructions are active for the current development tree. The owner has
+**already approved** the scoped Artist/Album, visual-state, deployment-mode and
+protected-JSON rules in `docs/POLICY-REGISTER.md`. Current source and installed
+client behavior remain subject to independent implementation validation;
+approval of the register is not proof that every implementation is correct.
 
 ## Authority and review
 
@@ -33,8 +35,8 @@ checkpoint**, not a declaration that the present application code is correct.
 - Workflow 01 release source consists of `build/WEBGui/` and
   `build/Windows/` only. Treat the exact Workflow 01 checkout, build,
   Dockerfile, Cargo, migrations, and test dependencies as the source map.
-- `schema/`, `release/`, `fixtures/` and `.github/` contain shared,
-  cross-runtime test, or release-wide inputs outside the two application roots.
+- `schema/`, `release/` and `.github/` contain shared-policy and
+  release-wide inputs outside the two application roots.
   WebGUI-only Docker deployment sources belong in `build/WEBGui/docker/`.
   Operator/developer Markdown guides belong in `docs/`, not `build/`.
 - Do not put operator manuals, historical policy Markdown, or build
@@ -64,8 +66,8 @@ authorization procedure before the guard can permit it. Do not edit the
 guard in the same PR to bypass the review. The checker does not
 automatically revert edits or modify either JSON.
 
-This guard is distinct from the archived/inactive boundary checker.
-It is loaded from the target branch's trusted base once installed there.
+The active policy guard runs independently in PR validation and is loaded
+from the target branch's trusted base once installed there.
 Configure GitHub rulesets to require **Canonical policy JSON — review gate**
 on `dev` and, when approved for promotion, `main`. A failing check alone
 does not guarantee merge prevention without the required-check rule.
@@ -117,6 +119,18 @@ protected behavioral JSON files retain their mandatory owner-review
 procedure and failing PR gate until an explicitly reviewed authorization
 mechanism is installed.
 
+## Active test and build inputs
+
+A source test or sample belongs in the current repository only where
+it supports a verified application build, Workflow 01 release,
+Store recovery, or independent PR policy/layout safeguard. Review
+actual consumers before removing it. Do not restore retired
+root-level example dependencies simply to make a stale test pass.
+Native Rust library tests are an opt-in extended Workflow 01
+validation; the Windows PR advisory is not a substitute for a
+native Windows compile. The WebGUI Python suite, JavaScript checks
+and Docker smoke run in the selected WebGUI release lane.
+
 ## Mandatory Codex preflight
 
 1. Read this file, `docs/build-layout.md`, `docs/POLICY-REGISTER.md`,
@@ -155,10 +169,11 @@ their approval again merely because runtime parity remains unverified.
 `docs/POLICY-INDEX.md` links all four shared `schema/` contracts.
 The COMP policy is an accepted working baseline (do not speculate or
 rewrite its matching rules), while SQLite DDL and Settings UI received
-structural inspection. Outstanding runtime/fixture checks are
+structural inspection. Outstanding runtime validation checks are
 **implementation validation**, not pending approval of the owner's
 established color policy. See `docs/SCHEMA-VALIDATION.md`.
 
 No unverified implementation, legacy guide, or test assertion may silently
-supersede the approved register. The mandatory Codex PR process in this
-version of `AGENTS.md` is under owner review in draft PR #217 until merged.
+supersede the approved register. The mandatory Codex Draft PR process,
+including owner-authorized exceptions limited to the current PR/action,
+is active on `dev` following merged PR #217.
