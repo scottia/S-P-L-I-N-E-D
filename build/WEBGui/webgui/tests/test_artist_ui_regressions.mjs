@@ -2693,6 +2693,23 @@ test("Artist Albums row reports shown, Completed, and in Process with status col
   assert.equal(host["aria-label"], "3 Albums shown, 1 Completed, 1 in Process, 1 overridden by Windows");
 });
 
+test("Selected Artwork embedded-size indication agrees with exact readback", () => {
+  const source = between(
+    appSource, "function embeddedResolutionStatusClass", "function renderReview",
+  );
+  const view = load(source, {});
+  const status = (embedded, count, resolution) =>
+    view.embeddedResolutionStatusClass(embedded, count, resolution);
+  assert.equal(status({outside_preference: false}, 1, "1200 × 1200"), "metric-ideal");
+  assert.equal(status({outside_preference: true}, 1, "1199 × 1199"), "metric-below-minimum");
+  assert.equal(status({outside_preference: true}, 1, "1201 × 1201"), "metric-below-minimum");
+  assert.equal(status({outside_preference: true}, 1, "1200 × 1201"), "metric-below-minimum");
+  assert.equal(status({outside_preference: true}, 0, "No embedded art"), "metric-below-minimum");
+  assert.equal(status({below_preference: true}, 1, "1000 × 1000"), "metric-below-minimum");
+  assert.equal(status({outside_preference: false}, 2, "Varying Size"), "metric-in-process");
+  assert.match(appSource, /embeddedResolutionStatusClass\(embedded, embeddedCount, resolution\)/);
+});
+
 test("Album cards keep unknown validation separate from confirmed missing thumbnails", () => {
   const state = {graphicalEnhancement: {frame_styles: {
     complete: {color: "theme-complete"}, in_process: {color: "theme-process"},
