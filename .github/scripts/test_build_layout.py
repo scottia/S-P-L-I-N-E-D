@@ -14,6 +14,10 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertTrue((root / "Windows/src/main.rs").is_file())
         self.assertTrue((root / "Windows/ui/app.slint").is_file())
         self.assertTrue((root / "WEBGui/Dockerfile").is_file())
+        self.assertTrue((root / "WEBGui/docker/compose.yaml").is_file())
+        self.assertTrue((root / "WEBGui/docker/.env.example").is_file())
+        self.assertTrue((root / "WEBGui/docker/config.example.toml").is_file())
+        self.assertFalse((ROOT / "docker").exists())
         self.assertTrue((root / "WEBGui/webgui/__main__.py").is_file())
         self.assertTrue((root / "WEBGui/webgui/static/index.html").is_file())
 
@@ -32,6 +36,12 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn("COPY schema/media.sql schema/settings-ui.json", dockerfile)
         self.assertIn("CMD [\"python\", \"-m\", \"webgui\"]", dockerfile)
         self.assertIn("!build/WEBGui/webgui/**", dockerignore)
+        self.assertIn("!build/WEBGui/docker/config.example.toml", dockerignore)
+        self.assertIn("COPY build/WEBGui/docker/config.example.toml /app/build/WEBGui/docker/config.example.toml", dockerfile)
+        compose = (ROOT / "build/WEBGui/docker/compose.yaml").read_text(encoding="utf-8")
+        self.assertIn("context: ../../..", compose)
+        self.assertIn("dockerfile: build/WEBGui/Dockerfile", compose)
+        self.assertIn("build/WEBGui/docker/config.example.toml", (ROOT / "build/WEBGui/webgui/runtime.py").read_text(encoding="utf-8"))
         self.assertIn("build/WEBGui/webgui/tests/", dockerignore)
 
     def test_workflow_one_validates_and_stamps_relocated_sources(self):
@@ -42,6 +52,8 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn("--file build/WEBGui/Dockerfile", workflow)
         self.assertIn("discover -s build/WEBGui/webgui/tests", workflow)
         self.assertIn("build/WEBGui:build/WEBGui/webgui/backend", workflow)
+        self.assertIn("cp -R schema docs release-package/", workflow)
+        self.assertNotIn("cp -R schema docker docs release-package/", workflow)
 
     def test_shared_schema_stays_single_source(self):
         for name in ("media.sql", "settings-ui.json", "media-state-classification.json", "comp-report-policy.json"):

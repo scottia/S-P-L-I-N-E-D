@@ -70,7 +70,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.db = Database(self.url)
         self.db.migrate()
         self.cfg = tomllib.loads(
-            (Path(__file__).parents[4] / "docker/config.example.toml").read_text(
+            (Path(__file__).parents[4] / "build/WEBGui/docker/config.example.toml").read_text(
                 encoding="utf-8"
             )
         )
