@@ -1,10 +1,10 @@
 # S:P:L:I:N:E:D — policy/source index
 
-**Checkpoint:** November 19, 2026 · development base
-`9be357951f0ccb4f2a624a7baf9307699d700e8a`.
-The owner's color and visual rules are **APPROVED** and have already
-been discussed and corrected in `dev` source. Deployment/runtime
-acceptance is **not** implied by that approval.
+**Source review:** Active two-application development layout, including
+merged Docker consolidation and the current protected policy contracts.
+The owner's color and visual rules are **APPROVED**; installed-client behavior
+and the documented technical source remain subject to independent validation.
+This index is not a new request for owner policy approval.
 
 ## Status vocabulary
 

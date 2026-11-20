@@ -1,8 +1,10 @@
-# SPLINED repository instructions — structure-first checkpoint
+# SPLINED repository instructions — active development governance
 
-These instructions apply to the repository until the owner approves a new,
-source-verified policy register. This is a **governance and restructuring
-checkpoint**, not a declaration that the present application code is correct.
+These instructions are active for the current development tree. The owner has
+**already approved** the scoped Artist/Album, visual-state, deployment-mode and
+protected-JSON rules in `docs/POLICY-REGISTER.md`. Current source and installed
+client behavior remain subject to independent implementation validation;
+approval of the register is not proof that every implementation is correct.
 
 ## Authority and review
 
