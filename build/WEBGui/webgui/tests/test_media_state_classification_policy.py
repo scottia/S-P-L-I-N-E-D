@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -12,6 +13,7 @@ from webgui.media_state_policy import (
     database_monitor_presentation,
     editable_policy_path,
     media_state_policy,
+    validate_media_state_policy,
 )
 
 
@@ -108,6 +110,43 @@ class MediaStateClassificationPolicyTests(unittest.TestCase):
         self.assertEqual(classify_media_state("album", set())["color_name"], "red")
         self.assertIn("white", policy["artist"]["forbidden_name_colors"])
         self.assertIn("white", policy["album"]["forbidden_name_colors"])
+
+    def test_saved_policy_rank_and_dot_order_cannot_silently_drift(self) -> None:
+        canonical = media_state_policy()
+        for scope, key in (
+            ("artist", "ranked_states"),
+            ("album", "ranked_name_states"),
+            ("album", "status_dots"),
+        ):
+            changed = json.loads(json.dumps(canonical))
+            changed[scope][key][0], changed[scope][key][1] = (
+                changed[scope][key][1], changed[scope][key][0]
+            )
+            error = "status-dot order" if key == "status_dots" else "ranking"
+            with self.subTest(scope=scope, key=key):
+                with self.assertRaisesRegex(ValueError, error):
+                    validate_media_state_policy(changed)
+
+        customized = json.loads(json.dumps(canonical))
+        customized["colors"]["red"] = "#ab1234"
+        customized["artist"]["ranked_states"][1]["label"] = "Existing local description"
+        self.assertEqual(
+            validate_media_state_policy(customized)["colors"]["red"], "#ab1234"
+        )
+
+    def test_blue_dot_is_auxiliary_without_requiring_legacy_metadata(self) -> None:
+        canonical = media_state_policy()
+        wrong = json.loads(json.dumps(canonical))
+        wrong["album"]["status_dots"][-1]["auxiliary"] = False
+        with self.assertRaisesRegex(ValueError, "auxiliary"):
+            validate_media_state_policy(wrong)
+
+        legacy = json.loads(json.dumps(canonical))
+        legacy["album"]["status_dots"][-1].pop("auxiliary", None)
+        self.assertEqual(
+            validate_media_state_policy(legacy)["album"]["status_dots"][-1]["color"],
+            "blue",
+        )
 
     def test_database_monitor_uses_policy_labels_and_colors(self) -> None:
         self.assertEqual(
