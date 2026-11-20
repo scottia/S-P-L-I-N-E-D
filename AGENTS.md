@@ -46,6 +46,28 @@ checkpoint**, not a declaration that the present application code is correct.
 - Do not modify, merge into, force-push, or publish from `main` without
   the owner's explicit subsequent authorization.
 
+## Protected JSON policy PR gate
+
+The independent PR check **Canonical policy JSON — review gate** protects
+both `schema/media-state-classification.json` and
+`schema/comp-report-policy.json`. Editing, adding, deleting, or moving
+either file makes the PR check **fail** with a pointer to this file and to
+`docs/POLICY-REGISTER.md` and `docs/POLICY-INDEX.md`.
+
+On failure: **STOP**. Inspect the exact diff, the approved owner policy,
+and its source/test consumers. Revert an accidental change; for an intended
+change obtain an explicit owner decision and document it in the register.
+An owner-authorized policy change needs an independently reviewed
+authorization procedure before the guard can permit it. Do not edit the
+guard in the same PR to bypass the review. The checker does not
+automatically revert edits or modify either JSON.
+
+This guard is distinct from the archived/inactive boundary checker.
+It is loaded from the target branch's trusted base once installed there.
+Configure GitHub rulesets to require **Canonical policy JSON — review gate**
+on `dev` and, when approved for promotion, `main`. A failing check alone
+does not guarantee merge prevention without the required-check rule.
+
 ## Mandatory Codex preflight
 
 1. Read this file, `docs/build-layout.md`, `docs/POLICY-REGISTER.md`,

@@ -27,6 +27,20 @@ A later decision to create `policy/` would require a coordinated,
 validated update to Rust `include_str!`, Python path resolution, GHCR
 Dockerfile, release workflows, tests, and PostgreSQL seed/mirror handling.
 
+## Canonical JSON PR protection
+
+Two behavioral-policy files are guarded together: the media-state JSON
+and COMP-report JSON. `.github/workflows/validate.yml` invokes the
+independent `.github/scripts/check_protected_policies.py` PR check.
+A proposed change to either file returns a **failure** and directs
+Codex to `AGENTS.md` and the approved policy register; no automatic
+revert, approval, or PostgreSQL/SQLite update occurs.
+
+The guard is deliberately separate from runtime validator results.
+Protecting the COMP JSON does not certify its unreviewed behavior.
+`schema/media.sql` and `schema/settings-ui.json` continue through their
+separate schema/configuration validation procedures.
+
 ## Current approved policy entries
 
 - [Artist names and state ranking — `ART-COLOR-001..006`](POLICY-REGISTER.md#media-filter-artist-name-policy)

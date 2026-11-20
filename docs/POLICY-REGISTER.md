@@ -41,6 +41,16 @@ artifact to be validated against it, not the source of approval.
 | `STATE-POLICY-003` | A local editable file, PostgreSQL revision, or Windows mirror may not replace the mandatory classification with different rankings or forbidden colors. When effective revisions differ, validate/report the discrepancy; do not silently select alternate behavior based on database mode. |
 | `STATE-POLICY-004` | **Unprocessed exists only as a MEDIA FILTER count.** An internal `unprocessed` catalog processing label is not an Artist or Album name classification, is not an Album status dot, and cannot force neutral white text. The unmatched/default name classification is Red. |
 
+## Shared behavioral-policy change protection
+
+Changes to `schema/media-state-classification.json` and
+`schema/comp-report-policy.json` are **both** subject to the failing
+canonical-policy PR review check. Any proposed modification must be
+examined under `AGENTS.md` and this register; passing existing tests,
+whether standalone/shared SQLite is enabled, or a current database
+revision does not constitute authorization. This protection does not
+mean the present COMP policy has been approved.
+
 ## Non-negotiable enforcement
 
 - **No Artist or Album name may display white**, including Unprocessed,
