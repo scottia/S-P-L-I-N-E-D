@@ -1,6 +1,6 @@
 # S:P:L:I:N:E:D — owner-approved policy register
 
-**Authority:** The repository owner's instructions, confirmed November 19,
+**Authority:** The repository owner's instructions, reconfirmed November 20,
 2026. The rules below have **already been given and approved**. No repeat
 owner approval is required to state or document them. The register is
 normative; current code, test assertions, saved database copies and old
@@ -11,6 +11,61 @@ status dots, approved visual indicators, policy consistency across
 deployment modes, and safeguards for changing shared policy JSON.
 For implementation verification, see
 [SCHEMA-VALIDATION.md](SCHEMA-VALIDATION.md).
+
+## Owner-confirmed exact classification priorities (November 20, 2026)
+
+**These requirements apply simultaneously to Windows and WebGUI, and to
+standalone/shared SQLite or optional PostgreSQL coordination.** The
+Artist FILE-LIST NAME, Album FILE-LIST NAME, multiple Album CARD
+status dots, and MEDIA FILTER counts are **four distinct surfaces**.
+A selected name color must never suppress another applicable Album dot.
+
+| Surface | Priority from highest to lowest | Forbidden NAME colors | No matching category |
+| --- | --- | --- | --- |
+| **Artist FILE-LIST NAME** | **Red → Yellow → Purple → Green** | **White, Dark Grey, Orange, Gold, Blue** | **Red** |
+| **Album FILE-LIST NAME** | **Dark Grey → Red → Yellow → Purple → Orange → Green** | **White, Blue** | **Red** |
+| **Album CARD status dots** | **Dark Grey → Red → Yellow → Purple → Orange → Green → auxiliary Blue** | Not a single name selection; show **every applicable dot** in this order | None unless applicable evidence exists |
+| **MEDIA FILTER** | Numeric state counts including Unprocessed, Processed, Bypassed and Override where applicable | **Not NAME classifications** | Calculate from the relevant inventory |
+
+The owner's exact precedence means:
+
+- **Red** denotes an independent Incomplete/Error condition and
+  outranks other eligible Artist/Album name colors. When **no**
+  category qualifies, the name still defaults to **Red**, not White,
+  neutral, a missing value or an inferred new category. The internal
+  processing label `unprocessed` **alone is not independent Red
+  error evidence**.
+- **Yellow** denotes missing applicable `artist.*` or
+  `banner.*` Artist Art, or missing ordinary Album static
+  `cover.*` **excluding `cover.webp`**; it outranks Purple and
+  Green in Artists, and Purple/Orange/Green in Albums.
+- **Purple** denotes applicable Album/Track/COMP-track embedding
+  issues. For Album embedded thumbnails, missing, below-preferred-size
+  and above-preferred-size results all count as issues relative to
+  the configured preferred thumbnail size. Purple outranks Orange
+  and Green for an Album name and Green for an Artist name.
+- **Orange** is the Album processed-name state, below Purple and
+  above Green. It is **never an Artist NAME color**. **Gold** bypass
+  and **Dark Grey** opposing override remain excluded from Artist
+  NAME color even if displayed elsewhere in MEDIA FILTER or frames.
+- **Dark Grey** opposing-app override is the **highest-priority
+  Album NAME color**. Completed/overridden Album evidence may
+  independently contribute to an Artist aggregate's Green result;
+  it does not make an overridden Album NAME Green while Dark Grey
+  evidence applies.
+- **Green** requires verified relevant covers/tracks complete or
+  appropriately overridden and no higher-ranked deficiency. An
+  Artist aggregates applicable Albums/tracks/COMP evidence rather
+  than copying the name color of one Album.
+- **Blue** is an **auxiliary Album status dot** when animated
+  `cover.webp` exists, never a NAME color and never a replacement
+  for ordinary static cover art. All applicable Album dots remain
+  colored and visible in their prescribed order.
+
+The owner confirmed that no existing runtime implementation, prior
+PR, historical `main` note or filter-count calculation may silently
+override these requirements. Their policy approval is **complete**;
+remaining tests assess implementation conformance, not policy consent.
 
 ## Approved Artist FILE-LIST name classification
 
