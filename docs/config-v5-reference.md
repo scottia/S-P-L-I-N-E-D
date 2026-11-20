@@ -30,8 +30,7 @@ configured directory, not inline Config v5 secrets.
 The current [Settings UI contract](../schema/settings-ui.json)
 defines eight sections: **Library & Files**, **Artwork & Embedding**,
 **Enhancement**, **Artwork Sources**, **Connections**, **Backup &
-Recovery**, **Processing & Logs**, and related runtime interface
-settings. Some controls are marked Windows-only or WebGUI-only.
+Recovery**, **Processing & Logs**, and **Catalog Maintenance**. Some controls are marked Windows-only or WebGUI-only.
 
 | Config group | Selected current concerns |
 | --- | --- |

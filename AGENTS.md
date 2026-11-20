@@ -50,6 +50,48 @@ approval of the register is not proof that every implementation is correct.
 - Do not modify, merge into, force-push, or publish from `main` without
   the owner's explicit subsequent authorization.
 
+## Documentation audience and verification
+
+- Root `README.md` is the user-facing entry point for supported Windows and
+  WebGUI deployments. The `main` README may guide **formatting only**;
+  never import stale paths, unsupported targets or unverified claims.
+- `docs/README.md` indexes current guides. `docs/POLICY-REGISTER.md`
+  records approved owner policy; `docs/POLICY-INDEX.md` identifies its
+  schema/source consumers; `docs/SCHEMA-VALIDATION.md` tracks
+  implementation evidence and unresolved validation. Do not conflate them.
+- Check each changed guide's links, source paths, Config v5 fields and
+  real Windows/WebGUI consumers. Label statements as **approved policy**,
+  **verified source**, **test evidence**, or **unverified runtime behavior**.
+  Reviewed documentation is not proof of deployed-client parity.
+- Public in-app Help must reference separately reviewed `main` documentation
+  only, never an unpublished `dev` guide.
+
+## Canonical application and release inputs
+
+- Windows first-run Config v5 is embedded from
+  `build/Windows/config.example.toml` by `build/Windows/src/config.rs`.
+  WebGUI uses `build/WEBGui/docker/config.example.toml` with
+  container/server-specific paths. Do not recreate a generic root
+  `config.example.toml` or use an unrelated example as runtime authority.
+- `release/cliff.toml` is the active shared Git-cliff classification for
+  release notes and Store Highlights. Workflows 01–02, their PowerShell
+  scripts and regression tests must reference this same file. Retained
+  historical classification does **not** establish a current runtime target.
+- Windows `<scan.cache_dir>/splined.db` owns synchronized
+  Artist/Album/Track fields. WebGUI PostgreSQL owns browser jobs, audit,
+  queues and its explicitly owned presentation state. Respect the field
+  allowlists in `build/WEBGui/webgui/catalog_authority.py` and the
+  [catalog authority guide](docs/catalog-authority.md).
+- The four root `schema/` contracts serve distinct purposes:
+  `media-state-classification.json` and `comp-report-policy.json`
+  are **protected behavioral policies**; `media.sql` is SQLite DDL;
+  `settings-ui.json` is the Config v5 UI contract. None of these is
+  an alternate per-installation policy. Standalone/shared SQLite and
+  optional PostgreSQL coordination follow the **same approved policy**.
+- Config v5 files, persisted policy revisions and credentials are
+  separate storage/delivery mechanisms. Flag revision drift for explicit
+  review instead of silently rewriting media files or databases.
+
 ## Protected JSON policy PR gate
 
 The independent PR check **Canonical policy JSON — review gate** protects
@@ -131,11 +173,31 @@ validation; the Windows PR advisory is not a substitute for a
 native Windows compile. The WebGUI Python suite, JavaScript checks
 and Docker smoke run in the selected WebGUI release lane.
 
+### CI and workflow evidence boundaries
+
+- `.github/workflows/validate.yml` runs PR scope/layout tests, the
+  independent canonical JSON policy gate and selected WebGUI checks.
+  Its Windows Rust/Slint job is **advisory only**; a green advisory
+  is not native Windows compilation or Slint UI acceptance.
+- `.github/workflows/01-full-release.yml` owns release builds.
+  The WebGUI lane runs Python, JavaScript and container/PostgreSQL
+  validation. Native Windows packaging is a distinct Windows lane;
+  its extended Cargo fmt/Clippy/library suite runs **only when
+  explicitly selected**, including for Store modes.
+- `02-store-recovery.yml` and `03-ghcr-recovery.yml` are for authorized
+  tagged Store and GHCR recovery, not ordinary docs or PR checks.
+  Do not dispatch or relax them to validate a documentation edit.
+- For documentation-only work, validate links, paths, schema
+  references, formatting and PR checks. Record any runtime,
+  database migration, browser or native tests **not run** instead
+  of asserting full application parity.
+
 ## Mandatory Codex preflight
 
-1. Read this file, `docs/build-layout.md`, `docs/POLICY-REGISTER.md`,
-   `docs/POLICY-INDEX.md` and `docs/SCHEMA-VALIDATION.md`; inspect the
-   current branch and worktree. Preserve unpublished local edits.
+1. Read this file, `README.md`, `docs/README.md`, `docs/build-layout.md`,
+   `docs/POLICY-REGISTER.md`, `docs/POLICY-INDEX.md` and
+   `docs/SCHEMA-VALIDATION.md`; inspect the current branch and worktree.
+   Preserve unpublished local edits.
 2. Confirm the exact supported build input, import, runtime asset, migration,
    packaging, and regression-test reference before proposing source deletion
    or moving any file.
@@ -146,8 +208,9 @@ and Docker smoke run in the selected WebGUI release lane.
 4. Only implement the explicitly authorized scope; do not silently modify
    media files, SQLite/PostgreSQL content, artist identities, MBIDs, history,
    schemas or release workflows as a consequence of a documentation audit.
-5. For technical changes, execute the relevant, available validation gates
-   and report both actual runs and checks that were **not** run. A passing
+5. For technical and documentation changes, execute the relevant, available
+   validation gates; check documentation links and references when applicable.
+   Report both actual runs and checks that were **not** run. A passing
    test does not itself approve its assertions.
 6. Record changed files, source SHA, independent test evidence, unresolved
    issues, and whether the `main` branch remained untouched. No merge or

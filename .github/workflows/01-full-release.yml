@@ -667,7 +667,7 @@ jobs:
           cp -R build/WEBGui release-package/build/
           cp -R schema docs release-package/
           cp .dockerignore release-package/
-          cp config.example.toml README.md LICENSE PRIVACY.md SECURITY.md SUPPORT.md release-package/
+          cp README.md LICENSE PRIVACY.md SECURITY.md SUPPORT.md release-package/
           tar -czf release-assets/splined-webgui-python.tar.gz -C release-package .
 
       - name: Upload WebGUI / Python artifact
@@ -795,7 +795,7 @@ jobs:
           & release/Generate-ReleaseNotes.ps1 `
             -Version $env:RELEASE_VERSION `
             -RepositoryRoot . `
-            -ConfigPath cliff.toml `
+            -ConfigPath release/cliff.toml `
             -GitHubTemplatePath release/templates/github-release.tera `
             -OutputDirectory release-notes
 
@@ -1036,7 +1036,7 @@ jobs:
             -Version $env:RELEASE_VERSION `
             -BaselineMetadataPath store-notes/STORE-BASELINE.json `
             -RepositoryRoot . `
-            -ConfigPath cliff.toml `
+            -ConfigPath release/cliff.toml `
             -StoreTemplatePath release/templates/store-highlights.tera `
             -OutputDirectory store-notes
 

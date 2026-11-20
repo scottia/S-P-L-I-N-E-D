@@ -79,7 +79,7 @@ jobs:
           ref: ${{ github.sha }}
           path: .splined-release-engine
           sparse-checkout: |
-            cliff.toml
+            release/cliff.toml
             release/Install-GitCliff.ps1
             release/Generate-StoreHighlights.ps1
             release/StoreHighlightsPolicy.ps1
@@ -268,7 +268,7 @@ jobs:
             -Version $env:RELEASE_VERSION `
             -BaselineMetadataPath store-notes/STORE-BASELINE.json `
             -RepositoryRoot . `
-            -ConfigPath .splined-release-engine/cliff.toml `
+            -ConfigPath .splined-release-engine/release/cliff.toml `
             -StoreTemplatePath .splined-release-engine/release/templates/store-highlights.tera `
             -OutputDirectory store-notes
           Copy-Item -LiteralPath store-notes/STORE-HIGHLIGHTS.txt -Destination store-submission/STORE-HIGHLIGHTS.txt

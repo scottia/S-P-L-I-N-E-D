@@ -13,6 +13,9 @@ published history belongs in Git tags and GitHub Releases.
   adds the full GitHub Release link for omitted details.
 - `Install-GitCliff.ps1` installs the pinned release-note engine and validates
   its checksum.
+- [`cliff.toml`](cliff.toml) contains the shared release-note and Store
+  classification configuration. Historical categories preserve old release
+  grouping; they do not declare a current application build target.
 - `templates/` contains the active GitHub Release and Microsoft Store Tera
   renderers.
 - `Test-ReleaseNoteClassification.ps1` and `Test-StoreBaseline.ps1` exercise
@@ -29,6 +32,6 @@ published history belongs in Git tags and GitHub Releases.
   outputs; the WebGUI source archive and GHCR image are separate artifacts.
 - macOS is not a release target in the current `/dev` Workflow 01 source.
 
-Windows release notes are generated from `cliff.toml` and
+Windows release notes are generated from [`cliff.toml`](cliff.toml) and
 `templates/github-release.tera`; a static migration-era release-note file is
 not retained here.

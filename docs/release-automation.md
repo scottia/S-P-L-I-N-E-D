@@ -18,7 +18,7 @@ separate approval. The approved behavioral policy remains in
 | GHCR WebGUI Dockerfile | [`build/WEBGui/Dockerfile`](../build/WEBGui/Dockerfile) |
 | WebGUI Compose/env/config | [`build/WEBGui/docker/`](../build/WEBGui/docker/) |
 | Shared runtime JSON/SQL | [`schema/`](../schema/) |
-| Release scripts, notes templates and Store regression data | [`release/`](../release/) and [`cliff.toml`](../cliff.toml) |
+| Release scripts, notes templates and Store regression data | [`release/`](../release/) including [`cliff.toml`](../release/cliff.toml) |
 
 Workflow 01 is the normal publisher. Workflow 02 does not create new release
 tags or GHCR images. Workflow 03 only repairs a missing GHCR tag using a
@@ -138,7 +138,10 @@ because its sample version is older.
 remain in service. `Generate-ReleaseNotes.ps1`,
 `Generate-StoreHighlights.ps1`, `Resolve-StoreBaseline.ps1`,
 `StoreHighlightsPolicy.ps1` and `Install-GitCliff.ps1` support the
-numbered workflows. Git-cliff is pinned to **2.14.2**.
+numbered workflows. The shared classification is at
+[`release/cliff.toml`](../release/cliff.toml), and Git-cliff is pinned to
+**2.14.2**. Historical categories remain release-note grouping rules,
+not supported application targets.
 `templates/` contains release-note and Store Tera templates; the
 `Test-*.ps1` scripts and `tests/` hold regression cases, including
 deliberately old **synthetic** Store-version JSON fixtures. Old fixture
