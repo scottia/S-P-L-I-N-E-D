@@ -599,6 +599,16 @@ jobs:
             release-assets/windows-update.json
           if-no-files-found: error
 
+      - name: Install and verify git-cliff 2.14.2 for Store fixture validation
+        if: ${{ (inputs.store_submit_update == true || inputs.store_submit_draft == true) && inputs.release_confirmation == 'Stop - no release' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & release/Install-GitCliff.ps1 -InstallDirectory (Join-Path $env:RUNNER_TEMP "git-cliff-2.14.2")
+          if (((git-cliff --version) -join "`n").Trim() -cne "git-cliff 2.14.2") {
+            throw "The Store fixture validation engine must be git-cliff 2.14.2."
+          }
+
       - name: Validate Store published-baseline logic against synthetic regression fixtures
         if: ${{ (inputs.store_submit_update == true || inputs.store_submit_draft == true) && inputs.release_confirmation == 'Stop - no release' }}
         shell: pwsh
