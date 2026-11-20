@@ -6,6 +6,10 @@ a repeat approval. The matching checked-in media-state JSON and focused
 source corrections have been committed to `dev`. Full installed-client
 validation is still outstanding; that does not revoke owner approval.
 
+The [root README](../README.md) provides a user-facing overview,
+installation choices and grouped entry points into these references.
+This index is the deeper **development** guide map, not published app Help.
+
 ## Documentation hierarchy
 
 | Reference | Purpose and authority |
@@ -80,6 +84,11 @@ neutral Unprocessed/All **name** colors, and WebP-only static-cover
 separation. See [validation notes](SCHEMA-VALIDATION.md) for the precise
 remaining defects; do not claim full visual acceptance yet.
 
+- [PR #219](https://github.com/scottia/S-P-L-I-N-E-D/pull/219) **merged
+  into `dev`**: retired obsolete root Album example data, preserved
+  active application/release regression tests, corrected release
+  guidance and revised ten current Windows/WebGUI technical guides.
+  Source and link review does not establish installed-client parity.
 - [PR #217](https://github.com/scottia/S-P-L-I-N-E-D/pull/217) **merged
   into `dev`**: mandatory Codex Draft PR process, current-PR-only owner
   exceptions, corrected documentation and WebGUI Docker relocation.

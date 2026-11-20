@@ -50,6 +50,71 @@ approval of the register is not proof that every implementation is correct.
 - Do not modify, merge into, force-push, or publish from `main` without
   the owner's explicit subsequent authorization.
 
+## Documentation audience and accuracy
+
+- Root `README.md` is the **user-facing navigation** for the current
+  development source. Organize installation, capabilities, application
+  choices, documentation and safety into clear sections with useful
+  bulleted links. The `main` README is a **style reference only**;
+  never import its obsolete paths, unsupported application targets or
+  release claims into `dev`.
+- `docs/README.md` indexes development guides.
+  `docs/POLICY-REGISTER.md` records **owner-approved requirements**;
+  `docs/POLICY-INDEX.md` maps policy/schema consumers;
+  `docs/SCHEMA-VALIDATION.md` records implementation evidence and
+  unresolved verification. These are different authorities and must
+  not be presented as interchangeable.
+- The reviewed source-based guides cover Windows and browser operation
+  (`windows-guide.md`, `browser-workspace-guide.md`),
+  storage and upgrades (`catalog-authority.md`,
+  `splined-media-database.md`,
+  `windows-schema-upgrade-preparedness.md`),
+  settings/sources (`config-v5-reference.md`,
+  `source-policies-range-types.md`, `credentials-providers.md`)
+  and release/store (`release-automation.md`, `windows-store.md`).
+  Read the relevant guide **and current code/config/schema** before
+  updating an operational claim. PR #219's documentation review is
+  not a blanket certification of deployed UI or synchronization.
+- Validate relative links and source paths in every changed README,
+  agent instruction and guide. Confirm that headings, Config v5
+  controls, supported deployments, SQL/JSON schema roles and
+  Windows-versus-WebGUI behavior match current `dev`. Keep old
+  source-root or retired root-fixture references out of active docs.
+- Do not promote a development guide as public in-app Help before
+  separate `main` review, and never present a passing docs/build
+  check as evidence of on-device Windows UI or live database parity.
+
+## Catalog, configuration and schema ownership
+
+- The Windows Rust/Slint application uses configured
+  `<scan.cache_dir>/splined.db`. SQLite is authoritative for
+  synchronized Artist/Album/Track identity, inventory and processing
+  fields; WebGUI's PostgreSQL database owns its own jobs, sessions,
+  audit, queues and explicitly WebGUI-owned columns. The detailed
+  field allowlists are implemented in
+  `build/WEBGui/webgui/catalog_authority.py`.
+- **Standalone and Shared / Network SQLite use the same approved
+  media-state and COMP policy.** Shared SQLite changes how one
+  physical file is accessed, not the behavior contract. Optional
+  PostgreSQL coordination is a distinct connection and writer
+  evidence mechanism; it does not make PostgreSQL authoritative over
+  synchronized Windows fields or create a second policy.
+- Root `schema/` has **four different canonical contracts**:
+  `media-state-classification.json` (protected name/dot policy),
+  `comp-report-policy.json` (protected COMP baseline),
+  `media.sql` (SQLite DDL) and `settings-ui.json` (Config v5
+  presentation/fields). Do not duplicate these as independent client
+  contracts or reinterpret SQL/default settings as owner policy.
+- Config v5 TOML, runtime credential-directory files, and
+  persisted PostgreSQL/local policy revisions are separate from
+  checked-in behavioral JSON. Report incompatible persisted revisions
+  for deliberate resolution; do not silently rewrite databases,
+  media files, saved credentials or existing policy revisions.
+- For an operational documentation change, identify whether a
+  statement is **approved policy**, **verified current source**,
+  **test evidence**, or **unverified deployed behavior**. Preserve
+  these distinctions in both README and technical guides.
+
 ## Protected JSON policy PR gate
 
 The independent PR check **Canonical policy JSON — review gate** protects
@@ -131,11 +196,31 @@ validation; the Windows PR advisory is not a substitute for a
 native Windows compile. The WebGUI Python suite, JavaScript checks
 and Docker smoke run in the selected WebGUI release lane.
 
+### CI and workflow evidence boundaries
+
+- `.github/workflows/validate.yml` runs PR scope/layout tests, the
+  independent canonical JSON policy gate and selected WebGUI checks.
+  Its Windows Rust/Slint job is **advisory only**; a green advisory
+  is not native Windows compilation or Slint UI acceptance.
+- `.github/workflows/01-full-release.yml` owns release builds.
+  The WebGUI lane runs Python, JavaScript and container/PostgreSQL
+  validation. Native Windows packaging is a distinct Windows lane;
+  its extended Cargo fmt/Clippy/library suite runs **only when
+  explicitly selected**, including for Store modes.
+- `02-store-recovery.yml` and `03-ghcr-recovery.yml` are for authorized
+  tagged Store and GHCR recovery, not ordinary docs or PR checks.
+  Do not dispatch or relax them to validate a documentation edit.
+- For documentation-only work, validate links, paths, schema
+  references, formatting and PR checks. Record any runtime,
+  database migration, browser or native tests **not run** instead
+  of asserting full application parity.
+
 ## Mandatory Codex preflight
 
-1. Read this file, `docs/build-layout.md`, `docs/POLICY-REGISTER.md`,
-   `docs/POLICY-INDEX.md` and `docs/SCHEMA-VALIDATION.md`; inspect the
-   current branch and worktree. Preserve unpublished local edits.
+1. Read this file, `README.md`, `docs/README.md`, `docs/build-layout.md`,
+   `docs/POLICY-REGISTER.md`, `docs/POLICY-INDEX.md` and
+   `docs/SCHEMA-VALIDATION.md`; inspect the current branch and worktree.
+   Preserve unpublished local edits.
 2. Confirm the exact supported build input, import, runtime asset, migration,
    packaging, and regression-test reference before proposing source deletion
    or moving any file.
@@ -146,8 +231,9 @@ and Docker smoke run in the selected WebGUI release lane.
 4. Only implement the explicitly authorized scope; do not silently modify
    media files, SQLite/PostgreSQL content, artist identities, MBIDs, history,
    schemas or release workflows as a consequence of a documentation audit.
-5. For technical changes, execute the relevant, available validation gates
-   and report both actual runs and checks that were **not** run. A passing
+5. For technical and documentation changes, execute the relevant, available
+   validation gates; check documentation links and references when applicable.
+   Report both actual runs and checks that were **not** run. A passing
    test does not itself approve its assertions.
 6. Record changed files, source SHA, independent test evidence, unresolved
    issues, and whether the `main` branch remained untouched. No merge or
