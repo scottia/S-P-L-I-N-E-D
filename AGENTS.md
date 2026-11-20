@@ -142,9 +142,22 @@ private settings in repository documentation, commits or reports.
 
 ## Policy register status
 
-**Partial: owner-approved Artist/Album color classification only.**
-`docs/POLICY-REGISTER.md` governs that scoped classification. The
-`docs/POLICY-INDEX.md` maps four runtime schema artifacts; a checked-in
-JSON or code implementation may still diverge. No application-wide
-permanent register or precedence is certified for other behavior. The
-historical 38-row comparison must not be imported as policy.
+**Owner-approved requirements already established:** Artist and Album
+file-list NAME classifications and rankings, the all-applicable Album
+status-dot order, screenshot-approved frames/banners/COMP-track colors,
+the MEDIA FILTER-only Unprocessed count, and a single canonical policy
+across standalone/shared/coordination deployments. These decisions
+are authoritative in `docs/POLICY-REGISTER.md`; Codex must not request
+their approval again merely because runtime parity remains unverified.
+
+`docs/POLICY-INDEX.md` links all four shared `schema/` contracts.
+The COMP policy is an accepted working baseline (do not speculate or
+rewrite its matching rules), while SQLite DDL and Settings UI received
+structural inspection. Outstanding runtime/fixture checks are
+**implementation validation**, not pending approval of the owner's
+established color policy. See `docs/SCHEMA-VALIDATION.md`.
+
+The historic 38-row comparison is excluded as policy, and no old
+implementation or test expectation may silently supersede this
+register. The mandatory Codex PR process in this version of
+`AGENTS.md` is under owner review in draft PR #217 until merged.
