@@ -53,6 +53,14 @@ the existing Windows package and GitHub Release preparation gates.
   Store options require a Windows-capable target and applicable credentials.
   Never infer permission to submit from a successful build alone.
 
+**Extended Windows validation is opt-in, including Store modes.**
+Workflow 01 does **not** automatically enable or require
+`extended_windows_validation` when either Store mode is selected. Unless
+explicitly enabled, the native build and package checks run without the
+separate strict `cargo fmt`, Clippy and library-test suite. Earlier
+claims that Store selection itself enforces these extended checks are
+not supported by the current workflow inputs.
+
 **Current workflow validation concern:** For `platform = Windows`,
 `build-webgui` is skipped (as confirmed by `finalize-tag` and the
 `release-success` gate), but the GHCR publication stage still executes.
