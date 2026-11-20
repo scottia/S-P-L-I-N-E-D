@@ -55,6 +55,44 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn("cp -R schema docs release-package/", workflow)
         self.assertNotIn("cp -R schema docker docs release-package/", workflow)
 
+    def test_configuration_examples_are_runtime_owned(self):
+        self.assertFalse((ROOT / "config.example.toml").exists())
+        windows_example = ROOT / "build/Windows/config.example.toml"
+        webgui_example = ROOT / "build/WEBGui/docker/config.example.toml"
+        self.assertTrue(windows_example.is_file())
+        self.assertTrue(webgui_example.is_file())
+        windows_source = (ROOT / "build/Windows/src/config.rs").read_text(encoding="utf-8")
+        self.assertIn('include_str!("../config.example.toml")', windows_source)
+        webgui_source = (ROOT / "build/WEBGui/webgui/runtime.py").read_text(encoding="utf-8")
+        self.assertIn("build/WEBGui/docker/config.example.toml", webgui_source)
+        workflow = (ROOT / ".github/workflows/01-full-release.yml").read_text(encoding="utf-8")
+        self.assertIn("cp -R build/WEBGui release-package/build/", workflow)
+        self.assertIn("cp README.md LICENSE PRIVACY.md SECURITY.md SUPPORT.md release-package/", workflow)
+        self.assertNotIn("cp config.example.toml ", workflow)
+        webgui_tests = (ROOT / "build/WEBGui/webgui/tests/test_config_v5.py").read_text(encoding="utf-8")
+        self.assertNotIn('load_example("config.example.toml")', webgui_tests)
+        self.assertNotIn('            "config.example.toml",', webgui_tests)
+
+    def test_cliff_config_and_release_consumers_are_colocated(self):
+        self.assertFalse((ROOT / "cliff.toml").exists())
+        classification = ROOT / "release/cliff.toml"
+        self.assertTrue(classification.is_file())
+        self.assertIn('tag_pattern = ', classification.read_text(encoding="utf-8"))
+        workflow_one = (ROOT / ".github/workflows/01-full-release.yml").read_text(encoding="utf-8")
+        self.assertEqual(workflow_one.count("-ConfigPath release/cliff.toml"), 2)
+        workflow_two = (ROOT / ".github/workflows/02-store-recovery.yml").read_text(encoding="utf-8")
+        self.assertIn("            release/cliff.toml", workflow_two)
+        self.assertIn("-ConfigPath .splined-release-engine/release/cliff.toml", workflow_two)
+        github_fixture = (ROOT / "release/Test-ReleaseNoteClassification.ps1").read_text(encoding="utf-8")
+        self.assertIn('Join-Path $PSScriptRoot "cliff.toml"', github_fixture)
+        store_fixture = (ROOT / "release/Test-StoreBaseline.ps1").read_text(encoding="utf-8")
+        self.assertIn('Join-Path $PSScriptRoot "cliff.toml"', store_fixture)
+        self.assertIn('$audit.classification -cne "release/cliff.toml"', store_fixture)
+        store_renderer = (ROOT / "release/Generate-StoreHighlights.ps1").read_text(encoding="utf-8")
+        self.assertIn('classification = "release/cliff.toml"', store_renderer)
+        release_docs = (ROOT / "docs/release-automation.md").read_text(encoding="utf-8")
+        self.assertIn("../release/cliff.toml", release_docs)
+
     def test_no_legacy_root_docker_config_references_in_python(self):
         # A missing relocated example can otherwise fail unrelated tests at
         # import time before the Docker image build is reached.
