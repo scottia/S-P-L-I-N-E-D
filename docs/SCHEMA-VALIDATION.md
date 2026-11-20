@@ -47,9 +47,11 @@ the UI, not a file-list name or dot category.
   Their presence is **not proof** of installed-client correctness.
 - GitHub Actions run
   [44664332291](https://github.com/scottia/S-P-L-I-N-E-D/actions/runs/44664332291)
-  for PR #217 completed successfully, including the canonical
-  JSON review gate. WebGUI was skipped by scope and Windows was
-  advisory; **that run does not certify PR #216 runtime changes**.
+  for PR #217's initial documentation-only commit completed successfully,
+  including the canonical JSON review gate. WebGUI was skipped by scope
+  and Windows was advisory; **that historical run certifies neither
+  PR #216 runtime changes nor PR #217's subsequent Docker relocation**.
+  Those relocation checks require a separate run on the updated PR head.
 
 **Still untested/undemonstrated at this checkpoint:**
 

@@ -74,7 +74,9 @@ owner-approved behavioral requirements.
 
 Both protected policy JSONs are checked in the separate **Canonical
 policy JSON — review gate**. This gate has been introduced on `dev`
-and exercised successfully on the docs-only PR #217. A proposal
+and exercised successfully on PR #217's earlier documentation-only
+checkpoint. Its later WebGUI Docker relocation requires fresh WebGUI,
+Docker image and packaging validation. A proposal
 changing either protected JSON fails with instructions referencing
 `AGENTS.md` and this register. It **does not auto-revert or
 authorize** the change.

@@ -65,9 +65,10 @@ remaining defects; do not claim full visual acceptance yet.
   It remains **HOLD** because of branch divergence and missing complete
   runtime verification.
 - [Draft PR #217](https://github.com/scottia/S-P-L-I-N-E-D/pull/217)
-  targets `dev` and proposes Codex's mandatory PR workflow with
-  **explicit owner approval for a named action on the current PR only**.
-  Its governance text is not merged until the owner approves.
+  targets `dev` and contains the proposed mandatory Codex PR workflow,
+  **current-PR-only owner exceptions**, corrected policy documentation,
+  and relocation of WebGUI Docker deployment inputs. Review its CI and
+  its governance text before owner-approved merge.
 
 The independent **Canonical policy JSON — review gate** exists in CI.
 It fails changes to either policy JSON and directs review to `AGENTS.md`;
