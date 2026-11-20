@@ -21,6 +21,12 @@ checkpoint**, not a declaration that the present application code is correct.
   not establish their rules as owner-approved policy.
 - Previously communicated owner decisions are not voided by this cleanup.
   Reconcile them explicitly before any behavioral correction.
+- **Mode-independent classification:** Shared / Network SQLite is not a
+  media-state policy choice. All clients use the same approved Artist/Album
+  name rankings and status-dot contract from
+  `docs/POLICY-REGISTER.md`; an embedded JSON seed or PostgreSQL/local
+  mirror is a delivery mechanism, not permission for a different policy.
+  `Unprocessed` belongs only to the MEDIA FILTER count, not name colors.
 
 ## Approved structural boundary
 

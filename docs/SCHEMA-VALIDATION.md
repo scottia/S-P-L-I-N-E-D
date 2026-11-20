@@ -144,3 +144,28 @@ checked-in JSON seed. Strict order validation may reject a nonconforming
 saved revision; inspect and reconcile it deliberately before deployment.
 No writes to production catalog, PostgreSQL policy rows, media tags or
 music files occurred. `/main` remains untouched.
+
+## Deployment-mode authority clarification
+
+The owner explicitly requires **one Artist/Album classification policy in all
+deployment modes**. Selecting Shared / Network SQLite cannot select a
+different ranking, an alternate "default" policy, or different name colors.
+
+Read-only code inspection confirms Windows embeds the checked-in JSON through
+`include_str!("../../../schema/media-state-classification.json")` and uses
+that embedded policy when no external file is configured. The standalone
+Setup test does **not** create a separate status-policy file. WebGUI includes
+the same JSON in its container but can persist a separately revisioned
+PostgreSQL value; Windows can also load an existing credential-directory
+copy. These are distribution/persistence mechanisms, not independent
+behavioral-policy approvals.
+
+The current implementation **does not yet prove** exact parity of existing
+local copies, PostgreSQL revisions, and new builds. This must be verified
+without silently writing to installed policy files or databases.
+
+Windows Slint also previously contained an explicit name rendering exception
+for `Unprocessed` and `All`, mapping them to theme foreground rather than
+the semantic status color. That exception is removed in the scoped /dev
+rendering correction. Upstream name evidence and runtime parity remain
+subject to validation.

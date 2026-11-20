@@ -405,7 +405,7 @@ component LibraryItem inherits Rectangle {
             Image { source: root.item.artwork; width: parent.width; height: parent.height; image-fit: cover; visible: root.item.has-artwork; }
         }
         VerticalLayout { spacing: (2px * AppTheme.ui-scale); alignment: center;
-            Text { text: root.item.primary; color: root.item.status == "Unprocessed" || root.item.status == "All" ? (AppTheme.light ? AppTheme.secondary-foreground : AppTheme.foreground) : root.item.status-color; font-size: (16px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: !root.status-only-album-selection && (root.item.selected || root.item.expanded) ? 700 : 600; overflow: elide; }
+            Text { text: root.item.primary; color: root.item.status-color; font-size: (16px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: !root.status-only-album-selection && (root.item.selected || root.item.expanded) ? 700 : 600; overflow: elide; }
             if root.item.secondary != "": Text { text: root.item.secondary; color: root.item.kind == "artist" ? AppTheme.magenta : AppTheme.secondary-foreground; font-size: (15px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 600; overflow: elide; }
         }
         if root.item.kind == "album" || root.item.kind == "album-child" || root.item.kind == "fallback-album": Rectangle {

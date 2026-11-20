@@ -31,6 +31,7 @@ Dockerfile, release workflows, tests, and PostgreSQL seed/mirror handling.
 
 - [Artist names and state ranking — `ART-COLOR-001..006`](POLICY-REGISTER.md#media-filter-artist-name-policy)
 - [Album names and status dots — `ALB-COLOR-001..006`](POLICY-REGISTER.md#album-name-and-status-dot-policy)
+- [Deployment-independent policy — `STATE-POLICY-001..004`](POLICY-REGISTER.md#deployment-independent-policy-authority)
 
 ## Implementation evidence (not approval)
 
@@ -38,8 +39,14 @@ Dockerfile, release workflows, tests, and PostgreSQL seed/mirror handling.
 - Active WebGUI policy: PostgreSQL revisioned row and in-memory state.
 - Coordinated Windows: local validated JSON mirror and asynchronous
   PostgreSQL-revision checks.
-- Standalone clients: validated repository or local defaults, subject to
-  their configuration.
+- **Standalone Windows:** embeds the exact same checked-in
+  `schema/media-state-classification.json` as its offline policy source;
+  this is not a second or separately approved default.
+- **Shared / Network SQLite:** changes the SQLite storage/coordination
+  mode, not name classification, rank order, or Album-dot rules.
+- Local credential-directory copies and PostgreSQL revisions remain
+  implementation/runtime state and must not fork the owner-approved
+  rules. Drift requires explicit validation and reporting.
 - Both clients must be checked against the **effective** runtime policy.
 - Existing historical sources are retained only in
   [`dev-archive`](https://github.com/scottia/S-P-L-I-N-E-D/tree/dev-archive).

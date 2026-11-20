@@ -32,6 +32,15 @@ artifact to be validated against it, not the source of approval.
 | `ALB-COLOR-005` | Show **all applicable Album status dots** simultaneously, ordered: **dark grey, red, yellow, purple, orange, green, auxiliary blue**. A single Album NAME priority winner must not suppress other applicable status dots. |
 | `ALB-COLOR-006` | Missing Artist Art or ordinary Album Art is yellow evidence; incomplete/error is red evidence. Green requires verified completion and absence of higher-priority deficiency. The governing effective color rule, not hard-coded CSS, determines the name. |
 
+## Deployment-independent policy authority
+
+| Policy ID | Required behavior |
+| --- | --- |
+| `STATE-POLICY-001` | **The Shared / Network SQLite option is a storage/coordination setting, never a policy selector.** Artist/Album classification, name-color precedence, forbidden name colors, and Album status-dot order must be identical in standalone Windows, shared Windows, and WebGUI configurations. |
+| `STATE-POLICY-002` | `schema/media-state-classification.json` is the canonical checked-in policy contract for all deployment modes. A Windows build may embed that **same** JSON for offline operation; this is delivery of the canonical policy, **not** an alternate "standalone default" rule set. |
+| `STATE-POLICY-003` | A local editable file, PostgreSQL revision, or Windows mirror may not replace the mandatory classification with different rankings or forbidden colors. When effective revisions differ, validate/report the discrepancy; do not silently select alternate behavior based on database mode. |
+| `STATE-POLICY-004` | **Unprocessed exists only as a MEDIA FILTER count.** An internal `unprocessed` catalog processing label is not an Artist or Album name classification, is not an Album status dot, and cannot force neutral white text. The unmatched/default name classification is Red. |
+
 ## Non-negotiable enforcement
 
 - **No Artist or Album name may display white**, including Unprocessed,
@@ -43,8 +52,9 @@ artifact to be validated against it, not the source of approval.
 - Verify WebGUI and Windows **independently** against the same owner policy.
   Never decide which is right by copying the other.
 - Runtime PostgreSQL policy revisions and Windows local mirrors may differ
-  from the checked-in JSON seed. Validate all effective values and do not
-  overwrite runtime state or media files as part of a documentation audit.
+  from the checked-in canonical JSON. Validate and reconcile effective values
+  against the *same owner-approved rules*, regardless of Shared selection.
+  Do not overwrite runtime state or media files as part of a documentation audit.
 
 ## Boundaries requiring explicit follow-up
 
