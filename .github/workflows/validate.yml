@@ -22,6 +22,30 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python3 .github/scripts/validation_scope.py "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+  policy-review:
+    name: Canonical policy JSON — review gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Test both policy guards
+        run: python3 -m unittest discover -s .github/scripts -p 'test_check_protected_policies.py' -v
+      - name: Block unreviewed policy JSON changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Execute the trusted target-branch guard after its first installation,
+          # not a modified checker supplied by the proposed PR.
+          if git cat-file -e "$BASE_SHA:.github/scripts/check_protected_policies.py" 2>/dev/null; then
+            git show "$BASE_SHA:.github/scripts/check_protected_policies.py" > "$RUNNER_TEMP/check_protected_policies.py"
+            python3 "$RUNNER_TEMP/check_protected_policies.py" "$BASE_SHA" "$HEAD_SHA"
+          else
+            # Bootstrap only: the target branch does not yet have a guard.
+            python3 .github/scripts/check_protected_policies.py "$BASE_SHA" "$HEAD_SHA"
+          fi
+
   webgui:
     needs: scope
     if: needs.scope.outputs.webgui == 'true'
