@@ -319,12 +319,19 @@ def embedded_album_artwork_summary(
         info is None or info[0] < preferred_side or info[1] < preferred_side
         for info in infos
     )
+    # Physical readback requires exact square dimensions. The footer must not
+    # mark a large-but-wrong or nonsquare embedded image as preferred quality.
+    outside_preference = any(
+        info is None or info[0] != preferred_side or info[1] != preferred_side
+        for info in infos
+    )
     return {
         "track_count": len(infos),
         "embedded_count": len(readable),
         "resolution": resolution,
         "bytes": sum(info[2] for info in readable),
         "below_preference": below_preference,
+        "outside_preference": outside_preference,
         "varying": varying,
         "current_width": current[0] if current else 0,
         "current_height": current[1] if current else 0,

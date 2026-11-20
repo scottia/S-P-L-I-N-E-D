@@ -2574,8 +2574,7 @@ function selectedImage() {
     const trackCount = Number(embedded.track_count ?? state.album.tracks ?? 0);
     const embeddedCount = Number(embedded.embedded_count ?? state.album.embedded ?? 0);
     const resolution = String(embedded.resolution || (embeddedCount ? "Varying Size" : "No embedded art"));
-    const resolutionClass = !embeddedCount || embedded.below_preference ? "metric-below-minimum"
-      : resolution === "Varying Size" ? "metric-in-process" : "metric-ideal";
+    const resolutionClass = embeddedResolutionStatusClass(embedded, embeddedCount, resolution);
     extra.classList.add("embedded-metadata-row");
     extra.append(
       node("span", "", "Track(s) (" + trackCount + ")"),
@@ -2589,6 +2588,14 @@ function selectedImage() {
       : "";
   } else ribbon.hidden = true;
   applyPreviewEffects();
+}
+function embeddedResolutionStatusClass(embedded, embeddedCount, resolution) {
+  // Match strict physical validation: oversized and non-square embedded art
+  // need the same attention treatment as missing or undersized thumbnails.
+  // Preserve compatibility with an older response carrying only below_preference.
+  const attention = embedded.outside_preference ?? embedded.below_preference;
+  return !embeddedCount || attention ? "metric-below-minimum"
+    : resolution === "Varying Size" ? "metric-in-process" : "metric-ideal";
 }
 function renderReview() {
   const artistEntry = state.editorMode === "artist" && state.workspace !== "enhance" && !state.compReportVisible && !state.selectedPortrait && !state.selectedBanner;

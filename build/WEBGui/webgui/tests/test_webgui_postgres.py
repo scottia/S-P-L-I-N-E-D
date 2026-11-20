@@ -299,17 +299,20 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertEqual(client.get("/api/settings").status_code, 200)
 
     @staticmethod
-    def set_flac_embedded_cover(path: Path, side: int | None):
+    def set_flac_embedded_cover(
+        path: Path, side: int | None, *, height: int | None = None
+    ):
         audio = FLAC(path)
         audio.clear_pictures()
         if side is not None:
+            final_height = side if height is None else height
             rendered = BytesIO()
-            Image.new("RGB", (side, side), "purple").save(rendered, format="JPEG")
+            Image.new("RGB", (side, final_height), "purple").save(rendered, format="JPEG")
             picture = Picture()
             picture.type = 3
             picture.mime = "image/jpeg"
             picture.width = side
-            picture.height = side
+            picture.height = final_height
             picture.depth = 24
             picture.data = rendered.getvalue()
             audio.add_picture(picture)
@@ -962,6 +965,20 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         wrong_size = self.services.validate_album_embedding(album_id)
         self.assertEqual(
             (wrong_size["status"], wrong_size["embedded_tracks"]),
+            ("verified", 1),
+        )
+
+        self.set_flac_embedded_cover(self.files[1], 301)
+        oversized = self.services.validate_album_embedding(album_id)
+        self.assertEqual(
+            (oversized["status"], oversized["embedded_tracks"]),
+            ("verified", 1),
+        )
+
+        self.set_flac_embedded_cover(self.files[1], 300, height=301)
+        non_square = self.services.validate_album_embedding(album_id)
+        self.assertEqual(
+            (non_square["status"], non_square["embedded_tracks"]),
             ("verified", 1),
         )
 

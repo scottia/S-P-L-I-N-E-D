@@ -103,6 +103,38 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
         self.assertTrue(summary["below_preference"])
         self.assertTrue(summary["varying"])
 
+    def test_album_embedded_summary_flags_any_size_outside_preference(self):
+        def jpeg(width: int, height: int) -> bytes:
+            buffer = BytesIO()
+            Image.new("RGB", (width, height), "teal").save(buffer, format="JPEG")
+            return buffer.getvalue()
+
+        for (width, height), below, outside in (
+            ((1200, 1200), False, False),
+            ((1199, 1199), True, True),
+            ((1201, 1201), False, True),
+            ((1200, 1201), False, True),
+            ((1201, 1200), False, True),
+        ):
+            with self.subTest(dimensions=(width, height)):
+                with mock.patch(
+                    "webgui.catalog.embedded_track_artwork_bytes",
+                    return_value=jpeg(width, height),
+                ):
+                    summary = embedded_album_artwork_summary(
+                        [Path("sample.flac")], 1200
+                    )
+                self.assertEqual(summary["embedded_count"], 1)
+                self.assertEqual(summary["below_preference"], below)
+                self.assertEqual(summary["outside_preference"], outside)
+
+        with mock.patch(
+            "webgui.catalog.embedded_track_artwork_bytes", return_value=None
+        ):
+            missing = embedded_album_artwork_summary([Path("empty.flac")], 1200)
+        self.assertTrue(missing["below_preference"])
+        self.assertTrue(missing["outside_preference"])
+
     def test_display_sort_keeps_symbol_prefixed_artist_before_letters(self):
         artists = ["Aaliyah", "*NSYNC", "10,000 Maniacs", "Nirvana"]
         self.assertEqual(
