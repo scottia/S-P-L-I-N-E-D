@@ -1,0 +1,3 @@
+# Historical approved media-state ranking guards — main-side reconciliation
+
+Temporary Draft-PR bootstrap only. Reproduce historical approved dev strict validation of Artist ranked names, Album ranked names and all seven Album card dots into current main Windows/Python policy loaders, preserving optional palette/legacy label values, the protected policy JSON blobs, all user/production database state, and existing test coverage. Add disposable tests only. Read-only source review cannot prove effective deployed PostgreSQL or Windows credential-directory copies. Delete this intent file before final review.
