@@ -76,6 +76,16 @@ class OptimizedFullReleaseMirrorTests(unittest.TestCase):
         self.assertIn("release-source.bundle", preflight)
         self.assertIn("temporary local QA source commit", preflight)
         self.assertIn("Validate canonical policies and indexer contracts", preflight)
+        # No can validate a Draft PR branch before merging; a real release
+        # remains restricted to main and uses the exact production source.
+        self.assertIn("inputs.release_confirmation == 'Create release now'", preflight)
+        self.assertIn("Require main branch dispatch", preflight)
+        self.assertIn("inputs.release_confirmation == 'Create release now' && 'main' || github.sha", preflight)
+        for job_name in ("build-windows", "build-webgui", "webgui-tests", "qa-ghcr-build"):
+            self.assertIn(
+                "inputs.release_confirmation == 'Create release now' && 'main' || github.sha",
+                job(self.workflow, job_name),
+            )
 
         for publisher in PUBLISH_JOBS:
             with self.subTest(publisher=publisher):

@@ -101,6 +101,7 @@ jobs:
           fi
 
       - name: Require main branch dispatch
+        if: ${{ inputs.release_confirmation == 'Create release now' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -110,10 +111,10 @@ jobs:
             exit 1
           fi
 
-      - name: Checkout main with tags
+      - name: Checkout exact source with tags (Yes=main, No=dispatched test branch)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: main
+          ref: ${{ inputs.release_confirmation == 'Create release now' && 'main' || github.sha }}
           fetch-depth: 0
 
       - name: Validate canonical policies and indexer contracts before release commit
@@ -351,7 +352,7 @@ jobs:
       - name: Checkout release base
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: main
+          ref: ${{ inputs.release_confirmation == 'Create release now' && 'main' || github.sha }}
           fetch-depth: 0
 
       - name: Download exact release source commit
@@ -653,7 +654,7 @@ jobs:
       - name: Checkout release base
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: main
+          ref: ${{ inputs.release_confirmation == 'Create release now' && 'main' || github.sha }}
           fetch-depth: 0
 
       - name: Download exact release source commit
@@ -717,7 +718,7 @@ jobs:
       - name: Checkout release base
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: main
+          ref: ${{ inputs.release_confirmation == 'Create release now' && 'main' || github.sha }}
           fetch-depth: 0
 
       - name: Download exact release source commit
@@ -1125,7 +1126,7 @@ jobs:
       - name: Checkout exact release base
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: main
+          ref: ${{ inputs.release_confirmation == 'Create release now' && 'main' || github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Download exact versioned candidate source
