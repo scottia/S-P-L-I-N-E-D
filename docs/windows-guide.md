@@ -281,7 +281,7 @@ summary is:
   **Validating** is shown only while Windows is actually checking that Album's
   embedded thumbnails. A verified complete check becomes green; a verified
   missing or wrong-size thumbnail uses the purple attention state.
-- A red frame with a grayscale Album thumbnail means WebGUI performed the last
+- A dark-grey override frame with a grayscale Album thumbnail means WebGUI performed the last
   verified artwork write. For an otherwise unprocessed Album, this verified
   write replaces the stale red Missing dot; all other independent status dots,
   text and controls keep their normal meanings. The card uses the configurable
@@ -716,5 +716,5 @@ making those logs application authority.
 | Shared SQLite is locked/unavailable | Stop other clients, verify the same physical database and share locking, and follow the [shared-database guide](splined-media-database.md) |
 
 For status-color detail, see
-[Windows Select Media and Status Colors](media-filter-status-colors.md). For
+[approved Artist/Album name-color and status-dot policy](POLICY-REGISTER.md). For
 provider failures, see [API/OAuth validation](oauth-validation.md).

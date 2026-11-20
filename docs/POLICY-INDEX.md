@@ -1,123 +1,46 @@
-# S:P:L:I:N:E:D — policy/source index
+# S:P:L:I:N:E:D — policy and indexer source map
 
-**Source review:** Active two-application development layout, including
-merged Docker consolidation and the current protected policy contracts.
-The owner's color and visual rules are **APPROVED**; installed-client behavior
-and the documented technical source remain subject to independent validation.
-This index is not a new request for owner policy approval.
+**Basis:** `main` as audited November 20, 2026 after the approved Windows/WebGUI reconstruction and media-state corrections through PR #238. This index maps existing **approved requirements to current source**; it does not invent new rules or create another 38-row draft. [POLICY-REGISTER.md](POLICY-REGISTER.md) remains the owner-authoritative behavioral register.
 
-## Status vocabulary
+## Two application roots and indexers
 
-- **APPROVED REQUIREMENT:** owner has specified the behavior; **no
-  additional approval is pending to document or enforce it**.
-- **SOURCE CORRECTED:** a matching source correction is present on
-  `dev`; installed-client behavior may still require testing.
-- **STRUCTURALLY INSPECTED:** format, fields and source dependencies
-  were examined; not a database or application acceptance test.
-- **ACCEPTED WORKING BASELINE:** preserve functioning implementation
-  unless specific evidence justifies correction; detailed equivalence
-  remains to be demonstrated.
-- **VALIDATION OPEN:** runtime, UI, data/migration, or saved revision
-  evidence has not yet been demonstrated. **Not a policy approval request.**
-
-## Four shared `/schema` contracts
-
-| File | Role | Decision / validation |
+| Scope | Windows — `build/Windows/` | WebGUI — `build/WEBGui/` |
 | --- | --- | --- |
-| [`media-state-classification.json`](../schema/media-state-classification.json) | **Protected, owner-approved Artist/Album color and dot policy implementation** | **APPROVED REQUIREMENT + SOURCE CORRECTED.** JSON ranking/red-yellow labels and Python/Rust guards updated. CSS and Slint neutral-name exceptions removed. Independent displayed evidence and installed revisions remain VALIDATION OPEN. |
-| [`comp-report-policy.json`](../schema/comp-report-policy.json) | **Protected COMP Artist/Recording matching, MusicBrainz ranking, grouping, revision pinning and coordination** | **ACCEPTED WORKING BASELINE + STRUCTURALLY INSPECTED.** No speculative behavior rewrite; independent parity and saved policy revisions remain VALIDATION OPEN. |
-| [`media.sql`](../schema/media.sql) | SQLite database DDL / catalog coordinator, **not** a media-name policy | **STRUCTURALLY INSPECTED:** 22 table and 24 index declarations identified. Actual execution, migration preservation and owner-field compatibility remain VALIDATION OPEN. |
-| [`settings-ui.json`](../schema/settings-ui.json) | Config v5 and shared Windows/WebGUI settings UI metadata, **not** artwork state authority | **STRUCTURALLY INSPECTED:** parses, 8 sections, 65 unique field paths and no inverted numeric bounds found. Actual UI/default/range/persistence parity remains VALIDATION OPEN. |
+| Persistent catalog | `src/media_database.rs`; SQLite `splined.db` | `webgui/catalog.py`, `webgui/services.py`; separate PostgreSQL catalog |
+| Index generations and batches | `src/catalog_index_coordinator.rs`, `src/index_batch_policy.rs` | `webgui/index_coordinator.py`, `webgui/index_batch_policy.py`, `webgui/migrations/021_catalog_index_coordinator.sql` |
+| Refresh/selection | `src/scan_controller.rs`, `src/scan.rs` | `webgui/services.py`, `webgui/catalog.py` |
+| Synchronized field ownership | SQLite catalog is authoritative for designated Artist/Album/Track fields | `webgui/catalog_authority.py`; PostgreSQL-only jobs, audit, validation and coordination remain local |
+| Artist/Album NAME and status dots | `src/media_state_policy.rs`, `ui/app.slint` | `webgui/media_state_policy.py`, `webgui/catalog.py`, `webgui/static/app.js`, `app.css` |
+| COMP contract | `src/comp_report_policy.rs` | `webgui/comp_report_policy.py` |
 
-All four remain single-sourced in `/schema`. Do not move or copy
-them into independent `/build` variants. The Workflow 01/GHCR and
-Windows dependencies are described by [build-layout.md](build-layout.md).
+[Catalog authority](catalog-authority.md) and [Windows media database](splined-media-database.md) describe write ownership and indexer persistence; [WebGUI guide](browser-workspace-guide.md) covers the browser's index/queue operation. Neither client's live database is a substitute policy definition.
 
-## Test ownership and release validation
+## Four canonical `schema/` contracts
 
-The former root-level example data is not a production configuration or
-additional schema authority. Its redundant cross-runtime tests were
-retired after confirming existing independent checks:
-
-- [Windows compilation tests](../build/Windows/src/compilation.rs)
-  already exercise Album eligibility and MusicBrainz release
-  classification. Workflow 01 runs native Rust tests **only** when
-  `extended_windows_validation` is explicitly enabled for a Windows
-  build; ordinary Windows packaging still compiles the executable.
-- [WebGUI compilation policy tests](../build/WEBGui/webgui/tests/test_splined_compilation_authority_policy.py)
-  cover corresponding eligibility and release ranking in the WebGUI
-  Python suite, discovered by Workflow 01's WebGUI job and the
-  repository's WebGUI PR check.
-- [WebGUI rendering acceptance tests](../build/WEBGui/webgui/tests/test_render_acceptance_contract.py)
-  use local test data, not root-level configuration or a third
-  behavioral-policy JSON.
-
-GitHub PR scope/layout checks run separately from Workflow 01; they
-remain necessary to keep the two application build roots and the
-canonical `schema/` intact. Preserve source regression coverage
-only where it serves current supported application or release gates.
-
-## Approved requirements indexed
-
-| Group | IDs | Implementation / evidence |
+| Source | Owner and usage | Review status |
 | --- | --- | --- |
-| Artist NAME priority and forbidden colors | [`ART-COLOR-001..006`](POLICY-REGISTER.md#approved-artist-file-list-name-classification) | JSON `artist.ranked_states`; Windows `media_state_policy.rs`; WebGUI `media_state_policy.py`, `catalog.py`, `app.js`, `app.css` |
-| Album NAME ranking and all applicable dots | [`ALB-COLOR-001..006`](POLICY-REGISTER.md#approved-album-file-list-name-classification-and-dots) | JSON `album.ranked_name_states` / `status_dots`; Rust/Python validators, WebGUI catalog/card/list, Slint UI |
-| Approved existing frames, banners, COMP track rows and animated WebP indicator | [`VISUAL-001..004`](POLICY-REGISTER.md#approved-visuals-that-must-not-change-during-name-color-corrections) | Approved owner screenshot; application status-key/card/track presentation. **Preserve independently of name correction** |
-| Same policy in all SQLite/PostgreSQL modes and Unprocessed count separation | [`STATE-POLICY-001..004`](POLICY-REGISTER.md#one-canonical-policy-across-every-installation) | Windows compile-time JSON seed; local credential file if present; WebGUI PostgreSQL revision; MEDIA FILTER count |
-| Protected JSON PR review flow | [`GUARD-001..003`](POLICY-REGISTER.md#protected-behavioral-policy-json) | `.github/scripts/check_protected_policies.py` and independent `policy-review` job in `.github/workflows/validate.yml` |
+| [`media-state-classification.json`](../schema/media-state-classification.json) | Owner-approved Artist/Album NAME colors, all Album dots and serialized presentation settings. Embedded by Windows for offline defaults, loaded/revisioned by WebGUI PostgreSQL and optionally mirrored in Windows credentials. | Exact priority validation added in both languages; deployed revision/palette comparison remains a separate read-only task. |
+| [`comp-report-policy.json`](../schema/comp-report-policy.json) | Shared Artist/Recording identity, MusicBrainz ranking, source/COMP options and batch revision pinning. | Protected accepted working contract; test runtime parity independently. |
+| [`media.sql`](../schema/media.sql) | Windows/compatible SQLite catalog DDL; not an Artist/Album color policy. | Validate schema and migrations with disposable databases before any change. |
+| [`settings-ui.json`](../schema/settings-ui.json) | Config v5 settings/UI field descriptions; no independent database or artwork authority. | Check defaults/ranges against both active implementations. |
 
-## Live code and test trace
+The two behavioral JSONs are **protected by approved repository policy**. Their governing Artist ranking is **Red > Yellow > Purple > Green**, Album NAME ranking **Dark Grey > Red > Yellow > Purple > Orange > Green**, and Album-dot ordering **Dark Grey > Red > Yellow > Purple > Orange > Green > auxiliary Blue**, with every applicable dot retained. See [POLICY-REGISTER.md](POLICY-REGISTER.md) for all conditions, exclusions, allowed defaults and separate COMP row semantics.
 
-| Scope | Current `dev` reference |
+## Requirements mapped to live code and regression tests
+
+| Approved group | Source/tests |
 | --- | --- |
-| Windows Rust policy and validation | [`build/Windows/src/media_state_policy.rs`](../build/Windows/src/media_state_policy.rs) |
-| Windows file-list name rendering | [`build/Windows/ui/app.slint`](../build/Windows/ui/app.slint) |
-| WebGUI Python policy and DB revision | [`build/WEBGui/webgui/media_state_policy.py`](../build/WEBGui/webgui/media_state_policy.py) |
-| WebGUI catalog/Artist aggregation | [`build/WEBGui/webgui/catalog.py`](../build/WEBGui/webgui/catalog.py) |
-| WebGUI presentation and CSS | [`build/WEBGui/webgui/static/app.js`](../build/WEBGui/webgui/static/app.js), [`app.css`](../build/WEBGui/webgui/static/app.css) |
-| WebGUI media-state regression | [`build/WEBGui/webgui/tests/test_media_state_classification_policy.py`](../build/WEBGui/webgui/tests/test_media_state_classification_policy.py) |
-| COMP runtime consumers | [`build/WEBGui/webgui/comp_report_policy.py`](../build/WEBGui/webgui/comp_report_policy.py), [`build/Windows/src/comp_report_policy.rs`](../build/Windows/src/comp_report_policy.rs) |
-| PR policy gate and rendering contract checks | [`.github/scripts/check_protected_policies.py`](../.github/scripts/check_protected_policies.py), [`test_media_state_rendering.py`](../.github/scripts/test_media_state_rendering.py) |
+| `ART-COLOR-001..006`, `ALB-COLOR-001..006` | Windows `src/media_state_policy.rs`, `ui/app.slint`; WebGUI `media_state_policy.py`, `catalog.py`, `static/app.js` and `app.css`; `webgui/tests/test_media_state_classification_policy.py`, `.github/scripts/test_media_state_rendering.py` |
+| `VISUAL-001..004` | Existing status dots, card frames/banners, override provenance and COMP-track presentation; do not infer those from NAME classification |
+| `STATE-POLICY-001..004` | Same canonical ordering in both runtimes; Windows policy loader/mirror, WebGUI PostgreSQL policy revision, inventory-derived Unprocessed count |
+| `GUARD-001..003` | Owner-approved review contract in `AGENTS.md` and the register; `.github/workflows/validate.yml` runs the independent `policy-review` job and `.github/scripts/check_protected_policies.py` rejects any diff to the two protected JSON files. Workflow 01 validates canonical contracts before creating release metadata. Required GitHub ruleset enforcement remains a separate repository-setting check. |
 
-## Required pull-request review boundary
+The test fixture that once lived under root `fixtures/` was retired; it was never a production policy. Independent Windows and WebGUI compilation tests now own the applicable release/category cases. Release scripts and synthetic Store test fixtures belong in root `release/`.
 
-Both protected policy JSONs are checked in the separate **Canonical
-policy JSON — review gate**. This gate has been introduced on `dev`
-and exercised on [merged PR #217](https://github.com/scottia/S-P-L-I-N-E-D/pull/217).
-That PR's Python/JavaScript/container validation passed for its updated
-Docker source layout; it does not certify Windows release or saved runtime
-policy revisions. A proposal
-changing either protected JSON fails with instructions referencing
-`AGENTS.md` and this register. It **does not auto-revert or
-authorize** the change.
+## CI and deployment distinctions
 
-An authorized JSON update still requires an explicit, independent
-owner-reviewed process; the gate currently fails a change rather than
-accepting approval simply because a reviewer says "yes." Required
-branch-ruleset protection remains unverified because the available
-GitHub integration cannot inspect that setting.
+`.github/workflows/validate.yml` executes scope checks, WebGUI Python/JavaScript/Docker/PostgreSQL checks when applicable, the independent **Canonical policy JSON — review gate** and a **Windows advisory** (not native Windows compilation). The policy-review job fails on a diff to either protected JSON, while `.github/scripts/validate_release_policy_contracts.py` uses the existing runtime validators plus in-memory SQLite and Config v5 structural checks. Workflow 01 runs that preflight and the shared `.github/scripts/test_*.py` suite **before** release version-stamping; its Store Submit Update mode also requires Extended Windows validation. These are checks of the owner-approved contracts, **not another source of policy rules**, nor proof of live Windows/PostgreSQL mirror parity. GitHub rulesets must separately designate appropriate checks as required; adding a workflow alone does not guarantee branch protection.
 
-Mandatory Codex Draft PRs and current-PR-only owner exceptions are
-**active in `AGENTS.md`** following merged PR #217. PR #216 was **closed
-without merging to `main`** because its development changes were already
-on `dev`. Any subsequent `main` promotion needs a new, separately
-validated and owner-approved PR.
+The numbered release workflows live under `.github/workflows/`; source builds and Docker packaging use `build/Windows/` and `build/WEBGui/`, not retired root application folders. [Build layout](build-layout.md).
 
-## Next engineering validation (not policy re-approval)
-
-1. Verify independent Artist/Album name classification on both
-   Windows and WebGUI, in light/dark themes and default/unprocessed
-   cases; fix any residual catalog-key/CSS/Slint evidence routing.
-2. Verify MEDIA FILTER Unprocessed **count** separately from the
-   ranked name states, and protect the screenshot-approved dots,
-   frames, banners and COMP rows.
-3. Validate saved PostgreSQL policy revision and Windows local
-   policy copies without silently changing live state.
-4. Validate the current working COMP behavior with focused real
-   fixtures, then SQLite DDL/migrations and Settings v5 parity.
-5. Rebuild public application Help only from verified,
-   owner-approved behavior, targeting `main` upon authorized
-   promotion—not development-only docs.
-
-Detailed evidence and open issues: [SCHEMA-VALIDATION.md](SCHEMA-VALIDATION.md).
+**Still to establish independently:** native Windows Rust/Slint validation against a real build, installed Artist/Album UI appearance, saved Windows credential-directory policy revision, full deployed PostgreSQL policy/palette comparison, and end-to-end migration/indexer persistence. The owner provided read-only PostgreSQL singleton evidence for media-state revision 3 and COMP revision 1 with matching listed condition/color order; this does not verify all saved fields or Windows mirrors. Prior CI passes do not prove those deployed properties. [Validation ledger](SCHEMA-VALIDATION.md).

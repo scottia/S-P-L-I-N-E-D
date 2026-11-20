@@ -1,141 +1,41 @@
-# S:P:L:I:N:E:D Documentation
+# S:P:L:I:N:E:D — current /main documentation
 
-This index separates current operating guidance from maintainer procedures and
-historical evidence. Follow the current guides for product behavior. Audits,
-dated reconciliation notes, and unverified follow-ups are retained for context,
-not as instructions for an installed release.
+This directory documents **only the supported source in** `build/Windows/` and `build/WEBGui/`, the shared indexer/catalog authority, and the approved contracts under `schema/`. It is not an archive of old PRs, test reports, or development-branch promotion instructions.
 
-## Current user guides
+## Windows — `build/Windows/`
 
-Start here:
+- [Install and first run](installation-first-run.md) — setup, supported distributions and safe first checks.
+- [Windows application guide](windows-guide.md) — Artist/Album selection, artwork, COMP workflow and operator actions.
+- [Windows source/build guide](windows-build-guide.md) — Rust/Slint crate, local validation and packaging.
+- [Windows SQLite catalog and indexer](splined-media-database.md) — identity, refresh, generations, state, schema upgrade and sharing.
+- [SQLite v2→v3 upgrade safeguards](windows-schema-upgrade-preparedness.md) — operator preparation and backup.
+- [Microsoft Store](windows-store.md) — Store-managed distribution, distinct from portable ZIP.
 
-1. [Install SPLINED and complete the first run](installation-first-run.md).
-2. Choose the guide for your interface:
-   [Windows](windows-guide.md) or [Ubuntu WebGUI](browser-workspace-guide.md).
-3. Review [Config v5](config-v5-reference.md) and
-   [credential/provider setup](credentials-providers.md).
-4. Back up persistent state and begin with Read mode on a small selection.
+## WebGUI — `build/WEBGui/`
 
-The current guides have distinct ownership:
+- [WebGUI workspace guide](browser-workspace-guide.md) — browser operations, PostgreSQL catalog/index maintenance and artwork review.
+- [Docker deployment](webgui-docker-deployment.md) — canonical `build/WEBGui/docker/` Compose, Config v5, persistent volumes and shared `schema/`.
+- [Catalog field authority](catalog-authority.md) — Windows-owned synchronized fields, PostgreSQL-only state and coordination.
 
-- [Windows application guide](windows-guide.md) — Windows library browsing,
-  artwork review, MusicBrainz choices, Write behavior, backup, updates, and
-  troubleshooting.
-- [WebGUI guide](browser-workspace-guide.md) — browser setup, PostgreSQL index
-  and queue behavior, artwork/COMP review, writes, recovery, and deployment
-  boundaries.
-- [Windows Select Media and status colors](media-filter-status-colors.md) —
-  native filters, selection scope, counts, status meaning, and accessibility.
-- [Microsoft Store channel](windows-store.md) — installed Windows identity,
-  Store-managed updates, and the separation from portable releases.
-- [Windows SQLite schema upgrade preparedness](windows-schema-upgrade-preparedness.md)
-  — operator confirmation, verified pre-upgrade backup, exclusive migration,
-  one-way downgrade recovery, and the PostgreSQL boundary.
-- [Artist COMP report policy](comp-report-policy.md) — shared Artist/alias
-  matching, MusicBrainz thresholds, release grouping, existing-art reuse,
-  batch outcomes, coordination publication, and revision pinning.
+## Shared contracts, policy and indexing
 
-## Technical references requiring policy reconciliation
+- [Approved policy register](POLICY-REGISTER.md) — **owner-authoritative** Artist/Album rankings, dots, visual safeguards and review boundaries.
+- [Policy and indexer source map](POLICY-INDEX.md) — each canonical contract's actual Windows/WebGUI consumers and tests.
+- [Source validation status](SCHEMA-VALIDATION.md) — completed source checks versus outstanding native/deployed verification.
+- [Artist/Album state policy delivery](media-state-classification-policy.md) and [COMP report policy](comp-report-policy.md) — operational handling of the two protected JSON contracts. Neither creates a second rulebook.
+- [Config v5 reference](config-v5-reference.md) and [source policies/ranges](source-policies-range-types.md) — settings and candidate/artwork rules.
+- [Credentials/providers](credentials-providers.md), [MusicBrainz OAuth](musicbrainz-oauth.md) and [OAuth validation](oauth-validation.md).
 
-- [Config v5 reference](config-v5-reference.md) owns configuration fields,
-  defaults, path rules, and validation.
-- [Source policies and Range Types](source-policies-range-types.md) owns
-  candidate eligibility, ranking, local artwork, output evaluation, and the
-  COMP/per-track policy.
-- [Windows SQLite media database](splined-media-database.md) owns native SQLite
-  identity, indexing, durable state, sharing, and backup boundaries. It also
-  records that WebGUI uses a separate PostgreSQL catalog.
-- [Credentials and provider setup](credentials-providers.md) owns credential
-  files, supported provider contracts, protection, relocation, and backup.
-- [MusicBrainz OAuth](musicbrainz-oauth.md) and
-  [provider validation](oauth-validation.md) own authorization and diagnostic
-  procedures.
-- [MusicBrainz fallback workflow](musicbrainz-fallback-workflow.md) records the
-  current Windows fallback identity/UI contract; source-policy rules remain
-  authoritative when wording overlaps.
+The sole checked-in shared contracts are `schema/media-state-classification.json`, `schema/comp-report-policy.json`, `schema/media.sql` and `schema/settings-ui.json`. They are not copied into competing Windows or WebGUI policy directories. Windows SQLite remains authoritative for the designated synchronized catalog fields; WebGUI maintains its separate PostgreSQL catalog.
 
-Provider secrets never belong in Config v5, source control, screenshots, or
-diagnostic reports.
+## Release and build boundaries
 
-## Maintainer procedures and architecture
+- [Build directory layout](build-layout.md) — current source paths and release inputs.
+- [Release/recovery automation](release-automation.md) — numbered workflows, canonical schema/policy preflight **before** version stamping, required Store validation and publication boundaries.
+- [Root release support](../release/README.md) — scripts, templates and synthetic regression fixtures.
 
-- [PR #185 Windows acceptance and promotion record](pr-185-acceptance.md) —
-  accepted startup projection, SQLite/Fallback, round Artist thumbnails,
-  configuration relocation, credential masking, directory browsing, and
-  WebGUI-aligned Artist Art identity behavior for promotion through `dev` to
-  `main`.
-- [PR #180–182 v3.0.1 acceptance and promotion record](pr-180-182-acceptance.md)
-  — accepted catalog recovery, NAS reader tuning, large-Album deferral,
-  restart-stable WebGUI sessions and artwork, COMP single-flight behavior, and
-  full-library live evidence for promotion from `dev` to `main`.
-- [PR #168 acceptance and promotion record](pr-168-acceptance.md) — accepted
-  catalog projection, COMP/Fallback, Artist Art, MusicBrainz, embedding, and
-  disposable-state scope for promotion through `dev` to `main`.
-- [Release automation](release-automation.md) — numbered release/recovery
-  workflows, validation selection, Store handling, and release-note authority.
-- [Windows source/build guide](windows-build-guide.md) — native Rust/Slint build,
-  runtime layout, packaging, and source validation.
-- [Docker deployment](webgui-docker-deployment.md) — Compose, PostgreSQL, persistent
-  mounts, backup, and container validation.
-- [Browser workspace schematic](browser-workspace-schematic.md) — maintainer
-  map of browser regions and source locations; not a parity guarantee.
-- [Cross-client Album override implementation](cross-client-album-override-implementation.md)
-  — Album and track-scoped last-successful-writer coordination, canonical
-  identity normalization, recovery boundaries, and isolated PC acceptance;
-  the governing Album visual contract was merged through PR #147.
-- [Windows Rust/Slint architecture checklist](windows-rust-slint-migration-checklist.md)
-  — current single-executable architecture and retired implementation boundary.
+Historical PR acceptance records, old screenshots, source audits and superseded platform instructions have been retired from active `docs/`; Git history retains them. The former fallback workflow guide was superseded by the current source-policy and COMP contracts and is not an independent authority.
 
-The [Windows portable instructions](../release/README-WINDOWS.txt) ship with
-the supported Windows archive. The retired root-native CLI and its Linux
-instructions are not supported release targets. macOS is unsupported on
-`main` and `dev`; experimental work is isolated on
-[`dev-macos`](https://github.com/scottia/S-P-L-I-N-E-D/tree/dev-macos).
+This documentation reflects source checked into `main`, not proof of installed Windows/WebGUI behavior. GitHub's Windows advisory is not a native Windows compile. Source edits, policy changes and releases require separate review per [AGENTS.md](../AGENTS.md).
 
-## Cross-client UI behavior
-
-- [Cross-client Album override indicator](cross-client-album-override-visual-contract.md)
-  — grayscale thumbnail, red frame in Album Status Key column 2, configurable
-  OVERRIDE banner, separate Overridden count, and short Selected Artwork notice.
-
-## Historical audits and unverified follow-ups
-
-These records preserve review evidence or work that still required validation.
-Do not use them in place of the current guides above:
-
-- [Windows Setup follow-ups](windows-setup-follow-ups.md) — source-only items
-  still awaiting end-to-end verification.
-- [Windows/WebGUI function audit](windows-web-function-audit.md) — migration-era
-  comparison and runtime observations.
-- [WebGUI live-write parity record](webgui-live-write-parity-2026-10-30.md) and
-  [WebGUI settings parity summary](webgui-settings-parity-summary-2026-10-29.md).
-- [Windows baseline reconciliation](windows-baseline-reconciliation-2026-10-18.md)
-  and [Windows source audit](windows-source-audit-2026-10-17.md).
-- [Windows 1.0.88 functional-parity audit](windows-functional-parity-1.0.88.md)
-  and [Windows graphical-workspace QA](windows-gui-redesign-qa.md).
-
-Historical project design ideas are not current implementation requirements.
-Use the current source layout and owner-approved policy documents.
-
-## Platform boundaries and safety
-
-| Runtime | Interface | Persistent authority |
-| --- | --- | --- |
-| Windows | Native Rust/Slint application | SQLite plus Windows-owned Config/UI state |
-| Ubuntu WebGUI | Python/browser application deployed with Docker | PostgreSQL plus mounted config, credentials, cache, and artwork state |
-
-The runtimes share concepts, not a live database or guaranteed interface
-parity. Avoid simultaneous writers to the same music files.
-
-macOS is not actively reviewed or developed on `main` or `dev`, and its
-remaining experimental implementation is planned for removal by December 31,
-2026. Apple developers interested in testing and developing the `dev-macos`
-branch are welcome to ask about joining the SPLINED project team.
-
-- Read mode evaluates without installing music-library artwork.
-- Write mode changes album or embedded artwork; test with a backup, snapshot,
-  staging library, or small selection first.
-- Back up configuration, credentials, and the runtime's persistent database.
-  Temporary candidates and diagnostic logs are not substitutes for that state.
-
-Return to the [repository README](../README.md).
+[Repository home](../README.md)

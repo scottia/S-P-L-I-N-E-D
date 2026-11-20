@@ -139,27 +139,13 @@ users never receive Portable ZIP replacement instructions. The separate App
 Installer template remains disabled and is not the Store update path. Windows
 builds target only `x86_64-pc-windows-msvc`.
 
-## Linux
+## Linux deployment
 
-Build the separate root Cargo project from source using the
-[Linux source-build instructions](../release/README-LINUX.txt). The numbered
-release workflow does not publish a Linux archive. Keep the `splined`
-executable and run it from a terminal. Config v5 may be supplied with
-`--config`; see the configuration reference.
-
-## macOS
-
-macOS is unsupported on `main` and `dev`; it is not built by the full-release
-workflow and is not actively reviewed or developed on those branches.
-Experimental development is isolated on the
-[`dev-macos`](https://github.com/scottia/S-P-L-I-N-E-D/tree/dev-macos) branch
-and is planned for removal from SPLINED by December 31, 2026. Apple developers
-interested in testing and maintaining that branch are welcome to ask about
-joining the project team.
+Linux/Ubuntu users deploy the supported **WebGUI Docker** application, backed by PostgreSQL. The retired root-native Linux CLI and nonexistent `release/README-LINUX.txt` are not supported build targets. macOS is not built by the `main` release workflow.
 
 ## WebGUI / Python
 
-Deploy the required [WebGUI and PostgreSQL stack](../docker/README.md), open
+Deploy the required [WebGUI and PostgreSQL stack](webgui-docker-deployment.md), open
 its browser address, and create the administrator with the deployment token.
 Complete Settings with server-visible paths, configure provider credentials,
 and run the first full library refresh. Start in Read mode.

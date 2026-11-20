@@ -4,7 +4,7 @@ This is the authoritative reference for the native Windows SQLite catalog,
 including optional shared-file operation. It is not the WebGUI database guide.
 WebGUI requires PostgreSQL for its separate catalog and persistent queue; see
 the [WebGUI data guide](browser-workspace-guide.md#data-recovery-and-deployment)
-and [Docker deployment guide](../docker/README.md). Windows does not connect to
+and [Docker deployment guide](webgui-docker-deployment.md). Windows does not connect to
 the live PostgreSQL store.
 
 The native Windows implementation stores its persistent Select Media model in:

@@ -60,8 +60,8 @@ of the executable produced by the release workflow. The optimization is
 required because the real 3,884-album library makes an unoptimized Windows UI
 too slow for valid testing. This local executable is not a release candidate.
 
-After the local build is approved, promote the tested source through `dev` and
-`main`. Pull requests do not automatically execute strict Windows Rust/Slint
+After the local build is approved, open a reviewed topic Draft PR against
+`main`; the owner separately authorizes each merge and any release. Pull requests do not automatically execute strict Windows Rust/Slint
 validation. The retained **Windows Rust/Slint — advisory** compatibility check
 runs on Ubuntu and reports **Not run — permanent PR policy exception** without
 provisioning Rust or a Windows runner. This applies to Windows, Slint,
@@ -70,8 +70,8 @@ Windows compilation and regression testing remains appropriate in the isolated
 E: acceptance environment. Workflow 01 retains strict optional Extended
 Windows validation and always performs a fresh optimized production build from
 versioned `main` source, using that same executable for portable and Store
-packaging. Owner policy requires Extended Windows validation before a Microsoft
-Store submission.
+packaging. Workflow 01 checks the accepted canonical source policies, Config v5 and in-memory SQLite DDL **before** version stamping. Owner policy requires Extended Windows validation before a Microsoft
+Store submission; submitting a Store update without that setting is blocked by the release preflight.
 
 `build/Windows/build.rs` compiles `build/Windows/ui/app.slint` and embeds build identity.
 The executable links directly to the Rust library modules in `build/Windows/src`.

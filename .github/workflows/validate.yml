@@ -22,6 +22,22 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python3 .github/scripts/validation_scope.py "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+  policy-review:
+    name: Canonical policy JSON — review gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Reject changed protected behavioural JSON
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 .github/scripts/check_protected_policies.py "$BASE_SHA" "$HEAD_SHA"
+      - name: Validate canonical policy, SQLite DDL and settings contracts
+        env:
+          PYTHONPATH: .:build/WEBGui:build/WEBGui/webgui/backend
+        run: python3 .github/scripts/validate_release_policy_contracts.py
   webgui:
     needs: scope
     if: needs.scope.outputs.webgui == 'true'

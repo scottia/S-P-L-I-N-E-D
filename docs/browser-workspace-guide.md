@@ -7,7 +7,7 @@ persistent work queue. Windows is a separate native Rust/Slint application with
 its own SQLite store. The two runtimes share concepts, not a live database or
 guaranteed interface parity.
 
-Use the [Docker deployment guide](../docker/README.md) for containers,
+Use the [Docker deployment guide](webgui-docker-deployment.md) for containers,
 networking, volumes, PostgreSQL, and backup. This page starts after the services
 are running.
 

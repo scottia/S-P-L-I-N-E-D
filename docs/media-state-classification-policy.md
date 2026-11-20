@@ -1,5 +1,9 @@
 # Artist and Album state classification policy
 
+The owner-approved Artist/Album name colors and dot priorities are governed by
+[POLICY-REGISTER.md](POLICY-REGISTER.md). This page describes runtime policy
+delivery and persistence; it does not establish another policy authority.
+
 SPLINED uses one JSON policy schema for Artist file-list name colors, Album
 file-list name colors, Album status dots, database-monitor presentation, and
 opposing-application Album-card presentation. WebGUI stores the JSON document
@@ -128,7 +132,9 @@ priority is:
 6. `tracks_complete` → green
 7. `default` → red
 
-Red means **Incomplete album tracks**. Missing Artist or Album art is yellow,
+Red means independent **Incomplete/Error** evidence (the current canonical
+JSON uses the narrower display label `Incomplete album tracks`). Missing
+Artist or Album art is yellow,
 not red unless independent incomplete/error evidence is also present. Blue is
 auxiliary status for an animated `cover.webp`; it is never an Album name color.
 White and blue are forbidden Album-name colors.
@@ -159,6 +165,8 @@ Keep `schema_version` at `1`, retain one `default` rule for both Artist and
 Album rankings, and reference only names present in `colors`. Light-theme
 values belong in `light_colors`. `ui_status_colors` maps the shared state keys
 to named colors used by both interfaces.
+
+The existing Windows and WebGUI policy loaders validate the owner-approved source ordering. Workflow 01 and the independent PR policy-review gate check canonical source contracts; they do not automatically change saved PostgreSQL policy revisions or Windows credential-directory mirrors.
 
 The order of each `ranked_*` array is behavior: the first matching condition
 wins. Album `status_dots` are not mutually exclusive and their array order is

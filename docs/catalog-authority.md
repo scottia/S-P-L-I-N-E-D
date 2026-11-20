@@ -13,7 +13,7 @@ and incremental indexing.
 | PostgreSQL/WebGUI | Album embedded-art validation count, validation status and validation timestamp; jobs; Audit; authentication; UI/session state; cross-client last-successful artwork-writer coordination |
 | Derived presentation | Artist status and Album counters; Album status derived from authoritative processing/COMP evidence |
 
-The executable field lists live in `webgui/catalog_authority.py`. A managed
+The executable field lists live in `build/WEBGui/webgui/catalog_authority.py`. A managed
 indexing UPSERT may update only the PostgreSQL-exclusive and derived sets.
 Artist status and counters use owned Albums plus identified compilations. An
 unidentified COMP fallback is per-track presentation for credited Artists, so
@@ -51,7 +51,7 @@ the existing insert, update, and stale-row cleanup behavior.
 not a second catalog authority. A verified Windows or WebGUI Album artwork
 write publishes the canonical Album key, writer, operation, event identity and
 completion order. The other client renders that Album's thumbnail in grayscale
-with a red frame until it completes its own verified write. This provenance
+with the canonical dark-grey override frame until it completes its own verified write. This provenance
 does not alter Album status, block either client, copy media bytes, or permit a
 WebGUI refresh to replace Windows-managed catalog fields.
 

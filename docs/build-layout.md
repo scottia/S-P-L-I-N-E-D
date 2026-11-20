@@ -30,6 +30,8 @@ asset, not the authoritative policy register.
 
 ## Workflow 01 reference chain
 
+Before version stamping, Workflow 01 checks the accepted media-state and COMP policies, Config v5 UI metadata and the SQLite schema in an **in-memory database**, then runs the shared nonmutating `.github/scripts` regressions. PR validation separately checks protected JSON diffs in the **Canonical policy JSON — review gate**. These enforce the existing approved register, not a new policy or a deployed-database acceptance.
+
 Workflow 01 stamps `build/Windows/Cargo.toml`, its lockfile and Windows
 package manifests, plus `build/WEBGui/webgui/backend/splined.py`. Windows
 releases compile with `--manifest-path build/Windows/Cargo.toml`; WebGUI
