@@ -56,8 +56,8 @@ Checks follow changed files: WebGUI, shared-contract, and release-automation
 changes run Python/PostgreSQL, JavaScript, and container checks. The archived
 root-native CLI no longer has an active Rust validation lane. Windows retains
 the separate advisory PR check and Workflow 01 release validation. Strict Windows Rust/Slint validation is never executed automatically
-for pull requests targeting `dev` or `main`, including Windows source, Slint,
-shared-schema, dependency, workflow, and `dev` to `main` promotion changes.
+for pull requests targeting `main`, including Windows source, Slint,
+shared-schema, dependency, and workflow changes.
 Those scopes still run every other applicable validation lane.
 
 GitHub retains the **Windows Rust/Slint — advisory** check name for branch-rule

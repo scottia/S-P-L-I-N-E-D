@@ -420,7 +420,7 @@ in that same database.
 WebGUI backups use consistent PostgreSQL dumps plus its config, credential,
 cache/staged-artwork, external Artist Art, and music volumes. Retired terminal
 backup commands are not part of the WebGUI. A SQLite snapshot is not a
-PostgreSQL backup. See the [server deployment guide](../docker/README.md).
+PostgreSQL backup. See the [server deployment guide](webgui-docker-deployment.md).
 On Windows use **Settings > Backup / Restore**. Rust-owned UI preferences keep
 independent directories, schedules, and retention limits for Settings `.spl`,
 restorable SQLite Database Backups, secret-free Diagnostic `.json`, and

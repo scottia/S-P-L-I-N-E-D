@@ -1,3 +1,0 @@
-# Main documentation cleanup intent (Draft PR bootstrap)
-
-Owner goal: `/main/docs` contains only current operating and engineering documentation mapped to `build/Windows`, `build/WEBGui`, the shared indexer/schema contracts, and the owner-approved policy register/index. Keep stable active-document paths, preserve `docs/musicbrainz-fallback-workflow.md` unchanged as explicitly excluded, remove historical PR acceptance/test evidence from active docs (Git history retains them), and repair links. Rewrite stale POLICY-INDEX / SCHEMA-VALIDATION against current source; preserve approved POLICY-REGISTER wording. Do not touch application code, schema, release logic, databases, or policy JSON. Delete this bootstrap file in the final PR.

@@ -60,8 +60,8 @@ of the executable produced by the release workflow. The optimization is
 required because the real 3,884-album library makes an unoptimized Windows UI
 too slow for valid testing. This local executable is not a release candidate.
 
-After the local build is approved, promote the tested source through `dev` and
-`main`. Pull requests do not automatically execute strict Windows Rust/Slint
+After the local build is approved, open a reviewed topic Draft PR against
+`main`; the owner separately authorizes each merge and any release. Pull requests do not automatically execute strict Windows Rust/Slint
 validation. The retained **Windows Rust/Slint — advisory** compatibility check
 runs on Ubuntu and reports **Not run — permanent PR policy exception** without
 provisioning Rust or a Windows runner. This applies to Windows, Slint,

@@ -716,5 +716,5 @@ making those logs application authority.
 | Shared SQLite is locked/unavailable | Stop other clients, verify the same physical database and share locking, and follow the [shared-database guide](splined-media-database.md) |
 
 For status-color detail, see
-[Windows Select Media and Status Colors](media-filter-status-colors.md). For
+[approved Artist/Album name-color and status-dot policy](POLICY-REGISTER.md). For
 provider failures, see [API/OAuth validation](oauth-validation.md).

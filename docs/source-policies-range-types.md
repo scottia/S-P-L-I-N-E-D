@@ -615,5 +615,5 @@ Exact serialized Config v5 keys/defaults are listed in the Config v5 reference a
 - [Config v5 reference](config-v5-reference.md)
 - [Windows guide](windows-guide.md)
 - [Credentials and provider setup](credentials-providers.md)
-- [Select Media and status colors](media-filter-status-colors.md)
+- [owner-approved Artist/Album name-color and dot policy](POLICY-REGISTER.md)
 - [WebGUI guide](browser-workspace-guide.md)

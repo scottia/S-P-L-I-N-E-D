@@ -1,5 +1,9 @@
 # Artist and Album state classification policy
 
+The owner-approved Artist/Album name colors and dot priorities are governed by
+[POLICY-REGISTER.md](POLICY-REGISTER.md). This page describes runtime policy
+delivery and persistence; it does not establish another policy authority.
+
 SPLINED uses one JSON policy schema for Artist file-list name colors, Album
 file-list name colors, Album status dots, database-monitor presentation, and
 opposing-application Album-card presentation. WebGUI stores the JSON document
@@ -128,7 +132,9 @@ priority is:
 6. `tracks_complete` → green
 7. `default` → red
 
-Red means **Incomplete album tracks**. Missing Artist or Album art is yellow,
+Red means independent **Incomplete/Error** evidence (the current canonical
+JSON uses the narrower display label `Incomplete album tracks`). Missing
+Artist or Album art is yellow,
 not red unless independent incomplete/error evidence is also present. Blue is
 auxiliary status for an animated `cover.webp`; it is never an Album name color.
 White and blue are forbidden Album-name colors.
