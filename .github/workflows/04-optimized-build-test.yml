@@ -142,22 +142,21 @@ jobs:
         if: ${{ inputs.extended_windows_validation == true }}
         shell: bash
         run: rustup component add rustfmt clippy --toolchain "$RUST_TOOLCHAIN"
-      - name: Normalize application-only version for the compiled cache key
+      - name: Set up Python 3.12 for stable Windows Cargo key
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Normalize application-only version for compiled cache key
         id: cargo-key
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $lock = Get-Content -Raw -LiteralPath build/Windows/Cargo.lock
-          $lockPattern = '(?ms)(\[\[package\]\]\r?\nname = "splined-windows"\r?\n)version = "[^"]+"'
-          if ([regex]::Matches($lock, $lockPattern).Count -ne 1) { throw "Cargo.lock package marker is unexpected." }
-          $normalLock = [regex]::Replace($lock, $lockPattern, '1version = "<release>"')
-          $manifest = Get-Content -Raw -LiteralPath build/Windows/Cargo.toml
-          $manifestPattern = '(?m)^(version = ")[^"]+(")$'
-          if ([regex]::Matches($manifest, $manifestPattern).Count -ne 1) { throw "Cargo.toml version marker is unexpected." }
-          $normalManifest = [regex]::Replace($manifest, $manifestPattern, '1<release>2')
-          $bytes = [Text.Encoding]::UTF8.GetBytes($normalLock + [Environment]::NewLine + $normalManifest)
-          $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
-          "hash=$hash" | Add-Content $env:GITHUB_OUTPUT
+          $PSNativeCommandUseErrorActionPreference = $true
+          $entry = & python .github/scripts/normalized_cargo_cache_key.py
+          if ($entry -notmatch '^hash=[0-9a-f]{64}$') {
+            throw "Canonical Cargo normalization did not produce a valid SHA-256 cache key."
+          }
+          $entry | Add-Content $env:GITHUB_OUTPUT
       - name: Restore downloaded plus compiled release dependencies
         id: rust-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
