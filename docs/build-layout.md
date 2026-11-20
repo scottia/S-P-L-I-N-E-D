@@ -40,13 +40,12 @@ same Dockerfile from the release tag, with an explicit OCI revision label.
 Docs and release source packages are distinct from the GHCR runtime image.
 The image is controlled by `.dockerignore` and the Dockerfile COPY inputs.
 
-## Archive boundary
+## Current-source boundary
 
-The `dev-archive` branch preserves the complete pre-migration `/dev`
-snapshot, including the root-native CLI, old architecture tests, benchmarks,
-old file paths, and historic references. No archive-only content is an
-implicit authority for new Codex corrections. Do not change `/main` until
-this refactor passes the relevant runtime verification.
+Retired root-native CLI sources, architecture tests, benchmarks, and old
+file paths are outside the supported `/main` source layout. Historical
+material is not an authority for new corrections; use current source and
+the owner-approved policy register, with applicable PR validation.
 
 This source map does **not** certify documentation policy correctness.
 Conflicting behavior contracts remain subject to owner approval.

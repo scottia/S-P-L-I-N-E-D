@@ -87,9 +87,9 @@ diagnostic reports.
   — current single-executable architecture and retired implementation boundary.
 
 The [Windows portable instructions](../release/README-WINDOWS.txt) ship with
-the supported Windows archive. The old root-native CLI source and its Linux
-instructions are retained on `dev-archive` only. macOS is
-unsupported on `main` and `dev`; experimental work is isolated on
+the supported Windows archive. The retired root-native CLI and its Linux
+instructions are not supported release targets. macOS is unsupported on
+`main` and `dev`; experimental work is isolated on
 [`dev-macos`](https://github.com/scottia/S-P-L-I-N-E-D/tree/dev-macos).
 
 ## Cross-client UI behavior
@@ -114,8 +114,8 @@ Do not use them in place of the current guides above:
 - [Windows 1.0.88 functional-parity audit](windows-functional-parity-1.0.88.md)
   and [Windows graphical-workspace QA](windows-gui-redesign-qa.md).
 
-Historical project design ideas are retained on the `dev-archive` branch,
-not as current implementation requirements.
+Historical project design ideas are not current implementation requirements.
+Use the current source layout and owner-approved policy documents.
 
 ## Platform boundaries and safety
 
