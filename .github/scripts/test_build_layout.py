@@ -69,6 +69,9 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn("cp -R build/WEBGui release-package/build/", workflow)
         self.assertIn("cp README.md LICENSE PRIVACY.md SECURITY.md SUPPORT.md release-package/", workflow)
         self.assertNotIn("cp config.example.toml ", workflow)
+        webgui_tests = (ROOT / "build/WEBGui/webgui/tests/test_config_v5.py").read_text(encoding="utf-8")
+        self.assertNotIn('load_example("config.example.toml")', webgui_tests)
+        self.assertNotIn('            "config.example.toml",', webgui_tests)
 
     def test_cliff_config_and_release_consumers_are_colocated(self):
         self.assertFalse((ROOT / "cliff.toml").exists())
