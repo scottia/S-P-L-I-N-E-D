@@ -2719,12 +2719,25 @@ test("Album cards keep unknown validation separate from confirmed missing thumbn
   assert.equal(fallback.checkEmbedded, false);
   assert.equal(fallback.stateKey, "albumsComplete");
 
-  const existingCover = context.albumCardState({
+  const webpOnly = context.albumCardState({
     album_mbid: "release-local", status: "unprocessed", cover_found: true,
-    cover: "cover.webp", tracks: 2, embedded: 0, embedded_validation: "unknown",
+    static_cover_found: false, cover: "cover.webp", webp_found: true,
+    tracks: 2, embedded: 0, embedded_validation: "unknown",
   }, artist);
-  assert.equal(existingCover.stateKey, "processed");
-  assert.equal(existingCover.fullyComplete, false);
+  assert.equal(webpOnly.missingArt, true, "animated WebP does not count as a static cover");
+  assert.equal(webpOnly.dots.some(([color]) => color === "#f4cc4d"), true);
+  assert.equal(webpOnly.dots.some(([color]) => color === "#ff5268"), false,
+    "missing static artwork must not create independent red/error evidence");
+  assert.equal(webpOnly.fullyComplete, false);
+
+  const unprocessedWithStaticCover = context.albumCardState({
+    album_mbid: "release-local", status: "unprocessed", cover_found: true,
+    static_cover_found: true, cover: "cover.jpg",
+    tracks: 2, embedded: 0, embedded_validation: "unknown",
+  }, artist);
+  assert.equal(unprocessedWithStaticCover.stateKey, "incomplete",
+    "an existing static cover does not manufacture Processed status");
+  assert.equal(unprocessedWithStaticCover.dots.some(([color]) => color === "#efa54e"), false);
 });
 
 test("selected Artist status includes its track-scoped COMP report", () => {
