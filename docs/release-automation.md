@@ -1,7 +1,6 @@
 # Release automation
 
-SPLINED exposes four manual GitHub Actions workflows. Only workflow 01 creates
-a version, tag, or GitHub Release or performs normal GHCR publication.
+SPLINED exposes four manual GitHub Actions workflows. **Workflow 01 creates releases by default when confirmed; Workflow 04 is its optimized feature-equivalent mirror and only publishes when the existing final release confirmation is set to Create release now.** Workflows 02/03 recover existing releases.
 Workflows 01 and 02 use pinned `git-cliff 2.14.2` for release notes or Store
 Highlights; no workflow is run merely by editing these files.
 
@@ -10,12 +9,12 @@ Highlights; no workflow is run merely by editing these files.
 | `01. Full Release - Build Selected Target and Publish` | New versioned release from `main`; choose All, Windows, or WebGUI / Python. | Validates the selected release targets, creates the version commit and numeric tag only after they pass, publishes the GitHub Release and GHCR, and optionally stages or submits Store. |
 | `02. Store Recovery - Tagged Draft or Update` | Rebuild a Store MSIX from an **existing** numeric Git tag if workflow 01's Store path failed. | Rebuilds/validates Windows package, generates git-cliff Store Highlights, then stages a draft or submits for certification. Does not create a tag, release, or GHCR image. |
 | `03. GHCR Recovery - Existing Published Release` | Safely recover missing GHCR tags for the latest **existing published** numeric release if workflow 01's GHCR path failed. | Verifies existing tag digests and OCI source/version/revision labels, performs no work when both tags are valid, and publishes only missing GHCR tags. Never changes a GitHub Release, release asset, Git tag, version, or Store submission. |
-| `04. Optimized Build - Test Selected Target (No Publish)` | Test `All`, `Windows` or `WebGUI / Python` with optional native/Store QA and timed Rust compilation. | Reuses compiled Rust dependencies; can compare an isolated full cold build; produces QA-only Actions artifacts but **never publishes a release, tag, GHCR image or Store submission**. |
+| `04. Optimized Full Release - Build Selected Target and Optional Publish` | Same target and Store controls as Workflow 01; final **No** builds/tests without publishing and final **Yes** executes full release. | Caches compiled Rust dependencies, rebuilds the exact application, runs complete Windows/WebGUI checks and uses parallel WebGUI test/container jobs. No mode validates release notes, local GHCR image and checksum artifacts without publishing; Yes runs the normal GitHub Release, GHCR and selected Store publication paths. |
 
 The previous status, authentication-diagnostic, package-only, publish-only, and
 one-time 2.0.0 workflows have been retired. GitHub may retain their historical
 run pages, but they are no longer runnable from the repository's default
-branch. Use Workflow 01 for publishing, Workflows 02/03 for tagged recovery, and Workflow 04 for isolated testing.
+branch. Use Workflow 01 for the original publishing path, Workflows 02/03 for tagged recovery, and Workflow 04 for either an optimized validation-only run or the same approved publication process.
 
 ## Workflow 01: full release
 
@@ -139,18 +138,26 @@ retains `splined-windows-store-submission` with the exact MSIX, Highlights, and
 submission metadata. The review mode stops after uploading those artifacts;
 only **Submit Update/No Draft** stages and submits the package.
 
-## Workflow 04: optimized build tests — no publication
+## Workflow 04: optimized full-build mirror with optional release
 
-[Workflow 04](../.github/workflows/04-optimized-build-test.yml) is a **manually dispatched, nonpublishing QA workflow**. It leaves the exact production Workflow 01 release pipeline unchanged. Select the same **All**, **Windows**, or **WebGUI / Python** platform as Workflow 01. **All** runs Windows and WebGUI validation in separate jobs. The equivalent `Extended Windows validation` toggle executes formatting, Clippy, and Rust library tests. The `Submit-mode` and `Review-mode` Store selections are **test-only simulations**: they create and validate unsigned Store-identity MSIX packages, development-sign/install/native-smoke/uninstall only on the isolated Windows runner, and upload QA-labelled Actions artifacts. They never authenticate to Partner Center, stage a draft, or submit an update. Both Store QA choices together are rejected; Submit-mode QA requires Extended Windows validation.
+[Workflow 04](../.github/workflows/04-optimized-build-test.yml) is an optimized, **feature-equivalent copy of the current Workflow 01 release sequence**. It preserves the same six dispatch inputs, in the same order: Release version, Platform (**All / Windows / WebGUI / Python**), Extended Windows validation, the two Store choices, and the **existing final release confirmation**. There is no additional release toggle.
 
-The familiar `Release version` input is a **test label only**: unlike Workflow 01, it does not change source or create a release version. The safety confirmation reads **Run optimized test only** and defaults to **Stop - no test**. The additional `Benchmark mode` choices are:
+The **only revised meaning of the final No choice in Workflow 04** is that it **continues validation instead of aborting**. To validate this workflow **before merging a change**, select its Draft PR branch in the Actions branch selector and choose **No**; the workflow builds the exact dispatched branch SHA. **Yes** remains restricted to the `main` branch, as in Workflow 01:
 
-- **Optimized only (default):** reuse downloaded and compiled Windows release dependencies from a cache keyed to the pinned Rust toolchain/target, normalized locked dependencies and package manifest. Clean only `splined-windows`, then compile a **fresh**, locked optimized Rust/Slint executable for the exact selected SHA. Verify x64 PE, build version and commit, SHA-256, and clean native smoke behavior.
-- **Cold and optimized:** perform the optimized build and also build the complete Rust graph in an isolated temporary target directory for timing comparison. This adds considerable runner time but does not replace or contaminate the cached build.
+- **Stop - no release (No, default):** perform the canonical preflight, select and stamp the next version **only inside an ephemeral unpushed runner commit**, compile the selected targets, execute all requested validation and packaging checks, render git-cliff release notes with a local disposable tag, and produce checksum-verified **QA-only Actions artifacts**. The temporary commit/tag never reaches GitHub's main branch or remote tags; no GitHub Release, GHCR push, Partner Center Store staging or Store submission occurs. A **production release-channel GHCR image** is also built and its OCI version/revision labels verified **locally without registry authentication or push**, even for Windows-only selection. Store QA checks the pinned baseline logic against synthetic fixtures, never live Partner Center. Windows update metadata is explicitly labeled QA, never stable.
+- **Create release now (Yes):** execute Workflow 01's complete production release process with optimized compilation: exact versioned source commit, full selected Windows/WebGUI builds, full policy/Windows/Store checks, numeric tag promotion, git-cliff release notes, GitHub Release, GHCR publication and selected Microsoft Store mode. Both yes-mode builds and the publication jobs fail closed on any required validation error.
 
-The first invocation may be a **cold cache miss** and provide no improvement. Repeat with the same dependency graph to measure a real cache hit, comparing the elapsed compile times, optional isolated cold baseline, and cache restore/upload overhead in the Actions job summary. Cached files are **compiler artifacts, never trusted final application binaries**: the project package is rebuilt and its executable identity checked on every test. QA binaries are downloadable **from the workflow run only**, labelled **NOT A RELEASE**. Caches may be costly to transfer or evicted, so judge success by measured end-to-end job duration rather than assuming guaranteed speedups.
+All other Workflow 01 controls and their constraints are preserved. **All** runs both Windows and WebGUI. The original **Extended Windows validation** invokes formatting, Clippy and Rust library tests; the selected Store package is built from the same Rust executable and performs the existing unsigned-package and local development-sign/install/smoke/uninstall checks. **Submit Update/No Draft** requires Extended Windows validation; **Review Bundle/No Submit** does not submit. In Yes mode the Store job retains the exact Workflow 01 published-history, Highlights, audit and Partner Center behavior; in No mode only the isolated build/package and source-only checks run, never credentialed Partner Center actions.
 
-This workflow has only `contents: read` permission and no release/registry/Partner Center publishing steps. It also runs the same canonical source-policy preflight as Workflow 01, plus the WebGUI Python/Node/PostgreSQL/Docker suite for applicable selections. It **does not replace Workflow 01's strict clean production build, release-tag checks, Store compliance, or owner authorization**. A newly added manual workflow requires an owner-approved merge onto the default branch before it appears as a runnable Actions dispatch.
+### Build-time optimization and verification
+
+Windows retains Workflow 01's Cargo registry/Git download cache and adds a separate cached **compiled release dependency graph**, keyed to the pinned Rust toolchain, Windows MSVC target and version-normalized `Cargo.lock`. Instead of deleting all compiled dependencies, it runs a package-scoped `cargo clean -p splined-windows --release --target ...` before the locked optimized build, ensuring a **fresh application executable for the exact staged commit** while Cargo fingerprints invalidate any changed dependency. The original PE x64, version/commit identity, clean native-smoke and portable/MSIX archive checks remain in place.
+
+WebGUI runs the **complete unsharded** Python/PostgreSQL/Node suite concurrently with the original Docker build/health and source-archive job. Both have independent disposable PostgreSQL services; both must pass before Yes mode can publish or No mode can report success. No tests are removed or skipped for speed.
+
+Workflow 04 reports compiled-cache hits, Rust compile duration, independent WebGUI outcomes and the final stage results. An initial cache miss can still take as long as a cold compile; compare repeated successful runs and cache-transfer overhead before declaring a speed improvement. **No native Windows speedup is established solely by pull-request CI**: the PR Windows lane is advisory, and the full optimized workflow requires an owner-authorized manual dispatch after merge.
+
+Workflow 01 itself remains unchanged. The owner must explicitly select **Create release now** to authorize publication, and both release workflows share the same publication concurrency group to avoid simultaneous release commits. The **No** choice is intended for full production-equivalent verification without release side effects. The two protected behavioral policy JSONs and [approved register](POLICY-REGISTER.md) remain normative.
 
 ## Workflow 02: Store recovery
 
@@ -181,7 +188,7 @@ published, non-prerelease GitHub Release and refuses any version other than the
 current latest release. It shares workflow 01's release concurrency group so
 normal publication and recovery cannot race each other.
 
-Workflow 01 remains the sole normal GHCR publisher. Workflow 03 inspects
+Workflows 01 and 04 (only when **Create release now** is selected) are normal GHCR publishers. Workflow 03 inspects
 `ghcr.io/scottia/splined:vX.Y.Z` and `:latest` before doing any recovery:
 
 - If both tags exist, have the expected source/version/revision OCI labels, and

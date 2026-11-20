@@ -30,11 +30,13 @@ The release executable is:
 build\Windows\target\x86_64-pc-windows-msvc\release\splined.exe
 ```
 
-### Workflow 04 optimized Windows benchmark (testing only)
+### Workflow 04 optimized Windows build mirror (No = validate, Yes = publish)
 
-[Workflow 04](../.github/workflows/04-optimized-build-test.yml) is a separate manual test workflow, not a modification of the clean release procedure above. Choose **Windows** or **All**; optionally enable **Extended Windows validation**, local **Store QA** simulation and **Cold and optimized** comparison. The default cached build restores compiler dependency artifacts and cleans **only the `splined-windows` package**, then rebuilds the complete current Rust/Slint executable with `--locked --release` and `CARGO_INCREMENTAL=0`. Its build identity must match the exact checked-out SHA and the source version, and its x64 PE/native smoke checks must pass. An optional truly cold compile uses a separate temporary target and does not poison the warm cache.
+[Workflow 04](../.github/workflows/04-optimized-build-test.yml) reuses the same release confirmation as Workflow 01 as its **last input**. Choosing **Stop - no release** performs the full selected Windows Rust/Slint build, portable ZIP and update metadata checks, optional Extended Windows suite, and Store MSIX/development installation QA, but **never publishes** a commit, tag, GitHub Release, GHCR image or Store submission. The versioned test source exists only in an unpushed temporary runner commit, and downloaded outputs are marked QA-only. Choosing **Create release now** follows Workflow 01's full production publication graph with the optimized compiler cache, including GHCR and requested Store handling.
 
-The first run normally populates the compiled dependency cache; measure at least two equivalent runs to compare warm cache hits to the existing Workflow 01 historical cold baseline (roughly 8–15 minutes of Rust compilation in November 2026). Cache restore/upload can offset savings; review measured end-to-end duration before adopting any change to Workflow 01. QA executables and optional unsigned Store packages remain Actions artifacts only. **No version stamping, release, tag, Store submission, GHCR publication or installed local state is changed.**
+The optimized Windows build caches compiled Rust dependencies as well as downloaded crates. It cleans only `splined-windows`, compiles a **fresh** locked optimized binary, and validates the exact temporary/real release commit identity, x64 PE, first-run native smoke, portable ZIP and Store package. **All** also validates WebGUI in parallel; WebGUI's full Python/PostgreSQL/Node suite runs alongside Docker image/health/packaging checks without removing test cases.
+
+Measure at least two equivalent Workflow 04 runs: the first may populate the compiled cache, and later runs report a cache hit and compilation seconds. Evaluate end-to-end wall time (including cache transfer), not only Rust compile time. Workflow 01's existing clean production build is unchanged, and pull-request advisory checks alone cannot prove Windows performance.
 
 ### Production-equivalent local PC test build
 
