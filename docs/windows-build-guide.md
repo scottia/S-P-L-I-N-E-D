@@ -30,6 +30,12 @@ The release executable is:
 build\Windows\target\x86_64-pc-windows-msvc\release\splined.exe
 ```
 
+### Workflow 04 optimized Windows benchmark (testing only)
+
+[Workflow 04](../.github/workflows/04-optimized-build-test.yml) is a separate manual test workflow, not a modification of the clean release procedure above. Choose **Windows** or **All**; optionally enable **Extended Windows validation**, local **Store QA** simulation and **Cold and optimized** comparison. The default cached build restores compiler dependency artifacts and cleans **only the `splined-windows` package**, then rebuilds the complete current Rust/Slint executable with `--locked --release` and `CARGO_INCREMENTAL=0`. Its build identity must match the exact checked-out SHA and the source version, and its x64 PE/native smoke checks must pass. An optional truly cold compile uses a separate temporary target and does not poison the warm cache.
+
+The first run normally populates the compiled dependency cache; measure at least two equivalent runs to compare warm cache hits to the existing Workflow 01 historical cold baseline (roughly 8–15 minutes of Rust compilation in November 2026). Cache restore/upload can offset savings; review measured end-to-end duration before adopting any change to Workflow 01. QA executables and optional unsigned Store packages remain Actions artifacts only. **No version stamping, release, tag, Store submission, GHCR publication or installed local state is changed.**
+
 ### Production-equivalent local PC test build
 
 For routine local iterations, close SPLINED and double-click

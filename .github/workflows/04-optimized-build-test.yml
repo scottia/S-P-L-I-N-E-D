@@ -1,0 +1,426 @@
+name: 04. Optimized Build - Test Selected Target (No Publish)
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: "Optional X.Y.Z test label only; never stamp a version or create a release"
+        required: false
+        default: ""
+        type: string
+      platform:
+        description: "Workflow 01 platform choices; this workflow NEVER publishes"
+        required: true
+        default: "All"
+        type: choice
+        options:
+          - "All"
+          - "Windows"
+          - "WebGUI / Python"
+      extended_windows_validation:
+        description: "Run full Windows fmt, Clippy, and Rust library tests"
+        required: false
+        default: false
+        type: boolean
+      store_submit_update:
+        description: "SIMULATE Submit-mode Store QA only (NEVER submit to Partner Center)"
+        required: false
+        default: false
+        type: boolean
+      store_submit_draft:
+        description: "SIMULATE Review-mode Store QA only (NEVER create a Store draft)"
+        required: false
+        default: false
+        type: boolean
+      release_confirmation:
+        description: "Explicitly confirm a testing-only run; no release actions are available"
+        required: true
+        default: "Stop - no test"
+        type: choice
+        options:
+          - "Stop - no test"
+          - "Run optimized test only"
+      benchmark_mode:
+        description: "Cold comparison builds all Rust dependencies again on an isolated target"
+        required: true
+        default: "Optimized only"
+        type: choice
+        options:
+          - "Optimized only"
+          - "Cold and optimized"
+
+# No contents/packages write access or Partner Center secrets.
+permissions:
+  contents: read
+
+concurrency:
+  group: splined-optimized-qa-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.99.0"
+  WINDOWS_TARGET: "x86_64-pc-windows-msvc"
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  preflight:
+    name: Verify QA-only intent and canonical source contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Reject publishing options and incompatible test modes
+        shell: bash
+        env:
+          TEST_CONFIRMATION: ${{ inputs.release_confirmation }}
+          RELEASE_LABEL: ${{ inputs.release_version }}
+          TEST_PLATFORM: ${{ inputs.platform }}
+          EXTENDED: ${{ inputs.extended_windows_validation }}
+          STORE_UPDATE_QA: ${{ inputs.store_submit_update }}
+          STORE_REVIEW_QA: ${{ inputs.store_submit_draft }}
+        run: |
+          set -euo pipefail
+          if [ "$TEST_CONFIRMATION" != "Run optimized test only" ]; then
+            echo "::error title=Test not confirmed::Select Run optimized test only."
+            exit 1
+          fi
+          if [ -n "$RELEASE_LABEL" ] && [[ ! "$RELEASE_LABEL" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error title=Invalid test label::Use X.Y.Z or leave blank."
+            exit 1
+          fi
+          if [ "$STORE_UPDATE_QA" = true ] && [ "$STORE_REVIEW_QA" = true ]; then
+            echo "::error title=Conflicting Store QA selections::Select one mode."
+            exit 1
+          fi
+          if { [ "$STORE_UPDATE_QA" = true ] || [ "$STORE_REVIEW_QA" = true ]; } &&
+             [ "$TEST_PLATFORM" != Windows ] && [ "$TEST_PLATFORM" != All ]; then
+            echo "::error title=Windows required::Store QA requires Windows or All."
+            exit 1
+          fi
+          if [ "$EXTENDED" = true ] &&
+             [ "$TEST_PLATFORM" != Windows ] && [ "$TEST_PLATFORM" != All ]; then
+            echo "::error title=Windows required::Extended validation requires Windows or All."
+            exit 1
+          fi
+          if [ "$STORE_UPDATE_QA" = true ] && [ "$EXTENDED" != true ]; then
+            echo "::error title=Store QA validation::Submit-mode simulation requires extended Windows validation."
+            exit 1
+          fi
+          echo "## Test only; no release/publication" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Source commit: $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Target: $TEST_PLATFORM" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Test label (not stamped): ${RELEASE_LABEL:-none}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Validate canonical policy/Config v5/SQLite contracts
+        env:
+          PYTHONPATH: .:build/WEBGui:build/WEBGui/webgui/backend
+        run: |
+          python3 .github/scripts/validate_release_policy_contracts.py
+          python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
+
+  windows:
+    name: Optimized native Windows compile and QA
+    needs: preflight
+    if: ${{ inputs.platform == 'Windows' || inputs.platform == 'All' }}
+    runs-on: windows-latest
+    steps:
+      - name: Checkout exact tested commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install exact release Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
+          rustup default "$RUST_TOOLCHAIN"
+          rustup target add "$WINDOWS_TARGET" --toolchain "$RUST_TOOLCHAIN"
+      - name: Install strict Rust quality components
+        if: ${{ inputs.extended_windows_validation == true }}
+        shell: bash
+        run: rustup component add rustfmt clippy --toolchain "$RUST_TOOLCHAIN"
+      - name: Normalize application-only version for the compiled cache key
+        id: cargo-key
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $lock = Get-Content -Raw -LiteralPath build/Windows/Cargo.lock
+          $lockPattern = '(?ms)(\[\[package\]\]\r?\nname = "splined-windows"\r?\n)version = "[^"]+"'
+          if ([regex]::Matches($lock, $lockPattern).Count -ne 1) { throw "Cargo.lock package marker is unexpected." }
+          $normalLock = [regex]::Replace($lock, $lockPattern, '1version = "<release>"')
+          $manifest = Get-Content -Raw -LiteralPath build/Windows/Cargo.toml
+          $manifestPattern = '(?m)^(version = ")[^"]+(")$'
+          if ([regex]::Matches($manifest, $manifestPattern).Count -ne 1) { throw "Cargo.toml version marker is unexpected." }
+          $normalManifest = [regex]::Replace($manifest, $manifestPattern, '1<release>2')
+          $bytes = [Text.Encoding]::UTF8.GetBytes($normalLock + [Environment]::NewLine + $normalManifest)
+          $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+          "hash=$hash" | Add-Content $env:GITHUB_OUTPUT
+      - name: Restore downloaded plus compiled release dependencies
+        id: rust-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            build/Windows/target/x86_64-pc-windows-msvc/release/deps
+            build/Windows/target/x86_64-pc-windows-msvc/release/build
+            build/Windows/target/x86_64-pc-windows-msvc/release/.fingerprint
+            build/Windows/target/release/deps
+            build/Windows/target/release/build
+            build/Windows/target/release/.fingerprint
+          key: ${{ runner.os }}-splined-optimized-qa-v1-${{ env.RUST_TOOLCHAIN }}-${{ env.WINDOWS_TARGET }}-${{ steps.cargo-key.outputs.hash }}
+      - name: Run Workflow 01-equivalent extended Windows validation
+        if: ${{ inputs.extended_windows_validation == true }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          cargo fmt --manifest-path build/Windows/Cargo.toml -- --check
+          cargo clippy --locked --manifest-path build/Windows/Cargo.toml --all-targets --target $env:WINDOWS_TARGET -- -D warnings
+          cargo test --locked --manifest-path build/Windows/Cargo.toml --lib --target $env:WINDOWS_TARGET
+      - name: Clean application only; build optimized Rust/Slint executable
+        id: optimized
+        shell: pwsh
+        env:
+          SPLINED_BUILD_COMMIT: ${{ github.sha }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $start = Get-Date
+          cargo clean --manifest-path build/Windows/Cargo.toml -p splined-windows --release --target $env:WINDOWS_TARGET
+          cargo build --locked --release --manifest-path build/Windows/Cargo.toml --target $env:WINDOWS_TARGET
+          "elapsed_seconds=$([Math]::Round(((Get-Date) - $start).TotalSeconds))" | Add-Content $env:GITHUB_OUTPUT
+      - name: Validate exact test binary, native smoke and sha256
+        id: binary
+        shell: pwsh
+        env:
+          EXPECTED_COMMIT: ${{ github.sha }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $exe = "build/Windows/target/$env:WINDOWS_TARGET/release/splined.exe"
+          if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw "Compiled executable missing." }
+          $image = [IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $exe).Path)
+          if ($image.Length -lt 64 -or $image[0] -ne 0x4d -or $image[1] -ne 0x5a) { throw "Not a Windows PE file." }
+          $offset = [BitConverter]::ToInt32($image, 0x3c)
+          if ($offset -lt 0 -or $offset + 6 -gt $image.Length) { throw "Invalid PE header." }
+          if ([BitConverter]::ToUInt16($image, $offset + 4) -ne 0x8664) { throw "Expected x64 PE." }
+          $report = Join-Path $env:RUNNER_TEMP "optimized-qa-build-info.json"
+          $identity = Start-Process -FilePath (Resolve-Path $exe) -ArgumentList @("--write-build-info", $report) -Wait -PassThru
+          if ($identity.ExitCode -ne 0) { throw "Build identity command failed." }
+          $actual = Get-Content -Raw -LiteralPath $report | ConvertFrom-Json
+          $cargo = Get-Content -Raw -LiteralPath build/Windows/Cargo.toml
+          $match = [regex]::Match($cargo, '(?m)^version = "([0-9]+\.[0-9]+\.[0-9]+)"$')
+          if (-not $match.Success) { throw "Source version missing." }
+          $version = $match.Groups[1].Value
+          if ($actual.version -ne $version -or $actual.commit -ne $env:EXPECTED_COMMIT -or $actual.architecture -ne "rust-slint") {
+            throw "Binary version, commit or architecture is stale."
+          }
+          $root = Join-Path $env:RUNNER_TEMP "splined-optimized-qa-smoke"
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          $old = $env:SPLINED_INTERNAL_STATE_ROOT
+          $env:SPLINED_INTERNAL_STATE_ROOT = $root
+          try {
+            $smoke = Start-Process -FilePath (Resolve-Path $exe) -ArgumentList "--native-smoke" -WorkingDirectory $env:RUNNER_TEMP -Wait -PassThru
+          } finally {
+            $env:SPLINED_INTERNAL_STATE_ROOT = $old
+          }
+          if ($smoke.ExitCode -ne 0) { throw "Native smoke failed." }
+          $unexpected = @("data", "_cache", "_logs", "credentials", "docker_builds") | Where-Object { Test-Path (Join-Path $root $_) }
+          if ($unexpected) { throw "QA smoke created user state before Setup Save." }
+          $qa = Join-Path $env:RUNNER_TEMP "splined-optimized-qa-output"
+          New-Item -ItemType Directory -Force -Path $qa | Out-Null
+          Copy-Item -LiteralPath $exe -Destination (Join-Path $qa "splined.exe")
+          Copy-Item -LiteralPath release/README-WINDOWS.txt -Destination (Join-Path $qa "README-WINDOWS.txt")
+          Copy-Item -LiteralPath $report -Destination (Join-Path $qa "build-info.json")
+          "QA ONLY. Not a published SPLINED release or Store installer." | Set-Content -LiteralPath (Join-Path $qa "QA-NOT-A-RELEASE.txt")
+          "version=$version" | Add-Content $env:GITHUB_OUTPUT
+          "qa_path=$qa" | Add-Content $env:GITHUB_OUTPUT
+          "sha256=$((Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant())" | Add-Content $env:GITHUB_OUTPUT
+      - name: Optional cold Rust/Slint comparison in an isolated target directory
+        if: ${{ inputs.benchmark_mode == 'Cold and optimized' }}
+        id: cold
+        shell: pwsh
+        env:
+          SPLINED_BUILD_COMMIT: ${{ github.sha }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $coldTarget = Join-Path $env:RUNNER_TEMP "splined-cold-qa"
+          $start = Get-Date
+          cargo build --locked --release --manifest-path build/Windows/Cargo.toml --target $env:WINDOWS_TARGET --target-dir $coldTarget
+          $binary = Join-Path $coldTarget "$env:WINDOWS_TARGET/release/splined.exe"
+          if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) { throw "Cold compilation did not produce an executable." }
+          "elapsed_seconds=$([Math]::Round(((Get-Date) - $start).TotalSeconds))" | Add-Content $env:GITHUB_OUTPUT
+      - name: Upload QA-only Windows binary and build identity
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: splined-windows-optimized-qa-${{ github.run_id }}
+          path: ${{ steps.binary.outputs.qa_path }}
+          if-no-files-found: error
+      - name: Install pinned Store QA package tool (never authenticate or submit)
+        if: ${{ inputs.store_submit_update == true || inputs.store_submit_draft == true }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $dir = Join-Path $env:RUNNER_TEMP "splined-winapp-qa"
+          npm install --prefix $dir --no-save --no-audit --no-fund "@microsoft/winappcli@0.7.1"
+          $bin = Join-Path $dir "node_modules/.bin"
+          $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $v = (& (Join-Path $bin "winapp.cmd") --version) -join " "
+          if ($v -notmatch "0\.7\.1") { throw "Pinned WinAppCli version mismatch." }
+      - name: Build and inspect production-identity unsigned Store QA MSIX
+        id: msix
+        if: ${{ inputs.store_submit_update == true || inputs.store_submit_draft == true }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $output = Join-Path $env:RUNNER_TEMP "SPLINED-x64-qa-unsigned.msix"
+          $version = "${{ steps.binary.outputs.version }}.0"
+          $parameters = @{
+            ExecutablePath = "build/Windows/target/$env:WINDOWS_TARGET/release/splined.exe"
+            ManifestPath = "build/Windows/package/Package.appxmanifest"
+            IconPath = "build/Windows/gui/splined-app-icon.png"
+            LayoutRoot = (Join-Path $env:RUNNER_TEMP "splined-qa-store-layout")
+            UnpackedRoot = (Join-Path $env:RUNNER_TEMP "splined-qa-store-unpacked")
+            OutputPath = $output
+            ExpectedVersion = $version
+          }
+          & build/Windows/package/Build-StorePackage.ps1 @parameters
+          "path=$output" | Add-Content $env:GITHUB_OUTPUT
+      - name: Development-sign, locally install, smoke and uninstall Store QA
+        if: ${{ inputs.store_submit_update == true || inputs.store_submit_draft == true }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $parameters = @{
+            ExecutablePath = "build/Windows/target/$env:WINDOWS_TARGET/release/splined.exe"
+            ManifestPath = "build/Windows/package/Package.appxmanifest"
+            IconPath = "build/Windows/gui/splined-app-icon.png"
+            LayoutRoot = (Join-Path $env:RUNNER_TEMP "splined-qa-development")
+          }
+          & build/Windows/package/Test-DevelopmentPackage.ps1 @parameters
+      - name: Upload unsigned QA package (never submitted to Partner Center)
+        if: ${{ inputs.store_submit_update == true || inputs.store_submit_draft == true }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: splined-store-unsigned-qa-${{ github.run_id }}
+          path: ${{ steps.msix.outputs.path }}
+          if-no-files-found: error
+      - name: Summarize measured optimization
+        if: always()
+        shell: pwsh
+        run: |
+          @(
+            "## Windows optimized build QA (no publishing)",
+            "",
+            "- Exact source commit: ${{ github.sha }}",
+            "- Rust toolchain and target: ${{ env.RUST_TOOLCHAIN }} / ${{ env.WINDOWS_TARGET }}",
+            "- Compiled dependency cache exact hit: ${{ steps.rust-cache.outputs.cache-hit }}",
+            "- Optimized package-clean compile: ${{ steps.optimized.outputs.elapsed_seconds }} seconds",
+            "- Optional isolated full cold compile: ${{ steps.cold.outputs.elapsed_seconds }} seconds",
+            "- Verified QA executable SHA-256: ${{ steps.binary.outputs.sha256 }}",
+            "- Store simulation modes: ${{ inputs.store_submit_update }} / ${{ inputs.store_submit_draft }}",
+            "- GitHub Releases, Git tags, GHCR and Partner Center submissions: NONE"
+          ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+  webgui:
+    name: WebGUI Python/PostgreSQL/Docker QA (no publish)
+    needs: preflight
+    if: ${{ inputs.platform == 'WebGUI / Python' || inputs.platform == 'All' }}
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: splined_test
+          POSTGRES_PASSWORD: splined_ci_only
+          POSTGRES_DB: splined_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U splined_test -d splined_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      SPLINED_TEST_DATABASE_URL: postgresql://splined_test:splined_ci_only@127.0.0.1:5432/splined_test
+      PYTHONPATH: .:build/WEBGui:build/WEBGui/webgui/backend
+    steps:
+      - name: Checkout exact tested commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - run: pip install -r build/WEBGui/webgui/requirements-test.txt
+      - name: Validate WebGUI Python/PostgreSQL
+        run: python -m unittest discover -s build/WEBGui/webgui/tests -v
+      - name: Validate browser JavaScript
+        run: node --check build/WEBGui/webgui/static/app.js && node --check build/WEBGui/webgui/static/operations.js
+      - name: Build and health-check isolated WebGUI container
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --file build/WEBGui/Dockerfile --tag splined-webgui:optimized-qa .
+          docker run -d --name splined-webgui-optimized-qa --network host \
+            -e PGHOST=127.0.0.1 -e PGUSER=splined_test -e PGPASSWORD=splined_ci_only \
+            -e PGDATABASE=splined_test -e SPLINED_WEB_TOKEN=ci-browser-only \
+            splined-webgui:optimized-qa
+          ready=false
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8080/api/status > /tmp/splined-qa-status.json; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" != true ]; then docker logs splined-webgui-optimized-qa; exit 1; fi
+          python -c "import json; x=json.load(open('/tmp/splined-qa-status.json')); assert x['database']=='PostgreSQL' and x['database_ready'] and x['auth_required']"
+      - name: Report WebGUI smoke logs
+        if: always()
+        run: docker logs splined-webgui-optimized-qa || true
+
+  summary:
+    name: Verify selected test results (no publish)
+    needs: [preflight, windows, webgui]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any selected runtime did not pass
+        shell: bash
+        env:
+          PREFLIGHT_RESULT: ${{ needs.preflight.result }}
+          WINDOWS_RESULT: ${{ needs.windows.result }}
+          WEBGUI_RESULT: ${{ needs.webgui.result }}
+          TEST_PLATFORM: ${{ inputs.platform }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Workflow 04 test-only summary"
+            echo "- Exact source: $GITHUB_SHA"
+            echo "- Platform: $TEST_PLATFORM"
+            echo "- Preflight: $PREFLIGHT_RESULT"
+            echo "- Windows: $WINDOWS_RESULT"
+            echo "- WebGUI: $WEBGUI_RESULT"
+            echo "- No release/tag/Store/GHCR publication"
+          } >> "$GITHUB_STEP_SUMMARY"
+          test "$PREFLIGHT_RESULT" = success
+          if [ "$TEST_PLATFORM" = Windows ] || [ "$TEST_PLATFORM" = All ]; then
+            test "$WINDOWS_RESULT" = success
+          else
+            test "$WINDOWS_RESULT" = skipped
+          fi
+          if [ "$TEST_PLATFORM" = 'WebGUI / Python' ] || [ "$TEST_PLATFORM" = All ]; then
+            test "$WEBGUI_RESULT" = success
+          else
+            test "$WEBGUI_RESULT" = skipped
+          fi
