@@ -91,6 +91,10 @@ jobs:
             echo "::error title=Windows validation unavailable::Strict Rust/Slint validation requires Windows or All."
             exit 1
           fi
+          if [ "$STORE_UPDATE" = true ] && [ "$EXTENDED_WINDOWS_VALIDATION" != true ]; then
+            echo "::error title=Store validation required::Submitting a Store update requires Extended Windows validation."
+            exit 1
+          fi
 
       - name: Require main branch dispatch
         shell: bash
@@ -107,6 +111,15 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
+
+      - name: Validate canonical policies and indexer contracts before release commit
+        shell: bash
+        env:
+          PYTHONPATH: .:build/WEBGui:build/WEBGui/webgui/backend
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/validate_release_policy_contracts.py
+          python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
 
       - name: Provision exact release metadata and commit
         id: release

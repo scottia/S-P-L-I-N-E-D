@@ -28,10 +28,11 @@ validation rather than enabling Slint compilation. Under the owner's release
 policy, Microsoft Store submissions require **Extended Windows validation** to
 be enabled in addition to the existing release confirmation and explicit Store
 submission choice. Do not stage or submit a Store package without those owner
-confirmations. **Workflow 01 does not currently enforce this dependency in
-preflight**: its Store choice and Extended Windows validation inputs are
-independent. The operator must deliberately enable validation; source-level
-enforcement would require a separately reviewed workflow change.
+confirmations. **Workflow 01 now enforces this dependency in preflight**: choosing **Submit Update/No Draft** without Extended Windows validation fails before any release metadata change. **Review Bundle/No Submit** is a separate, non-submitting review mode that still requires explicit release confirmation.
+
+**Canonical source-contract preflight (every target):** After checking out `main` but **before** version stamping, Workflow 01 runs `.github/scripts/validate_release_policy_contracts.py` and the shared `.github/scripts/test_*.py` regression suite. This exercises both JSONs with their existing Python validators, validates Config v5 settings metadata and executes `schema/media.sql` only against an **in-memory SQLite database**. Any failure prevents creating a release commit, tag, or published artifact. The authoritative rules remain in [POLICY-REGISTER.md](POLICY-REGISTER.md) and the two protected JSONs, not in the workflow. This check neither opens live credentials nor contacts a deployed PostgreSQL database.
+
+**Independent pull-request gate:** `.github/workflows/validate.yml` also runs **Canonical policy JSON — review gate**, blocking any change, rename, addition or deletion of either protected JSON while reporting the current contract validity. Branch rulesets must separately require the check; it does not substitute for owner approval.
 
 The **WebGUI / Python** target is the browser application, not a native Ubuntu
 Rust build. It runs the Python/PostgreSQL suite, validates browser JavaScript,

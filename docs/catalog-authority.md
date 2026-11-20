@@ -51,7 +51,7 @@ the existing insert, update, and stale-row cleanup behavior.
 not a second catalog authority. A verified Windows or WebGUI Album artwork
 write publishes the canonical Album key, writer, operation, event identity and
 completion order. The other client renders that Album's thumbnail in grayscale
-with a red frame until it completes its own verified write. This provenance
+with the canonical dark-grey override frame until it completes its own verified write. This provenance
 does not alter Album status, block either client, copy media bytes, or permit a
 WebGUI refresh to replace Windows-managed catalog fields.
 

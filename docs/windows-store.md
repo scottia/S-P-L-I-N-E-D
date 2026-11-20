@@ -70,7 +70,7 @@ JSON. Review mode authenticates only to read the last published Store baseline;
 it never stages a draft or submits for certification. The run stops before
 release work unless **Create release now** is selected. Owner release policy
 also requires **Extended Windows
-validation** before automated Store submission. The Windows
+validation** before automated Store submission; Workflow 01 rejects a submitting Store choice without that option enabled, before creating release metadata. The Windows
 job performs one clean x64
 build, uses that exact executable for the Portable ZIP and Store MSIX,
 and validates both before the workflow may create the numeric tag. WebGUI /

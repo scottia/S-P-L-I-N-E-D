@@ -70,8 +70,8 @@ Windows compilation and regression testing remains appropriate in the isolated
 E: acceptance environment. Workflow 01 retains strict optional Extended
 Windows validation and always performs a fresh optimized production build from
 versioned `main` source, using that same executable for portable and Store
-packaging. Owner policy requires Extended Windows validation before a Microsoft
-Store submission.
+packaging. Workflow 01 checks the accepted canonical source policies, Config v5 and in-memory SQLite DDL **before** version stamping. Owner policy requires Extended Windows validation before a Microsoft
+Store submission; submitting a Store update without that setting is blocked by the release preflight.
 
 `build/Windows/build.rs` compiles `build/Windows/ui/app.slint` and embeds build identity.
 The executable links directly to the Rust library modules in `build/Windows/src`.

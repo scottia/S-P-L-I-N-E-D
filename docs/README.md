@@ -31,7 +31,7 @@ The sole checked-in shared contracts are `schema/media-state-classification.json
 ## Release and build boundaries
 
 - [Build directory layout](build-layout.md) — current source paths and release inputs.
-- [Release/recovery automation](release-automation.md) — numbered workflows, artifact distribution and validation limits.
+- [Release/recovery automation](release-automation.md) — numbered workflows, canonical schema/policy preflight **before** version stamping, required Store validation and publication boundaries.
 - [Root release support](../release/README.md) — scripts, templates and synthetic regression fixtures.
 
 Historical PR acceptance records, old screenshots, source audits and superseded platform instructions have been retired from active `docs/`; Git history retains them. The former fallback workflow guide was superseded by the current source-policy and COMP contracts and is not an independent authority.
