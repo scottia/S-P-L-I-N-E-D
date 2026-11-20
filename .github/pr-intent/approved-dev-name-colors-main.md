@@ -1,0 +1,3 @@
+# Owner-approved Artist/Album name colors from historical dev
+
+Temporary nonbehavioral Draft-PR bootstrap. Restore the specific previously approved historical dev neutral-name override removals in `build/Windows/ui/app.slint` and `build/WEBGui/webgui/static/app.css`. Preserve current main branding paths and all unrelated presentation, protected policy JSON, UI statuses, and tests. The full historical app.slint file contains different asset paths and must not be copied wholesale. After the PR is open, remove this intent file; report the resulting CI status. Do not merge, publish, or write long-lived branches without separate owner authorization.
