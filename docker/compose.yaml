@@ -16,7 +16,7 @@ services:
   webgui:
     build:
       context: ..
-      dockerfile: webgui/Dockerfile
+      dockerfile: build/WEBGui/Dockerfile
     image: splined-webgui:local
     restart: unless-stopped
     depends_on:

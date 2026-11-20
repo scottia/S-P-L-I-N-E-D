@@ -56,11 +56,11 @@ class WindowsAdvisoryTests(unittest.TestCase):
         self.assertIn(
             "if: ${{ inputs.extended_windows_validation == true }}", workflow
         )
-        self.assertIn("cargo fmt --manifest-path windows/Cargo.toml -- --check", workflow)
+        self.assertIn("cargo fmt --manifest-path build/Windows/Cargo.toml -- --check", workflow)
         self.assertIn("cargo clippy", workflow)
         self.assertIn("-D warnings", workflow)
         self.assertIn(
-            "cargo test --locked --manifest-path windows/Cargo.toml --lib",
+            "cargo test --locked --manifest-path build/Windows/Cargo.toml --lib",
             workflow,
         )
         clean_build = workflow.split("- name: Build clean x64 Rust/Slint executable", 1)[1]
@@ -69,7 +69,7 @@ class WindowsAdvisoryTests(unittest.TestCase):
             clean_build.split("- name:", 1)[0],
         )
         self.assertIn(
-            "cargo build --locked --release --manifest-path windows/Cargo.toml",
+            "cargo build --locked --release --manifest-path build/Windows/Cargo.toml",
             clean_build,
         )
 

@@ -144,32 +144,16 @@ jobs:
                   elif result.returncode != 1:
                       raise SystemExit(f"Could not inspect release tag ancestry: {tag}")
 
-          cargo_path = Path("Cargo.toml")
+          cargo_path = Path("build/Windows/Cargo.toml")
           cargo = cargo_path.read_text(encoding="utf-8-sig")
           source_match = re.search(
               r'(?ms)^\[package\].*?^version\s*=\s*"(\d+\.\d+\.\d+)"',
               cargo,
           )
           if not source_match:
-              raise SystemExit("Cargo.toml package version was not found")
+              raise SystemExit("Windows Cargo package version was not found")
 
           source_version = tuple(map(int, source_match.group(1).split(".")))
-
-          windows_cargo_path = Path("windows/Cargo.toml")
-          windows_cargo = windows_cargo_path.read_text(encoding="utf-8")
-          windows_source_match = re.search(
-              r'(?ms)^\[package\].*?^version\s*=\s*"(\d+\.\d+\.\d+)"',
-              windows_cargo,
-          )
-          if not windows_source_match:
-              raise SystemExit("windows/Cargo.toml package version was not found")
-          windows_source_version = tuple(
-              map(int, windows_source_match.group(1).split("."))
-          )
-          if windows_source_version != source_version:
-              raise SystemExit(
-                  "Root and Windows package versions must match before release provisioning"
-              )
 
           compatible_versions = [
               version for version in versions
@@ -211,44 +195,22 @@ jobs:
               count=1,
           )
           if cargo_count != 1:
-              raise SystemExit("Cargo.toml package version was not updated")
+              raise SystemExit("Windows Cargo package version was not updated")
           cargo_path.write_text(cargo, encoding="utf-8")
 
-          lock_path = Path("Cargo.lock")
+          lock_path = Path("build/Windows/Cargo.lock")
           lock = lock_path.read_text(encoding="utf-8")
           lock, lock_count = re.subn(
-              r'(?m)(^name = "splined"\r?\nversion = ")[^"]+("$)',
+              r'(?m)(^name = "splined-windows"\r?\nversion = ")[^"]+("$)',
               rf'\g<1>{release_version}\g<2>',
               lock,
               count=1,
           )
           if lock_count != 1:
-              raise SystemExit("Cargo.lock SPLINED package version was not updated")
+              raise SystemExit("Windows Cargo.lock package version was not updated")
           lock_path.write_text(lock, encoding="utf-8")
 
-          windows_cargo, windows_cargo_count = re.subn(
-              r'(?ms)(^\[package\].*?^version\s*=\s*")[^"]+("\s*$)',
-              rf'\g<1>{release_version}\g<2>',
-              windows_cargo,
-              count=1,
-          )
-          if windows_cargo_count != 1:
-              raise SystemExit("windows/Cargo.toml package version was not updated")
-          windows_cargo_path.write_text(windows_cargo, encoding="utf-8")
-
-          windows_lock_path = Path("windows/Cargo.lock")
-          windows_lock = windows_lock_path.read_text(encoding="utf-8")
-          windows_lock, windows_lock_count = re.subn(
-              r'(?m)(^name = "splined-windows"\r?\nversion = ")[^"]+("$)',
-              rf'\g<1>{release_version}\g<2>',
-              windows_lock,
-              count=1,
-          )
-          if windows_lock_count != 1:
-              raise SystemExit("windows/Cargo.lock package version was not updated")
-          windows_lock_path.write_text(windows_lock, encoding="utf-8")
-
-          app_manifest_path = Path("windows/gui/app.manifest")
+          app_manifest_path = Path("build/Windows/gui/app.manifest")
           app_manifest = app_manifest_path.read_text(encoding="utf-8-sig")
           app_manifest, count = re.subn(
               r'(<assemblyIdentity version=")[^"]+(" name="SPLINED\.Windows"/>)',
@@ -260,7 +222,7 @@ jobs:
               raise SystemExit("Windows executable manifest version was not updated")
           app_manifest_path.write_text(app_manifest, encoding="utf-8")
 
-          package_manifest_path = Path("windows/package/Package.appxmanifest")
+          package_manifest_path = Path("build/Windows/package/Package.appxmanifest")
           package_manifest = package_manifest_path.read_text(encoding="utf-8-sig")
           package_manifest, count = re.subn(
               r'(?s)(<Identity\b[^>]*\bVersion=")[0-9]+\.[0-9]+\.[0-9]+\.0(")',
@@ -276,7 +238,7 @@ jobs:
               raise SystemExit("Package.appxmanifest MaxVersionTested changed unexpectedly")
           package_manifest_path.write_text(package_manifest, encoding="utf-8")
 
-          appinstaller_path = Path("windows/package/SPLINED.appinstaller.template")
+          appinstaller_path = Path("build/Windows/package/SPLINED.appinstaller.template")
           appinstaller = appinstaller_path.read_text(encoding="utf-8-sig")
           appinstaller, count = re.subn(
               r'(Version=")[0-9]+\.[0-9]+\.[0-9]+\.0(")',
@@ -287,7 +249,7 @@ jobs:
               raise SystemExit("App Installer template versions were not updated exactly twice")
           appinstaller_path.write_text(appinstaller, encoding="utf-8")
 
-          python_path = Path("webgui/backend/splined.py")
+          python_path = Path("build/WEBGui/webgui/backend/splined.py")
           source = python_path.read_text(encoding="utf-8")
           source, version_count = re.subn(
               r'^VERSION = "[^"]+"$',
@@ -316,14 +278,14 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           mapfile -t changed < <(git diff --name-only | sort)
-          expected=("Cargo.lock" "Cargo.toml" "webgui/backend/splined.py" "windows/Cargo.lock" "windows/Cargo.toml" "windows/gui/app.manifest" "windows/package/Package.appxmanifest" "windows/package/SPLINED.appinstaller.template")
+          expected=("build/WEBGui/webgui/backend/splined.py" "build/Windows/Cargo.lock" "build/Windows/Cargo.toml" "build/Windows/gui/app.manifest" "build/Windows/package/Package.appxmanifest" "build/Windows/package/SPLINED.appinstaller.template")
           if [ "${changed[*]}" != "${expected[*]}" ]; then
             echo "ERROR: Release provisioning changed unexpected files."
             printf '  %s\n' "${changed[@]}"
             exit 1
           fi
 
-          git add Cargo.toml Cargo.lock webgui/backend/splined.py windows/Cargo.toml windows/Cargo.lock windows/gui/app.manifest windows/package/Package.appxmanifest windows/package/SPLINED.appinstaller.template
+          git add build/WEBGui/webgui/backend/splined.py build/Windows/Cargo.toml build/Windows/Cargo.lock build/Windows/gui/app.manifest build/Windows/package/Package.appxmanifest build/Windows/package/SPLINED.appinstaller.template
           git commit -m "release: prepare ${RELEASE_VERSION}"
 
           RELEASE_COMMIT=$(git rev-parse HEAD)
@@ -398,7 +360,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $lock = Get-Content -Raw -LiteralPath windows/Cargo.lock
+          $lock = Get-Content -Raw -LiteralPath build/Windows/Cargo.lock
           $pattern = '(?ms)(\[\[package\]\]\r?\nname = "splined-windows"\r?\n)version = "[^"]+"'
           $normalized = [regex]::Replace($lock, $pattern, '${1}version = "<release>"')
           if ($normalized -eq $lock) {
@@ -425,9 +387,9 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
-          cargo fmt --manifest-path windows/Cargo.toml -- --check
-          cargo clippy --locked --manifest-path windows/Cargo.toml --all-targets --target $env:WINDOWS_TARGET -- -D warnings
-          cargo test --locked --manifest-path windows/Cargo.toml --lib --target $env:WINDOWS_TARGET
+          cargo fmt --manifest-path build/Windows/Cargo.toml -- --check
+          cargo clippy --locked --manifest-path build/Windows/Cargo.toml --all-targets --target $env:WINDOWS_TARGET -- -D warnings
+          cargo test --locked --manifest-path build/Windows/Cargo.toml --lib --target $env:WINDOWS_TARGET
 
       - name: Build clean x64 Rust/Slint executable
         id: windows-build
@@ -437,12 +399,12 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
-          $releaseRoot = "windows/target/$env:WINDOWS_TARGET/release"
+          $releaseRoot = "build/Windows/target/$env:WINDOWS_TARGET/release"
           if (Test-Path -LiteralPath $releaseRoot) {
             Remove-Item -LiteralPath $releaseRoot -Recurse -Force
           }
           $started = Get-Date
-          cargo build --locked --release --manifest-path windows/Cargo.toml --target $env:WINDOWS_TARGET
+          cargo build --locked --release --manifest-path build/Windows/Cargo.toml --target $env:WINDOWS_TARGET
           "elapsed_seconds=$([Math]::Round(((Get-Date) - $started).TotalSeconds))" | Add-Content $env:GITHUB_OUTPUT
 
       - name: Stage and audit portable Windows release
@@ -453,7 +415,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
-          $releaseRoot = "windows/target/$env:WINDOWS_TARGET/release"
+          $releaseRoot = "build/Windows/target/$env:WINDOWS_TARGET/release"
           $portableRoot = "release-package/SPLINED"
           New-Item -ItemType Directory -Force -Path $portableRoot, release-assets | Out-Null
           Copy-Item "$releaseRoot/splined.exe" "$portableRoot/splined.exe"
@@ -542,14 +504,14 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
-          $releaseRoot = "windows/target/$env:WINDOWS_TARGET/release"
+          $releaseRoot = "build/Windows/target/$env:WINDOWS_TARGET/release"
           $artifactRoot = Join-Path $env:RUNNER_TEMP "splined-store-artifact"
           New-Item -ItemType Directory -Force -Path $artifactRoot | Out-Null
           $storePackage = Join-Path $artifactRoot "SPLINED-x64-store-unsigned.msix"
-          $result = & windows/package/Build-StorePackage.ps1 `
+          $result = & build/Windows/package/Build-StorePackage.ps1 `
             -ExecutablePath "$releaseRoot/splined.exe" `
-            -ManifestPath windows/package/Package.appxmanifest `
-            -IconPath windows/gui/splined-app-icon.png `
+            -ManifestPath build/Windows/package/Package.appxmanifest `
+            -IconPath build/Windows/gui/splined-app-icon.png `
             -LayoutRoot (Join-Path $env:RUNNER_TEMP "splined-msix-store-layout") `
             -UnpackedRoot (Join-Path $env:RUNNER_TEMP "splined-msix-store-unpacked") `
             -OutputPath $storePackage `
@@ -563,11 +525,11 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
-          $releaseRoot = "windows/target/$env:WINDOWS_TARGET/release"
-          & windows/package/Test-DevelopmentPackage.ps1 `
+          $releaseRoot = "build/Windows/target/$env:WINDOWS_TARGET/release"
+          & build/Windows/package/Test-DevelopmentPackage.ps1 `
             -ExecutablePath "$releaseRoot/splined.exe" `
-            -ManifestPath windows/package/Package.appxmanifest `
-            -IconPath windows/gui/splined-app-icon.png `
+            -ManifestPath build/Windows/package/Package.appxmanifest `
+            -IconPath build/Windows/gui/splined-app-icon.png `
             -LayoutRoot (Join-Path $env:RUNNER_TEMP "splined-msix-development-layout")
 
       - name: Upload Windows portable release artifact
@@ -619,7 +581,7 @@ jobs:
           --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       SPLINED_TEST_DATABASE_URL: postgresql://splined_test:splined_ci_only@127.0.0.1:5432/splined_test
-      PYTHONPATH: .:webgui/backend
+      PYTHONPATH: .:build/WEBGui:build/WEBGui/webgui/backend
 
     steps:
       - name: Checkout release base
@@ -656,19 +618,19 @@ jobs:
           node-version: "22"
 
       - name: Install WebGUI test dependencies
-        run: pip install -r webgui/requirements-test.txt
+        run: pip install -r build/WEBGui/webgui/requirements-test.txt
 
       - name: Validate Python/PostgreSQL WebGUI
-        run: python -m unittest discover -s webgui/tests -v
+        run: python -m unittest discover -s build/WEBGui/webgui/tests -v
 
       - name: Validate browser JavaScript
-        run: node --check webgui/static/app.js && node --check webgui/static/operations.js
+        run: node --check build/WEBGui/webgui/static/app.js && node --check build/WEBGui/webgui/static/operations.js
 
       - name: Build and smoke-test WebGUI container
         shell: bash
         run: |
           set -euo pipefail
-          docker build --file webgui/Dockerfile --tag splined-webgui:release-test .
+          docker build --file build/WEBGui/Dockerfile --tag splined-webgui:release-test .
           docker run -d --name splined-webgui-release-test --network host \
             -e PGHOST=127.0.0.1 -e PGUSER=splined_test -e PGPASSWORD=splined_ci_only \
             -e PGDATABASE=splined_test -e SPLINED_WEB_TOKEN=ci-browser-only \
@@ -701,8 +663,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p release-package release-assets
-          cp -R webgui schema docker docs release-package/
+          mkdir -p release-package/build release-assets
+          cp -R build/WEBGui release-package/build/
+          cp -R schema docker docs release-package/
+          cp .dockerignore release-package/
           cp config.example.toml README.md LICENSE PRIVACY.md SECURITY.md SUPPORT.md release-package/
           tar -czf release-assets/splined-webgui-python.tar.gz -C release-package .
 
@@ -944,7 +908,7 @@ jobs:
             --label "org.opencontainers.image.revision=${{ needs.prepare-release.outputs.commit }}" \
             --tag "$IMAGE_NAME:$VERSION_TAG" \
             --tag "$IMAGE_NAME:latest" \
-            --file webgui/Dockerfile .
+            --file build/WEBGui/Dockerfile .
 
       - name: Log in to GHCR
         shell: bash
@@ -1105,7 +1069,7 @@ jobs:
           SELLER_ID: ${{ secrets.SELLER_ID }}
         run: |
           $ErrorActionPreference = "Stop"
-          & windows/package/Publish-StoreUpdate.ps1 `
+          & build/Windows/package/Publish-StoreUpdate.ps1 `
             -PackagePath store-submission/SPLINED-x64-store-unsigned.msix `
             -HighlightsPath store-submission/STORE-HIGHLIGHTS.txt `
             -BaselineMetadataPath store-submission/STORE-SUBMISSION.json `

@@ -45,10 +45,10 @@ Validate changes locally on PC, push the tested source to `dev`, then merge
 the `dev` pull request into `main`. Validation runs on pull requests, so pushing
 and merging the same source does not launch duplicate push-triggered builds.
 
-Checks follow the changed files: WebGUI changes run the Python/PostgreSQL,
-JavaScript, and container checks, and root Rust changes run the Linux Rust
-tests. Repository policy and boundary checks remain independent of runtime
-selection. Strict Windows Rust/Slint validation is never executed automatically
+Checks follow changed files: WebGUI, shared-contract, and release-automation
+changes run Python/PostgreSQL, JavaScript, and container checks. The archived
+root-native CLI no longer has an active Rust validation lane. Windows retains
+the separate advisory PR check and Workflow 01 release validation. Strict Windows Rust/Slint validation is never executed automatically
 for pull requests targeting `dev` or `main`, including Windows source, Slint,
 shared-schema, dependency, workflow, and `dev` to `main` promotion changes.
 Those scopes still run every other applicable validation lane.

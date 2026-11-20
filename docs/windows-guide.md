@@ -5,7 +5,7 @@ installation, everyday artwork work, Settings, backup, updates, and support.
 It does not apply to the separate browser/PostgreSQL WebGUI.
 
 Maintainer build and packaging instructions belong in the
-[Windows source/build guide](../windows/README.md). Exact Config v5 fields live
+[Windows source/build guide](windows-build-guide.md). Exact Config v5 fields live
 in the [configuration reference](config-v5-reference.md). Dated audits are
 retained as historical evidence, not current operating instructions.
 

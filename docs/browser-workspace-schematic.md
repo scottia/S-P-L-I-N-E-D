@@ -3,8 +3,8 @@
 This is a maintainer map of the WebGUI layout and its corresponding source
 regions. It helps reviewers notice deliberate visual alignment with Windows,
 but it is not a parity promise or user operating guide. The Windows
-implementation is in `windows/ui/app.slint`; the browser interface is in
-`webgui/static/index.html`, `app.css`, and `app.js`.
+implementation is in `build/Windows/ui/app.slint`; the browser interface is in
+`build/WEBGui/webgui/static/index.html`, `app.css`, and `app.js`.
 
 Use the current source and tests to establish behavior. The dated
 [function and event-sequence audit](windows-web-function-audit.md) is retained
@@ -41,7 +41,7 @@ At narrower widths, the browser stacks these regions while keeping the same read
 | `Selected Artwork` near `app.slint:2693` | `#review`, `#selectedFrame`, `#themedPackaging`, `.review-actions` | Current or proposed preview, source metadata, Themed Packaging for the combined artist package, Upscale Preview before WRITE, then EMBED Batch. |
 | `Candidate Artwork` near `app.slint:2852` | `#candidateDock`, `#candidateGrid` | LAUNCH and a horizontally scrolling candidate strip. |
 
-The browser assets under `webgui/static/assets/` are copies of `windows/gui/splined-app-icon.png`, `windows/gui/splined-watermark.png`, `windows/gui/source-icons/*.svg`, `windows/gui/set-your-imagination-tv.jpg`, and `assets/branding/splined-slogan.svg`. If Windows branding changes, refresh those copies and compare the header and source cards.
+The browser assets under `build/WEBGui/webgui/static/assets/` are copies of `build/Windows/gui/splined-app-icon.png`, `build/Windows/gui/splined-watermark.png`, `build/Windows/gui/source-icons/*.svg`, `build/Windows/gui/set-your-imagination-tv.jpg`, and `assets/branding/splined-slogan.svg`. If Windows branding changes, refresh those copies and compare the header and source cards.
 
 ## Mouse workflow and state
 
@@ -54,7 +54,7 @@ The browser assets under `webgui/static/assets/` are copies of `windows/gui/spli
 
 ## Data and write boundaries
 
-`webgui/server.py` serves the approved static interface and operation endpoints. Python handles providers, image processing and real artwork/tag writes. PostgreSQL owns catalog, completion ledger, audit records and persistent jobs. Read mode blocks music writes. Settings and provider credentials are editable in the browser; MusicBrainz authorization uses a server-side PKCE verifier.
+`build/WEBGui/webgui/server.py` serves the approved static interface and operation endpoints. Python handles providers, image processing and real artwork/tag writes. PostgreSQL owns catalog, completion ledger, audit records and persistent jobs. Read mode blocks music writes. Settings and provider credentials are editable in the browser; MusicBrainz authorization uses a server-side PKCE verifier.
 
 Windows remains native Rust with SQLite. There is no shared live
 PostgreSQL/Windows database. The explicit SQLite import copies recognized rows

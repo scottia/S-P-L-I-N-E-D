@@ -1,6 +1,8 @@
 **
-!webgui/
-!webgui/**
+!build/
+!build/WEBGui/
+!build/WEBGui/webgui/
+!build/WEBGui/webgui/**
 !docker/
 !docker/config.example.toml
 !schema/
@@ -8,6 +10,6 @@
 !schema/settings-ui.json
 !schema/media-state-classification.json
 !schema/comp-report-policy.json
-webgui/tests/
-webgui/**/__pycache__/
-webgui/**/*.pyc
+build/WEBGui/webgui/tests/
+build/WEBGui/webgui/**/__pycache__/
+build/WEBGui/webgui/**/*.pyc

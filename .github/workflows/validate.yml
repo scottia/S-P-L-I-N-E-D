@@ -10,7 +10,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       webgui: ${{ steps.scope.outputs.webgui }}
-      linux: ${{ steps.scope.outputs.linux }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -40,7 +39,7 @@ jobs:
           --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       SPLINED_TEST_DATABASE_URL: postgresql://splined_test:splined_ci_only@127.0.0.1:5432/splined_test
-      PYTHONPATH: .:webgui/backend
+      PYTHONPATH: .:build/WEBGui:build/WEBGui/webgui/backend
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -49,12 +48,12 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
-      - run: pip install -r webgui/requirements-test.txt
-      - run: python -m unittest discover -s webgui/tests -v
-      - run: node --check webgui/static/app.js && node --check webgui/static/operations.js
+      - run: pip install -r build/WEBGui/webgui/requirements-test.txt
+      - run: python -m unittest discover -s build/WEBGui/webgui/tests -v
+      - run: node --check build/WEBGui/webgui/static/app.js && node --check build/WEBGui/webgui/static/operations.js
       - name: Build and start browser container
         run: |
-          docker build --file webgui/Dockerfile --tag splined-webgui:test .
+          docker build --file build/WEBGui/Dockerfile --tag splined-webgui:test .
           docker run -d --name splined-webgui-test --network host \
             -e PGHOST=127.0.0.1 -e PGUSER=splined_test -e PGPASSWORD=splined_ci_only \
             -e PGDATABASE=splined_test -e SPLINED_WEB_TOKEN=ci-browser-only splined-webgui:test
@@ -65,16 +64,6 @@ jobs:
           python -c "import json; value=json.load(open('/tmp/splined-status.json')); assert value['database']=='PostgreSQL' and value['auth_required'] and value['database_ready']"
       - if: always()
         run: docker logs splined-webgui-test || true
-  native:
-    name: native (ubuntu-latest)
-    needs: scope
-    if: needs.scope.outputs.linux == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - name: Install Rust
-        run: rustup toolchain install stable --profile minimal --no-self-update
-      - run: cargo +stable test --locked
   windows-advisory:
     name: Windows Rust/Slint — advisory
     needs: scope
