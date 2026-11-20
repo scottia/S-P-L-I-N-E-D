@@ -20,12 +20,18 @@ explicit first save creates these files in the selected Configuration Path:
   config.toml
   ui.toml
 
-Standalone SQLite Setup creates neither shared-policy JSON. If Shared SQLite is
-selected, Setup asks whether it coordinates with WebGUI PostgreSQL. Shared-only
-Setup creates media-state-classification.json and comp-report-policy.json. Coordinated Setup first requires
-a successful PostgreSQL Test, then Save creates album-coordination.json and the
-validated PostgreSQL policy mirror. Setup never creates a blank JSON or
-overwrites a conflicting existing credential or policy.
+All installations apply the SAME bundled, canonical media-state and COMP
+behavioral-policy contracts, whether SQLite is standalone or shared. The
+Shared SQLite option affects database storage/coordination only; it does not
+select an alternative default or separately approved name-color/COMP policy.
+Standalone mode does not require an independently managed policy file.
+
+If Shared SQLite is selected, Setup offers optional WebGUI/PostgreSQL
+coordination. Coordinated Setup requires a successful PostgreSQL Test before
+Save, and any persisted Windows policy copies must be validated against the
+same approved contract rather than silently replacing or overriding it.
+Setup must not create blank JSON or overwrite a conflicting existing credential
+or policy. Any policy revision conflict requires an explicit review.
 
 When Configuration Path is the portable directory, moving or copying the
 complete directory carries its settings with the app. An explicitly selected

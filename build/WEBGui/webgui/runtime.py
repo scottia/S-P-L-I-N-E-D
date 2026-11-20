@@ -70,7 +70,7 @@ class Runtime:
 
     def load(self):
         if not self.config_file.is_file():
-            example = source_root() / "docker/config.example.toml"
+            example = source_root() / "build/WEBGui/docker/config.example.toml"
             return tomllib.loads(example.read_text(encoding="utf-8"))
         cfg = tomllib.loads(self.config_file.read_text(encoding="utf-8"))
         self.validate(cfg)

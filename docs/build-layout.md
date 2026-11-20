@@ -18,9 +18,9 @@ production release entry point for Windows, WebGUI, and the All selection.
 - `schema/`: shared JSON/SQL runtime contracts, not duplicated between
   target folders. WebGUI includes these in GHCR at `/app/schema`; Windows
   embeds referenced defaults at compile time.
-- `docker/config.example.toml`: default WebGUI Config v5 example included
-  in the container at `/app/docker/config.example.toml`.
-- `docker/compose.yaml`: source deployment configuration using the same
+- `build/WEBGui/docker/config.example.toml`: default WebGUI Config v5 example included
+  in the container at `/app/build/WEBGui/docker/config.example.toml`.
+- `build/WEBGui/docker/compose.yaml`: source deployment configuration using the same
   Dockerfile as Workflow 01.
 
 The `build/` directory contains exactly two application-specific directories,

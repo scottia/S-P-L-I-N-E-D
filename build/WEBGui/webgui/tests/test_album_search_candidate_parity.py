@@ -18,7 +18,7 @@ REPOSITORY = Path(__file__).resolve().parents[4]
 
 class AlbumSearchCandidateParityTests(unittest.TestCase):
     def test_search_payload_preserves_windows_candidate_filter_evidence(self) -> None:
-        with (REPOSITORY / "docker/config.example.toml").open("rb") as handle:
+        with (REPOSITORY / "build/WEBGui/docker/config.example.toml").open("rb") as handle:
             config = tomllib.load(handle)
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

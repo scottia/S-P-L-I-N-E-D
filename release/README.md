@@ -25,10 +25,10 @@ published history belongs in Git tags and GitHub Releases.
 ## Current guidance
 
 - `README-WINDOWS.txt` ships with the supported Windows portable archive.
-- `README-LINUX.txt` documents the separate native Linux source build. The
-  numbered release workflow does not currently publish a Linux archive.
-- macOS instructions and development artifacts exist only on the experimental
-  `dev-macos` branch. macOS is not a release target on `main` or `dev`.
+- Workflow 01 separately builds and publishes the WebGUI/Python GHCR image
+  and can attach a WebGUI source archive. There is **no supported native Linux
+  README or root-native Linux release target** in the two-target `/main` layout.
+- macOS is not a release target in the current `/dev` Workflow 01 source.
 
 Windows release notes are generated from `cliff.toml` and
 `templates/github-release.tera`; a static migration-era release-note file is

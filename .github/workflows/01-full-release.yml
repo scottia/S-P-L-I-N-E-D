@@ -665,7 +665,7 @@ jobs:
           set -euo pipefail
           mkdir -p release-package/build release-assets
           cp -R build/WEBGui release-package/build/
-          cp -R schema docker docs release-package/
+          cp -R schema docs release-package/
           cp .dockerignore release-package/
           cp config.example.toml README.md LICENSE PRIVACY.md SECURITY.md SUPPORT.md release-package/
           tar -czf release-assets/splined-webgui-python.tar.gz -C release-package .

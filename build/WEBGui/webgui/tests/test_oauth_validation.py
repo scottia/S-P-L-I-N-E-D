@@ -55,7 +55,7 @@ class OAuthValidationTests(unittest.TestCase):
 
     @staticmethod
     def _example_config() -> dict:
-        with (REPOSITORY / "docker" / "config.example.toml").open("rb") as handle:
+        with (REPOSITORY / "build" / "WEBGui" / "docker" / "config.example.toml").open("rb") as handle:
             return tomllib.load(handle)
 
     def _write_credential(self, provider: str, payload: dict) -> Path:
