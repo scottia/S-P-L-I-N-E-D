@@ -1,3 +1,0 @@
-# Draft PR intent: remove archive branch references from main
-
-Temporary nonbehavioral bootstrap. Owner directs removal of both `dev-archive` and `dev-archived` references everywhere under `/main`. GitHub code search found five `dev-archive` mentions in `README.md`, `docs/README.md`, `docs/build-layout.md`, and `docs/windows-build-guide.md`; no `dev-archived` mentions. Remove mentions and stale archive-only guidance while preserving valid current Windows/WebGUI and release documentation. Do not delete/rename either branch or alter code, release, protected JSON or governance. Remove bootstrap prior to PR review.

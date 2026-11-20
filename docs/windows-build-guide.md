@@ -169,7 +169,7 @@ splined.exe --write-build-info build-info.json
 
 ## Validation
 
-The historic root-crate architecture test sources are retained in `dev-archive`;
+The historic root-crate architecture tests are outside the current source layout.
 Workflow 01's portable allowlist and native smoke checks remain active. Reestablish
 current-layout architecture coverage before treating past test claims as current.
 Controller and library unit tests cover real state transitions without placing

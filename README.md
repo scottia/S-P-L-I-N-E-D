@@ -97,8 +97,7 @@ SPLINED keeps its supported implementations separate:
   [`webgui/`](build/WEBGui/webgui/) Python/browser package, including its CI tests.
 - [`schema/`](schema/) remains the single source of shared runtime JSON/SQL
   contracts. WebGUI deployment inputs live under [`build/WEBGui/docker/`](build/WEBGui/docker/).
-- Unused legacy root-native CLI sources are retained only in
-  [`dev-archive`](https://github.com/scottia/S-P-L-I-N-E-D/tree/dev-archive).
+- The retired root-native CLI is not part of the supported `/main` build layout.
 
 They share configuration and artwork-policy concepts, but do not guarantee
 identical interfaces or use one shared live database.
