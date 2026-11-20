@@ -58,7 +58,7 @@ class BuildLayoutTests(unittest.TestCase):
     def test_no_legacy_root_docker_config_references_in_python(self):
         # A missing relocated example can otherwise fail unrelated tests at
         # import time before the Docker image build is reached.
-        legacy = '"docker" / "config.example.toml"'
+        legacy = 'REPOSITORY / "docker" / "config.example.toml"'
         stale = []
         for source in (ROOT / "build/WEBGui").rglob("*.py"):
             if legacy in source.read_text(encoding="utf-8"):
