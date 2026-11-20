@@ -67,7 +67,7 @@
     "preserve_album_classification": true
   },
   "artist": {
-    "description": "Artist file-list names are an aggregate of Artist Art plus independently classified Album and COMP-track evidence.",
+    "description": "Artist name colors aggregate Artist and applicable Album cover evidence plus Album, Track and COMP embedding evidence; red > yellow > purple > green, with no-category red.",
     "ranked_states": [
       {
         "condition": "incomplete_or_error",
@@ -80,7 +80,7 @@
         "condition": "missing_artist_art",
         "key": "missing_art",
         "ui_status_key": "bypassed",
-        "label": "Missing Artist Art",
+        "label": "Missing Artist or Album Art",
         "color": "yellow"
       },
       {
@@ -114,7 +114,7 @@
     ]
   },
   "album": {
-    "description": "Album names and status dots are independent of the Artist aggregate. Multiple dots may apply; ranked_name_states selects the single Album file-list name color.",
+    "description": "Album names are independent of Artist name colors and independently ranked dark grey > red > yellow > purple > orange > green. Show every applicable Album status dot in its separately ranked order; blue cover.webp is auxiliary only.",
     "ranked_name_states": [
       {
         "condition": "opposing_override",
@@ -127,7 +127,7 @@
         "condition": "incomplete_tracks",
         "key": "incomplete",
         "ui_status_key": "incomplete",
-        "label": "Incomplete album tracks",
+        "label": "Incomplete / Error",
         "color": "red"
       },
       {
@@ -174,7 +174,7 @@
       },
       {
         "condition": "incomplete_tracks",
-        "label": "Incomplete album tracks",
+        "label": "Incomplete / Error",
         "color": "red"
       },
       {
@@ -184,7 +184,7 @@
       },
       {
         "condition": "embedding_issues",
-        "label": "Embedded art needs attention",
+        "label": "Embedding issues: missing or outside preferred thumbnail size",
         "color": "purple"
       },
       {
@@ -204,7 +204,7 @@
         "auxiliary": true
       }
     ],
-    "red_definition": "Incomplete album tracks",
+    "red_definition": "Incomplete / Error",
     "forbidden_name_colors": [
       "white",
       "blue"

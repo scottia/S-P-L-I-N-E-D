@@ -88,6 +88,27 @@ def validate_media_state_policy(value: object) -> dict:
             int(color[1:], 16)
         except ValueError as error:
             raise ValueError(f"invalid color {name}: {color}") from error
+    # The owner-approved name-color precedence is mandatory for both clients.
+    # Preserve live policy palettes and legacy wire keys, but never accept a
+    # reordered classification list as valid policy.
+    required_rankings = {
+        "artist": [
+            ("incomplete_or_error", "red"),
+            ("missing_artist_art", "yellow"),
+            ("embedding_issues", "purple"),
+            ("all_albums_complete_or_overridden", "green"),
+            ("default", "red"),
+        ],
+        "album": [
+            ("opposing_override", "dark_grey"),
+            ("incomplete_tracks", "red"),
+            ("missing_art", "yellow"),
+            ("embedding_issues", "purple"),
+            ("processed", "orange"),
+            ("tracks_complete", "green"),
+            ("default", "red"),
+        ],
+    }
     for scope, rule_name in (("artist", "ranked_states"), ("album", "ranked_name_states")):
         section = value.get(scope)
         rules = section.get(rule_name) if isinstance(section, dict) else None
@@ -110,6 +131,9 @@ def validate_media_state_policy(value: object) -> dict:
                 raise ValueError(f"{scope} rule references unknown color {rule['color']}")
             if rule["color"] in forbidden:
                 raise ValueError(f"{scope} names may not use {rule['color']}")
+        actual_ranking = [(rule["condition"], rule["color"]) for rule in rules]
+        if actual_ranking != required_rankings[scope]:
+            raise ValueError(f"{scope} name-color ranking differs from owner policy")
     status_colors = value.get("ui_status_colors")
     if not isinstance(status_colors, dict) or any(color not in colors for color in status_colors.values()):
         raise ValueError("ui_status_colors must reference named colors")
@@ -141,6 +165,21 @@ def validate_media_state_policy(value: object) -> dict:
     for dot in dots:
         if not isinstance(dot, dict) or not dot.get("condition") or not dot.get("label") or dot.get("color") not in colors:
             raise ValueError("album contains an invalid status dot")
+    required_dot_order = [
+        ("opposing_override", "dark_grey"),
+        ("incomplete_tracks", "red"),
+        ("missing_art", "yellow"),
+        ("embedding_issues", "purple"),
+        ("processed", "orange"),
+        ("tracks_complete", "green"),
+        ("animated_webp", "blue"),
+    ]
+    if [(dot["condition"], dot["color"]) for dot in dots] != required_dot_order:
+        raise ValueError("Album status-dot order differs from owner policy")
+    # The blue dot is auxiliary. Accept absent legacy metadata so an older
+    # PostgreSQL/local mirror does not fail startup solely on that omission.
+    if dots[-1].get("auxiliary", True) is not True:
+        raise ValueError("animated cover.webp must be an auxiliary Album dot")
     presentation = value.get("override_presentation")
     if (
         not isinstance(presentation, dict)

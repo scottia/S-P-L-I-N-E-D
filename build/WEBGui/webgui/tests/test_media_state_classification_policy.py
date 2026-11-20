@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -12,6 +13,7 @@ from webgui.media_state_policy import (
     database_monitor_presentation,
     editable_policy_path,
     media_state_policy,
+    validate_media_state_policy,
 )
 
 
@@ -57,7 +59,7 @@ class MediaStateClassificationPolicyTests(unittest.TestCase):
         )
 
 
-    def test_album_red_is_track_only_and_override_presentation_is_complete(self) -> None:
+    def test_album_red_and_override_presentation_are_independent(self) -> None:
         policy = media_state_policy()
 
         self.assertEqual(
@@ -72,7 +74,9 @@ class MediaStateClassificationPolicyTests(unittest.TestCase):
             ],
             "dark_grey",
         )
-        self.assertEqual(policy["album"]["red_definition"], "Incomplete album tracks")
+        self.assertEqual(policy["album"]["red_definition"], "Incomplete / Error")
+        self.assertEqual(policy["album"]["status_dots"][1]["label"], "Incomplete / Error")
+        self.assertEqual(policy["artist"]["ranked_states"][1]["label"], "Missing Artist or Album Art")
         self.assertEqual(
             policy["override_presentation"],
             {
@@ -108,6 +112,33 @@ class MediaStateClassificationPolicyTests(unittest.TestCase):
         self.assertEqual(classify_media_state("album", set())["color_name"], "red")
         self.assertIn("white", policy["artist"]["forbidden_name_colors"])
         self.assertIn("white", policy["album"]["forbidden_name_colors"])
+
+    def test_approved_rankings_and_all_seven_dots_are_enforced(self) -> None:
+        original = media_state_policy()
+        for scope, key in (("artist", "ranked_states"), ("album", "ranked_name_states")):
+            changed = json.loads(json.dumps(original))
+            changed[scope][key][0], changed[scope][key][1] = (
+                changed[scope][key][1], changed[scope][key][0]
+            )
+            with self.subTest(scope=scope), self.assertRaisesRegex(ValueError, "ranking"):
+                validate_media_state_policy(changed)
+
+        wrong_dots = json.loads(json.dumps(original))
+        wrong_dots["album"]["status_dots"][0], wrong_dots["album"]["status_dots"][1] = (
+            wrong_dots["album"]["status_dots"][1], wrong_dots["album"]["status_dots"][0]
+        )
+        with self.assertRaisesRegex(ValueError, "status-dot order"):
+            validate_media_state_policy(wrong_dots)
+
+    def test_webgui_library_names_are_not_overridden_by_theme_css(self) -> None:
+        root = Path(__file__).resolve().parents[4]
+        css = (root / "build/WEBGui/webgui/static/app.css").read_text(encoding="utf-8")
+        js = (root / "build/WEBGui/webgui/static/app.js").read_text(encoding="utf-8")
+        self.assertNotIn("data-media-status=unprocessed] .row-copy strong", css)
+        self.assertIn("color:var(--status-color)", css)
+        self.assertIn("color:var(--status-color-light)", css)
+        self.assertIn("const processed = status === \"processed\" || status === \"artistComplete\";", js)
+        self.assertNotIn('rawStatus === "unprocessed" && !Boolean(album.cover_found', js)
 
     def test_database_monitor_uses_policy_labels_and_colors(self) -> None:
         self.assertEqual(

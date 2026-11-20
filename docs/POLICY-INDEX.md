@@ -15,7 +15,7 @@ Do not convert unapproved source observations into register entries.
 
 | Artifact | Type and purpose | Runtime readers and validation | Status |
 | --- | --- | --- | --- |
-| [`schema/media-state-classification.json`](../schema/media-state-classification.json) | **Behavioral policy seed** for Artist/Album name ranking, Album status dots, palette, override presentation and database monitor | `build/WEBGui/webgui/media_state_policy.py`, `build/Windows/src/media_state_policy.rs`, browser UI and tests | **Owner policy defined; implementation NONCONFORMING** (CSS bypass; validators do not enforce complete rank/order); live revisions unverified |
+| [`schema/media-state-classification.json`](../schema/media-state-classification.json) | **Behavioral policy seed** for Artist/Album name ranking, Album status dots, palette, override presentation and database monitor | `build/WEBGui/webgui/media_state_policy.py`, `build/Windows/src/media_state_policy.rs`, browser UI and tests | **Owner policy defined; focused /dev correction prepared** (red/yellow wording, ranking/dot validators, CSS unprocessed-name bypass, Album status inference); full client parity and live PostgreSQL/Windows revisions unverified |
 | [`schema/comp-report-policy.json`](../schema/comp-report-policy.json) | **Behavioral policy seed** for COMP Artist/Recording matching, ranking, batch outcomes and coordination | `build/WEBGui/webgui/comp_report_policy.py`, `build/Windows/src/comp_report_policy.rs`, respective tests | JSON structure and required fields reviewed; **behavioral approval pending**; working runtime not independently tested |
 | [`schema/media.sql`](../schema/media.sql) | **SQLite database DDL**; not a color policy | Windows index coordinator and native catalog initialization; WebGUI compatibility/SQLite import path | 22 table and 24 index declarations identified; **SQL execution, migrations and semantic compatibility unverified** |
 | [`schema/settings-ui.json`](../schema/settings-ui.json) | **Config/UI presentation contract**, not the authority for artwork processing outcomes | `build/WEBGui/webgui/server.py`, settings UI, Windows/UI compatibility checks | Parses as JSON; 8 sections, 65 field paths, no duplicate paths or inverted numeric bounds found; **runtime/default parity unverified** |
@@ -46,8 +46,10 @@ Dockerfile, release workflows, tests, and PostgreSQL seed/mirror handling.
 
 ## Remaining review order
 
-1. Resolve the explicit media-state discrepancies and add rank/order,
-   no-white, multiple-dot, and theme/CSS regression assertions.
+1. Validate the focused media-state correction under Windows and WebGUI,
+   including no-white names, red/yellow evidence, all applicable dots,
+   theme/CSS behavior, and effective runtime revisions. Resolve remaining
+   evidence and presentation gaps before promotion.
 2. Independently validate COMP report policy and its effective revisions;
    preserve presently functioning behavior until a concrete defect is proven.
 3. Validate SQLite `media.sql` by applying the DDL in a disposable database,

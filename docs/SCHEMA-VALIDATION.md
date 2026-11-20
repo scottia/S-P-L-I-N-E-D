@@ -96,7 +96,51 @@ valid JSON may still misstate existing settings behavior.
 - [Windows COMP validator](../build/Windows/src/comp_report_policy.rs)
 - [Windows schema consumer](../build/Windows/src/catalog_index_coordinator.rs)
 
-**Validation boundary:** No code/runtime/schema changes were made in this
-review; the known CSS bypass is recorded as a defect for a focused correction
-after updating the approved policy and its enforcement tests. `main`
-remains untouched.
+**Original baseline boundary:** At this checkpoint no implementation changes
+had yet been made. The follow-up below records the subsequent focused
+source correction; production validation remains pending. `main` is unchanged.
+
+## Focused policy-correction checkpoint
+
+The preceding sections document the original read-only baseline. The
+subsequent `/dev` correction applies these source changes:
+
+- `schema/media-state-classification.json`: Album red
+  `Incomplete / Error` description, name rule and dot; Artist yellow
+  `Missing Artist or Album Art`; clearer owner-policy scope descriptions.
+  Retains the existing `splined-media-state-v2` wire ID, condition keys,
+  color precedence and seven-dot sequence for compatibility.
+- Both policy validators now reject reordered Artist-name, Album-name or
+  Album-dot rules, while continuing to allow configurable color palettes
+  and labels. Windows also preserves the `auxiliary` dot field when
+  serializing the local policy.
+- WebGUI CSS no longer forces Unprocessed/All library-row names to neutral
+  white or muted theme text. Semantic palette properties remain in use.
+- WebGUI Album classification no longer interprets an unprocessed row
+  with a missing cover as independent red/error evidence, or the existence
+  of a cover as proof of a completed SPLINED processing operation.
+- The WebGUI Album projection now exposes `static_cover_found` separately
+  from previewable `cover_found`, so `cover.webp` cannot by itself
+  suppress yellow missing-static-cover evidence. A focused browser
+  regression covers WebP-only and pre-existing static-cover cases.
+- Focused Python and Rust regression cases check ordering, labels,
+  forbidden colors and the removal of the CSS bypass.
+
+**Important: this is a code review and regression-test change, not proof
+of deployed client parity.** A full WebGUI Python/PostgreSQL and browser test
+run, Windows Rust/Slint build, interactive themes, live runtime policy row,
+Windows credential-directory mirror, and actual media evidence remain
+unverified until separately exercised.
+
+**Remaining issues requiring validation or policy interpretation:** whether
+`cover.webp` incorrectly satisfies ordinary cover evidence; physical
+Artist Art and Album associations; bypass status versus missing-art yellow;
+COMP-track and below/above preferred thumbnail size propagation; and
+opposing-override frame color (independent of dark-grey name/dot).
+
+**Runtime state remains unchanged.** An existing PostgreSQL saved policy
+or Windows local mirror is not automatically upgraded by editing the
+checked-in JSON seed. Strict order validation may reject a nonconforming
+saved revision; inspect and reconcile it deliberately before deployment.
+No writes to production catalog, PostgreSQL policy rows, media tags or
+music files occurred. `/main` remains untouched.

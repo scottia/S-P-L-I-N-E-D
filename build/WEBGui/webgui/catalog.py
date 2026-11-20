@@ -2398,6 +2398,9 @@ class Catalog:
                 ),
                 "webp_found": bool(row["webp_found"]),
                 "cover_found": cover is not None,
+                # A readable cover.webp remains previewable but cannot satisfy
+                # ordinary static cover.* completeness.
+                "static_cover_found": cover is not None and cover.suffix.casefold() != ".webp",
                 "cover": self.image(cover),
                 "override_writer": override.get("writer", ""),
                 "override_operation": override.get("operation", ""),
@@ -2478,6 +2481,7 @@ class Catalog:
             "embedded_validation": str(row["embedded_validation_status"] or "unknown")
                 if "embedded_validation_status" in row else "unknown",
             "cover_found": cover is not None,
+            "static_cover_found": cover is not None and cover.suffix.casefold() != ".webp",
             "webp_found": bool(row["webp_found"]),
             "cover": self.image(cover), "cover_meta": image_metadata(cover) if cover else None,
             "embedded_meta": embedded_album_artwork_summary(

@@ -83,6 +83,8 @@ pub struct StatusDotRule {
     pub condition: String,
     pub label: String,
     pub color: String,
+    #[serde(default)]
+    pub auxiliary: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -555,6 +557,64 @@ fn parse_policy(text: &str) -> Result<MediaStatePolicy, String> {
             return Err("media-state policy contains an invalid Album status dot".to_string());
         }
     }
+    // Validate the owner's exact precedence without replacing user palettes.
+    // A configured runtime policy may retain old labels, but cannot reorder
+    // Artist names, Album names, or their independent Album status dots.
+    let artist_order = [
+        ("incomplete_or_error", "red"),
+        ("missing_artist_art", "yellow"),
+        ("embedding_issues", "purple"),
+        ("all_albums_complete_or_overridden", "green"),
+        ("default", "red"),
+    ];
+    if value.artist.ranked_states.len() != artist_order.len()
+        || value
+            .artist
+            .ranked_states
+            .iter()
+            .zip(artist_order)
+            .any(|(rule, (condition, color))| rule.condition != condition || rule.color != color)
+    {
+        return Err("Artist name-color ranking differs from owner policy".to_string());
+    }
+    let album_order = [
+        ("opposing_override", "dark_grey"),
+        ("incomplete_tracks", "red"),
+        ("missing_art", "yellow"),
+        ("embedding_issues", "purple"),
+        ("processed", "orange"),
+        ("tracks_complete", "green"),
+        ("default", "red"),
+    ];
+    if value.album.ranked_name_states.len() != album_order.len()
+        || value
+            .album
+            .ranked_name_states
+            .iter()
+            .zip(album_order)
+            .any(|(rule, (condition, color))| rule.condition != condition || rule.color != color)
+    {
+        return Err("Album name-color ranking differs from owner policy".to_string());
+    }
+    let dot_order = [
+        ("opposing_override", "dark_grey"),
+        ("incomplete_tracks", "red"),
+        ("missing_art", "yellow"),
+        ("embedding_issues", "purple"),
+        ("processed", "orange"),
+        ("tracks_complete", "green"),
+        ("animated_webp", "blue"),
+    ];
+    if value.album.status_dots.len() != dot_order.len()
+        || value
+            .album
+            .status_dots
+            .iter()
+            .zip(dot_order)
+            .any(|(dot, (condition, color))| dot.condition != condition || dot.color != color)
+    {
+        return Err("Album status-dot order differs from owner policy".to_string());
+    }
     if value.override_presentation.condition != "opposing_override"
         || !value
             .colors
@@ -589,6 +649,38 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
+    fn policy_preserves_blue_dot_metadata_and_owner_red_definition() {
+        let policy = parse_policy(DEFAULT_POLICY).expect("seed must validate");
+        assert_eq!(policy.album.red_definition, "Incomplete / Error");
+        assert!(policy.album.status_dots.last().expect("blue dot").auxiliary);
+        let serialized = serde_json::to_string(&policy).expect("policy serialization");
+        assert!(serialized.contains("\"auxiliary\":true"));
+    }
+
+    #[test]
+    fn policy_rejects_artist_and_album_reordering() {
+        let mut artist: serde_json::Value =
+            serde_json::from_str(DEFAULT_POLICY).expect("seed JSON");
+        artist["artist"]["ranked_states"]
+            .as_array_mut()
+            .expect("ranked Artist states")
+            .swap(0, 1);
+        assert!(validate_policy(&artist.to_string())
+            .expect_err("reordered Artist policy must fail")
+            .contains("Artist name-color ranking"));
+
+        let mut dots: serde_json::Value =
+            serde_json::from_str(DEFAULT_POLICY).expect("seed JSON");
+        dots["album"]["status_dots"]
+            .as_array_mut()
+            .expect("ranked status dots")
+            .swap(0, 1);
+        assert!(validate_policy(&dots.to_string())
+            .expect_err("reordered Album dots must fail")
+            .contains("Album status-dot order"));
+    }
+
+    #[test]
     fn artist_policy_never_selects_album_only_colors() {
         for conditions in [
             vec!["missing_artist_art"],
@@ -617,8 +709,8 @@ mod tests {
     }
 
     #[test]
-    fn red_album_definition_is_track_only() {
-        assert_eq!(policy().album.red_definition, "Incomplete album tracks");
+    fn red_album_definition_includes_incomplete_and_error() {
+        assert_eq!(policy().album.red_definition, "Incomplete / Error");
         assert_eq!(classify_album(&["incomplete_tracks"]).color_name, "red");
         assert_eq!(classify_album(&["missing_art"]).color_name, "yellow");
     }
