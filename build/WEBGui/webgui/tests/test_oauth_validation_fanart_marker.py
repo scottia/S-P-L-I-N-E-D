@@ -36,7 +36,7 @@ class FanartValidationMarkerTests(unittest.TestCase):
             credential_dir = root / "credentials"
             credential_dir.mkdir()
 
-            with (REPOSITORY / "docker" / "config.example.toml").open("rb") as handle:
+            with (REPOSITORY / "build" / "WEBGui" / "docker" / "config.example.toml").open("rb") as handle:
                 cfg = tomllib.load(handle)
             cfg["credentials"]["credential_dir"] = str(credential_dir)
 

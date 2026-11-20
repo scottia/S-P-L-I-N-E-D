@@ -55,6 +55,16 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn("cp -R schema docs release-package/", workflow)
         self.assertNotIn("cp -R schema docker docs release-package/", workflow)
 
+    def test_no_legacy_root_docker_config_references_in_python(self):
+        # A missing relocated example can otherwise fail unrelated tests at
+        # import time before the Docker image build is reached.
+        legacy = '"docker" / "config.example.toml"'
+        stale = []
+        for source in (ROOT / "build/WEBGui").rglob("*.py"):
+            if legacy in source.read_text(encoding="utf-8"):
+                stale.append(str(source.relative_to(ROOT)))
+        self.assertEqual(stale, [])
+
     def test_album_fixture_remains_cross_runtime(self):
         fixture = ROOT / "fixtures/cross-runtime-album-policy.json"
         self.assertTrue(fixture.is_file())
