@@ -30,13 +30,19 @@ The `build/` root contains **exactly two** immediate directories:
   baseline while independently verifying detailed runtime parity.
 - `schema/media.sql`: SQLite catalog/coordinator DDL.
 - `schema/settings-ui.json`: Config v5 settings-presentation contract.
-- `docker/config.example.toml` and `docker/compose.yaml`: deployment
-  examples/source inputs; release scripts and manifests live in
+- `build/WEBGui/docker/config.example.toml` and
+  `build/WEBGui/docker/compose.yaml`: WebGUI-only deployment inputs.
+  The operator guide is [webgui-docker-deployment.md](webgui-docker-deployment.md).
+  Release-wide scripts and Windows manifests remain in
   `release/` and `build/Windows/package/`.
 
 These four shared contracts are referenced together in
 [POLICY-INDEX.md](POLICY-INDEX.md) but do **not** require separate
 copies inside the Windows and WebGUI build roots.
+
+The root [`fixtures/cross-runtime-album-policy.json`](../fixtures/cross-runtime-album-policy.json)
+is **test input**, not a third runtime policy or deployable schema. Windows
+and WebGUI both test their Album/compilation classification against it.
 
 ## Active release boundary
 

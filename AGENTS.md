@@ -33,8 +33,10 @@ checkpoint**, not a declaration that the present application code is correct.
 - Workflow 01 release source consists of `build/WEBGui/` and
   `build/Windows/` only. Treat the exact Workflow 01 checkout, build,
   Dockerfile, Cargo, migrations, and test dependencies as the source map.
-- `schema/`, `docker/`, `release/` and `.github/` contain shared or
-  release-support inputs outside the two application build folders.
+- `schema/`, `release/`, `fixtures/` and `.github/` contain shared,
+  cross-runtime test, or release-wide inputs outside the two application roots.
+  WebGUI-only Docker deployment sources belong in `build/WEBGui/docker/`.
+  Operator/developer Markdown guides belong in `docs/`, not `build/`.
 - Do not put operator manuals, historical policy Markdown, or build
   architecture descriptions inside `build/`.
 - Do not reintroduce unsupported root `src/`, `Cargo.toml`,
