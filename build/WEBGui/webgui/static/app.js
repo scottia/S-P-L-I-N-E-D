@@ -1115,19 +1115,26 @@ function albumCardState(album, artist) {
   // presentation is stale. Preserve every other independent status dot, but
   // replace that stale incomplete state with the override presentation.
   const staleUnprocessed = overridden && status === "unprocessed";
-  const missingCover = !fallback && !overridden && (!album.cover_found || !album.cover);
+  // A cover.webp may be previewed but cannot satisfy a static cover.*.
+  // The catalog sends this evidence separately from the preview URL.
+  // Retain filename detection for older, non-indexed test/presentation data.
+  const staticCover = album.static_cover_found === true
+    || (album.static_cover_found == null && Boolean(album.cover_found || album.cover)
+      && !/\.webp(?:$|[?#])/i.test(String(album.cover_path || album.cover || "")));
+  const missingCover = !fallback && !overridden && !staticCover;
   const missingArtist = !artist?.portrait && !artist?.banner;
   const missingArt = missingCover || missingArtist;
   const bypassed = status === "bypassed" || status === "artistBypass";
+  // Missing cover art is yellow evidence. An unprocessed label alone
+  // cannot manufacture the independent red Incomplete/Error state.
   const incomplete = fallback ? album.fallback_complete !== true
-    : ["incomplete", "timeout", "error"].includes(rawStatus)
-      || (rawStatus === "unprocessed" && !Boolean(album.cover_found || album.cover));
+    : ["incomplete", "timeout", "error"].includes(rawStatus);
   const incompleteEvidence = !staleUnprocessed && incomplete;
   // cover_found is current filesystem evidence. It must outrank an old
   // unprocessed database label, while verified embedded-track evidence still
   // remains the only route to a green/complete Album.
-  const processed = status === "processed" || status === "artistComplete"
-    || (!fallback && status === "unprocessed" && Boolean(album.cover_found || album.cover));
+  // Artwork inventory does not prove a SPLINED-processed Album.
+  const processed = status === "processed" || status === "artistComplete";
   const embeddedValidation = String(album.embedded_validation || "unknown").toLowerCase();
   const embeddedKnown = embeddedValidation === "verified";
   const embeddedComplete = embeddedKnown && Number(album.tracks) > 0 && Number(album.embedded) >= Number(album.tracks);
