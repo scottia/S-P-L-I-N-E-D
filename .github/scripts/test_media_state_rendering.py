@@ -23,6 +23,52 @@ class MediaStateRenderingContracts(unittest.TestCase):
         self.assertEqual([r["color"] for r in policy["album"]["status_dots"]],
                          ["dark_grey", "red", "yellow", "purple", "orange", "green", "blue"])
 
+    def test_owner_confirmed_name_priorities_and_unprocessed_separation(self):
+        policy = json.loads((ROOT / "schema/media-state-classification.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            [(rule["condition"], rule["color"]) for rule in policy["artist"]["ranked_states"]],
+            [
+                ("incomplete_or_error", "red"),
+                ("missing_artist_art", "yellow"),
+                ("embedding_issues", "purple"),
+                ("all_albums_complete_or_overridden", "green"),
+                ("default", "red"),
+            ],
+        )
+        self.assertEqual(
+            [(rule["condition"], rule["color"]) for rule in policy["album"]["ranked_name_states"]],
+            [
+                ("opposing_override", "dark_grey"),
+                ("incomplete_tracks", "red"),
+                ("missing_art", "yellow"),
+                ("embedding_issues", "purple"),
+                ("processed", "orange"),
+                ("tracks_complete", "green"),
+                ("default", "red"),
+            ],
+        )
+        self.assertTrue(
+            {"white", "dark_grey", "orange", "gold", "blue"}.issubset(
+                set(policy["artist"]["forbidden_name_colors"])
+            )
+        )
+        self.assertTrue(
+            {"white", "blue"}.issubset(set(policy["album"]["forbidden_name_colors"]))
+        )
+        for scope, key in (("artist", "ranked_states"), ("album", "ranked_name_states")):
+            self.assertNotIn("white", [rule["color"] for rule in policy[scope][key]])
+            self.assertEqual(policy[scope][key][-1]["condition"], "default")
+            self.assertEqual(policy[scope][key][-1]["color"], "red")
+            self.assertNotIn("unprocessed", [rule["condition"] for rule in policy[scope][key]])
+        self.assertEqual(
+            [rule["color"] for rule in policy["album"]["status_dots"]],
+            ["dark_grey", "red", "yellow", "purple", "orange", "green", "blue"],
+        )
+        self.assertEqual(policy["album"]["status_dots"][-1]["condition"], "animated_webp")
+        self.assertTrue(policy["album"]["status_dots"][-1]["auxiliary"])
+        self.assertEqual(policy["ui_status_colors"]["unprocessed"], "red")
+        # This is a filter/legend palette entry, NOT an Artist/Album name category.
+
     def test_no_theme_override_of_library_names(self):
         slint = (ROOT / "build/Windows/ui/app.slint").read_text(encoding="utf-8")
         css = (ROOT / "build/WEBGui/webgui/static/app.css").read_text(encoding="utf-8")
