@@ -38,15 +38,13 @@ release history are available under [GitHub Releases](https://github.com/scottia
 
 ## Documentation status
 
-The source tree is undergoing structural consolidation. **Historical guides
-and behavioral policy Markdown are not currently approved as an application
-policy.** See [documentation status](docs/README.md) and the
-[verified build layout](docs/build-layout.md).
+Current, owner-approved classification requirements live in the
+[policy register](docs/POLICY-REGISTER.md), with source and validation
+traceability in the [policy index](docs/POLICY-INDEX.md).
+See the [documentation index](docs/README.md) and
+[Workflow 01 build layout](docs/build-layout.md) for the active sources.
 
 Application Help intended for public use belongs on `main` after review.
-Current policy requirements are maintained in the
-[policy register](docs/POLICY-REGISTER.md) and
-[policy index](docs/POLICY-INDEX.md).
 
 ## Project information
 

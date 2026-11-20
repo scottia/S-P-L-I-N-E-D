@@ -17,9 +17,8 @@ validation is still outstanding; that does not revoke owner approval.
 
 **Precedence:** explicit current owner decisions → approved register →
 checked-in JSON/SQL/UI contracts → application code/tests as verifiable
-implementation evidence. Source, a stale PR, or historical documents may
-not silently replace approved behavior. The old **38-row comparison is
-discarded as policy**.
+implementation evidence. No unverified document, source behavior, or test
+assertion may silently replace approved policy.
 
 ## Approved classification at a glance
 
