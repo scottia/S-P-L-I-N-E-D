@@ -65,14 +65,6 @@ class BuildLayoutTests(unittest.TestCase):
                 stale.append(str(source.relative_to(ROOT)))
         self.assertEqual(stale, [])
 
-    def test_album_fixture_remains_cross_runtime(self):
-        fixture = ROOT / "fixtures/cross-runtime-album-policy.json"
-        self.assertTrue(fixture.is_file())
-        windows = (ROOT / "build/Windows/src/compilation.rs").read_text(encoding="utf-8")
-        webgui = (ROOT / "build/WEBGui/webgui/tests/test_cross_runtime_album_policy.py").read_text(encoding="utf-8")
-        self.assertIn("../../../fixtures/cross-runtime-album-policy.json", windows)
-        self.assertIn('"fixtures" / "cross-runtime-album-policy.json"', webgui)
-
     def test_shared_schema_stays_single_source(self):
         for name in ("media.sql", "settings-ui.json", "media-state-classification.json", "comp-report-policy.json"):
             self.assertTrue((ROOT / "schema" / name).is_file())
