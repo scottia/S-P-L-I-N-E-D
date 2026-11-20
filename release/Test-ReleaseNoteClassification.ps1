@@ -10,7 +10,7 @@ try {
     & (Join-Path $PSScriptRoot "Generate-ReleaseNotes.ps1") `
         -Version 2.0.12 `
         -RepositoryRoot $RepositoryRoot `
-        -ConfigPath (Join-Path $RepositoryRoot "cliff.toml") `
+        -ConfigPath (Join-Path $PSScriptRoot "cliff.toml") `
         -GitHubTemplatePath (Join-Path $PSScriptRoot "templates/github-release.tera") `
         -OutputDirectory $testRoot
 

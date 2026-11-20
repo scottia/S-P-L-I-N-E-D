@@ -196,7 +196,7 @@ therefore requires a new versioned release; it cannot be repaired in place.
 
 ## Notes and Store safety
 
-The shared `cliff.toml` and checked-in Tera templates classify release changes.
+The shared [`release/cliff.toml`](../release/cliff.toml) and checked-in Tera templates classify release changes.
 GitHub notes cover the previous numeric tag through the current tag. Store
 Highlights cover the **last published Store package** through the target tag,
 so intervening GitHub-only releases are included. The Store Highlights file

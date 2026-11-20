@@ -3,7 +3,7 @@
 This is the permanent field and behavior reference opened by **Settings HELP**
 in the SPLINED WebGUI. Browser Settings is the normal editor; Config v5 is its
 saved, validated configuration contract. The container-ready example is
-[`docker/config.example.toml`](../docker/config.example.toml). The native
+[`build/WEBGui/docker/config.example.toml`](../build/WEBGui/docker/config.example.toml). The native
 Windows application shares the same policy schema where noted but keeps its
 own SQLite catalog and interface state.
 
@@ -71,6 +71,8 @@ mounts.
   both include the active media-state and COMP report policies.
 - **Processing & Logs**: processing mode, completion history, Log Directory,
   diagnostic level, retention, and bounded WebGUI events.
+- **Catalog Maintenance**: explicit PostgreSQL catalog refresh or deliberate
+  read-only SQLite snapshot import; not a separate artwork policy.
 
 ## General settings
 

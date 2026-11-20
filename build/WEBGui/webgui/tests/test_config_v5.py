@@ -131,9 +131,8 @@ class ConfigV5ParityTests(unittest.TestCase):
                 self.assertNotIn(secret, redacted)
                 self.assertIn("[REDACTED]", redacted)
 
-    def test_all_public_examples_validate_as_v5(self) -> None:
+    def test_active_runtime_examples_validate_as_v5(self) -> None:
         for relative in (
-            "config.example.toml",
             "build/Windows/config.example.toml",
             "build/WEBGui/docker/config.example.toml",
         ):
@@ -181,7 +180,7 @@ class ConfigV5ParityTests(unittest.TestCase):
         self.assertEqual(operations["upscale_percent"], 200)
 
     def test_fixed_provider_filenames_ignore_legacy_overrides(self) -> None:
-        config = load_example("config.example.toml")
+        config = load_example("build/WEBGui/docker/config.example.toml")
         config["credentials"]["credential_dir"] = "private"
         config["fanarttv"] = {"credential_file": "outside.json"}
         config["lastfm"] = {"credential_file": "outside.json"}
@@ -202,7 +201,7 @@ class ConfigV5ParityTests(unittest.TestCase):
         )
 
     def test_source_override_uses_only_adjacent_lower_fallback(self) -> None:
-        config = load_example("config.example.toml")
+        config = load_example("build/WEBGui/docker/config.example.toml")
         policy = config["source_policies"]["discogs"]
         policy["source_override"] = True
         policy["minimum_range_type"] = "Ideal"
@@ -222,7 +221,7 @@ class ConfigV5ParityTests(unittest.TestCase):
         )
 
     def test_source_override_applies_advanced_constraints_and_primary_metadata(self) -> None:
-        config = load_example("config.example.toml")
+        config = load_example("build/WEBGui/docker/config.example.toml")
         policy = config["source_policies"]["discogs"]
         policy.update(
             {
@@ -247,7 +246,7 @@ class ConfigV5ParityTests(unittest.TestCase):
         self.assertTrue(splined.reference_allowed(config, "discogs", True))
 
     def test_strict_override_supersedes_source_range_authority(self) -> None:
-        config = load_example("config.example.toml")
+        config = load_example("build/WEBGui/docker/config.example.toml")
         policy = config["source_policies"]["amazon"]
         policy.update(
             {
@@ -305,7 +304,7 @@ class ConfigV5ParityTests(unittest.TestCase):
         self.assertIn("not primary/front", diagnostics[0][1])
 
     def test_disabled_provider_is_removed_without_erasing_policy(self) -> None:
-        config = load_example("config.example.toml")
+        config = load_example("build/WEBGui/docker/config.example.toml")
         config["source_policies"]["fanarttv"]["enabled"] = False
         sources = splined.resolve_sources(config, None, None, [])
         self.assertNotIn("fanarttv", sources)

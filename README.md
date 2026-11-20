@@ -220,7 +220,7 @@ WebGUI presents its server-visible settings in the browser and keeps PostgreSQL
 connection authority with the deployment.
 
 Start with the [Config v5 reference](docs/config-v5-reference.md) and the
-checked-in [native](config.example.toml) or
+checked-in [native](build/Windows/config.example.toml) or
 [Docker](build/WEBGui/docker/config.example.toml) example for the selected runtime.
 
 ---
