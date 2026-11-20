@@ -1,0 +1,39 @@
+{
+  "revision": "1dd01f3208278af9b9b0e1216f79f277e6287e23",
+  "installed_executable_sha256": "6A17DDC142E02A4C80279F5C3281BE1827110912F70F49CBE262C08DE9DD522E",
+  "previous_executable_sha256": "E8B34906F671F1F2EA8960AF3A6B91BFC31C58B7C6B8CAD0F7EE73D3019E807F",
+  "database": {
+    "quick_check": "ok",
+    "schema_version": 2,
+    "library_root": "E:\\apps\\ChatGpt\\SPLINED-local-test-library\\music",
+    "sha256": "fab0e3c21da3f0b1b51bd89c88e527b63da5806d9381277fee572945ce5ca876",
+    "restored_digest_matches": true
+  },
+  "diagnostic": {
+    "loaded_read_only": true,
+    "malformed_json_failed_safely": true
+  },
+  "settings": {
+    "extension": ".spl",
+    "parsed": true,
+    "library_root_preserved": true,
+    "interface_included": true,
+    "credentials_included": false
+  },
+  "snapshot": {
+    "quick_check": "ok",
+    "schema_version": 2,
+    "library_root_preserved": true,
+    "digest_stable_across_two_exports": true,
+    "provenance_sidecars_exist": true
+  },
+  "source_database_unchanged": true,
+  "visual_acceptance": {
+    "completed": false,
+    "blocker": "Remotix virtual monitor rejected Windows Graphics Capture and input capture"
+  },
+  "webgui_compare_dry_run": {
+    "completed": false,
+    "blocker": "No WebGUI test service was listening on the PC"
+  }
+}
