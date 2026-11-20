@@ -64,8 +64,8 @@ authorization procedure before the guard can permit it. Do not edit the
 guard in the same PR to bypass the review. The checker does not
 automatically revert edits or modify either JSON.
 
-This guard is distinct from the archived/inactive boundary checker.
-It is loaded from the target branch's trusted base once installed there.
+The active policy guard runs independently in PR validation and is loaded
+from the target branch's trusted base once installed there.
 Configure GitHub rulesets to require **Canonical policy JSON — review gate**
 on `dev` and, when approved for promotion, `main`. A failing check alone
 does not guarantee merge prevention without the required-check rule.
