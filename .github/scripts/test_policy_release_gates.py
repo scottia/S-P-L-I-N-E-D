@@ -62,15 +62,19 @@ class CanonicalReleaseContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "invalid base"):
             pr_gate.check_diff("bad", "b" * 40)
 
-    def test_workflow_one_fails_before_version_stamp_when_policy_invalid(self) -> None:
+    def test_workflow_one_historical_release_preflight_is_preserved(self) -> None:
         release = (ROOT / ".github/workflows/01-full-release.yml").read_text(encoding="utf-8")
-        self.assertLess(
-            release.index("Validate canonical policies and indexer contracts"),
-            release.index("Provision exact release metadata and commit"),
-        )
-        self.assertIn("python3 .github/scripts/validate_release_policy_contracts.py", release)
-        self.assertIn("python3 -m unittest discover -s .github/scripts", release)
-        self.assertIn('if [ "$STORE_UPDATE" = true ] && [ "$EXTENDED_WINDOWS_VALIDATION" != true ]', release)
+        self.assertIn("Require main branch dispatch", release)
+        self.assertIn("Provision exact release metadata and commit", release)
+        self.assertIn("Validate Release — WebGUI / Python", release)
+        self.assertIn("Build clean x64 Rust/Slint executable", release)
+        self.assertIn("git push --atomic origin", release)
+        # Restore historical release entry checks from 3f111d7, while the
+        # separate PR policy-review gate remains authoritative for PR checks.
+        self.assertNotIn("Validate canonical policies and indexer contracts before release commit", release)
+        self.assertNotIn('if [ "$STORE_UPDATE" = true ] && [ "$EXTENDED_WINDOWS_VALIDATION" != true ]', release)
+        self.assertIn("Path(\"build/Windows/Cargo.toml\")", release)
+        self.assertIn("build/WEBGui/webgui/backend/splined.py", release)
 
     def test_pr_policy_check_is_independent_of_windows_advisory(self) -> None:
         content = (ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")
