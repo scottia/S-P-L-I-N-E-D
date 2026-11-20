@@ -1,3 +1,0 @@
-# Workflow 04 parity intent
-
-Owner clarification: Workflow 01 already provides final release confirmation (Stop - no release / Create release now). Workflow 04 must preserve those existing options with release_confirmation LAST; unlike Workflow 01, No must still validate/build/package without publishing, while Yes must execute the full production release/publication graph. Copy Workflow 01 source as authority; only change optional publish gating and performance implementation. Never create another release confirmation control; do not edit Workflow 01 or protected policies. Fix broken Cargo normalization. Keep exact Store modes and audit artifacts, full Windows and WebGUI validation. New main-only Draft PR; no workflow dispatch. Remove this file before review.
