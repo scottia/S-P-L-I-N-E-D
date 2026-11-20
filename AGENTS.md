@@ -50,70 +50,47 @@ approval of the register is not proof that every implementation is correct.
 - Do not modify, merge into, force-push, or publish from `main` without
   the owner's explicit subsequent authorization.
 
-## Documentation audience and accuracy
+## Documentation audience and verification
 
-- Root `README.md` is the **user-facing navigation** for the current
-  development source. Organize installation, capabilities, application
-  choices, documentation and safety into clear sections with useful
-  bulleted links. The `main` README is a **style reference only**;
-  never import its obsolete paths, unsupported application targets or
-  release claims into `dev`.
-- `docs/README.md` indexes development guides.
-  `docs/POLICY-REGISTER.md` records **owner-approved requirements**;
-  `docs/POLICY-INDEX.md` maps policy/schema consumers;
-  `docs/SCHEMA-VALIDATION.md` records implementation evidence and
-  unresolved verification. These are different authorities and must
-  not be presented as interchangeable.
-- The reviewed source-based guides cover Windows and browser operation
-  (`windows-guide.md`, `browser-workspace-guide.md`),
-  storage and upgrades (`catalog-authority.md`,
-  `splined-media-database.md`,
-  `windows-schema-upgrade-preparedness.md`),
-  settings/sources (`config-v5-reference.md`,
-  `source-policies-range-types.md`, `credentials-providers.md`)
-  and release/store (`release-automation.md`, `windows-store.md`).
-  Read the relevant guide **and current code/config/schema** before
-  updating an operational claim. PR #219's documentation review is
-  not a blanket certification of deployed UI or synchronization.
-- Validate relative links and source paths in every changed README,
-  agent instruction and guide. Confirm that headings, Config v5
-  controls, supported deployments, SQL/JSON schema roles and
-  Windows-versus-WebGUI behavior match current `dev`. Keep old
-  source-root or retired root-fixture references out of active docs.
-- Do not promote a development guide as public in-app Help before
-  separate `main` review, and never present a passing docs/build
-  check as evidence of on-device Windows UI or live database parity.
+- Root `README.md` is the user-facing entry point for supported Windows and
+  WebGUI deployments. The `main` README may guide **formatting only**;
+  never import stale paths, unsupported targets or unverified claims.
+- `docs/README.md` indexes current guides. `docs/POLICY-REGISTER.md`
+  records approved owner policy; `docs/POLICY-INDEX.md` identifies its
+  schema/source consumers; `docs/SCHEMA-VALIDATION.md` tracks
+  implementation evidence and unresolved validation. Do not conflate them.
+- Check each changed guide's links, source paths, Config v5 fields and
+  real Windows/WebGUI consumers. Label statements as **approved policy**,
+  **verified source**, **test evidence**, or **unverified runtime behavior**.
+  Reviewed documentation is not proof of deployed-client parity.
+- Public in-app Help must reference separately reviewed `main` documentation
+  only, never an unpublished `dev` guide.
 
-## Catalog, configuration and schema ownership
+## Canonical application and release inputs
 
-- The Windows Rust/Slint application uses configured
-  `<scan.cache_dir>/splined.db`. SQLite is authoritative for
-  synchronized Artist/Album/Track identity, inventory and processing
-  fields; WebGUI's PostgreSQL database owns its own jobs, sessions,
-  audit, queues and explicitly WebGUI-owned columns. The detailed
-  field allowlists are implemented in
-  `build/WEBGui/webgui/catalog_authority.py`.
-- **Standalone and Shared / Network SQLite use the same approved
-  media-state and COMP policy.** Shared SQLite changes how one
-  physical file is accessed, not the behavior contract. Optional
-  PostgreSQL coordination is a distinct connection and writer
-  evidence mechanism; it does not make PostgreSQL authoritative over
-  synchronized Windows fields or create a second policy.
-- Root `schema/` has **four different canonical contracts**:
-  `media-state-classification.json` (protected name/dot policy),
-  `comp-report-policy.json` (protected COMP baseline),
-  `media.sql` (SQLite DDL) and `settings-ui.json` (Config v5
-  presentation/fields). Do not duplicate these as independent client
-  contracts or reinterpret SQL/default settings as owner policy.
-- Config v5 TOML, runtime credential-directory files, and
-  persisted PostgreSQL/local policy revisions are separate from
-  checked-in behavioral JSON. Report incompatible persisted revisions
-  for deliberate resolution; do not silently rewrite databases,
-  media files, saved credentials or existing policy revisions.
-- For an operational documentation change, identify whether a
-  statement is **approved policy**, **verified current source**,
-  **test evidence**, or **unverified deployed behavior**. Preserve
-  these distinctions in both README and technical guides.
+- Windows first-run Config v5 is embedded from
+  `build/Windows/config.example.toml` by `build/Windows/src/config.rs`.
+  WebGUI uses `build/WEBGui/docker/config.example.toml` with
+  container/server-specific paths. Do not recreate a generic root
+  `config.example.toml` or use an unrelated example as runtime authority.
+- `release/cliff.toml` is the active shared Git-cliff classification for
+  release notes and Store Highlights. Workflows 01–02, their PowerShell
+  scripts and regression tests must reference this same file. Retained
+  historical classification does **not** establish a current runtime target.
+- Windows `<scan.cache_dir>/splined.db` owns synchronized
+  Artist/Album/Track fields. WebGUI PostgreSQL owns browser jobs, audit,
+  queues and its explicitly owned presentation state. Respect the field
+  allowlists in `build/WEBGui/webgui/catalog_authority.py` and the
+  [catalog authority guide](docs/catalog-authority.md).
+- The four root `schema/` contracts serve distinct purposes:
+  `media-state-classification.json` and `comp-report-policy.json`
+  are **protected behavioral policies**; `media.sql` is SQLite DDL;
+  `settings-ui.json` is the Config v5 UI contract. None of these is
+  an alternate per-installation policy. Standalone/shared SQLite and
+  optional PostgreSQL coordination follow the **same approved policy**.
+- Config v5 files, persisted policy revisions and credentials are
+  separate storage/delivery mechanisms. Flag revision drift for explicit
+  review instead of silently rewriting media files or databases.
 
 ## Protected JSON policy PR gate
 
