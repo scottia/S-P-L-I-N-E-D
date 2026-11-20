@@ -39,7 +39,7 @@ class OAuthValidationRecoveryTests(unittest.TestCase):
         self.config_file.parent.mkdir()
         self.credential_dir = self.root / "credentials"
         self.credential_dir.mkdir()
-        with (REPOSITORY / "docker" / "config.example.toml").open("rb") as handle:
+        with (REPOSITORY / "build" / "WEBGui" / "docker" / "config.example.toml").open("rb") as handle:
             self.cfg = tomllib.load(handle)
         self.cfg["credentials"]["credential_dir"] = "../credentials"
         self.credential_payloads: dict[str, dict] = {}

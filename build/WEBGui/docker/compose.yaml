@@ -15,7 +15,7 @@ services:
       retries: 10
   webgui:
     build:
-      context: ..
+      context: ../../..
       dockerfile: build/WEBGui/Dockerfile
     image: splined-webgui:local
     restart: unless-stopped

@@ -75,7 +75,7 @@ diagnostic reports.
   workflows, validation selection, Store handling, and release-note authority.
 - [Windows source/build guide](windows-build-guide.md) — native Rust/Slint build,
   runtime layout, packaging, and source validation.
-- [Docker deployment](../docker/README.md) — Compose, PostgreSQL, persistent
+- [Docker deployment](webgui-docker-deployment.md) — Compose, PostgreSQL, persistent
   mounts, backup, and container validation.
 - [Browser workspace schematic](browser-workspace-schematic.md) — maintainer
   map of browser regions and source locations; not a parity guarantee.

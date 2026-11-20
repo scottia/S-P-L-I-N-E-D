@@ -179,7 +179,7 @@ class Context:
         else:
             cfg = tomllib.loads(
                 (
-                    source_root() / "docker/config.example.toml"
+                    source_root() / "build/WEBGui/docker/config.example.toml"
                 ).read_text(encoding="utf-8")
             )
         cfg.setdefault("output", {}).setdefault("embedded_thumbnail_size", 1200)

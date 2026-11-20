@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 REPOSITORY = Path(__file__).resolve().parents[4]
 STATIC = REPOSITORY / "build" / "WEBGui" / "webgui" / "static"
 CONTRACT = json.loads((REPOSITORY / "schema" / "settings-ui.json").read_text(encoding="utf-8"))
-CONFIG = tomllib.loads((REPOSITORY / "docker" / "config.example.toml").read_text(encoding="utf-8"))
+CONFIG = tomllib.loads((REPOSITORY / "build" / "WEBGui" / "docker" / "config.example.toml").read_text(encoding="utf-8"))
 CONFIG["library"]["music_library"] = r"E:\Disposable SPLINED Acceptance\Music"
 CONFIG["scan"]["cache_dir"] = r"E:\Disposable SPLINED Acceptance\Cache"
 CONFIG["scan"]["temporary_cache_dir"] = r"E:\Disposable SPLINED Acceptance\Temp"

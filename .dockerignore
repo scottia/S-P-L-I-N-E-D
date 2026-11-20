@@ -3,8 +3,8 @@
 !build/WEBGui/
 !build/WEBGui/webgui/
 !build/WEBGui/webgui/**
-!docker/
-!docker/config.example.toml
+!build/WEBGui/docker/
+!build/WEBGui/docker/config.example.toml
 !schema/
 !schema/media.sql
 !schema/settings-ui.json

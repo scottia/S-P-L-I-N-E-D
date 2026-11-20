@@ -63,7 +63,7 @@ following its portable instructions.
 | --- | --- | --- |
 | **Microsoft Store** | Native Windows application; Store-managed installation and updates; SQLite | [Install SPLINED](https://apps.microsoft.com/detail/9p8g4gmbbvbs?hl=en-US&gl=US) · [Store guide](docs/windows-store.md) |
 | **Windows Portable** | Native Windows application in an extracted folder; portable settings; SQLite | [Windows portable instructions](release/README-WINDOWS.txt) · [Releases](https://github.com/scottia/S-P-L-I-N-E-D/releases) |
-| **Ubuntu WebGUI / Docker** | Python/browser application; PostgreSQL and persistent mounted files | [Docker deployment](docker/README.md) · [WebGUI guide](docs/browser-workspace-guide.md) |
+| **Ubuntu WebGUI / Docker** | Python/browser application; PostgreSQL and persistent mounted files | [Docker deployment](docs/webgui-docker-deployment.md) · [WebGUI guide](docs/browser-workspace-guide.md) |
 
 After installation, configure the runtime's music-library view, persistent
 state, cache, and provider credentials. Build or refresh the catalog, then
@@ -96,7 +96,7 @@ SPLINED keeps its supported implementations separate:
 - [`build/WEBGui/`](build/WEBGui/) contains the GHCR Dockerfile and the
   [`webgui/`](build/WEBGui/webgui/) Python/browser package, including its CI tests.
 - [`schema/`](schema/) remains the single source of shared runtime JSON/SQL
-  contracts. [`docker/`](docker/README.md) contains deployment configuration.
+  contracts. WebGUI deployment inputs live under [`build/WEBGui/docker/`](build/WEBGui/docker/).
 - Unused legacy root-native CLI sources are retained only in
   [`dev-archive`](https://github.com/scottia/S-P-L-I-N-E-D/tree/dev-archive).
 
@@ -221,7 +221,7 @@ connection authority with the deployment.
 
 Start with the [Config v5 reference](docs/config-v5-reference.md) and the
 checked-in [native](config.example.toml) or
-[Docker](docker/config.example.toml) example for the selected runtime.
+[Docker](build/WEBGui/docker/config.example.toml) example for the selected runtime.
 
 ---
 
