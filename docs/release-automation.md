@@ -28,7 +28,10 @@ validation rather than enabling Slint compilation. Under the owner's release
 policy, Microsoft Store submissions require **Extended Windows validation** to
 be enabled in addition to the existing release confirmation and explicit Store
 submission choice. Do not stage or submit a Store package without those owner
-confirmations.
+confirmations. **Workflow 01 does not currently enforce this dependency in
+preflight**: its Store choice and Extended Windows validation inputs are
+independent. The operator must deliberately enable validation; source-level
+enforcement would require a separately reviewed workflow change.
 
 The **WebGUI / Python** target is the browser application, not a native Ubuntu
 Rust build. It runs the Python/PostgreSQL suite, validates browser JavaScript,
@@ -38,12 +41,16 @@ with Windows. GitHub release notes classify explicit `webgui`,
 `python`, and `postgres` commits under **WebGUI / Python** before evaluating
 the separate Microsoft Store and Windows categories. A release fixture guards
 against classifying `restore` as Store or `webgui` as generic Windows GUI work.
-The [Docker deployment guide](../docker/README.md) owns the distinction between
-the source-built Compose stack and the separately published GHCR image.
+The [Docker deployment guide](webgui-docker-deployment.md) documents
+`build/WEBGui/docker/`, the repository-root Compose build context, canonical
+`schema/` dependencies, and the distinction between source-built Compose and
+the separately published GHCR image.
 
-Validate changes locally on PC, push the tested source to `dev`, then merge
-the `dev` pull request into `main`. Validation runs on pull requests, so pushing
-and merging the same source does not launch duplicate push-triggered builds.
+Validate changes on a short-lived feature branch based on `main`, open a
+Draft PR targeting `main` before implementation, complete all applicable PR
+checks, and obtain explicit owner approval for the specific merge. Repository
+promotion and publication remain distinct; no PR merge alone authorizes a
+versioned release.
 
 Checks follow changed files: WebGUI, shared-contract, and release-automation
 changes run Python/PostgreSQL, JavaScript, and container checks. The archived
@@ -80,9 +87,9 @@ verifies and installs the local executable, and reopens the app without changing
 Git or starting Actions. An
 unoptimized Windows build is not used against the real library because its UI
 refresh cost can make Windows report the application as unresponsive. This
-local test binary is never a release input. After explicit approval, promote
-the tested source through `dev` and `main`; pull requests publish the
-permanent-exception compatibility report rather than Windows diagnostics.
+local test binary is never a release input. After explicit owner approval, merge
+the tested topic PR into `main`; pull requests publish the permanent-exception
+compatibility report rather than Windows diagnostics.
 Workflow 01 always performs a clean optimized build from the versioned `main`
 source before producing the portable archive or Store MSIX.
 
