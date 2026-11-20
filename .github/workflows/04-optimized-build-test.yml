@@ -18,7 +18,7 @@ on:
           - "Windows"
           - "WebGUI / Python"
       extended_windows_validation:
-        description: "Run the full Rust/Slint Windows regression suite before packaging"
+        description: "Strict ON: clean Rust/Slint release rebuild plus full regression suite. OFF: cached incremental release build; packaging and QA unchanged."
         required: false
         default: false
         type: boolean
@@ -347,6 +347,10 @@ jobs:
     needs: prepare-release
     if: ${{ inputs.platform == 'Windows' || inputs.platform == 'All' }}
     runs-on: windows-latest
+    env:
+      # A fast Windows build reuses compiler state. Strict retains the standard
+      # non-incremental release build behavior used by Workflow 01.
+      CARGO_INCREMENTAL: ${{ inputs.extended_windows_validation == true && '0' || '1' }}
 
     steps:
       - name: Checkout release base
@@ -411,9 +415,30 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-splined-windows-dependencies-v2-${{ env.RUST_TOOLCHAIN }}-
 
-      - name: Restore cached compiled Windows release dependencies
+      - name: Restore cached compiled Windows intermediates (fast mode only)
+        if: ${{ inputs.extended_windows_validation != true }}
         id: compiled-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            build/Windows/target/x86_64-pc-windows-msvc/release/deps
+            build/Windows/target/x86_64-pc-windows-msvc/release/build
+            build/Windows/target/x86_64-pc-windows-msvc/release/.fingerprint
+            build/Windows/target/x86_64-pc-windows-msvc/release/incremental
+            build/Windows/target/release/deps
+            build/Windows/target/release/build
+            build/Windows/target/release/.fingerprint
+            build/Windows/target/release/incremental
+          # A new source SHA/version saves updated compiler state under a new
+          # immutable key; fallback restores the latest compatible build state.
+          key: ${{ runner.os }}-splined-optimized-compiled-v2-${{ env.RUST_TOOLCHAIN }}-${{ env.WINDOWS_TARGET }}-${{ steps.windows-dependency-cache-key.outputs.hash }}-${{ github.sha }}-${{ needs.prepare-release.outputs.version }}
+          restore-keys: |
+            ${{ runner.os }}-splined-optimized-compiled-v2-${{ env.RUST_TOOLCHAIN }}-${{ env.WINDOWS_TARGET }}-${{ steps.windows-dependency-cache-key.outputs.hash }}-
+
+      - name: Restore previous compiled dependencies (v1 cache migration)
+        if: ${{ inputs.extended_windows_validation != true && steps.compiled-cache.outputs.cache-hit == '' }}
+        id: legacy-compiled-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             build/Windows/target/x86_64-pc-windows-msvc/release/deps
@@ -434,7 +459,7 @@ jobs:
           cargo clippy --locked --manifest-path build/Windows/Cargo.toml --all-targets --target $env:WINDOWS_TARGET -- -D warnings
           cargo test --locked --manifest-path build/Windows/Cargo.toml --lib --target $env:WINDOWS_TARGET
 
-      - name: Build fresh optimized x64 Rust/Slint executable with cached dependencies
+      - name: Build optimized x64 Rust/Slint executable (fast or strict clean)
         id: windows-build
         shell: pwsh
         env:
@@ -443,9 +468,14 @@ jobs:
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
           $started = Get-Date
-          # Remove application artifacts only; never reuse a previous final EXE.
-          # Cargo fingerprints continue to invalidate dependencies correctly.
-          cargo clean --manifest-path build/Windows/Cargo.toml -p splined-windows --release --target $env:WINDOWS_TARGET
+          if ($env:CARGO_INCREMENTAL -eq "0") {
+            # Strict mode: no compiled release cache; rebuild all release crates.
+            cargo clean --manifest-path build/Windows/Cargo.toml --release --target $env:WINDOWS_TARGET
+          } else {
+            # Fast mode: Cargo fingerprints plus the version/commit inputs
+            # invalidate changed application outputs; never reuse a stale EXE.
+            Write-Host "Fast mode: reusing Cargo-validated release intermediates."
+          }
           cargo build --locked --release --manifest-path build/Windows/Cargo.toml --target $env:WINDOWS_TARGET
           "elapsed_seconds=$([Math]::Round(((Get-Date) - $started).TotalSeconds))" | Add-Content $env:GITHUB_OUTPUT
 
@@ -632,9 +662,12 @@ jobs:
           ## Windows release build
 
           - Downloaded Cargo cache hit: ``${{ steps.rust-cache.outputs.cache-hit }}``
-          - Compiled dependency cache hit: ``${{ steps.compiled-cache.outputs.cache-hit }}``
+          - Windows build mode: ``${{ inputs.extended_windows_validation == true && 'STRICT - clean' || 'FAST - incremental' }}``
+          - Compiled cache exact-key hit: ``${{ steps.compiled-cache.outputs.cache-hit }}`` (a prefix match can also restore cache)
+          - Legacy v1 cache fallback hit: ``${{ steps.legacy-compiled-cache.outputs.cache-hit }}``
           - Rust toolchain: ``${{ env.RUST_TOOLCHAIN }}``
-          - Fresh optimized build after package-only clean: ``${{ steps.windows-build.outputs.elapsed_seconds }} seconds``
+          - Rust incremental flag: ``$env:CARGO_INCREMENTAL``
+          - Release build duration: ``${{ steps.windows-build.outputs.elapsed_seconds }} seconds``
           - Store package-only artifact: ``splined-windows-store-package``
           - Automated Partner Center update: ``${{ inputs.store_submit_update }}``; complete review bundle: ``${{ inputs.store_submit_draft }}``
           - Portable and Store outputs use the same release executable and Rust DLL build.
