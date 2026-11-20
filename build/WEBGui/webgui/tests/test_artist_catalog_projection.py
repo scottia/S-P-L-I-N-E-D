@@ -38,6 +38,47 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
         self.assertEqual(PreviewApp._effective_album_status(review), "timeout")
         self.assertEqual(aggregate_artist(["processed", "timeout"]), "partial")
 
+    def test_artist_yellow_uses_indexed_static_album_cover_not_webp(self):
+        """Index evidence decides Yellow without probing NAS artwork on list load."""
+        album = {
+            "status": "processed",
+            "cover_path": "",
+            "cover_found": 0,
+            "track_count": 2,
+            "embedded_tracks": 2,
+            "embedded_validation_status": "verified",
+        }
+        missing = PreviewApp._artist_album_state_conditions(album)
+        self.assertIn("missing_artist_art", missing)
+        self.assertNotIn("incomplete_or_error", missing)
+        self.assertEqual(
+            PreviewApp._aggregate_album_status([{"status": "processed", "conditions": missing}]),
+            "bypassed",
+        )
+        for filename in ("cover.webp", "COVER.WEBP"):
+            with self.subTest(filename=filename):
+                self.assertIn(
+                    "missing_artist_art",
+                    PreviewApp._artist_album_state_conditions(
+                        {**album, "cover_path": filename, "cover_found": 1}
+                    ),
+                )
+        static = {**album, "cover_path": "cover.jpg", "cover_found": 1}
+        self.assertNotIn(
+            "missing_artist_art", PreviewApp._artist_album_state_conditions(static)
+        )
+        self.assertNotIn(
+            "missing_artist_art",
+            PreviewApp._artist_album_state_conditions(
+                album, {"writer": "windows"}
+            ),
+        )
+        error = PreviewApp._artist_album_state_conditions({**album, "status": "error"})
+        self.assertEqual(
+            PreviewApp._aggregate_album_status([{"status": "error", "conditions": error}]),
+            "incomplete",
+        )
+
     def test_album_embedded_summary_matches_native_footer_semantics(self):
         first = BytesIO()
         second = BytesIO()
@@ -108,6 +149,75 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                     "/api/artist/thumbnail?id=artist-1",
                 )
 
+    def test_artist_list_aggregates_indexed_covers_and_featured_credits_without_scans(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "index.sqlite"
+            with closing(connect(database)) as db:
+                db.execute(
+                    "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,"
+                    "musicbrainz_artistid TEXT,primary_path TEXT,status TEXT)"
+                )
+                db.execute(
+                    "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,"
+                    "album_name TEXT,path TEXT,cover_path TEXT,cover_found INTEGER,"
+                    "track_count INTEGER,status TEXT,compilation INTEGER,"
+                    "musicbrainz_albumid TEXT,release_year TEXT,embedded_tracks INTEGER,"
+                    "embedded_validation_status TEXT,webp_found INTEGER)"
+                )
+                db.execute(
+                    "CREATE TABLE album_artwork_write_coordination (album_key TEXT,"
+                    "relative_path TEXT,writer TEXT,operation TEXT,event_id TEXT,"
+                    "source_completed_ms INTEGER,revision INTEGER,completed_at TEXT)"
+                )
+                db.executemany(
+                    "INSERT INTO artists VALUES (?,?,?,?,?)",
+                    [
+                        (artist, artist.title(), "", str(root / artist), "processed")
+                        for artist in ("yellow", "green", "red")
+                    ],
+                )
+                db.executemany(
+                    "INSERT INTO albums VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    [
+                        ("yellow-album", "yellow", "Missing still", str(root / "yellow" / "Album"),
+                         "cover.webp", 1, 2, "processed", 0, "mbid-yellow", "2025", 2, "verified", 1),
+                        ("green-album", "green", "Good still", str(root / "green" / "Album"),
+                         "cover.jpg", 1, 2, "processed", 0, "mbid-green", "2025", 2, "verified", 0),
+                        ("red-album", "red", "Explicit error", str(root / "red" / "Album"),
+                         "", 0, 2, "error", 0, "mbid-red", "2025", 0, "verified", 0),
+                    ],
+                )
+                db.commit()
+            for name in ("yellow", "green", "red"):
+                (root / name / "Album").mkdir(parents=True)
+            featured = {
+                normalized_artist_identity("Featured"): {
+                    "artist_key": "tag:featured", "artist_name": "Featured",
+                    "musicbrainz_artistid": "", "primary_path": "",
+                    "album_keys": {"yellow-album"},
+                    "artist_album_keys": {"yellow-album"},
+                    "statuses": {"yellow-album": "processed"},
+                    "comp_statuses": {},
+                }
+            }
+            app = PreviewApp(root, database, root, root)
+            with (
+                mock.patch.object(app, "_projected_track_artists", return_value=featured),
+                mock.patch.object(app, "album_cover_path",
+                                  side_effect=AssertionError("Artist list must not scan NAS covers")),
+                mock.patch.object(app, "artist_thumbnail_path",
+                                  side_effect=AssertionError("Artist list must not scan Artist Art")),
+            ):
+                listed = {item["name"]: item for item in app.artists("")}
+            self.assertEqual(listed["Yellow"]["status"], "bypassed")
+            self.assertFalse(listed["Yellow"]["has_incomplete_error"])
+            self.assertEqual(listed["Featured"]["status"], "bypassed")
+            self.assertEqual(listed["Green"]["status"], "complete")
+            self.assertFalse(listed["Green"]["has_incomplete_error"])
+            self.assertEqual(listed["Red"]["status"], "incomplete")
+            self.assertTrue(listed["Red"]["has_incomplete_error"])
+
     def test_lazy_thumbnail_result_reports_missing_artist_art(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -170,6 +280,8 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             windows_grey = band / "Windows Grey"
             local_green.mkdir(parents=True)
             windows_grey.mkdir(parents=True)
+            local_cover = local_green / "cover.jpg"
+            Image.new("RGB", (16, 16), "blue").save(local_cover)
             with closing(connect(database)) as db:
                 db.execute(
                     "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,"
@@ -195,10 +307,10 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                     (str(root / "Band"),),
                 )
                 db.executemany(
-                    "INSERT INTO albums VALUES (?,?,?,?,NULL,1,?,?,?,'2024',1,'verified',0)",
+                    "INSERT INTO albums VALUES (?,?,?,?,?,1,?,?,?,'2024',1,'verified',0)",
                     [
-                        ("local-green", "band", "Local Green", str(local_green), "processed", 0, "release-green"),
-                        ("windows-grey", "band", "Windows Grey", str(windows_grey), "incomplete", 0, "release-grey"),
+                        ("local-green", "band", "Local Green", str(local_green), str(local_cover), "processed", 0, "release-green"),
+                        ("windows-grey", "band", "Windows Grey", str(windows_grey), None, "incomplete", 0, "release-grey"),
                     ],
                 )
                 db.executemany(
