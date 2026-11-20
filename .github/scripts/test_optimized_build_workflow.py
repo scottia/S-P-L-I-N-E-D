@@ -154,6 +154,18 @@ class OptimizedFullReleaseMirrorTests(unittest.TestCase):
         self.assertIn("Build-StorePackage.ps1", windows)
         self.assertIn("Development-sign, install, activate, native-smoke, and uninstall", windows)
 
+    def test_validation_only_store_fixture_installs_pinned_git_cliff_first(self):
+        windows = job(self.workflow, "build-windows")
+        install = "Install and verify git-cliff 2.14.2 for Store fixture validation"
+        fixture = "Validate Store published-baseline logic against synthetic regression fixtures"
+        self.assertEqual(windows.count(install), 1)
+        self.assertEqual(windows.count(fixture), 1)
+        self.assertLess(windows.index(install), windows.index(fixture))
+        installer_block = windows.split(install, 1)[1].split(fixture, 1)[0]
+        self.assertIn("release/Install-GitCliff.ps1", installer_block)
+        self.assertIn("git-cliff 2.14.2", installer_block)
+        self.assertIn("inputs.release_confirmation == 'Stop - no release'", installer_block)
+
     def test_webgui_full_test_and_docker_checks_run_in_parallel(self):
         tests = job(self.workflow, "webgui-tests")
         docker = job(self.workflow, "build-webgui")
