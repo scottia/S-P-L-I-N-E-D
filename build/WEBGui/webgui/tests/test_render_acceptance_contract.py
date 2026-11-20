@@ -38,9 +38,9 @@ class RenderAcceptanceContractTests(unittest.TestCase):
     def test_audit_example_is_valid_chronological_json_without_raw_secret(self):
         sample = json.loads(
             (
-                Path(__file__).resolve().parents[4]
-                / "docs"
-                / "pr-131-audit-sample.json"
+                Path(__file__).resolve().parent
+                / "fixtures"
+                / "audit-export-sample.json"
             ).read_text(encoding="utf-8")
         )
         self.assertEqual(sample["format"], "splined-web-audit-v2")

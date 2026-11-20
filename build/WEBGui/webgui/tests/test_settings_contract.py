@@ -44,7 +44,7 @@ class SettingsContractTests(unittest.TestCase):
             for section in self.contract["sections"]
             for field in section.get("fields", [])
         }
-        with (REPOSITORY / "docker/config.example.toml").open("rb") as handle:
+        with (REPOSITORY / "build/WEBGui/docker/config.example.toml").open("rb") as handle:
             docker = tomllib.load(handle)
         for name in (
             "upscale_below_ideal",
@@ -246,7 +246,7 @@ class SettingsContractTests(unittest.TestCase):
         self.assertFalse(fields["samples.sample_write"]["default"])
         self.assertFalse(fields["aisplined.enabled"]["default"])
         self.assertTrue(fields["aisplined.enabled"]["future"])
-        with (REPOSITORY / "docker/config.example.toml").open("rb") as handle:
+        with (REPOSITORY / "build/WEBGui/docker/config.example.toml").open("rb") as handle:
             docker = tomllib.load(handle)
         self.assertFalse(docker["samples"]["sample_write"])
         self.assertEqual(docker["samples"]["sample_dir"], "")

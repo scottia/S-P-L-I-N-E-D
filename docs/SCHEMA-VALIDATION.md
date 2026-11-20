@@ -1,171 +1,143 @@
-# Shared schema review — November 19, 2026
+# SPLINED — schema and media-state implementation validation
 
-**Baseline:** `/dev` commit `0cad7016b5e5c6d5210b5ab68fffb496fe3b54c2`.
-**Scope:** checked-in schemas and read-only trace of source consumers.
-This is **not** a full production acceptance test. No PostgreSQL server,
-Windows build, GHCR deployment, or media-library write was used.
+**Updated for the November 19, 2026 owner decisions.**
+Baseline audited: `dev`
+`9be357951f0ccb4f2a624a7baf9307699d700e8a`.
+This report distinguishes **approved behavior**, **committed
+corrections**, **static checks**, and **runtime testing not yet run**.
+The approved color policy is [POLICY-REGISTER.md](POLICY-REGISTER.md);
+it is **not pending owner re-approval**.
 
-## Static results
+## Source correction ledger
 
-| Artifact | Checks performed | Result |
+| Topic | Before | Now in `dev` | Remaining verification |
+| --- | --- | --- | --- |
+| WebGUI white Unprocessed Artist/Album names | `app.css` forced `.library-row[data-media-status=unprocessed] .row-copy strong` to neutral `var(--text)` (white in dark theme), including light-theme override | Those specific forced-name CSS rules **removed**. Semantic name colors use `--status-color` / `--status-color-light` | Verify actual Artist/Album list names and competing CSS specificity in browser |
+| Windows neutral Unprocessed/All names | Slint `LibraryItem` supplied theme foreground rather than `item.status-color` when status was Unprocessed or All | Special-case name override **removed**; `root.item.primary` takes `root.item.status-color` | Verify native Windows list projections assign independently ranked colors and remain valid with actual Slint compilation |
+| JSON policy wording | Album Red was labeled "Incomplete album tracks"; Artist Yellow only "Missing Artist Art" | `media-state-classification.json` now labels Red **Incomplete / Error** and Artist Yellow **Missing Artist or Album Art** | Verify effective persisted PostgreSQL policy row and Windows local files; the shipped JSON seed is not an automatic migration of installed copies |
+| Ranking/dot validator gaps | Python/Rust allowed syntactically valid rank and dot reordering | Both validators now reject order deviations from approved Artist/Album ranking and seven-dot order | Run Python and native Rust test suites against real configured policy revisions |
+| Album Red from unprocessed label | WebGUI could produce independent Red/error solely for a missing cover on an `unprocessed` row | Removed that inferred error; missing static art produces Yellow evidence absent independent Red | Test categories, stale status and selected Album/Artist projection |
+| Album Orange from existing cover | WebGUI could infer "Processed" from a mere existing cover | That shortcut removed | Verify actual processed state is derived from a legitimate processing event |
+| Animated WebP versus static cover | Previewable `cover.webp` could be confused with qualifying static `cover.*` | WebGUI catalog now exports `static_cover_found` separately from previewable `cover_found`; UI evidence checks static cover separately | Verify real album paths, saved summaries, and fallback/COMP category exceptions |
+| Approved visuals | Historic descriptions conflicted with the owner's screenshot | **Owner settled the visual authority:** preserve current status dots, Album card frames including **Dark Grey override frame**, banners and COMP Blue/Green/Purple track rows | Verify those visuals/counts are unchanged in both clients |
+
+**Do not resurrect earlier resolved disputes:** Red means **Incomplete /
+Error** and Red is also the default unmatched *name* category; the
+Dark Grey override **frame** in the owner's screenshot is correct.
+"Unprocessed" must remain **only a MEDIA FILTER numeric count** in
+the UI, not a file-list name or dot category.
+
+## Current source checks versus full runtime acceptance
+
+**Static/source checks performed:**
+
+- The three JSON documents parse as JSON.
+- The Owner's Artist ranking is `Red > Yellow > Purple > Green`
+  with Red default, and Album ranking is
+  `Dark Grey > Red > Yellow > Purple > Orange > Green`
+  with Red default; both name-color exclusion sets are present.
+- The Album dot array is `Dark Grey > Red > Yellow > Purple >
+  Orange > Green > auxiliary Blue`.
+- Focused condition-subset inspections evaluated **16 Artist**
+  and **64 Album** combinations without selecting forbidden names.
+- Verified source no longer contains the specific WebGUI CSS
+  white-name rule or the Windows Slint Unprocessed/All
+  neutral-name override.
+- Focused source-level tests and independent guard tests exist.
+  Their presence is **not proof** of installed-client correctness.
+- GitHub Actions run
+  [44664332291](https://github.com/scottia/S-P-L-I-N-E-D/actions/runs/44664332291)
+  for PR #217's initial documentation-only commit completed successfully,
+  including the canonical JSON review gate. WebGUI was skipped by scope
+  and Windows was advisory; **that historical run certifies neither
+  PR #216 runtime changes nor PR #217's subsequent Docker relocation**.
+  Those relocation checks require a separate run on the updated PR head.
+
+**Still untested/undemonstrated at this checkpoint:**
+
+- Full WebGUI Python suite, live PostgreSQL migrations and browser
+  behavior against current `dev` (light and dark name text).
+- Native Windows Rust/Slint compile and complete native UI suite
+  against the current source.
+- Effective PostgreSQL policy JSON/revision versus checked-in seed,
+  existing Windows credential-directory copies, and offline
+  embedded policy behavior.
+- Real media fixtures for missing Artist/Album art, only `cover.webp`,
+  incomplete/error states, overridden Albums, and embedded art
+  missing/below/above the configured preferred size.
+- Regression of the screenshot-approved Album dots, card frames,
+  banners, COMP-track rows and category handling.
+
+## Current implementation risks requiring code verification
+
+1. **Do not equate processing state and name ranking.** WebGUI
+   `app.js::mediaStatusKey()` still falls back to a raw catalog
+   processing key for ordinary Artist rows. It is not independent
+   proof that all applicable Artist/Album evidence was ranked.
+2. **The Unprocessed count may be wrong despite correct name CSS.**
+   WebGUI `renderMediaStatusChips()` populates its map using the
+   categorized `albumCardState().stateKey`, which returns ranked
+   statuses (or Red default), then looks up the `"unprocessed"`
+   key. That can yield **zero regardless of real unprocessed
+   Albums**. Verify/rewrite that count from the proper inventory
+   without adding Unprocessed to name-color or dot classifications.
+3. **Artist aggregation must include all relevant evidence**, not
+   only whether portrait artwork exists. Inspect associated Album
+   static covers, true Artist Art, COMP-track embedding and
+   opposing override state without introducing expensive
+   whole-library NAS scans at startup.
+4. **Album contexts must provide correct Artist evidence.** In
+   some V/A OST/Fallback views, an absent currently selected
+   Artist object could be interpreted as missing Artist Art;
+   verify the correct Album/Artist projection before displaying
+   Yellow.
+5. **Do not infer override/banner/COMP styling from name color.**
+   The approved screenshot preserves the independently
+   configured frame/badge, banner and track-row presentation.
+6. **Policy revision drift:** Windows embeds the checked-in JSON
+   but may load an existing credential-directory policy;
+   WebGUI's PostgreSQL row can retain a saved revision.
+   A repository edit does not automatically reconcile those
+   installed versions. Fail/report conflicts and require
+   deliberate owner action before any live change.
+7. **PR promotion conflicts:** PR #216 compares a policy-changed
+   `dev` against `main`, so the protected policy JSON guard
+   requires a separately authorized review procedure. The
+   merge divergence (15 ahead/3 behind at the checkpoint)
+   and full validation remain blockers.
+
+None of these pending engineering checks is a request for
+the owner to restate or reapprove the existing color policy.
+
+## Other `schema/` contracts: what has been validated
+
+| Contract | Results | Still required |
 | --- | --- | --- |
-| `schema/media-state-classification.json` | JSON syntax; rank arrays, defaults, forbidden names, status-dot order, current reader/validator behavior | Syntactically valid; rank and dot arrays largely agree with owner order; **implementation and semantic discrepancies confirmed** |
-| `schema/comp-report-policy.json` | JSON syntax; Artist recovery parameters; result grouping, completion and coordination keys versus Python/Rust validator requirements | Valid JSON with required fields and in-range values; **functional correctness unverified** |
-| `schema/media.sql` | Read DDL structure; table/index enumeration; references from Windows coordinator and WebGUI compatibility code | 22 `CREATE TABLE` and 24 `CREATE INDEX` declarations identified; **DDL execution, migration compatibility and schema ownership NOT TESTED** |
-| `schema/settings-ui.json` | JSON syntax; section/field enumeration; duplicate field names; numeric min/max consistency | 8 sections and 65 top-level field entries; no duplicate paths or reversed numeric bounds observed; **actual client settings/default/range parity NOT TESTED** |
+| [`comp-report-policy.json`](../schema/comp-report-policy.json) | Valid JSON with selected-Artist precedence, Artist aliases, Recording/MB score bounds, official release-family grouping, batch outcomes and revision pinning; Python and Rust validator source inspected. **Accepted working behavior; left unchanged.** | Test both clients and saved policy revisions, with real COMP fixtures before any new changes |
+| [`media.sql`](../schema/media.sql) | DDL inspected: **22 table declarations and 24 index declarations**, plus native/compatibility consumers identified | Execute schema/migrations in a disposable SQLite DB, verify history and authority integrity; not yet an execution pass |
+| [`settings-ui.json`](../schema/settings-ui.json) | Valid JSON: **8 sections, 65 unique field paths**, no inverted numeric bounds found | Compare every real Windows/WebGUI field/default/range/persistence behavior against Config v5 |
 
-The three JSON documents parsed successfully. Static inspection alone does
-not establish database correctness or validate actual rendered UI behavior.
+All four contracts remain in `/schema` and are linked through
+[POLICY-INDEX.md](POLICY-INDEX.md); they do not need a second copy in
+each client.
 
-## Confirmed media-state divergences and gaps
+## PR governance and deployment boundary
 
-1. **White names despite policy:** `build/WEBGui/webgui/static/app.css`
-   contains `.library-row[data-media-status=unprocessed] .row-copy strong`
-   forcing `color:var(--text)`, plus a light-theme override. This bypasses
-   the Artist/Album name-color policy. WebGUI also has older base `.library-row
-   strong` color declarations, so fix the complete cascade instead of
-   removing one rule and assuming success.
-2. **Evidence key versus name color:** `build/WEBGui/webgui/static/app.js`
-   `mediaStatusKey()` often reuses the catalog status key, and
-   `applyStatusPalette()` maps that key through `ui_status_colors`.
-   The JSON `artist.ranked_states` and `album.ranked_name_states`
-   only help when the correct independent evidence classification reaches
-   the name-rendering path. Count keys and name colors must remain distinct.
-3. **Validators are not full semantic gates:** WebGUI
-   `media_state_policy.py` and Windows `media_state_policy.rs` verify
-   required objects/colors, forbidden Artist/Album name colors and a
-   `default` entry, but do **not** require the owner's exact ranked
-   condition order or complete seven-dot order. A syntactically valid JSON
-   can silently reorder the approved policy.
-4. **Album red wording:** `album.red_definition` currently says
-   `Incomplete album tracks`. Owner policy says `Incomplete/Error`.
-   Present source/test assumptions about when errors, timeout and incomplete
-   tracks qualify must be checked against that broader intent.
-5. **Art and embedded size evidence:** Album card logic in
-   `build/WEBGui/webgui/static/app.js` derives missing art,
-   embedded-validation and completion flags separately. Verify
-   `cover.webp` exclusion, portrait/banner requirements and missing,
-   below/above preferred-size embedding on representative fixtures.
-   Verify the same independently in Windows.
-6. **Override-frame discrepancy:** the media-state seed declares
-   `override_presentation.frame_color = dark_grey`; historical approved
-   Album-card visual material describes a red frame. Name/dot color does
-   not automatically decide frame color. Keep this discrepancy open.
-7. **Gold role:** `gold` is explicitly forbidden for Artist names but
-   absent from the `colors` palette. Do not fabricate a color code or
-   bypassed-Album name/dot rule.
-8. **Effective revisions not inspected:** WebGUI reads the revisioned
-   `media_state_classification_policy` row and seeds from JSON only when
-   absent; Windows can activate local or coordinated mirrors. Changing
-   a repository seed alone does not prove an existing installation changed.
+- `.github/workflows/validate.yml` has an independent
+  **Canonical policy JSON — review gate** for **both** protected
+  JSON files. It reports a failure for modifications/renames/deletions,
+  directing Codex to `AGENTS.md` and the approved register.
+  It does not automatically revert source or grant an override.
+- Mandatory Codex Draft PR use and **explicit current-PR-only owner
+  exceptions** are proposed in [PR #217](https://github.com/scottia/S-P-L-I-N-E-D/pull/217),
+  not yet merged into `dev`.
+- The guard's status as a **required** branch-ruleset check
+  cannot be confirmed by the current GitHub integration.
+- Do not merge [PR #216](https://github.com/scottia/S-P-L-I-N-E-D/pull/216)
+  or release Workflow 01 without independently verified Windows,
+  WebGUI and policy-revision acceptance. **No production media,
+  SQLite, PostgreSQL, or `main` changes** were made by this
+  documentation update.
 
-## COMP policy: preserve working behavior pending evidence
-
-The checked-in `splined-comp-report-v1` defines selected-Artist
-precedence, explicit Artist credit separators, bounded name/alias and
-MusicBrainz recovery, Recording-search limits, ordered official release
-families, existing-art reuse, outcomes `completed/unresolved/failed`,
-batch revision pinning and coordination publication. Python and Rust
-implement separate validators; they require core fields and constraints.
-The user reports that current COMP processing works well. No speculative
-changes to these rules, their matching thresholds or their DB state are
-authorized by this review.
-
-## Database and Settings: evidence still required
-
-`media.sql` describes the native SQLite catalog and coordinator tables.
-It is neither a complete PostgreSQL schema nor proof of cross-client
-synchronization. Before approving it, execute DDL and migration checks in
-a disposable SQLite instance, inspect actual catalog code, and reconcile
-field ownership and association semantics with owner-approved policy.
-
-`settings-ui.json` describes presentation and validation metadata for
-Config v5 settings. For every field, verify the real Rust and Python
-configuration parsers, UI exposure, default, allowed range, persistence,
-runtime ownership, and platform-specific exception. A syntactically
-valid JSON may still misstate existing settings behavior.
-
-## Read-only references
-
-- [WebGUI media-state validator](../build/WEBGui/webgui/media_state_policy.py)
-- [Windows media-state validator](../build/Windows/src/media_state_policy.rs)
-- [WebGUI Artist/Album presentation](../build/WEBGui/webgui/static/app.js)
-- [WebGUI styling](../build/WEBGui/webgui/static/app.css)
-- [WebGUI media-state regression tests](../build/WEBGui/webgui/tests/test_media_state_classification_policy.py)
-- [WebGUI COMP validator](../build/WEBGui/webgui/comp_report_policy.py)
-- [Windows COMP validator](../build/Windows/src/comp_report_policy.rs)
-- [Windows schema consumer](../build/Windows/src/catalog_index_coordinator.rs)
-
-**Original baseline boundary:** At this checkpoint no implementation changes
-had yet been made. The follow-up below records the subsequent focused
-source correction; production validation remains pending. `main` is unchanged.
-
-## Focused policy-correction checkpoint
-
-The preceding sections document the original read-only baseline. The
-subsequent `/dev` correction applies these source changes:
-
-- `schema/media-state-classification.json`: Album red
-  `Incomplete / Error` description, name rule and dot; Artist yellow
-  `Missing Artist or Album Art`; clearer owner-policy scope descriptions.
-  Retains the existing `splined-media-state-v2` wire ID, condition keys,
-  color precedence and seven-dot sequence for compatibility.
-- Both policy validators now reject reordered Artist-name, Album-name or
-  Album-dot rules, while continuing to allow configurable color palettes
-  and labels. Windows also preserves the `auxiliary` dot field when
-  serializing the local policy.
-- WebGUI CSS no longer forces Unprocessed/All library-row names to neutral
-  white or muted theme text. Semantic palette properties remain in use.
-- WebGUI Album classification no longer interprets an unprocessed row
-  with a missing cover as independent red/error evidence, or the existence
-  of a cover as proof of a completed SPLINED processing operation.
-- The WebGUI Album projection now exposes `static_cover_found` separately
-  from previewable `cover_found`, so `cover.webp` cannot by itself
-  suppress yellow missing-static-cover evidence. A focused browser
-  regression covers WebP-only and pre-existing static-cover cases.
-- Focused Python and Rust regression cases check ordering, labels,
-  forbidden colors and the removal of the CSS bypass.
-
-**Important: this is a code review and regression-test change, not proof
-of deployed client parity.** A full WebGUI Python/PostgreSQL and browser test
-run, Windows Rust/Slint build, interactive themes, live runtime policy row,
-Windows credential-directory mirror, and actual media evidence remain
-unverified until separately exercised.
-
-**Remaining issues requiring validation or policy interpretation:** whether
-`cover.webp` incorrectly satisfies ordinary cover evidence; physical
-Artist Art and Album associations; bypass status versus missing-art yellow;
-COMP-track and below/above preferred thumbnail size propagation; and
-opposing-override frame color (independent of dark-grey name/dot).
-
-**Runtime state remains unchanged.** An existing PostgreSQL saved policy
-or Windows local mirror is not automatically upgraded by editing the
-checked-in JSON seed. Strict order validation may reject a nonconforming
-saved revision; inspect and reconcile it deliberately before deployment.
-No writes to production catalog, PostgreSQL policy rows, media tags or
-music files occurred. `/main` remains untouched.
-
-## Deployment-mode authority clarification
-
-The owner explicitly requires **one Artist/Album classification policy in all
-deployment modes**. Selecting Shared / Network SQLite cannot select a
-different ranking, an alternate "default" policy, or different name colors.
-
-Read-only code inspection confirms Windows embeds the checked-in JSON through
-`include_str!("../../../schema/media-state-classification.json")` and uses
-that embedded policy when no external file is configured. The standalone
-Setup test does **not** create a separate status-policy file. WebGUI includes
-the same JSON in its container but can persist a separately revisioned
-PostgreSQL value; Windows can also load an existing credential-directory
-copy. These are distribution/persistence mechanisms, not independent
-behavioral-policy approvals.
-
-The current implementation **does not yet prove** exact parity of existing
-local copies, PostgreSQL revisions, and new builds. This must be verified
-without silently writing to installed policy files or databases.
-
-Windows Slint also previously contained an explicit name rendering exception
-for `Unprocessed` and `All`, mapping them to theme foreground rather than
-the semantic status color. That exception is removed in the scoped /dev
-rendering correction. Upstream name evidence and runtime parity remain
-subject to validation.
+This review uses the current approved register and source evidence.
+Older comparison drafts do not establish or replace policy.

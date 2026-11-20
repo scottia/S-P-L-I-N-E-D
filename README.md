@@ -18,6 +18,7 @@ application and a Python/browser WebGUI.
 build/
   WEBGui/
     Dockerfile
+    docker/       WebGUI Compose, .env and Config v5 example
     webgui/       Python backend, browser UI, migrations, validation
   Windows/
     Cargo.toml
@@ -26,7 +27,7 @@ build/
     gui/          Windows GUI resources
     package/      Store/portable packaging
 schema/           Shared SQL and JSON runtime contracts
-docker/           WebGUI deployment definition
+fixtures/         Cross-runtime regression fixtures
 release/          Release automation support
 .github/workflows/01-full-release.yml
 ```
@@ -38,13 +39,13 @@ release history are available under [GitHub Releases](https://github.com/scottia
 
 ## Documentation status
 
-The source tree is undergoing structural consolidation. **Historical guides
-and behavioral policy Markdown are not currently approved as an application
-policy.** See [documentation status](docs/README.md) and the
-[verified build layout](docs/build-layout.md).
+Current, owner-approved classification requirements live in the
+[policy register](docs/POLICY-REGISTER.md), with source and validation
+traceability in the [policy index](docs/POLICY-INDEX.md).
+See the [documentation index](docs/README.md),
+[WebGUI Docker deployment](docs/webgui-docker-deployment.md), and
+[Workflow 01 build layout](docs/build-layout.md) for the active sources.
 
-The complete original tree and withdrawn historical documents remain on
-[`dev-archive`](https://github.com/scottia/S-P-L-I-N-E-D/tree/dev-archive).
 Application Help intended for public use belongs on `main` after review.
 
 ## Project information

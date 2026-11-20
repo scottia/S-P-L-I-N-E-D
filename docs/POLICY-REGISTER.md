@@ -1,98 +1,114 @@
-# SPLINED Policy Register — owner-approved classification
+# S:P:L:I:N:E:D — owner-approved policy register
 
-**Scope:** Artist and Album file-list NAME colors, Album status-dot order, and
-related evidence. **Approval basis:** owner's written instructions of
-November 19, 2026. This is not an approval of existing runtime behavior,
-database records, or other application policy.
+**Authority:** The repository owner's instructions, confirmed November 19,
+2026. The rules below have **already been given and approved**. No repeat
+owner approval is required to state or document them. The register is
+normative; current code, test assertions, saved database copies and old
+PR documents are not alternate policy authorities.
 
-The old 38-row Windows/WebGUI comparison is **discarded as policy**; do not
-reimport it. Only explicit owner requirements belong here. This register is
-the normative behavior specification; checked-in JSON is an implementation
-artifact to be validated against it, not the source of approval.
+**Scope:** Artist/Album FILE-LIST **name colors**, ordered multiple Album
+status dots, approved visual indicators, policy consistency across
+deployment modes, and safeguards for changing shared policy JSON.
+For implementation verification, see
+[SCHEMA-VALIDATION.md](SCHEMA-VALIDATION.md).
 
-## Media Filter Artist-name policy
+## Approved Artist FILE-LIST name classification
 
-| Policy ID | Required behavior |
+The Artist name is an aggregate of applicable Artist Art, Album cover,
+track-embedding and COMP-track evidence. It is evaluated separately from
+the individual Album name colors and MEDIA FILTER counts.
+
+| ID | Approved requirement |
 | --- | --- |
-| `ART-COLOR-001` | An Artist file-list name is classified **independently of its Albums' own displayed name colors**. Aggregate applicable Artist Art, associated Album Art, Album embedding, and COMP-track embedding evidence. |
-| `ART-COLOR-002` | Rank Artist names: **red** (Incomplete/Error) > **yellow** (missing applicable Artist or Album Art) > **purple** (Album/track/COMP embedding issues) > **green** (all eligible Album covers and tracks complete or overridden, with no higher-priority deficiency). No matching category defaults to **red**. |
-| `ART-COLOR-003` | Artist names are **never white, dark grey, orange, gold, or blue**. Orange processed-Album, gold bypassed-Album, and dark-grey opposing-override indications do not become Artist-name colors. |
-| `ART-COLOR-004` | A yellow Artist condition includes missing applicable `artist.*`/`banner.*` or associated Album `cover.*`; `cover.webp` is excluded as proof that required ordinary Album cover art is present. |
-| `ART-COLOR-005` | Purple includes applicable Album, embedded Track, and COMP-track embedding issues. Red outranks yellow and purple; yellow outranks purple; purple outranks green. |
-| `ART-COLOR-006` | An Unprocessed total/count in **MEDIA FILTER** is separate from the Artist NAME color. Counts, labels, default theme text, and other neutral UI presentations may not force a white Artist name. |
+| `ART-COLOR-001` | Artist names use an independent ranked aggregation of their applicable Artist/Album Art and Album/Track/COMP evidence—not a copied Album color, filter count or theme foreground color. |
+| `ART-COLOR-002` | **Red (Incomplete/Error) > Yellow (missing Artist or Album Art) > Purple (embedding issues) > Green (all applicable covers/tracks complete or overridden without a higher-priority issue).** The first applicable ranked condition wins. If none matches, default to **Red**. |
+| `ART-COLOR-003` | Artist NAME colors are **never White, Dark Grey, Orange, Gold or Blue**. The Orange processed-Album, Gold bypassed-Album, and Dark-Grey override indicators are not Artist-name classifications. |
+| `ART-COLOR-004` | Yellow includes missing applicable `artist.*` / `banner.*` or an associated ordinary Album `cover.*`; `cover.webp` alone does **not** fulfill the ordinary static cover requirement. |
+| `ART-COLOR-005` | Purple includes embedding issues in applicable Albums, tracks and COMP tracks; Red outranks Yellow/Purple/Green, Yellow outranks Purple/Green, Purple outranks Green. |
+| `ART-COLOR-006` | `Unprocessed` exists as a MEDIA FILTER **numeric count only**. A catalog row's internal processing label is not the Artist NAME category and never assigns White or independently forces Red. |
 
-## Album-name and status-dot policy
+**Artist name rank:** **Red → Yellow → Purple → Green**. Excluded:
+White, Dark Grey, Orange, Gold and Blue.
 
-| Policy ID | Required behavior |
+## Approved Album FILE-LIST name classification and dots
+
+Album FILE-LIST names are independent of the Artist aggregate and of the
+multiple dots shown on Album cards. The applicable Album, V/A OST and
+Fallback/Curated Compilation views use the same ranking.
+
+| ID | Approved requirement |
 | --- | --- |
-| `ALB-COLOR-001` | An Album file-list name is classified **independently** from the parent Artist name and independently from the multiple status dots displayed on its Album card. Applies to the relevant Artist Album, V/A OST, and Fallback/Curated Compilations views, subject to their actual evidence. |
-| `ALB-COLOR-002` | Rank the single Album name color: **dark grey** (opposing-app override) > **red** (Incomplete/Error) > **yellow** (missing Artist/Album Art) > **purple** (embedded-art issues) > **orange** (Processed Album) > **green** (complete without an applicable higher-priority condition). No matching category defaults to **red**. |
-| `ALB-COLOR-003` | Album names are **never white or blue**. Blue indicates the presence of animated `cover.webp` only as an auxiliary Album status dot. Its presence does not independently satisfy ordinary `cover.*` requirements. |
-| `ALB-COLOR-004` | Purple embedding issues include missing, below-preferred-size, or above-preferred-size embedded artwork, using the configured preferred thumbnail size. The check must use actual track evidence rather than a color shortcut. |
-| `ALB-COLOR-005` | Show **all applicable Album status dots** simultaneously, ordered: **dark grey, red, yellow, purple, orange, green, auxiliary blue**. A single Album NAME priority winner must not suppress other applicable status dots. |
-| `ALB-COLOR-006` | Missing Artist Art or ordinary Album Art is yellow evidence; incomplete/error is red evidence. Green requires verified completion and absence of higher-priority deficiency. The governing effective color rule, not hard-coded CSS, determines the name. |
+| `ALB-COLOR-001` | Classify the Album NAME separately from the Artist NAME and separately from its multiple status dots. |
+| `ALB-COLOR-002` | **Dark Grey (opposing-app override) > Red (Incomplete/Error) > Yellow (missing Artist/Album Art) > Purple (embedding issues) > Orange (processed Album) > Green (complete)**. A matching higher-priority rule wins; no match defaults to **Red**. |
+| `ALB-COLOR-003` | Album NAME colors are **never White or Blue**. Blue is solely the auxiliary animated-`cover.webp` status dot; that file alone does not satisfy an ordinary static cover requirement. |
+| `ALB-COLOR-004` | Purple embedding issues include missing, below-preferred-size or above-preferred-size embedded thumbnails, judged against the configured preferred embedded-art size using real track evidence. |
+| `ALB-COLOR-005` | Display **all applicable Album status dots at once** in the fixed priority order: Dark Grey, Red, Yellow, Purple, Orange, Green, then auxiliary Blue. A selected Album NAME color must not suppress another applicable dot. |
+| `ALB-COLOR-006` | Missing applicable Artist Art or static Album cover is Yellow evidence; an independent Incomplete/Error condition is Red evidence. Green requires verified completion with no higher-priority deficiency. The rendered NAME uses its classified color, not hard-coded CSS. |
 
-## Deployment-independent policy authority
+**Album name rank:** **Dark Grey → Red → Yellow → Purple → Orange → Green**.
+**Status dots:** **Dark Grey → Red → Yellow → Purple → Orange → Green → Blue (animated WebP only)**.
 
-| Policy ID | Required behavior |
+**Default Red** is the unmatched/uncategorized name color as well as an
+explicit Incomplete/Error result. It must **not** be manufactured from
+the internal catalog word `unprocessed`: where Yellow evidence exists
+and there is no independent Red condition, Yellow is the higher
+applicable classification.
+
+## Approved visuals that must not change during name-color corrections
+
+| ID | Accepted appearance |
 | --- | --- |
-| `STATE-POLICY-001` | **The Shared / Network SQLite option is a storage/coordination setting, never a policy selector.** Artist/Album classification, name-color precedence, forbidden name colors, and Album status-dot order must be identical in standalone Windows, shared Windows, and WebGUI configurations. |
-| `STATE-POLICY-002` | `schema/media-state-classification.json` is the canonical checked-in policy contract for all deployment modes. A Windows build may embed that **same** JSON for offline operation; this is delivery of the canonical policy, **not** an alternate "standalone default" rule set. |
-| `STATE-POLICY-003` | A local editable file, PostgreSQL revision, or Windows mirror may not replace the mandatory classification with different rankings or forbidden colors. When effective revisions differ, validate/report the discrepancy; do not silently select alternate behavior based on database mode. |
-| `STATE-POLICY-004` | **Unprocessed exists only as a MEDIA FILTER count.** An internal `unprocessed` catalog processing label is not an Artist or Album name classification, is not an Album status dot, and cannot force neutral white text. The unmatched/default name classification is Red. |
+| `VISUAL-001` | The owner's supplied Album Status Key screenshot is the accepted reference for **Album status dots and Album card frames** (including Cyan, Green, Orange/Purple, Green/Purple, Yellow and Dark Grey), independent of the file-list names. Preserve the existing opposing-app **Dark Grey override frame**. |
+| `VISUAL-002` | Preserve the currently accepted **COMPILED, FEATURING, SOUNDTRACK, VARIOUS, ARTIST and OVERRIDE banners** and their styling. |
+| `VISUAL-003` | Preserve COMP Track ROW colors: **Blue = pending artwork; Green = artwork complete; Purple = embedded thumbnail needing attention**. These are not Artist/Album name-ranking colors. |
+| `VISUAL-004` | `cover.webp` creates an auxiliary **Blue Animated** Album indicator; it does not independently classify the Album NAME Blue. |
 
-## Shared behavioral-policy change protection
+A correction to Artist/Album name classification is **not** authorization
+to alter frames, dots, banners, COMP rows, or their counted states.
 
-Changes to `schema/media-state-classification.json` and
-`schema/comp-report-policy.json` are **both** subject to the failing
-canonical-policy PR review check. Any proposed modification must be
-examined under `AGENTS.md` and this register; passing existing tests,
-whether standalone/shared SQLite is enabled, or a current database
-revision does not constitute authorization. This protection does not
-mean the present COMP policy has been approved.
+## One canonical policy across every installation
 
-## Non-negotiable enforcement
+| ID | Approved requirement |
+| --- | --- |
+| `STATE-POLICY-001` | Standalone Windows SQLite, Shared / Network SQLite and WebGUI/PostgreSQL coordination implement the **same Artist/Album color and dot policy**. Shared mode determines storage/coordination only, never the policy. |
+| `STATE-POLICY-002` | `schema/media-state-classification.json` is the canonical checked-in contract. Windows may embed this **same** JSON for offline operation; it is **not** a different standalone policy. |
+| `STATE-POLICY-003` | Existing credential-directory files, PostgreSQL persisted revisions and Windows mirrors are delivery/persistence mechanisms; they must not silently substitute different name rankings, forbidden colors or dot ordering. Flag revision or behavior drift for deliberate reconciliation. |
+| `STATE-POLICY-004` | `Unprocessed` is a MEDIA FILTER count, **not** a name-color or dot category. The fallback for an unmatched Artist/Album NAME remains **Red**. |
 
-- **No Artist or Album name may display white**, including Unprocessed,
-  empty/default classification, selected/highlighted, or light-theme states.
-- Default/no evidence for either scope: **red**. Applying a count key as a name
-  color is prohibited.
-- The ranked Artist and Album name rules and the ordered status-dot list must
-  be validated as behavior, not merely accepted because JSON parses.
-- Verify WebGUI and Windows **independently** against the same owner policy.
-  Never decide which is right by copying the other.
-- Runtime PostgreSQL policy revisions and Windows local mirrors may differ
-  from the checked-in canonical JSON. Validate and reconcile effective values
-  against the *same owner-approved rules*, regardless of Shared selection.
-  Do not overwrite runtime state or media files as part of a documentation audit.
+## Protected behavioral policy JSON
 
-## Boundaries requiring explicit follow-up
+| ID | Approved safeguard |
+| --- | --- |
+| `GUARD-001` | Protect **both** `schema/media-state-classification.json` and `schema/comp-report-policy.json` in the independent canonical-policy PR gate. A diff, deletion or rename must trigger a **failure and owner-policy review**. |
+| `GUARD-002` | A failed check directs Codex to `AGENTS.md`, this register and [POLICY-INDEX.md](POLICY-INDEX.md). It **does not automatically revert** files or allow a test pass to stand in for approval. |
+| `GUARD-003` | Owner authorization must be explicit, narrow and auditable. GitHub required checks and rulesets remain independent; owner consent does **not** forge a green status or implicitly bypass a technical restriction. |
 
-The statements above preserve the owner's wording but do not invent missing
-implementation detail. These points require evidence or owner clarification
-before any broadened code change:
+## Codex governance — requested, tracked in PR #217
 
-1. **Art completeness:** whether both portrait and banner are required or
-   whether either qualifies as Artist Art in each supported category; how
-   missing `cover.*` is evaluated on Fallback/Curated COMP cards.
-2. **Green versus opposing override:** dark grey outranks green for an
-   overridden Album name, while an Artist can be green when all associated
-   Albums are complete or overridden. The owner's Album-green wording
-   mentions dark grey; do not make a single overridden Album green contrary
-   to the stated name ranking.
-3. **Gold/bypass:** gold is excluded from Artist names but is not currently a
-   named palette value in `schema/media-state-classification.json`. Its
-   Album-dot or legend role is not specified by the present Album-dot list.
-4. **Override frame:** this message defines dark-grey override NAME/DOT,
-   not a frame color. Previously approved historical material specifies a
-   red frame; the current JSON seed uses dark grey. Resolve the separately
-   scoped frame rule without inferring it from the name color.
-5. **Red and embedding completion:** the checked-in JSON calls red
-   `Incomplete album tracks`, whereas the approved meaning here includes
-   `Incomplete/Error`; determine the exact evidence mapping and correct
-   both validators/tests and both UI presentations as needed.
+The owner directed mandatory **topic branch → Draft PR** rather than
+direct commits to the long-lived branches. The owner may authorize a
+specific exception **only after Codex asks**, identifying the current PR
+and exact action. The approval is valid **for that PR and action only**
+and expires on PR closure/merger/cancellation.
 
-Other SPLINED policies (COMP search, database schema, Settings, providers,
-identity, synchronization, queues, etc.) remain **unapproved in this
-register** until independently reviewed. Do not expand them from historical
-assessments or current source behavior.
+This process is proposed in [draft PR #217](https://github.com/scottia/S-P-L-I-N-E-D/pull/217)
+and becomes active in `AGENTS.md` only after approved merge; it is **not**
+a blanket exception for the current draft PR or to the JSON review gate.
+
+## Other contracts and validation boundaries
+
+The owner has accepted `schema/comp-report-policy.json` as a **working
+COMP baseline**, not ordered speculative rewrites to its thresholds.
+It is checked in, structurally inspected and protected, but its detailed
+runtime equivalence across Windows/WebGUI remains a test requirement.
+`schema/media.sql` and `schema/settings-ui.json` were structurally
+validated and indexed; database migration execution and end-to-end UI
+parity remain unverified. These are **validation tasks, not requests to
+approve the color rules again**.
+
+**Implementation outstanding:** The approved rules still require
+verification of actual on-screen name classification, Album/Artist
+evidence, preferred embedded size, and effective PostgreSQL/Windows
+policy revisions. Treat all unresolved technical gaps as implementation
+work—not as revocation of these owner approvals. Do not silently modify
+live data or `main`.

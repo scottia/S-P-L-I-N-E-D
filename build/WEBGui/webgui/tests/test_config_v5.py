@@ -22,7 +22,7 @@ class ConfigV5ParityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             config_file = root / "config" / "config.toml"
-            config = load_example("docker/config.example.toml")
+            config = load_example("build/WEBGui/docker/config.example.toml")
             library = root / "music"
             library.mkdir()
             config["library"]["music_library"] = str(library)
@@ -42,7 +42,7 @@ class ConfigV5ParityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             config_file = root / "config" / "config.toml"
-            config = load_example("docker/config.example.toml")
+            config = load_example("build/WEBGui/docker/config.example.toml")
             library = root / "music"
             library.mkdir()
             config["library"]["music_library"] = str(library)
@@ -70,7 +70,7 @@ class ConfigV5ParityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             config_file = root / "config" / "config.toml"
-            config = load_example("docker/config.example.toml")
+            config = load_example("build/WEBGui/docker/config.example.toml")
             config["verbosity"] = "none"
             config["scan"]["log_dir"] = str(root / "logs")
             splined.validate_config_v5(config)
@@ -82,7 +82,7 @@ class ConfigV5ParityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             config_file = root / "config" / "config.toml"
-            config = load_example("docker/config.example.toml")
+            config = load_example("build/WEBGui/docker/config.example.toml")
             cache = root / "preferred-images"
             config["scan"]["cache_dir"] = str(cache)
             config["scan"]["shared_artist_art_dir"] = ""
@@ -101,7 +101,7 @@ class ConfigV5ParityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             config_file = root / "config" / "config.toml"
-            config = load_example("docker/config.example.toml")
+            config = load_example("build/WEBGui/docker/config.example.toml")
             library = root / "music"
             config["library"]["music_library"] = str(library)
             config["scan"]["scan_library_dir"] = ""
@@ -135,7 +135,7 @@ class ConfigV5ParityTests(unittest.TestCase):
         for relative in (
             "config.example.toml",
             "build/Windows/config.example.toml",
-            "docker/config.example.toml",
+            "build/WEBGui/docker/config.example.toml",
         ):
             with self.subTest(relative=relative):
                 config = load_example(relative)
@@ -143,7 +143,7 @@ class ConfigV5ParityTests(unittest.TestCase):
                 splined.validate_config_v5(config)
 
     def test_index_metadata_reader_bound_is_explicit_and_portable(self) -> None:
-        config = load_example("docker/config.example.toml")
+        config = load_example("build/WEBGui/docker/config.example.toml")
         self.assertEqual(config["scan"]["index_metadata_readers"], 16)
         for readers in (1, 16, 32):
             with self.subTest(readers=readers):
@@ -158,7 +158,7 @@ class ConfigV5ParityTests(unittest.TestCase):
                     splined.validate_config_v5(config)
 
     def test_large_album_deferral_threshold_is_explicit_and_disableable(self) -> None:
-        config = load_example("docker/config.example.toml")
+        config = load_example("build/WEBGui/docker/config.example.toml")
         self.assertEqual(config["scan"]["index_large_album_track_threshold"], 100)
         for threshold in (0, 100, 10000):
             with self.subTest(threshold=threshold):
@@ -171,7 +171,7 @@ class ConfigV5ParityTests(unittest.TestCase):
             splined.validate_config_v5(config)
 
     def test_upscale_percentage_is_a_ceiling_not_an_all_or_nothing_gate(self) -> None:
-        config = load_example("docker/config.example.toml")
+        config = load_example("build/WEBGui/docker/config.example.toml")
         config["output"]["upscale_below_ideal"] = True
         config["output"]["upscale_max_percent"] = 200
         width, height, operations = splined.project_dimensions(600, 900, config)
@@ -264,7 +264,7 @@ class ConfigV5ParityTests(unittest.TestCase):
         self.assertTrue(splined.source_policy(config, "amazon")["strict_override"])
 
     def test_small_front_references_survive_until_decoded_candidate_policy(self) -> None:
-        config = load_example("docker/config.example.toml")
+        config = load_example("build/WEBGui/docker/config.example.toml")
         reference = splined.Ref(
             "discogs",
             "manual-review",
@@ -286,7 +286,7 @@ class ConfigV5ParityTests(unittest.TestCase):
         )
 
     def test_non_front_reference_is_still_rejected_before_download(self) -> None:
-        config = load_example("docker/config.example.toml")
+        config = load_example("build/WEBGui/docker/config.example.toml")
         reference = splined.Ref(
             "discogs",
             "back-cover",
@@ -337,7 +337,7 @@ class ConfigV5ParityTests(unittest.TestCase):
         )
 
     def test_aisplined_is_canonical_and_disabled(self) -> None:
-        config = load_example("docker/config.example.toml")
+        config = load_example("build/WEBGui/docker/config.example.toml")
         self.assertIn("aisplined", config)
         self.assertNotIn("splineai", config)
         self.assertEqual(
@@ -351,7 +351,7 @@ class ConfigV5ParityTests(unittest.TestCase):
         )
 
     def test_legacy_splineai_alias_remains_compatible(self) -> None:
-        config = load_example("docker/config.example.toml")
+        config = load_example("build/WEBGui/docker/config.example.toml")
         config["splineai"] = config.pop("aisplined")
         splined.validate_config_v5(config)
         self.assertEqual(
@@ -365,25 +365,25 @@ class ConfigV5ParityTests(unittest.TestCase):
         )
 
     def test_matching_canonical_and_legacy_tables_are_not_merged(self) -> None:
-        config = load_example("docker/config.example.toml")
+        config = load_example("build/WEBGui/docker/config.example.toml")
         config["splineai"] = dict(config["aisplined"])
         splined.validate_config_v5(config)
         self.assertEqual(splined.aisplined_settings(config), config["aisplined"])
 
     def test_conflicting_canonical_and_legacy_tables_fail_clearly(self) -> None:
-        config = load_example("docker/config.example.toml")
+        config = load_example("build/WEBGui/docker/config.example.toml")
         config["splineai"] = {"enabled": True, "endpoint": ""}
         with self.assertRaisesRegex(splined.SplinedError, "disagree"):
             splined.validate_config_v5(config)
 
     def test_aisplined_types_are_validated_without_activating_ai(self) -> None:
-        config = load_example("docker/config.example.toml")
+        config = load_example("build/WEBGui/docker/config.example.toml")
         config["aisplined"]["endpoint"] = 7
         with self.assertRaisesRegex(splined.SplinedError, "endpoint must be a string"):
             splined.validate_config_v5(config)
 
     def test_aisplined_floor_and_override_are_validated(self) -> None:
-        config = load_example("docker/config.example.toml")
+        config = load_example("build/WEBGui/docker/config.example.toml")
         config["aisplined"]["minimum_short_side"] = 0
         with self.assertRaisesRegex(splined.SplinedError, "greater than zero"):
             splined.validate_config_v5(config)
