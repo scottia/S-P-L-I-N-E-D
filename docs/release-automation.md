@@ -3,7 +3,7 @@
 This guide describes the **checked-in release workflow controls** on
 `dev`. It is a source-verified release reference, **not** authorization
 to publish or modify `main`. The supported application targets are
-`build/WEBGui/` (Python/browser/Podman-compatible Docker image and
+`build/WEBGui/` (Python/browser image and
 PostgreSQL integration) and `build/Windows/` (Rust/Slint,
 portable Windows and Microsoft Store packaging). There is no separate
 root-native Linux CLI release target.
