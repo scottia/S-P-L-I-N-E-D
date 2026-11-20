@@ -15,6 +15,7 @@ validation is still outstanding; that does not revoke owner approval.
 | [SCHEMA-VALIDATION.md](SCHEMA-VALIDATION.md) | **Current state of implementation**: what changed on `dev`, what was inspected, what passed static checks, and what runtime evidence remains |
 | [build-layout.md](build-layout.md) | Workflow 01's two release roots and shared-dependency boundary |
 | [webgui-docker-deployment.md](webgui-docker-deployment.md) | WebGUI Docker Compose, local environment, and GHCR build inputs |
+| [release-automation.md](release-automation.md) | Current Workflow 01/02/03 release, Store recovery and GHCR recovery controls |
 
 **Precedence:** explicit current owner decisions → approved register →
 checked-in JSON/SQL/UI contracts → application code/tests as verifiable
