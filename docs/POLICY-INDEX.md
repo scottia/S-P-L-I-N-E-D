@@ -33,6 +33,30 @@ All four remain single-sourced in `/schema`. Do not move or copy
 them into independent `/build` variants. The Workflow 01/GHCR and
 Windows dependencies are described by [build-layout.md](build-layout.md).
 
+## Test ownership and release validation
+
+The former root-level example data is not a production configuration or
+additional schema authority. Its redundant cross-runtime tests were
+retired after confirming existing independent checks:
+
+- [Windows compilation tests](../build/Windows/src/compilation.rs)
+  already exercise Album eligibility and MusicBrainz release
+  classification. Workflow 01 runs native Rust tests **only** when
+  `extended_windows_validation` is explicitly enabled for a Windows
+  build; ordinary Windows packaging still compiles the executable.
+- [WebGUI compilation policy tests](../build/WEBGui/webgui/tests/test_splined_compilation_authority_policy.py)
+  cover corresponding eligibility and release ranking in the WebGUI
+  Python suite, discovered by Workflow 01's WebGUI job and the
+  repository's WebGUI PR check.
+- [WebGUI rendering acceptance tests](../build/WEBGui/webgui/tests/test_render_acceptance_contract.py)
+  use local test data, not root-level configuration or a third
+  behavioral-policy JSON.
+
+GitHub PR scope/layout checks run separately from Workflow 01; they
+remain necessary to keep the two application build roots and the
+canonical `schema/` intact. Preserve source regression coverage
+only where it serves current supported application or release gates.
+
 ## Approved requirements indexed
 
 | Group | IDs | Implementation / evidence |

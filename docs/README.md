@@ -16,6 +16,15 @@ validation is still outstanding; that does not revoke owner approval.
 | [build-layout.md](build-layout.md) | Workflow 01's two release roots and shared-dependency boundary |
 | [webgui-docker-deployment.md](webgui-docker-deployment.md) | WebGUI Docker Compose, local environment, and GHCR build inputs |
 | [release-automation.md](release-automation.md) | Source-verified Workflows 01–03, Store/GHCR recovery and release-gate limitations |
+| [catalog-authority.md](catalog-authority.md) | Windows SQLite ownership, PostgreSQL-only state, reconciliation and artwork provenance |
+| [splined-media-database.md](splined-media-database.md) | Windows SQLite index, shared-file safety, v3 coordinator and backup |
+| [windows-schema-upgrade-preparedness.md](windows-schema-upgrade-preparedness.md) | v2→v3 one-way schema migration and verified downgrade backup |
+| [config-v5-reference.md](config-v5-reference.md) | Shared configuration contract, storage paths and runtime-specific Settings |
+| [credentials-providers.md](credentials-providers.md) | Credential-directory contract, providers and optional PostgreSQL coordination |
+| [source-policies-range-types.md](source-policies-range-types.md) | Image quality/range vocabulary, provider controls and separate enhancement policy |
+| [windows-store.md](windows-store.md) | Native MSIX/Store build, package identity and tagged recovery |
+| [windows-guide.md](windows-guide.md) | Windows user workflow, SQLite setup, artwork, status colors and backup |
+| [browser-workspace-guide.md](browser-workspace-guide.md) | Browser/PostgreSQL use, indexing, artwork queue and COMP operations |
 
 **Precedence:** explicit current owner decisions → approved register →
 checked-in JSON/SQL/UI contracts → application code/tests as verifiable
@@ -52,6 +61,16 @@ no speculative matching/ranking edits. Its detailed runtime conformity
 has **not** been independently certified by this documentation review.
 The SQL and Settings contracts passed the stated **structural** inspection;
 execution/migration and real-client parity are still to be checked.
+
+## Documentation review boundary
+
+These restored guides have been **reviewed and revised for the current
+two-target source tree**. They distinguish implemented configuration
+and release behavior from untested live UI, media-write, and
+cross-client equivalence. A guide does not establish an independent
+behavioral policy; the owner's approved register remains normative.
+No unsupported third release target or competing catalog authority is
+introduced by a document.
 
 ## Changes and pull requests
 

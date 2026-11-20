@@ -106,6 +106,24 @@ It inspects `ghcr.io/scottia/splined:vX.Y.Z` and
 Workflow 03 neither creates/edits release tags or GitHub Releases nor
 touches Store submissions or existing release assets.
 
+## Test roles and source-retention review
+
+| Check | When it runs | Disposition |
+| --- | --- | --- |
+| WebGUI Python policy/Album tests | Workflow 01 `WebGUI / Python` or `All`, and applicable PR validation | Retain independent active source tests |
+| WebGUI JavaScript checks and Docker/PostgreSQL health | Same WebGUI build and selected PR validation | Retain as application release gates |
+| Native Windows Cargo format/Clippy/library tests | Workflow 01 Windows/All **only** with extended validation enabled | Retain; do not claim the PR advisory executed them |
+| Native optimized Windows application and package validation | Workflow 01 Windows/All release build | Retain |
+| Release-note/Store baseline regression scripts and historic synthetic JSON | Workflow 01/02 release support and applicable packaging checks | Retain; historical version numbers are deliberate |
+| Repository layout, scope and protected JSON guards | PR validation, separate from the release engine | Retain as controls for Workflow 01 source/layout and owner policy |
+
+Duplicated root-level Album example data was retired from active
+`dev` after confirming that local Windows and WebGUI tests already
+covered the cases. A WebGUI-specific audit example remains with the
+WebGUI test suite. Do not preserve an obsolete root path simply to
+satisfy an outdated test, and do not remove active release evidence
+because its sample version is older.
+
 ## Active `/release` content
 
 [Release support files](../release/README.md) and the checked-in scripts

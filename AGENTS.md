@@ -117,6 +117,18 @@ protected behavioral JSON files retain their mandatory owner-review
 procedure and failing PR gate until an explicitly reviewed authorization
 mechanism is installed.
 
+## Active test and build inputs
+
+A source test or sample belongs in the current repository only where
+it supports a verified application build, Workflow 01 release,
+Store recovery, or independent PR policy/layout safeguard. Review
+actual consumers before removing it. Do not restore retired
+root-level example dependencies simply to make a stale test pass.
+Native Rust library tests are an opt-in extended Workflow 01
+validation; the Windows PR advisory is not a substitute for a
+native Windows compile. The WebGUI Python suite, JavaScript checks
+and Docker smoke run in the selected WebGUI release lane.
+
 ## Mandatory Codex preflight
 
 1. Read this file, `docs/build-layout.md`, `docs/POLICY-REGISTER.md`,
