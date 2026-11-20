@@ -43,9 +43,10 @@ and behavioral policy Markdown are not currently approved as an application
 policy.** See [documentation status](docs/README.md) and the
 [verified build layout](docs/build-layout.md).
 
-The complete original tree and withdrawn historical documents remain on
-[`dev-archive`](https://github.com/scottia/S-P-L-I-N-E-D/tree/dev-archive).
 Application Help intended for public use belongs on `main` after review.
+Current policy requirements are maintained in the
+[policy register](docs/POLICY-REGISTER.md) and
+[policy index](docs/POLICY-INDEX.md).
 
 ## Project information
 

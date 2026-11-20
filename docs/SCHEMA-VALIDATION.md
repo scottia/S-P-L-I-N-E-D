@@ -137,6 +137,5 @@ each client.
   SQLite, PostgreSQL, or `main` changes** were made by this
   documentation update.
 
-Historical reports and the discarded 38-row comparison are
-preserved on [`dev-archive`](https://github.com/scottia/S-P-L-I-N-E-D/tree/dev-archive)
-for evidence only—not current behavioral authority.
+This review uses the current approved register and source evidence.
+Older comparison drafts do not establish or replace policy.

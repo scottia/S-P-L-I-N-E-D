@@ -38,12 +38,11 @@ These four shared contracts are referenced together in
 [POLICY-INDEX.md](POLICY-INDEX.md) but do **not** require separate
 copies inside the Windows and WebGUI build roots.
 
-## Archive and release boundary
+## Active release boundary
 
-The pre-migration tree and withdrawn old docs are preserved on
-[`dev-archive`](https://github.com/scottia/S-P-L-I-N-E-D/tree/dev-archive).
-Archived root-native Rust/CLI, dated test reports and outdated policy
-documents do not become source authority by their presence.
+Unsupported root-native Rust/CLI sources are not Workflow 01 release
+targets. Only the two designated `build/` application roots are active;
+policy and design documentation belong under `docs/`.
 
 The two-source layout is on `dev` within
 [draft PR #216](https://github.com/scottia/S-P-L-I-N-E-D/pull/216).

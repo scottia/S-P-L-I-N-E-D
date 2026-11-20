@@ -81,8 +81,7 @@ Application Help links should use **reviewed `main` documentation only**,
 never `dev`. Current Help is acknowledged as inaccurate and is not being
 silently rewritten or promoted.
 
-Historical documentation and the old source tree are preserved on
-[`dev-archive`](https://github.com/scottia/S-P-L-I-N-E-D/tree/dev-archive).
-They are evidence, not approved replacements. `main` and deployed
-PostgreSQL/SQLite policy revisions must remain unchanged until their
-separate authorized workflows.
+Additional guides may be added here selectively after their accuracy is
+checked against the approved register and current runtime behavior.
+`main` and deployed PostgreSQL/SQLite policy revisions must remain
+unchanged until their separately authorized workflows.

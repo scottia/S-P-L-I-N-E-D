@@ -19,8 +19,8 @@ For deployed releases, use a reviewed and pinned tag from
 [GHCR](https://github.com/scottia/S-P-L-I-N-E-D/pkgs/container/splined)
 and confirm compatible runtime storage and PostgreSQL backups before upgrades.
 
-Older setup, migration, recovery, and troubleshooting guidance is preserved
-in [dev-archive](https://github.com/scottia/S-P-L-I-N-E-D/tree/dev-archive/historical/2026-11-19-pre-policy-docs-cleanup/docker/README.md),
-but is not considered approved until reverified. See
+For the current source and deployment boundary, see
 [documentation status](../docs/README.md) and
 [Workflow 01 build layout](../docs/build-layout.md).
+Detailed installation, migration, recovery, and troubleshooting procedures
+must be verified before publication as operator instructions.

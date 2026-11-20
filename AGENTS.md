@@ -13,9 +13,9 @@ checkpoint**, not a declaration that the present application code is correct.
   WebGUI, and no existing WebGUI implementation is automatically correct
   relative to Windows. Differences must be checked independently against
   the owner-approved rule.
-- Retired Markdown policies, the historical 38-row comparison, and past
-  acceptance records are quarantined in `dev-archive`; do not import them
-  as mandatory requirements.
+- Unverified guides, past comparison drafts, and older acceptance records
+  cannot override `docs/POLICY-REGISTER.md`. Do not promote them to policy
+  without explicit owner approval.
 - `schema/` JSON, SQL contracts, and `*_policy.py` / `*_policy.rs`
   modules are runtime dependencies where referenced. Their execution does
   not establish their rules as owner-approved policy.
@@ -37,9 +37,9 @@ checkpoint**, not a declaration that the present application code is correct.
   release-support inputs outside the two application build folders.
 - Do not put operator manuals, historical policy Markdown, or build
   architecture descriptions inside `build/`.
-- Preserve `dev-archive` as the read-only historical reference. Do not
-  reintroduce old root `src/`, `Cargo.toml`, `Cargo.lock`, `webgui/`
-  or `windows/` layouts into active `dev`.
+- Do not reintroduce unsupported root `src/`, `Cargo.toml`,
+  `Cargo.lock`, `webgui/`, or `windows/` layouts into active
+  `dev`. Use only the two Workflow 01 application roots.
 - Application Help links must point to approved `/main` documentation
   only, never `/dev`. Help content is currently under review. Do not
   treat an existing `main` Help page as certified merely because it exists.
@@ -157,7 +157,6 @@ structural inspection. Outstanding runtime/fixture checks are
 **implementation validation**, not pending approval of the owner's
 established color policy. See `docs/SCHEMA-VALIDATION.md`.
 
-The historic 38-row comparison is excluded as policy, and no old
-implementation or test expectation may silently supersede this
-register. The mandatory Codex PR process in this version of
-`AGENTS.md` is under owner review in draft PR #217 until merged.
+No unverified implementation, legacy guide, or test assertion may silently
+supersede the approved register. The mandatory Codex PR process in this
+version of `AGENTS.md` is under owner review in draft PR #217 until merged.
