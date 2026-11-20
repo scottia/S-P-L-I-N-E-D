@@ -460,13 +460,24 @@ function rawMediaStatusKey(item) {
   if (raw.includes("partial")) return "partial";
   return MEDIA_STATUSES.some(([key]) => key === raw) ? raw : "unprocessed";
 }
+function unprocessedInventoryCount(albums) {
+  // This is a MEDIA FILTER inventory count, never an Album NAME/dot state.
+  // An opposing completed write is not still pending locally merely because
+  // the old materialized catalog status says "unprocessed".
+  return albums.filter(album => rawMediaStatusKey(album) === "unprocessed"
+    && !opposingAlbumOverride(album)).length;
+}
 function opposingAlbumOverride(item) {
   const fallback = Boolean(item?.fallback || ["fallback", "misc-curated"].includes(String(item?.library_group || "")));
   return !fallback && albumOverride(item)?.writer === "windows";
 }
 function mediaStatusKey(item) {
   if (item?.missing_artist_art === true) {
-    return classifyMediaState("artist", ["missing_artist_art"]).ui_status_key;
+    // Red from independent error evidence outranks missing Artist Art Yellow;
+    // an unmatched/default Red is not itself error evidence.
+    const evidence = item.has_incomplete_error === true
+      ? ["incomplete_or_error", "missing_artist_art"] : ["missing_artist_art"];
+    return classifyMediaState("artist", evidence).ui_status_key;
   }
   return opposingAlbumOverride(item) ? "overridden" : rawMediaStatusKey(item);
 }
@@ -822,7 +833,7 @@ function renderMediaStatusChips() {
       counts.set(key, (counts.get(key) || 0) + 1);
     }
   }
-  const unprocessed = counts.get("unprocessed") || 0;
+  const unprocessed = unprocessedInventoryCount(items);
   const title = $("mediaStatusTitle"); clear(title);
   title.append(
     document.createTextNode("Artist State ("),
@@ -1189,16 +1200,23 @@ function selectedArtistAggregateStatus(artist = state.artist) {
   const conditions = [];
   if ((!artist.portrait && !artist.banner) || cards.some(card => card.missingArt)) conditions.push("missing_artist_art");
   if (cards.some(card => card.checkEmbedded || card.stateKey === "partial")) conditions.push("embedding_issues");
-  if (cards.some(card => card.incomplete || card.stateKey === "incomplete")) conditions.push("incomplete_or_error");
+  if (cards.some(card => card.incomplete)) conditions.push("incomplete_or_error");
   if (cards.length && cards.every(card => card.fullyComplete || card.overridden)) conditions.push("all_albums_complete_or_overridden");
   return classifyMediaState("artist", conditions).ui_status_key;
 }
 function syncSelectedArtistStatus() {
   if (!state.artist) return "incomplete";
   const status = selectedArtistAggregateStatus(state.artist);
+  // Explicit-error provenance is separate from the default unmatched Red.
+  const cards = artistOverviewAlbums(state.artist, false).map(album => albumCardState(album, state.artist));
+  const hasIncompleteError = cards.some(card => card.incomplete);
   state.artist.status = status;
+  state.artist.has_incomplete_error = hasIncompleteError;
   const listed = state.artists.find(item => String(item.id) === String(state.artist.id));
-  if (listed) listed.status = status;
+  if (listed) {
+    listed.status = status;
+    listed.has_incomplete_error = hasIncompleteError;
+  }
   return status;
 }
 function renderAlbumCountSummary(albums, artist = state.artist) {

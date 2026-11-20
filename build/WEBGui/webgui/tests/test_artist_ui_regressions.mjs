@@ -230,7 +230,8 @@ test("opposing Album overrides use their own dark-grey filter and never inflate 
   assert.equal(context.mediaStatusKey(album), "overridden");
   assert.equal(context.mediaStatusColor("override"), "#6b737b");
   assert.match(appSource, /applyStatusPalette\(button, overridden \? "override" : albumCardState\(album, state\.artist\)\.stateKey\)/);
-  assert.match(appSource, /classifyMediaState\("artist", \["missing_artist_art"\]\)\.ui_status_key/);
+  assert.match(appSource, /item\.has_incomplete_error === true/);
+  assert.match(appSource, /classifyMediaState\("artist", evidence\)\.ui_status_key/);
   assert.match(appSource, /artist\.missing_artist_art = missing/);
   assert.match(cssSource, /\.fallback-library-track\.opposing-track-override\{color:var\(--media-state-dark-grey/);
   assert.match(cssSource, /\.fallback-track\.opposing-track-override\{border-color:var\(--media-state-dark-grey/);
@@ -258,6 +259,39 @@ test("Artist State exposes six filters plus an Unprocessed heading and Album tot
   assert.deepEqual(mediaPolicy.artist.forbidden_name_colors, ["white", "dark_grey", "orange", "gold", "blue"]);
   assert.equal(context.classifyMediaState("artist", []).ui_status_key, "incomplete");
   assert.equal(context.classifyMediaState("album", []).ui_status_key, "incomplete");
+});
+
+test("Artist Red error outranks lazy missing Art Yellow; unmatched Red may become Yellow", () => {
+  const context = load(mediaStatusFunctions, {state: {}, albumOverride: () => null});
+  assert.equal(context.mediaStatusKey({
+    status: "incomplete", missing_artist_art: true, has_incomplete_error: true,
+  }), "incomplete");
+  assert.equal(context.mediaStatusKey({
+    status: "incomplete", missing_artist_art: true, has_incomplete_error: false,
+  }), "bypassed");
+  assert.equal(context.mediaStatusKey({
+    status: "partial", missing_artist_art: true, has_incomplete_error: false,
+  }), "bypassed");
+});
+
+test("Unprocessed is raw Artist Album inventory, not ranked NAME or override", () => {
+  const context = load(mediaStatusFunctions, {
+    state: {}, albumOverride: album =>
+      album.override_writer === "windows" ? {writer: "windows"} : null,
+  });
+  const albums = [
+    {status: "unprocessed", cover: "cover.webp", static_cover_found: false},
+    {status: "unprocessed", cover: "cover.jpg", static_cover_found: true},
+    {status: "unprocessed", override_writer: "windows"},
+    {status: "processed", cover: "cover.jpg"},
+    {status: "incomplete", cover: "cover.webp"},
+  ];
+  assert.equal(context.unprocessedInventoryCount(albums), 2);
+  assert.equal(context.classifyMediaState("album", ["missing_art"]).ui_status_key, "bypassed");
+  assert.match(
+    between(appSource, "function renderMediaStatusChips", "function artistOverviewAlbums"),
+    /const unprocessed = unprocessedInventoryCount\(items\)/,
+  );
 });
 
 test("Album Status Key separates animated WebP from mutually exclusive status dots", () => {
@@ -2767,8 +2801,10 @@ test("selected Artist status includes its track-scoped COMP report", () => {
   assert.equal(context.syncSelectedArtistStatus(), "incomplete");
   assert.equal(state.artist.status, "incomplete");
   assert.equal(state.artists[0].status, "incomplete");
+  assert.equal(state.artist.has_incomplete_error, true);
   state.compAlbums[0].tracks[1].completed = true;
   assert.equal(context.syncSelectedArtistStatus(), "albumsComplete");
+  assert.equal(state.artist.has_incomplete_error, false);
 });
 
 test("Artist overview lazily verifies unresolved regular Albums without touching COMP fallback", async () => {

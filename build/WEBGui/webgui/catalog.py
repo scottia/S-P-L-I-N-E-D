@@ -927,11 +927,11 @@ class Catalog:
     def _artist_album_state_conditions(
         row, coordination: dict[str, object] | None = None
     ) -> set[str]:
-        """Return Artist-rollup evidence without conflating missing cover art.
+        """Return Artist-rollup evidence from already-indexed Album state.
 
-        Missing Album art is an Album-name/dot condition. Artist yellow is
-        reserved for missing Artist Art and is applied by the presentation
-        after its lazy portrait/banner result is known.
+        An absent static Album cover contributes Yellow to the Artist name.
+        Never resolve or scan Album artwork paths while listing Artists.
+        Lazy Artist portrait/banner inspection remains a separate input.
         """
         keys = set(row.keys())
         status = str(row["status"] or "unprocessed").casefold() if "status" in keys else "unprocessed"
@@ -941,6 +941,15 @@ class Catalog:
             # Opposing ownership is authoritative presentation evidence. Do
             # not also inherit a stale pre-write incomplete label.
             return {"opposing_override", "complete_or_overridden"}
+        if "cover_path" in keys:
+            # Read only indexed catalog evidence: a WebP may be previewable,
+            # but only a qualifying static cover.* satisfies Artist Yellow.
+            cover_path = str(row["cover_path"] or "").strip()
+            static_cover = bool(cover_path and Path(cover_path).suffix.casefold() != ".webp")
+            if "cover_found" in keys:
+                static_cover = static_cover and bool(row["cover_found"])
+            if not static_cover:
+                conditions.add("missing_artist_art")
         if status == "partial":
             conditions.add("embedding_issues")
         if status in {"incomplete", "timeout", "error"}:
@@ -1912,20 +1921,23 @@ class Catalog:
             and value.get("artist_album_keys")
         )]
         statuses_by_artist: dict[str, list] = {}
+        album_evidence_by_key: dict[str, dict[str, object]] = {}
         owned_album_keys: dict[str, set[str]] = {}
         for row in status_rows:
             album_key = str(row["album_key"])
             effective_status = self._effective_album_status(
                 row, coordination.get(album_key, {})
             )
+            album_evidence = {
+                "album_key": album_key,
+                "status": effective_status,
+                "conditions": self._artist_album_state_conditions(
+                    row, coordination.get(album_key, {})
+                ),
+            }
+            album_evidence_by_key[album_key] = album_evidence
             statuses_by_artist.setdefault(str(row["artist_key"]), []).append(
-                {
-                    "album_key": album_key,
-                    "status": effective_status,
-                    "conditions": self._artist_album_state_conditions(
-                        row, coordination.get(album_key, {})
-                    ),
-                }
+                album_evidence
             )
             owned_album_keys.setdefault(str(row["artist_key"]), set()).add(album_key)
         result = []
@@ -1956,23 +1968,21 @@ class Catalog:
                 for status in statuses_by_artist.get(str(row["artist_key"]), [])
             ]
             if appearance:
-                status_group.extend(
-                    {
-                        "status": (
-                            "processed"
-                            if str(coordination.get(album_key, {}).get("writer", "")).casefold()
-                            == "windows"
-                            else status
-                        ),
-                        "conditions": (
-                            {"opposing_override", "complete_or_overridden"}
-                            if str(coordination.get(album_key, {}).get("writer", "")).casefold()
-                            == "windows"
-                            else self._artist_album_state_conditions({"status": status})
-                        ),
-                    }
-                    for album_key, status in appearance.get("statuses", {}).items()
-                )
+                for album_key, status in appearance.get("statuses", {}).items():
+                    # Featured and V/A/OST track credits share the indexed
+                    # Album's static-cover and embedding evidence, not only
+                    # its raw processing label.
+                    indexed = album_evidence_by_key.get(album_key)
+                    if indexed is not None:
+                        status_group.append(indexed)
+                    else:
+                        status_group.append({
+                            "status": status,
+                            "conditions": self._artist_album_state_conditions(
+                                {"status": status},
+                                coordination.get(album_key, {}),
+                            ),
+                        })
                 status_group.extend(
                     {
                         "status": status,
@@ -1983,6 +1993,17 @@ class Catalog:
                         ),
                     }
                     for status in appearance.get("comp_statuses", {}).values()
+                )
+            # Keep explicit Red/error evidence distinct from a default-Red
+            # name, so lazy missing Artist Art cannot hide a genuine error.
+            has_incomplete_error = any(
+                "incomplete_or_error" in item.get("conditions", ())
+                for item in status_group
+            )
+            if not projected_statuses:
+                has_incomplete_error = any(
+                    str(row["status"] or "").casefold() in {"incomplete", "timeout", "error"}
+                    for row in group
                 )
             # The list projection must remain PostgreSQL-only. Give the
             # browser a stable authenticated URL without resolving the file
@@ -2003,6 +2024,7 @@ class Catalog:
                     else self._aggregate_stored_artist_status(group)
                 ),
                 "portrait": portrait_url,
+                "has_incomplete_error": has_incomplete_error,
             })
         return sorted(
             result,
