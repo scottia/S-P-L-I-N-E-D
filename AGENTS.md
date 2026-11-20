@@ -42,8 +42,9 @@ checkpoint**, not a declaration that the present application code is correct.
 
 ## Mandatory Codex preflight
 
-1. Read this file and `docs/build-layout.md`; inspect the current branch
-   and worktree. Preserve unpublished local edits.
+1. Read this file, `docs/build-layout.md`, `docs/POLICY-REGISTER.md`,
+   `docs/POLICY-INDEX.md` and `docs/SCHEMA-VALIDATION.md`; inspect the
+   current branch and worktree. Preserve unpublished local edits.
 2. Confirm the exact supported build input, import, runtime asset, migration,
    packaging, and regression-test reference before proposing source deletion
    or moving any file.
@@ -66,7 +67,9 @@ private settings in repository documentation, commits or reports.
 
 ## Policy register status
 
-**Not established.** No application-wide permanent register or document
-precedence is currently certified. The next policy review must start from
-owner decisions, the corrected source map, and explicitly verified runtime
-behavior. It must not infer approval from the current implementation.
+**Partial: owner-approved Artist/Album color classification only.**
+`docs/POLICY-REGISTER.md` governs that scoped classification. The
+`docs/POLICY-INDEX.md` maps four runtime schema artifacts; a checked-in
+JSON or code implementation may still diverge. No application-wide
+permanent register or precedence is certified for other behavior. The
+historical 38-row comparison must not be imported as policy.

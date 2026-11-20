@@ -5,6 +5,18 @@ This branch does not yet publish an approved application-wide policy register.
 Source observations, old test expectations, PR acceptance records, and archived
 documents are evidence, **not** automatic instructions for a future code change.
 
+## Policy validation in progress
+
+- [Policy Register](POLICY-REGISTER.md) — owner's approved Artist/Album
+  color-name rules only; not a blanket endorsement of current code.
+- [Policy Index](POLICY-INDEX.md) — links all four shared `schema/`
+  artifacts to their runtime consumers, approval state and evidence.
+- [Schema Validation](SCHEMA-VALIDATION.md) — read-only findings and
+  unresolved implementation discrepancies.
+
+Other SPLINED policies remain unapproved pending independent validation.
+The historical 38-row comparison is excluded as policy.
+
 ## Verified release structure
 
 [Build layout](build-layout.md) records the two Workflow 01 release sources:
