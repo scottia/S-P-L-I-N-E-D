@@ -1062,7 +1062,10 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             target_list_row = next(
                 item for item in app.artists("") if item["name"] == "Target Artist"
             )
-            self.assertEqual(target_list_row["status"], "incomplete")
+            # Once COMP is complete, these Albums remain unprocessed with
+            # no indexed static covers: Artist Yellow outranks the default Red.
+            self.assertEqual(target_list_row["status"], "bypassed")
+            self.assertFalse(target_list_row["has_incomplete_error"])
 
 
 if __name__ == "__main__":

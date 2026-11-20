@@ -230,7 +230,8 @@ test("opposing Album overrides use their own dark-grey filter and never inflate 
   assert.equal(context.mediaStatusKey(album), "overridden");
   assert.equal(context.mediaStatusColor("override"), "#6b737b");
   assert.match(appSource, /applyStatusPalette\(button, overridden \? "override" : albumCardState\(album, state\.artist\)\.stateKey\)/);
-  assert.match(appSource, /classifyMediaState\("artist", \["missing_artist_art"\]\)\.ui_status_key/);
+  assert.match(appSource, /item\.has_incomplete_error === true/);
+  assert.match(appSource, /classifyMediaState\("artist", evidence\)\.ui_status_key/);
   assert.match(appSource, /artist\.missing_artist_art = missing/);
   assert.match(cssSource, /\.fallback-library-track\.opposing-track-override\{color:var\(--media-state-dark-grey/);
   assert.match(cssSource, /\.fallback-track\.opposing-track-override\{border-color:var\(--media-state-dark-grey/);
