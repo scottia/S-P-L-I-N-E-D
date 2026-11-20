@@ -74,9 +74,10 @@ owner-approved behavioral requirements.
 
 Both protected policy JSONs are checked in the separate **Canonical
 policy JSON — review gate**. This gate has been introduced on `dev`
-and exercised successfully on PR #217's earlier documentation-only
-checkpoint. Its later WebGUI Docker relocation requires fresh WebGUI,
-Docker image and packaging validation. A proposal
+and exercised on [merged PR #217](https://github.com/scottia/S-P-L-I-N-E-D/pull/217).
+That PR's Python/JavaScript/container validation passed for its updated
+Docker source layout; it does not certify Windows release or saved runtime
+policy revisions. A proposal
 changing either protected JSON fails with instructions referencing
 `AGENTS.md` and this register. It **does not auto-revert or
 authorize** the change.
@@ -88,8 +89,10 @@ branch-ruleset protection remains unverified because the available
 GitHub integration cannot inspect that setting.
 
 Mandatory Codex Draft PRs and current-PR-only owner exceptions are
-**proposed in PR #217**, not yet merged. PR #216 is the divergent
-`dev` → `main` release-layout/policy draft and must remain on hold.
+**active in `AGENTS.md`** following merged PR #217. PR #216 was **closed
+without merging to `main`** because its development changes were already
+on `dev`. Any subsequent `main` promotion needs a new, separately
+validated and owner-approved PR.
 
 ## Next engineering validation (not policy re-approval)
 

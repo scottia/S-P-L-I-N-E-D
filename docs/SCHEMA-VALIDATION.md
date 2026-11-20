@@ -48,10 +48,11 @@ the UI, not a file-list name or dot category.
 - GitHub Actions run
   [44664332291](https://github.com/scottia/S-P-L-I-N-E-D/actions/runs/44664332291)
   for PR #217's initial documentation-only commit completed successfully,
-  including the canonical JSON review gate. WebGUI was skipped by scope
-  and Windows was advisory; **that historical run certifies neither
-  PR #216 runtime changes nor PR #217's subsequent Docker relocation**.
-  Those relocation checks require a separate run on the updated PR head.
+  including the canonical JSON review gate. That run was documentation
+  scope only and does not certify runtime policy behavior. The later
+  [PR #217 Docker-source run 44673870120](https://github.com/scottia/S-P-L-I-N-E-D/actions/runs/44673870120)
+  passed Python, JavaScript and container checks for the relocated source,
+  **not** native Windows build or effective PostgreSQL/Windows policy parity.
 
 **Still untested/undemonstrated at this checkpoint:**
 
@@ -100,11 +101,10 @@ the UI, not a file-list name or dot category.
    A repository edit does not automatically reconcile those
    installed versions. Fail/report conflicts and require
    deliberate owner action before any live change.
-7. **PR promotion conflicts:** PR #216 compares a policy-changed
-   `dev` against `main`, so the protected policy JSON guard
-   requires a separately authorized review procedure. The
-   merge divergence (15 ahead/3 behind at the checkpoint)
-   and full validation remain blockers.
+7. **Future production promotion:** PR #216 was closed without
+   merging into `main`. The protected policy JSON gate and independent
+   cross-client validation remain required for any new proposal to
+   promote the development tree to `main`.
 
 None of these pending engineering checks is a request for
 the owner to restate or reapprove the existing color policy.
@@ -129,15 +129,15 @@ each client.
   directing Codex to `AGENTS.md` and the approved register.
   It does not automatically revert source or grant an override.
 - Mandatory Codex Draft PR use and **explicit current-PR-only owner
-  exceptions** are proposed in [PR #217](https://github.com/scottia/S-P-L-I-N-E-D/pull/217),
-  not yet merged into `dev`.
+  exceptions** are active in `AGENTS.md` after
+  [merged PR #217](https://github.com/scottia/S-P-L-I-N-E-D/pull/217).
 - The guard's status as a **required** branch-ruleset check
   cannot be confirmed by the current GitHub integration.
-- Do not merge [PR #216](https://github.com/scottia/S-P-L-I-N-E-D/pull/216)
-  or release Workflow 01 without independently verified Windows,
-  WebGUI and policy-revision acceptance. **No production media,
-  SQLite, PostgreSQL, or `main` changes** were made by this
-  documentation update.
+- [PR #216](https://github.com/scottia/S-P-L-I-N-E-D/pull/216)
+  is closed unmerged. Do not promote `dev` to `main` or release Workflow 01
+  without independently verified Windows, WebGUI and policy-revision
+  acceptance. This documentation update does not alter production media,
+  SQLite, PostgreSQL or `main`.
 
 This review uses the current approved register and source evidence.
 Older comparison drafts do not establish or replace policy.

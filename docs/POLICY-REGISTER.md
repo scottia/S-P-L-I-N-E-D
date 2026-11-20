@@ -83,7 +83,7 @@ to alter frames, dots, banners, COMP rows, or their counted states.
 | `GUARD-002` | A failed check directs Codex to `AGENTS.md`, this register and [POLICY-INDEX.md](POLICY-INDEX.md). It **does not automatically revert** files or allow a test pass to stand in for approval. |
 | `GUARD-003` | Owner authorization must be explicit, narrow and auditable. GitHub required checks and rulesets remain independent; owner consent does **not** forge a green status or implicitly bypass a technical restriction. |
 
-## Codex governance — requested, tracked in PR #217
+## Codex governance — active in AGENTS.md
 
 The owner directed mandatory **topic branch → Draft PR** rather than
 direct commits to the long-lived branches. The owner may authorize a
@@ -91,9 +91,9 @@ specific exception **only after Codex asks**, identifying the current PR
 and exact action. The approval is valid **for that PR and action only**
 and expires on PR closure/merger/cancellation.
 
-This process is proposed in [draft PR #217](https://github.com/scottia/S-P-L-I-N-E-D/pull/217)
-and becomes active in `AGENTS.md` only after approved merge; it is **not**
-a blanket exception for the current draft PR or to the JSON review gate.
+This process was installed on `dev` by
+[PR #217](https://github.com/scottia/S-P-L-I-N-E-D/pull/217).
+It is **not** a blanket exception for any PR or the protected JSON gate.
 
 ## Other contracts and validation boundaries
 

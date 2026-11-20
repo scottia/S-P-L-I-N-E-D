@@ -50,9 +50,9 @@ Unsupported root-native Rust/CLI sources are not Workflow 01 release
 targets. Only the two designated `build/` application roots are active;
 policy and design documentation belong under `docs/`.
 
-The two-source layout is on `dev` within
-[draft PR #216](https://github.com/scottia/S-P-L-I-N-E-D/pull/216).
-Do not promote to `main` or publish before resolving branch
-divergence, policy-review authorization and complete Windows/WebGUI
-validation. Public app Help must point only to reviewed `main` docs;
+The two-source layout is established on `dev`. The earlier
+[PR #216](https://github.com/scottia/S-P-L-I-N-E-D/pull/216) was
+closed without a `main` merge. Further promotion requires a new,
+owner-approved PR and complete Windows/WebGUI validation.
+Public app Help must point only to reviewed `main` docs;
 `dev` documentation is for implementation and owner review.

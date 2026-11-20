@@ -15,6 +15,7 @@ validation is still outstanding; that does not revoke owner approval.
 | [SCHEMA-VALIDATION.md](SCHEMA-VALIDATION.md) | **Current state of implementation**: what changed on `dev`, what was inspected, what passed static checks, and what runtime evidence remains |
 | [build-layout.md](build-layout.md) | Workflow 01's two release roots and shared-dependency boundary |
 | [webgui-docker-deployment.md](webgui-docker-deployment.md) | WebGUI Docker Compose, local environment, and GHCR build inputs |
+| [release-automation.md](release-automation.md) | Source-verified Workflows 01–03, Store/GHCR recovery and release-gate limitations |
 
 **Precedence:** explicit current owner decisions → approved register →
 checked-in JSON/SQL/UI contracts → application code/tests as verifiable
@@ -60,15 +61,15 @@ neutral Unprocessed/All **name** colors, and WebP-only static-cover
 separation. See [validation notes](SCHEMA-VALIDATION.md) for the precise
 remaining defects; do not claim full visual acceptance yet.
 
-- [Draft PR #216](https://github.com/scottia/S-P-L-I-N-E-D/pull/216)
-  is the accumulated `dev` → `main` restructuring/policy work.
-  It remains **HOLD** because of branch divergence and missing complete
-  runtime verification.
-- [Draft PR #217](https://github.com/scottia/S-P-L-I-N-E-D/pull/217)
-  targets `dev` and contains the proposed mandatory Codex PR workflow,
-  **current-PR-only owner exceptions**, corrected policy documentation,
-  and relocation of WebGUI Docker deployment inputs. Review its CI and
-  its governance text before owner-approved merge.
+- [PR #217](https://github.com/scottia/S-P-L-I-N-E-D/pull/217) **merged
+  into `dev`**: mandatory Codex Draft PR process, current-PR-only owner
+  exceptions, corrected documentation and WebGUI Docker relocation.
+  Its successful Python/JavaScript/container tests cover that PR's scope,
+  not full Windows native acceptance or deployed policy revision parity.
+- [PR #216](https://github.com/scottia/S-P-L-I-N-E-D/pull/216) **closed
+  unmerged**: the development restructuring was already on `dev`;
+  nothing was promoted to `main`. New production promotion requires
+  a separate authorized and fully validated PR.
 
 The independent **Canonical policy JSON — review gate** exists in CI.
 It fails changes to either policy JSON and directs review to `AGENTS.md`;

@@ -160,5 +160,6 @@ structural inspection. Outstanding runtime/fixture checks are
 established color policy. See `docs/SCHEMA-VALIDATION.md`.
 
 No unverified implementation, legacy guide, or test assertion may silently
-supersede the approved register. The mandatory Codex PR process in this
-version of `AGENTS.md` is under owner review in draft PR #217 until merged.
+supersede the approved register. The mandatory Codex Draft PR process,
+including owner-authorized exceptions limited to the current PR/action,
+is active on `dev` following merged PR #217.
