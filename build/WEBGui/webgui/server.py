@@ -1,0 +1,1556 @@
+"""SPLINED HTTP application: browser setup, operations, and PostgreSQL jobs."""
+
+from __future__ import annotations
+from webgui import source_root
+
+from contextlib import asynccontextmanager
+from pathlib import Path
+from urllib.parse import urlsplit
+from uuid import uuid4
+from io import BytesIO
+from PIL import Image
+import base64
+import json
+import os
+import secrets
+import threading
+import time
+import tomllib
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
+
+import splined as core
+from webgui.catalog import ASSETS
+from webgui.database import Database
+from webgui.runtime import Runtime
+from webgui.services import Services, _web_image_signing_key
+from webgui.jobs import JobQueue
+from webgui.credentials import Credentials
+from webgui.auth import AdminAuth
+from webgui.browser_sessions import BrowserSessionStore, SESSION_MAX_AGE_SECONDS
+from webgui.audit import sanitize, sanitize_text, utc_now
+from webgui.reconciliation import SQLiteReconciler
+from webgui import index_coordinator as indexer
+from webgui.media_state_policy import (
+    database_media_state_policy,
+    database_monitor_presentation,
+    media_state_policy,
+    save_database_media_state_policy,
+)
+from webgui.comp_report_policy import (
+    comp_report_policy,
+    database_comp_report_policy,
+    save_database_comp_report_policy,
+)
+
+
+SETTINGS_UI = source_root() / "schema/settings-ui.json"
+
+
+def _sqlite_snapshot_roots() -> tuple[Path, ...]:
+    configured = os.environ.get("SPLINED_SQLITE_SNAPSHOT_ROOT", "").strip()
+    if configured:
+        return (Path(configured),)
+    conventional = Path("/sqlite_snap")
+    return (conventional,) if conventional.is_dir() else ()
+
+
+class Context:
+    def __init__(
+        self,
+        config_file,
+        database_url=None,
+        *,
+        start_worker=True,
+        image_signing_key=None,
+    ):
+        self.config_file = Path(config_file).resolve()
+        self.explicit_url = (
+            database_url
+            or os.environ.get("SPLINED_DATABASE_URL", "")
+            or ("postgresql://" if os.environ.get("PGHOST") else "")
+        )
+        self.start_worker = start_worker
+        self.image_signing_key = image_signing_key
+        self.runtime = None
+        self.services = None
+        self.jobs = None
+        self.reconciliation = None
+        self.url = ""
+        self.error = ""
+        self.database_migration = {"current": 0, "applied": [], "automatic": True}
+        self.media_state_policy_revision = 0
+        self.comp_report_policy_revision = 0
+        self._database_monitor_lock = threading.Lock()
+        self._database_monitor_checked_at = 0.0
+        self._database_monitor_result: dict[str, object] | None = None
+        self.lifecycle_lock = threading.RLock()
+        try:
+            cfg = (
+                tomllib.loads(self.config_file.read_text(encoding="utf-8"))
+                if self.config_file.is_file()
+                else {}
+            )
+            self.url = self.explicit_url or str(cfg.get("database", {}).get("url", ""))
+            if self.url:
+                self.open(self.url)
+        except Exception:
+            if self.runtime:
+                self.runtime.close()
+            if self.reconciliation:
+                self.reconciliation.close()
+            self.runtime = None
+            self.services = None
+            self.jobs = None
+            self.error = "The database connection or saved configuration needs attention in Settings"
+
+    def open(self, url):
+        self.invalidate_database_monitor()
+        database = Database(url)
+        self.database_migration = database.migrate()
+        self.database_migration.update(database.upgrade_status(core.VERSION))
+        policy_record = database_media_state_policy(database)
+        self.media_state_policy_revision = int(policy_record["revision"])
+        comp_policy_record = database_comp_report_policy(database)
+        self.comp_report_policy_revision = int(comp_policy_record["revision"])
+        self.runtime = Runtime(self.config_file, database)
+        self.services = Services(
+            self.runtime, image_signing_key=self.image_signing_key
+        )
+        self.services.start_audit_session()
+        self.reconciliation = SQLiteReconciler(
+            database,
+            self.runtime.cache,
+            self.runtime.music,
+            self.services.audit,
+            snapshot_roots=_sqlite_snapshot_roots(),
+            start_scheduler=self.start_worker,
+            album_validator=self.services.validate_album_embedding,
+        )
+        if self.start_worker:
+            self.jobs = JobQueue(self.services)
+        self.url = url
+        self.error = ""
+
+    def database_monitor(self) -> dict[str, object]:
+        with self._database_monitor_lock:
+            now = time.monotonic()
+            poll_seconds = float(
+                media_state_policy()["database_monitor"]["poll_seconds"]
+            )
+            if (
+                self._database_monitor_result is not None
+                and now - self._database_monitor_checked_at < poll_seconds
+            ):
+                return dict(self._database_monitor_result)
+            if not self.url:
+                result = database_monitor_presentation("postgres", "available")
+            elif self.runtime is None or self.services is None:
+                result = database_monitor_presentation("postgres", "broken")
+            else:
+                try:
+                    with self.runtime.database.connect() as db:
+                        db.raw.execute("SELECT 1").fetchone()
+                except Exception:
+                    result = database_monitor_presentation("postgres", "broken")
+                else:
+                    result = database_monitor_presentation("postgres", "good")
+            self._database_monitor_checked_at = now
+            self._database_monitor_result = dict(result)
+            return result
+
+    def invalidate_database_monitor(self) -> None:
+        with self._database_monitor_lock:
+            self._database_monitor_checked_at = 0.0
+            self._database_monitor_result = None
+
+    def require(self):
+        if not self.services:
+            raise ValueError("Complete database and library setup in Settings")
+        return self.services
+
+    def settings(self):
+        if self.runtime:
+            cfg = self.runtime.settings()
+        elif self.config_file.is_file():
+            cfg = tomllib.loads(self.config_file.read_text(encoding="utf-8"))
+        else:
+            cfg = tomllib.loads(
+                (
+                    source_root() / "build/WEBGui/docker/config.example.toml"
+                ).read_text(encoding="utf-8")
+            )
+        cfg.setdefault("output", {}).setdefault("embedded_thumbnail_size", 1200)
+        cfg.setdefault("database", {})["url"] = ""
+        return {
+            "config": cfg,
+            "database_configured": bool(self.runtime),
+            "database_managed": bool(self.explicit_url),
+            "error": self.error,
+        }
+
+    def configure(self, cfg):
+        with self.lifecycle_lock:
+            return self._configure(cfg)
+
+    def _configure(self, cfg):
+        self.invalidate_database_monitor()
+        if not isinstance(cfg, dict):
+            raise ValueError("Settings must be an object")
+        url = (
+            self.explicit_url or str(cfg.get("database", {}).get("url", "")) or self.url
+        )
+        if not url:
+            raise ValueError("Enter a PostgreSQL connection URL")
+        cfg = dict(cfg)
+        cfg["database"] = {"url": url}
+        if self.runtime and url == self.url:
+            self.runtime.save_settings(cfg)
+            self.services.reload_settings()
+            if self.reconciliation:
+                self.reconciliation.close()
+            self.reconciliation = SQLiteReconciler(
+                self.runtime.database,
+                self.runtime.cache,
+                self.runtime.music,
+                self.services.audit,
+                snapshot_roots=_sqlite_snapshot_roots(),
+                start_scheduler=self.start_worker,
+                album_validator=self.services.validate_album_embedding,
+            )
+        else:
+            if self.jobs and any(
+                item["state"] not in {"done", "failed", "cancelled"}
+                for item in self.jobs.list()
+            ):
+                raise ValueError(
+                    "Finish or remove queued work before changing databases"
+                )
+            database = Database(url)
+            self.database_migration = database.migrate()
+            self.database_migration.update(database.upgrade_status(core.VERSION))
+            policy_record = database_media_state_policy(database)
+            self.media_state_policy_revision = int(policy_record["revision"])
+            comp_policy_record = database_comp_report_policy(database)
+            self.comp_report_policy_revision = int(comp_policy_record["revision"])
+            Runtime.validate(cfg)
+            core.validate_filename(str(cfg.get("output", {}).get("file_name", "cover")))
+            if not core.resolve_path(
+                self.config_file, str(cfg.get("library", {}).get("music_library", ""))
+            ).is_dir():
+                raise ValueError("The music library must be an existing directory")
+            if self.jobs:
+                self.jobs.close()
+            if self.reconciliation:
+                self.reconciliation.close()
+            if self.runtime:
+                self.runtime.close()
+            runtime = Runtime(self.config_file, database, cfg)
+            runtime.save_settings(cfg)
+            self.runtime = runtime
+            self.services = Services(
+                runtime, image_signing_key=self.image_signing_key
+            )
+            self.services.start_audit_session()
+            self.jobs = JobQueue(self.services) if self.start_worker else None
+            self.reconciliation = SQLiteReconciler(
+                database,
+                runtime.cache,
+                runtime.music,
+                self.services.audit,
+                snapshot_roots=_sqlite_snapshot_roots(),
+                start_scheduler=self.start_worker,
+                album_validator=self.services.validate_album_embedding,
+            )
+            self.url = url
+            self.error = ""
+        return self.settings()
+
+    def _rebuild_services(self):
+        runtime = self.runtime
+        if runtime is None:
+            raise ValueError("Complete PostgreSQL setup before resetting the database")
+        self.services = Services(
+            runtime, image_signing_key=self.image_signing_key
+        )
+        self.reconciliation = SQLiteReconciler(
+            runtime.database,
+            runtime.cache,
+            runtime.music,
+            self.services.audit,
+            snapshot_roots=_sqlite_snapshot_roots(),
+            start_scheduler=self.start_worker,
+            album_validator=self.services.validate_album_embedding,
+        )
+        self.jobs = JobQueue(self.services) if self.start_worker else None
+
+    def reset_database(self, target: str, confirmation: str):
+        with self.lifecycle_lock:
+            runtime = self.runtime
+            if runtime is None or self.services is None:
+                raise ValueError("Complete PostgreSQL setup before resetting the database")
+            expected = runtime.database.target()
+            if target != expected or confirmation != f"RESET {expected}":
+                raise ValueError("Database reset confirmation does not match the active target")
+
+            jobs = self.jobs
+            reconciliation = self.reconciliation
+            self.jobs = None
+            self.reconciliation = None
+            if jobs is not None:
+                jobs.close()
+                if jobs.thread.is_alive():
+                    self.jobs = jobs
+                    self.reconciliation = reconciliation
+                    raise ValueError("Database reset stopped because active work did not finish")
+            if reconciliation is not None:
+                reconciliation.close()
+            try:
+                with runtime.job_scope, runtime.processing:
+                    result = runtime.database.reset_application_data()
+                self._rebuild_services()
+                result["ready_for_full_index"] = True
+                return result
+            except Exception:
+                self._rebuild_services()
+                raise
+
+
+def create_app(config_file=None, database_url=None, *, token=None, start_worker=True):
+    config_file = config_file or os.environ.get("SPLINED_CONFIG", "/config/config.toml")
+    access_token = (
+        token if token is not None else os.environ.get("SPLINED_WEB_TOKEN", "")
+    )
+    context = Context(
+        config_file,
+        database_url,
+        start_worker=start_worker,
+        image_signing_key=_web_image_signing_key(access_token),
+    )
+    sessions = {}
+    sessions_lock = threading.Lock()
+    login_attempts = {}
+
+    def durable_sessions() -> BrowserSessionStore | None:
+        runtime = context.runtime
+        return BrowserSessionStore(runtime.database) if runtime is not None else None
+
+    def account_auth() -> AdminAuth:
+        if not context.runtime:
+            raise ValueError("PostgreSQL must be available before creating the WebGUI administrator")
+        return AdminAuth(context.runtime.database)
+
+    def admin_setup_required() -> bool:
+        if not access_token:
+            return False
+        try:
+            return not account_auth().account_exists()
+        except Exception:
+            return True
+
+    def auth_rate_key(request: Request, purpose: str) -> str:
+        host = request.client.host if request.client else "unknown"
+        return f"{purpose}:{host}"
+
+    def require_auth_rate(key: str) -> tuple[int, float]:
+        with sessions_lock:
+            failures, blocked_until = login_attempts.get(key, (0, 0.0))
+        if time.monotonic() < blocked_until:
+            raise PermissionError("Too many sign-in attempts; wait briefly before retrying")
+        return failures, blocked_until
+
+    def record_auth_failure(key: str, failures: int) -> None:
+        failures += 1
+        with sessions_lock:
+            login_attempts[key] = (
+                0,
+                time.monotonic() + 30,
+            ) if failures >= 5 else (failures, 0.0)
+            if len(login_attempts) > 1000:
+                login_attempts.clear()
+
+    def clear_auth_failures(key: str) -> None:
+        with sessions_lock:
+            login_attempts.pop(key, None)
+
+    @asynccontextmanager
+    async def lifespan(_app):
+        yield
+        if context.jobs:
+            context.jobs.close()
+        if context.reconciliation:
+            context.reconciliation.close()
+        if context.runtime:
+            context.runtime.close()
+
+    app = FastAPI(title="SPLINED", docs_url=None, redoc_url=None, lifespan=lifespan)
+    app.state.context = context
+
+    @app.middleware("http")
+    async def browser_session(request, call_next):
+        started = time.perf_counter()
+        supplied_trace = sanitize_text(request.headers.get("x-splined-trace", ""), limit=100)
+        request.state.trace_id = supplied_trace or uuid4().hex
+        request.state.action_id = sanitize_text(
+            request.headers.get("x-splined-action", ""), limit=100
+        )
+        path = request.url.path
+        # Container liveness must not allocate a browser session or wait for
+        # PostgreSQL. Readiness remains the authenticated /api/status contract.
+        if path == "/api/health":
+            return await call_next(request)
+        noisy = (
+            path
+            in {
+                "/api/status",
+                "/api/jobs",
+                "/api/jobs/control-state",
+                "/api/login",
+                "/api/admin/setup",
+                "/api/admin/recover",
+                "/api/database/reset",
+                "/api/database/reset-target",
+            }
+            or path.startswith(
+                (
+                    "/api/image/",
+                    "/api/artist/thumbnail",
+                    "/api/album/thumbnail",
+                    "/api/fallback/thumbnail",
+                    "/api/audit",
+                )
+            )
+        )
+        auditable = path.startswith("/api/") and not noisy
+        scope = {
+            "artist_id": request.query_params.get("artist_id")
+            or (request.query_params.get("id") if "/artist" in path else ""),
+            "album_id": request.query_params.get("album_id")
+            or (
+                request.query_params.get("id")
+                if "/album" in path or "/fallback" in path
+                else ""
+            ),
+            "track_key": request.query_params.get("key", ""),
+        }
+        scope = {key: value for key, value in scope.items() if value}
+
+        def audit_http(action, stage, request_status, *, status_code=None):
+            audit_session = getattr(request.state, "session", None)
+            if (
+                not context.services
+                or not auditable
+                or not audit_session
+                or not audit_session.get("authenticated")
+            ):
+                return
+            try:
+                context.services.audit(
+                    action,
+                    f"{request.method} {path}",
+                    {"http_status": status_code} if status_code is not None else {},
+                    severity=(
+                        "error"
+                        if status_code is not None and status_code >= 500
+                        else "warning"
+                        if status_code is not None and status_code >= 400
+                        else "debug"
+                    ),
+                    action_id=request.state.action_id,
+                    trace_id=request.state.trace_id,
+                    scope=scope,
+                    stage=stage,
+                    request_status=request_status,
+                    elapsed_ms=(time.perf_counter() - started) * 1000,
+                )
+            except Exception as audit_error:
+                core.runtime_log(
+                    "warning",
+                    "webgui.audit request event unavailable "
+                    + core._redact_log_message(str(audit_error)),
+                )
+
+        def audit_response(response):
+            audit_http(
+                "api-response",
+                "response",
+                "failed" if response.status_code >= 400 else "completed",
+                status_code=response.status_code,
+            )
+            return response
+
+        origin = request.headers.get("origin")
+        if (
+            origin
+            and urlsplit(origin).netloc.lower()
+            != request.headers.get("host", "").lower()
+        ):
+            return audit_response(
+                JSONResponse(
+                    {"error": "Cross-origin requests are not allowed"}, status_code=403
+                )
+            )
+        host = (request.url.hostname or "").lower()
+        if not access_token and host not in {
+            "127.0.0.1",
+            "localhost",
+            "::1",
+            "testserver",
+        }:
+            return audit_response(
+                JSONResponse(
+                    {"error": "Set a WebGUI access token before enabling network access"},
+                    status_code=403,
+                )
+            )
+        sid = request.cookies.get("splined_session", "")
+        restored = None
+        if sid:
+            with sessions_lock:
+                known = sid in sessions
+            if not known:
+                store = durable_sessions()
+                if store is not None:
+                    try:
+                        restored = store.load(sid)
+                    except Exception as session_error:
+                        core.runtime_log(
+                            "warning",
+                            "webgui.browser session restore unavailable "
+                            + core._redact_log_message(str(session_error)),
+                        )
+        with sessions_lock:
+            if sid not in sessions:
+                if len(sessions) > 1000:
+                    sessions.clear()
+                if restored is not None:
+                    sessions[sid] = restored
+                else:
+                    sid = secrets.token_urlsafe(32)
+                    sessions[sid] = {
+                        "csrf": secrets.token_urlsafe(32),
+                        "authenticated": not bool(access_token),
+                        "username": "Local administrator" if not access_token else "",
+                    }
+            session = sessions[sid]
+            session_before = json.dumps(session, sort_keys=True, default=str)
+        request.state.session = session
+        public = request.url.path in {
+            "/api/status",
+            "/api/login",
+            "/api/admin/setup",
+            "/api/admin/recover",
+        } or not request.url.path.startswith("/api/")
+        if not public and not session["authenticated"]:
+            return audit_response(
+                JSONResponse({"error": "Sign in to SPLINED"}, status_code=401)
+            )
+        audit_http("api-request", "request", "started")
+        if request.method not in {"GET", "HEAD", "OPTIONS"}:
+            if request.headers.get("x-splined-csrf") != session["csrf"]:
+                return audit_response(
+                    JSONResponse(
+                        {"error": "Refresh the page before retrying this operation"},
+                        status_code=403,
+                    )
+                )
+            content_length = int(request.headers.get("content-length", "0") or 0)
+            if content_length > 40 * 1024 * 1024:
+                return audit_response(
+                    JSONResponse({"error": "Request is too large"}, status_code=413)
+                )
+        response = await call_next(request)
+        with sessions_lock:
+            session_after = json.dumps(session, sort_keys=True, default=str)
+            session_data = dict(session)
+        if session_after != session_before:
+            store = durable_sessions()
+            if store is not None:
+                try:
+                    store.save(sid, session_data)
+                except Exception as session_error:
+                    core.runtime_log(
+                        "warning",
+                        "webgui.browser session save unavailable "
+                        + core._redact_log_message(str(session_error)),
+                    )
+        response.set_cookie(
+            "splined_session",
+            sid,
+            max_age=SESSION_MAX_AGE_SECONDS,
+            httponly=True,
+            samesite="strict",
+            secure=request.url.scheme == "https",
+        )
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-SPLINED-Trace"] = request.state.trace_id
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+        )
+        return audit_response(response)
+
+    @app.exception_handler(PermissionError)
+    @app.exception_handler(KeyError)
+    @app.exception_handler(ValueError)
+    @app.exception_handler(core.SplinedError)
+    @app.exception_handler(Exception)
+    async def operation_error(request, error):
+        status = (
+            403
+            if isinstance(error, PermissionError)
+            else 404
+            if isinstance(error, KeyError)
+            else 400
+        )
+        message = core._redact_log_message(str(error))[:2000]
+        if "postgresql://" in message or "postgres://" in message:
+            message = "Database operation failed; check the connection in Settings"
+        if context.services:
+            try:
+                context.services.audit(
+                    "api-error",
+                    f"{request.method} {request.url.path}",
+                    severity="error",
+                    action_id=getattr(request.state, "action_id", ""),
+                    trace_id=getattr(request.state, "trace_id", ""),
+                    stage="exception",
+                    request_status="failed",
+                    error=message,
+                )
+            except Exception:
+                pass
+        return JSONResponse(
+            {"error": message or "Operation failed"}, status_code=status
+        )
+
+    @app.get("/api/health")
+    async def health():
+        # Docker health is process liveness. Readiness and database state stay
+        # available from /api/status without letting a busy PostgreSQL pool
+        # cause an external auto-healer to replace a healthy WebGUI process.
+        return {"ok": True, "service": "SPLINED WebGUI"}
+
+    @app.get("/api/status")
+    def status(request: Request):
+        if request.query_params.get("refresh_database_monitor") == "1":
+            context.invalidate_database_monitor()
+        session = request.state.session
+        r = context.runtime
+        result = {
+            "version": core.VERSION,
+            "csrf": session["csrf"],
+            "authenticated": session["authenticated"],
+            "auth_required": bool(access_token),
+            "admin_setup_required": admin_setup_required(),
+            "username": session.get("username", "") if session["authenticated"] else "",
+            "setup_required": not bool(
+                r and context.config_file.is_file() and r.music.is_dir()
+            ),
+            "database": "PostgreSQL",
+            "database_ready": bool(context.services),
+            "database_monitor": context.database_monitor(),
+            "database_migration": context.database_migration,
+            "media_state_policy": media_state_policy(),
+            "comp_report_policy": comp_report_policy(),
+        }
+        if session["authenticated"]:
+            result.update(
+                {
+                    "mode": r.cfg.get("mode", "read") if r else "read",
+                    "revision": context.services.application_revision if context.services else "unknown",
+                    "audit_session_id": context.services.audit_session_id if context.services else "",
+                    "music": str(r.music) if r else "",
+                    "artist_art": str(r.artist_art) if r else "",
+                    "embedded_thumbnail_size": int(
+                        r.cfg.get("output", {}).get(
+                            "embedded_thumbnail_size", 1200
+                        )
+                    )
+                    if r
+                    else 1200,
+                    "comp_repair": bool(r and r.cfg.get("mode") == "write"),
+                    "animate_webp_preview": bool(
+                        r and r.cfg.get("webgui_ui", {}).get("animate_webp_preview", False)
+                    ),
+                    "capabilities": {
+                        "cover_write": True,
+                        "artist_write": True,
+                        "embedding": True,
+                        "musicbrainz": True,
+                        "configuration": True,
+                    },
+                    "error": context.error,
+                }
+            )
+        return result
+
+    @app.post("/api/login")
+    async def login(request: Request):
+        value = await request.json()
+        session = request.state.session
+        if not access_token:
+            session.update(authenticated=True, username="Local administrator")
+            return {"ok": True, "username": session["username"]}
+        if admin_setup_required():
+            raise PermissionError("Create the WebGUI administrator before signing in")
+        rate_key = auth_rate_key(request, "login")
+        failures, _ = require_auth_rate(rate_key)
+        username = account_auth().authenticate(
+            str(value.get("username", "")), str(value.get("password", ""))
+        )
+        if not username:
+            record_auth_failure(rate_key, failures)
+            raise PermissionError("Incorrect username or password")
+        clear_auth_failures(rate_key)
+        session.update(
+            authenticated=True,
+            username=username,
+        )
+        return {"ok": True, "username": username}
+
+    @app.post("/api/admin/setup")
+    async def setup_admin(request: Request):
+        value = await request.json()
+        rate_key = auth_rate_key(request, "setup")
+        failures, _ = require_auth_rate(rate_key)
+        try:
+            username = account_auth().setup(
+                str(value.get("username", "")),
+                str(value.get("password", "")),
+                str(value.get("confirmation", "")),
+                str(value.get("token", "")),
+                access_token,
+            )
+        except PermissionError:
+            record_auth_failure(rate_key, failures)
+            raise
+        clear_auth_failures(rate_key)
+        request.state.session.update(authenticated=True, username=username)
+        return {"ok": True, "username": username}
+
+    @app.post("/api/admin/recover")
+    async def recover_admin(request: Request):
+        if admin_setup_required():
+            raise ValueError("Create the WebGUI administrator before using password recovery")
+        value = await request.json()
+        rate_key = auth_rate_key(request, "recovery")
+        failures, _ = require_auth_rate(rate_key)
+        try:
+            username = account_auth().reset_password(
+                str(value.get("username", "")),
+                str(value.get("password", "")),
+                str(value.get("confirmation", "")),
+                str(value.get("token", "")),
+                access_token,
+            )
+        except PermissionError:
+            record_auth_failure(rate_key, failures)
+            raise
+        context.services.audit("reset-admin-password", username)
+        store = durable_sessions()
+        if store is not None:
+            store.delete_all()
+        with sessions_lock:
+            sessions.clear()
+            login_attempts.clear()
+        request.state.session.update(authenticated=False, username="")
+        return {"ok": True, "username": username}
+
+    @app.post("/api/logout")
+    def logout(request: Request):
+        request.state.session.update(authenticated=not bool(access_token), username="")
+        return {"ok": True}
+
+    @app.get("/api/settings/contract")
+    def settings_contract():
+        contract = json.loads(SETTINGS_UI.read_text(encoding="utf-8"))
+        contract["media_state_policy"] = media_state_policy()
+        contract["comp_report_policy"] = comp_report_policy()
+        return contract
+
+    @app.get("/api/settings")
+    def settings():
+        return context.settings()
+
+    @app.post("/api/settings")
+    def save_settings(payload: dict):
+        return context.configure((payload).get("config"))
+
+    @app.get("/api/settings/media-state-policy")
+    def get_media_state_policy():
+        context.require()
+        record = database_media_state_policy(context.runtime.database, seed_if_missing=False)
+        context.media_state_policy_revision = int(record["revision"])
+        return record["policy"]
+
+    @app.post("/api/settings/media-state-policy")
+    def update_media_state_policy(payload: dict):
+        try:
+            context.require()
+            record = save_database_media_state_policy(
+                context.runtime.database,
+                payload.get("policy"),
+                updated_by="webgui-settings",
+            )
+            context.media_state_policy_revision = int(record["revision"])
+        except (OSError, ValueError, RuntimeError) as error:
+            raise HTTPException(400, str(error)) from error
+        context.services and context.services.audit(
+            "save-media-state-policy", "postgresql-policy"
+        )
+        return record["policy"]
+
+    @app.get("/api/settings/comp-report-policy")
+    def get_comp_report_policy():
+        context.require()
+        record = database_comp_report_policy(
+            context.runtime.database, seed_if_missing=False
+        )
+        context.comp_report_policy_revision = int(record["revision"])
+        return record["policy"]
+
+    @app.post("/api/settings/comp-report-policy")
+    def update_comp_report_policy(payload: dict):
+        try:
+            context.require()
+            record = save_database_comp_report_policy(
+                context.runtime.database,
+                payload.get("policy"),
+                updated_by="webgui-settings",
+            )
+            context.comp_report_policy_revision = int(record["revision"])
+        except (OSError, ValueError, RuntimeError) as error:
+            raise HTTPException(400, str(error)) from error
+        context.services and context.services.audit(
+            "save-comp-report-policy", "postgresql-policy"
+        )
+        return record["policy"]
+
+    @app.get("/api/settings/library-directories")
+    def library_directories(path: str = ""):
+        runtime = context.require().runtime
+        root = runtime.music.resolve()
+        requested = Path(path).resolve() if path.strip() else root
+        try:
+            requested.relative_to(root)
+        except ValueError as error:
+            raise HTTPException(400, "Directory must remain inside Music Library") from error
+        if not requested.is_dir() or requested.is_symlink():
+            raise HTTPException(404, "Library directory is unavailable")
+        try:
+            directories = sorted(
+                (
+                    child for child in requested.iterdir()
+                    if child.is_dir() and not child.is_symlink()
+                ),
+                key=lambda child: child.name.casefold(),
+            )
+        except OSError as error:
+            raise HTTPException(400, "Library directory cannot be read") from error
+        parent = requested.parent if requested != root else None
+        return {
+            "root": str(root),
+            "current": str(requested),
+            "parent": str(parent) if parent is not None else "",
+            "directories": [
+                {"name": child.name, "path": str(child)} for child in directories
+            ],
+        }
+
+    @app.get("/api/database/reset-target")
+    def database_reset_target():
+        services = context.require()
+        return {
+            "backend": "PostgreSQL",
+            "target": services.runtime.database.target(),
+        }
+
+    @app.post("/api/database/reset")
+    def database_reset(payload: dict):
+        return context.reset_database(
+            str(payload.get("target", "")),
+            str(payload.get("confirmation", "")),
+        )
+
+    @app.get("/api/diagnostics")
+    def diagnostics(
+        limit: int = 250,
+        severity: str = "",
+        action: str = "",
+        correlation: str = "",
+        since: str = "",
+        until: str = "",
+    ):
+        context.require()
+        return context.services.diagnostics(
+            limit,
+            severity=severity,
+            action=action,
+            correlation=correlation,
+            since=since,
+            until=until,
+        )
+
+    @app.post("/api/audit/events")
+    def browser_audit(request: Request, payload: dict):
+        services = context.require()
+        value = sanitize(payload)
+        return {
+            "sequence": services.audit(
+                str(value.get("action") or "browser-event"),
+                str(value.get("subject") or "browser"),
+                value.get("details") if isinstance(value.get("details"), dict) else {},
+                severity=str(value.get("severity") or "info"),
+                action_id=str(value.get("action_id") or request.state.action_id),
+                trace_id=str(value.get("trace_id") or request.state.trace_id),
+                job_id=str(value.get("job_id") or ""),
+                scope=value.get("scope") if isinstance(value.get("scope"), dict) else {},
+                stage=str(value.get("stage") or "browser"),
+                request_status=str(value.get("request_status") or "emitted"),
+                elapsed_ms=value.get("elapsed_ms"),
+                state_from=str(value.get("state_from") or ""),
+                state_to=str(value.get("state_to") or ""),
+                error=str(value.get("error") or ""),
+            )
+        }
+
+    @app.get("/api/audit/export")
+    def export_audit(
+        severity: str = "",
+        action: str = "",
+        correlation: str = "",
+        since: str = "",
+        until: str = "",
+    ):
+        services = context.require()
+        events = services.diagnostics(
+            50001,
+            severity=severity,
+            action=action,
+            correlation=correlation,
+            since=since,
+            until=until,
+            maximum=50001,
+        )
+        truncated = len(events) > 50000
+        if truncated:
+            events = events[-50000:]
+        bounds = services.audit_bounds()
+        body = json.dumps(
+            {
+                "format": "splined-web-audit-v2",
+                "generated_at": utc_now(),
+                "export": {
+                    **bounds,
+                    "selected_records": len(events),
+                    "selected_records_truncated": truncated,
+                    "complete_for_retained_window": (
+                        not truncated
+                        and bounds["fallback_records_pending_recovery"] == 0
+                    ),
+                    "truncation_reason": (
+                        "selected period exceeds the 50000-record export limit"
+                        if truncated
+                        else ""
+                    ),
+                },
+                "filters": sanitize(
+                    {
+                        "severity": severity,
+                        "action": action,
+                        "correlation": correlation,
+                        "since": since,
+                        "until": until,
+                    }
+                ),
+                "events": events,
+            },
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        )
+        return Response(
+            body,
+            media_type="application/json",
+            headers={"Content-Disposition": 'attachment; filename="audit.json"'},
+        )
+
+    @app.get("/api/storage")
+    def storage():
+        context.require()
+        return context.services.storage_summary()
+
+    @app.get("/api/credentials/{provider}")
+    def credentials(provider: str):
+        context.require()
+        return Credentials(context.runtime).describe(provider)
+
+    @app.post("/api/credentials/{provider}")
+    def save_credentials(provider: str, payload: dict):
+        context.require()
+        result = Credentials(context.runtime).save(provider, payload)
+        context.services.audit("save-credentials", provider)
+        return result
+
+    @app.post("/api/credentials/{provider}/test")
+    def test_credentials(provider: str):
+        context.require()
+        return Credentials(context.runtime).test(provider)
+
+    @app.post("/api/credentials/musicbrainz/authorize")
+    def authorize_musicbrainz(request: Request):
+        context.require()
+        return Credentials(context.runtime).authorize_musicbrainz(request.state.session)
+
+    @app.post("/api/credentials/musicbrainz/complete")
+    def complete_musicbrainz(request: Request, payload: dict):
+        context.require()
+        return Credentials(context.runtime).complete_musicbrainz(
+            request.state.session, payload
+        )
+
+    @app.get("/api/artists")
+    def artists(q: str = ""):
+        return context.require().catalog.artists(q)
+
+    @app.get("/api/artists/thumbnails")
+    def artist_thumbnails():
+        return context.require().catalog.artist_thumbnails()
+
+    @app.get("/api/albums")
+    def albums(q: str = "", view: str = "albums"):
+        return context.require().catalog.albums(q, view)
+
+    @app.get("/api/album/thumbnail")
+    def album_thumbnail(id: str):
+        return FileResponse(
+            context.require().catalog.album_thumbnail(id),
+            headers={"Cache-Control": "private, max-age=300"},
+        )
+
+    @app.get("/api/library/changes")
+    def library_changes():
+        services = context.require()
+        result = services.index_changes(refresh=False)
+        probe = context.jobs.index_probe_state() if context.jobs else None
+        result["checking"] = probe is not None
+        result["probe_job_id"] = probe.get("id", "") if probe else ""
+        return result
+
+    @app.post("/api/library/check-changes")
+    def check_library_changes():
+        context.require()
+        if context.jobs is None:
+            raise HTTPException(503, "The background worker is unavailable")
+        return context.jobs.enqueue("index-probe", {})
+
+    @app.get("/api/library/index-status")
+    def library_index_status():
+        # Bypass the media-processing mutex so progress remains responsive.
+        services = context.require()
+        return indexer.status(services.runtime.database)
+
+    @app.get("/api/artist")
+    def artist(id: str):
+        return context.require().catalog.artist(id)
+
+    @app.get("/api/artist/overview")
+    def artist_overview(id: str):
+        catalog = context.require().catalog
+        artist = catalog.artist(id)
+        artist_id = str(artist["id"])
+        return {
+            "artist": artist,
+            "comp_albums": catalog.artist_comp_albums(artist_id),
+            "metadata": catalog.artist_metadata_seed(artist_id),
+        }
+
+    @app.get("/api/artist/thumbnail")
+    def artist_thumbnail(id: str):
+        return FileResponse(
+            context.require().catalog.artist_thumbnail(id),
+            headers={"Cache-Control": "private, max-age=300"},
+        )
+
+    @app.get("/api/artist/similar-thumbnail")
+    def similar_artist_thumbnail(provider_id: str, name: str, cover_art: str):
+        return FileResponse(
+            context.require().catalog.similar_artist_thumbnail(
+                provider_id, name, cover_art
+            ),
+            headers={"Cache-Control": "private, max-age=86400"},
+        )
+
+    @app.get("/api/artist/metadata")
+    def artist_metadata(id: str, refresh: bool = False):
+        services = context.require()
+        result = services.catalog.artist_metadata(id, refresh=refresh)
+        if result.get("reason"):
+            services.audit(
+                "artist-metadata-unavailable",
+                id,
+                {"artist_id": id, "reason": result["reason"]},
+                severity="warning",
+                stage="provider",
+                request_status="unavailable",
+            )
+        if not result.get("similar") and result.get("similar_reason"):
+            services.audit(
+                "similar-artists-unavailable",
+                id,
+                {"artist_id": id, "reason": result["similar_reason"]},
+                severity="warning",
+                stage="similar-artists",
+                request_status="unavailable",
+            )
+        return result
+
+    @app.get("/api/artist/comp-report")
+    def comp_report(id: str):
+        return context.require().comp_report(id)
+
+    @app.get("/api/artist/comp-albums")
+    def comp_albums(id: str):
+        return context.require().catalog.artist_comp_albums(id)
+
+    @app.get("/api/album")
+    def album(id: str):
+        services = context.require()
+        return services.catalog.album(id)
+
+    @app.post("/api/album/category")
+    def set_album_category(payload: dict):
+        services = context.require()
+        album_id = str(payload.get("id", ""))
+        category = str(payload.get("category", ""))
+        result = services.catalog.set_album_category(album_id, category)
+        services.audit(
+            "album-category-override",
+            album_id,
+            {"category": result["category_override"] or "automatic"},
+            scope={"album_id": album_id},
+            stage="catalog",
+            request_status="completed",
+        )
+        return result
+
+    @app.get("/api/album/embedded-status")
+    def album_embedded_status(id: str):
+        return context.require().validate_album_embedding(id)
+
+    @app.get("/api/coordination/album-overrides")
+    def album_overrides():
+        return context.require().album_write_coordination()
+
+    @app.get("/api/coordination/comp-track-overrides")
+    def comp_track_overrides():
+        return context.require().comp_track_write_coordination()
+
+    @app.get("/api/fallback/tracks")
+    def tracks(id: str):
+        services = context.require()
+        services.ensure_tracks(id)
+        return services.catalog.fallback_tracks(id)
+
+    @app.get("/api/fallback/track")
+    def track(id: str, key: str):
+        return context.require().catalog.fallback_track_preview(id, key)
+
+    @app.get("/api/fallback/track-status")
+    def track_status(id: str, key: str):
+        return context.require().catalog.comp_track_status(id, key)
+
+    @app.get("/api/fallback/thumbnail")
+    def fallback_thumbnail(id: str, key: str):
+        return Response(
+            context.require().catalog.fallback_thumbnail(id, key),
+            media_type="image/png",
+            headers={"Cache-Control": "private, max-age=300"},
+        )
+
+    @app.get("/api/image/{image_id}")
+    def image(image_id: str, still: bool = False):
+        source = context.require().catalog.image_source("/api/image/" + image_id)
+        if still:
+            try:
+                with Image.open(source if isinstance(source, Path) else BytesIO(source)) as opened:
+                    if str(opened.format or "").casefold() == "webp" and int(getattr(opened, "n_frames", 1)) > 1:
+                        opened.seek(0)
+                        output = BytesIO()
+                        opened.convert("RGBA").save(output, format="PNG")
+                        return Response(output.getvalue(), media_type="image/png")
+            except (OSError, ValueError):
+                pass
+        if isinstance(source, Path):
+            if not source.is_file():
+                raise KeyError("Artwork is unavailable")
+            return FileResponse(source, headers={"Cache-Control": "private, no-cache, must-revalidate"})
+        with Image.open(BytesIO(source)) as opened:
+            media_type = Image.MIME.get(opened.format, "image/png")
+        return Response(source, media_type=media_type)
+
+    @app.post("/api/search/artist")
+    def search_artist(payload: dict):
+        services = context.require()
+        artist_id = str(payload.get("id", ""))
+        result = services.catalog.search_artist(artist_id)
+        services.audit(
+            "artwork-provider-outcome",
+            "Artist search",
+            {"candidates": len(result.get("candidates", [])), "warnings": result.get("warnings", [])},
+            scope={"artist_id": artist_id},
+            stage="provider",
+            request_status="completed-with-warnings" if result.get("warnings") else "completed",
+        )
+        return result
+
+    @app.post("/api/search/album")
+    def search_album(payload: dict):
+        value = payload
+        services = context.require()
+        album_id = str(value.get("id", ""))
+        result = services.search_album(
+            album_id, value.get("release_id")
+        )
+        services.audit(
+            "artwork-provider-outcome",
+            "Album search",
+            {"candidates": len(result.get("candidates", [])), "warnings": result.get("warnings", [])},
+            scope={"album_id": album_id},
+            stage="provider",
+            request_status="completed-with-warnings" if result.get("warnings") else "completed",
+        )
+        return result
+
+    @app.post("/api/musicbrainz")
+    def musicbrainz(payload: dict):
+        value = payload
+        services = context.require()
+        album_id = str(value.get("album_id", ""))
+        result = services.musicbrainz(
+            album_id, value.get("artist"), value.get("title")
+        )
+        services.audit(
+            "musicbrainz-outcome",
+            album_id,
+            {"results": len(result)},
+            scope={"album_id": album_id},
+            stage="provider",
+            request_status="completed" if result else "empty",
+        )
+        return result
+
+    @app.post("/api/musicbrainz/artwork-preview")
+    def musicbrainz_artwork_preview(payload: dict):
+        return context.require().musicbrainz_artwork_preview(payload)
+
+    @app.post("/api/preview/render")
+    def preview(payload: dict):
+        return context.require().preview(payload)
+
+    @app.post("/api/preview/upscale")
+    def upscale(payload: dict):
+        value = payload
+        value["upscale"] = True
+        return context.require().preview(value)
+
+    @app.post("/api/artwork/cover")
+    def write_cover(payload: dict):
+        return context.require().write_cover(payload)
+
+    @app.post("/api/artwork/artist")
+    def write_artist(payload: dict):
+        return context.require().write_artist(payload)
+
+    @app.post("/api/bypass")
+    def bypass(payload: dict):
+        value = payload
+        return context.require().bypass(
+            str(value.get("album_id", "")), bool(value.get("enabled", True))
+        )
+
+    def repair_comp(payload: dict, *, artist_required: bool):
+        services = context.require()
+        context.runtime.require_write()
+        artist_id = str(payload.get("artist_id", "")).strip()
+        if artist_required and not artist_id:
+            raise ValueError("Choose the Artist COMP Report before repairing a track")
+        with context.runtime.processing:
+            return services.catalog.repair_comp_track(
+                str(payload.get("album_id", "")),
+                str(payload.get("track_key", "")),
+                artist_id if artist_required else "",
+            )
+
+    @app.post("/api/comp/repair")
+    def full_comp_repair(payload: dict):
+        return repair_comp(payload, artist_required=False)
+
+    @app.post("/api/artist/comp-repair")
+    def artist_comp_repair(payload: dict):
+        return repair_comp(payload, artist_required=True)
+
+    @app.post("/api/comp/embed")
+    def full_comp_embed(payload: dict):
+        value = dict(payload)
+        value.pop("artist_id", None)
+        value.pop("artist_name", None)
+        return context.require().embed_comp_track(value)
+
+    @app.post("/api/comp/thumbnail-preview")
+    def full_comp_thumbnail_preview(payload: dict):
+        value = dict(payload)
+        value.pop("artist_id", None)
+        value.pop("artist_name", None)
+        return context.require().prepare_comp_thumbnail(value)
+
+    @app.post("/api/artist/comp-embed")
+    def artist_comp_embed(payload: dict):
+        if not str(payload.get("artist_id", "")).strip():
+            raise ValueError("Choose the Artist COMP Report before embedding a track")
+        return context.require().embed_comp_track(payload)
+
+    @app.post("/api/artist/comp-thumbnail-preview")
+    def artist_comp_thumbnail_preview(payload: dict):
+        if not str(payload.get("artist_id", "")).strip():
+            raise ValueError("Choose the Artist COMP Report before preparing a thumbnail")
+        return context.require().prepare_comp_thumbnail(payload)
+
+    @app.get("/api/jobs")
+    def jobs():
+        context.require()
+        return context.jobs.list() if context.jobs else []
+
+    @app.get("/api/jobs/control-state")
+    def job_control_state():
+        context.require()
+        return context.jobs.control_state() if context.jobs else {
+            "pause_after_album": False,
+            "pause_all_albums": False,
+        }
+
+    @app.post("/api/jobs")
+    def stage_job(request: Request, payload: dict):
+        services = context.require()
+        value = payload
+        kind = value.get("kind")
+        payload = dict(value.get("payload", {}))
+        audit_context = {
+            "action_id": request.state.action_id,
+            "trace_id": request.state.trace_id,
+        }
+        if not context.jobs:
+            raise ValueError("The job worker is unavailable")
+        if kind == "embed-album":
+            old = next(
+                (
+                    job
+                    for job in context.jobs.list()
+                    if job["kind"] == kind
+                    and job["payload"].get("album_id") == payload.get("album_id")
+                    and job["state"] not in {"done", "failed", "cancelled"}
+                ),
+                None,
+            )
+            if old:
+                services.audit(
+                    "job-deduplicated",
+                    str(kind),
+                    {"already_queued": True},
+                    action_id=request.state.action_id,
+                    trace_id=request.state.trace_id,
+                    job_id=old["id"],
+                    scope={"album_id": payload.get("album_id", "")},
+                    stage="queue",
+                    request_status="existing",
+                )
+                return {"id": old["id"], "already_queued": True}
+            payload = services.stage_album(payload)
+            payload["_audit"] = audit_context
+            try:
+                result = context.jobs.enqueue(str(kind), payload, staged=True)
+            except Exception:
+                services.remove_staged_artwork(payload)
+                raise
+            if result.get("already_queued"):
+                services.remove_staged_artwork(payload)
+            return result
+        if kind == "comp":
+            context.runtime.require_write()
+            payload = services.validate_comp_payload(payload)
+        payload["_audit"] = audit_context
+        return context.jobs.enqueue(str(kind), payload, staged=kind == "embed-album")
+
+    @app.post("/api/jobs/comp-batch")
+    def stage_comp_batch(request: Request, payload: dict):
+        services = context.require()
+        if not context.jobs:
+            raise ValueError("The job worker is unavailable")
+        context.runtime.require_write()
+        artist_id = str(payload.get("artist_id", "")).strip()
+        groups = payload.get("groups")
+        if not artist_id or not isinstance(groups, list) or not groups:
+            raise ValueError("Choose an Artist COMP Report with explicit albums")
+        audit_context = {
+            "action_id": request.state.action_id,
+            "trace_id": request.state.trace_id,
+        }
+        jobs = []
+        for group in groups:
+            if not isinstance(group, dict):
+                raise ValueError("Invalid Artist COMP album selection")
+            job = services.validate_comp_payload({
+                "artist_id": artist_id,
+                "album_id": group.get("album_id"),
+                "track_keys": group.get("track_keys"),
+            })
+            job["_audit"] = audit_context
+            jobs.append(job)
+        return context.jobs.enqueue_comp_batch(jobs)
+
+    @app.post("/api/jobs/action")
+    def queue_action(payload: dict):
+        context.require()
+        value = payload
+        if not context.jobs:
+            raise ValueError("The job worker is unavailable")
+        return context.jobs.action(
+            str(value.get("action", "")),
+            value.get("id"),
+            value.get("value"),
+            value.get("nonce"),
+            value.get("kind"),
+        )
+
+    @app.post("/api/artwork/upload")
+    def upload(payload: dict):
+        services = context.require()
+        body = base64.b64decode(str(payload.get("data", "")), validate=True)
+        if len(body) > 25 * 1024 * 1024:
+            raise ValueError("Image upload exceeds 25 MB")
+        from webgui.imaging import adjusted, encode
+
+        image = adjusted(body)
+        with context.runtime.temporary_files.workspace("uploads") as directory:
+            path = directory / (uuid4().hex + ".png")
+            path.write_bytes(encode(image))
+            image_handle = services.catalog.image(path)
+            size = path.stat().st_size
+        return {
+            "image": image_handle,
+            "name": str(payload.get("name", "Uploaded artwork"))[:200],
+            "source": "Local",
+            "width": image.width,
+            "height": image.height,
+            "bytes": size,
+            "kind": "cover",
+            "acceptable": True,
+        }
+
+    @app.post("/api/catalog/import")
+    def import_catalog(payload: dict):
+        services = context.require()
+        value = payload
+        source = Path(str(value.get("path", "")))
+        if not source.is_file():
+            raise ValueError("Choose an existing SQLite snapshot")
+        return services.runtime.database.import_sqlite(source)
+
+    @app.get("/api/reconciliation/sources")
+    def reconciliation_sources():
+        context.require()
+        if not context.reconciliation:
+            raise ValueError("SQLite reconciliation is unavailable")
+        return context.reconciliation.sources()
+
+    @app.get("/api/reconciliation")
+    def reconciliation_history(run_id: str = "", resolution: str = "", limit: int = 500):
+        context.require()
+        if not context.reconciliation:
+            raise ValueError("SQLite reconciliation is unavailable")
+        return context.reconciliation.history(
+            run_id=run_id,
+            resolution=resolution,
+            limit=limit,
+        )
+
+    @app.get("/api/reconciliation/conflicts")
+    def reconciliation_conflicts(
+        run_id: str = "",
+        query: str = "",
+        entity_table: str = "",
+        reason: str = "",
+        album_class: str = "",
+        offset: int = 0,
+        limit: int = 200,
+    ):
+        context.require()
+        if not context.reconciliation:
+            raise ValueError("SQLite reconciliation is unavailable")
+        return context.reconciliation.conflict_report(
+            run_id=run_id,
+            query=query,
+            entity_table=entity_table,
+            reason=reason,
+            album_class=album_class,
+            offset=offset,
+            limit=limit,
+        )
+
+    @app.get("/api/reconciliation/conflicts/export")
+    def reconciliation_conflicts_export(run_id: str = "", format: str = "html"):
+        context.require()
+        if not context.reconciliation:
+            raise ValueError("SQLite reconciliation is unavailable")
+        kind = str(format or "html").strip().casefold()
+        if kind == "json":
+            payload = context.reconciliation.conflict_report(
+                run_id=run_id, limit=100_000, _maximum=100_000
+            )
+            return Response(
+                json.dumps(payload, ensure_ascii=False, indent=2, default=str) + "\n",
+                media_type="application/json",
+                headers={"Content-Disposition": 'attachment; filename="splined-conflicts.json"'},
+            )
+        if kind != "html":
+            raise ValueError("Conflict export format must be html or json")
+        return Response(
+            context.reconciliation.conflict_report_html(run_id=run_id),
+            media_type="text/html",
+            headers={"Content-Disposition": 'attachment; filename="splined-conflicts.html"'},
+        )
+
+    @app.post("/api/reconciliation/compare")
+    def reconciliation_compare(payload: dict):
+        context.require()
+        if not context.reconciliation:
+            raise ValueError("SQLite reconciliation is unavailable")
+        return context.reconciliation.compare(
+            payload.get("source_path", ""),
+            payload.get("source_root", ""),
+            payload.get("target_root", ""),
+        )
+
+    @app.post("/api/reconciliation/apply")
+    def reconciliation_apply(payload: dict):
+        context.require()
+        if not context.reconciliation:
+            raise ValueError("SQLite reconciliation is unavailable")
+        return context.reconciliation.apply(payload.get("run_id", ""))
+
+    @app.post("/api/reconciliation/settings")
+    def reconciliation_settings(payload: dict):
+        context.require()
+        if not context.reconciliation:
+            raise ValueError("SQLite reconciliation is unavailable")
+        return context.reconciliation.save_settings(payload)
+
+    @app.get("/guide")
+    def guide():
+        return FileResponse(ASSETS / "guide.html")
+
+    app.mount("/", StaticFiles(directory=ASSETS, html=True), name="workspace")
+    return app

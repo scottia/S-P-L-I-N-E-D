@@ -1,4 +1,8 @@
-"""Select runtime validation from the files changed by a pull request."""
+"""Select active WebGUI validation from a pull request source diff.
+
+Windows builds remain governed by Workflow 01 and its optional extended
+Windows validation. No root-native CLI validation lane is enabled.
+"""
 
 import re
 import subprocess
@@ -6,55 +10,16 @@ import sys
 
 
 def select_checks(paths):
-    checks = {"webgui": False, "linux": False}
+    checks = {"webgui": False}
     for path in paths:
         if path == "__all__":
-            checks["webgui"] = True
-            checks["linux"] = True
-            return checks
+            return {"webgui": True}
         if path.endswith(".md"):
             continue
-        if (
-            path
-            in {
-                ".gitattributes",
-                ".github/CODEOWNERS",
-                ".github/dependabot.yml",
-                "rust-toolchain",
-                "rust-toolchain.toml",
-            }
-            or path.startswith(
-                (
-                    ".github/workflows/",
-                    ".github/scripts/",
-                    ".cargo/",
-                    "schema/",
-                    "fixtures/",
-                )
-            )
-        ):
+        if path in {".gitattributes", ".dockerignore", ".github/CODEOWNERS", ".github/dependabot.yml"}:
             checks["webgui"] = True
-            checks["linux"] = True
-            return checks
-        # Branding, instructions, package scripts, and local helper messages do
-        # not benefit from compiling the native applications on every PR.
-        if path.startswith("assets/") or path.startswith(
-            ("windows/scripts/", "windows/package/")
-        ):
-            continue
-        if path == "config.example.toml":
+        elif path.startswith((".github/workflows/", ".github/scripts/", "schema/", "build/WEBGui/")):
             checks["webgui"] = True
-            checks["linux"] = True
-            continue
-        if path.startswith(("webgui/", "docker/")) or path == ".dockerignore":
-            checks["webgui"] = True
-        if path.startswith(("src/", "tests/")) or path in {
-            "Cargo.toml",
-            "Cargo.lock",
-            "build.rs",
-            "deny.toml",
-        }:
-            checks["linux"] = True
     return checks
 
 
@@ -70,10 +35,9 @@ def main():
         ).split("\0")
         checks = select_checks(changed)
     except (ValueError, subprocess.CalledProcessError, UnicodeError):
-        print("::warning::Changed files unavailable; running all runtime checks", file=sys.stderr)
+        print("::warning::Changed files unavailable; running WebGUI checks", file=sys.stderr)
         checks = select_checks(["__all__"])
     print(f"webgui={str(checks['webgui']).lower()}")
-    print(f"linux={str(checks['linux']).lower()}")
 
 
 if __name__ == "__main__":

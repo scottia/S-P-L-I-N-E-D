@@ -7,7 +7,7 @@ $ErrorActionPreference = "Stop"
 $resolver = Join-Path $PSScriptRoot "Resolve-StoreBaseline.ps1"
 $generator = Join-Path $PSScriptRoot "Generate-StoreHighlights.ps1"
 $policy = Join-Path $PSScriptRoot "StoreHighlightsPolicy.ps1"
-$config = Join-Path (Split-Path -Parent $PSScriptRoot) "cliff.toml"
+$config = Join-Path $PSScriptRoot "cliff.toml"
 $template = Join-Path $PSScriptRoot "templates/store-highlights.tera"
 $fixtures = Join-Path $PSScriptRoot "tests"
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ("splined-store-baseline-" + [Guid]::NewGuid().ToString("N"))
@@ -89,7 +89,8 @@ try {
         throw "Cumulative Store Highlights were incomplete, noisy, repeated, or over the Store limit."
     }
     $audit = Get-Content -Raw -LiteralPath (Join-Path $positive "STORE-SUBMISSION.json") | ConvertFrom-Json
-    if ($audit.range -cne "1.0.71..1.0.78" -or
+    if ($audit.classification -cne "release/cliff.toml" -or
+        $audit.range -cne "1.0.71..1.0.78" -or
         $audit.highlights_characters -ne $highlights.Length -or
         $audit.highlights_source_characters -lt $audit.highlights_characters -or
         $null -eq $audit.highlights_compacted -or

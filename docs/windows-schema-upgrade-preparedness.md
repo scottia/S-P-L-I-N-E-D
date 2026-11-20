@@ -1,66 +1,67 @@
 # Windows SQLite schema upgrade preparedness
 
-Windows database schema changes are explicit startup maintenance, not a
-library refresh. The first 2.0.36 Catalog Index Coordinator build advances the
-native catalog from schema v2 to v3 through an additive, one-way migration.
+**Reviewed contract:** The v2 → v3 Catalog Index Coordinator upgrade is
+dedicated Windows database maintenance, **not** a media refresh or a
+PostgreSQL migration. Its previously established operator safeguards
+are retained here for source and executable confirmation.
 
-## What the operator sees
+## Operator flow
 
-When the configured `splined.db` is schema v2, Windows opens a dedicated
-**Prepare This Database Upgrade** window before it constructs the normal
-workspace. The window reports:
+If the configured `splined.db` is schema v2, Windows enters a
+**Prepare This Database Upgrade** maintenance window before creating the
+normal workspace. The operator must see the source/target schema
+versions, actual database path and size, Artist/Album/Track/history
+counts, backup destination, one-way compatibility warning, and the
+explicit PostgreSQL exclusion.
 
-- the source and target schema versions;
-- the exact SQLite path and its size;
-- the current Artist, Album, Track, and history counts;
-- the directory where the downgrade backup will be written;
-- the one-way downgrade warning; and
-- the explicit boundary that PostgreSQL is not part of this operation.
+**Back Up & Upgrade** begins the operation; while converting, the
+window must prevent a second start or unsafe close. **Exit Safely**
+is available before conversion starts. **Open SPLINED** is only
+allowed after database and backup validation succeeds.
 
-Choose **Back Up & Upgrade** to begin. The status changes to **Database
-Conversion In Progress** and confirms that conversion has begun. The window
-cannot be closed while the conversion thread is active. Choose **Exit Safely**
-before starting if storage is unavailable or the maintenance should be
-postponed.
+## Preservation and transaction requirements
 
-The normal SPLINED workspace opens only after the upgraded database passes all
-validation and the operator chooses **Open SPLINED**.
+1. Identify the configured SQLite catalog and confirm supported source
+   `user_version = 2`; do not open a different guessed default path.
+2. Create an independently restorable SQLite **v2 backup** in
+   `schema-upgrade-backups`, using SQLite's online backup mechanism.
+3. Verify that snapshot with `PRAGMA quick_check`, schema version and
+   original Artist, Album, Track and retained history counts.
+4. Acquire the required exclusive SQLite migration transaction and,
+   for shared clients, respect configured Windows client-file coordination.
+5. Add the v3 coordinator's tables/indexes; preserve existing identities,
+   completion/history and the former published inventory as the
+   `legacy-pre-coordinator` generation.
+6. Confirm all pre-existing catalog/history counts before committing.
+   After commit verify v3 `user_version`, `quick_check`, and the
+   coordinator's published-generation marker.
 
-## Safety and preservation contract
+A failure before commit must roll back the schema transaction.
+Never advertise an unverified backup as usable. A verified v2
+backup remains available for manual recovery. The upgrade does
+**not** reset the catalog, update audio tags, consume media files,
+rewrite saved library inventory signatures, or touch PostgreSQL.
 
-The upgrade sequence is:
+## Downgrade boundary
 
-1. Open only the configured Windows SQLite catalog and verify that its schema
-   is the supported v2 source.
-2. Create a standalone SQLite backup with the online backup API under
-   `schema-upgrade-backups` beside `splined.db`.
-3. Verify the backup with `PRAGMA quick_check`, its v2 `user_version`, and the
-   source Artist/Album/Track/history counts.
-4. Acquire an exclusive SQLite transaction. Shared configurations retain the
-   configured Windows `.client-lock` for the lifetime of the operation.
-5. Apply only the additive v3 tables and indexes, initialize Catalog Index
-   Coordinator state, and mark the existing catalog as the
-   `legacy-pre-coordinator` published generation.
-6. Confirm that all pre-existing Artist, Album, Track, and history counts are
-   unchanged before committing.
-7. Commit the v3 `user_version`, run `PRAGMA quick_check`, validate the
-   coordinator publication marker, and report the verified backup path.
+This is a **one-way migration**. A v2-only executable cannot safely use
+the migrated v3 database. To return to a v2 build, close all clients
+and restore the verified v2 backup as a database replacement;
+**never** change only `PRAGMA user_version` or promise an automatic
+downgrade.
 
-Any failure before commit rolls the schema transaction back. A failed backup
-is removed rather than presented as recoverable. A verified backup is retained
-if a later validation fails.
+Other unsupported schema versions remain unchanged and require
+diagnosis, not a guessed conversion. A shared file must not be
+migrated while another client writes it.
 
-The migration does **not** reset SQLite, re-index music, update the saved v2
-inventory signature, or access PostgreSQL. The legacy inventory signature is
-accepted until the next explicit index refresh writes a current baseline.
+## Validation status
 
-## Downgrade and recovery
+Source schema and the planned operator contract were previously
+documented, but this restored guide does **not** represent a new
+Windows native compile or an exercised migration on the current
+`dev` head. Before production use, verify a disposable v2 database,
+retained history counts, interrupted migration, backup restore,
+shared-client isolation and startup screen behavior.
 
-The migration is one-way. A v2-only executable rejects a v3 database rather
-than attempting to downgrade it. To return to the older application, exit all
-SPLINED clients and restore the timestamped v2 SQLite snapshot shown in the
-completion screen. Do not copy the v2 `user_version` onto a v3 database.
-
-An unsupported schema other than v2 is never converted automatically. Windows
-leaves it unchanged and uses the existing Setup/error path for diagnosis.
-
+See [Windows SQLite media database](splined-media-database.md)
+and the [policy register](POLICY-REGISTER.md).

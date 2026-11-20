@@ -1,0 +1,6006 @@
+"""Integration tests use a dedicated PostgreSQL schema and generated silent audio."""
+
+from __future__ import annotations
+from contextlib import closing
+from dataclasses import replace
+from datetime import timezone
+from io import BytesIO
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import sqlite3
+import socket
+import tempfile
+import threading
+import time
+import tomllib
+import unittest
+from unittest.mock import patch
+from types import SimpleNamespace
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode, quote
+from uuid import uuid4
+
+import psycopg
+from psycopg import sql
+from psycopg_pool import PoolTimeout
+from fastapi.testclient import TestClient
+from PIL import Image
+import numpy as np
+import soundfile as sf
+from mutagen.flac import FLAC, Picture
+from mutagen.id3 import COMM, ID3, TALB, TCON, TIT2, TPE1, TPE2, TRCK, TXXX, UFID
+from mutagen.mp3 import MP3
+from psycopg.types.json import Jsonb
+import tomlkit
+import uvicorn
+import splined as core
+import splined_compilation_authority_policy as compilation
+
+from webgui.database import Database
+from webgui.catalog_authority import WINDOWS_SYNCHRONIZED_FIELDS, mark_windows_authority
+from webgui.runtime import Runtime
+from webgui.services import Services
+from webgui.jobs import JobAdapter, JobQueue
+from webgui.reconciliation import SQLiteReconciler
+from webgui.server import create_app
+from webgui.catalog import embedded_track_artwork_bytes, explicit_artist_credits
+from webgui.coordination import current_rows, current_track_rows, record_event
+from webgui.credentials import Credentials
+
+
+@unittest.skipUnless(
+    os.environ.get("SPLINED_TEST_DATABASE_URL"),
+    "Set SPLINED_TEST_DATABASE_URL for real PostgreSQL integration tests",
+)
+class PostgreSQLBrowserTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.schema = "splined_test_" + uuid4().hex
+        self.base_url = os.environ["SPLINED_TEST_DATABASE_URL"]
+        with psycopg.connect(self.base_url, autocommit=True) as db:
+            db.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(self.schema)))
+        parsed = urlsplit(self.base_url)
+        params = dict(parse_qsl(parsed.query))
+        params["options"] = "-c search_path=" + self.schema
+        self.url = urlunsplit(parsed._replace(query=urlencode(params, quote_via=quote)))
+        self.db = Database(self.url)
+        self.db.migrate()
+        self.cfg = tomllib.loads(
+            (Path(__file__).parents[4] / "build/WEBGui/docker/config.example.toml").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.cfg["mode"] = "write"
+        self.cfg["library"]["music_library"] = str(self.root / "music")
+        self.cfg["library"].update(
+            various_artist_path=str(self.root / "music" / "Various Artists"),
+            soundtracks_path=str(self.root / "music" / "Soundtracks"),
+            curated_compilations_path=str(self.root / "music" / "Compilations"),
+        )
+        self.cfg["scan"].update(
+            cache_dir=str(self.root / "cache"),
+            temporary_cache_dir=str(self.root / "temporary"),
+            shared_artist_art_dir=str(self.root / "artist-art"),
+            log_dir=str(self.root / "logs"),
+        )
+        self.cfg["credentials"]["credential_dir"] = str(self.root / "credentials")
+        self.cfg["output"].update(preserve_file=False, embedded_thumbnail_size=300)
+        self.config = self.root / "config.toml"
+        self.config.write_text(tomlkit.dumps(self.cfg), encoding="utf-8")
+        album = self.root / "music" / "Test Artist" / "Test Album"
+        album.mkdir(parents=True)
+        self.files = []
+        for number in (1, 2):
+            path = album / (str(number) + ".flac")
+            sf.write(path, np.zeros((4410, 2)), 44100)
+            audio = FLAC(path)
+            for key, value in {
+                "title": f"Track {number}",
+                "artist": "Test Artist",
+                "albumartist": "Test Artist",
+                "album": "Test Album",
+                "musicbrainz_albumid": "33333333-3333-4333-8333-333333333333",
+                "musicbrainz_artistid": "22222222-2222-4222-8222-222222222222",
+                "musicbrainz_trackid": f"44444444-4444-4444-8444-{number:012d}",
+            }.items():
+                audio[key] = value
+            audio.save()
+            self.files.append(path)
+        self.cover = album / "cover.jpg"
+        Image.new("RGB", (180, 180), "navy").save(self.cover)
+        self.artist_portrait = album.parent / "artist.png"
+        Image.new("RGB", (180, 180), "teal").save(self.artist_portrait)
+        self.runtime = Runtime(self.config, self.db)
+        self.services = Services(self.runtime)
+        self.services.refresh_index()
+        with closing(self.db.connect()) as db:
+            self.row = db.execute("SELECT * FROM albums").fetchone()
+        self.queue = None
+
+    def tearDown(self):
+        if self.queue:
+            self.queue.close()
+        self.runtime.close()
+        with psycopg.connect(self.base_url, autocommit=True) as db:
+            db.execute(
+                sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(self.schema))
+            )
+        self.temp.cleanup()
+
+    def payload(self):
+        return {
+            "album_id": self.row["album_key"],
+            "image": self.services.catalog.image(self.cover),
+            "adjustments": {"Brightness": 40},
+        }
+
+    def test_database_pool_bounds_concurrent_connections_without_eager_startup(self):
+        database = Database(self.url, pool_max_size=2, pool_timeout=1.0)
+        self.assertEqual(
+            database.pool_stats(),
+            {
+                "max_size": 2,
+                "pool_size": 0,
+                "pool_available": 0,
+                "requests_waiting": 0,
+            },
+        )
+        first = database.connect()
+        second = database.connect()
+        try:
+            started = time.perf_counter()
+            with self.assertRaises(PoolTimeout):
+                database.connect()
+            self.assertLess(time.perf_counter() - started, 2.0)
+            stats = database.pool_stats()
+            self.assertEqual(stats["max_size"], 2)
+            self.assertLessEqual(stats["pool_size"], 2)
+        finally:
+            first.close()
+            second.close()
+        indexing = database.connect()
+        try:
+            started = time.perf_counter()
+            with closing(database.connect()) as interactive:
+                self.assertEqual(interactive.execute("SELECT 1 AS ready").fetchone()["ready"], 1)
+            self.assertLess(
+                time.perf_counter() - started,
+                0.5,
+                "one long-lived indexing connection must leave capacity for status reads",
+            )
+        finally:
+            indexing.close()
+        database.close()
+
+    def test_database_connection_context_returns_session_to_pool(self):
+        database = Database(self.url, pool_max_size=1, pool_timeout=1.0)
+        try:
+            # The database monitor uses this direct context-manager form every
+            # few minutes. Repeating it must never exhaust the bounded pool.
+            for _ in range(3):
+                with database.connect() as db:
+                    self.assertEqual(
+                        db.execute("SELECT 1 AS ready").fetchone()["ready"], 1
+                    )
+            stats = database.pool_stats()
+            self.assertEqual(stats["pool_size"], 1)
+            self.assertEqual(stats["pool_available"], 1)
+            self.assertEqual(stats["requests_waiting"], 0)
+        finally:
+            database.close()
+
+    def test_catalog_refresh_performs_no_remote_provider_requests(self):
+        with patch.object(core.Http, "get") as get:
+            result = self.services.refresh_index()
+        get.assert_not_called()
+        with closing(self.db.connect()) as db:
+            timings = db.execute(
+                "SELECT timings FROM catalog_generations "
+                "WHERE generation_id=?",
+                (result["generation_id"],),
+            ).fetchone()["timings"]
+        self.assertEqual(timings["album_tag_reads"], 0)
+        self.assertEqual(
+            timings["resource_budget"],
+            {
+                "index_workers": 1,
+                "metadata_readers": 16,
+                "maximum_batch_albums": 64,
+                "postgresql_connections": 8,
+                "remote_provider_requests": 0,
+            },
+        )
+
+    def test_musicbrainz_artwork_preview_imports_only_verified_release_art(self):
+        rendered = BytesIO()
+        Image.new("RGB", (640, 480), "teal").save(rendered, format="JPEG")
+        response = SimpleNamespace(status_code=200, content=rendered.getvalue())
+        release_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        with patch.object(core.Http, "get", return_value=response) as get:
+            result = self.services.musicbrainz_artwork_preview(
+                {"release_id": release_id, "release_group_id": ""}
+            )
+
+        self.assertTrue(result["image"].startswith("/api/image/"))
+        self.assertEqual((result["width"], result["height"]), (640, 480))
+        self.assertEqual(self.services.catalog.image_bytes(result["image"]), rendered.getvalue())
+        self.assertEqual(
+            get.call_args.args[0],
+            f"https://coverartarchive.org/release/{release_id}/front",
+        )
+
+    def test_database_reset_empties_application_data_and_preserves_schema_and_admin(self):
+        with closing(self.db.connect()) as db, db:
+            db.execute(
+                "INSERT INTO web_admin_accounts(username_key,username,password_algorithm,"
+                "password_salt,password_hash) VALUES(?,?,?,?,?)",
+                ("owner", "Owner", "fixture", "salt", "hash"),
+            )
+            db.raw.execute(
+                "INSERT INTO web_jobs(id,kind,state,payload) VALUES(%s,%s,%s,%s)",
+                (uuid4().hex, "index", "staged", Jsonb({"mode": "full"})),
+            )
+
+        result = self.db.reset_application_data()
+
+        self.assertGreater(result["removed"]["artists"], 0)
+        self.assertGreater(result["removed"]["albums"], 0)
+        self.assertGreater(result["removed"]["tracks"], 0)
+        with closing(self.db.connect()) as db:
+            for table in ("artists", "albums", "tracks", "web_jobs", "web_audit"):
+                with self.subTest(table=table):
+                    self.assertEqual(db.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT count(*) FROM web_admin_accounts").fetchone()[0], 1)
+            self.assertGreater(db.execute("SELECT count(*) FROM web_schema_versions").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT count(*) FROM sqlite_reconciliation_settings").fetchone()[0], 1)
+            index = db.raw.execute(
+                "SELECT 1 FROM pg_indexes WHERE schemaname=current_schema() "
+                "AND indexname='idx_albums_artist'"
+            ).fetchone()
+            self.assertIsNotNone(index)
+
+    def test_authenticated_database_reset_endpoint_requires_exact_target_confirmation(self):
+        self.runtime.close()  # The API owns its runtime for this test.
+        app = create_app(self.config, self.url, token="test-access", start_worker=True)
+        with TestClient(app) as client:
+            status = client.get("/api/status").json()
+            client.headers["X-SPLINED-CSRF"] = status["csrf"]
+            setup = client.post(
+                "/api/admin/setup",
+                json={
+                    "username": "administrator",
+                    "password": "StrongPassword123",
+                    "confirmation": "StrongPassword123",
+                    "token": "test-access",
+                },
+            )
+            self.assertEqual(setup.status_code, 200, setup.text)
+            target = client.get("/api/database/reset-target").json()["target"]
+            rejected = client.post(
+                "/api/database/reset",
+                json={"target": target, "confirmation": "RESET wrong-target"},
+            )
+            self.assertEqual(rejected.status_code, 400, rejected.text)
+            self.assertTrue(client.get("/api/artists").json())
+
+            reset = client.post(
+                "/api/database/reset",
+                json={"target": target, "confirmation": f"RESET {target}"},
+            )
+            self.assertEqual(reset.status_code, 200, reset.text)
+            result = reset.json()
+            self.assertTrue(result["ready_for_full_index"])
+            self.assertGreater(result["removed"]["artists"], 0)
+            self.assertEqual(client.get("/api/artists").json(), [])
+            self.assertEqual(client.get("/api/settings").status_code, 200)
+
+    @staticmethod
+    def set_flac_embedded_cover(path: Path, side: int | None):
+        audio = FLAC(path)
+        audio.clear_pictures()
+        if side is not None:
+            rendered = BytesIO()
+            Image.new("RGB", (side, side), "purple").save(rendered, format="JPEG")
+            picture = Picture()
+            picture.type = 3
+            picture.mime = "image/jpeg"
+            picture.width = side
+            picture.height = side
+            picture.depth = 24
+            picture.data = rendered.getvalue()
+            audio.add_picture(picture)
+        audio.save()
+
+    def make_comp_track(self, folder_name, *, recording_id=True):
+        folder = self.root / "music" / "Compilations" / folder_name
+        folder.mkdir(parents=True)
+        target = folder / "01 Test Artist - Track 1.flac"
+        shutil.copyfile(self.files[0], target)
+        audio = FLAC(target)
+        del audio["musicbrainz_albumid"]
+        if not recording_id:
+            del audio["musicbrainz_trackid"]
+        audio["albumartist"] = "Various Artists"
+        audio["album"] = folder_name
+        audio.save()
+        self.services.refresh_index(mode="full")
+        with closing(self.db.connect()) as db:
+            row = db.execute(
+                "SELECT * FROM albums WHERE path=?", (str(folder),)
+            ).fetchone()
+        track = self.services.hydrate_tracks(row["album_key"])[0]
+        return row, track, target
+
+    def test_multivalue_id3_artist_is_safe_in_postgresql_job_progress(self):
+        path = self.root / "multi-credit.mp3"
+        tags = ID3()
+        tags.add(TIT2(encoding=3, text=["Say Something"]))
+        tags.add(TPE1(encoding=3, text=["A Great Big World", "Christina Aguilera"]))
+        tags.add(TPE2(encoding=3, text=["Various Artists"]))
+        tags.add(TALB(encoding=3, text=["Billboard Hot 100 Singles of 2014"]))
+        tags.save(path, v2_version=4)
+        track = core.read_track(path)
+        job_id = uuid4().hex
+        with closing(self.db.connect()) as db, db:
+            db.raw.execute(
+                "INSERT INTO web_jobs(id,kind,state,payload) VALUES(%s,%s,%s,%s)",
+                (job_id, "comp", "running", Jsonb({"album_id": "fixture"})),
+            )
+        adapter = JobAdapter(SimpleNamespace(db=self.db), job_id)
+
+        adapter.progress(
+            {"current": {"fallback_authority": {"artist": track.artist}}}
+        )
+
+        with closing(self.db.connect()) as db:
+            saved = db.execute(
+                "SELECT progress FROM web_jobs WHERE id=?", (job_id,)
+            ).fetchone()["progress"]
+        self.assertEqual(
+            saved["current"]["fallback_authority"]["artist"],
+            "A Great Big World; Christina Aguilera",
+        )
+
+    @staticmethod
+    def title_suggestion_resolution():
+        item = compilation.DiscoveryCandidate(
+            recording_mbid="44444444-4444-4444-8444-000000000001",
+            recording_title="Track 1",
+            recording_artist="Test Artist",
+            artist_mbids_key="22222222-2222-4222-8222-222222222222",
+            release_mbid="33333333-3333-4333-8333-333333333333",
+            release_group_mbid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            release_class="album",
+            class_rank=0,
+            release_title="Test Album",
+            release_artist="Test Artist",
+            release_date="2000",
+            country="US",
+            score=88,
+            release_group_title="Test Album",
+            match_basis="same-artist-title",
+        )
+        return compilation.DiscoveryResolution(
+            candidates=(item,),
+            identity_status="unresolved",
+            identity_message="Recording ID missing; same-Artist title suggestion available",
+            recording_status="missing",
+            artist_status="valid",
+            friendly_artist="Test Artist",
+            friendly_title="Track 1",
+            focused_artist_mbid="22222222-2222-4222-8222-222222222222",
+            used_fuzzy_search=True,
+        )
+
+    def wait_for_job(self, job_id, predicate, timeout=10.0):
+        deadline = time.monotonic() + timeout
+        item = None
+        while time.monotonic() < deadline:
+            item = next(value for value in self.queue.list() if value["id"] == job_id)
+            if predicate(item):
+                return item
+            time.sleep(0.05)
+        self.fail(f"job {job_id} did not reach the expected state: {item}")
+
+    def test_waiting_scan_does_not_block_explicit_writes_or_album_embedding(self):
+        self.queue = JobQueue(self.services)
+
+        def interactive_scan(_payload, adapter):
+            decision = adapter.read(
+                "Choose album artwork",
+                {"kind": "normal-picker", "options": []},
+            )
+            return {"decision": decision}
+
+        with patch.object(self.services, "run_scan", side_effect=interactive_scan):
+            queued = self.queue.enqueue(
+                "scan", {"album_ids": [self.row["album_key"]]}
+            )
+            waiting = self.wait_for_job(
+                queued["id"], lambda item: item["state"] == "waiting"
+            )
+
+            # The interactive job still owns job_scope, so Settings cannot
+            # retarget the library while its decision is outstanding.
+            with self.assertRaisesRegex(ValueError, "active artwork work"):
+                self.runtime.save_settings(self.cfg)
+
+            # Direct writes use the independent processing lock and must not
+            # wait behind the browser prompt.
+            self.assertTrue(self.runtime.processing.acquire(blocking=False))
+            self.runtime.processing.release()
+            artist_result = self.services.write_artist(
+                {
+                    "artist_id": self.row["artist_key"],
+                    "components": [
+                        {
+                            "kind": "artist",
+                            "image": self.services.catalog.image(self.cover),
+                        }
+                    ],
+                }
+            )
+            self.assertTrue(artist_result["written"])
+
+            # EMBED Batch is an explicit operation. Once its exact prepared
+            # artwork has been snapshotted, the candidate scan that supplied
+            # it is superseded and must release the single durable worker.
+            staged = self.services.stage_album(self.payload())
+            self.assertTrue(staged["prepared_file"])
+            album_job = self.queue.enqueue(
+                "embed-album", staged, staged=True
+            )
+            cancelled_scan = self.wait_for_job(
+                queued["id"], lambda item: item["state"] == "cancelled"
+            )
+            self.assertEqual(cancelled_scan["state"], "cancelled")
+            self.queue.action("start", kind="embed-album")
+            completed = self.wait_for_job(
+                album_job["id"], lambda item: item["state"] in {"done", "failed"}
+            )
+            self.assertEqual(completed["state"], "done", completed["error"])
+            self.assertTrue(completed["result"]["verified"])
+
+    def test_explicit_album_embed_replaces_same_size_art_and_ignores_duplicate_covers(self):
+        # Purple/preferred-size status is informational. Existing artwork at
+        # the requested dimensions must not prevent an explicitly selected,
+        # byte-different candidate from replacing every track thumbnail.
+        for path in self.files:
+            self.set_flac_embedded_cover(path, 300)
+        old_art = [embedded_track_artwork_bytes(path) for path in self.files]
+        self.assertTrue(all(old_art))
+
+        alternate = self.cover.with_suffix(".png")
+        Image.new("RGB", (900, 900), "orange").save(alternate)
+        webp = self.cover.with_suffix(".webp")
+        Image.new("RGB", (900, 900), "purple").save(webp, format="WEBP")
+        candidate = self.runtime.cache / "explicit-selected-candidate.png"
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (1800, 1800), "teal").save(candidate, format="PNG")
+
+        staged = self.services.stage_album(
+            {
+                "album_id": self.row["album_key"],
+                "image": self.services.catalog.image(candidate),
+            }
+        )
+        self.assertTrue(staged["preferred_size"])
+        self.assertFalse(self.cover.is_file())
+        self.assertTrue(alternate.is_file())
+        self.assertTrue(webp.is_file())
+        static_covers = [
+            path
+            for path in core.canonical_cover_files(self.cover.parent, "cover")
+            if path.suffix.casefold() != ".webp"
+        ]
+        self.assertEqual(static_covers, [alternate])
+        prepared = (
+            self.runtime.cache / "staged-artwork" / staged["prepared_file"]
+        ).read_bytes()
+
+        result = self.services.embed_album(staged)
+
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["tracks"], len(self.files))
+        for prior, path in zip(old_art, self.files):
+            embedded = embedded_track_artwork_bytes(path)
+            self.assertNotEqual(embedded, prior)
+            self.assertEqual(
+                hashlib.sha256(embedded).digest(),
+                hashlib.sha256(prepared).digest(),
+            )
+
+    def test_webp_album_embed_uses_verified_jpeg_still_and_removes_static_png(self):
+        alternate = self.cover.with_suffix(".png")
+        Image.new("RGB", (900, 900), "orange").save(alternate)
+        candidate = self.runtime.cache / "explicit-selected-candidate.webp"
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (1800, 1800), "teal").save(candidate, format="WEBP")
+
+        staged = self.services.stage_album(
+            {
+                "album_id": self.row["album_key"],
+                "image": self.services.catalog.image(candidate),
+            }
+        )
+
+        webp = self.cover.with_suffix(".webp")
+        self.assertTrue(webp.is_file())
+        self.assertTrue(self.cover.is_file())
+        self.assertFalse(alternate.is_file())
+        staged_cover = self.runtime.cache / "staged-artwork" / staged["cover_file"]
+        with Image.open(staged_cover) as opened:
+            self.assertEqual(opened.format, "JPEG")
+        prepared = (
+            self.runtime.cache / "staged-artwork" / staged["prepared_file"]
+        ).read_bytes()
+        result = self.services.embed_album(staged)
+        self.assertTrue(result["verified"])
+        for path in self.files:
+            self.assertEqual(
+                hashlib.sha256(embedded_track_artwork_bytes(path)).digest(),
+                hashlib.sha256(prepared).digest(),
+            )
+
+    def drive_comp_candidate(self, row, track):
+        result = self.queue.enqueue(
+            "comp",
+            {"album_id": row["album_key"], "track_keys": [track["track_key"]]},
+        )
+        item = self.wait_for_job(
+            result["id"],
+            lambda value: value["state"] == "waiting"
+            and value["progress"]["prompt"]["context"].get("kind")
+            == "musicbrainz-results",
+        )
+        prompt = item["progress"]["prompt"]
+        self.queue.action("decision", result["id"], "1", prompt["nonce"])
+        item = self.wait_for_job(
+            result["id"],
+            lambda value: value["state"] == "waiting"
+            and value["progress"]["prompt"]["context"].get("kind")
+            != "musicbrainz-results"
+            and bool(value["progress"].get("current", {}).get("candidates", {}).get("items")),
+        )
+        prompt = item["progress"]["prompt"]
+        self.queue.action("decision", result["id"], "1", prompt["nonce"])
+        return self.wait_for_job(
+            result["id"], lambda value: value["state"] in {"done", "failed"}
+        )
+
+    def test_comp_existing_title_match_uses_the_postgres_catalog(self):
+        rows = core.compilation_local_artwork_rows(
+            self.config,
+            self.cfg,
+            SimpleNamespace(
+                recording_mbid="55555555-5555-4555-8555-555555555555",
+                artist_mbid="22222222-2222-4222-8222-222222222222",
+                title="Track 1",
+            ),
+            current_album_path=self.root / "music" / "Various Artists" / "Billboard",
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["album_name"], "Test Album")
+        self.assertFalse(rows[0]["recording_match"])
+        self.assertEqual(Path(rows[0]["cover_path"]), self.cover)
+
+    def test_actual_cover_artist_and_album_embedding_preserve_audio(self):
+        result = self.services.write_cover(self.payload())
+        with Image.open(
+            BytesIO(self.services.catalog.image_bytes(result["image"]))
+        ) as preview:
+            with Image.open(self.cover) as saved:
+                self.assertEqual(preview.tobytes(), saved.tobytes())
+        banner_component = {
+            "kind": "banner",
+            "image": result["image"],
+            "adjustments": {"Brightness": -35, "Vivid Color": 20},
+            "fit": {"zoom": 1.4, "x": 20, "y": -10},
+        }
+        expected_banner = self.services.preview(banner_component)
+        self.services.write_artist(
+            {
+                "artist_id": self.row["artist_key"],
+                "components": [
+                    {"kind": "artist", "image": result["image"]},
+                    banner_component,
+                ],
+            }
+        )
+        self.assertTrue(list(self.root.rglob("artist.png")))
+        banner = list(self.root.rglob("banner.png"))[0]
+        with Image.open(BytesIO(self.services.catalog.image_bytes(expected_banner["image"]))) as preview:
+            with Image.open(banner) as saved:
+                self.assertEqual(preview.size, saved.size)
+                self.assertEqual(preview.tobytes(), saved.tobytes())
+        staged = self.services.stage_album(self.payload())
+        self.services.embed_album(staged)
+        for path in self.files:
+            audio = FLAC(path)
+            self.assertEqual(audio["artist"], ["Test Artist"])
+            samples, rate = sf.read(path)
+            self.assertEqual((len(samples), rate), (4410, 44100))
+            with Image.open(BytesIO(embedded_track_artwork_bytes(path))) as image:
+                self.assertEqual(image.size, (300, 300))
+        self.assertEqual(
+            self.services.catalog.album(self.row["album_key"])["embedded"], 2
+        )
+        self.assertEqual(
+            self.services.catalog.album(self.row["album_key"])["embedded_validation"],
+            "verified",
+        )
+        self.assertEqual(self.services.index_changes()["count"], 0)
+
+    def test_album_write_coordination_is_durable_ordered_and_projected(self):
+        preview = self.services.preview(self.payload())
+        self.assertTrue(preview["image"])
+        with closing(self.db.connect()) as db:
+            self.assertEqual(
+                db.execute(
+                    "SELECT count(*) FROM album_artwork_write_coordination"
+                ).fetchone()[0],
+                0,
+                "previewing must not claim Album ownership",
+            )
+
+        written = self.services.write_cover(self.payload())
+        self.assertTrue(written["coordination"]["durable"])
+        self.assertEqual(written["coordination"]["writer"], "webgui")
+        self.assertEqual(written["coordination"]["operation"], "write-cover")
+        with closing(self.db.connect()) as db:
+            current = dict(
+                db.execute(
+                    "SELECT * FROM album_artwork_write_coordination"
+                ).fetchone()
+            )
+        self.assertEqual(current["album_key"], self.row["album_key"])
+        self.assertEqual(current["relative_path"], "test artist/test album")
+        self.assertEqual(
+            self.services.catalog.album(self.row["album_key"])["override_writer"],
+            "webgui",
+        )
+        artist_album = next(
+            item
+            for item in self.services.catalog.artist(self.row["artist_key"])["albums"]
+            if item["id"] == self.row["album_key"]
+        )
+        self.assertEqual(artist_album["override_writer"], "webgui")
+
+        older = {
+            **current,
+            "writer": "windows",
+            "operation": "embed-album",
+            "event_id": "windows-older-synthetic",
+            "source_completed_ms": int(current["source_completed_ms"]) - 1,
+            "completed_at": "2026-11-04T00:00:00+00:00",
+        }
+        replayed = record_event(self.db, older)
+        self.assertEqual(replayed["writer"], "webgui")
+        self.assertEqual(replayed["event_id"], current["event_id"])
+
+        newer = {
+            **older,
+            "event_id": "windows-newer-synthetic",
+            "source_completed_ms": int(current["source_completed_ms"]) + 1,
+            "completed_at": "2026-11-04T00:00:01+00:00",
+        }
+        transferred = record_event(self.db, newer)
+        self.assertEqual(transferred["writer"], "windows")
+        self.assertGreater(transferred["revision"], current["revision"])
+        self.assertEqual(
+            self.services.catalog.album(self.row["album_key"])["override_writer"],
+            "windows",
+        )
+
+    def test_album_write_coordination_projects_newer_relative_path_identity(self):
+        """A stale MBID must not hide a write to the same physical Album."""
+        stale_key = "mbid:00000000-0000-0000-0000-000000000001"
+        with closing(self.db.connect()) as db, db:
+            db.raw.execute(
+                "INSERT INTO album_artwork_write_coordination("
+                "album_identity,album_key,musicbrainz_albumid,relative_path,"
+                "writer,operation,event_id,source_completed_ms,completed_at) "
+                "VALUES(%s,%s,%s,%s,'webgui','embed-album','stale-webgui',10,now())",
+                (
+                    "key:" + self.row["album_key"],
+                    self.row["album_key"],
+                    self.row["musicbrainz_albumid"],
+                    "test artist/test album",
+                ),
+            )
+            db.raw.execute(
+                "INSERT INTO album_artwork_write_coordination("
+                "album_identity,album_key,musicbrainz_albumid,relative_path,"
+                "writer,operation,event_id,source_completed_ms,completed_at) "
+                "VALUES(%s,%s,%s,%s,'windows','write-cover','new-windows',20,now())",
+                (
+                    "key:" + stale_key,
+                    stale_key,
+                    stale_key.removeprefix("mbid:"),
+                    "test artist/test album",
+                ),
+            )
+
+        album = self.services.catalog.album(self.row["album_key"])
+        self.assertEqual(album["override_writer"], "windows")
+        self.assertEqual(album["override_operation"], "write-cover")
+        projected = {
+            row["album_key"]: row
+            for row in self.services.album_write_coordination()
+        }
+        self.assertEqual(projected[self.row["album_key"]]["writer"], "windows")
+        self.assertEqual(
+            projected[self.row["album_key"]]["source_album_key"], stale_key
+        )
+
+    def test_album_write_coordination_outbox_recovers_without_duplicate_claim(self):
+        with patch(
+            "webgui.services.record_event",
+            side_effect=OSError("synthetic PostgreSQL disconnect"),
+        ):
+            written = self.services.write_cover(self.payload())
+        self.assertFalse(written["coordination"]["durable"])
+        self.assertTrue(self.services._coordination_outbox_path.is_file())
+        pending = json.loads(
+            self.services._coordination_outbox_path.read_text(encoding="utf-8")
+        )
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["event_id"], written["coordination"]["event_id"])
+
+        recovered = self.services.flush_album_write_coordination()
+        self.assertEqual(recovered, {"applied": 1, "pending": 0})
+        self.assertFalse(self.services._coordination_outbox_path.exists())
+        self.assertEqual(
+            self.services.flush_album_write_coordination(),
+            {"applied": 0, "pending": 0},
+        )
+        with closing(self.db.connect()) as db:
+            rows = db.execute(
+                "SELECT event_id,writer FROM album_artwork_write_coordination"
+            ).fetchall()
+        self.assertEqual(
+            [(row["event_id"], row["writer"]) for row in rows],
+            [(written["coordination"]["event_id"], "webgui")],
+        )
+
+    def test_legacy_postgresql_coordination_identities_are_repaired_in_place(self):
+        dirty_key = "mbid:\ufeffLegacy-Album"
+        dirty_identity = "key:" + dirty_key
+        dirty_track = "Various Artists/\ufeffLegacy/01.flac"
+        dirty_track_identity = dirty_identity + "|track:" + dirty_track.casefold()
+        with closing(self.db.connect()) as db, db:
+            db.raw.execute(
+                "INSERT INTO album_artwork_write_coordination("
+                "album_identity,album_key,musicbrainz_albumid,relative_path,"
+                "writer,operation,event_id,source_completed_ms,completed_at) "
+                "VALUES(%s,%s,%s,%s,'windows','write-cover',%s,10,now())",
+                (dirty_identity, dirty_key, "\ufeffLegacy-Album", "Artist/\ufeffAlbum", "legacy-album"),
+            )
+            db.raw.execute(
+                "INSERT INTO comp_track_write_coordination("
+                "track_identity,album_identity,album_key,track_key,"
+                "relative_track_path,writer,operation,event_id,artwork_sha256,"
+                "source_completed_ms,completed_at) "
+                "VALUES(%s,%s,%s,'legacy-track',%s,'windows','embed-comp-track',"
+                "%s,'abc123',11,now())",
+                (dirty_track_identity, dirty_identity, dirty_key, dirty_track, "legacy-track-event"),
+            )
+
+        albums = current_rows(self.db)
+        tracks = current_track_rows(self.db)
+        self.assertEqual(albums[0]["album_key"], "mbid:legacy-album")
+        self.assertEqual(albums[0]["musicbrainz_albumid"], "legacy-album")
+        self.assertEqual(albums[0]["relative_path"], "artist/album")
+        self.assertEqual(tracks[0]["album_key"], "mbid:legacy-album")
+        self.assertEqual(
+            tracks[0]["relative_track_path"],
+            "various artists/legacy/01.flac",
+        )
+        with closing(self.db.connect()) as db:
+            album = db.execute(
+                "SELECT album_identity,album_key,musicbrainz_albumid,relative_path "
+                "FROM album_artwork_write_coordination"
+            ).fetchone()
+            track = db.execute(
+                "SELECT track_identity,album_identity,album_key,relative_track_path "
+                "FROM comp_track_write_coordination"
+            ).fetchone()
+        self.assertEqual(album["album_identity"], "key:mbid:legacy-album")
+        self.assertEqual(album["album_key"], "mbid:legacy-album")
+        self.assertEqual(album["musicbrainz_albumid"], "legacy-album")
+        self.assertEqual(album["relative_path"], "artist/album")
+        self.assertEqual(
+            track["track_identity"],
+            "key:mbid:legacy-album|track:various artists/legacy/01.flac",
+        )
+        self.assertEqual(track["album_identity"], "key:mbid:legacy-album")
+
+    def test_opposing_comp_event_resolves_the_indexed_case_preserving_path(self):
+        self.set_flac_embedded_cover(self.files[0], 300)
+        artwork = embedded_track_artwork_bytes(self.files[0])
+        self.assertIsNotNone(artwork)
+        event = {
+            "album_key": self.row["album_key"],
+            # Coordination identities are intentionally normalized while the
+            # physical Linux fixture retains its mixed-case directory names.
+            "relative_track_path": "test artist/test album/1.flac",
+            "artwork_sha256": hashlib.sha256(artwork).hexdigest(),
+        }
+
+        self.assertTrue(self.services._persist_opposing_comp_track(event))
+        with closing(self.db.connect()) as db:
+            written = db.execute(
+                "SELECT track_path,outcome FROM compilation_track_artwork"
+            ).fetchone()
+            progress = db.execute(
+                "SELECT total_tracks,completed_tracks,status "
+                "FROM compilation_album_progress"
+            ).fetchone()
+        self.assertEqual(written["track_path"], str(self.files[0]))
+        self.assertEqual(written["outcome"], "embedded-existing")
+        self.assertEqual(
+            (progress["total_tracks"], progress["completed_tracks"], progress["status"]),
+            (2, 1, "incomplete"),
+        )
+        # Browser polling reuses the durable projection for the unchanged
+        # Windows event instead of reopening and hashing the NAS audio file.
+        with patch(
+            "webgui.services.embedded_track_artwork_bytes",
+            side_effect=AssertionError("durable coordination was re-read"),
+        ):
+            self.assertTrue(self.services._persist_opposing_comp_track(event))
+
+    def test_matching_opposing_comp_event_preserves_artwork_source_provenance(self):
+        self.set_flac_embedded_cover(self.files[0], 300)
+        artwork = embedded_track_artwork_bytes(self.files[0])
+        self.assertIsNotNone(artwork)
+        digest = hashlib.sha256(artwork).hexdigest()
+        event = {
+            "album_key": self.row["album_key"],
+            "relative_track_path": "test artist/test album/1.flac",
+            "artwork_sha256": digest,
+        }
+        with closing(self.db.connect()) as db, db:
+            db.execute(
+                "INSERT INTO compilation_track_artwork"
+                "(track_path,recording_mbid,artist_mbid,source_kind,source_locator,"
+                "release_mbid,artwork_sha256,outcome,applied_at,splined_version) "
+                "VALUES(?,'','','itunes','provider-result',NULL,?,"
+                "'embedded-existing',now(),'test')",
+                (str(self.files[0]), digest),
+            )
+
+        # Coordination owns the cross-client override presentation.  The
+        # original provider remains artwork provenance and no NAS re-read is
+        # necessary when the durable digest already matches.
+        with patch(
+            "webgui.services.embedded_track_artwork_bytes",
+            side_effect=AssertionError("matching durable artwork was re-read"),
+        ):
+            self.assertTrue(self.services._persist_opposing_comp_track(event))
+        with closing(self.db.connect()) as db:
+            source = db.execute(
+                "SELECT source_kind FROM compilation_track_artwork WHERE track_path=?",
+                (str(self.files[0]),),
+            ).fetchone()[0]
+        self.assertEqual(source, "itunes")
+
+    def test_failed_album_write_does_not_claim_coordination(self):
+        with patch(
+            "webgui.services.core.install_canonical_cover",
+            side_effect=OSError("synthetic artwork write failure"),
+        ):
+            with self.assertRaisesRegex(OSError, "synthetic artwork write failure"):
+                self.services.write_cover(self.payload())
+        with closing(self.db.connect()) as db:
+            self.assertEqual(
+                db.execute(
+                    "SELECT count(*) FROM album_artwork_write_coordination"
+                ).fetchone()[0],
+                0,
+            )
+        self.assertFalse(self.services._coordination_outbox_path.exists())
+
+    def test_album_embedding_validation_preserves_unknown_on_read_failure(self):
+        with closing(self.db.connect()) as db, db:
+            db.execute(
+                "UPDATE albums SET embedded_tracks=1,embedded_validation_status='verified' "
+                "WHERE album_key=?",
+                (self.row["album_key"],),
+            )
+        with patch(
+            "webgui.services.embedded_track_artwork_bytes",
+            side_effect=OSError("synthetic read failure"),
+        ):
+            result = self.services.validate_album_embedding(self.row["album_key"])
+
+        self.assertEqual(result["status"], "retry")
+        self.assertEqual(result["embedded_tracks"], 1)
+        projected = self.services.catalog.album(self.row["album_key"])
+        self.assertEqual(projected["embedded_validation"], "retry")
+        self.assertEqual(projected["embedded"], 1)
+
+        # WebGUI-owned writes advance the saved inventory baseline, while a
+        # later external change to the same Album still requires review.
+        stat = self.files[0].stat()
+        os.utime(
+            self.files[0],
+            ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000),
+        )
+        changes = self.services.index_changes()
+        self.assertEqual(changes["count"], 1)
+        self.assertEqual(changes["changed"], 1)
+
+    def test_album_embedding_validation_requires_preferred_size_on_every_track(self):
+        album_id = self.row["album_key"]
+        with closing(self.db.connect()) as db, db:
+            db.execute(
+                "UPDATE albums SET embedded_tracks=2,embedded_validation_status='unknown',"
+                "embedded_validated_at=NULL WHERE album_key=?",
+                (album_id,),
+            )
+
+        # A projected historical count is not evidence.  Physical readback of
+        # two readable tracks with no artwork confirms attention instead.
+        missing = self.services.validate_album_embedding(album_id)
+        self.assertEqual(
+            (missing["status"], missing["embedded_tracks"], missing["preferred_side"]),
+            ("verified", 0, 300),
+        )
+
+        self.set_flac_embedded_cover(self.files[0], 300)
+        partial = self.services.validate_album_embedding(album_id)
+        self.assertEqual(
+            (partial["status"], partial["embedded_tracks"]), ("verified", 1)
+        )
+
+        self.set_flac_embedded_cover(self.files[1], 299)
+        wrong_size = self.services.validate_album_embedding(album_id)
+        self.assertEqual(
+            (wrong_size["status"], wrong_size["embedded_tracks"]),
+            ("verified", 1),
+        )
+
+        self.set_flac_embedded_cover(self.files[1], 300)
+        complete = self.services.validate_album_embedding(album_id)
+        self.assertEqual(
+            (complete["status"], complete["embedded_tracks"], complete["track_count"]),
+            ("verified", 2, 2),
+        )
+
+    def test_cover_format_replacement_stages_and_embeds_without_reusing_stale_handle(self):
+        stale_cover = self.services.catalog.image(self.cover)
+        self.runtime.cfg["output"].update(
+            preserve_file=True,
+            file_formats=["png"],
+        )
+
+        staged = self.services.stage_album(
+            {
+                "album_id": self.row["album_key"],
+                "image": stale_cover,
+                "adjustments": {"Brightness": 20},
+            }
+        )
+
+        destination = self.cover.with_suffix(".png")
+        self.assertTrue(destination.is_file())
+        self.assertTrue(self.cover.with_name("cover-(2).jpg").is_file())
+        with self.assertRaisesRegex(KeyError, "preview expired after the artwork changed"):
+            self.services.catalog.image_source(stale_cover)
+
+        result = self.services.embed_album(staged)
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["tracks"], len(self.files))
+        for path in self.files:
+            with Image.open(BytesIO(embedded_track_artwork_bytes(path))) as image:
+                self.assertEqual(image.size, (300, 300))
+
+    def test_postgres_track_credit_projects_featured_album_for_selected_artist(self):
+        folder = self.root / "music" / "Album Owner" / "Guest Release"
+        folder.mkdir(parents=True)
+        path = folder / "guest.flac"
+        sf.write(path, np.zeros((4410, 2)), 44100)
+        audio = FLAC(path)
+        for key, value in {
+            "title": "Guest Track",
+            "artist": "Album Owner feat. Test Artist",
+            "albumartist": "Album Owner",
+            "album": "Guest Release",
+            "musicbrainz_albumid": "99999999-9999-4999-8999-999999999999",
+            "musicbrainz_artistid": "88888888-8888-4888-8888-888888888888",
+        }.items():
+            audio[key] = value
+        audio.save()
+        Image.new("RGB", (180, 180), "purple").save(folder / "cover.jpg")
+        self.services.refresh_index()
+
+        artist = self.services.catalog.artist(self.row["artist_key"])
+        featured = [album for album in artist["albums"] if album["name"] == "Guest Release"]
+        self.assertEqual(len(featured), 1)
+        self.assertTrue(featured[0]["featured"])
+
+    def test_artist_comp_report_is_scoped_while_full_fallback_keeps_every_track(self):
+        comp = self.root / "music" / "Compilations" / "Billboard Fixture"
+        other_album = self.root / "music" / "Other Artist" / "Other Release"
+        comp.mkdir(parents=True)
+        other_album.mkdir(parents=True)
+
+        def write_track(
+            path,
+            *,
+            title,
+            artist,
+            albumartist,
+            album,
+            album_mbid="",
+            artist_mbid="",
+            recording_mbid="",
+        ):
+            sf.write(path, np.zeros((4410, 2)), 44100)
+            audio = FLAC(path)
+            values = {
+                "title": title,
+                "artist": artist,
+                "albumartist": albumartist,
+                "album": album,
+            }
+            if album_mbid:
+                values["musicbrainz_albumid"] = album_mbid
+            if artist_mbid:
+                values["musicbrainz_artistid"] = artist_mbid
+            if recording_mbid:
+                values["musicbrainz_trackid"] = recording_mbid
+            if albumartist == "Various Artists":
+                values["musicbrainz_albumartistid"] = "89ad4ac3-39f7-470e-963a-56509c546377"
+            for key, value in values.items():
+                audio[key] = value
+            audio.save()
+
+        target_path = comp / "01 Test Artist - Target.flac"
+        other_path = comp / "02 Other Artist - Other.flac"
+        featured_path = comp / "03 Various Artists feat Test Artist.flac"
+        write_track(
+            target_path,
+            title="Target",
+            artist="test artist",
+            albumartist="Various Artists",
+            album="Billboard Fixture",
+            artist_mbid="22222222-2222-4222-8222-222222222222",
+            recording_mbid="11111111-1111-4111-8111-111111111111",
+        )
+        write_track(
+            other_path,
+            title="Other",
+            artist="Other Artist",
+            albumartist="Various Artists",
+            album="Billboard Fixture",
+            artist_mbid="77777777-7777-4777-8777-777777777777",
+            recording_mbid="33333333-3333-4333-8333-333333333333",
+        )
+        write_track(
+            featured_path,
+            title="Featured Target",
+            artist="Various Artists feat. Test Artist",
+            albumartist="Various Artists",
+            album="Billboard Fixture",
+            artist_mbid="22222222-2222-4222-8222-222222222222",
+            recording_mbid="44444444-4444-4444-8444-444444444444",
+        )
+        write_track(
+            other_album / "01 Other.flac",
+            title="Other Release Track",
+            artist="Other Artist",
+            albumartist="Other Artist",
+            album="Other Release",
+            album_mbid="66666666-6666-4666-8666-666666666666",
+            artist_mbid="77777777-7777-4777-8777-777777777777",
+        )
+        Image.new("RGB", (180, 180), "purple").save(comp / "cover.jpg")
+        self.services.refresh_index()
+
+        with closing(self.db.connect()) as db:
+            comp_row = db.execute(
+                "SELECT album_key FROM albums WHERE path=?", (str(comp),)
+            ).fetchone()
+            other_artist = db.execute(
+                "SELECT artist_key FROM artists WHERE artist_name='Other Artist'"
+            ).fetchone()
+
+        first = self.services.comp_report(self.row["artist_key"])
+        repeated = self.services.comp_report(self.row["artist_key"])
+        other = self.services.comp_report(other_artist["artist_key"])
+        full = self.services.catalog.fallback_tracks(comp_row["album_key"])
+
+        self.assertEqual([group["id"] for group in first], [comp_row["album_key"]])
+        self.assertEqual(
+            {track["file"] for track in first[0]["tracks"]},
+            {target_path.name, featured_path.name},
+        )
+        self.assertEqual(
+            [track["key"] for track in repeated[0]["tracks"]],
+            [track["key"] for track in first[0]["tracks"]],
+        )
+        self.assertEqual(
+            {track["file"] for track in other[0]["tracks"]}, {other_path.name}
+        )
+        self.assertEqual({track["file"] for track in full}, {
+            target_path.name, other_path.name, featured_path.name,
+        })
+        target_key = next(
+            track["key"] for track in first[0]["tracks"]
+            if track["file"] == target_path.name
+        )
+        other_key = next(track["key"] for track in full if track["file"] == other_path.name)
+        scoped_payload = self.services.validate_comp_payload({
+            "artist_id": self.row["artist_key"],
+            "album_id": comp_row["album_key"],
+            "track_keys": [target_key],
+        })
+        self.assertEqual(scoped_payload["track_keys"], [target_key])
+        with self.assertRaisesRegex(ValueError, "not in this Artist's COMP report"):
+            self.services.validate_comp_payload({
+                "artist_id": self.row["artist_key"],
+                "album_id": comp_row["album_key"],
+                "track_keys": [other_key],
+            })
+        full_payload = self.services.validate_comp_payload({
+            "album_id": comp_row["album_key"],
+            "track_keys": [target_key, other_key],
+        })
+        self.assertEqual(full_payload["track_keys"], [target_key, other_key])
+
+        candidate = self.runtime.temporary_cache / "selected-comp-candidate.png"
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (900, 600), "orange").save(candidate)
+        candidate_url = self.services.catalog.image(candidate)
+        with patch.object(
+            self.services.catalog,
+            "image",
+            wraps=self.services.catalog.image,
+        ) as publish:
+            prepared = self.services.prepare_comp_thumbnail({
+                "artist_id": self.row["artist_key"],
+                "album_id": comp_row["album_key"],
+                "track_key": target_key,
+                "image": candidate_url,
+                "adjustments": {"Brightness": 8},
+                "upscale": True,
+            })
+        # The full rendered preview stays in-process. Only the final bounded
+        # embedded thumbnail is published to the browser cache.
+        self.assertEqual(
+            len([
+                call for call in publish.call_args_list
+                if isinstance(call.args[0], bytes)
+            ]),
+            1,
+        )
+        self.assertFalse(prepared["audio_written"])
+        self.assertEqual((prepared["width"], prepared["height"]), (300, 300))
+        self.assertIsNone(embedded_track_artwork_bytes(target_path))
+        restarted_services = Services(self.runtime)
+        with patch.object(
+            restarted_services, "_comp_track_authority_validated", return_value=True
+        ):
+            embedded = restarted_services.embed_comp_track({
+                "artist_id": self.row["artist_key"],
+                "album_id": comp_row["album_key"],
+                "track_key": target_key,
+                "image": self.services.catalog.image(candidate),
+                "adjustments": {"Brightness": 8},
+                "upscale": True,
+                "prepared_id": prepared["prepared_id"],
+                "prepared_sha256": prepared["sha256"],
+            })
+        self.assertEqual((embedded["width"], embedded["height"]), (300, 300))
+        self.assertEqual(embedded["artwork_sha256"], prepared["sha256"])
+        self.assertTrue(embedded["coordination"]["durable"])
+        self.assertEqual(embedded["coordination"]["writer"], "webgui")
+        with Image.open(BytesIO(embedded_track_artwork_bytes(target_path))) as image:
+            self.assertEqual(image.size, (300, 300))
+        self.assertIsNone(embedded_track_artwork_bytes(other_path))
+        self.assertIsNone(embedded_track_artwork_bytes(featured_path))
+        with closing(self.db.connect()) as db:
+            written = list(db.execute(
+                "SELECT track_path FROM compilation_track_artwork"
+            ))
+            track_coordination = list(db.execute(
+                "SELECT relative_track_path,writer,artwork_sha256 "
+                "FROM comp_track_write_coordination"
+            ))
+            album_coordination_count = db.execute(
+                "SELECT count(*) FROM album_artwork_write_coordination"
+            ).fetchone()[0]
+        self.assertEqual([row["track_path"] for row in written], [str(target_path)])
+        self.assertEqual(album_coordination_count, 0)
+        self.assertEqual(len(track_coordination), 1)
+        self.assertEqual(track_coordination[0]["writer"], "webgui")
+        self.assertEqual(
+            track_coordination[0]["artwork_sha256"], embedded["artwork_sha256"]
+        )
+        self.assertEqual(
+            track_coordination[0]["relative_track_path"],
+            "compilations/billboard fixture/" + target_path.name.casefold(),
+        )
+
+        target_art = embedded_track_artwork_bytes(target_path)
+        with patch.object(
+            self.services, "_comp_track_authority_validated", return_value=True
+        ):
+            full_embedded = self.services.embed_comp_track({
+                "album_id": comp_row["album_key"],
+                "track_key": other_key,
+                "image": self.services.catalog.image(candidate),
+                "adjustments": {"Exposure": -4},
+                "upscale": False,
+            })
+        self.assertEqual((full_embedded["width"], full_embedded["height"]), (300, 300))
+        self.assertEqual(embedded_track_artwork_bytes(target_path), target_art)
+        with Image.open(BytesIO(embedded_track_artwork_bytes(other_path))) as image:
+            self.assertEqual(image.size, (300, 300))
+        self.assertIsNone(embedded_track_artwork_bytes(featured_path))
+        with closing(self.db.connect()) as db:
+            written = {
+                row["track_path"]
+                for row in db.execute(
+                    "SELECT track_path FROM compilation_track_artwork"
+                )
+            }
+            track_coordination_count = db.execute(
+                "SELECT count(*) FROM comp_track_write_coordination"
+            ).fetchone()[0]
+        self.assertEqual(written, {str(target_path), str(other_path)})
+        self.assertEqual(track_coordination_count, 2)
+
+    def test_read_mode_and_invalid_destinations_do_not_write(self):
+        original = self.cover.read_bytes()
+        self.runtime.cfg["mode"] = "read"
+        with self.assertRaises(PermissionError):
+            self.services.write_cover(self.payload())
+        with self.assertRaises(PermissionError):
+            self.services.stage_album(self.payload())
+        self.assertEqual(self.cover.read_bytes(), original)
+        with self.assertRaises(ValueError):
+            self.services.catalog.image_source("/etc/passwd")
+        outside = self.root / "outside.png"
+        Image.new("RGB", (20, 20), "red").save(outside)
+        self.assertIsNone(self.services.catalog.image(outside))
+
+    def test_upscale_preview_honors_native_resolution_and_percentage_ceiling(self):
+        source = self.runtime.cache / "small-cover.png"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (600, 900), "purple").save(source)
+        image = self.services.catalog.image(source)
+        self.runtime.cfg["output"]["upscale_below_ideal"] = False
+        preserved = self.services.preview(
+            {"image": image, "kind": "cover", "upscale": True}
+        )
+        self.assertEqual((preserved["width"], preserved["height"]), (600, 900))
+        self.assertFalse(preserved["upscaled"])
+        self.assertIn("Actual source resolution preserved", preserved["reason"])
+
+        self.runtime.cfg["output"]["upscale_below_ideal"] = True
+        self.runtime.cfg["output"]["upscale_max_percent"] = 200
+        enlarged = self.services.preview(
+            {"image": image, "kind": "cover", "upscale": True}
+        )
+        self.assertEqual((enlarged["width"], enlarged["height"]), (1200, 1800))
+        self.assertTrue(enlarged["upscaled"])
+        self.assertIn("200% ceiling", enlarged["reason"])
+        self.assertEqual(enlarged["upscale_percent"], 200.0)
+        self.assertTrue(enlarged["upscale_limited"])
+
+        ideal_source = self.runtime.cache / "near-ideal-cover.png"
+        Image.new("RGB", (1500, 1500), "navy").save(ideal_source)
+        ideal_preview = self.services.preview(
+            {
+                "image": self.services.catalog.image(ideal_source),
+                "kind": "comp",
+                "upscale": True,
+            }
+        )
+        self.assertEqual(
+            (ideal_preview["width"], ideal_preview["height"]), (1800, 1800)
+        )
+        self.assertEqual(ideal_preview["upscale_percent"], 120.0)
+        self.assertFalse(ideal_preview["upscale_limited"])
+        self.assertIn("120% to 1800px Ideal", ideal_preview["reason"])
+        self.assertNotIn("200%", ideal_preview["reason"])
+        self.assertEqual(ideal_preview["embedded_thumbnail_size"], 300)
+        self.assertTrue(list((self.runtime.temporary_cache / "web-images").iterdir()))
+        self.assertFalse((self.runtime.cache / "web-images").exists())
+
+    def test_staged_queue_survives_worker_restart_and_verifies_artifact(self):
+        staged = self.services.stage_album(self.payload())
+        self.assertIsNone(staged["cover"])
+        self.assertEqual(staged["prepared_kind"], "thumbnail-v1")
+        prepared = self.runtime.cache / "staged-artwork" / staged["prepared_file"]
+        full_cover = self.runtime.cache / "staged-artwork" / staged["cover_file"]
+        with Image.open(prepared) as image:
+            self.assertEqual(image.size, (300, 300))
+        with Image.open(full_cover) as image:
+            self.assertEqual(
+                image.size,
+                (staged["cover_width"], staged["cover_height"]),
+            )
+
+        first_projection = self.services.staged_album_projection(staged)
+        self.assertTrue(first_projection["staged_valid"])
+        first_handle = first_projection["cover"]
+        self.assertEqual(
+            self.services.catalog.image_bytes(first_handle), full_cover.read_bytes()
+        )
+        self.queue = JobQueue(self.services)
+        result = self.queue.enqueue("embed-album", staged, staged=True)
+
+        # Both index paths leave the durable Album work and its exact prepared
+        # artwork intact.
+        self.services.refresh_index(mode="incremental")
+        self.services.refresh_index(mode="full")
+        self.assertEqual(
+            next(item for item in self.queue.list() if item["id"] == result["id"])[
+                "state"
+            ],
+            "staged",
+        )
+        self.queue.close()
+
+        # A recreated service has a new signing key. The stored payload never
+        # contains the old handle; queue projection signs the persistent cache
+        # snapshot for this process.
+        restarted = Services(self.runtime)
+        with self.assertRaisesRegex(ValueError, "Invalid artwork handle"):
+            restarted.catalog.image_bytes(first_handle)
+        self.queue = JobQueue(restarted)
+        restored = next(
+            item for item in self.queue.list() if item["id"] == result["id"]
+        )
+        self.assertEqual(restored["state"], "staged")
+        self.assertTrue(restored["payload"]["staged_valid"])
+        self.assertNotEqual(restored["payload"]["cover"], first_handle)
+        self.assertEqual(
+            restarted.catalog.image_bytes(restored["payload"]["cover"]),
+            full_cover.read_bytes(),
+        )
+
+        self.queue.action("start", kind="embed-album")
+        for _ in range(100):
+            row = next(item for item in self.queue.list() if item["id"] == result["id"])
+            if row["state"] in {"done", "failed"}:
+                break
+            time.sleep(0.05)
+        self.assertEqual(row["state"], "done", row["error"])
+        self.assertTrue(row["result"]["verified"])
+        corrupt_payload = self.payload()
+        corrupt_payload["image"] = restarted.catalog.image(self.cover)
+        corrupt = restarted.stage_album(corrupt_payload)
+        (self.runtime.cache / "staged-artwork" / corrupt["prepared_file"]).write_bytes(
+            b"corrupt"
+        )
+        before = self.files[0].read_bytes()
+        with self.assertRaisesRegex(ValueError, "verification"):
+            restarted.embed_album(corrupt)
+        self.assertEqual(self.files[0].read_bytes(), before)
+
+    def test_album_staging_rejects_comp_before_it_can_enter_the_queue(self):
+        # A refresh publishes the current classification to PostgreSQL. Model
+        # that accepted catalog transition directly so this test remains about
+        # the staging boundary rather than tag-reader cache behavior.
+        with closing(self.db.connect()) as db, db:
+            db.execute(
+                "UPDATE albums SET musicbrainz_albumid='' WHERE album_key=?",
+                (self.row["album_key"],),
+            )
+            fallback = db.execute(
+                "SELECT * FROM albums WHERE path=?", (str(self.cover.parent),)
+            ).fetchone()
+        self.assertEqual(str(fallback["musicbrainz_albumid"] or ""), "")
+        original_cover = self.cover.read_bytes()
+        with self.assertRaisesRegex(ValueError, "COMP Fallback Albums"):
+            self.services.stage_album(
+                {
+                    "album_id": fallback["album_key"],
+                    "image": self.services.catalog.image(self.cover),
+                    "adjustments": {"Brightness": 40},
+                }
+            )
+        self.assertEqual(self.cover.read_bytes(), original_cover)
+        with closing(self.db.connect()) as db:
+            self.assertEqual(
+                db.execute(
+                    "SELECT count(*) FROM web_jobs WHERE kind='embed-album'"
+                ).fetchone()[0],
+                0,
+            )
+
+    def test_album_embedding_rejects_malformed_ids_at_stage_retry_and_execution(self):
+        staged = self.services.stage_album(self.payload())
+        self.queue = JobQueue(self.services)
+        self.queue.close()
+        queued = self.queue.enqueue("embed-album", staged, staged=True)
+        before = [path.read_bytes() for path in self.files]
+        with closing(self.db.connect()) as db, db:
+            db.execute(
+                "UPDATE albums SET musicbrainz_albumid='release-not-a-uuid' "
+                "WHERE album_key=?",
+                (self.row["album_key"],),
+            )
+
+        with self.assertRaisesRegex(ValueError, "valid MusicBrainz Release ID"):
+            self.services.stage_album(self.payload())
+        with self.assertRaisesRegex(ValueError, "valid MusicBrainz Release ID"):
+            self.services.embed_album(
+                {"album_id": self.row["album_key"], "image": self.services.catalog.image(self.cover)}
+            )
+        projection = self.services.staged_album_projection(staged)
+        self.assertFalse(projection["staged_valid"])
+        self.assertIn("valid MusicBrainz Release ID", projection["staged_error"])
+        self.queue.action("start", kind="embed-album")
+        failed = next(item for item in self.queue.list() if item["id"] == queued["id"])
+        self.assertEqual(failed["state"], "failed")
+        self.assertIn("valid MusicBrainz Release ID", failed["error"])
+        with self.assertRaisesRegex(ValueError, "valid MusicBrainz Release ID"):
+            self.queue.action("retry", queued["id"])
+        self.assertEqual([path.read_bytes() for path in self.files], before)
+
+    def test_identified_compilation_album_remains_album_embedding_eligible(self):
+        with closing(self.db.connect()) as db, db:
+            db.execute(
+                "UPDATE albums SET compilation=1 WHERE album_key=?",
+                (self.row["album_key"],),
+            )
+        staged = self.services.stage_album(self.payload())
+        row, files, _ = self.services.validate_staged_album(staged)
+        self.assertEqual(row["album_key"], self.row["album_key"])
+        self.assertEqual(files, self.files)
+        result = self.services.embed_album(staged)
+        self.assertTrue(result["verified"])
+        self.assertEqual(result["tracks"], len(self.files))
+
+    def test_reclassified_album_job_fails_visibly_without_embedding_comp_tracks(self):
+        self.queue = JobQueue(self.services)
+        self.queue.close()
+        staged = self.services.stage_album(self.payload())
+        result = self.queue.enqueue("embed-album", staged, staged=True)
+        before = [embedded_track_artwork_bytes(path) for path in self.files]
+
+        # The job survives an index refresh. Then model the refreshed catalog
+        # reclassifying this path as COMP and prove the obsolete Album job is
+        # visible but cannot be started.
+        self.services.refresh_index(mode="full")
+        with closing(self.db.connect()) as db, db:
+            db.execute(
+                "UPDATE albums SET musicbrainz_albumid='' WHERE album_key=?",
+                (self.row["album_key"],),
+            )
+            fallback = db.execute(
+                "SELECT * FROM albums WHERE path=?", (str(self.cover.parent),)
+            ).fetchone()
+        self.assertEqual(str(fallback["musicbrainz_albumid"] or ""), "")
+
+        restored = next(
+            item for item in self.queue.list() if item["id"] == result["id"]
+        )
+        self.assertFalse(restored["payload"]["staged_valid"])
+        self.assertRegex(
+            restored["payload"]["staged_error"],
+            "(now COMP Fallback|no longer indexed)",
+        )
+        self.queue.action("start", kind="embed-album")
+        failed = next(
+            item for item in self.queue.list() if item["id"] == result["id"]
+        )
+        self.assertEqual(failed["state"], "failed")
+        self.assertRegex(failed["error"], "(now COMP Fallback|no longer indexed)")
+        self.assertEqual(
+            [embedded_track_artwork_bytes(path) for path in self.files], before
+        )
+
+    def test_active_album_job_is_not_hidden_by_mixed_job_history(self):
+        self.queue = JobQueue(self.services)
+        self.queue.close()
+        result = self.queue.enqueue(
+            "embed-album", self.services.stage_album(self.payload()), staged=True
+        )
+        with closing(self.db.connect()) as db, db:
+            with db.raw.cursor() as cursor:
+                cursor.executemany(
+                    "INSERT INTO web_jobs(id,kind,state,payload) VALUES(%s,'comp','done',%s)",
+                    [
+                        (
+                            f"historical-{number:03d}",
+                            Jsonb({"track_keys": [str(number)]}),
+                        )
+                        for number in range(250)
+                    ],
+                )
+        listed = {item["id"]: item for item in self.queue.list()}
+        self.assertIn(result["id"], listed)
+        self.assertEqual(listed[result["id"]]["state"], "staged")
+
+    def test_album_queue_gates_order_and_remove_all_safety(self):
+        self.queue = JobQueue(self.services)
+        self.queue.close()
+        second_folder = self.root / "music" / "Test Artist" / "Second Album"
+        second_folder.mkdir(parents=True)
+        second_track = second_folder / "1.flac"
+        sf.write(second_track, np.zeros((4410, 2)), 44100)
+        second_audio = FLAC(second_track)
+        for key, value in {
+            "title": "Second Track",
+            "artist": "Test Artist",
+            "albumartist": "Test Artist",
+            "album": "Second Album",
+            "musicbrainz_albumid": "55555555-5555-4555-8555-555555555555",
+            "musicbrainz_artistid": "22222222-2222-4222-8222-222222222222",
+        }.items():
+            second_audio[key] = value
+        second_audio.save()
+        second_cover = second_folder / "cover.jpg"
+        Image.new("RGB", (180, 180), "purple").save(second_cover)
+        self.services.refresh_index(mode="full")
+        with closing(self.db.connect()) as db:
+            second_row = db.execute(
+                "SELECT * FROM albums WHERE path=?", (str(second_folder),)
+            ).fetchone()
+
+        staged = self.services.stage_album(self.payload())
+        second_staged = self.services.stage_album(
+            {
+                "album_id": second_row["album_key"],
+                "image": self.services.catalog.image(second_cover),
+            }
+        )
+        snapshots = [
+            self.runtime.cache / "staged-artwork" / item[field]
+            for item in (staged, second_staged)
+            for field in ("prepared_file", "cover_file")
+        ]
+        result = self.queue.enqueue("embed-album", staged, staged=True)
+        second_result = self.queue.enqueue(
+            "embed-album", second_staged, staged=True
+        )
+        self.queue.action("start", kind="embed-album")
+
+        paused_after = self.queue.action("pause-after", kind="embed-album")
+        self.assertTrue(paused_after["pause_after_album"])
+        self.assertIsNone(self.queue.claim())
+        resumed = self.queue.action("resume-queue", kind="embed-album")
+        self.assertFalse(resumed["pause_after_album"])
+
+        paused_all = self.queue.action("pause-all", kind="embed-album")
+        self.assertTrue(paused_all["pause_all_albums"])
+        self.assertIsNone(self.queue.claim())
+        resumed_all = self.queue.action("resume-all", kind="embed-album")
+        self.assertFalse(resumed_all["pause_all_albums"])
+        claimed = self.queue.claim()
+        self.assertEqual(claimed["id"], result["id"])
+        with self.assertRaisesRegex(ValueError, "Pause ALL Albums"):
+            self.queue.action("clear", kind="embed-album")
+
+        self.queue.action("pause", result["id"])
+        self.queue.action("pause", second_result["id"])
+        self.queue.action("clear", kind="embed-album")
+        self.assertTrue(all(not path.exists() for path in snapshots))
+        self.assertFalse(
+            any(item["kind"] == "embed-album" for item in self.queue.list())
+        )
+
+    def test_authenticated_server_recreation_restores_staged_preview(self):
+        self.runtime.close()
+        first_app = create_app(
+            self.config, self.url, token="restart-test-token", start_worker=True
+        )
+        with TestClient(first_app) as client:
+            status = client.get("/api/status").json()
+            client.headers["X-SPLINED-CSRF"] = status["csrf"]
+            setup = client.post(
+                "/api/admin/setup",
+                json={
+                    "username": "restart-admin",
+                    "password": "RestartPassword123",
+                    "confirmation": "RestartPassword123",
+                    "token": "restart-test-token",
+                },
+            )
+            self.assertEqual(setup.status_code, 200, setup.text)
+            album = client.get(
+                "/api/album", params={"id": self.row["album_key"]}
+            ).json()
+            staged = client.post(
+                "/api/jobs",
+                json={
+                    "kind": "embed-album",
+                    "payload": {
+                        "album_id": self.row["album_key"],
+                        "image": album["cover"],
+                    },
+                },
+            )
+            self.assertEqual(staged.status_code, 200, staged.text)
+            first_jobs = client.get("/api/jobs").json()
+            first = next(item for item in first_jobs if item["id"] == staged.json()["id"])
+            first_cover = first["payload"]["cover"]
+            self.assertTrue(first["payload"]["staged_valid"])
+            self.assertEqual(client.get(first_cover).status_code, 200)
+            # A page refresh reads the same staged identity and current handle.
+            refreshed = client.get("/api/jobs").json()
+            self.assertEqual(
+                next(item for item in refreshed if item["id"] == first["id"])[
+                    "payload"
+                ]["cover"],
+                first_cover,
+            )
+
+        second_app = create_app(
+            self.config, self.url, token="restart-test-token", start_worker=True
+        )
+        with TestClient(second_app) as client:
+            status = client.get("/api/status").json()
+            self.assertFalse(status["admin_setup_required"])
+            client.headers["X-SPLINED-CSRF"] = status["csrf"]
+            login = client.post(
+                "/api/login",
+                json={
+                    "username": "restart-admin",
+                    "password": "RestartPassword123",
+                },
+            )
+            self.assertEqual(login.status_code, 200, login.text)
+            restored_jobs = client.get("/api/jobs").json()
+            restored = next(item for item in restored_jobs if item["id"] == first["id"])
+            restored_cover = restored["payload"]["cover"]
+            self.assertTrue(restored["payload"]["staged_valid"])
+            # The WebGUI access token now supplies one restart-stable signing
+            # key. An already-open browser and a durable staged job therefore
+            # retain the same authorized path handle across server recreation.
+            self.assertEqual(restored_cover, first_cover)
+            self.assertEqual(client.get(restored_cover).status_code, 200)
+            self.assertEqual(client.get(first_cover).status_code, 200)
+
+        self.runtime = Runtime(self.config, self.db)
+        self.services = Services(self.runtime)
+
+    def test_comp_queue_deduplicates_only_the_same_track_and_artist_scope(self):
+        queue = JobQueue(self.services)
+        queue.close()
+        full = queue.enqueue("comp", {
+            "album_id": "comp-1", "track_keys": ["artist-track", "other-track"],
+        })
+        scoped = queue.enqueue("comp", {
+            "artist_id": "artist-1", "album_id": "comp-1", "track_keys": ["artist-track"],
+        })
+        repeated = queue.enqueue("comp", {
+            "artist_id": "artist-1", "album_id": "comp-1", "track_keys": ["artist-track"],
+        })
+
+        self.assertNotEqual(full["id"], scoped["id"])
+        self.assertEqual(repeated["id"], scoped["id"])
+        self.assertTrue(repeated["already_queued"])
+
+    def test_artist_comp_batch_queues_every_album_in_one_commit(self):
+        queue = JobQueue(self.services)
+        queue.close()
+        payloads = [
+            {
+                "artist_id": "artist-batch",
+                "album_id": "comp-batch-1",
+                "track_keys": ["track-1"],
+            },
+            {
+                "artist_id": "artist-batch",
+                "album_id": "comp-batch-2",
+                "track_keys": ["track-2", "track-3"],
+            },
+        ]
+
+        result = queue.enqueue_comp_batch(payloads)
+
+        self.assertEqual(result["id"], result["ids"][0])
+        self.assertEqual(len(result["ids"]), 2)
+        self.assertTrue(all(not job["already_queued"] for job in result["jobs"]))
+        with closing(self.db.connect()) as db:
+            rows = db.raw.execute(
+                "SELECT id,payload FROM web_jobs WHERE id=ANY(%s)",
+                (result["ids"],),
+            ).fetchall()
+        queued = {row["id"]: row["payload"] for row in rows}
+        self.assertEqual(set(queued), set(result["ids"]))
+        self.assertEqual(
+            [queued[job_id]["album_id"] for job_id in result["ids"]],
+            ["comp-batch-1", "comp-batch-2"],
+        )
+        self.assertEqual(
+            len({
+                queued[job_id]["comp_report_policy_revision"]
+                for job_id in result["ids"]
+            }),
+            1,
+        )
+        self.assertTrue(all(
+            queued[job_id]["comp_report_policy"]["batch"]["pin_policy_revision"]
+            for job_id in result["ids"]
+        ))
+
+        repeated = queue.enqueue_comp_batch(payloads)
+        self.assertEqual(repeated["ids"], result["ids"])
+        self.assertTrue(all(job["already_queued"] for job in repeated["jobs"]))
+
+    def test_scan_queue_resumes_the_active_interactive_review(self):
+        queue = JobQueue(self.services)
+        queue.close()
+        first = queue.enqueue(
+            "scan",
+            {"artist_id": "artist-1", "album_ids": ["album-1", "album-2"]},
+        )
+        repeated = queue.enqueue(
+            "scan",
+            {"artist_id": "artist-1", "album_ids": ["album-1"]},
+        )
+        other_artist = queue.enqueue(
+            "scan",
+            {"artist_id": "artist-2", "album_ids": ["album-3"]},
+        )
+
+        self.assertEqual(repeated["id"], first["id"])
+        self.assertEqual(other_artist["id"], first["id"])
+        self.assertTrue(repeated["already_queued"])
+        with closing(self.db.connect()) as db:
+            active = db.execute(
+                "SELECT count(*) FROM web_jobs WHERE kind='scan' "
+                "AND state IN ('waiting','running','queued')"
+            ).fetchone()[0]
+        self.assertEqual(active, 1)
+
+    def test_queue_start_leaves_paused_work_paused_and_retry_clears_stale_review(self):
+        self.queue = JobQueue(self.services)
+        self.queue.close()
+        queue = self.queue
+        self.queue = None
+        staged_payload = self.services.stage_album(self.payload())
+        with closing(self.db.connect()) as db, db:
+            db.raw.execute(
+                "INSERT INTO web_jobs(id,kind,state,payload,progress,decision,error) VALUES"
+                "('staged-work','embed-album','staged',%s,'{}',NULL,''),"
+                "('paused-work','embed-album','paused',%s,"
+                "'{\"prompt\":{\"nonce\":\"stale\"}}',"
+                "'{\"nonce\":\"stale\",\"value\":\"1\"}','old failure')",
+                (Jsonb(staged_payload), Jsonb(staged_payload)),
+            )
+        queue.action("start")
+        with closing(self.db.connect()) as db:
+            staged = db.execute("SELECT state FROM web_jobs WHERE id='staged-work'").fetchone()
+            paused = db.execute("SELECT state FROM web_jobs WHERE id='paused-work'").fetchone()
+        self.assertEqual(staged["state"], "queued")
+        self.assertEqual(paused["state"], "paused")
+
+        queue.action("retry", "paused-work")
+        with closing(self.db.connect()) as db:
+            retried = db.execute(
+                "SELECT state,progress,decision,error FROM web_jobs WHERE id='paused-work'"
+            ).fetchone()
+        self.assertEqual(retried["state"], "queued")
+        self.assertNotIn("prompt", retried["progress"])
+        self.assertIsNone(retried["decision"])
+        self.assertEqual(retried["error"], "")
+
+    def test_browser_auth_csrf_real_settings_and_bypass(self):
+        self.runtime.close()  # API owns its runtime for this test.
+        app = create_app(self.config, self.url, token="test-access", start_worker=False)
+        with TestClient(app) as client:
+            status = client.get("/api/status").json()
+            self.assertFalse(status["authenticated"])
+            self.assertTrue(status["admin_setup_required"])
+            self.assertEqual(client.get("/api/artists").status_code, 401)
+            self.assertEqual(
+                client.post(
+                    "/api/admin/setup",
+                    json={
+                        "username": "administrator",
+                        "password": "StrongPassword123",
+                        "confirmation": "StrongPassword123",
+                        "token": "test-access",
+                    },
+                ).status_code,
+                403,
+            )
+            client.headers["X-SPLINED-CSRF"] = status["csrf"]
+            self.assertEqual(
+                client.post(
+                    "/api/admin/setup",
+                    json={
+                        "username": "administrator",
+                        "password": "StrongPassword123",
+                        "confirmation": "StrongPassword123",
+                        "token": "wrong-token",
+                    },
+                ).status_code,
+                403,
+            )
+            self.assertEqual(
+                client.post(
+                    "/api/admin/setup",
+                    json={
+                        "username": "administrator",
+                        "password": "StrongPassword123",
+                        "confirmation": "StrongPassword123",
+                        "token": "test-access",
+                    },
+                ).status_code,
+                200,
+            )
+            self.assertFalse(client.get("/api/status").json()["admin_setup_required"])
+            artists = client.get("/api/artists").json()
+            self.assertEqual(artists[0]["name"], "Test Artist")
+            self.assertEqual(
+                artists[0]["portrait"],
+                "/api/artist/thumbnail?id=" + quote(artists[0]["id"], safe=""),
+            )
+            thumbnails = client.get("/api/artists/thumbnails").json()
+            portrait = next(
+                item["portrait"]
+                for item in thumbnails
+                if item["id"] == artists[0]["id"]
+            )
+            self.assertEqual(client.get(portrait).status_code, 200)
+            settings = client.get("/api/settings").json()
+            settings["config"]["mode"] = "read"
+            settings["config"]["webgui_ui"] = {
+                "enhancement": {
+                    "banner_styles": {
+                        "compiled": {
+                            "name": "COMPILED",
+                            "background": "#3478FF",
+                            "frame": "#D9AD43",
+                            "letters": "#D9AD43",
+                        }
+                    }
+                }
+            }
+            self.assertEqual(
+                client.post("/api/settings", json=settings).status_code, 200
+            )
+            stored = tomllib.loads(self.config.read_text())
+            self.assertEqual(stored["mode"], "read")
+            self.assertEqual(
+                stored["webgui_ui"]["enhancement"]["banner_styles"]["compiled"][
+                    "background"
+                ],
+                "#3478FF",
+            )
+            self.assertEqual(
+                client.post("/api/artwork/cover", json=self.payload()).status_code, 403
+            )
+            self.assertEqual(
+                client.post(
+                    "/api/bypass",
+                    json={"album_id": self.row["album_key"]},
+                    headers={
+                        "X-SPLINED-Action": "action-bypass",
+                        "X-SPLINED-Trace": "trace-bypass",
+                    },
+                ).status_code,
+                200,
+            )
+            self.assertEqual(
+                client.get("/api/album", params={"id": self.row["album_key"]}).json()[
+                    "status"
+                ],
+                "bypassed",
+            )
+            diagnostics = client.get("/api/diagnostics")
+            self.assertEqual(diagnostics.status_code, 200)
+            self.assertTrue(
+                any(event["action"] == "bypass" for event in diagnostics.json())
+            )
+            bypass_http = [
+                event
+                for event in diagnostics.json()
+                if event["subject"] == "POST /api/bypass"
+                and event["trace_id"] == "trace-bypass"
+            ]
+            self.assertEqual(
+                [event["action"] for event in bypass_http],
+                ["api-request", "api-response"],
+            )
+            self.assertEqual(
+                [event["request_status"] for event in bypass_http],
+                ["started", "completed"],
+            )
+            self.assertTrue(
+                all(event["action_id"] == "action-bypass" for event in bypass_http)
+            )
+            storage = client.get("/api/storage")
+            self.assertEqual(storage.status_code, 200)
+            self.assertTrue(storage.json()["database"].startswith("PostgreSQL · "))
+            self.assertGreater(storage.json()["database_bytes"], 0)
+            self.assertEqual(storage.json()["configuration"], str(self.config.resolve()))
+            self.assertEqual(
+                client.post(
+                    "/api/bypass", headers={"Origin": "https://example.org"}, json={}
+                ).status_code,
+                403,
+            )
+            recovery = {
+                "username": "administrator",
+                "password": "ReplacementPassword456",
+                "confirmation": "ReplacementPassword456",
+                "token": "wrong-token",
+            }
+            self.assertEqual(
+                client.post("/api/admin/recover", json=recovery).status_code, 403
+            )
+            recovery["token"] = "test-access"
+            self.assertEqual(
+                client.post("/api/admin/recover", json=recovery).status_code, 200
+            )
+            self.assertEqual(client.get("/api/artists").status_code, 401)
+            status = client.get("/api/status").json()
+            client.headers["X-SPLINED-CSRF"] = status["csrf"]
+            self.assertEqual(
+                client.post(
+                    "/api/login",
+                    json={
+                        "username": "administrator",
+                        "password": "StrongPassword123",
+                    },
+                ).status_code,
+                403,
+            )
+
+            self.assertEqual(
+                client.post(
+                    "/api/login",
+                    json={
+                        "username": "administrator",
+                        "password": "ReplacementPassword456",
+                    },
+                ).status_code,
+                200,
+            )
+            diagnostics = client.get("/api/diagnostics").json()
+            self.assertTrue(
+                any(event["action"] == "reset-admin-password" for event in diagnostics)
+            )
+            self.assertEqual(client.post("/api/logout").status_code, 200)
+            self.assertEqual(client.get("/api/artists").status_code, 401)
+        self.runtime = Runtime(self.config, self.db)
+
+    def test_browser_authentication_survives_server_restart(self):
+        self.runtime.close()
+        first_app = create_app(
+            self.config, self.url, token="restart-test-token", start_worker=False
+        )
+        with TestClient(first_app) as first:
+            status = first.get("/api/status").json()
+            first.headers["X-SPLINED-CSRF"] = status["csrf"]
+            response = first.post(
+                "/api/admin/setup",
+                json={
+                    "username": "restart-admin",
+                    "password": "RestartPassword123",
+                    "confirmation": "RestartPassword123",
+                    "token": "restart-test-token",
+                },
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            session_cookie = first.cookies.get("splined_session")
+            self.assertTrue(session_cookie)
+            self.assertTrue(first.get("/api/status").json()["authenticated"])
+            image_handle = first_app.state.context.services.catalog.image(self.cover)
+
+        restarted_app = create_app(
+            self.config, self.url, token="restart-test-token", start_worker=False
+        )
+        with TestClient(restarted_app) as restarted:
+            restarted.cookies.set("splined_session", session_cookie)
+            status = restarted.get("/api/status")
+            self.assertEqual(status.status_code, 200, status.text)
+            self.assertTrue(status.json()["authenticated"])
+            self.assertEqual(status.json()["username"], "restart-admin")
+            self.assertEqual(status.json()["database_migration"]["current"], 26)
+            self.assertTrue(status.json()["database_migration"]["automatic"])
+            self.assertEqual(restarted.get("/api/artists").status_code, 200)
+            self.assertEqual(
+                restarted_app.state.context.services.catalog.image_source(
+                    image_handle
+                ).read_bytes(),
+                self.cover.read_bytes(),
+            )
+        self.runtime = Runtime(self.config, self.db)
+
+    def test_v3_migration_prunes_legacy_diagnostics_and_reports_catalog_drift(self):
+        with closing(self.db.connect()) as db, db:
+            db.raw.execute("DELETE FROM web_schema_versions WHERE version=23")
+            db.raw.execute(
+                "INSERT INTO web_audit_sessions("
+                "session_id,application_version,application_revision) "
+                "VALUES('legacy-v2','2.0.36','legacy')"
+            )
+            db.raw.execute(
+                "INSERT INTO web_audit("
+                "action,subject,session_id,application_version,application_revision) "
+                "VALUES('api-error','legacy thumbnail','legacy-v2','2.0.36','legacy')"
+            )
+            db.raw.execute(
+                "UPDATE albums SET splined_version='2.0.36' WHERE album_key=%s",
+                (self.row["album_key"],),
+            )
+            db.raw.execute(
+                "UPDATE artists SET splined_version='2.0.36' WHERE artist_key=%s",
+                (self.row["artist_key"],),
+            )
+            db.raw.execute(
+                "UPDATE tracks SET splined_version='2.0.36' WHERE album_key=%s",
+                (self.row["album_key"],),
+            )
+
+        migration = self.db.migrate()
+        self.assertEqual(migration["applied"], [23])
+        self.assertEqual(migration["cleanup"]["pre_v3_audit"], 1)
+        status = self.db.upgrade_status(core.VERSION)
+        self.assertEqual(status["catalog_older_major_records"], 4)
+        self.assertEqual(
+            status["catalog_older_major_by_table"],
+            {"artists": 1, "albums": 1, "tracks": 2},
+        )
+        self.assertEqual(status["audit_older_major_records"], 0)
+        self.assertTrue(status["recommendations"])
+        with closing(self.db.connect()) as db:
+            self.assertEqual(
+                db.raw.execute(
+                    "SELECT count(*) AS n FROM web_audit "
+                    "WHERE application_version='2.0.36'"
+                ).fetchone()["n"],
+                0,
+            )
+            self.assertEqual(
+                db.raw.execute(
+                    "SELECT splined_version FROM albums WHERE album_key=%s",
+                    (self.row["album_key"],),
+                ).fetchone()["splined_version"],
+                "2.0.36",
+            )
+
+    def test_library_changes_get_is_cached_and_probe_is_explicit(self):
+        self.runtime.close()  # The API owns its runtime for this test.
+        app = create_app(self.config, self.url, token="test-access", start_worker=False)
+        app.state.context.jobs = JobQueue(app.state.context.services)
+        app.state.context.jobs.close()
+        with TestClient(app) as client:
+            status = client.get("/api/status").json()
+            client.headers["X-SPLINED-CSRF"] = status["csrf"]
+            setup = client.post(
+                "/api/admin/setup",
+                json={
+                    "username": "manifest-admin",
+                    "password": "StrongPassword123",
+                    "confirmation": "StrongPassword123",
+                    "token": "test-access",
+                },
+            )
+            self.assertEqual(setup.status_code, 200, setup.text)
+
+            added = self.root / "music" / "Unprobed Artist" / "Unprobed Album"
+            added.mkdir(parents=True)
+            shutil.copy2(self.files[0], added / "01.flac")
+
+            cached = client.get("/api/library/changes")
+            self.assertEqual(cached.status_code, 200, cached.text)
+            self.assertEqual(cached.json()["count"], 0)
+            self.assertFalse(cached.json()["checking"])
+            with closing(self.db.connect()) as db:
+                self.assertEqual(
+                    db.execute(
+                        "SELECT count(*) FROM web_jobs WHERE kind='index-probe'"
+                    ).fetchone()[0],
+                    0,
+                )
+
+            requested = client.post("/api/library/check-changes", json={})
+            self.assertEqual(requested.status_code, 200, requested.text)
+            self.assertEqual(requested.json()["state"], "queued")
+            checking = client.get("/api/library/changes").json()
+            self.assertTrue(checking["checking"])
+            self.assertEqual(checking["probe_job_id"], requested.json()["id"])
+
+            refresh = client.post(
+                "/api/jobs",
+                json={"kind": "index", "payload": {"mode": "incremental"}},
+            )
+            self.assertEqual(refresh.status_code, 200, refresh.text)
+            self.assertNotEqual(refresh.json()["id"], requested.json()["id"])
+            self.assertFalse(refresh.json().get("already_queued", False))
+        self.runtime = Runtime(self.config, self.db)
+
+    def test_audit_recovers_sanitized_local_fallback_in_order(self):
+        with patch.object(
+            self.runtime.database,
+            "connect",
+            side_effect=OSError("postgres unavailable password=database-secret"),
+        ):
+            fallback_sequence = self.services.audit(
+                "deliberate-test-failure",
+                "audit recovery",
+                {
+                    "password": "payload-secret",
+                    "album_id": "album-1",
+                    "provider_error": (
+                        "failed at https://recovery-user:recovery-pass@example.invalid/api"
+                        "?api%5Fkey=recovery-query-secret&id=42"
+                    ),
+                },
+                severity="error",
+                action_id="action-recovery",
+                trace_id="trace-recovery",
+                request_status="failed",
+            )
+
+        self.assertLess(fallback_sequence, 0)
+        self.assertTrue(self.services._audit_fallback_path.is_file())
+        current_sequence = self.services.audit(
+            "recovery-check",
+            "audit recovery",
+            action_id="action-recovery",
+            trace_id="trace-recovery",
+            request_status="completed",
+        )
+        self.assertGreater(current_sequence, 0)
+        self.assertFalse(self.services._audit_fallback_path.exists())
+
+        with closing(self.db.connect()) as db:
+            rows = db.execute(
+                "SELECT id,action,details,recovered_from_fallback,session_id,"
+                "application_version,application_revision FROM web_audit "
+                "WHERE action_id=? ORDER BY id",
+                ("action-recovery",),
+            ).fetchall()
+        self.assertEqual(
+            [row["action"] for row in rows],
+            ["deliberate-test-failure", "recovery-check"],
+        )
+        self.assertTrue(rows[0]["recovered_from_fallback"])
+        self.assertFalse(rows[1]["recovered_from_fallback"])
+        self.assertLess(rows[0]["id"], rows[1]["id"])
+        self.assertEqual(rows[0]["details"]["password"], "[REDACTED]")
+        self.assertNotIn("payload-secret", repr(rows))
+        self.assertNotIn("recovery-user", repr(rows))
+        self.assertNotIn("recovery-pass", repr(rows))
+        self.assertNotIn("recovery-query-secret", repr(rows))
+        self.assertIn("id=42", repr(rows))
+        self.assertTrue(all(row["session_id"] for row in rows))
+        self.assertTrue(all(row["application_version"] for row in rows))
+        self.assertTrue(all(row["application_revision"] for row in rows))
+
+    def test_failed_browser_action_exports_complete_correlated_audit(self):
+        """A downloaded audit can reconstruct one deliberately failed action."""
+        self.runtime.close()  # API owns its runtime for this test.
+        app = create_app(self.config, self.url, token="test-access", start_worker=False)
+        with TestClient(app) as client:
+            status = client.get("/api/status").json()
+            client.headers["X-SPLINED-CSRF"] = status["csrf"]
+            setup = client.post(
+                "/api/admin/setup",
+                json={
+                    "username": "administrator",
+                    "password": "StrongPassword123",
+                    "confirmation": "StrongPassword123",
+                    "token": "test-access",
+                },
+            )
+            self.assertEqual(setup.status_code, 200, setup.text)
+
+            action_id = "action-deliberate-audit-failure"
+            trace_id = "trace-deliberate-audit-failure"
+            job_id = "job-deliberate-audit-failure"
+            audit_headers = {
+                "X-SPLINED-Action": action_id,
+                "X-SPLINED-Trace": trace_id,
+            }
+            button = client.post(
+                "/api/audit/events",
+                headers=audit_headers,
+                json={
+                    "action": "button-click",
+                    "subject": "bypassButton",
+                    "action_id": action_id,
+                    "trace_id": trace_id,
+                    "job_id": job_id,
+                    "request_status": "requested",
+                    "details": {
+                        "label": "Bypass",
+                        "password": "synthetic-audit-secret",
+                        "provider_error": (
+                            "first https://export-user:export-pass@example.invalid:8443/api"
+                            "?to%6Ben=export-query-secret&id=42 then "
+                            "postgresql://db-user:db-pass@db.invalid/catalog"
+                            "?credential=export-credential-secret"
+                        ),
+                    },
+                },
+            )
+            self.assertEqual(button.status_code, 200, button.text)
+
+            failed = client.post(
+                "/api/bypass",
+                headers=audit_headers,
+                json={"album_id": "missing-deliberate-audit-album"},
+            )
+            self.assertEqual(failed.status_code, 404, failed.text)
+            failure_message = failed.json()["error"]
+            for action, subject in (
+                ("api-client-error", "/api/bypass"),
+                ("browser-action-failed", "bypassButton"),
+            ):
+                browser_failure = client.post(
+                    "/api/audit/events",
+                    headers=audit_headers,
+                    json={
+                        "action": action,
+                        "subject": subject,
+                        "severity": "error",
+                        "action_id": action_id,
+                        "trace_id": trace_id,
+                        "request_status": "failed",
+                        "error": failure_message,
+                    },
+                )
+                self.assertEqual(browser_failure.status_code, 200, browser_failure.text)
+
+            exported = client.get(
+                "/api/audit/export", params={"correlation": action_id}
+            )
+            self.assertEqual(exported.status_code, 200, exported.text)
+            self.assertEqual(
+                exported.headers["content-disposition"],
+                'attachment; filename="audit.json"',
+            )
+            document = exported.json()
+            events = document["events"]
+            self.assertEqual(
+                [event["action"] for event in events],
+                [
+                    "button-click",
+                    "api-request",
+                    "api-error",
+                    "api-response",
+                    "api-client-error",
+                    "browser-action-failed",
+                ],
+            )
+            self.assertEqual(
+                [event["sequence"] for event in events],
+                sorted(event["sequence"] for event in events),
+            )
+            self.assertTrue(
+                all(event["action_id"] == action_id for event in events)
+            )
+            self.assertTrue(
+                all(event["trace_id"] == trace_id for event in events)
+            )
+            self.assertEqual(events[0]["job_id"], job_id)
+            self.assertTrue(
+                all(event["session_id"] for event in events)
+            )
+            self.assertTrue(
+                all(event["application_version"] == core.VERSION for event in events)
+            )
+            self.assertTrue(
+                all(event["application_revision"] for event in events)
+            )
+            self.assertEqual(
+                events[0]["details"]["password"], "[REDACTED]"
+            )
+            self.assertNotIn("synthetic-audit-secret", exported.text)
+            for secret in (
+                "export-user",
+                "export-pass",
+                "export-query-secret",
+                "db-user",
+                "db-pass",
+                "export-credential-secret",
+            ):
+                self.assertNotIn(secret, exported.text)
+            self.assertIn("https://example.invalid:8443/api", exported.text)
+            self.assertIn("id=42", exported.text)
+            self.assertFalse(document["export"]["selected_records_truncated"])
+            self.assertTrue(document["export"]["complete_for_retained_window"])
+
+            artifact = os.environ.get("SPLINED_TEST_AUDIT_EXPORT", "").strip()
+            if artifact:
+                target = Path(artifact).resolve()
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(
+                    json.dumps(document, indent=2, ensure_ascii=False) + "\n",
+                    encoding="utf-8",
+                )
+        self.runtime = Runtime(self.config, self.db)
+
+    def test_credentials_mask_secrets_and_retain_blank_values(self):
+        credentials = Credentials(self.runtime)
+        credentials.save(
+            "navidrome",
+            {
+                "server_url": "http://127.0.0.1:4533",
+                "auth_method": "api_key",
+                "api_key": "fixture-secret",
+            },
+        )
+        credentials.save("navidrome", {"api_key": ""})
+        self.assertNotIn("fixture-secret", str(credentials.describe("navidrome")))
+        self.assertEqual(credentials.read("navidrome")["api_key"], "fixture-secret")
+        with self.assertRaises(ValueError):
+            credentials.save("navidrome", {"../bad": "secret"})
+
+    def test_restart_discards_comp_jobs_but_pauses_durable_and_queued_scan_work(self):
+        prepared_id = "a" * 32
+        prepared_dir = self.services._prepared_comp_directory()
+        prepared_image = prepared_dir / (prepared_id + ".jpg")
+        prepared_manifest = prepared_dir / (prepared_id + ".json")
+        prepared_image.write_bytes(b"prepared")
+        prepared_manifest.write_text("{}", encoding="utf-8")
+        with closing(self.db.connect()) as db, db:
+            db.raw.execute(
+                "INSERT INTO web_jobs(id,kind,state,payload,progress) "
+                "VALUES('interrupted','comp','waiting','{}',%s)",
+                (Jsonb({"prepared_comp": {"prepared_id": prepared_id}}),),
+            )
+            db.execute(
+                "INSERT INTO web_jobs(id,kind,state,payload) VALUES('completed-comp','comp','done','{}')"
+            )
+            db.execute(
+                "INSERT INTO web_jobs(id,kind,state,payload) VALUES('durable','embed-album','waiting','{}')"
+            )
+            db.execute(
+                "INSERT INTO web_jobs(id,kind,state,payload) "
+                "VALUES('queued-scan','scan','queued','{\"artist_id\":\"artist-1\",\"album_ids\":[\"album-1\"]}')"
+            )
+        self.queue = JobQueue(self.services)
+        rows = {item["id"]: item for item in self.queue.list()}
+        self.assertNotIn("interrupted", rows)
+        self.assertNotIn("completed-comp", rows)
+        self.assertEqual(rows["durable"]["state"], "paused")
+        self.assertEqual(rows["durable"]["error"], "Interrupted by server restart")
+        self.assertEqual(rows["queued-scan"]["state"], "paused")
+        self.assertEqual(rows["queued-scan"]["error"], "Interrupted by server restart")
+        self.assertFalse(prepared_image.exists())
+        self.assertFalse(prepared_manifest.exists())
+        with self.assertRaises(ValueError):
+            self.queue.action("decision", "interrupted", "1", "stale")
+
+    def test_album_queue_bulk_actions_never_change_hidden_comp_work(self):
+        self.queue = JobQueue(self.services)
+        self.queue.close()
+        staged = self.services.stage_album(self.payload())
+        album = self.queue.enqueue("embed-album", staged, staged=True)
+        comp = self.queue.enqueue("comp", {"track_keys": ["track"]}, staged=True)
+
+        self.queue.action("start", kind="embed-album")
+        states = {item["id"]: item["state"] for item in self.queue.list()}
+        self.assertEqual(states[album["id"]], "queued")
+        self.assertEqual(states[comp["id"]], "staged")
+
+        self.queue.action("clear", kind="embed-album")
+        remaining = {item["id"]: item for item in self.queue.list()}
+        self.assertNotIn(album["id"], remaining)
+        self.assertEqual(remaining[comp["id"]]["state"], "staged")
+
+    @patch("splined_scan._manual_remote_candidates", return_value=([], []))
+    def test_comp_decision_writes_one_track_and_records_postgres_completion(
+        self, _remote
+    ):
+        import shutil
+
+        suggestion = self.title_suggestion_resolution()
+        exact = replace(
+            suggestion.candidates[0],
+            score=100,
+            match_basis="exact-recording",
+        )
+        validated = replace(
+            suggestion,
+            candidates=(exact,),
+            identity_status="valid",
+            identity_message="Recording and Artist IDs verified",
+            recording_status="valid",
+            used_fuzzy_search=False,
+        )
+
+        self.services.hydrate_tracks(self.row["album_key"])
+        folder = self.root / "music" / "Compilations" / "Various"
+        folder.mkdir(parents=True)
+        target = folder / "comp.flac"
+        shutil.copyfile(self.files[0], target)
+        audio = FLAC(target)
+        del audio["musicbrainz_albumid"]
+        audio["album"] = "Various"
+        audio.save()
+        original_cover = self.cover.read_bytes()
+        self.services.refresh_index()
+        with closing(self.db.connect()) as db:
+            row = db.execute(
+                "SELECT * FROM albums WHERE path=?", (str(folder),)
+            ).fetchone()
+            self.assertEqual(
+                db.execute(
+                    "SELECT count(*) FROM tracks WHERE album_key=?",
+                    (row["album_key"],),
+                ).fetchone()[0],
+                1,
+            )
+        with patch.object(self.services, "hydrate_tracks", wraps=self.services.hydrate_tracks) as hydrate:
+            report = self.services.comp_report(row["artist_key"])
+            self.assertFalse(hydrate.called)
+        self.assertEqual([group["id"] for group in report], [row["album_key"]])
+        tracks = self.services.hydrate_tracks(row["album_key"])
+        self.queue = JobQueue(self.services)
+        with (
+            patch.object(
+                core,
+                "compilation_credential_options",
+                return_value=compilation.MusicBrainzOptions(1, 0.0, 1.0),
+            ),
+            patch.object(
+                core,
+                "compilation_resolve_interactive_identity",
+                return_value=validated,
+            ),
+        ):
+            job = self.queue.enqueue(
+                "comp",
+                {
+                    "album_id": row["album_key"],
+                    "track_keys": [tracks[0]["track_key"]],
+                },
+            )
+            item = self.wait_for_job(
+                job["id"], lambda value: value["state"] == "waiting"
+            )
+            self.assertEqual(item["state"], "waiting", item.get("error"))
+            prompt = item["progress"]["prompt"]
+            self.assertEqual(prompt["context"]["album_id"], row["album_key"])
+            self.assertEqual(prompt["context"]["kind"], "musicbrainz-results")
+            self.queue.action(
+                "decision", job["id"],
+                json.dumps({"action": "use-existing", "number": 1}),
+                prompt["nonce"],
+            )
+            item = self.wait_for_job(
+                job["id"],
+                lambda value: value["state"] == "waiting"
+                and value["progress"]["prompt"]["context"].get("kind")
+                != "musicbrainz-results",
+            )
+            self.assertTrue(item["progress"]["current"]["candidates"]["items"])
+            prompt = item["progress"]["prompt"]
+            self.queue.action("decision", job["id"], "1", prompt["nonce"])
+            item = self.wait_for_job(
+                job["id"], lambda value: value["state"] in {"done", "failed"}
+            )
+        self.assertEqual(item["state"], "done", item.get("error"))
+        self.assertEqual(item["result"]["installed"], 1, item["result"])
+        with Image.open(BytesIO(embedded_track_artwork_bytes(target))) as image:
+            self.assertEqual(image.size, (300, 300))
+        self.assertEqual(
+            self.services.catalog.comp_track_status(
+                row["album_key"], tracks[0]["track_key"]
+            )["status"],
+            "green",
+        )
+        with closing(self.db.connect()) as db:
+            recorded = db.execute(
+                "SELECT recording_mbid,artist_mbid,artwork_sha256,outcome "
+                "FROM compilation_track_artwork WHERE track_path=?",
+                (str(target),),
+            ).fetchone()
+        self.assertIsNotNone(recorded)
+        self.assertEqual(recorded["outcome"], "embedded-replaced")
+        self.assertEqual(
+            recorded["artwork_sha256"],
+            hashlib.sha256(embedded_track_artwork_bytes(target)).hexdigest(),
+        )
+        self.assertEqual(self.cover.read_bytes(), original_cover)
+        self.assertNotIn("musicbrainz_albumid", FLAC(target))
+        # The terminal job row is committed immediately before its structured
+        # Audit transition is written on a separate connection.  Wait for the
+        # correlated diagnostic event instead of racing that deliberate
+        # boundary on fast CI runners.
+        deadline = time.monotonic() + 5.0
+        transitions = []
+        while time.monotonic() < deadline:
+            with closing(self.db.connect()) as db:
+                transitions = db.execute(
+                    "SELECT id,state_from,state_to,request_status FROM web_audit "
+                    "WHERE job_id=? AND action='job-transition' ORDER BY id",
+                    (job["id"],),
+                ).fetchall()
+            if transitions and transitions[-1]["state_to"] == "done":
+                break
+            time.sleep(0.05)
+        states = [event["state_to"] for event in transitions]
+        self.assertEqual(states[:2], ["queued", "running"])
+        self.assertGreaterEqual(states.count("waiting"), 2)
+        self.assertGreaterEqual(states.count("running"), 3)
+        self.assertEqual(states[-1], "done")
+        self.assertEqual(
+            [event["id"] for event in transitions],
+            sorted(event["id"] for event in transitions),
+        )
+
+    def test_title_suggested_comp_write_without_apply_ids_stays_blue(self):
+        row, track, target = self.make_comp_track(
+            "Title Suggested Compilation", recording_id=False
+        )
+        self.queue = JobQueue(self.services)
+        resolution = self.title_suggestion_resolution()
+        with (
+            patch.object(
+                core,
+                "compilation_credential_options",
+                return_value=compilation.MusicBrainzOptions(1, 0.0, 1.0),
+            ),
+            patch.object(
+                core,
+                "compilation_resolve_interactive_identity",
+                return_value=resolution,
+            ),
+            patch("splined_scan._manual_remote_candidates", return_value=([], [])),
+        ):
+            item = self.drive_comp_candidate(row, track)
+
+        self.assertEqual(item["state"], "done", item.get("error"))
+        self.assertEqual(item["result"]["installed"], 1)
+        self.assertEqual(item["result"]["unresolved"], 1)
+        self.assertEqual(item["result"]["resolved"], 0)
+        artwork = embedded_track_artwork_bytes(target)
+        self.assertIsNotNone(artwork)
+        with Image.open(BytesIO(artwork)) as image:
+            self.assertEqual(image.size, (300, 300))
+        with closing(self.db.connect()) as db:
+            self.assertIsNone(
+                db.execute(
+                    "SELECT 1 FROM compilation_track_artwork WHERE track_path=?",
+                    (str(target),),
+                ).fetchone()
+            )
+        self.assertEqual(
+            self.services.catalog.comp_track_status(
+                row["album_key"], track["track_key"]
+            )["status"],
+            "blue",
+        )
+        self.assertNotIn("musicbrainz_trackid", FLAC(target))
+        self.assertEqual(
+            FLAC(target)["musicbrainz_artistid"],
+            ["22222222-2222-4222-8222-222222222222"],
+        )
+
+    def test_artist_mismatched_recording_suggestion_stays_blue_in_queued_and_direct_paths(self):
+        row, track, target = self.make_comp_track(
+            "Mismatched Recording Compilation", recording_id=True
+        )
+        mismatched_recording = "99999999-9999-4999-8999-999999999999"
+        audio = FLAC(target)
+        audio["musicbrainz_trackid"] = mismatched_recording
+        audio.save()
+        self.services.refresh_index(mode="full")
+        track = self.services.hydrate_tracks(row["album_key"])[0]
+        self.queue = JobQueue(self.services)
+        resolution = replace(
+            self.title_suggestion_resolution(),
+            identity_status="invalid",
+            identity_message=(
+                "Recording Artist ID does not match the local Artist ID; "
+                "same-Artist title suggestion available"
+            ),
+            recording_status="invalid",
+        )
+        with (
+            patch.object(
+                core,
+                "compilation_credential_options",
+                return_value=compilation.MusicBrainzOptions(1, 0.0, 1.0),
+            ),
+            patch.object(
+                core,
+                "compilation_resolve_interactive_identity",
+                return_value=resolution,
+            ),
+            patch("splined_scan._manual_remote_candidates", return_value=([], [])),
+        ):
+            item = self.drive_comp_candidate(row, track)
+
+        self.assertEqual(item["state"], "done", item.get("error"))
+        self.assertEqual(item["result"]["installed"], 1)
+        self.assertEqual(item["result"]["unresolved"], 1)
+        self.assertEqual(FLAC(target)["musicbrainz_trackid"], [mismatched_recording])
+        with closing(self.db.connect()) as db:
+            self.assertIsNone(
+                db.execute(
+                    "SELECT 1 FROM compilation_track_artwork WHERE track_path=?",
+                    (str(target),),
+                ).fetchone()
+            )
+
+        candidate = self.runtime.temporary_cache / "mismatched-direct.png"
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (500, 500), "orange").save(candidate)
+        with (
+            patch.object(
+                core,
+                "compilation_credential_options",
+                return_value=compilation.MusicBrainzOptions(1, 0.0, 1.0),
+            ),
+            patch.object(
+                core,
+                "compilation_resolve_interactive_identity",
+                return_value=resolution,
+            ) as direct_resolver,
+        ):
+            direct = self.services.embed_comp_track({
+                "album_id": row["album_key"],
+                "track_key": track["track_key"],
+                "image": self.services.catalog.image(candidate),
+                "adjustments": {},
+                "upscale": False,
+            })
+        direct_resolver.assert_called_once()
+        self.assertFalse(direct["completed"])
+        self.assertEqual(direct["status"], "blue")
+        self.assertEqual(FLAC(target)["musicbrainz_trackid"], [mismatched_recording])
+        with closing(self.db.connect()) as db:
+            self.assertIsNone(
+                db.execute(
+                    "SELECT 1 FROM compilation_track_artwork WHERE track_path=?",
+                    (str(target),),
+                ).fetchone()
+            )
+
+    def test_fastapi_mp3_comp_embed_preserves_id3_and_records_verified_completion(self):
+        folder = self.root / "music" / "Various Artists" / "MP3 COMP Fixture"
+        folder.mkdir(parents=True)
+        target = folder / "01 Test Artist - MP3 Track.mp3"
+        sibling = folder / "02 Other Artist - Untouched.mp3"
+        silent_frame = bytes.fromhex("fffb9064") + bytes(413)
+        target.write_bytes(silent_frame * 20)
+        sibling.write_bytes(silent_frame * 20)
+        recording_id = "44444444-4444-4444-8444-000000000099"
+        artist_id = "22222222-2222-4222-8222-222222222222"
+        tags = ID3()
+        tags.add(TIT2(encoding=3, text=["MP3 Track"]))
+        tags.add(TPE1(encoding=3, text=["Test Artist"]))
+        tags.add(TPE2(encoding=3, text=["Various Artists"]))
+        tags.add(TALB(encoding=3, text=["MP3 COMP Fixture"]))
+        tags.add(TRCK(encoding=3, text=["1"]))
+        tags.add(TCON(encoding=3, text=["Alternative"]))
+        tags.add(COMM(encoding=3, lang="eng", desc="fixture-note", text=["preserve me"]))
+        tags.add(TXXX(encoding=3, desc="fixture-custom", text=["unchanged"]))
+        tags.add(TXXX(encoding=3, desc="MusicBrainz Track Id", text=[recording_id]))
+        tags.add(TXXX(encoding=3, desc="MusicBrainz Artist Id", text=[artist_id]))
+        tags.add(UFID(owner="http://musicbrainz.org", data=recording_id.encode("ascii")))
+        tags.save(target)
+        sibling_tags = ID3()
+        sibling_tags.add(TIT2(encoding=3, text=["Untouched"]))
+        sibling_tags.add(TPE1(encoding=3, text=["Other Artist"]))
+        sibling_tags.add(TPE2(encoding=3, text=["Various Artists"]))
+        sibling_tags.add(TALB(encoding=3, text=["MP3 COMP Fixture"]))
+        sibling_tags.save(sibling)
+        Image.new("RGB", (640, 640), "purple").save(folder / "cover.jpg")
+        self.services.refresh_index(mode="full")
+        with closing(self.db.connect()) as db:
+            row = db.execute(
+                "SELECT * FROM albums WHERE path=?", (str(folder),)
+            ).fetchone()
+        track = next(
+            item for item in self.services.hydrate_tracks(row["album_key"])
+            if Path(item["path"]) == target
+        )
+        self.runtime.close()
+        app = create_app(self.config, self.url, token="test-access", start_worker=False)
+        with patch.object(
+            Services, "_comp_track_authority_validated", return_value=True
+        ), TestClient(app) as client:
+            status = client.get("/api/status").json()
+            client.headers["X-SPLINED-CSRF"] = status["csrf"]
+            setup = client.post(
+                "/api/admin/setup",
+                json={
+                    "username": "administrator",
+                    "password": "StrongPassword123",
+                    "confirmation": "StrongPassword123",
+                    "token": "test-access",
+                },
+            )
+            self.assertEqual(setup.status_code, 200, setup.text)
+            album = client.get(
+                "/api/album", params={"id": row["album_key"]}
+            ).json()
+            response = client.post(
+                "/api/comp/embed",
+                json={
+                    "album_id": row["album_key"],
+                    "track_key": track["track_key"],
+                    "image": album["cover"],
+                    "adjustments": {},
+                    "upscale": False,
+                },
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            result = response.json()
+            self.assertTrue(result["completed"])
+            self.assertEqual(result["file"], target.name)
+
+        self.runtime = Runtime(self.config, self.db)
+        self.services = Services(self.runtime)
+        embedded = embedded_track_artwork_bytes(target)
+        self.assertIsNotNone(embedded)
+        with Image.open(BytesIO(embedded)) as image:
+            self.assertEqual(image.size, (300, 300))
+        self.assertIsNone(embedded_track_artwork_bytes(sibling))
+        written = MP3(target)
+        self.assertEqual(str(written.tags["TIT2"]), "MP3 Track")
+        self.assertEqual(str(written.tags["TALB"]), "MP3 COMP Fixture")
+        self.assertEqual(str(written.tags["TCON"]), "Alternative")
+        self.assertEqual(
+            written.tags.getall("COMM:fixture-note:eng")[0].text,
+            ["preserve me"],
+        )
+        custom = next(
+            frame for frame in written.tags.getall("TXXX")
+            if frame.desc == "fixture-custom"
+        )
+        self.assertEqual(custom.text, ["unchanged"])
+        mbids = {frame.desc: frame.text for frame in written.tags.getall("TXXX")}
+        self.assertEqual(mbids["MusicBrainz Track Id"], [recording_id])
+        self.assertEqual(mbids["MusicBrainz Artist Id"], [artist_id])
+        self.assertEqual(
+            written.tags.getall("UFID:http://musicbrainz.org")[0].data,
+            recording_id.encode("ascii"),
+        )
+        with closing(self.db.connect()) as db:
+            ledger = db.execute(
+                "SELECT recording_mbid,artist_mbid,outcome FROM compilation_track_artwork "
+                "WHERE track_path=?",
+                (str(target),),
+            ).fetchone()
+        self.assertEqual(ledger["recording_mbid"], recording_id)
+        self.assertEqual(ledger["artist_mbid"], artist_id)
+        self.assertEqual(ledger["outcome"], "embedded-replaced")
+
+    def test_queued_comp_verified_readback_records_completion(self):
+        row, track, target = self.make_comp_track(
+            "Verified Readback Compilation", recording_id=True
+        )
+        self.queue = JobQueue(self.services)
+        suggestion = self.title_suggestion_resolution()
+        exact = replace(
+            suggestion.candidates[0],
+            score=100,
+            match_basis="exact-recording",
+        )
+        resolution = replace(
+            suggestion,
+            candidates=(exact,),
+            identity_status="valid",
+            identity_message="Recording and Artist IDs verified",
+            recording_status="valid",
+            used_fuzzy_search=False,
+        )
+        with (
+            patch.object(
+                core,
+                "compilation_credential_options",
+                return_value=compilation.MusicBrainzOptions(1, 0.0, 1.0),
+            ),
+            patch.object(
+                core,
+                "compilation_resolve_interactive_identity",
+                return_value=resolution,
+            ),
+            patch("splined_scan._manual_remote_candidates", return_value=([], [])),
+        ):
+            item = self.drive_comp_candidate(row, track)
+
+        self.assertEqual(item["state"], "done", item.get("error"))
+        self.assertEqual(item["result"]["installed"], 1)
+        self.assertEqual(item["result"]["unresolved"], 0)
+        self.assertEqual(item["result"]["resolved"], 1)
+        artwork = embedded_track_artwork_bytes(target)
+        with Image.open(BytesIO(artwork)) as image:
+            self.assertEqual(image.size, (300, 300))
+        with closing(self.db.connect()) as db:
+            recorded = db.execute(
+                "SELECT recording_mbid,artist_mbid,artwork_sha256 "
+                "FROM compilation_track_artwork WHERE track_path=?",
+                (str(target),),
+            ).fetchone()
+        self.assertEqual(
+            recorded["recording_mbid"],
+            "44444444-4444-4444-8444-000000000001",
+        )
+        self.assertEqual(
+            recorded["artwork_sha256"], hashlib.sha256(artwork).hexdigest()
+        )
+        self.assertEqual(
+            self.services.catalog.comp_track_status(
+                row["album_key"], track["track_key"]
+            )["status"],
+            "green",
+        )
+
+    def test_queued_comp_failed_readback_never_records_completion(self):
+        row, track, target = self.make_comp_track(
+            "Failed Readback Compilation", recording_id=True
+        )
+        self.queue = JobQueue(self.services)
+        resolution = self.title_suggestion_resolution()
+        with (
+            patch.object(
+                core,
+                "compilation_credential_options",
+                return_value=compilation.MusicBrainzOptions(1, 0.0, 1.0),
+            ),
+            patch.object(
+                core,
+                "compilation_resolve_interactive_identity",
+                return_value=resolution,
+            ),
+            patch("splined_scan._manual_remote_candidates", return_value=([], [])),
+            patch("webgui.services.embedded_track_artwork_bytes", return_value=None),
+        ):
+            item = self.drive_comp_candidate(row, track)
+
+        self.assertEqual(item["state"], "failed")
+        self.assertIn("verification failed", item["error"])
+        self.assertIsNotNone(embedded_track_artwork_bytes(target))
+        with closing(self.db.connect()) as db:
+            self.assertIsNone(
+                db.execute(
+                    "SELECT 1 FROM compilation_track_artwork WHERE track_path=?",
+                    (str(target),),
+                ).fetchone()
+            )
+        self.assertEqual(
+            self.services.catalog.comp_track_status(
+                row["album_key"], track["track_key"]
+            )["status"],
+            "blue",
+        )
+
+    def test_musicbrainz_authorization_is_pkce_and_never_returns_saved_tokens(self):
+        credentials = Credentials(self.runtime)
+        credentials.save(
+            "musicbrainz",
+            {"client_id": "fixture-client", "client_secret": "fixture-client-secret"},
+        )
+        session = {}
+        flow = credentials.authorize_musicbrainz(session)
+        from urllib.parse import parse_qs
+
+        query = parse_qs(urlsplit(flow["url"]).query)
+        self.assertEqual(query["code_challenge_method"], ["S256"])
+        self.assertNotIn("fixture-client-secret", flow["url"])
+        with patch("requests.post") as request:
+            request.return_value.ok = True
+            request.return_value.json.return_value = {
+                "access_token": "fixture-access",
+                "refresh_token": "fixture-refresh",
+                "expires_in": 3600,
+            }
+            result = credentials.complete_musicbrainz(
+                session, {"state": flow["state"], "code": "fixture-code"}
+            )
+        self.assertTrue(result["ok"])
+        self.assertNotIn("fixture-access", str(credentials.describe("musicbrainz")))
+        with self.assertRaises(ValueError):
+            credentials.complete_musicbrainz(
+                session, {"state": flow["state"], "code": "reused"}
+            )
+
+    def test_large_library_handles_stay_valid_and_reject_tampering(self):
+        catalog = self.services.catalog
+        first = catalog.image(self.cover)
+        for _ in range(500):
+            catalog.image(self.cover)
+        self.assertEqual(
+            catalog.image_source(first).read_bytes(), self.cover.read_bytes()
+        )
+        with self.assertRaises(ValueError):
+            catalog.image_source(first[:-1] + ("a" if first[-1] != "a" else "b"))
+
+    def test_candidate_pixels_survive_many_enhancement_previews(self):
+        catalog = self.services.catalog
+        body = BytesIO()
+        Image.new("RGB", (80, 80), "red").save(body, format="PNG")
+        original = catalog.image(body.getvalue())
+        for value in range(110):
+            image = BytesIO()
+            Image.new("RGB", (80, 80), (value, 0, 0)).save(image, format="PNG")
+            catalog.image(image.getvalue())
+        self.assertEqual(catalog.image_source(original).read_bytes(), body.getvalue())
+
+    def test_second_worker_cannot_take_over_a_live_catalog(self):
+        self.queue = JobQueue(self.services)
+        with self.assertRaisesRegex(ValueError, "already owns"):
+            JobQueue(self.services)
+
+    def test_parameter_values_and_large_file_metadata_round_trip(self):
+        with closing(self.db.connect()) as db, db:
+            value = "artist'; DROP TABLE albums; -- % ?"
+            db.execute(
+                "UPDATE artists SET artist_name=? WHERE artist_key=?",
+                (value, self.row["artist_key"]),
+            )
+            db.execute(
+                "UPDATE albums SET representative_mtime_ns=? WHERE album_key=?",
+                (1777777777777777777, self.row["album_key"]),
+            )
+            self.assertEqual(
+                db.execute("SELECT artist_name FROM artists").fetchone()[0], value
+            )
+            self.assertEqual(
+                db.execute("SELECT representative_mtime_ns FROM albums").fetchone()[0],
+                1777777777777777777,
+            )
+
+    def test_incremental_index_refresh_preserves_unchanged_album_rows(self):
+        with closing(self.db.connect()) as db:
+            original_updated_at = db.execute(
+                "SELECT updated_at FROM albums WHERE album_key=?",
+                (self.row["album_key"],),
+            ).fetchone()[0]
+        added = self.root / "music" / "Other Artist" / "New Album"
+        added.mkdir(parents=True)
+        added_track = added / "1.flac"
+        shutil.copy2(self.files[0], added_track)
+        audio = FLAC(added_track)
+        audio["artist"] = "Other Artist"
+        audio["albumartist"] = "Other Artist"
+        audio["album"] = "New Album"
+        audio["musicbrainz_albumid"] = "55555555-5555-4555-8555-555555555555"
+        audio["musicbrainz_artistid"] = "66666666-6666-4666-8666-666666666666"
+        audio.save()
+
+        changes = self.services.index_changes()
+        self.assertEqual(changes["added"], 1)
+        self.assertEqual(changes["changed"], 0)
+        self.assertEqual(changes["removed"], 0)
+        result = self.services.refresh_index(mode="incremental")
+        self.assertEqual(result["changed_albums"], 1)
+        with closing(self.db.connect()) as db:
+            self.assertEqual(
+                db.execute("SELECT count(*) FROM albums").fetchone()[0], 2
+            )
+            self.assertEqual(
+                db.execute(
+                    "SELECT updated_at FROM albums WHERE album_key=?",
+                    (self.row["album_key"],),
+                ).fetchone()[0],
+                original_updated_at,
+            )
+
+        shutil.rmtree(added)
+        changes = self.services.index_changes()
+        self.assertEqual(changes["removed"], 1)
+        result = self.services.refresh_index(mode="incremental")
+        self.assertEqual(result["removed_albums"], 1)
+        with closing(self.db.connect()) as db:
+            self.assertEqual(
+                db.execute("SELECT count(*) FROM albums").fetchone()[0], 1
+            )
+
+    def test_unchanged_incremental_index_reuses_catalog_without_tag_reads(self):
+        result = self.services.refresh_index(mode="incremental")
+        self.assertEqual(result["changed_albums"], 0)
+        self.assertEqual(result["unchanged_albums"], 1)
+        with closing(self.db.connect()) as db:
+            timings = db.execute(
+                "SELECT timings FROM catalog_generations WHERE generation_id=?",
+                (result["generation_id"],),
+            ).fetchone()[0]
+        self.assertEqual(timings["album_tag_reads"], 0)
+        self.assertEqual(timings["track_tag_reads"], 0)
+
+    def test_incremental_generation_reconciles_multiple_changes_and_preserves_history(self):
+        artist_root = self.root / "music" / "Incremental Artist"
+
+        def add_album(name, release_id):
+            folder = artist_root / name
+            folder.mkdir(parents=True)
+            target = folder / "01.flac"
+            shutil.copy2(self.files[0], target)
+            audio = FLAC(target)
+            audio["title"] = name
+            audio["artist"] = "Incremental Artist"
+            audio["albumartist"] = "Incremental Artist"
+            audio["album"] = name
+            audio["musicbrainz_albumid"] = release_id
+            audio["musicbrainz_artistid"] = (
+                "77777777-7777-4777-8777-777777777777"
+            )
+            audio["musicbrainz_trackid"] = str(uuid4())
+            audio.save()
+            Image.new("RGB", (90, 90), "green").save(folder / "cover.jpg")
+            return folder, target
+
+        changed, changed_track = add_album(
+            "Changed", "88888888-8888-4888-8888-888888888881"
+        )
+        moved, _ = add_album(
+            "Moved", "88888888-8888-4888-8888-888888888882"
+        )
+        removed, _ = add_album(
+            "Removed", "88888888-8888-4888-8888-888888888883"
+        )
+        self.services.refresh_index(mode="full")
+        with closing(self.db.connect()) as db, db:
+            db.execute(
+                "UPDATE albums SET updated_at=?,status='processed',processed_at=?,"
+                "selected_source='musicbrainz' WHERE album_name='Test Album'",
+                ("keep-album-sentinel", "2026-11-01T00:00:00+00:00"),
+            )
+            db.execute(
+                "UPDATE tracks SET updated_at=? WHERE album_key=(SELECT album_key "
+                "FROM albums WHERE album_name='Test Album')",
+                ("keep-track-sentinel",),
+            )
+            db.execute(
+                "UPDATE albums SET status='processed',processed_at=?,"
+                "selected_source='musicbrainz' WHERE album_name IN ('Changed','Moved')",
+                ("2026-11-01T00:00:00+00:00",),
+            )
+
+        audio = FLAC(changed_track)
+        audio["title"] = "Changed title"
+        audio.save()
+        Image.new("RGB", (91, 91), "orange").save(changed / "cover.jpg")
+        moved_target = artist_root / "Moved Elsewhere"
+        moved.rename(moved_target)
+        shutil.rmtree(removed)
+        add_album("Added", "88888888-8888-4888-8888-888888888884")
+
+        self.assertEqual(self.services.index_changes(refresh=False)["count"], 0)
+        changes = self.services.detect_index_changes()
+        self.assertEqual(
+            (
+                changes["added"],
+                changes["changed"],
+                changes["moved"],
+                changes["removed"],
+            ),
+            (1, 1, 1, 1),
+        )
+        result = self.services.refresh_index(mode="incremental")
+        self.assertEqual(result["changed_albums"], 3)
+        self.assertEqual(result["unchanged_albums"], 1)
+        self.assertEqual(result["moved_albums"], 1)
+        self.assertEqual(result["removed_albums"], 1)
+
+        with closing(self.db.connect()) as db:
+            keep = db.execute(
+                "SELECT updated_at,status,processed_at,selected_source FROM albums "
+                "WHERE album_name='Test Album'"
+            ).fetchone()
+            self.assertEqual(keep["updated_at"], "keep-album-sentinel")
+            self.assertEqual(keep["status"], "processed")
+            self.assertEqual(keep["selected_source"], "musicbrainz")
+            self.assertEqual(
+                db.execute(
+                    "SELECT updated_at FROM tracks WHERE album_key=(SELECT album_key "
+                    "FROM albums WHERE album_name='Test Album')"
+                ).fetchone()[0],
+                "keep-track-sentinel",
+            )
+            for album in ("Changed", "Moved"):
+                row = db.execute(
+                    "SELECT status,processed_at,selected_source,path FROM albums "
+                    "WHERE album_name=?",
+                    (album,),
+                ).fetchone()
+                self.assertEqual(row["status"], "processed")
+                self.assertEqual(row["selected_source"], "musicbrainz")
+                self.assertEqual(row["processed_at"], "2026-11-01T00:00:00+00:00")
+            self.assertEqual(
+                db.execute(
+                    "SELECT path FROM albums WHERE album_name='Moved'"
+                ).fetchone()[0],
+                str(moved_target),
+            )
+            self.assertEqual(
+                db.execute(
+                    "SELECT count(*) FROM albums WHERE album_name='Removed'"
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                db.execute(
+                    "SELECT count(*) FROM catalog_index_events WHERE generation_id=? "
+                    "AND operation='move'",
+                    (result["generation_id"],),
+                ).fetchone()[0],
+                1,
+            )
+
+    def test_incremental_move_preserves_duplicate_album_identity_and_history(self):
+        original = self.root / "music" / "Test Artist" / "Test Album"
+        duplicate = self.root / "music" / "Test Artist" / "Test Album Copy"
+        duplicate.mkdir(parents=True)
+        for source in original.iterdir():
+            if source.is_file():
+                shutil.copy2(source, duplicate / source.name)
+        self.services.refresh_index(mode="full")
+        with closing(self.db.connect()) as db, db:
+            duplicate_row = db.execute(
+                "SELECT album_key FROM albums WHERE path=?", (str(duplicate),)
+            ).fetchone()
+            duplicate_key = str(duplicate_row["album_key"])
+            self.assertIn(":copy:", duplicate_key)
+            db.execute(
+                "UPDATE albums SET status='processed',processed_at=?,"
+                "selected_source='discogs' WHERE album_key=?",
+                ("2026-11-01T00:00:00+00:00", duplicate_key),
+            )
+
+        moved = duplicate.with_name("Moved Test Album Copy")
+        duplicate.rename(moved)
+        changes = self.services.detect_index_changes()
+        self.assertEqual(changes["moved"], 1)
+        result = self.services.refresh_index(mode="incremental")
+        self.assertEqual(result["moved_albums"], 1)
+        self.assertEqual(result["removed_albums"], 0)
+        with closing(self.db.connect()) as db:
+            row = db.execute(
+                "SELECT album_key,status,processed_at,selected_source FROM albums "
+                "WHERE path=?",
+                (str(moved),),
+            ).fetchone()
+            self.assertEqual(row["album_key"], duplicate_key)
+            self.assertEqual(row["status"], "processed")
+            self.assertEqual(row["processed_at"], "2026-11-01T00:00:00+00:00")
+            self.assertEqual(row["selected_source"], "discogs")
+
+    def test_change_manifest_probe_detects_tags_artwork_moves_adds_and_removals(self):
+        cached = self.services.index_changes(refresh=False)
+        self.assertEqual(cached["count"], 0)
+
+        audio = FLAC(self.files[0])
+        audio["title"] = "Manifest tag change"
+        audio.save()
+        self.assertEqual(
+            self.services.index_changes(refresh=False)["count"],
+            0,
+            "cached status must not inspect physical files",
+        )
+        changed_tags = self.services.detect_index_changes()
+        self.assertEqual(changed_tags["changed"], 1)
+        self.services.refresh_index(mode="incremental")
+
+        Image.new("RGB", (181, 181), "orange").save(self.cover)
+        changed_artwork = self.services.detect_index_changes()
+        self.assertEqual(changed_artwork["changed"], 1)
+        self.services.refresh_index(mode="incremental")
+
+        original = self.root / "music" / "Test Artist" / "Test Album"
+        moved = self.root / "music" / "Test Artist" / "Moved Album"
+        original.rename(moved)
+        moved_change = self.services.detect_index_changes()
+        self.assertEqual(moved_change["moved"], 1)
+        self.assertEqual(moved_change["added"], 0)
+        self.assertEqual(moved_change["removed"], 0)
+        self.services.refresh_index(mode="incremental")
+
+        added = self.root / "music" / "Other Artist" / "Added Album"
+        added.mkdir(parents=True)
+        added_track = added / "01.flac"
+        shutil.copy2(moved / "1.flac", added_track)
+        added_audio = FLAC(added_track)
+        added_audio["artist"] = "Other Artist"
+        added_audio["albumartist"] = "Other Artist"
+        added_audio["album"] = "Added Album"
+        added_audio["musicbrainz_albumid"] = str(uuid4())
+        added_audio["musicbrainz_artistid"] = str(uuid4())
+        added_audio["musicbrainz_trackid"] = str(uuid4())
+        added_audio.save()
+        added_change = self.services.detect_index_changes()
+        self.assertEqual(added_change["added"], 1)
+        self.services.refresh_index(mode="incremental")
+
+        shutil.rmtree(added)
+        removed_change = self.services.detect_index_changes()
+        self.assertEqual(removed_change["removed"], 1)
+
+    def test_catalog_generation_terminal_states_are_durable_and_owner_scoped(self):
+        from webgui import index_coordinator as coordinator
+
+        with closing(self.db.connect()) as db:
+            published = db.execute(
+                "SELECT active_generation_id FROM catalog_index_state "
+                "WHERE singleton=TRUE"
+            ).fetchone()["active_generation_id"]
+            self.assertEqual(
+                db.execute(
+                    "SELECT state FROM catalog_generations WHERE generation_id=?",
+                    (published,),
+                ).fetchone()["state"],
+                "published",
+            )
+
+        for terminal in ("cancelled", "failed"):
+            lease = coordinator.claim(self.db, "full", str(self.root / "music"))
+            coordinator.finish(self.db, lease, terminal, f"forced {terminal}")
+            restarted = Database(self.url)
+            with closing(restarted.connect()) as db:
+                row = db.execute(
+                    "SELECT state,phase,error FROM catalog_generations "
+                    "WHERE generation_id=?",
+                    (lease.generation_id,),
+                ).fetchone()
+                state = db.execute(
+                    "SELECT active_generation_id,maintenance_generation_id,catalog_state "
+                    "FROM catalog_index_state WHERE singleton=TRUE"
+                ).fetchone()
+            self.assertEqual(row["state"], terminal)
+            self.assertEqual(row["phase"], terminal)
+            self.assertEqual(row["error"], f"forced {terminal}")
+            self.assertEqual(state["active_generation_id"], published)
+            self.assertEqual(state["maintenance_generation_id"], "")
+            self.assertEqual(state["catalog_state"], "ready")
+
+        stale = coordinator.claim(self.db, "full", str(self.root / "music"))
+        with closing(self.db.connect()) as db, db:
+            db.raw.execute(
+                "UPDATE catalog_generations SET lease_expires_at=now()-interval '1 second' "
+                "WHERE generation_id=%s",
+                (stale.generation_id,),
+            )
+        resumed = coordinator.claim(self.db, "full", str(self.root / "music"))
+        coordinator.finish(self.db, stale, "cancelled", "stale cancellation")
+        with closing(self.db.connect()) as db:
+            generation = db.execute(
+                "SELECT state,owner_token FROM catalog_generations WHERE generation_id=?",
+                (resumed.generation_id,),
+            ).fetchone()
+            maintenance = db.execute(
+                "SELECT maintenance_generation_id FROM catalog_index_state "
+                "WHERE singleton=TRUE"
+            ).fetchone()["maintenance_generation_id"]
+        self.assertEqual(generation["state"], "building")
+        self.assertEqual(generation["owner_token"], resumed.owner_token)
+        self.assertEqual(maintenance, resumed.generation_id)
+        coordinator.finish(self.db, resumed, "cancelled", "test cleanup")
+
+    def test_process_interruption_leaves_catalog_generation_recoverable(self):
+        from webgui import index_coordinator as coordinator
+
+        def interrupted():
+            raise coordinator.GenerationInterrupted()
+
+        with self.assertRaises(coordinator.GenerationInterrupted):
+            self.services.refresh_index(cancelled=interrupted, mode="full")
+
+        with closing(self.db.connect()) as db:
+            generation = db.execute(
+                "SELECT generation_id,state,phase FROM catalog_generations "
+                "WHERE state='building' ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+            maintenance = db.execute(
+                "SELECT maintenance_generation_id FROM catalog_index_state "
+                "WHERE singleton=TRUE"
+            ).fetchone()["maintenance_generation_id"]
+        self.assertIsNotNone(generation)
+        self.assertEqual(generation["state"], "building")
+        self.assertEqual(maintenance, generation["generation_id"])
+
+        with closing(self.db.connect()) as db, db:
+            db.raw.execute(
+                "UPDATE catalog_generations SET lease_expires_at=now() "
+                "WHERE generation_id=%s",
+                (generation["generation_id"],),
+            )
+        lease = coordinator.claim(self.db, "full", str(self.root / "music"))
+        self.assertTrue(lease.resumed)
+        self.assertEqual(lease.generation_id, generation["generation_id"])
+        coordinator.finish(self.db, lease, "cancelled", "test cleanup")
+
+    def test_postgres_validation_and_publication_interruptions_preserve_atomic_catalog(self):
+        from webgui import index_coordinator as coordinator
+
+        def published_state():
+            with closing(self.db.connect()) as db:
+                row = db.execute(
+                    "SELECT active_generation_id,(SELECT count(*) FROM albums) AS albums,"
+                    "(SELECT count(DISTINCT path) FROM albums) AS paths "
+                    "FROM catalog_index_state WHERE singleton=TRUE"
+                ).fetchone()
+            return str(row["active_generation_id"]), int(row["albums"]), int(row["paths"])
+
+        def add_album(name):
+            album = self.root / "music" / "Recovery Artist" / name
+            album.mkdir(parents=True)
+            track = album / "01.flac"
+            shutil.copy2(self.files[0], track)
+            audio = FLAC(track)
+            audio["artist"] = "Recovery Artist"
+            audio["albumartist"] = "Recovery Artist"
+            audio["album"] = name
+            audio["musicbrainz_albumid"] = str(uuid4())
+            audio["musicbrainz_artistid"] = str(uuid4())
+            audio["musicbrainz_trackid"] = str(uuid4())
+            audio.save()
+
+        initial = published_state()
+        self.assertEqual(initial[1:], (1, 1))
+        add_album("Validation Interruption")
+
+        def interrupt_validation(phase):
+            if phase == "validated":
+                raise RuntimeError("forced validation interruption")
+
+        with (
+            patch.object(
+                self.services,
+                "_catalog_publication_checkpoint",
+                side_effect=interrupt_validation,
+            ),
+            self.assertRaisesRegex(RuntimeError, "forced validation interruption"),
+        ):
+            self.services.refresh_index(mode="full")
+        self.assertEqual(published_state(), initial)
+
+        with closing(self.db.connect()) as db:
+            failed = db.execute(
+                "SELECT generation_id,owner_token,mode,library_root,base_generation_id "
+                "FROM catalog_generations WHERE state='failed' "
+                "ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+        stale = coordinator.GenerationLease(
+            str(failed["generation_id"]),
+            str(failed["owner_token"]),
+            str(failed["mode"]),
+            str(failed["library_root"]),
+            str(failed["base_generation_id"]),
+        )
+        with self.assertRaises(coordinator.GenerationLeaseLost):
+            coordinator.heartbeat(
+                self.db, stale, phase="stale-validation-worker"
+            )
+
+        self.services.refresh_index(mode="full")
+        validated = published_state()
+        self.assertNotEqual(validated[0], initial[0])
+        self.assertEqual(validated[1:], (2, 2))
+
+        add_album("Publication Interruption")
+
+        def interrupt_publication(phase):
+            if phase == "before-commit":
+                raise RuntimeError("forced publication interruption")
+
+        with (
+            patch.object(
+                self.services,
+                "_catalog_publication_checkpoint",
+                side_effect=interrupt_publication,
+            ),
+            self.assertRaisesRegex(RuntimeError, "forced publication interruption"),
+        ):
+            self.services.refresh_index(mode="full")
+        self.assertEqual(published_state(), validated)
+
+        self.services.refresh_index(mode="full")
+        recovered = published_state()
+        self.assertNotEqual(recovered[0], validated[0])
+        self.assertEqual(recovered[1:], (3, 3))
+
+    def test_postgres_index_progress_and_cancellation_preserve_published_catalog(self):
+        for number in range(4):
+            album = self.root / "music" / "Progress Artist" / f"Album {number}"
+            album.mkdir(parents=True)
+            track = album / "01.flac"
+            shutil.copy2(self.files[0], track)
+            audio = FLAC(track)
+            audio["artist"] = "Progress Artist"
+            audio["albumartist"] = "Progress Artist"
+            audio["album"] = f"Album {number}"
+            audio["musicbrainz_albumid"] = str(uuid4())
+            audio["musicbrainz_artistid"] = str(uuid4())
+            audio["musicbrainz_trackid"] = str(uuid4())
+            audio.save()
+
+        progress = []
+        self.services.refresh_index(progress=progress.append, mode="full")
+        self.assertEqual(progress[0]["phase"], "starting")
+        indexing = [item for item in progress if item["phase"] == "indexing"]
+        validating = [item for item in progress if item["phase"] == "validating"]
+        self.assertTrue(indexing)
+        self.assertTrue(validating)
+        self.assertTrue(all(not item["total_known"] for item in indexing))
+        self.assertTrue(all(item["total_known"] for item in validating))
+        self.assertEqual(progress[-1]["phase"], "published")
+        self.assertTrue(progress[-1]["total_known"])
+        self.assertEqual(progress[-1]["percentage"], 100)
+        self.assertEqual(progress[-1]["completed"], 5)
+
+        with closing(self.db.connect()) as db:
+            before = db.execute(
+                "SELECT active_generation_id,(SELECT count(*) FROM albums) AS albums "
+                "FROM catalog_index_state WHERE singleton=TRUE"
+            ).fetchone()
+        cancelled_album = self.root / "music" / "Progress Artist" / "Cancelled"
+        cancelled_album.mkdir(parents=True)
+        shutil.copy2(self.files[0], cancelled_album / "01.flac")
+        checks = {"count": 0}
+
+        def cancelled():
+            checks["count"] += 1
+            return checks["count"] >= 2
+
+        with self.assertRaises(core.InteractionCancelled):
+            self.services.refresh_index(cancelled=cancelled, mode="full")
+        with closing(self.db.connect()) as db:
+            after = db.execute(
+                "SELECT active_generation_id,maintenance_generation_id,catalog_state,"
+                "(SELECT count(*) FROM albums) AS albums "
+                "FROM catalog_index_state WHERE singleton=TRUE"
+            ).fetchone()
+            terminal = db.execute(
+                "SELECT state FROM catalog_generations ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()["state"]
+        self.assertEqual(after["active_generation_id"], before["active_generation_id"])
+        self.assertEqual(after["maintenance_generation_id"], "")
+        self.assertEqual(after["catalog_state"], "ready")
+        self.assertEqual(after["albums"], before["albums"])
+        self.assertEqual(terminal, "cancelled")
+
+    def test_catalog_refresh_streams_bounded_batches_without_missing_records(self):
+        from webgui import index_coordinator as coordinator
+
+        for number in range(7):
+            album = self.root / "music" / f"Stream Artist {number}" / f"Album {number}"
+            album.mkdir(parents=True)
+            track = album / "01.flac"
+            shutil.copy2(self.files[0], track)
+            audio = FLAC(track)
+            audio["artist"] = f"Stream Artist {number}"
+            audio["albumartist"] = f"Stream Artist {number}"
+            audio["album"] = f"Album {number}"
+            audio["musicbrainz_albumid"] = str(uuid4())
+            audio["musicbrainz_artistid"] = str(uuid4())
+            audio["musicbrainz_trackid"] = str(uuid4())
+            audio.save()
+
+        self.runtime.cfg["scan"]["index_batch_size"] = 3
+        self.runtime.cfg["scan"]["index_batch_adaptive"] = False
+        original_inventory = core.iter_inventory
+        original_stage = coordinator.stage_batch
+        source = {"yielded": 0, "exhausted": False}
+        batch_sizes = []
+        batch_objects = []
+        flush_before_exhaustion = []
+        durable_counts = []
+        live_counts = []
+
+        def instrumented_inventory(*args, **kwargs):
+            for album in original_inventory(*args, **kwargs):
+                source["yielded"] += 1
+                yield album
+            source["exhausted"] = True
+
+        def observed_stage(database, lease, rows, **kwargs):
+            batch_sizes.append(len(rows))
+            batch_objects.append(id(rows))
+            flush_before_exhaustion.append(not source["exhausted"])
+            result = original_stage(database, lease, rows, **kwargs)
+            with closing(database.connect()) as db:
+                durable_counts.append(
+                    db.execute(
+                        "SELECT count(*) AS n FROM catalog_generation_albums "
+                        "WHERE generation_id=? AND scan_token=?",
+                        (lease.generation_id, lease.owner_token),
+                    ).fetchone()["n"]
+                )
+                live_counts.append(
+                    db.execute("SELECT count(*) AS n FROM albums").fetchone()["n"]
+                )
+            return result
+
+        with (
+            patch.object(core, "iter_inventory", new=instrumented_inventory),
+            patch.object(coordinator, "stage_batch", new=observed_stage),
+        ):
+            self.services.refresh_index(mode="full")
+
+        self.assertEqual(source["yielded"], 8)
+        self.assertTrue(flush_before_exhaustion[0])
+        self.assertTrue(batch_sizes)
+        self.assertLessEqual(max(batch_sizes), 3)
+        self.assertEqual(batch_sizes, [3, 3, 2])
+        self.assertEqual(durable_counts, [3, 6, 8])
+        self.assertEqual(live_counts, [1, 1, 1])
+        self.assertEqual(len(set(batch_objects)), len(batch_objects))
+        with closing(self.db.connect()) as db:
+            counts = db.raw.execute(
+                "SELECT count(*) AS albums,count(DISTINCT path) AS paths,"
+                "(SELECT count(*) FROM tracks) AS tracks FROM albums"
+            ).fetchone()
+        self.assertEqual(counts["albums"], 8)
+        self.assertEqual(counts["paths"], 8)
+        self.assertEqual(counts["tracks"], 9)
+
+    def test_catalog_refresh_recovers_durable_batch_without_partial_publication(self):
+        from webgui import index_coordinator as coordinator
+
+        for number in range(5):
+            album = self.root / "music" / f"Recovery Artist {number}" / f"Album {number}"
+            album.mkdir(parents=True)
+            track = album / "01.flac"
+            shutil.copy2(self.files[0], track)
+            audio = FLAC(track)
+            audio["artist"] = f"Recovery Artist {number}"
+            audio["albumartist"] = f"Recovery Artist {number}"
+            audio["album"] = f"Album {number}"
+            audio["musicbrainz_albumid"] = str(uuid4())
+            audio["musicbrainz_artistid"] = str(uuid4())
+            audio["musicbrainz_trackid"] = str(uuid4())
+            audio.save()
+
+        self.runtime.cfg["scan"]["index_batch_size"] = 3
+        self.runtime.cfg["scan"]["index_batch_adaptive"] = False
+        original_stage = coordinator.stage_batch
+        interrupted = {"done": False, "generation": ""}
+
+        def interrupt_after_durable_batch(database, lease, rows, **kwargs):
+            result = original_stage(database, lease, rows, **kwargs)
+            if not interrupted["done"]:
+                interrupted["done"] = True
+                interrupted["generation"] = lease.generation_id
+                raise KeyboardInterrupt("simulated worker loss after durable checkpoint")
+            return result
+
+        with (
+            patch.object(coordinator, "stage_batch", new=interrupt_after_durable_batch),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            self.services.refresh_index(mode="full")
+
+        with closing(self.db.connect()) as db, db:
+            self.assertEqual(db.execute("SELECT count(*) FROM albums").fetchone()[0], 1)
+            self.assertEqual(
+                db.execute(
+                    "SELECT count(*) FROM catalog_generation_albums "
+                    "WHERE generation_id=?",
+                    (interrupted["generation"],),
+                ).fetchone()[0],
+                3,
+            )
+            staged_paths = {
+                str(row["album_path"])
+                for row in db.execute(
+                    "SELECT album_path FROM catalog_generation_albums "
+                    "WHERE generation_id=?",
+                    (interrupted["generation"],),
+                )
+            }
+            db.raw.execute(
+                "UPDATE catalog_generations SET lease_expires_at=now()-interval '1 second',"
+                "created_at=now()-interval '5 minutes' "
+                "WHERE generation_id=%s",
+                (interrupted["generation"],),
+            )
+
+        self.runtime.close()
+        self.db = Database(self.url)
+        self.runtime = Runtime(self.config, self.db)
+        self.services = Services(self.runtime)
+
+        from webgui import services as services_module
+
+        original_inspect = services_module.tags.inspect_album
+        inspected_after_restart = []
+        recovery_batch_sizes = []
+        original_touch_batch = coordinator.touch_completed_batch
+
+        def observe_inspect(album, *args, **kwargs):
+            path = str(album.path)
+            self.assertNotIn(path, staged_paths)
+            inspected_after_restart.append(path)
+            return original_inspect(album, *args, **kwargs)
+
+        def observe_touch_batch(database, lease, checkpoints, **kwargs):
+            recovery_batch_sizes.append(len(checkpoints))
+            return original_touch_batch(database, lease, checkpoints, **kwargs)
+
+        with (
+            patch.object(services_module.tags, "inspect_album", new=observe_inspect),
+            patch.object(
+                coordinator, "touch_completed_batch", new=observe_touch_batch
+            ),
+        ):
+            recovered = self.services.refresh_index(mode="full")
+        self.assertTrue(recovered["resumed"])
+        self.assertEqual(recovered["generation_id"], interrupted["generation"])
+        self.assertTrue(inspected_after_restart)
+        self.assertEqual(recovery_batch_sizes, [3])
+        with closing(self.db.connect()) as db:
+            state = db.execute(
+                "SELECT active_generation_id,maintenance_generation_id,catalog_state "
+                "FROM catalog_index_state WHERE singleton=TRUE"
+            ).fetchone()
+            self.assertEqual(state["active_generation_id"], interrupted["generation"])
+            self.assertEqual(state["maintenance_generation_id"], "")
+            self.assertEqual(state["catalog_state"], "ready")
+            self.assertEqual(db.execute("SELECT count(*) FROM albums").fetchone()[0], 6)
+            timings = db.execute(
+                "SELECT timings FROM catalog_generations WHERE generation_id=?",
+                (interrupted["generation"],),
+            ).fetchone()["timings"]
+            self.assertGreaterEqual(float(timings["total_seconds"]), 300.0)
+            self.assertLess(float(timings["process_seconds"]), 300.0)
+
+    def test_successful_job_clears_stale_restart_recovery_error(self):
+        job_id = "recovered-index-job"
+        with closing(self.db.connect()) as db, db:
+            db.raw.execute(
+                "INSERT INTO web_jobs(id,kind,state,payload,progress,error) "
+                "VALUES(%s,'index','queued',%s,'{}',"
+                "'Recovering interrupted catalog generation')",
+                (
+                    job_id,
+                    Jsonb(
+                        {
+                            "mode": "incremental",
+                            "library_root": str(self.runtime.music),
+                        }
+                    ),
+                ),
+            )
+        self.queue = JobQueue(self.services)
+        completed = self.wait_for_job(
+            job_id, lambda item: item["state"] in {"done", "failed"}
+        )
+        self.assertEqual(completed["state"], "done", completed["error"])
+        self.assertEqual(completed["error"], "")
+
+    def test_full_refresh_revalidates_existing_windows_managed_track_tags(self):
+        with closing(self.db.connect()) as db, db:
+            track = db.execute(
+                "SELECT * FROM tracks WHERE album_key=? ORDER BY path LIMIT 1",
+                (self.row["album_key"],),
+            ).fetchone()
+            mark_windows_authority(
+                db.raw,
+                "albums",
+                self.row["album_key"],
+                "fixture-album-fingerprint",
+                "fixture-windows",
+            )
+            mark_windows_authority(
+                db.raw,
+                "tracks",
+                track["track_key"],
+                "fixture-track-fingerprint",
+                "fixture-windows",
+            )
+
+        audio = FLAC(self.files[0])
+        audio["artist"] = ["Test Artist", "Featured Artist"]
+        audio["musicbrainz_artistid"] = [
+            "22222222-2222-4222-8222-222222222222",
+            "77777777-7777-4777-8777-777777777777",
+        ]
+        audio.save()
+
+        self.services.refresh_index(mode="full")
+
+        with closing(self.db.connect()) as db:
+            refreshed = db.execute(
+                "SELECT artist_name,musicbrainz_artistid,file_size,file_mtime_ns "
+                "FROM tracks WHERE track_key=?",
+                (track["track_key"],),
+            ).fetchone()
+            album = db.execute(
+                "SELECT album_key,artist_key,album_name FROM albums WHERE album_key=?",
+                (self.row["album_key"],),
+            ).fetchone()
+            track_count = db.execute(
+                "SELECT count(*) FROM tracks WHERE album_key=?",
+                (self.row["album_key"],),
+            ).fetchone()[0]
+
+        self.assertEqual(
+            explicit_artist_credits(refreshed["artist_name"]),
+            ("Test Artist", "Featured Artist"),
+        )
+        self.assertIn(
+            "77777777-7777-4777-8777-777777777777",
+            refreshed["musicbrainz_artistid"],
+        )
+        self.assertEqual(refreshed["file_size"], self.files[0].stat().st_size)
+        self.assertEqual(refreshed["file_mtime_ns"], self.files[0].stat().st_mtime_ns)
+        self.assertEqual(album["artist_key"], self.row["artist_key"])
+        self.assertEqual(album["album_name"], self.row["album_name"])
+        self.assertEqual(track_count, 2)
+        self.assertIn(
+            "Featured Artist",
+            {item["name"] for item in self.services.catalog.artists("")},
+        )
+
+    def test_incremental_index_defers_new_album_with_windows_authority_present(self):
+        with closing(self.db.connect()) as db, db:
+            mark_windows_authority(
+                db.raw,
+                "albums",
+                self.row["album_key"],
+                "fixture-fingerprint",
+                "fixture-windows",
+            )
+
+        added = self.root / "music" / "Compilation Artist" / "New COMP Album"
+        added.mkdir(parents=True)
+        added_track = added / "1.flac"
+        shutil.copy2(self.files[0], added_track)
+        audio = FLAC(added_track)
+        audio["artist"] = "Featured Artist"
+        audio["albumartist"] = "Various Artists"
+        audio["album"] = "New COMP Album"
+        audio.pop("musicbrainz_albumid", None)
+        audio.pop("musicbrainz_artistid", None)
+        audio.save()
+
+        changes = self.services.index_changes()
+        self.assertEqual(changes["added"], 1)
+        result = self.services.refresh_index(mode="incremental")
+        self.assertEqual(result["changed_albums"], 0)
+        self.assertEqual(result["deferred_albums"], 1)
+        with closing(self.db.connect()) as db:
+            indexed = db.execute(
+                "SELECT album_name,path FROM albums WHERE path=?",
+                (str(added),),
+            ).fetchone()
+        self.assertIsNone(indexed)
+
+        # A deliberate Full Refresh may revalidate existing managed rows, but
+        # it must honor the same Windows-owned identity boundary for new
+        # filesystem discoveries. Reconciliation is the only insertion path
+        # once Windows authority has been established.
+        result = self.services.refresh_index(mode="full")
+        self.assertEqual(result["deferred_albums"], 1)
+        with closing(self.db.connect()) as db:
+            indexed = db.execute(
+                "SELECT album_name,path FROM albums WHERE path=?",
+                (str(added),),
+            ).fetchone()
+        self.assertIsNone(indexed)
+
+    def test_library_change_notice_excludes_windows_authoritative_album_deltas(self):
+        with closing(self.db.connect()) as db, db:
+            mark_windows_authority(
+                db.raw,
+                "albums",
+                self.row["album_key"],
+                "fixture-fingerprint",
+                "fixture-windows",
+            )
+        audio = FLAC(self.files[0])
+        audio["title"] = "Windows authoritative physical update"
+        audio.save()
+
+        changes = self.services.index_changes()
+
+        self.assertEqual(changes["count"], 0)
+        self.assertEqual(changes["changed"], 0)
+        self.assertEqual(changes["protected"], 1)
+        result = self.services.refresh_index(mode="incremental")
+        self.assertEqual(result["changed_albums"], 0)
+
+    def test_reconciliation_applies_windows_album_authority_and_is_idempotent(self):
+        authoritative_time = "2000-01-01T00:00:00+00:00"
+        snapshot = self.root / "cache" / "processed.sqlite"
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        with closing(self.db.connect()) as db:
+            indexed_tracks = [
+                dict(row)
+                for row in db.execute(
+                    "SELECT * FROM tracks WHERE album_key=? ORDER BY track_key",
+                    (self.row["album_key"],),
+                )
+            ]
+        with closing(sqlite3.connect(snapshot)) as source, source:
+            source.execute("PRAGMA user_version=2")
+            source.execute(
+                "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,"
+                "primary_path TEXT)"
+            )
+            source.execute(
+                "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,"
+                "album_name TEXT,path TEXT,processed_at TEXT,selected_source TEXT,updated_at TEXT,"
+                "compilation INTEGER,status TEXT,track_count INTEGER,musicbrainz_albumid TEXT)"
+            )
+            source.execute(
+                "INSERT INTO artists VALUES (?,?,?)",
+                (
+                    self.row["artist_key"],
+                    "Test Artist",
+                    str(self.root / "music" / "Test Artist"),
+                ),
+            )
+            source.execute(
+                "INSERT INTO albums VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    self.row["album_key"],
+                    self.row["artist_key"],
+                    self.row["album_name"],
+                    self.row["path"],
+                    authoritative_time,
+                    "existing",
+                    authoritative_time,
+                    1,
+                    "processed",
+                    int(self.row["track_count"]),
+                    self.row["musicbrainz_albumid"],
+                ),
+            )
+            source.execute(
+                "INSERT INTO albums VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    "source-only-hidden-comp",
+                    self.row["artist_key"],
+                    "Hidden Windows COMP",
+                    str(self.root / "music" / "Various Artists" / "Hidden Windows COMP"),
+                    authoritative_time,
+                    "embed-queue",
+                    authoritative_time,
+                    1,
+                    "processed",
+                    1,
+                    "",
+                ),
+            )
+            source.execute(
+                "CREATE TABLE tracks (track_key TEXT PRIMARY KEY,album_key TEXT,path TEXT,"
+                "title TEXT,artist_name TEXT,musicbrainz_recordingid TEXT,"
+                "musicbrainz_artistid TEXT,file_size INTEGER,file_mtime_ns INTEGER,"
+                "updated_at TEXT,splined_version TEXT)"
+            )
+            source.executemany(
+                "INSERT INTO tracks VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                [
+                    (
+                        row["track_key"],
+                        row["album_key"],
+                        row["path"],
+                        f"Windows Authoritative Track {number}",
+                        row["artist_name"],
+                        row["musicbrainz_recordingid"],
+                        row["musicbrainz_artistid"],
+                        row["file_size"],
+                        row["file_mtime_ns"],
+                        "2099-01-01T00:00:00+00:00",
+                        "windows-authority-test",
+                    )
+                    for number, row in enumerate(indexed_tracks, 1)
+                ],
+            )
+
+        # Physical media is authoritative for the WebGUI-only embedded count.
+        # Leave PostgreSQL deliberately stale so apply must validate the mapped
+        # files instead of treating the source's absent counter as zero.
+        staged = self.services.stage_album(self.payload())
+        self.services.embed_album(staged)
+        with closing(self.db.connect()) as db, db:
+            db.execute(
+                "UPDATE albums SET embedded_tracks=0,embedded_validation_status='unknown',"
+                "processed_at=NULL,selected_source=NULL,status='unprocessed',updated_at=? "
+                "WHERE album_key=?",
+                ("2026-01-01T00:00:00+00:00", self.row["album_key"]),
+            )
+
+        reconciler = SQLiteReconciler(
+            self.db,
+            snapshot.parent,
+            self.root / "music",
+            start_scheduler=False,
+            album_validator=self.services.validate_album_embedding,
+        )
+        try:
+            compared = reconciler.compare(
+                snapshot,
+                str(self.root / "music"),
+                str(self.root / "music"),
+            )
+            self.assertGreaterEqual(compared["safe"], 1)
+            self.assertGreaterEqual(compared["conflicts"], 1)
+            applied = reconciler.apply(compared["run_id"])
+            self.assertEqual(applied["failures"], 0)
+            self.assertEqual(applied["attempted"], applied["applied"])
+            with closing(self.db.connect()) as db:
+                album = db.execute(
+                    "SELECT status,selected_source,processed_at,embedded_tracks,track_count,"
+                    "embedded_validation_status "
+                    "FROM albums WHERE album_key=?",
+                    (self.row["album_key"],),
+                ).fetchone()
+                album_count = db.execute("SELECT count(*) FROM albums").fetchone()[0]
+            self.assertEqual(album["status"], "processed")
+            self.assertEqual(album["selected_source"], "existing")
+            self.assertTrue(album["processed_at"])
+            self.assertEqual(album["embedded_tracks"], album["track_count"])
+            self.assertEqual(album["embedded_validation_status"], "verified")
+            self.assertEqual(applied["album_validation_retries"], 0)
+            self.assertEqual(
+                applied["album_validations"][0]["album_id"], self.row["album_key"]
+            )
+            self.assertEqual(album_count, 1)
+
+            with closing(self.db.connect()) as db, db:
+                before_refresh = {
+                    "artist": dict(
+                        db.execute(
+                            "SELECT * FROM artists WHERE artist_key=?",
+                            (self.row["artist_key"],),
+                        ).fetchone()
+                    ),
+                    "album": dict(
+                        db.execute(
+                            "SELECT * FROM albums WHERE album_key=?",
+                            (self.row["album_key"],),
+                        ).fetchone()
+                    ),
+                    "tracks": [
+                        dict(row)
+                        for row in db.execute(
+                            "SELECT * FROM tracks WHERE album_key=? ORDER BY track_key",
+                            (self.row["album_key"],),
+                        )
+                    ],
+                }
+                authority_counts = {
+                    row["entity_table"]: int(row["count"])
+                    for row in db.raw.execute(
+                        "SELECT entity_table,count(*) AS count "
+                        "FROM catalog_sync_authority GROUP BY entity_table"
+                    )
+                }
+                db.execute(
+                    "UPDATE albums SET embedded_validation_status='unknown',"
+                    "embedded_validated_at=NULL WHERE album_key=?",
+                    (self.row["album_key"],),
+                )
+            self.assertEqual(authority_counts["artists"], 1)
+            self.assertEqual(authority_counts["albums"], 1)
+            self.assertEqual(authority_counts["tracks"], len(indexed_tracks))
+
+            # Model a catalog published before the current managed-credit
+            # pass. Version 3 must reopen otherwise unchanged Windows-managed
+            # tracks once so positional MBID and ID3v2.3 TPE1 corrections are
+            # applied.
+            with closing(self.db.connect()) as db:
+                db.execute(
+                    "UPDATE db_maintenance_state SET details_json=? "
+                    "WHERE action_name=?",
+                    (
+                        json.dumps(
+                            {
+                                "artist_separator_regex": self.cfg["scan"][
+                                    "artist_separator_regex"
+                                ],
+                                "artist_separator_profile": self.cfg["scan"][
+                                    "artist_separator_profile"
+                                ],
+                                "managed_track_credit_refresh": 2,
+                            },
+                            sort_keys=True,
+                        ),
+                        "artist-credit-separator",
+                    ),
+                )
+
+            # Force physical tag and file metadata changes that a normal Full
+            # Refresh would otherwise project over reconciled PostgreSQL rows.
+            for number, path in enumerate(self.files, 1):
+                audio = FLAC(path)
+                audio["title"] = f"WebGUI Refresh Track {number}"
+                audio["album"] = "WebGUI Refresh Album"
+                audio["albumartist"] = "WebGUI Refresh Artist"
+                audio["musicbrainz_albumid"] = (
+                    "88888888-8888-4888-8888-888888888888"
+                )
+                audio["musicbrainz_artistid"] = (
+                    "99999999-9999-4999-8999-999999999999"
+                )
+                audio.save()
+
+            refreshed = self.services.refresh_index(mode="full")
+            self.assertEqual(refreshed["removed_albums"], 0)
+            self.assertEqual(refreshed["deferred_albums"], 0)
+            self.assertGreaterEqual(refreshed["windows_managed_albums"], 1)
+            validation = self.services.validate_album_embedding(
+                self.row["album_key"]
+            )
+            self.assertEqual(validation["status"], "verified")
+
+            with closing(self.db.connect()) as db:
+                after_refresh = {
+                    "artist": dict(
+                        db.execute(
+                            "SELECT * FROM artists WHERE artist_key=?",
+                            (self.row["artist_key"],),
+                        ).fetchone()
+                    ),
+                    "album": dict(
+                        db.execute(
+                            "SELECT * FROM albums WHERE album_key=?",
+                            (self.row["album_key"],),
+                        ).fetchone()
+                    ),
+                    "tracks": [
+                        dict(row)
+                        for row in db.execute(
+                            "SELECT * FROM tracks WHERE album_key=? ORDER BY track_key",
+                            (self.row["album_key"],),
+                        )
+                    ],
+                }
+            for table, singular in (
+                ("artists", "artist"),
+                ("albums", "album"),
+            ):
+                self.assertEqual(
+                    {
+                        name: before_refresh[singular][name]
+                        for name in WINDOWS_SYNCHRONIZED_FIELDS[table]
+                    },
+                    {
+                        name: after_refresh[singular][name]
+                        for name in WINDOWS_SYNCHRONIZED_FIELDS[table]
+                    },
+                )
+            # A deliberate Full Refresh may revalidate file-derived fields on
+            # an existing matched track.  It must not change track identity,
+            # Album membership, paths, or create/remove Windows-owned rows.
+            self.assertEqual(
+                [
+                    {
+                        name: row[name]
+                        for name in ("track_key", "album_key", "path")
+                    }
+                    for row in before_refresh["tracks"]
+                ],
+                [
+                    {
+                        name: row[name]
+                        for name in ("track_key", "album_key", "path")
+                    }
+                    for row in after_refresh["tracks"]
+                ],
+            )
+            self.assertEqual(
+                [row["title"] for row in after_refresh["tracks"]],
+                ["WebGUI Refresh Track 1", "WebGUI Refresh Track 2"],
+            )
+            self.assertTrue(
+                all(
+                    row["musicbrainz_artistid"]
+                    == "99999999-9999-4999-8999-999999999999"
+                    for row in after_refresh["tracks"]
+                )
+            )
+            self.assertEqual(
+                after_refresh["album"]["embedded_validation_status"], "verified"
+            )
+            with closing(self.db.connect()) as db:
+                marker = db.execute(
+                    "SELECT details_json FROM db_maintenance_state "
+                    "WHERE action_name=?",
+                    ("artist-credit-separator",),
+                ).fetchone()
+            self.assertEqual(
+                json.loads(marker["details_json"])["managed_track_credit_refresh"],
+                3,
+            )
+
+            repeated = reconciler.compare(
+                snapshot,
+                str(self.root / "music"),
+                str(self.root / "music"),
+            )
+            # The explicit filesystem refresh exposed two newer physical-tag
+            # projections, so the older authoritative SQLite snapshot now has
+            # one safe track correction per file. Applying that snapshot must
+            # still win, which preserves Windows catalog authority.
+            self.assertEqual(repeated["safe"], len(before_refresh["tracks"]))
+            self.assertEqual(repeated["conflicts"], 1)
+            repeated_apply = reconciler.apply(repeated["run_id"])
+            self.assertEqual(
+                repeated_apply["attempted"], len(before_refresh["tracks"])
+            )
+            self.assertEqual(
+                repeated_apply["applied"], len(before_refresh["tracks"])
+            )
+            self.assertEqual(repeated_apply["failures"], 0)
+            with closing(self.db.connect()) as db:
+                restored_titles = [
+                    row["title"]
+                    for row in db.execute(
+                        "SELECT title FROM tracks WHERE album_key=? ORDER BY track_key",
+                        (self.row["album_key"],),
+                    )
+                ]
+            self.assertEqual(
+                restored_titles,
+                [row["title"] for row in before_refresh["tracks"]],
+            )
+
+            settings = reconciler.save_settings({
+                "enabled": False,
+                "auto_apply_safe": False,
+                "startup_mode": "compare",
+                "interval_minutes": 1440,
+                "source_path": str(snapshot),
+                "source_root": str(self.root / "music"),
+                "target_root": str(self.root / "music"),
+            })
+            self.assertEqual(settings["startup_mode"], "compare")
+
+            with closing(self.db.connect()) as db, db:
+                db.raw.execute(
+                    "INSERT INTO web_jobs(id,kind,state,payload) VALUES(%s,%s,%s,%s)",
+                    ("busy-album", "embed-album", "running", Jsonb({})),
+                )
+            try:
+                with self.assertRaisesRegex(RuntimeError, "deferred while Album processing"):
+                    reconciler.compare(
+                        snapshot,
+                        str(self.root / "music"),
+                        str(self.root / "music"),
+                    )
+                with self.assertRaisesRegex(RuntimeError, "deferred while Album processing"):
+                    reconciler.apply(repeated["run_id"])
+            finally:
+                with closing(self.db.connect()) as db, db:
+                    db.raw.execute("DELETE FROM web_jobs WHERE id=%s", ("busy-album",))
+
+            # The saved startup radio is operational, not merely persisted:
+            # it runs one comparison after restart and leaves apply disabled
+            # for Compare-only mode.
+            reconciler.close()
+            startup_reconciler = SQLiteReconciler(
+                self.db,
+                snapshot.parent,
+                self.root / "music",
+                start_scheduler=True,
+            )
+            try:
+                deadline = time.monotonic() + 8
+                startup_run = None
+                while time.monotonic() < deadline:
+                    candidate = startup_reconciler.history(limit=1)["last_run"]
+                    if candidate and candidate["run_id"] != repeated["run_id"]:
+                        startup_run = candidate
+                        break
+                    time.sleep(0.1)
+                self.assertIsNotNone(startup_run)
+                self.assertEqual(startup_run["trigger"], "startup")
+                self.assertEqual(startup_run["status"], "compared")
+                self.assertEqual(startup_run["applied"], 0)
+            finally:
+                startup_reconciler.close()
+        finally:
+            reconciler.close()
+
+    def test_reconciliation_populates_empty_catalog_with_accounted_controlled_inserts(self):
+        snapshot = self.root / "cache" / "empty-target-source.sqlite"
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        with closing(self.db.connect()) as db:
+            source_rows = {
+                "artists": [
+                    dict(
+                        db.execute(
+                            "SELECT * FROM artists WHERE artist_key=?",
+                            (self.row["artist_key"],),
+                        ).fetchone()
+                    )
+                ],
+                "albums": [
+                    dict(
+                        db.execute(
+                            "SELECT * FROM albums WHERE album_key=?",
+                            (self.row["album_key"],),
+                        ).fetchone()
+                    )
+                ],
+                "tracks": [
+                    dict(row)
+                    for row in db.execute(
+                        "SELECT * FROM tracks WHERE album_key=? ORDER BY track_key",
+                        (self.row["album_key"],),
+                    )
+                ],
+            }
+
+        schema_sql = (
+            Path(__file__).parents[4] / "schema" / "media.sql"
+        ).read_text(encoding="utf-8")
+        with closing(sqlite3.connect(snapshot)) as source, source:
+            source.executescript(schema_sql)
+            source.execute("PRAGMA user_version=2")
+            for table, rows in source_rows.items():
+                sqlite_columns = {
+                    str(row[1])
+                    for row in source.execute(f'PRAGMA table_info("{table}")')
+                }
+                names = [name for name in rows[0] if name in sqlite_columns]
+                placeholders = ",".join("?" for _ in names)
+                source.executemany(
+                    f'INSERT INTO "{table}" ({",".join(names)}) VALUES ({placeholders})',
+                    [[row.get(name) for name in names] for row in rows],
+                )
+
+        with closing(self.db.connect()) as db, db:
+            db.raw.execute("TRUNCATE artists,albums,tracks CASCADE")
+
+        audit_events = []
+
+        def audit(action, subject, details, **fields):
+            audit_events.append({"action": action, "details": details, **fields})
+
+        reconciler = SQLiteReconciler(
+            self.db,
+            snapshot.parent,
+            self.root / "music",
+            audit=audit,
+            start_scheduler=False,
+        )
+        try:
+            compared = reconciler.compare(
+                snapshot, str(self.root / "music"), str(self.root / "music")
+            )
+            self.assertEqual(compared["differences"], 4)
+            self.assertEqual(compared["safe"], 4)
+            self.assertEqual(compared["conflicts"], 0)
+            self.assertEqual(compared["tables"]["artists"]["inserts"], 1)
+            self.assertEqual(compared["tables"]["albums"]["inserts"], 1)
+            self.assertEqual(compared["tables"]["tracks"]["inserts"], 2)
+            self.assertEqual(compared["tables"]["tracks"]["rejected"], 0)
+
+            completed_event = next(
+                event
+                for event in audit_events
+                if event.get("stage") == "compare"
+                and event.get("request_status") == "completed"
+            )
+            self.assertEqual(
+                completed_event["details"]["tables"]["tracks"]["safe"], 2
+            )
+
+            applied = reconciler.apply(compared["run_id"])
+            self.assertEqual(applied["attempted"], 4)
+            self.assertEqual(applied["applied"], 4)
+            self.assertEqual(applied["failures"], 0)
+            self.assertEqual(applied["tables"]["tracks"]["applied"], 2)
+            with closing(self.db.connect()) as db:
+                counts = {
+                    table: db.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+                    for table in ("artists", "albums", "tracks")
+                }
+                stored_counts = db.execute(
+                    "SELECT table_counts FROM sqlite_reconciliation_runs WHERE run_id=?",
+                    (compared["run_id"],),
+                ).fetchone()["table_counts"]
+            self.assertEqual(counts, {"artists": 1, "albums": 1, "tracks": 2})
+            self.assertEqual(stored_counts["artists"]["applied"], 1)
+
+            repeated = reconciler.compare(
+                snapshot, str(self.root / "music"), str(self.root / "music")
+            )
+            self.assertEqual(repeated["differences"], 0)
+            self.assertEqual(reconciler.apply(repeated["run_id"])["attempted"], 0)
+        finally:
+            reconciler.close()
+
+    def test_reconciliation_complete_snapshots_preserve_prior_rows_across_one_album_change(self):
+        with closing(self.db.connect()) as db:
+            persisted = {
+                "artists": [
+                    dict(
+                        db.execute(
+                            "SELECT * FROM artists WHERE artist_key=?",
+                            (self.row["artist_key"],),
+                        ).fetchone()
+                    )
+                ],
+                "albums": [
+                    dict(
+                        db.execute(
+                            "SELECT * FROM albums WHERE album_key=?",
+                            (self.row["album_key"],),
+                        ).fetchone()
+                    )
+                ],
+                "tracks": [
+                    dict(row)
+                    for row in db.execute(
+                        "SELECT * FROM tracks WHERE album_key=? ORDER BY track_key",
+                        (self.row["album_key"],),
+                    )
+                ],
+            }
+
+        schema_sql = (
+            Path(__file__).parents[4] / "schema" / "media.sql"
+        ).read_text(encoding="utf-8")
+
+        def write_snapshot(path, *, processed=False):
+            rows = {
+                table: [dict(row) for row in values]
+                for table, values in persisted.items()
+            }
+            if processed:
+                timestamp = "2099-02-01T00:00:00+00:00"
+                rows["artists"][0]["updated_at"] = timestamp
+                rows["albums"][0].update(
+                    processed_at=timestamp,
+                    selected_source="embed-queue",
+                    cover_found=1,
+                    cover_path=str(
+                        self.root
+                        / "music"
+                        / "Test Artist"
+                        / "Test Album"
+                        / "cover.jpg"
+                    ),
+                    bypassed=0,
+                    timeout_until=None,
+                    updated_at=timestamp,
+                )
+            with closing(sqlite3.connect(path)) as source, source:
+                source.executescript(schema_sql)
+                source.execute("PRAGMA user_version=2")
+                for table, values in rows.items():
+                    sqlite_columns = {
+                        str(row[1])
+                        for row in source.execute(f'PRAGMA table_info("{table}")')
+                    }
+                    names = [name for name in values[0] if name in sqlite_columns]
+                    placeholders = ",".join("?" for _ in names)
+                    source.executemany(
+                        f'INSERT INTO "{table}" ({",".join(names)}) VALUES ({placeholders})',
+                        [[row.get(name) for name in names] for row in values],
+                    )
+
+        snapshot_a = self.root / "cache" / "complete-before.sqlite"
+        snapshot_b = self.root / "cache" / "complete-after.sqlite"
+        snapshot_a.parent.mkdir(parents=True, exist_ok=True)
+        write_snapshot(snapshot_a)
+        write_snapshot(snapshot_b, processed=True)
+
+        reconciler = SQLiteReconciler(
+            self.db,
+            snapshot_a.parent,
+            self.root / "music",
+            start_scheduler=False,
+        )
+        try:
+            before = reconciler.compare(
+                snapshot_a, str(self.root / "music"), str(self.root / "music")
+            )
+            self.assertEqual(before["differences"], 0)
+            self.assertEqual(before["conflicts"], 0)
+
+            after = reconciler.compare(
+                snapshot_b, str(self.root / "music"), str(self.root / "music")
+            )
+            self.assertEqual(after["safe"], 2)
+            self.assertEqual(after["conflicts"], 0)
+            self.assertEqual(after["tables"]["artists"]["updates"], 1)
+            self.assertEqual(after["tables"]["albums"]["updates"], 1)
+
+            applied = reconciler.apply(after["run_id"])
+            self.assertEqual(applied["attempted"], 2)
+            self.assertEqual(applied["applied"], 2)
+            self.assertEqual(applied["failures"], 0)
+            with closing(self.db.connect()) as db:
+                album = db.execute(
+                    "SELECT processed_at,selected_source,cover_found,cover_path "
+                    "FROM albums WHERE album_key=?",
+                    (self.row["album_key"],),
+                ).fetchone()
+                self.assertEqual(
+                    db.execute(
+                        "SELECT count(*) FROM tracks WHERE album_key=?",
+                        (self.row["album_key"],),
+                    ).fetchone()[0],
+                    len(persisted["tracks"]),
+                )
+            self.assertTrue(album["processed_at"])
+            self.assertEqual(album["selected_source"], "embed-queue")
+            self.assertEqual(album["cover_found"], 1)
+            self.assertTrue(album["cover_path"])
+
+            repeated = reconciler.compare(
+                snapshot_b, str(self.root / "music"), str(self.root / "music")
+            )
+            self.assertEqual(repeated["differences"], 0)
+            self.assertEqual(reconciler.apply(repeated["run_id"])["attempted"], 0)
+        finally:
+            reconciler.close()
+
+    def test_reconciliation_older_windows_fields_override_without_erasing_postgresql_only_fields(self):
+        snapshot = self.root / "cache" / "windows-authority.sqlite"
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        with closing(self.db.connect()) as db:
+            artist = db.execute(
+                "SELECT artist_key,artist_name,primary_path FROM artists WHERE artist_key=?",
+                (self.row["artist_key"],),
+            ).fetchone()
+            album = db.execute(
+                "SELECT album_key,artist_key,album_name,path FROM albums WHERE album_key=?",
+                (self.row["album_key"],),
+            ).fetchone()
+        with closing(sqlite3.connect(snapshot)) as source, source:
+            source.execute("PRAGMA user_version=2")
+            source.execute(
+                "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,primary_path TEXT)"
+            )
+            source.execute(
+                "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,"
+                "album_name TEXT,path TEXT,release_year TEXT,updated_at TEXT,"
+                "timeout_until TEXT)"
+            )
+            source.execute(
+                "INSERT INTO artists VALUES (?,?,?)",
+                (artist["artist_key"], artist["artist_name"], artist["primary_path"]),
+            )
+            source.execute(
+                "INSERT INTO albums VALUES (?,?,?,?,?,?,?)",
+                (
+                    album["album_key"],
+                    album["artist_key"],
+                    album["album_name"],
+                    album["path"],
+                    "1999",
+                    "2000-01-01T00:00:00+00:00",
+                    "2001-01-01T00:00:00+00:00",
+                ),
+            )
+        with closing(self.db.connect()) as db, db:
+            db.execute(
+                "UPDATE albums SET release_year='2001',updated_at=?,timeout_until=NULL,embedded_tracks=1,"
+                "embedded_validation_status='retry',embedded_validated_at=? "
+                "WHERE album_key=?",
+                (
+                    "2099-01-01T00:00:00+00:00",
+                    "2026-01-01T00:00:00+00:00",
+                    self.row["album_key"],
+                ),
+            )
+
+        reconciler = SQLiteReconciler(
+            self.db, snapshot.parent, self.root / "music", start_scheduler=False
+        )
+        try:
+            compared = reconciler.compare(
+                snapshot, str(self.root / "music"), str(self.root / "music")
+            )
+            self.assertEqual(compared["safe"], 1)
+            self.assertEqual(compared["conflicts"], 0)
+            applied = reconciler.apply(compared["run_id"])
+            self.assertEqual(applied["failures"], 0)
+            with closing(self.db.connect()) as db:
+                saved = db.execute(
+                    "SELECT release_year,updated_at,timeout_until,embedded_tracks,"
+                    "embedded_validation_status,embedded_validated_at "
+                    "FROM albums WHERE album_key=?",
+                    (self.row["album_key"],),
+                ).fetchone()
+            self.assertEqual(saved["release_year"], "1999")
+            self.assertEqual(saved["updated_at"], "2000-01-01T00:00:00+00:00")
+            self.assertEqual(saved["timeout_until"], "2001-01-01T00:00:00+00:00")
+            self.assertEqual(saved["embedded_tracks"], 1)
+            self.assertEqual(saved["embedded_validation_status"], "retry")
+            self.assertEqual(
+                saved["embedded_validated_at"].astimezone(timezone.utc).isoformat(),
+                "2026-01-01T00:00:00+00:00",
+            )
+            repeated = reconciler.compare(
+                snapshot, str(self.root / "music"), str(self.root / "music")
+            )
+            self.assertEqual(repeated["differences"], 0)
+        finally:
+            reconciler.close()
+
+    def test_reconciliation_apply_audit_identifies_failed_table_key_and_error(self):
+        snapshot = self.root / "cache" / "stale-target.sqlite"
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        with closing(self.db.connect()) as db:
+            artist = db.execute(
+                "SELECT artist_key,artist_name,primary_path FROM artists WHERE artist_key=?",
+                (self.row["artist_key"],),
+            ).fetchone()
+            album = db.execute(
+                "SELECT album_key,artist_key,album_name,path FROM albums WHERE album_key=?",
+                (self.row["album_key"],),
+            ).fetchone()
+        with closing(sqlite3.connect(snapshot)) as source, source:
+            source.execute("PRAGMA user_version=2")
+            source.execute(
+                "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,primary_path TEXT)"
+            )
+            source.execute(
+                "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,"
+                "album_name TEXT,path TEXT,release_year TEXT)"
+            )
+            source.execute(
+                "INSERT INTO artists VALUES (?,?,?)",
+                (artist["artist_key"], artist["artist_name"], artist["primary_path"]),
+            )
+            source.execute(
+                "INSERT INTO albums VALUES (?,?,?,?,?)",
+                (
+                    album["album_key"],
+                    album["artist_key"],
+                    album["album_name"],
+                    album["path"],
+                    "1999",
+                ),
+            )
+
+        audit_events = []
+
+        def audit(action, subject, details, **fields):
+            audit_events.append({"action": action, "details": details, **fields})
+
+        reconciler = SQLiteReconciler(
+            self.db,
+            snapshot.parent,
+            self.root / "music",
+            audit=audit,
+            start_scheduler=False,
+        )
+        try:
+            compared = reconciler.compare(
+                snapshot, str(self.root / "music"), str(self.root / "music")
+            )
+            self.assertEqual(compared["safe"], 1)
+            with closing(self.db.connect()) as db, db:
+                db.execute(
+                    "UPDATE albums SET release_year='changed-after-compare' WHERE album_key=?",
+                    (self.row["album_key"],),
+                )
+            applied = reconciler.apply(compared["run_id"])
+            self.assertEqual(applied["attempted"], 1)
+            self.assertEqual(applied["applied"], 0)
+            self.assertEqual(applied["failures"], 1)
+            self.assertEqual(applied["tables"]["albums"]["apply_failed"], 1)
+            self.assertEqual(applied["failure_details"][0]["table"], "albums")
+            self.assertIn(
+                self.row["album_key"], applied["failure_details"][0]["entity_key"]
+            )
+            self.assertIn(
+                "state changed", applied["failure_details"][0]["error"].lower()
+            )
+            failed_event = next(
+                event
+                for event in audit_events
+                if event.get("stage") == "apply-safe"
+            )
+            self.assertEqual(
+                failed_event["details"]["failure_details"][0]["table"], "albums"
+            )
+            with closing(self.db.connect()) as db:
+                difference = db.execute(
+                    "SELECT resolution,application_outcome,error FROM salite_diff "
+                    "WHERE last_run_id=? AND entity_table='albums'",
+                    (compared["run_id"],),
+                ).fetchone()
+            self.assertEqual(difference["resolution"], "skipped")
+            self.assertEqual(difference["application_outcome"], "failed")
+            self.assertIn("state changed", difference["error"].lower())
+        finally:
+            reconciler.close()
+
+    def test_reconciliation_advances_legacy_cache_history_identity_before_insert(self):
+        snapshot = self.root / "cache" / "cache-history.sqlite"
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(snapshot)) as source, source:
+            source.execute("PRAGMA user_version=2")
+            source.execute("CREATE TABLE artists (artist_key TEXT PRIMARY KEY)")
+            source.execute("CREATE TABLE albums (album_key TEXT PRIMARY KEY)")
+            source.execute(
+                "CREATE TABLE cache_history (history_id INTEGER PRIMARY KEY,"
+                "cache_key TEXT,cache_type TEXT,album_key TEXT,action TEXT,"
+                "payload_json TEXT,splined_version TEXT,event_at TEXT)"
+            )
+            source.execute(
+                "INSERT INTO cache_history VALUES (2,'source','test',NULL,"
+                "'processed','{}','windows','2026-01-02T00:00:00Z')"
+            )
+        with closing(self.db.connect()) as db, db:
+            db.raw.execute(
+                "INSERT INTO cache_history(history_id,cache_key,cache_type,album_key,"
+                "action,payload_json,splined_version,event_at) OVERRIDING SYSTEM VALUE "
+                "VALUES(1,'existing','test',NULL,'processed','{}','postgres',"
+                "'2026-01-01T00:00:00Z')"
+            )
+
+        reconciler = SQLiteReconciler(
+            self.db, snapshot.parent, self.root / "music", start_scheduler=False
+        )
+        try:
+            compared = reconciler.compare(
+                snapshot, str(self.root / "music"), str(self.root / "music")
+            )
+            self.assertEqual(compared["safe"], 1)
+            applied = reconciler.apply(compared["run_id"])
+            self.assertEqual(applied["failures"], 0)
+            self.assertEqual(applied["applied"], 1)
+            with closing(self.db.connect()) as db:
+                rows = db.execute(
+                    "SELECT history_id,cache_key FROM cache_history ORDER BY history_id"
+                ).fetchall()
+            self.assertEqual(
+                [(row["history_id"], row["cache_key"]) for row in rows],
+                [(1, "existing"), (2, "source")],
+            )
+        finally:
+            reconciler.close()
+
+    def test_reconciliation_normalizes_windows_nul_multivalue_text_before_jsonb(self):
+        newer = "2099-01-01T00:00:00+00:00"
+        with closing(self.db.connect()) as db:
+            artist = db.execute(
+                "SELECT artist_key,artist_name,musicbrainz_artistid,primary_path "
+                "FROM artists WHERE artist_key=?",
+                (self.row["artist_key"],),
+            ).fetchone()
+
+        snapshot = self.root / "cache" / "nul-multivalue.sqlite"
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        guest_mbid = "77777777-7777-4777-8777-777777777777"
+        with closing(sqlite3.connect(snapshot)) as source, source:
+            source.execute("PRAGMA user_version=2")
+            source.execute(
+                "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,"
+                "musicbrainz_artistid TEXT,primary_path TEXT,updated_at TEXT)"
+            )
+            source.execute("CREATE TABLE albums (album_key TEXT PRIMARY KEY)")
+            source.execute(
+                "INSERT INTO artists VALUES (?,?,?,?,?)",
+                (
+                    artist["artist_key"],
+                    artist["artist_name"] + "\0Guest Artist",
+                    artist["musicbrainz_artistid"] + "\0" + guest_mbid,
+                    artist["primary_path"],
+                    newer,
+                ),
+            )
+
+        reconciler = SQLiteReconciler(
+            self.db, snapshot.parent, self.root / "music", start_scheduler=False
+        )
+        try:
+            compared = reconciler.compare(
+                snapshot, str(self.root / "music"), str(self.root / "music")
+            )
+            self.assertEqual(compared["safe"], 1)
+            self.assertEqual(compared["conflicts"], 0)
+            with closing(self.db.connect()) as db:
+                difference = db.execute(
+                    "SELECT source_value FROM salite_diff WHERE last_run_id=?",
+                    (compared["run_id"],),
+                ).fetchone()["source_value"]
+            self.assertEqual(
+                difference["artist_name"], artist["artist_name"] + "; Guest Artist"
+            )
+            self.assertNotIn("\0", json.dumps(difference))
+
+            applied = reconciler.apply(compared["run_id"])
+            self.assertEqual(applied["failures"], 0)
+            self.assertEqual(applied["applied"], 1)
+            with closing(self.db.connect()) as db:
+                saved = db.execute(
+                    "SELECT artist_name,musicbrainz_artistid FROM artists "
+                    "WHERE artist_key=?",
+                    (artist["artist_key"],),
+                ).fetchone()
+            self.assertEqual(
+                saved["artist_name"], artist["artist_name"] + "; Guest Artist"
+            )
+            self.assertEqual(
+                saved["musicbrainz_artistid"],
+                artist["musicbrainz_artistid"] + "; " + guest_mbid,
+            )
+
+            repeated = reconciler.compare(
+                snapshot, str(self.root / "music"), str(self.root / "music")
+            )
+            self.assertEqual(repeated["differences"], 0)
+        finally:
+            reconciler.close()
+
+    def test_reconciliation_normalizes_and_coalesces_identical_bom_alias(self):
+        with closing(self.db.connect()) as db:
+            artist = dict(
+                db.execute(
+                    "SELECT artist_key,artist_name,musicbrainz_artistid,primary_path "
+                    "FROM artists WHERE artist_key=?",
+                    (self.row["artist_key"],),
+                ).fetchone()
+            )
+        mbid = str(artist["musicbrainz_artistid"])
+
+        unique_snapshot = self.root / "cache" / "bom-identity.sqlite"
+        unique_snapshot.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(unique_snapshot)) as source, source:
+            source.execute("PRAGMA user_version=2")
+            source.execute(
+                "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,"
+                "musicbrainz_artistid TEXT,primary_path TEXT)"
+            )
+            source.execute("CREATE TABLE albums (album_key TEXT PRIMARY KEY)")
+            source.execute(
+                "INSERT INTO artists VALUES (?,?,?,?)",
+                (
+                    "mbid:\ufeff" + mbid,
+                    artist["artist_name"],
+                    "\ufeff" + mbid,
+                    artist["primary_path"],
+                ),
+            )
+
+        reconciler = SQLiteReconciler(
+            self.db,
+            unique_snapshot.parent,
+            self.root / "music",
+            start_scheduler=False,
+        )
+        try:
+            unique = reconciler.compare(
+                unique_snapshot,
+                str(self.root / "music"),
+                str(self.root / "music"),
+            )
+            self.assertEqual(unique["differences"], 0)
+
+            collision_snapshot = self.root / "cache" / "bom-collision.sqlite"
+            with closing(sqlite3.connect(collision_snapshot)) as source, source:
+                source.execute("PRAGMA user_version=2")
+                source.execute(
+                    "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,"
+                    "musicbrainz_artistid TEXT,primary_path TEXT)"
+                )
+                source.execute("CREATE TABLE albums (album_key TEXT PRIMARY KEY)")
+                source.executemany(
+                    "INSERT INTO artists VALUES (?,?,?,?)",
+                    (
+                        (
+                            "mbid:" + mbid,
+                            artist["artist_name"],
+                            mbid,
+                            artist["primary_path"],
+                        ),
+                        (
+                            "mbid:\ufeff" + mbid,
+                            artist["artist_name"],
+                            "\ufeff" + mbid,
+                            artist["primary_path"],
+                        ),
+                    ),
+                )
+
+            collision = reconciler.compare(
+                collision_snapshot,
+                str(self.root / "music"),
+                str(self.root / "music"),
+            )
+            self.assertEqual(collision["safe"], 0)
+            self.assertEqual(collision["conflicts"], 0)
+            self.assertEqual(collision["differences"], 0)
+            self.assertEqual(
+                collision["tables"]["artists"]["transport_aliases_coalesced"],
+                1,
+            )
+            self.assertEqual(reconciler.apply(collision["run_id"])["attempted"], 0)
+        finally:
+            reconciler.close()
+
+    def test_reconciliation_reclassifies_persisted_conflict_as_safe_and_idempotent(self):
+        snapshot = self.root / "cache" / "reclassified-safe.sqlite"
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        with closing(self.db.connect()) as db, db:
+            artist = db.execute(
+                "SELECT artist_key,artist_name,primary_path FROM artists "
+                "WHERE artist_key=?",
+                (self.row["artist_key"],),
+            ).fetchone()
+            album = db.execute(
+                "SELECT album_key,artist_key,album_name,path FROM albums "
+                "WHERE album_key=?",
+                (self.row["album_key"],),
+            ).fetchone()
+            db.execute(
+                "UPDATE albums SET release_year='2001' WHERE album_key=?",
+                (self.row["album_key"],),
+            )
+        with closing(sqlite3.connect(snapshot)) as source, source:
+            source.execute("PRAGMA user_version=2")
+            source.execute(
+                "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,"
+                "primary_path TEXT)"
+            )
+            source.execute(
+                "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,"
+                "album_name TEXT,path TEXT,release_year TEXT)"
+            )
+            source.execute(
+                "INSERT INTO artists VALUES (?,?,?)",
+                (artist["artist_key"], artist["artist_name"], artist["primary_path"]),
+            )
+            source.execute(
+                "INSERT INTO albums VALUES (?,?,?,?,?)",
+                (
+                    album["album_key"],
+                    album["artist_key"],
+                    album["album_name"],
+                    album["path"],
+                    "1999",
+                ),
+            )
+
+        reconciler = SQLiteReconciler(
+            self.db, snapshot.parent, self.root / "music", start_scheduler=False
+        )
+        try:
+            first = reconciler.compare(
+                snapshot, str(self.root / "music"), str(self.root / "music")
+            )
+            self.assertEqual(first["safe"], 1)
+            with closing(self.db.connect()) as db, db:
+                db.execute(
+                    "UPDATE salite_diff SET resolution='conflict',"
+                    "application_outcome='failed',error='synthetic historical failure',"
+                    "applied_at=now() WHERE last_run_id=?",
+                    (first["run_id"],),
+                )
+
+            second = reconciler.compare(
+                snapshot, str(self.root / "music"), str(self.root / "music")
+            )
+            self.assertEqual(second["safe"], 1)
+            with closing(self.db.connect()) as db:
+                rows = db.execute(
+                    "SELECT resolution,application_outcome,error,applied_at "
+                    "FROM salite_diff WHERE last_run_id=?",
+                    (second["run_id"],),
+                ).fetchall()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["resolution"], "safe")
+            self.assertEqual(rows[0]["application_outcome"], "pending")
+            self.assertEqual(rows[0]["error"], "")
+            self.assertIsNone(rows[0]["applied_at"])
+
+            applied = reconciler.apply(second["run_id"])
+            self.assertEqual(applied["attempted"], 1)
+            self.assertEqual(applied["applied"], 1)
+            self.assertEqual(applied["failures"], 0)
+            repeated = reconciler.compare(
+                snapshot, str(self.root / "music"), str(self.root / "music")
+            )
+            self.assertEqual(repeated["differences"], 0)
+            self.assertEqual(reconciler.apply(repeated["run_id"])["attempted"], 0)
+        finally:
+            reconciler.close()
+
+    def test_reconciliation_ambiguous_artist_remains_diagnostic_and_cannot_reparent_album(self):
+        old = "2026-01-01T00:00:00+00:00"
+        newer = "2099-01-01T00:00:00+00:00"
+        first_key = "tag:ambiguous-first"
+        second_key = "tag:ambiguous-second"
+        source_key = "mbid:ambiguous-source"
+        album_key = "ambiguous-target-album"
+        first_path = self.root / "music" / "Ambiguous First"
+        second_path = self.root / "music" / "Ambiguous Second"
+        album_path = first_path / "Album"
+        with closing(self.db.connect()) as db, db:
+            for key, mbid, path in (
+                (first_key, "ambiguous-first-mbid", first_path),
+                (second_key, "ambiguous-second-mbid", second_path),
+            ):
+                db.execute(
+                    "INSERT INTO artists(artist_key,artist_name,musicbrainz_artistid,"
+                    "primary_path,created_at,updated_at,last_seen_at,splined_version) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
+                    (key, "Ambiguous Name", mbid, str(path), old, old, old, "test"),
+                )
+            db.execute(
+                "INSERT INTO albums(album_key,artist_key,album_name,path,tag_signature,"
+                "created_at,updated_at,last_seen_at,splined_version) VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    album_key,
+                    first_key,
+                    "Must Not Move",
+                    str(album_path),
+                    "ambiguous",
+                    old,
+                    old,
+                    old,
+                    "test",
+                ),
+            )
+
+        snapshot = self.root / "cache" / "ambiguous-artist.sqlite"
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(snapshot)) as source, source:
+            source.execute("PRAGMA user_version=2")
+            source.execute(
+                "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,"
+                "musicbrainz_artistid TEXT,primary_path TEXT,updated_at TEXT)"
+            )
+            source.execute(
+                "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,"
+                "album_name TEXT,path TEXT,updated_at TEXT)"
+            )
+            source.execute(
+                "INSERT INTO artists VALUES (?,?,?,?,?)",
+                (
+                    source_key,
+                    "Ambiguous-Name",
+                    "ambiguous-source-mbid",
+                    str(self.root / "music" / "Ambiguous Source"),
+                    newer,
+                ),
+            )
+            # Deliberately reuse the PostgreSQL Album key/path.  An unresolved
+            # Artist must prevent this otherwise strong Album match from
+            # re-parenting the target row.
+            source.execute(
+                "INSERT INTO albums VALUES (?,?,?,?,?)",
+                (album_key, source_key, "Must Not Move", str(album_path), newer),
+            )
+
+        reconciler = SQLiteReconciler(
+            self.db, snapshot.parent, self.root / "music", start_scheduler=False
+        )
+        try:
+            compared = reconciler.compare(
+                snapshot, str(self.root / "music"), str(self.root / "music")
+            )
+            self.assertEqual(compared["safe"], 0)
+            self.assertEqual(compared["conflicts"], 2)
+            with closing(self.db.connect()) as db:
+                differences = db.execute(
+                    "SELECT entity_table,source_value,resolution FROM salite_diff "
+                    "WHERE last_run_id=? ORDER BY entity_table",
+                    (compared["run_id"],),
+                ).fetchall()
+            artist_difference = next(
+                row for row in differences if row["entity_table"] == "artists"
+            )
+            album_difference = next(
+                row for row in differences if row["entity_table"] == "albums"
+            )
+            artist_identity = artist_difference["source_value"][
+                "_reconciliation_identity"
+            ]
+            self.assertEqual(artist_difference["resolution"], "conflict")
+            self.assertEqual(artist_identity["status"], "ambiguous")
+            self.assertEqual(artist_identity["evidence"], "artist-name")
+            self.assertEqual(artist_identity["candidate_count"], 2)
+            self.assertEqual(
+                album_difference["source_value"]["_reconciliation_identity"]["reason"],
+                "artist-association-unresolved",
+            )
+
+            report = reconciler.conflict_report(run_id=compared["run_id"])
+            self.assertEqual(report["total"], 2)
+            self.assertEqual(
+                {item["entity_table"] for item in report["items"]},
+                {"artists", "albums"},
+            )
+            self.assertEqual(len(report["roots"]), 1)
+            self.assertEqual(report["roots"][0]["count"], 2)
+            self.assertIn("ambiguous", report["facets"]["reasons"])
+            html = reconciler.conflict_report_html(run_id=compared["run_id"])
+            self.assertIn("SPLINED Reconciliation Conflicts", html)
+            self.assertIn("Ambiguous-Name", html)
+
+            applied = reconciler.apply(compared["run_id"])
+            self.assertEqual(applied["attempted"], 0)
+            with closing(self.db.connect()) as db:
+                target_album = db.execute(
+                    "SELECT artist_key FROM albums WHERE album_key=?", (album_key,)
+                ).fetchone()
+                target_artists = db.execute(
+                    "SELECT artist_key,musicbrainz_artistid FROM artists "
+                    "WHERE artist_key IN (?,?) ORDER BY artist_key",
+                    (first_key, second_key),
+                ).fetchall()
+                authority_count = db.raw.execute(
+                    "SELECT count(*) AS count FROM catalog_sync_authority "
+                    "WHERE entity_key IN (%s,%s,%s)",
+                    (first_key, second_key, album_key),
+                ).fetchone()["count"]
+            self.assertEqual(target_album["artist_key"], first_key)
+            self.assertEqual(authority_count, 0)
+            self.assertEqual(
+                [row["musicbrainz_artistid"] for row in target_artists],
+                ["ambiguous-first-mbid", "ambiguous-second-mbid"],
+            )
+
+            repeated = reconciler.compare(
+                snapshot, str(self.root / "music"), str(self.root / "music")
+            )
+            self.assertEqual(repeated["safe"], 0)
+            self.assertEqual(repeated["conflicts"], 2)
+            self.assertEqual(reconciler.apply(repeated["run_id"])["attempted"], 0)
+        finally:
+            reconciler.close()
+
+    def test_reconciliation_unique_artist_identity_applies_windows_authority(self):
+        old = "2026-01-01T00:00:00+00:00"
+        newer = "2099-01-01T00:00:00+00:00"
+        targets = (
+            (
+                "tag:path-proven",
+                "Path Proven",
+                "stale-path-mbid",
+                self.root / "music" / "Path Proven",
+            ),
+            (
+                "tag:identified-later",
+                "Identified Later",
+                "",
+                self.root / "music" / "Identified Later Target",
+            ),
+            (
+                "tag:keep-known",
+                "Keep Known",
+                "known-target-mbid",
+                self.root / "music" / "Keep Known",
+            ),
+        )
+        with closing(self.db.connect()) as db, db:
+            for key, name, mbid, path in targets:
+                db.execute(
+                    "INSERT INTO artists(artist_key,artist_name,musicbrainz_artistid,"
+                    "primary_path,created_at,updated_at,last_seen_at,splined_version) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
+                    (key, name, mbid, str(path), old, old, old, "test"),
+                )
+
+        snapshot = self.root / "cache" / "unique-artists.sqlite"
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(snapshot)) as source, source:
+            source.execute("PRAGMA user_version=2")
+            source.execute(
+                "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,"
+                "musicbrainz_artistid TEXT,primary_path TEXT,updated_at TEXT)"
+            )
+            source.execute("CREATE TABLE albums (album_key TEXT PRIMARY KEY)")
+            source.executemany(
+                "INSERT INTO artists VALUES (?,?,?,?,?)",
+                (
+                    (
+                        "mbid:authoritative-path-mbid",
+                        "Path Proven",
+                        "authoritative-path-mbid",
+                        str(targets[0][3]),
+                        newer,
+                    ),
+                    (
+                        "mbid:newly-identified-mbid",
+                        "Identified Later",
+                        "newly-identified-mbid",
+                        str(self.root / "music" / "Different Source Path"),
+                        newer,
+                    ),
+                    (
+                        "tag:keep-known",
+                        "Keep Known",
+                        "",
+                        str(targets[2][3]),
+                        newer,
+                    ),
+                ),
+            )
+
+        reconciler = SQLiteReconciler(
+            self.db, snapshot.parent, self.root / "music", start_scheduler=False
+        )
+        try:
+            compared = reconciler.compare(
+                snapshot, str(self.root / "music"), str(self.root / "music")
+            )
+            self.assertEqual(compared["safe"], 3)
+            self.assertEqual(compared["conflicts"], 0)
+            applied = reconciler.apply(compared["run_id"])
+            self.assertEqual(applied["attempted"], 3)
+            self.assertEqual(applied["failures"], 0)
+            with closing(self.db.connect()) as db:
+                rows = db.execute(
+                    "SELECT artist_key,musicbrainz_artistid FROM artists "
+                    "WHERE artist_key IN (?,?,?) ORDER BY artist_key",
+                    tuple(item[0] for item in targets),
+                ).fetchall()
+            self.assertEqual(
+                {row["artist_key"]: row["musicbrainz_artistid"] for row in rows},
+                {
+                    "tag:path-proven": "authoritative-path-mbid",
+                    "tag:identified-later": "newly-identified-mbid",
+                    # The exact key and unique mapped path prove the entity;
+                    # the authoritative unidentified Windows value therefore
+                    # clears the stale synchronized PostgreSQL MBID.
+                    "tag:keep-known": "",
+                },
+            )
+            repeated = reconciler.compare(
+                snapshot, str(self.root / "music"), str(self.root / "music")
+            )
+            self.assertEqual(repeated["safe"], 0)
+            self.assertEqual(repeated["conflicts"], 0)
+            self.assertEqual(reconciler.apply(repeated["run_id"])["attempted"], 0)
+        finally:
+            reconciler.close()
+
+    def test_rendered_browser_comp_workflows_and_persistent_album_queue(self):
+        """Drive local FastAPI in a rendered browser; external providers are simulated."""
+        try:
+            from playwright.sync_api import expect, sync_playwright
+        except ImportError as error:  # pragma: no cover - CI installs test requirements.
+            self.skipTest(f"Playwright is unavailable: {error}")
+
+        comp = (
+            self.root
+            / "music"
+            / "Compilations"
+            / "Billboard Hot 100 Singles of 1994"
+        )
+        comp.mkdir(parents=True)
+        target = comp / "01 10,000 Maniacs - Because the Night.flac"
+        other = comp / "02 Other Performer - Other Song.flac"
+
+        def comp_track(path, title, artist, artist_id, recording_id):
+            sf.write(path, np.zeros((4410, 2)), 44100)
+            audio = FLAC(path)
+            for key, value in {
+                "title": title,
+                "artist": artist,
+                "albumartist": "Various Artists",
+                "album": "Billboard Hot 100 Singles of 1994",
+                "musicbrainz_albumartistid": "89ad4ac3-39f7-470e-963a-56509c546377",
+                "musicbrainz_artistid": artist_id,
+                "musicbrainz_trackid": recording_id,
+            }.items():
+                audio[key] = value
+            audio.save()
+
+        comp_track(
+            target,
+            "Because the Night",
+            "10,000 Maniacs",
+            "6c8b9855-ba8b-48f9-ac1d-42167f7f7b18",
+            "11111111-1111-4111-8111-111111111111",
+        )
+        initial_target_art_buffer = BytesIO()
+        Image.new("RGB", (640, 640), "maroon").save(
+            initial_target_art_buffer, format="JPEG"
+        )
+        initial_target_art = initial_target_art_buffer.getvalue()
+        compilation.replace_embedded_artwork(
+            target,
+            initial_target_art,
+            "jpeg",
+            {"width": 640, "height": 640},
+        )
+        comp_track(
+            other,
+            "Other Song",
+            "Other Performer",
+            "77777777-7777-4777-8777-777777777777",
+            "88888888-8888-4888-8888-888888888888",
+        )
+        # The reported library selects 10,000 Maniacs from its normal Artist
+        # entry, then projects that Artist's compilation appearances.  Keep a
+        # regular reference Album in the fixture so the rendered interaction
+        # follows the same route instead of manufacturing a track-credit-only
+        # sidebar identity that Windows does not expose.
+        artist_album = self.root / "music" / "10,000 Maniacs" / "Reference Album"
+        artist_album.mkdir(parents=True)
+        target_release_id = "12345678-1234-4234-8234-123456789abc"
+        other_release_id = "99999999-9999-4999-8999-999999999999"
+        artist_track = artist_album / "01 Because the Night.flac"
+        sf.write(artist_track, np.zeros((4410, 2)), 44100)
+        audio = FLAC(artist_track)
+        for key, value in {
+            "title": "Because the Night",
+            "artist": "10,000 Maniacs",
+            "albumartist": "10,000 Maniacs",
+            "album": "Reference Album",
+            "musicbrainz_albumid": target_release_id,
+            "musicbrainz_artistid": "6c8b9855-ba8b-48f9-ac1d-42167f7f7b18",
+            "musicbrainz_trackid": "11111111-1111-4111-8111-111111111111",
+        }.items():
+            audio[key] = value
+        audio.save()
+        Image.new("RGB", (900, 600), "orange").save(artist_album / "cover.png")
+        other_album = self.root / "music" / "Other Performer" / "Other Reference"
+        other_album.mkdir(parents=True)
+        other_reference = other_album / "01 Other Song.flac"
+        sf.write(other_reference, np.zeros((4410, 2)), 44100)
+        audio = FLAC(other_reference)
+        for key, value in {
+            "title": "Other Song",
+            "artist": "Other Performer",
+            "albumartist": "Other Performer",
+            "album": "Other Reference",
+            "musicbrainz_albumid": other_release_id,
+            "musicbrainz_artistid": "77777777-7777-4777-8777-777777777777",
+            "musicbrainz_trackid": "88888888-8888-4888-8888-888888888888",
+        }.items():
+            audio[key] = value
+        audio.save()
+        Image.new("RGB", (900, 600), "cyan").save(other_album / "cover.png")
+        Image.new("RGB", (700, 700), "purple").save(comp / "cover.jpg")
+        credential = self.root / "credentials" / "musicbrainz.json"
+        credential.parent.mkdir(parents=True, exist_ok=True)
+        credential.write_text(json.dumps({"options": {
+            "retry_max": 1, "min_delay": 0.001, "recording_timeout": 2,
+        }}), encoding="utf-8")
+
+        def wait_for_embedded_art(
+            path: Path, previous: bytes | None = None, timeout: float = 15.0
+        ) -> bytes:
+            """Wait for verified audio readback, not a transient progress banner."""
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                try:
+                    body = embedded_track_artwork_bytes(path)
+                except Exception:
+                    body = None
+                if body and body != previous:
+                    return body
+                time.sleep(0.1)
+            self.fail(f"embedded artwork was not readable from {path.name}")
+
+        self.services.refresh_index(mode="full")
+        with closing(self.db.connect()) as db:
+            comp_row = db.execute(
+                "SELECT * FROM albums WHERE path=?", (str(comp),)
+            ).fetchone()
+            target_artist_key = db.execute(
+                "SELECT artist_key FROM artists WHERE artist_name=?",
+                ("10,000 Maniacs",),
+            ).fetchone()["artist_key"]
+        target_track_key = next(
+            item["track_key"]
+            for item in self.services.hydrate_tracks(comp_row["album_key"])
+            if Path(item["path"]) == target
+        )
+        self.runtime.close()
+
+        app = None
+        http_calls: list[str] = []
+        release_preview = BytesIO()
+        Image.new("RGB", (760, 620), "gold").save(release_preview, format="JPEG")
+
+        class MusicBrainzResponse:
+            def __init__(self, payload, status_code=200, content=b""):
+                self.status_code = status_code
+                self._payload = payload
+                self.content = content
+
+            def json(self):
+                return self._payload
+
+        identities = {
+            "6c8b9855-ba8b-48f9-ac1d-42167f7f7b18": {
+                "recording": "11111111-1111-4111-8111-111111111111",
+                "artist": "10,000 Maniacs",
+                "title": "Because the Night",
+                "release": target_release_id,
+                "album": "Reference Album",
+                "group": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            },
+            "77777777-7777-4777-8777-777777777777": {
+                "recording": "88888888-8888-4888-8888-888888888888",
+                "artist": "Other Performer",
+                "title": "Other Song",
+                "release": other_release_id,
+                "album": "Other Reference",
+                "group": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            },
+        }
+
+        def recording_payload(artist_id, identity):
+            credit = [{"artist": {"id": artist_id, "name": identity["artist"]}}]
+            return {
+                "id": identity["recording"],
+                "score": 100,
+                "title": identity["title"],
+                "artist-credit": credit,
+                "relations": [],
+                "releases": [{
+                    "id": identity["release"],
+                    "title": identity["album"],
+                    "status": "Official",
+                    "date": "1994",
+                    "country": "US",
+                    "artist-credit": credit,
+                    "release-group": {
+                        "id": identity["group"],
+                        "title": identity["album"],
+                        "primary-type": "Album",
+                        "secondary-types": [],
+                    },
+                }],
+            }
+
+        def fixture_http_get(_http, url, **kwargs):
+            http_calls.append(url)
+            if url.startswith("https://coverartarchive.org/"):
+                return MusicBrainzResponse({}, 200, release_preview.getvalue())
+            for artist_id, identity in identities.items():
+                if url.endswith("/artist/" + artist_id):
+                    return MusicBrainzResponse({
+                        "id": artist_id, "name": identity["artist"]
+                    })
+                if url.endswith("/recording/" + identity["recording"]):
+                    return MusicBrainzResponse(
+                        recording_payload(artist_id, identity)
+                    )
+            if url.rstrip("/").endswith("/recording"):
+                query = str(kwargs.get("params", {}).get("query", ""))
+                identity = next(
+                    (value for key, value in identities.items() if key in query),
+                    None,
+                )
+                artist_id = next(
+                    (key for key in identities if key in query), ""
+                )
+                return MusicBrainzResponse({
+                    "recordings": [recording_payload(artist_id, identity)]
+                    if identity else []
+                })
+            return MusicBrainzResponse({}, 503)
+
+        provider_fixture_dir = self.runtime.temporary_cache / "provider-candidates"
+        provider_fixture_dir.mkdir()
+        provider_candidates = []
+        for number, (side, source, color) in enumerate(
+            [
+                (1200, "itunes", "navy"),
+                (1400, "amazon", "orange"),
+                (1600, "coverartarchive", "teal"),
+                (1800, "fanarttv", "purple"),
+                (2000, "discogs", "green"),
+            ],
+            1,
+        ):
+            path = provider_fixture_dir / f"candidate-{number}.jpg"
+            Image.new("RGB", (side, side), color).save(path)
+            provider_candidates.append(
+                core.Candidate(
+                    core.Ref(
+                        source,
+                        f"fixture-{number}",
+                        f"https://fixtures.invalid/{number}",
+                        width=side,
+                        height=side,
+                    ),
+                    path,
+                    side,
+                    side,
+                    "jpeg",
+                    number,
+                )
+            )
+
+        def fixture_remote_candidates(*_args, **_kwargs):
+            return list(provider_candidates), [
+                ("amazon", "Fixture policy diagnostic retained for review"),
+                ("amazon", "Fixture policy diagnostic retained for review"),
+                ("itunes", "Fixture range diagnostic retained for review"),
+                ("musicbrainz", "policy-filtered: Reference is not primary/front under active source policy"),
+                ("deezer", "request failed (ConnectionError)"),
+            ]
+
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+
+        def launch_test_server():
+            application = create_app(
+                self.config,
+                self.url,
+                token="rendered-browser-token",
+                start_worker=True,
+            )
+            running_server = uvicorn.Server(
+                uvicorn.Config(
+                    application,
+                    host="127.0.0.1",
+                    port=port,
+                    log_level="warning",
+                )
+            )
+            running_server.install_signal_handlers = lambda: None
+            running_thread = threading.Thread(
+                target=running_server.run, daemon=True
+            )
+            running_thread.start()
+            for _ in range(100):
+                if running_server.started:
+                    break
+                time.sleep(0.05)
+            self.assertTrue(
+                running_server.started, "temporary WebGUI server did not start"
+            )
+            return application, running_server, running_thread
+
+        server = None
+        server_thread = None
+        with (
+            patch.object(
+                core,
+                "mb_headers",
+                return_value=({"User-Agent": "SPLINED-test"}, "fixture"),
+            ),
+            patch.object(core.Http, "get", new=fixture_http_get),
+            patch(
+                "splined_scan._manual_remote_candidates",
+                side_effect=fixture_remote_candidates,
+            ),
+        ):
+            app, server, server_thread = launch_test_server()
+
+            try:
+                with sync_playwright() as playwright:
+                    browser_executable = os.environ.get(
+                        "SPLINED_TEST_BROWSER_EXECUTABLE"
+                    )
+                    launch_options = {
+                        "headless": os.environ.get(
+                            "SPLINED_TEST_BROWSER_HEADLESS", "1"
+                        ) != "0",
+                        "args": ["--no-sandbox"],
+                    }
+                    if browser_executable:
+                        launch_options["executable_path"] = browser_executable
+                    else:
+                        launch_options["channel"] = os.environ.get(
+                            "SPLINED_TEST_BROWSER_CHANNEL", "chrome"
+                        )
+                    browser = playwright.chromium.launch(**launch_options)
+                    page = browser.new_page(viewport={"width": 1600, "height": 1000})
+                    page.goto(f"http://127.0.0.1:{port}", wait_until="networkidle")
+                    page.locator("#setupUsername").fill("browser-admin")
+                    page.locator("#setupPassword").fill("RenderedBrowser123")
+                    page.locator("#setupConfirmation").fill("RenderedBrowser123")
+                    page.locator("#setupToken").fill("rendered-browser-token")
+                    page.locator("#adminSetupForm button[type=submit]").click()
+                    expect(page.locator("body")).to_have_class("authenticated")
+
+                    # Panel proportions are browser-local preferences. They
+                    # must be restored only after authentication reveals a
+                    # measurable workspace, not clamped while it is hidden.
+                    page.evaluate(
+                        """() => localStorage.setItem(
+                            'splined.browser-preview.layout',
+                            JSON.stringify({library: 315, review: 390, candidates: 275})
+                        )"""
+                    )
+                    page.reload(wait_until="domcontentloaded")
+                    expect(page.locator("body")).to_have_class("authenticated")
+                    page.wait_for_function(
+                        """() => {
+                            const style = getComputedStyle(document.querySelector('.workspace'));
+                            return style.getPropertyValue('--library-width').trim() === '315px'
+                                && style.getPropertyValue('--review-width').trim() === '390px'
+                                && style.getPropertyValue('--dock-height').trim() === '275px';
+                        }"""
+                    )
+
+                    # A regular Album stages through the rendered controls and
+                    # its card survives a real browser reload.
+                    expect(page.locator("#mediaFilter")).to_be_hidden()
+                    page.locator("#mediaFilterToggle").click()
+                    expect(page.locator("#mediaFilter")).to_be_visible()
+                    page.locator("#artistSearch").fill("Test Artist")
+                    page.locator("#artistList button", has_text="Test Artist").click()
+                    page.locator("button.album-card", has_text="Test Album").click()
+                    expect(page.locator("#embedBatchButton")).to_be_enabled()
+                    with page.expect_response(
+                        lambda response: response.url.endswith("/api/jobs")
+                        and response.request.method == "POST",
+                        timeout=15000,
+                    ) as stage_response:
+                        page.locator("#embedBatchButton").click()
+                    self.assertTrue(
+                        stage_response.value.ok, stage_response.value.text()
+                    )
+                    page.locator("#embedTab").click()
+                    expect(page.locator(".queue-card", has_text="Test Album")).to_be_visible()
+
+                    # Recreate the authenticated service against the same
+                    # PostgreSQL schema and persistent cache, then sign in as
+                    # a new server session and verify the staged preview card.
+                    server.should_exit = True
+                    server_thread.join(timeout=15)
+                    self.assertFalse(server_thread.is_alive())
+                    app, server, server_thread = launch_test_server()
+                    # The authenticated GUI polls job state every 1.5 seconds,
+                    # so network-idle is not a stable readiness contract after
+                    # a server restart.  The assertions below wait for the
+                    # durable session and asynchronous library bootstrap.
+                    page.reload(wait_until="domcontentloaded")
+                    # The authenticated session is intentionally durable. It
+                    # can restore just after the login form first paints, so
+                    # wait for bootstrap to settle and sign in only when the
+                    # prior session was not restored.
+                    page.wait_for_timeout(250)
+                    body_class = page.locator("body").get_attribute("class") or ""
+                    if "authenticated" not in body_class.split():
+                        expect(page.locator("#loginForm")).to_be_visible()
+                        page.locator("#loginUsername").fill("browser-admin")
+                        page.locator("#loginPassword").fill("RenderedBrowser123")
+                        page.locator("#loginForm button[type=submit]").click()
+                    expect(page.locator("body")).to_have_class("authenticated")
+                    # Authentication becomes visible before the asynchronous
+                    # library/bootstrap render completes.  Wait for that load
+                    # so its default workspace render cannot race this click.
+                    expect(
+                        page.locator("#artistList button", has_text="Test Artist")
+                    ).to_be_visible(timeout=15000)
+                    page.locator("#embedTab").click()
+                    expect(page.locator("#embedView")).to_be_visible()
+                    expect(page.locator(".queue-card", has_text="Test Album")).to_be_visible()
+                    expect(page.locator("#embedQueue")).not_to_contain_text(
+                        "Billboard Hot 100 Singles of 1994"
+                    )
+
+                    # Artist report: the top LAUNCH COMP stays scoped to the
+                    # one 10,000 Maniacs track and presents simulated MB 100%.
+                    page.locator("#findTab").click()
+                    page.locator("#artistsTab").click()
+                    expect(page.locator("#mediaFilter")).to_be_hidden()
+                    page.locator("#mediaFilterToggle").click()
+                    expect(page.locator("#mediaFilter")).to_be_visible()
+                    page.locator("#artistSearch").fill("10,000 Maniacs")
+                    page.locator(
+                        "#artistList button", has_text="10,000 Maniacs"
+                    ).click()
+                    expect(page.locator("#artistName")).to_have_text(
+                        "10,000 Maniacs", timeout=15000
+                    )
+                    # Artist information is a tiny, theme-driven pop-out over
+                    # the five-line biography. It must preserve the circular
+                    # portrait and never move the Album area or page layout.
+                    expect(page.locator("#artistInfoRows")).to_be_hidden()
+                    expect(page.locator("#artistBiography")).to_be_visible()
+                    portrait_box = page.locator("#heroPortrait").bounding_box()
+                    self.assertAlmostEqual(
+                        portrait_box["width"], portrait_box["height"], delta=0.5
+                    )
+                    portrait_rule_is_round = page.evaluate(
+                        """() => [...document.styleSheets].some(sheet =>
+                            [...sheet.cssRules].some(rule =>
+                                rule.selectorText === '.hero-portrait' &&
+                                rule.style.getPropertyValue('border-radius') === '50%'
+                            )
+                        )"""
+                    )
+                    self.assertTrue(portrait_rule_is_round)
+                    toggle_box = page.locator("#artistInfoToggle").bounding_box()
+                    artist_radio_box = page.locator("#artistArtEntry").bounding_box()
+                    self.assertEqual(round(toggle_box["width"]), 16)
+                    self.assertEqual(round(toggle_box["height"]), 16)
+                    self.assertGreater(toggle_box["x"], artist_radio_box["x"])
+                    self.assertLess(toggle_box["y"], artist_radio_box["y"])
+                    hero_height = page.locator("#hero").bounding_box()["height"]
+                    album_grid_y = page.locator("#albumGrid").bounding_box()["y"]
+                    page.locator("#artistInfoToggle").click()
+                    expect(page.locator("#artistInfoRows")).to_be_visible()
+                    self.assertEqual(
+                        page.locator("#artistInfoRows > span > b").all_inner_texts(),
+                        [
+                            "Artist",
+                            "Status",
+                            "Albums",
+                            "Roles",
+                            "MusicBrainz ID",
+                            "Genres",
+                        ],
+                    )
+                    expect(page.locator("#artistInfoArtist")).to_have_text(
+                        "10,000 Maniacs"
+                    )
+                    self.assertEqual(
+                        page.locator("#artistInfoMbid").get_attribute("href"),
+                        "https://musicbrainz.org/artist/6c8b9855-ba8b-48f9-ac1d-42167f7f7b18",
+                    )
+                    self.assertEqual(
+                        page.locator("#artistInfoMbid").get_attribute("target"),
+                        "_blank",
+                    )
+                    self.assertEqual(
+                        page.locator("#artistInfoRows").evaluate(
+                            "element => getComputedStyle(element).position"
+                        ),
+                        "absolute",
+                    )
+                    self.assertAlmostEqual(
+                        page.locator("#hero").bounding_box()["height"],
+                        hero_height,
+                        delta=0.5,
+                    )
+                    self.assertAlmostEqual(
+                        page.locator("#albumGrid").bounding_box()["y"],
+                        album_grid_y,
+                        delta=0.5,
+                    )
+                    info_cells = page.locator("#artistInfoRows > span")
+                    self.assertEqual(info_cells.count(), 6)
+                    self.assertGreaterEqual(
+                        info_cells.nth(4).bounding_box()["height"],
+                        info_cells.nth(5).bounding_box()["height"],
+                    )
+                    initial_theme = page.evaluate(
+                        "document.documentElement.getAttribute('data-theme')"
+                    )
+                    theme_rows = {}
+                    for theme in ("dark", "chalk", "light"):
+                        page.evaluate(
+                            "theme => document.documentElement.dataset.theme = theme",
+                            theme,
+                        )
+                        theme_rows[theme] = page.locator("#artistInfoRows").evaluate(
+                            """element => {
+                                const color = getComputedStyle(element).backgroundColor;
+                                const canvas = document.createElement('canvas');
+                                canvas.width = 1;
+                                canvas.height = 1;
+                                const context = canvas.getContext('2d');
+                                context.clearRect(0, 0, 1, 1);
+                                context.fillStyle = color;
+                                context.fillRect(0, 0, 1, 1);
+                                return {
+                                    color,
+                                    alpha: context.getImageData(0, 0, 1, 1).data[3],
+                                };
+                            }"""
+                        )
+                    self.assertEqual(
+                        len({row["color"] for row in theme_rows.values()}), 3
+                    )
+                    for theme, row in theme_rows.items():
+                        self.assertAlmostEqual(
+                            row["alpha"],
+                            224,
+                            delta=1,
+                            msg=f"{theme} metadata table must retain its 88% opaque panel",
+                        )
+                    page.evaluate(
+                        """theme => theme === null
+                            ? document.documentElement.removeAttribute('data-theme')
+                            : document.documentElement.setAttribute('data-theme', theme)""",
+                        initial_theme,
+                    )
+                    page.locator("#artistInfoToggle").click()
+                    expect(page.locator("#artistInfoRows")).to_be_hidden()
+                    page.locator("#compReportButton").click()
+                    expect(page.locator("#fallbackReport")).to_contain_text(
+                        "Because the Night", timeout=15000
+                    )
+                    expect(page.locator("#fallbackReport")).not_to_contain_text(
+                        "Other Song"
+                    )
+
+                    # Explicit preview mode remains a direct saved-art path.
+                    # Outside preview mode, selecting a track immediately
+                    # starts its single-track COMP review.
+                    page.locator("#fallbackReport .fallback-preview-radio").click()
+                    page.locator("#fallbackReport .fallback-track").click()
+                    expect(page.locator("#selectedSource")).to_have_text(
+                        "Embedded track"
+                    )
+                    expect(page.locator("#selectedDimensions")).to_have_text(
+                        "640 × 640"
+                    )
+                    expect(page.locator("#writeButton")).to_have_text(
+                        "EMBED Comp"
+                    )
+                    expect(page.locator("#writeButton")).to_be_enabled()
+                    expect(page.locator("#embedBatchButton")).to_have_text(
+                        "EMBED Batch"
+                    )
+                    expect(page.locator("#embedBatchButton")).to_be_disabled()
+                    self.assertEqual(
+                        embedded_track_artwork_bytes(target), initial_target_art
+                    )
+                    page.locator("#upscaleButton").click()
+                    expect(page.locator("#selectedDimensions")).to_have_text(
+                        "300 × 300"
+                    )
+                    artwork_info = page.locator("#artMetadata")
+                    expect(artwork_info).to_contain_text("Before")
+                    expect(artwork_info).to_contain_text("Track(s) (1)")
+                    expect(artwork_info).to_contain_text("640 × 640")
+                    expect(artwork_info).to_contain_text("After")
+                    expect(artwork_info).to_contain_text("Embedded Thumb")
+                    expect(artwork_info).to_contain_text("Source")
+                    expect(artwork_info).to_contain_text("Upscale Preview")
+                    expect(artwork_info).to_contain_text("Enhancement")
+                    expect(page.locator("#writeNotice")).to_be_hidden()
+                    expect(page.locator("#selectedQuality")).to_have_text("Postgres")
+                    expect(page.locator("#selectedQuality")).to_have_attribute(
+                        "data-health", "good"
+                    )
+                    self.assertEqual(
+                        embedded_track_artwork_bytes(target), initial_target_art
+                    )
+                    page.locator("#writeButton").click()
+                    direct_art = wait_for_embedded_art(target, initial_target_art)
+                    with Image.open(BytesIO(direct_art)) as embedded:
+                        self.assertEqual(embedded.size, (300, 300))
+                    expect(page.locator("#statusText")).to_contain_text(
+                        "Embedded COMP track", timeout=15000
+                    )
+                    self.assertIsNone(embedded_track_artwork_bytes(other))
+
+                    # Restore the disposable fixture to its pre-write state so
+                    # the same browser test can independently exercise the MB
+                    # candidate workflow below.
+                    compilation.replace_embedded_artwork(
+                        target,
+                        initial_target_art,
+                        "jpeg",
+                        {"width": 640, "height": 640},
+                    )
+                    with closing(self.db.connect()) as db, db:
+                        db.execute(
+                            "DELETE FROM compilation_track_artwork WHERE lower(track_path)=lower(?)",
+                            (str(target),),
+                        )
+                        db.execute(
+                            "DELETE FROM compilation_album_progress WHERE album_path=?",
+                            (str(comp),),
+                        )
+                    page.locator("#compReportButton").click()
+                    page.locator("#compReportButton").click()
+                    expect(page.locator("#fallbackReport")).to_contain_text(
+                        "Because the Night", timeout=15000
+                    )
+                    with page.expect_request(
+                        lambda request: request.method == "POST"
+                        and request.url.endswith("/api/jobs/comp-batch")
+                    ) as launch_request:
+                        page.locator("#fallbackReport .fallback-launch").click()
+                    launch_payload = launch_request.value.post_data_json
+                    self.assertEqual(
+                        launch_payload["artist_id"],
+                        target_artist_key,
+                    )
+                    self.assertEqual(
+                        launch_payload["groups"],
+                        [{
+                            "album_id": comp_row["album_key"],
+                            "track_keys": [target_track_key],
+                        }],
+                    )
+                    expect(page.locator("#musicbrainzReview")).to_be_visible(
+                        timeout=15000
+                    )
+                    expect(page.locator("#sourceHeading")).to_have_text(
+                        "Find Releases Containing This Recording"
+                    )
+                    expect(page.locator("#musicbrainzReview")).to_contain_text(
+                        "100% match · Release Family"
+                    )
+                    expect(page.locator("#musicbrainzReview")).to_contain_text(
+                        "CURRENT ALBUM · SPLINED LIBRARY AUTHORITY"
+                    )
+                    expect(page.locator("#candidateDock")).to_be_hidden()
+                    expect(page.locator("#sourceStrip button", has_text="MusicBrainz")).to_contain_text(
+                        "0 Cover"
+                    )
+                    expect(page.locator("#sourceStrip button", has_text="MusicBrainz")).to_contain_text(
+                        "Album-Only"
+                    )
+                    self.assertTrue(http_calls)
+                    self.assertTrue(
+                        all(url.startswith(core.MB_BASE) for url in http_calls),
+                        "an artwork provider was queried before release selection",
+                    )
+                    page.locator(".musicbrainz-authority-editor summary").click()
+                    expect(
+                        page.locator(
+                            '.musicbrainz-authority-fields input[placeholder^="Release MBID"]'
+                        )
+                    ).to_have_count(0)
+                    page.locator(
+                        '.musicbrainz-authority-fields input[placeholder="Recording MBID"]'
+                    ).fill("11111111-1111-4111-8111-111111111111")
+                    page.locator(
+                        '.musicbrainz-authority-fields input[placeholder="Artist MBID"]'
+                    ).fill("6c8b9855-ba8b-48f9-ac1d-42167f7f7b18")
+                    authority_nonce = page.evaluate(
+                        "() => state.queuedDecision?.nonce || ''"
+                    )
+                    with page.expect_response(
+                        lambda response: response.url.endswith("/api/jobs/action")
+                        and response.request.method == "POST"
+                        and "manual-authority-query"
+                        in (response.request.post_data or ""),
+                        timeout=15000,
+                    ) as authority_response:
+                        page.locator(
+                            ".musicbrainz-authority-fields button",
+                            has_text="Apply IDs",
+                        ).click()
+                    self.assertTrue(
+                        authority_response.value.ok,
+                        authority_response.value.text(),
+                    )
+                    page.wait_for_function(
+                        "previous => state.queuedDecision?.nonce"
+                        " && state.queuedDecision.nonce !== previous",
+                        arg=authority_nonce,
+                        timeout=15000,
+                    )
+                    expect(page.locator("#musicbrainzReview")).to_contain_text(
+                        "Artist ID · valid · Recording ID · valid",
+                        timeout=15000,
+                    )
+                    self.assertTrue(
+                        all(url.startswith(core.MB_BASE) for url in http_calls),
+                        "Apply IDs queried an artwork provider before release selection",
+                    )
+                    expect(
+                        page.locator(
+                            ".musicbrainz-review-actions button",
+                            has_text="Back to Candidates",
+                        )
+                    ).to_be_disabled()
+                    expect(page.locator(".musicbrainz-release-row").first).to_be_visible()
+                    page.locator(".musicbrainz-release-row").first.click()
+                    expect(
+                        page.locator(
+                            "#musicbrainzReview button", has_text="EMBED Comp"
+                        )
+                    ).to_have_count(0)
+                    candidate_search = page.locator(
+                        ".musicbrainz-release-actions button",
+                        has_text="Generate Candidate Artwork",
+                    )
+                    expect(candidate_search).to_be_visible()
+                    expect(candidate_search).to_be_enabled()
+                    expect(page.locator("#writeButton")).to_have_text("EMBED Comp")
+                    expect(page.locator("#writeButton")).to_be_enabled()
+                    expect(page.locator("#selectedSource")).to_have_text(
+                        "MusicBrainz / Cover Art Archive"
+                    )
+                    expect(page.locator("#selectedDimensions")).to_have_text(
+                        "760 × 620"
+                    )
+                    self.assertEqual(embedded_track_artwork_bytes(target), initial_target_art)
+                    page.locator("#upscaleButton").click()
+                    expect(page.locator("#selectedDimensions")).to_have_text("300 × 300")
+                    expect(page.locator("#selectedQuality")).to_have_text("Postgres")
+                    expect(page.locator("#selectedQuality")).to_have_attribute(
+                        "data-health", "good"
+                    )
+                    with page.expect_response(
+                        lambda response: response.url.endswith("/api/jobs/action")
+                        and "webgui-embed-release" in (response.request.post_data or ""),
+                        timeout=15000,
+                    ) as action_response:
+                        page.locator("#writeButton").click()
+                    self.assertTrue(action_response.value.ok, action_response.value.text())
+                    target_art = wait_for_embedded_art(target, initial_target_art)
+                    with Image.open(BytesIO(target_art)) as embedded:
+                        self.assertEqual(embedded.size, (300, 300))
+                    expect(page.locator("#statusText")).to_have_text(
+                        re.compile(r"COMP (track artwork work complete|report ready)"),
+                        timeout=15000,
+                    )
+                    self.assertIsNone(embedded_track_artwork_bytes(other))
+
+                    # Full Fallback: the lower LAUNCH processes the remaining
+                    # performer independently and remains in the full report.
+                    page.locator("#fallbackTab").click()
+                    page.locator(
+                        "#artistList button", has_text="Billboard Hot 100 Singles of 1994"
+                    ).click()
+                    expect(page.locator("#fallbackReport")).to_contain_text(
+                        "Because the Night", timeout=15000
+                    )
+                    expect(page.locator("#fallbackReport")).to_contain_text(
+                        "Other Song", timeout=15000
+                    )
+                    full_launch_call_start = len(http_calls)
+                    page.locator("#searchButton").click()
+                    expect(page.locator("#musicbrainzReview")).to_be_visible(
+                        timeout=15000
+                    )
+                    expect(page.locator("#musicbrainzReview")).to_contain_text(
+                        "Other Performer — Other Song", timeout=15000
+                    )
+                    expect(page.locator("#musicbrainzReview")).to_contain_text(
+                        "100% match · Release Family"
+                    )
+                    expect(page.locator("#candidateDock")).to_be_hidden()
+                    unexpected_full_launch_calls = [
+                        url
+                        for url in http_calls[full_launch_call_start:]
+                        if not (
+                            url.startswith(core.MB_BASE)
+                            or url.startswith("https://coverartarchive.org/")
+                        )
+                    ]
+                    self.assertFalse(
+                        unexpected_full_launch_calls,
+                        "a non-MusicBrainz artwork provider was queried before "
+                        "full-Fallback release selection: "
+                        f"{unexpected_full_launch_calls}",
+                    )
+                    page.locator(".musicbrainz-release-row").click()
+                    expect(
+                        page.locator(
+                            "#musicbrainzReview button", has_text="EMBED Comp"
+                        )
+                    ).to_have_count(0)
+                    candidate_search = page.locator(
+                        ".musicbrainz-release-actions button",
+                        has_text="Generate Candidate Artwork",
+                    )
+                    expect(candidate_search).to_be_visible()
+                    expect(candidate_search).to_be_enabled()
+                    expect(page.locator("#writeButton")).to_have_text("EMBED Comp")
+                    expect(page.locator("#writeButton")).to_be_enabled()
+                    expect(page.locator("#embedBatchButton")).to_have_text("EMBED Batch")
+                    expect(page.locator("#embedBatchButton")).to_be_disabled()
+                    self.assertIsNone(embedded_track_artwork_bytes(other))
+                    page.locator("#writeButton").click()
+                    wait_for_embedded_art(other)
+                    expect(page.locator("#statusText")).to_have_text(
+                        re.compile(r"COMP (track artwork work complete|report ready)"),
+                        timeout=15000,
+                    )
+                    self.assertEqual(embedded_track_artwork_bytes(target), target_art)
+                    self.assertIsNotNone(embedded_track_artwork_bytes(other))
+
+                    # Reopen the Artist report and prove full-album work did
+                    # not leak the other performer into the Artist scope.
+                    page.locator("#artistsTab").click()
+                    expect(page.locator("#mediaFilter")).to_be_visible()
+                    page.locator("#artistSearch").fill("10,000 Maniacs")
+                    page.locator(
+                        "#artistList button", has_text="10,000 Maniacs"
+                    ).click()
+                    expect(page.locator("#artistName")).to_have_text(
+                        "10,000 Maniacs", timeout=15000
+                    )
+                    page.locator("#compReportButton").click()
+                    expect(page.locator("#fallbackReport")).to_contain_text(
+                        "Because the Night", timeout=15000
+                    )
+                    expect(page.locator("#fallbackReport")).not_to_contain_text(
+                        "Other Song"
+                    )
+                    browser.close()
+            finally:
+                server.should_exit = True
+                server_thread.join(timeout=15)
+                self.assertFalse(server_thread.is_alive())
+
+        self.runtime = Runtime(self.config, self.db)
+        self.services = Services(self.runtime)
+
+
+if __name__ == "__main__":
+    unittest.main()

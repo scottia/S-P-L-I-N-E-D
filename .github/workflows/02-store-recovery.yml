@@ -79,7 +79,7 @@ jobs:
           ref: ${{ github.sha }}
           path: .splined-release-engine
           sparse-checkout: |
-            cliff.toml
+            release/cliff.toml
             release/Install-GitCliff.ps1
             release/Generate-StoreHighlights.ps1
             release/StoreHighlightsPolicy.ps1
@@ -87,7 +87,7 @@ jobs:
             release/Test-StoreBaseline.ps1
             release/tests
             release/templates
-            windows/package/Publish-StoreUpdate.ps1
+            build/Windows/package/Publish-StoreUpdate.ps1
 
       - name: Verify exact tag and release metadata
         id: release
@@ -113,11 +113,12 @@ jobs:
             return $match.Groups[1].Value
           }
 
-          if ((Read-PackageVersion "Cargo.toml") -ne $env:RELEASE_VERSION -or
-              (Read-PackageVersion "windows/Cargo.toml") -ne $env:RELEASE_VERSION) {
-            throw "Root/Windows package versions do not match tag $env:RELEASE_VERSION."
+          $windowsRoot = if (Test-Path -LiteralPath 'build/Windows/Cargo.toml') { 'build/Windows' } elseif (Test-Path -LiteralPath 'windows/Cargo.toml') { 'windows' } else { throw "No supported Windows source in the selected historical release tag." }
+          "WINDOWS_ROOT=$windowsRoot" | Add-Content $env:GITHUB_ENV
+          if ((Read-PackageVersion "$windowsRoot/Cargo.toml") -ne $env:RELEASE_VERSION) {
+            throw "Windows package version does not match tag $env:RELEASE_VERSION."
           }
-          $manifest = [xml](Get-Content -Raw -LiteralPath windows/package/Package.appxmanifest)
+          $manifest = [xml](Get-Content -Raw -LiteralPath "$windowsRoot/package/Package.appxmanifest")
           if ($manifest.Package.Identity.Version -cne "$env:RELEASE_VERSION.0") {
             throw "Store manifest version does not match $env:RELEASE_VERSION.0."
           }
@@ -137,7 +138,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-splined-windows-store-v3-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('windows/Cargo.lock') }}
+          key: ${{ runner.os }}-splined-windows-store-v3-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('build/Windows/Cargo.lock', 'windows/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-splined-windows-store-v3-${{ env.RUST_TOOLCHAIN }}-
             ${{ runner.os }}-splined-windows-dependencies-v2-${{ env.RUST_TOOLCHAIN }}-
@@ -213,9 +214,9 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
-          $releaseRoot = "windows/target/$env:WINDOWS_TARGET/release"
+          $releaseRoot = "$env:WINDOWS_ROOT/target/$env:WINDOWS_TARGET/release"
           if (Test-Path -LiteralPath $releaseRoot) { Remove-Item -LiteralPath $releaseRoot -Recurse -Force }
-          cargo build --locked --release --manifest-path windows/Cargo.toml --target $env:WINDOWS_TARGET
+          cargo build --locked --release --manifest-path "$env:WINDOWS_ROOT/Cargo.toml" --target $env:WINDOWS_TARGET
 
       - name: Build and strictly validate unsigned production Store MSIX
         id: store-package
@@ -223,13 +224,13 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
-          $releaseRoot = "windows/target/$env:WINDOWS_TARGET/release"
+          $releaseRoot = "$env:WINDOWS_ROOT/target/$env:WINDOWS_TARGET/release"
           [IO.Directory]::CreateDirectory("store-submission") | Out-Null
           $storePackage = "store-submission/SPLINED-x64-store-unsigned.msix"
-          & windows/package/Build-StorePackage.ps1 `
+          & "$env:WINDOWS_ROOT/package/Build-StorePackage.ps1" `
             -ExecutablePath "$releaseRoot/splined.exe" `
-            -ManifestPath windows/package/Package.appxmanifest `
-            -IconPath windows/gui/splined-app-icon.png `
+            -ManifestPath "$env:WINDOWS_ROOT/package/Package.appxmanifest" `
+            -IconPath "$env:WINDOWS_ROOT/gui/splined-app-icon.png" `
             -LayoutRoot (Join-Path $env:RUNNER_TEMP "splined-msix-store-layout") `
             -UnpackedRoot (Join-Path $env:RUNNER_TEMP "splined-msix-store-unpacked") `
             -OutputPath $storePackage `
@@ -240,11 +241,11 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
-          $releaseRoot = "windows/target/$env:WINDOWS_TARGET/release"
-          & windows/package/Test-DevelopmentPackage.ps1 `
+          $releaseRoot = "$env:WINDOWS_ROOT/target/$env:WINDOWS_TARGET/release"
+          & "$env:WINDOWS_ROOT/package/Test-DevelopmentPackage.ps1" `
             -ExecutablePath "$releaseRoot/splined.exe" `
-            -ManifestPath windows/package/Package.appxmanifest `
-            -IconPath windows/gui/splined-app-icon.png `
+            -ManifestPath "$env:WINDOWS_ROOT/package/Package.appxmanifest" `
+            -IconPath "$env:WINDOWS_ROOT/gui/splined-app-icon.png" `
             -LayoutRoot (Join-Path $env:RUNNER_TEMP "splined-msix-development-layout")
 
       - name: Resolve last-published Store baseline
@@ -267,7 +268,7 @@ jobs:
             -Version $env:RELEASE_VERSION `
             -BaselineMetadataPath store-notes/STORE-BASELINE.json `
             -RepositoryRoot . `
-            -ConfigPath .splined-release-engine/cliff.toml `
+            -ConfigPath .splined-release-engine/release/cliff.toml `
             -StoreTemplatePath .splined-release-engine/release/templates/store-highlights.tera `
             -OutputDirectory store-notes
           Copy-Item -LiteralPath store-notes/STORE-HIGHLIGHTS.txt -Destination store-submission/STORE-HIGHLIGHTS.txt
@@ -294,7 +295,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $draftOnly = $env:STORE_DRAFT -eq 'true'
-          & .splined-release-engine/windows/package/Publish-StoreUpdate.ps1 `
+          & .splined-release-engine/build/Windows/package/Publish-StoreUpdate.ps1 `
             -PackagePath store-submission/SPLINED-x64-store-unsigned.msix `
             -HighlightsPath store-submission/STORE-HIGHLIGHTS.txt `
             -BaselineMetadataPath store-submission/STORE-SUBMISSION.json `

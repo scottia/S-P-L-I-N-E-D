@@ -1,18 +1,7 @@
 version: 2
 updates:
   - package-ecosystem: cargo
-    directory: /
-    target-branch: dev
-    schedule:
-      interval: weekly
-    groups:
-      rust-production:
-        dependency-type: production
-      rust-development:
-        dependency-type: development
-
-  - package-ecosystem: cargo
-    directory: /windows
+    directory: /build/Windows
     target-branch: dev
     schedule:
       interval: weekly
@@ -23,7 +12,7 @@ updates:
         dependency-type: development
 
   - package-ecosystem: pip
-    directory: /webgui
+    directory: /build/WEBGui/webgui
     target-branch: dev
     schedule:
       interval: weekly
@@ -32,7 +21,7 @@ updates:
         patterns: ["*"]
 
   - package-ecosystem: docker
-    directory: /webgui
+    directory: /build/WEBGui
     target-branch: dev
     schedule:
       interval: weekly

@@ -1,213 +1,170 @@
-# Release automation
+# Release automation — current Workflow 01–03 reference
 
-SPLINED exposes three manual GitHub Actions workflows. Only workflow 01 creates
-a version, tag, or GitHub Release or performs normal GHCR publication.
-Workflows 01 and 02 use pinned `git-cliff 2.14.2` for release notes or Store
-Highlights; no workflow is run merely by editing these files.
+**Scope:** The active `dev` source paths and numbered GitHub Actions
+workflows. This is a technical runbook derived from their current definitions;
+it is **not** authorization to publish a release or evidence that a complete
+Windows/WebGUI release was tested. Published releases require the owner's
+separate approval. The approved behavioral policy remains in
+[POLICY-REGISTER.md](POLICY-REGISTER.md).
 
-| Workflow | Use | Effect |
-|---|---|---|
-| `01. Full Release - Build Selected Target and Publish` | New versioned release from `main`; choose All, Windows, or WebGUI / Python. | Validates the selected release targets, creates the version commit and numeric tag only after they pass, publishes the GitHub Release and GHCR, and optionally stages or submits Store. |
-| `02. Store Recovery - Tagged Draft or Update` | Rebuild a Store MSIX from an **existing** numeric Git tag if workflow 01's Store path failed. | Rebuilds/validates Windows package, generates git-cliff Store Highlights, then stages a draft or submits for certification. Does not create a tag, release, or GHCR image. |
-| `03. GHCR Recovery - Existing Published Release` | Safely recover missing GHCR tags for the latest **existing published** numeric release if workflow 01's GHCR path failed. | Verifies existing tag digests and OCI source/version/revision labels, performs no work when both tags are valid, and publishes only missing GHCR tags. Never changes a GitHub Release, release asset, Git tag, version, or Store submission. |
+## Where release sources live
 
-The previous status, authentication-diagnostic, package-only, publish-only, and
-one-time 2.0.0 workflows have been retired. GitHub may retain their historical
-run pages, but they are no longer runnable from the repository's default
-branch. Pin the three numbered workflows for routine use.
+| Component | Authoritative repository path |
+| --- | --- |
+| Workflow 01, full release | [`.github/workflows/01-full-release.yml`](../.github/workflows/01-full-release.yml) |
+| Workflow 02, Store recovery | [`.github/workflows/02-store-recovery.yml`](../.github/workflows/02-store-recovery.yml) |
+| Workflow 03, GHCR recovery | [`.github/workflows/03-ghcr-recovery.yml`](../.github/workflows/03-ghcr-recovery.yml) |
+| Windows source and packaging | [`build/Windows/`](../build/Windows/) |
+| GHCR WebGUI Dockerfile | [`build/WEBGui/Dockerfile`](../build/WEBGui/Dockerfile) |
+| WebGUI Compose/env/config | [`build/WEBGui/docker/`](../build/WEBGui/docker/) |
+| Shared runtime JSON/SQL | [`schema/`](../schema/) |
+| Release scripts, notes templates and Store regression data | [`release/`](../release/) including [`cliff.toml`](../release/cliff.toml) |
 
-## Workflow 01: full release
+Workflow 01 is the normal publisher. Workflow 02 does not create new release
+tags or GHCR images. Workflow 03 only repairs a missing GHCR tag using a
+verified existing registry image. They must not be used as read-only status
+queries or triggered as a side effect of documentation edits.
 
-Run from `main`. `Release version` may be left blank for the next patch version
-or set to a new numeric `X.Y.Z` version greater than the current version. The
-workflow requires **Create release now** confirmation. `Extended Windows
-validation` is off by default; turn it on for `Windows` or `All` to run the
-Windows Rust formatting, Clippy, and library test checks. The standard Windows
-build always compiles the Rust/Slint executable; the checkbox adds strict
-validation rather than enabling Slint compilation. Under the owner's release
-policy, Microsoft Store submissions require **Extended Windows validation** to
-be enabled in addition to the existing release confirmation and explicit Store
-submission choice. Do not stage or submit a Store package without those owner
-confirmations.
+## Workflow 01 — full versioned release
 
-The **WebGUI / Python** target is the browser application, not a native Ubuntu
-Rust build. It runs the Python/PostgreSQL suite, validates browser JavaScript,
-builds and smoke-tests the container against PostgreSQL, and publishes a
-WebGUI/Python source archive with the release. `All` runs that validation along
-with Windows. GitHub release notes classify explicit `webgui`,
-`python`, and `postgres` commits under **WebGUI / Python** before evaluating
-the separate Microsoft Store and Windows categories. A release fixture guards
-against classifying `restore` as Store or `webgui` as generic Windows GUI work.
-The [Docker deployment guide](../docker/README.md) owns the distinction between
-the source-built Compose stack and the separately published GHCR image.
+**Entry:** Manually dispatch from `main` with explicit
+`Create release now` confirmation. Supported platform selections are
+`All`, `Windows`, and `WebGUI / Python`. The release version can be
+omitted to select the next numeric patch, or supplied as a new `X.Y.Z`
+greater than the active source and numeric tags on the `main` release line.
 
-Validate changes locally on PC, push the tested source to `dev`, then merge
-the `dev` pull request into `main`. Validation runs on pull requests, so pushing
-and merging the same source does not launch duplicate push-triggered builds.
+The workflow prepares the exact release commit and builds selected targets
+before publishing a numeric tag and GitHub Release. It separately publishes
+GHCR version and `latest` tags. Store processing, when selected, follows
+the existing Windows package and GitHub Release preparation gates.
 
-Checks follow the changed files: WebGUI changes run the Python/PostgreSQL,
-JavaScript, and container checks, and root Rust changes run the Linux Rust
-tests. Repository policy and boundary checks remain independent of runtime
-selection. Strict Windows Rust/Slint validation is never executed automatically
-for pull requests targeting `dev` or `main`, including Windows source, Slint,
-shared-schema, dependency, workflow, and `dev` to `main` promotion changes.
-Those scopes still run every other applicable validation lane.
+- **Windows / All:** Builds the native optimized Rust/Slint executable from
+  `build/Windows/Cargo.toml`; creates the Windows portable and Store
+  package artifacts. The optional `extended_windows_validation` adds strict
+  Rust format, Clippy and library regression checks. The ordinary build is
+  not proof that the extended suite ran.
+- **WebGUI / Python / All:** Runs Python tests, browser JavaScript syntax
+  checks, and builds/smoke-tests the container against PostgreSQL. It creates
+  a WebGUI source archive containing `build/WEBGui/`, canonical
+  `schema/`, `docs/` and root release-support metadata.
+- **Store modes:** Workflow 01 has mutually exclusive
+  `Submit Update/No Draft` and `Review Bundle/No Submit` options. The
+  latter produces review artifacts without a Partner Center submission.
+  Store options require a Windows-capable target and applicable credentials.
+  Never infer permission to submit from a successful build alone.
 
-GitHub retains the **Windows Rust/Slint — advisory** check name for branch-rule
-compatibility. It runs only a lightweight Ubuntu report with the outcome
-**Not run — permanent PR policy exception**. It does not provision a Windows
-runner or Rust toolchain and does not execute Cargo formatting, `cargo check`,
-Clippy, or Windows regression tests. An unexecuted diagnostic is never reported
-as passed. This standing policy remains in effect until the repository owner
-explicitly changes it.
+**Extended Windows validation is opt-in, including Store modes.**
+Workflow 01 does **not** automatically enable or require
+`extended_windows_validation` when either Store mode is selected. Unless
+explicitly enabled, the native build and package checks run without the
+separate strict `cargo fmt`, Clippy and library-test suite. Earlier
+claims that Store selection itself enforces these extended checks are
+not supported by the current workflow inputs.
 
-Useful targeted Windows compilation and regression testing remains part of the
-isolated E: acceptance workflow. For a Windows release, Workflow 01 retains the
-optional **Extended Windows validation** suite against the exact versioned
-source before packaging. That suite owns strict formatting, Clippy, and Windows
-library tests; the ordinary Windows release path still performs its clean
-optimized production Rust/Slint build when the option is off.
+**Current workflow validation concern:** For `platform = Windows`,
+`build-webgui` is skipped (as confirmed by `finalize-tag` and the
+`release-success` gate), but the GHCR publication stage still executes.
+Thus a Windows-only release **does not provide the same container test
+evidence** as `WebGUI / Python` or `All`. This is an implementation
+gap to review separately before considering the release gate complete.
+Do not change the workflow without an authorized PR and focused tests.
 
-For routine PC iterations, close SPLINED and double-click
-`E:\apps\SPLINED\Apply Quick Local Update.cmd`. It reuses unchanged optimized
-Cargo objects, verifies and installs the complete executable, and reopens the
-app. Before repository promotion or Microsoft Store preparation, close SPLINED
-and double-click
-`E:\apps\SPLINED\Apply Local Test Build.cmd`. The helper clears the
-target-specific release output, disables Cargo incremental code generation,
-uses the same locked optimized build command as the GitHub Windows release,
-verifies and installs the local executable, and reopens the app without changing
-Git or starting Actions. An
-unoptimized Windows build is not used against the real library because its UI
-refresh cost can make Windows report the application as unresponsive. This
-local test binary is never a release input. After explicit approval, promote
-the tested source through `dev` and `main`; pull requests publish the
-permanent-exception compatibility report rather than Windows diagnostics.
-Workflow 01 always performs a clean optimized build from the versioned `main`
-source before producing the portable archive or Store MSIX.
+Version stamping and manifests are under `build/Windows/`; the release
+workflow does not build the withdrawn root-native CLI as a third target.
+The current WebGUI Docker build context is the repository root, not the
+nested Compose directory.
 
-macOS is deliberately absent from Workflow 01. Development-only macOS checks
-belong to the `dev-macos` branch's dedicated workflow and do not create SPLINED
-tags, releases, or published assets.
+## Workflow 02 — Store recovery from an existing tag
 
-The two Store options are both off by default and mutually exclusive:
+**Entry:** Manually dispatch from `main` with an existing numeric
+`X.Y.Z` release tag, and exactly one Store mode:
+`Submit Update/No Draft` or `Submit Draft/No Update`.
 
-- **Submit Update/No Draft:** build and validate the Store MSIX, stage it with
-  Partner Center, update en-US Highlights, then immediately submit it for
-  certification. The Store CLI creates a draft internally, but there is no
-  manual draft-review pause.
-- **Review Bundle/No Submit:** build, validate, and smoke-test the MSIX; read
-  the last published Partner Center package history; generate cumulative Store
-  Highlights and the submission audit JSON; and retain both downloadable Store
-  artifacts. This mode never stages a draft or submits for certification.
+This workflow checks out the exact existing tag, verifies release version
+and Windows package manifest, rebuilds and smoke-tests the Windows MSIX,
+then resolves the last-published Microsoft Store baseline and generates
+cumulative Highlights. It uses release automation scripts from the
+current approved release engine but builds tagged Windows source.
 
-Either Store option requires `Windows` or `All`. Selecting both, or requesting
-Windows-only validation for a non-Windows build, fails before release work.
-Every `Windows` or `All` run also builds, strictly validates, development-smoke
-tests, and uploads the unsigned `splined-windows-store-package` Actions artifact
-for manual Microsoft Store submission. Selecting **Review Bundle/No Submit**
-also uploads `splined-windows-store-submission`, containing the exact MSIX,
-`STORE-HIGHLIGHTS.txt`, and `STORE-SUBMISSION.json`. It authenticates only to
-read the published Store baseline and performs no staging or submission.
-Leaving both Store options off skips Partner Center authentication, history
-lookup, staging, and submission without suppressing the package-only artifact.
-Store and GHCR publication are independent after GitHub Release creation, so
-one can succeed if the other fails.
+Workflow 02 does **not** mint a new numeric tag, create a GitHub Release or
+publish GHCR. Store modes can affect Partner Center; no recovery dispatch
+is authorized by this document.
 
-The release commit and numeric Git tag are published atomically after all
-selected builds pass. Before the tag exists, workflows 02 and 03 cannot recover
-the release; rerun workflow 01 after correcting the build failure. Once the tag
-and GitHub Release exist, use the appropriate tagged recovery workflow.
+**Compatibility observation:** The current Store-recovery workflow
+retains a legacy fallback for older tags containing
+`windows/Cargo.toml`. This is a tagged-source compatibility branch,
+not a supported current `dev` source root. Do not relocate old source
+back into active `dev` because of it.
 
-Git release tags are three-part numeric versions, such as `2.0.0`. The Windows
-MSIX manifest uses the corresponding four-part version, `2.0.0.0`. Workflow
-02 checks that correspondence before staging anything.
+## Workflow 03 — recovery of an existing published GHCR release
 
-The unsigned Store MSIX is never attached to the public GitHub Release. Every
-Windows/All run retains the validated MSIX in the Actions artifact
-`splined-windows-store-package`. Selecting either Store mode additionally
-retains `splined-windows-store-submission` with the exact MSIX, Highlights, and
-submission metadata. The review mode stops after uploading those artifacts;
-only **Submit Update/No Draft** stages and submits the package.
+**Entry:** Manually dispatch from `main` for the **latest existing
+published** numeric `X.Y.Z` GitHub Release. The workflow shares the
+normal release concurrency group with Workflow 01.
 
-## Workflow 02: Store recovery
+It inspects `ghcr.io/scottia/splined:vX.Y.Z` and
+`ghcr.io/scottia/splined:latest`:
 
-Enter the existing numeric tag `X.Y.Z` and select exactly one of Workflow 02's
-Partner Center modes: stage a draft or submit an update. Workflow 02 checks out
-that tag, verifies its source and Store
-manifest version, rebuilds and validates the Windows package, resolves the
-last **published** Store baseline, and renders cumulative Store Highlights
-with git-cliff before staging. It cannot silently substitute a different tag
-or published version. Draft mode stops before certification submission;
-Update mode submits after staging.
+- Both present, with matching digest and expected provenance: no-op.
+- Exactly one missing: reuse the verified image and publish **only the
+  missing tag**.
+- Both missing, conflicting digest/labels, or unprovable absence: fail
+  closed. It does **not** rebuild an unknown-equivalence image.
 
-Automated Store publication is serialized across workflows 01 and 02. Workflow
-01's **Submit Update/No Draft** mode and both Workflow 02 modes fail closed if
-Partner Center already has a pending or unresolved submission. If an automated
-update fails after internally staging its package, neither workflow overwrites
-or cancels the resulting draft. Inspect and resolve that submission in Partner
-Center before rerunning recovery. This is deliberate: an ambiguous active
-submission cannot safely be identified as a retry target. Workflow 01's
-**Review Bundle/No Submit** mode may still read the last published baseline
-while a pending submission exists because it cannot stage, replace, cancel, or
-submit that pending work.
+Workflow 03 neither creates/edits release tags or GitHub Releases nor
+touches Store submissions or existing release assets.
 
-## Workflow 03: GHCR-only recovery
+## Test roles and source-retention review
 
-Enter the existing numeric tag `X.Y.Z`. Workflow 03 requires that tag to have a
-published, non-prerelease GitHub Release and refuses any version other than the
-current latest release. It shares workflow 01's release concurrency group so
-normal publication and recovery cannot race each other.
+| Check | When it runs | Disposition |
+| --- | --- | --- |
+| WebGUI Python policy/Album tests | Workflow 01 `WebGUI / Python` or `All`, and applicable PR validation | Retain independent active source tests |
+| WebGUI JavaScript checks and Docker/PostgreSQL health | Same WebGUI build and selected PR validation | Retain as application release gates |
+| Native Windows Cargo format/Clippy/library tests | Workflow 01 Windows/All **only** with extended validation enabled | Retain; do not claim the PR advisory executed them |
+| Native optimized Windows application and package validation | Workflow 01 Windows/All release build | Retain |
+| Release-note/Store baseline regression scripts and historic synthetic JSON | Workflow 01/02 release support and applicable packaging checks | Retain; historical version numbers are deliberate |
+| Repository layout, scope and protected JSON guards | PR validation, separate from the release engine | Retain as controls for Workflow 01 source/layout and owner policy |
 
-Workflow 01 remains the sole normal GHCR publisher. Workflow 03 inspects
-`ghcr.io/scottia/splined:vX.Y.Z` and `:latest` before doing any recovery:
+Duplicated root-level Album example data was retired from active
+`dev` after confirming that local Windows and WebGUI tests already
+covered the cases. A WebGUI-specific audit example remains with the
+WebGUI test suite. Do not preserve an obsolete root path simply to
+satisfy an outdated test, and do not remove active release evidence
+because its sample version is older.
 
-- If both tags exist, have the expected source/version/revision OCI labels, and
-  resolve to the same manifest digest, recovery is a no-op.
-- If exactly one tag is missing, the verified existing image is reused and only
-  the missing tag is published.
-- If both tags are missing, recovery fails closed. Workflow 01 does not record a
-  published manifest digest or signed build attestation, and its historical
-  container inputs are not fully immutable, so an equivalent rebuild cannot be
-  proven. A potentially different image is never published under an existing
-  release version; create a new versioned release instead.
-- A retry after a partial failure reuses the one verified tag that succeeded and
-  publishes only the other tag instead of rebuilding or overwriting either one.
-- If an existing tag has missing or unexpected provenance labels, the two tags
-  have different digests, or the registry cannot prove a target tag is absent,
-  recovery fails closed without overwriting either tag.
+## Active `/release` content
 
-The OCI source, release version, release commit, and registry digest are the
-available provenance checked by workflows 01 and 03. Workflow 01 does not emit
-a separately verifiable signed GHCR build attestation, so workflow 03 reports
-that limitation rather than claiming signed provenance.
+[Release support files](../release/README.md) and the checked-in scripts
+remain in service. `Generate-ReleaseNotes.ps1`,
+`Generate-StoreHighlights.ps1`, `Resolve-StoreBaseline.ps1`,
+`StoreHighlightsPolicy.ps1` and `Install-GitCliff.ps1` support the
+numbered workflows. The shared classification is at
+[`release/cliff.toml`](../release/cliff.toml), and Git-cliff is pinned to
+**2.14.2**. Historical categories remain release-note grouping rules,
+not supported application targets.
+`templates/` contains release-note and Store Tera templates; the
+`Test-*.ps1` scripts and `tests/` hold regression cases, including
+deliberately old **synthetic** Store-version JSON fixtures. Old fixture
+versions are **not** grounds for deleting those test files.
 
-Workflow 03 never creates or edits a GitHub Release, moves or creates a Git tag,
-or adds, replaces, or deletes release assets. Published release assets are final
-when Release Immutability is enabled. A missing or defective archive or checksum
-therefore requires a new versioned release; it cannot be repaired in place.
+The Windows portable `release/README-WINDOWS.txt` is a packaged
+operator instruction, not a separate media-state policy. Standalone and
+Shared SQLite use the same canonical policy defined in the register.
 
-## Notes and Store safety
+## Review and promotion safeguards
 
-The shared `cliff.toml` and checked-in Tera templates classify release changes.
-GitHub notes cover the previous numeric tag through the current tag. Store
-Highlights cover the **last published Store package** through the target tag,
-so intervening GitHub-only releases are included. The Store Highlights file
-must fit the 1,500-character Store limit. If the complete cumulative history
-exceeds that boundary, generation retains the highest-priority complete
-bullets that fit and appends the target GitHub Release link. It never cuts a
-bullet or sentence mid-text. `STORE-SUBMISSION.json` records the source and
-final character counts, candidate/emitted/omitted bullet counts, whether
-compaction occurred, the target, published baseline, range, git-cliff version,
-and Highlights checksum.
+1. Changes are prepared through a temporary branch and reviewed in a
+   Draft PR against `dev`; `main` is not automatically updated.
+2. Test claims must name the workflow or fixture actually executed.
+   Source-path inspection and PR advisory checks do not establish full
+   Windows release acceptance.
+3. Protect both `schema/media-state-classification.json` and
+   `schema/comp-report-policy.json` through their existing PR gate.
+   Neither a packaging change nor a saved runtime revision approves a
+   behavioral policy change.
+4. Do not activate Workflow 01, Workflow 02, Workflow 03, Partner Center
+   submission, or GHCR publication without a new explicit owner decision.
 
-The active scripts, templates, and intentionally historical Store regression
-fixtures are inventoried in the [release support-file guide](../release/README.md).
-
-Store product `9P8G4GMBBVBS` uses the repository's
-`AZURE_AD_APPLICATION_CLIENT_ID`, `AZURE_AD_APPLICATION_SECRET`,
-`AZURE_AD_TENANT_ID`, and `SELLER_ID` Actions secrets. The publisher retrieves
-the pending submission after staging and changes only its existing en-US
-`BaseListing.ReleaseNotes`, preserving all other listing and package fields.
-No release workflow should be used as a read-only status check; inspect Partner
-Center directly for certification progress.
+**Documentation restoration rule:** Relevant current guides can be
+reconstructed from source and owner-approved policy one at a time. Do not
+restore obsolete paths, discarded policies, or unverified instructions.

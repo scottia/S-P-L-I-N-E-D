@@ -1,0 +1,54 @@
+[package]
+name = "splined-windows"
+version = "3.0.18"
+edition = "2024"
+build = "build.rs"
+publish = false
+license = "GPL-3.0-only"
+repository = "https://github.com/scottia/S-P-L-I-N-E-D"
+
+[lib]
+name = "splined_core"
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[[bin]]
+name = "splined"
+path = "src/main.rs"
+
+[dependencies]
+base64 = "0.23.1"
+aes = "0.9.3"
+cbc = { version = "0.2.1", features = ["alloc", "block-padding"] }
+crossterm = "0.29.0"
+futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
+hmac = "0.13.0"
+hyphenation = { version = "0.8.4", features = ["embed_en-us"] }
+lofty = "0.25.1"
+rand = "0.10.2"
+regex = "1.12.3"
+pbkdf2 = "0.13.0"
+reqwest = { version = "0.13.5", features = ["form", "json", "multipart", "query", "rustls"] }
+rusqlite = { version = "0.42.0", features = ["backup", "bundled", "trace"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.11.0"
+sha1 = "0.11.0"
+slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-software", "compat-1-2"] }
+tempfile = "3.27.0"
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+toml = "1.1.5"
+unicode-normalization = "0.1.25"
+unicode-casefold = "0.2.0"
+sqlx = { version = "0.8.6", default-features = false, features = ["postgres", "runtime-tokio-rustls"] }
+url = "2.5.8"
+
+[build-dependencies]
+slint-build = { version = "=1.18.1", default-features = false, features = ["compat-1-18"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = ["Foundation", "Foundation_Collections", "Services_Store", "Win32_Foundation", "Win32_Graphics_DirectWrite", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_NetworkManagement_WNet", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
+windows-registry = "0.100.0"
+rfd = { version = "0.18.0", default-features = false }
