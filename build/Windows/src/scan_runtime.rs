@@ -3508,8 +3508,8 @@ async fn run_compilation_album(
             let selected_release = selected_match
                 .as_ref()
                 .map(|item| item.release_mbid.as_str());
-            // Apply IDs is durable authority. Keep the completion ledger in
-            // lockstep with the safely written track tags and splined.db.
+            // Apply IDs validates COMP selection and records SQLite identity; audio
+            // MusicBrainz tags remain strictly read-only.
             let track_recording = authority.recording_mbid.clone().unwrap_or_default();
             let track_artists = authority.artist_mbids.join(",");
             let already_has_artwork = effective_mode == Mode::Write
