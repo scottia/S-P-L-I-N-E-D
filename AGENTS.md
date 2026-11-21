@@ -118,6 +118,12 @@ and both release workflows, independent of fast/strict validation choices.
 A source change that introduces audio-tag editing is prohibited; changing
 tests, policy JSON or a workflow to hide it is not an approved fix.
 
+**Immutable WebP source:** Existing `cover.webp` is read-only (including its
+animation and exact bytes); the only permitted derivation is a separate static
+`cover.jpg` still after an explicit artwork WRITE. Do not rename, remove,
+overwrite or re-encode the original WebP. Require real Windows and WebGUI
+folder-artwork tests that reject an attempted WebP replacement.
+
 ## 4. Protected contracts and source ownership
 
 - BOTH `schema/media-state-classification.json` and
