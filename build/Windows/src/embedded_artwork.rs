@@ -159,6 +159,60 @@ mod tests {
     use super::*;
 
     #[test]
+    fn id3v24_front_picture_never_alters_multivalue_artist_or_mb_frames() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credits.mp3");
+        let mut tag = Vec::new();
+        fn frame(id: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+            let mut encoded = Vec::new();
+            encoded.extend_from_slice(id);
+            encoded.extend_from_slice(&encode_synchsafe(payload.len()).unwrap());
+            encoded.extend_from_slice(&[0, 0]);
+            encoded.extend_from_slice(payload);
+            encoded
+        }
+        tag.extend_from_slice(&frame(b"TPE1", b"\x03Sammy Hagar\x00Taj Mahal"));
+        tag.extend_from_slice(&frame(b"TPE2", b"\x03Sammy Hagar\x00Sammy Hagar & Friends"));
+        tag.extend_from_slice(&frame(
+            b"TXXX", b"\x03MusicBrainz Artist Id\x00aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
+        ));
+        let mut original = b"ID3\x04\x00\x00".to_vec();
+        original.extend_from_slice(&encode_synchsafe(tag.len()).unwrap());
+        original.extend_from_slice(&tag);
+        // Existing MPEG payload is copied byte-for-byte, without decoding.
+        let mut audio = vec![0u8; 417 * 8];
+        for frame in audio.chunks_exact_mut(417) {
+            frame[..4].copy_from_slice(&[0xff, 0xfb, 0x90, 0x64]);
+        }
+        original.extend_from_slice(&audio);
+        std::fs::write(&path, &original).unwrap();
+
+        let before = protected_mp3_bytes(&path).unwrap();
+        write_mp3_front_only(&path, b"artwork bytes", "image/png").unwrap();
+        assert_eq!(protected_mp3_bytes(&path).unwrap(), before);
+        assert!(std::fs::read(&path).unwrap().ends_with(&audio));
+
+        let mut tampered = std::fs::read(&path).unwrap();
+        let index = tampered.windows(5).position(|w| w == b"Sammy").unwrap();
+        tampered[index] = b'X';
+        std::fs::write(&path, tampered).unwrap();
+        assert_ne!(protected_mp3_bytes(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn id3_major_version_conversion_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("version.mp3");
+        let mut input = b"ID3\x04\x00\x00\x00\x00\x00\x00".to_vec();
+        input.extend_from_slice(b"\xff\xfb\x90\x64");
+        std::fs::write(&path, &input).unwrap();
+        let baseline = protected_mp3_bytes(&path).unwrap();
+        input[3] = 3;
+        std::fs::write(&path, input).unwrap();
+        assert_ne!(protected_mp3_bytes(&path).unwrap(), baseline);
+    }
+
+    #[test]
     fn unsupported_image_is_rejected_before_track_mutation() {
         let error = replace_embedded_front(Path::new("missing.mp3"), b"not-an-image")
             .expect_err("invalid image should fail first");
