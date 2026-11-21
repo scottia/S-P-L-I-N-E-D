@@ -177,10 +177,16 @@ stamps an uncommitted application version.
 
 The four publishing presets execute the selected production release graph:
 canonical preflight, target builds, numeric tag promotion, git-cliff notes and
-GitHub Release. GHCR and Store review behavior then follows the table. Review
-Bundle/No Submit reads the published Store baseline and retains the validated
-MSIX, Highlights and audit JSON without staging or submitting. None of the
-presets automatically selects the riskier Submit Update/No Draft path.
+GitHub Release. GHCR and Store review behavior then follows the table. In
+Workflow 04, **Review Bundle/No Submit is entirely local to GitHub Actions**:
+it never authenticates to or queries Partner Center and never stages, replaces,
+cancels, or submits a Store draft. It retains the validated MSIX, bounded
+Highlights, `STORE-SUBMISSION.json`, and the release-context JSON together in
+the downloadable `splined-windows-store-submission` artifact ZIP. Its JSON
+explicitly records that Partner Center was not contacted and no Store write was
+performed. **Submit Update/No Draft** is the only Workflow 04 selection that
+uses Store credentials or the Store CLI. None of the presets automatically
+selects that riskier path.
 
 TEST BUILD performs canonical preflight, both target builds, strict Windows
 format/Clippy/library validation, complete WebGUI/PostgreSQL checks, QA-only
