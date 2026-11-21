@@ -342,6 +342,35 @@ jobs:
           path: release-source.bundle
           if-no-files-found: error
 
+  audio-integrity:
+    name: Audio metadata integrity — mandatory Windows and WebGUI
+    needs: prepare-release
+
+    runs-on: windows-latest
+    steps:
+      - name: Checkout exact integrity-test source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+      - name: Install Python for real Mutagen writer tests
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Install WebGUI integrity test requirements
+        shell: pwsh
+        run: python -m pip install -r build/WEBGui/webgui/requirements-test.txt
+      - name: Fail on WebGUI metadata mutation during artwork embedding
+        shell: pwsh
+        env:
+          PYTHONPATH: build/WEBGui;build/WEBGui/webgui/backend
+        run: python -m unittest discover -s build/WEBGui/webgui/tests -p test_audio_integrity.py -v
+      - name: Install pinned Windows Rust compiler
+        shell: pwsh
+        run: rustup toolchain install 1.99.0 --profile minimal --target x86_64-pc-windows-msvc
+      - name: Fail on Rust metadata mutation or ID3 conversion
+        shell: pwsh
+        run: cargo +1.99.0 test --locked --manifest-path build/Windows/Cargo.toml --lib --target x86_64-pc-windows-msvc artwork_integrity::tests
+
   build-windows:
     name: Build Release — Windows
     needs: prepare-release
@@ -836,6 +865,7 @@ jobs:
     name: Publish numeric tag and release commit after successful builds
     needs:
       - prepare-release
+      - audio-integrity
       - build-windows
       - build-webgui
       - webgui-tests
@@ -844,6 +874,7 @@ jobs:
         always() &&
         inputs.release_confirmation == 'Create release now' &&
         needs.prepare-release.result == 'success' &&
+        needs.audio-integrity.result == 'success' &&
         (
           (
             inputs.platform == 'Windows' &&
@@ -1417,6 +1448,7 @@ jobs:
     name: Release or validation-only summary
     needs:
       - prepare-release
+      - audio-integrity
       - build-windows
       - build-webgui
       - finalize-tag
@@ -1431,6 +1463,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Enforce unconditional Windows and WebGUI audio-integrity gate
+        shell: bash
+        env:
+          AUDIO_INTEGRITY_RESULT: ${{ needs.audio-integrity.result }}
+        run: |
+          if [ "$AUDIO_INTEGRITY_RESULT" != "success" ]; then
+            echo "::error title=Audio-integrity gate::Required Windows/WebGUI media integrity was '$AUDIO_INTEGRITY_RESULT'; release and validation must fail."
+            exit 1
+          fi
       - name: Enforce selected build and publication results
         if: ${{ inputs.release_confirmation == 'Create release now' }}
         shell: bash
