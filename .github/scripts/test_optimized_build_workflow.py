@@ -1,4 +1,4 @@
-"""Nonmutating checks: Workflow 04 mirrors Workflow 01 with opt-in publication."""
+"""Nonmutating checks for Workflow 04's owner-defined build presets."""
 
 from pathlib import Path
 import re
@@ -14,7 +14,7 @@ MIRRORED_JOBS = (
     "generate-release-notes", "publish-release", "publish-ghcr",
     "publish-store", "release-summary",
 )
-RELEASE_CHOICES = ("Stop - no release", "Create release now")
+PRESETS = ("ALL", "PYTHON / WEBGUI", "WINDOWS", "SOURCE BUILD", "TEST BUILD")
 
 
 def job(source: str, name: str) -> str:
@@ -33,28 +33,76 @@ class OptimizedFullReleaseMirrorTests(unittest.TestCase):
         cls.workflow = WORKFLOW.read_text(encoding="utf-8")
         cls.release = RELEASE.read_text(encoding="utf-8")
 
-    def test_same_dispatch_inputs_and_release_confirmation_last(self):
+    def test_five_dispatch_presets_replace_ambiguous_independent_controls(self):
         def inputs(source):
             form = source.split("  workflow_dispatch:\n", 1)[1].split("\npermissions:", 1)[0]
             return re.findall(r"(?m)^      ([a-z][a-z0-9_]+):\s*$", form)
 
-        original = inputs(self.release)
         mirrored = inputs(self.workflow)
-        self.assertEqual(mirrored, original)
-        self.assertEqual(mirrored[-1], "release_confirmation")
-        self.assertEqual(mirrored, [
-            "release_version", "platform", "extended_windows_validation",
-            "store_submit_update", "store_submit_draft", "release_confirmation",
-        ])
-        for choice in RELEASE_CHOICES:
-            self.assertIn(f'- "{choice}"', self.workflow)
-            self.assertIn(f'- "{choice}"', self.release)
-        for platform in ("All", "Windows", "WebGUI / Python"):
-            self.assertIn(f'- "{platform}"', self.workflow)
-        self.assertNotIn("benchmark_mode:", self.workflow)
+        self.assertEqual(mirrored, ["build_preset", "release_version"])
+        dispatch = self.workflow.split("permissions:", 1)[0]
+        self.assertIn('build_preset:', dispatch)
+        self.assertIn('default: "ALL"', dispatch)
+        for preset in PRESETS:
+            self.assertIn(f'- "{preset}"', dispatch)
+        for removed in (
+            "platform:", "extended_windows_validation:",
+            "store_submit_update:", "store_submit_draft:",
+            "release_confirmation:",
+        ):
+            self.assertNotIn(removed, dispatch)
+
+    def test_presets_resolve_the_owner_defined_default_matrix(self):
+        resolver = job(self.workflow, "resolve-plan")
+
+        def preset(name, following):
+            start = resolver.index(f'            "{name}")')
+            end = resolver.index(f'            "{following}")', start)
+            return resolver[start:end]
+
+        cases = {
+            "ALL": ("PYTHON / WEBGUI", "All", "false", "true", "true", "Create release now"),
+            "PYTHON / WEBGUI": ("WINDOWS", "WebGUI / Python", "false", "false", "true", "Create release now"),
+            "WINDOWS": ("SOURCE BUILD", "Windows", "false", "true", "false", "Create release now"),
+            "SOURCE BUILD": ("TEST BUILD", "All", "false", "true", "true", "Create release now"),
+        }
+        for name, (following, platform, strict, draft, ghcr, release) in cases.items():
+            with self.subTest(preset=name):
+                block = preset(name, following)
+                self.assertIn(f'platform="{platform}"', block)
+                self.assertIn(f"strict={strict}", block)
+                self.assertIn("store_update=false", block)
+                self.assertIn(f"store_draft={draft}", block)
+                self.assertIn(f"publish_ghcr={ghcr}", block)
+                self.assertIn(f'release_confirmation="{release}"', block)
+
+        test = resolver.split('            "TEST BUILD")', 1)[1].split(
+            "            *)", 1
+        )[0]
+        for expected in (
+            'platform="All"', "strict=true", "store_update=false",
+            "store_draft=false", "publish_ghcr=false",
+            'release_confirmation="Stop - no release"',
+        ):
+            self.assertIn(expected, test)
+        self.assertIn("Release presets must be dispatched from main", resolver)
+        self.assertIn('display_version="n/a - disposable validation', resolver)
+        for label in (
+            "Preset", "Branch", "Release version", "Release target",
+            "Strict Windows validation", "Submit Update / No Draft",
+            "Review Bundle / No Submit", "Publish GHCR", "Final option",
+        ):
+            self.assertIn(label, resolver)
+        self.assertIn('target_label="Windows / WebGUI"', resolver)
+        self.assertIn('target_label="WebGUI"', resolver)
+        self.assertIn('target_label="Windows"', resolver)
 
     def test_all_workflow_one_jobs_and_full_publish_graph_remain(self):
-        self.assertTrue(self.workflow.startswith("name: 04. Optimized Full Release"))
+        self.assertTrue(
+            self.workflow.startswith(
+                "name: 04. Optimized Release or Test - Select One of Five Build Presets"
+            )
+        )
         for name in MIRRORED_JOBS:
             with self.subTest(job=name):
                 job(self.workflow, name)
@@ -76,20 +124,20 @@ class OptimizedFullReleaseMirrorTests(unittest.TestCase):
         self.assertIn("release-source.bundle", preflight)
         self.assertIn("temporary local QA source commit", preflight)
         self.assertIn("Validate canonical policies and indexer contracts", preflight)
-        # No can validate a Draft PR branch before merging; a real release
+        # TEST BUILD can validate a Draft PR branch before merging; a real release
         # remains restricted to main and uses the exact production source.
-        self.assertIn("inputs.release_confirmation == 'Create release now'", preflight)
+        self.assertIn("needs.resolve-plan.outputs.release_confirmation == 'Create release now'", preflight)
         self.assertIn("Require main branch dispatch", preflight)
-        self.assertIn("inputs.release_confirmation == 'Create release now' && 'main' || github.sha", preflight)
+        self.assertIn("needs.resolve-plan.outputs.release_confirmation == 'Create release now' && 'main' || github.sha", preflight)
         for job_name in ("build-windows", "build-webgui", "webgui-tests", "qa-ghcr-build"):
             self.assertIn(
-                "inputs.release_confirmation == 'Create release now' && 'main' || github.sha",
+                "needs.resolve-plan.outputs.release_confirmation == 'Create release now' && 'main' || github.sha",
                 job(self.workflow, job_name),
             )
 
         for publisher in PUBLISH_JOBS:
             with self.subTest(publisher=publisher):
-                self.assertIn("inputs.release_confirmation == 'Create release now'",
+                self.assertIn("needs.resolve-plan.outputs.release_confirmation == 'Create release now'",
                               job(self.workflow, publisher).split("    steps:\n", 1)[0])
 
         notes = job(self.workflow, "generate-release-notes")
@@ -105,14 +153,14 @@ class OptimizedFullReleaseMirrorTests(unittest.TestCase):
         self.assertNotIn("GH_TOKEN:", local_tag_step)
 
         qa = job(self.workflow, "qa-artifacts")
-        self.assertIn("inputs.release_confirmation == 'Stop - no release'", qa)
+        self.assertIn("needs.resolve-plan.outputs.release_confirmation == 'Stop - no release'", qa)
         self.assertIn("sha256sum -c SHA256SUMS.txt", qa)
         self.assertIn("QA-NOT-A-RELEASE.txt", qa)
         self.assertNotIn("gh release create", qa)
         self.assertNotIn("git push", qa)
 
         ghcr_qa = job(self.workflow, "qa-ghcr-build")
-        self.assertIn("inputs.release_confirmation == 'Stop - no release'", ghcr_qa)
+        self.assertIn("needs.resolve-plan.outputs.release_confirmation == 'Stop - no release'", ghcr_qa)
         self.assertIn("docker build --pull", ghcr_qa)
         self.assertIn("org.opencontainers.image.revision", ghcr_qa)
         self.assertNotIn("docker login", ghcr_qa)
@@ -120,11 +168,15 @@ class OptimizedFullReleaseMirrorTests(unittest.TestCase):
 
     def test_yes_mode_preserves_the_publication_and_store_recovery_paths(self):
         self.assertIn("splined-release-next-patch", self.workflow)
-        self.assertIn("inputs.release_confirmation == 'Create release now'",
+        self.assertIn("needs.resolve-plan.outputs.release_confirmation == 'Create release now'",
                       job(self.workflow, "finalize-tag"))
         for name in ("publish-release", "publish-ghcr", "publish-store"):
-            self.assertIn("inputs.release_confirmation == 'Create release now'",
+            self.assertIn("needs.resolve-plan.outputs.release_confirmation == 'Create release now'",
                           job(self.workflow, name))
+        self.assertIn(
+            "needs.resolve-plan.outputs.publish_ghcr == 'true'",
+            job(self.workflow, "publish-ghcr"),
+        )
         for token in (
             "release/Install-GitCliff.ps1",
             "release/Test-StoreBaseline.ps1",
@@ -148,10 +200,10 @@ class OptimizedFullReleaseMirrorTests(unittest.TestCase):
         self.assertIn("splined-optimized-compiled-v2", windows)
         self.assertIn("${{ github.sha }}-${{ needs.prepare-release.outputs.version }}", windows)
         self.assertIn("restore-keys: |", windows)
-        self.assertIn("CARGO_INCREMENTAL: ${{ inputs.extended_windows_validation == true && '0' || '1' }}", windows)
+        self.assertIn("CARGO_INCREMENTAL: ${{ needs.resolve-plan.outputs.strict == 'true' && '0' || '1' }}", windows)
         cache = windows.split("Restore cached compiled Windows intermediates", 1)[1].split(
             "Restore previous compiled dependencies", 1)[0]
-        self.assertIn("if: ${{ inputs.extended_windows_validation != true }}", cache)
+        self.assertIn("if: ${{ needs.resolve-plan.outputs.strict != 'true' }}", cache)
         self.assertNotIn("release/splined.exe", cache)
         self.assertIn("if ($env:CARGO_INCREMENTAL -eq \"0\") {", windows)
         self.assertIn("cargo clean --manifest-path build/Windows/Cargo.toml --release --target", windows)
@@ -176,13 +228,13 @@ class OptimizedFullReleaseMirrorTests(unittest.TestCase):
         installer_block = windows.split(install, 1)[1].split(fixture, 1)[0]
         self.assertIn("release/Install-GitCliff.ps1", installer_block)
         self.assertIn("git-cliff 2.14.2", installer_block)
-        self.assertIn("inputs.release_confirmation == 'Stop - no release'", installer_block)
+        self.assertIn("needs.resolve-plan.outputs.release_confirmation == 'Stop - no release'", installer_block)
 
     def test_webgui_full_test_and_docker_checks_run_in_parallel(self):
         tests = job(self.workflow, "webgui-tests")
         docker = job(self.workflow, "build-webgui")
         for part in (tests, docker):
-            self.assertIn("    needs: prepare-release", part)
+            self.assertIn("    needs: [resolve-plan, prepare-release]", part)
             self.assertIn("postgres:17", part)
             self.assertIn("release-source.bundle", part)
         self.assertIn("python -m unittest discover -s build/WEBGui/webgui/tests -v", tests)
@@ -196,14 +248,16 @@ class OptimizedFullReleaseMirrorTests(unittest.TestCase):
 
     def test_strict_summary_fails_closed_for_both_modes(self):
         summary = job(self.workflow, "release-summary")
-        self.assertIn("inputs.release_confirmation == 'Create release now'", summary)
-        self.assertIn("inputs.release_confirmation == 'Stop - no release'", summary)
+        self.assertIn("needs.resolve-plan.outputs.release_confirmation == 'Create release now'", summary)
+        self.assertIn("needs.resolve-plan.outputs.release_confirmation == 'Stop - no release'", summary)
         for step in ("QA_RESULT", "QA_GHCR_RESULT", "GHCR_RESULT", "STORE_RESULT", "WEBGUI_TEST_RESULT"):
             self.assertIn(step, summary)
         self.assertIn('check "GitHub Release" "$RELEASE_RESULT" skipped', summary)
         self.assertIn('check "QA-only checksum and artifacts" "$QA_RESULT" success', summary)
         self.assertIn('check "Local release-channel GHCR image build" "$QA_GHCR_RESULT" success', summary)
         self.assertIn('check "WebGUI tests" "$WEBGUI_TEST_RESULT" success', summary)
+        self.assertIn('if [ "$PUBLISH_GHCR" = true ]; then', summary)
+        self.assertIn('expect_result "GHCR publication" "$GHCR_RESULT" skipped', summary)
 
     def test_workflow_one_remains_the_unmodified_reference(self):
         self.assertIn("name: 01. Full Release - Build Selected Target and Publish", self.release)

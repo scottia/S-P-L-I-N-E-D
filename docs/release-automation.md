@@ -1,6 +1,9 @@
 # Release automation
 
-SPLINED exposes four manual GitHub Actions workflows. **Workflow 01 creates releases by default when confirmed; Workflow 04 is its optimized feature-equivalent mirror and only publishes when the existing final release confirmation is set to Create release now.** Workflows 02/03 recover existing releases.
+SPLINED exposes four manual GitHub Actions workflows. **Workflow 01 creates
+releases when explicitly confirmed; Workflow 04 resolves one of five clear
+build presets before running its optimized release or disposable-test graph.**
+Workflows 02/03 recover existing releases.
 Workflows 01 and 02 use pinned `git-cliff 2.14.2` for release notes or Store
 Highlights; no workflow is run merely by editing these files.
 
@@ -9,12 +12,14 @@ Highlights; no workflow is run merely by editing these files.
 | `01. Full Release - Build Selected Target and Publish` | New versioned release from `main`; choose All, Windows, or WebGUI / Python. | Validates the selected release targets, creates the version commit and numeric tag only after they pass, publishes the GitHub Release and GHCR, and optionally stages or submits Store. |
 | `02. Store Recovery - Tagged Draft or Update` | Rebuild a Store MSIX from an **existing** numeric Git tag if workflow 01's Store path failed. | Rebuilds/validates Windows package, generates git-cliff Store Highlights, then stages a draft or submits for certification. Does not create a tag, release, or GHCR image. |
 | `03. GHCR Recovery - Existing Published Release` | Safely recover missing GHCR tags for the latest **existing published** numeric release if workflow 01's GHCR path failed. | Verifies existing tag digests and OCI source/version/revision labels, performs no work when both tags are valid, and publishes only missing GHCR tags. Never changes a GitHub Release, release asset, Git tag, version, or Store submission. |
-| `04. Optimized Full Release - Build Selected Target and Optional Publish` | Same target and Store controls as Workflow 01; final **No** builds/tests without publishing and final **Yes** executes full release. | Caches compiled Rust dependencies, rebuilds the exact application, runs complete Windows/WebGUI checks and uses parallel WebGUI test/container jobs. No mode validates release notes, local GHCR image and checksum artifacts without publishing; Yes runs the normal GitHub Release, GHCR and selected Store publication paths. |
+| `04. Optimized Release or Test - Select One of Five Build Presets` | Choose **ALL** (default), **PYTHON / WEBGUI**, **WINDOWS**, **SOURCE BUILD**, or **TEST BUILD**. | Resolves and reports the complete target/strict/Store/GHCR/release plan first, then uses cached Rust intermediates and parallel WebGUI validation. The four release presets publish their selected outputs; TEST BUILD performs strict disposable validation without publication. |
 
 The previous status, authentication-diagnostic, package-only, publish-only, and
 one-time 2.0.0 workflows have been retired. GitHub may retain their historical
 run pages, but they are no longer runnable from the repository's default
-branch. Use Workflow 01 for the original publishing path, Workflows 02/03 for tagged recovery, and Workflow 04 for either an optimized validation-only run or the same approved publication process.
+branch. Use Workflow 01 for the original publishing path, Workflows 02/03 for
+tagged recovery, and Workflow 04 for a preset-driven optimized release or
+strict disposable test build.
 
 ## Workflow 01: full release
 
@@ -138,16 +143,48 @@ retains `splined-windows-store-submission` with the exact MSIX, Highlights, and
 submission metadata. The review mode stops after uploading those artifacts;
 only **Submit Update/No Draft** stages and submits the package.
 
-## Workflow 04: optimized full-build mirror with optional release
+## Workflow 04: five optimized build presets
 
-[Workflow 04](../.github/workflows/04-optimized-build-test.yml) is an optimized, **feature-equivalent copy of the current Workflow 01 release sequence**. It preserves the same six dispatch inputs, in the same order: Release version, Platform (**All / Windows / WebGUI / Python**), Extended Windows validation, the two Store choices, and the **existing final release confirmation**. There is no additional release toggle.
+[Workflow 04](../.github/workflows/04-optimized-build-test.yml) presents one
+authoritative **Build option** and an optional exact version. GitHub's manual
+dispatch form cannot dynamically redraw dependent checkboxes after another
+field changes, so target, strictness, Store handling, GHCR publication and
+release creation are resolved from the selected preset. The first job prints
+the complete effective plan before expensive build jobs start.
 
-The **only revised meaning of the final No choice in Workflow 04** is that it **continues validation instead of aborting**. To validate this workflow **before merging a change**, select its Draft PR branch in the Actions branch selector and choose **No**; the workflow builds the exact dispatched branch SHA. **Yes** remains restricted to the `main` branch, as in Workflow 01:
+The repository default branch, `main`, is the default GitHub branch selector.
+Every publishing preset also enforces `main`; **TEST BUILD** may run from a
+Draft PR branch to validate an unmerged Workflow 04 change. A blank version
+selects the exact committed source version and the release preflight proves it
+is the next unused numeric tag. An entered version must equal that committed
+Windows/WebGUI version. TEST BUILD ignores the field and reports its version as
+disposable while still compiling the source's embedded numeric identity.
 
-- **Stop - no release (No, default):** perform the canonical preflight, select and stamp the next version **only inside an ephemeral unpushed runner commit**, compile the selected targets, execute all requested validation and packaging checks, render git-cliff release notes with a local disposable tag, and produce checksum-verified **QA-only Actions artifacts**. The temporary commit/tag never reaches GitHub's main branch or remote tags; no GitHub Release, GHCR push, Partner Center Store staging or Store submission occurs. A **production release-channel GHCR image** is also built and its OCI version/revision labels verified **locally without registry authentication or push**, even for Windows-only selection. Store QA checks the pinned baseline logic against synthetic fixtures, never live Partner Center. Windows update metadata is explicitly labeled QA, never stable.
-- **Create release now (Yes):** execute Workflow 01's complete production release process with optimized compilation: exact versioned source commit, full selected Windows/WebGUI builds, full policy/Windows/Store checks, numeric tag promotion, git-cliff release notes, GitHub Release, GHCR publication and selected Microsoft Store mode. Both yes-mode builds and the publication jobs fail closed on any required validation error.
+| Preset | Target | Strict | Submit update | Store review bundle | Publish GHCR | Final action |
+|---|---|---:|---:|---:|---:|---|
+| **ALL** (default) | Windows + WebGUI | No | No | Yes | Yes | Create release now |
+| **PYTHON / WEBGUI** | WebGUI | No | No | No | Yes | Create release now |
+| **WINDOWS** | Windows | No | No | Yes | No | Create release now |
+| **SOURCE BUILD** | Windows + WebGUI at the exact committed version | No | No | Yes | Yes | Create release now |
+| **TEST BUILD** | Windows + WebGUI | Yes | No | No | No | No release creation |
 
-All other Workflow 01 controls and their constraints are preserved. **All** runs both Windows and WebGUI. The original **Extended Windows validation** invokes formatting, Clippy and Rust library tests; the selected Store package is built from the same Rust executable and performs the existing unsigned-package and local development-sign/install/smoke/uninstall checks. **Submit Update/No Draft** requires Extended Windows validation; **Review Bundle/No Submit** does not submit. In Yes mode the Store job retains the exact Workflow 01 published-history, Highlights, audit and Partner Center behavior; in No mode only the isolated build/package and source-only checks run, never credentialed Partner Center actions.
+ALL and SOURCE BUILD intentionally produce the same selected artifacts when
+the optional version field is blank. SOURCE BUILD makes the exact committed
+source-version intent explicit; ALL is the routine default release preset.
+Neither mode invents or stamps an uncommitted application version.
+
+The four publishing presets execute the selected production release graph:
+canonical preflight, target builds, numeric tag promotion, git-cliff notes and
+GitHub Release. GHCR and Store review behavior then follows the table. Review
+Bundle/No Submit reads the published Store baseline and retains the validated
+MSIX, Highlights and audit JSON without staging or submitting. None of the
+presets automatically selects the riskier Submit Update/No Draft path.
+
+TEST BUILD performs canonical preflight, both target builds, strict Windows
+format/Clippy/library validation, complete WebGUI/PostgreSQL checks, QA-only
+release notes and checksum artifacts, plus a local release-channel container
+label check. Its temporary commit/tag never reaches `main` or remote tags; it
+does not create a GitHub Release, push GHCR, or contact Partner Center.
 
 ### Build-time optimization and verification
 
@@ -157,7 +194,11 @@ WebGUI runs the **complete unsharded** Python/PostgreSQL/Node suite concurrently
 
 Workflow 04 reports compiled-cache hits, Rust compile duration, independent WebGUI outcomes and the final stage results. An initial cache miss can still take as long as a cold compile; compare repeated successful runs and cache-transfer overhead before declaring a speed improvement. **No native Windows speedup is established solely by pull-request CI**: the PR Windows lane is advisory, and the full optimized workflow requires an owner-authorized manual dispatch after merge.
 
-Workflow 01 itself remains unchanged. The owner must explicitly select **Create release now** to authorize publication, and both release workflows share the same publication concurrency group to avoid simultaneous release commits. The **No** choice is intended for full production-equivalent verification without release side effects. The two protected behavioral policy JSONs and [approved register](POLICY-REGISTER.md) remain normative.
+Workflow 01 itself remains unchanged. Selecting one of Workflow 04's four
+release presets is the explicit publication choice; both release workflows
+share the same publication concurrency group to avoid simultaneous release
+commits. TEST BUILD is the nonpublishing choice. The two protected behavioral
+policy JSONs and [approved register](POLICY-REGISTER.md) remain normative.
 
 ## Workflow 02: Store recovery
 
@@ -188,7 +229,8 @@ published, non-prerelease GitHub Release and refuses any version other than the
 current latest release. It shares workflow 01's release concurrency group so
 normal publication and recovery cannot race each other.
 
-Workflows 01 and 04 (only when **Create release now** is selected) are normal GHCR publishers. Workflow 03 inspects
+Workflows 01 and 04 presets with **Publish GHCR = Yes** are normal GHCR
+publishers. Workflow 03 inspects
 `ghcr.io/scottia/splined:vX.Y.Z` and `:latest` before doing any recovery:
 
 - If both tags exist, have the expected source/version/revision OCI labels, and
