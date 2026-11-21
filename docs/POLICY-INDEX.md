@@ -11,6 +11,7 @@
 | Refresh/selection | `src/scan_controller.rs`, `src/scan.rs` | `webgui/services.py`, `webgui/catalog.py` |
 | Synchronized field ownership | SQLite catalog is authoritative for designated Artist/Album/Track fields | `webgui/catalog_authority.py`; PostgreSQL-only jobs, audit, validation and coordination remain local |
 | Artist/Album NAME and status dots | `src/media_state_policy.rs`, `ui/app.slint` | `webgui/media_state_policy.py`, `webgui/catalog.py`, `webgui/static/app.js`, `app.css` |
+| Normalized Artist presentation and physical Art | `src/media_database.rs`, `src/application.rs` | `webgui/catalog.py`; display groups retain independent rows and Album keys |
 | COMP contract | `src/comp_report_policy.rs` | `webgui/comp_report_policy.py` |
 | Artwork-only media write boundary | `src/embedded_artwork.rs`, `src/scan_runtime.rs`, `src/safe_write.rs` | `webgui/backend/splined_compilation_authority_policy.py`, `webgui/services.py`, `webgui/backend/splined_scan.py` |
 
@@ -32,6 +33,8 @@ The two behavioral JSONs are **protected by approved repository policy**. Their 
 | Approved group | Source/tests |
 | --- | --- |
 | `ART-COLOR-001..006`, `ALB-COLOR-001..006` | Windows `src/media_state_policy.rs`, `ui/app.slint`; WebGUI `media_state_policy.py`, `catalog.py`, `static/app.js` and `app.css`; `webgui/tests/test_media_state_classification_policy.py`, `.github/scripts/test_media_state_rendering.py` |
+| `ART-001..003`, `SAFE-001` | Windows normalized projection in `src/media_database.rs`/`src/application.rs`; WebGUI `_artist_groups`, `_artist_identity_rows`, Artist overview and thumbnail resolution in `webgui/catalog.py`; `webgui/tests/test_artist_catalog_projection.py` |
+| `UI-001` | Windows job/progress publication in `src/application.rs` and Slint bindings; WebGUI job state in `services.py`/`server.py` and polling/rendering in `static/operations.js` |
 | `VISUAL-001..004` | Existing status dots, card frames/banners, override provenance and COMP-track presentation; do not infer those from NAME classification |
 | `STATE-POLICY-001..004` | Same canonical ordering in both runtimes; Windows policy loader/mirror, WebGUI PostgreSQL policy revision, inventory-derived Unprocessed count |
 | `GUARD-001..003` | Owner-approved review contract in `AGENTS.md` and the register; `.github/workflows/validate.yml` runs the independent `policy-review` job and `.github/scripts/check_protected_policies.py` rejects any diff to the two protected JSON files. Workflow 01 validates canonical contracts before creating release metadata. Required GitHub ruleset enforcement remains a separate repository-setting check. |
