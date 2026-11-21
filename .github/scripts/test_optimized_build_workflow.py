@@ -39,18 +39,32 @@ class OptimizedFullReleaseMirrorTests(unittest.TestCase):
             return re.findall(r"(?m)^      ([a-z][a-z0-9_]+):\s*$", form)
 
         mirrored = inputs(self.workflow)
-        self.assertEqual(mirrored, ["build_preset", "release_version"])
+        self.assertEqual(mirrored, [
+            "build_preset", "release_version", "release_target",
+            "strict_validation", "submit_update", "review_bundle",
+            "publish_ghcr", "final_action",
+        ])
         dispatch = self.workflow.split("permissions:", 1)[0]
         self.assertIn('build_preset:', dispatch)
         self.assertIn('default: "ALL"', dispatch)
         for preset in PRESETS:
             self.assertIn(f'- "{preset}"', dispatch)
-        for removed in (
-            "platform:", "extended_windows_validation:",
-            "store_submit_update:", "store_submit_draft:",
-            "release_confirmation:",
+        self.assertEqual(dispatch.count('default: "Use preset default"'), 6)
+        for visible in (
+            "release_target:", "strict_validation:", "submit_update:",
+            "review_bundle:", "publish_ghcr:", "final_action:",
         ):
-            self.assertNotIn(removed, dispatch)
+            self.assertIn(visible, dispatch)
+        self.assertIn('- "Create release now"', dispatch)
+        self.assertIn('- "No release creation"', dispatch)
+        cargo = (ROOT / "build/Windows/Cargo.toml").read_text(encoding="utf-8-sig")
+        source_version = re.search(
+            r'(?ms)^\[package\].*?^version\s*=\s*"(\d+\.\d+\.\d+)"', cargo
+        ).group(1)
+        version_input = dispatch.split("      release_version:\n", 1)[1].split(
+            "      release_target:\n", 1
+        )[0]
+        self.assertIn(f'default: "{source_version}"', version_input)
 
     def test_presets_resolve_the_owner_defined_default_matrix(self):
         resolver = job(self.workflow, "resolve-plan")
@@ -96,6 +110,36 @@ class OptimizedFullReleaseMirrorTests(unittest.TestCase):
         self.assertIn('target_label="Windows / WebGUI"', resolver)
         self.assertIn('target_label="WebGUI"', resolver)
         self.assertIn('target_label="Windows"', resolver)
+
+    def test_visible_form_controls_can_override_each_preset_default(self):
+        resolver = job(self.workflow, "resolve-plan")
+        for name in (
+            "TARGET_SELECTION", "STRICT_SELECTION", "STORE_UPDATE_SELECTION",
+            "STORE_DRAFT_SELECTION", "GHCR_SELECTION", "FINAL_SELECTION",
+        ):
+            self.assertIn(name, resolver)
+        for form_value, assignment in (
+            ('"Windows / WebGUI")', 'platform="All"'),
+            ('"Windows")', 'platform="Windows"'),
+            ('"WebGUI")', 'platform="WebGUI / Python"'),
+            ('"Yes") strict=true', 'strict=true'),
+            ('"No") strict=false', 'strict=false'),
+            ('"Yes") store_update=true', 'store_update=true'),
+            ('"No") store_update=false', 'store_update=false'),
+            ('"Yes") store_draft=true', 'store_draft=true'),
+            ('"No") store_draft=false', 'store_draft=false'),
+            ('"Yes") publish_ghcr=true', 'publish_ghcr=true'),
+            ('"No") publish_ghcr=false', 'publish_ghcr=false'),
+            ('"Create release now") release_confirmation=',
+             'release_confirmation="Create release now"'),
+            ('"No release creation") release_confirmation=',
+             'release_confirmation="Stop - no release"'),
+        ):
+            with self.subTest(form_value=form_value):
+                self.assertIn(form_value, resolver)
+                self.assertIn(assignment, resolver)
+        self.assertIn("(form:", resolver)
+        self.assertIn("inputs.final_action == 'Create release now'", self.workflow)
 
     def test_all_workflow_one_jobs_and_full_publish_graph_remain(self):
         self.assertTrue(
@@ -217,6 +261,27 @@ class OptimizedFullReleaseMirrorTests(unittest.TestCase):
         self.assertIn("Compress-Archive", windows)
         self.assertIn("Build-StorePackage.ps1", windows)
         self.assertIn("Development-sign, install, activate, native-smoke, and uninstall", windows)
+
+    def test_windows_integrity_lane_caches_only_reusable_inputs_and_intermediates(self):
+        integrity = job(self.workflow, "audio-integrity-windows")
+        self.assertIn("Calculate normalized Windows integrity cache key", integrity)
+        self.assertIn("~/.cargo/registry", integrity)
+        self.assertIn("~/.cargo/git", integrity)
+        self.assertIn("splined-integrity-dependencies-v1", integrity)
+        self.assertIn("splined-integrity-compiled-v1", integrity)
+        self.assertIn("debug/deps", integrity)
+        self.assertIn("debug/.fingerprint", integrity)
+        self.assertIn("debug/incremental", integrity)
+        self.assertIn("${{ github.sha }}", integrity)
+        self.assertIn("Remove final Windows test artifacts before cache save", integrity)
+        self.assertIn('$_.Extension -in ".exe", ".dll", ".pdb"', integrity)
+        self.assertIn("elapsed_seconds", integrity)
+        for command in (
+            "artwork_integrity::tests -- --nocapture",
+            "embedded_artwork -- --nocapture",
+            "local_artwork -- --nocapture",
+        ):
+            self.assertIn(command, integrity)
 
     def test_validation_only_store_fixture_installs_pinned_git_cliff_first(self):
         windows = job(self.workflow, "build-windows")

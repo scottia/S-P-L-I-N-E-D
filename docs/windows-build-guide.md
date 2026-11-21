@@ -39,9 +39,12 @@ builds the portable ZIP and Store review bundle without publishing GHCR;
 and **TEST BUILD** runs strict Windows plus WebGUI validation without creating
 a tag, GitHub Release, GHCR push or Store action. The run summary lists every
 effective choice before compilation begins. Publishing presets require the
-`main` branch; TEST BUILD may validate a Draft PR branch.
+`main` branch; TEST BUILD may validate a Draft PR branch. All target, strict,
+Store, GHCR and final-action controls remain visible and may either use the
+selected flow's default or an explicit owner override. Release Version displays
+the current compiled source identity and is contract-checked against it.
 
-The optimized Windows build caches compiled Rust dependencies as well as downloaded crates. It cleans only `splined-windows`, compiles a **fresh** locked optimized binary, and validates the exact temporary/real release commit identity, x64 PE, first-run native smoke, portable ZIP and Store package. **All** also validates WebGUI in parallel; WebGUI's full Python/PostgreSQL/Node suite runs alongside Docker image/health/packaging checks without removing test cases.
+The optimized Windows build caches compiled Rust dependencies as well as downloaded crates. Its mandatory artwork-integrity lane separately caches Cargo downloads and reusable test intermediates, removes final test binaries before cache save, preserves all three locked Rust/Lofty test groups, and reports cache hits plus elapsed time. The production lane compiles a **fresh** locked optimized binary and validates the exact temporary/real release commit identity, x64 PE, first-run native smoke, portable ZIP and Store package. **ALL** also validates WebGUI in parallel; WebGUI's full Python/PostgreSQL/Node suite runs alongside Docker image/health/packaging checks without removing test cases.
 
 Measure at least two equivalent Workflow 04 runs: the first may populate the
 compiled cache, and later runs report a cache hit and compilation seconds.
