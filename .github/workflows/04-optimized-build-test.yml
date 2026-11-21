@@ -268,9 +268,36 @@ jobs:
             echo "- Final option: \`$release_confirmation\` (form: \`$FINAL_SELECTION\`)"
           } >> "$GITHUB_STEP_SUMMARY"
 
+  approve-plan:
+    name: Approve resolved Workflow 04 plan
+    needs: resolve-plan
+    runs-on: ubuntu-latest
+    environment:
+      name: workflow-04-plan-approval
+    steps:
+      - name: Record the approved plan
+        shell: bash
+        run: |
+          {
+            echo "## Workflow 04 plan approved"
+            echo
+            echo "- Preset: \`${{ inputs.build_preset }}\`"
+            echo "- Branch: \`${{ github.ref_name }}\`"
+            echo "- Release version: \`${{ needs.resolve-plan.outputs.display_version }}\`"
+            echo "- Release target: \`${{ needs.resolve-plan.outputs.target_label }}\`"
+            echo "- Strict Windows validation: \`${{ needs.resolve-plan.outputs.strict }}\`"
+            echo "- Submit Update / No Draft: \`${{ needs.resolve-plan.outputs.store_update }}\`"
+            echo "- Review Bundle / No Submit: \`${{ needs.resolve-plan.outputs.store_draft }}\`"
+            echo "- Publish GHCR: \`${{ needs.resolve-plan.outputs.publish_ghcr }}\`"
+            echo "- Final option: \`${{ needs.resolve-plan.outputs.release_confirmation }}\`"
+            echo
+            echo "Validation, compilation and publication may now begin."
+          } >> "$GITHUB_STEP_SUMMARY"
+
   audio-integrity-webgui:
     name: Audio integrity — WebGUI real artwork writer
-    needs: resolve-plan
+    needs: [resolve-plan, approve-plan]
+    if: ${{ needs.resolve-plan.outputs.platform == 'WebGUI / Python' || needs.resolve-plan.outputs.platform == 'All' }}
     runs-on: ubuntu-latest
     env:
       PYTHONPATH: .:build/WEBGui:build/WEBGui/webgui/backend
@@ -288,7 +315,8 @@ jobs:
           python -m unittest discover -s build/WEBGui/webgui/tests -p test_cross_format_cover_overwrite.py -v
   audio-integrity-windows:
     name: Audio integrity — Windows real artwork writer
-    needs: resolve-plan
+    needs: [resolve-plan, approve-plan]
+    if: ${{ needs.resolve-plan.outputs.platform == 'Windows' || needs.resolve-plan.outputs.platform == 'All' }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -370,7 +398,30 @@ jobs:
           - Final ``.exe``, ``.dll`` and ``.pdb`` test artifacts are removed before cache save.
           "@ | Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY
   prepare-release:
-    needs: [resolve-plan, audio-integrity-webgui, audio-integrity-windows]
+    needs: [resolve-plan, approve-plan, audio-integrity-webgui, audio-integrity-windows]
+    if: >-
+      ${{
+        always() &&
+        needs.resolve-plan.result == 'success' &&
+        needs.approve-plan.result == 'success' &&
+        (
+          (
+            needs.resolve-plan.outputs.platform == 'Windows' &&
+            needs.audio-integrity-windows.result == 'success' &&
+            needs.audio-integrity-webgui.result == 'skipped'
+          ) ||
+          (
+            needs.resolve-plan.outputs.platform == 'WebGUI / Python' &&
+            needs.audio-integrity-webgui.result == 'success' &&
+            needs.audio-integrity-windows.result == 'skipped'
+          ) ||
+          (
+            needs.resolve-plan.outputs.platform == 'All' &&
+            needs.audio-integrity-webgui.result == 'success' &&
+            needs.audio-integrity-windows.result == 'success'
+          )
+        )
+      }}
     name: Prepare exact release source for build or unpublished validation
     runs-on: ubuntu-latest
     outputs:
@@ -1127,6 +1178,7 @@ jobs:
     name: Publish numeric tag and release commit after successful builds
     needs:
       - resolve-plan
+      - approve-plan
       - prepare-release
       - audio-integrity-webgui
       - audio-integrity-windows
@@ -1138,23 +1190,27 @@ jobs:
         always() &&
         needs.resolve-plan.outputs.release_confirmation == 'Create release now' &&
         needs.prepare-release.result == 'success' &&
-        needs.audio-integrity-webgui.result == 'success' &&
-        needs.audio-integrity-windows.result == 'success' &&
         (
           (
             needs.resolve-plan.outputs.platform == 'Windows' &&
+            needs.audio-integrity-windows.result == 'success' &&
+            needs.audio-integrity-webgui.result == 'skipped' &&
             needs.build-windows.result == 'success' &&
             needs.build-webgui.result == 'skipped' &&
             needs.webgui-tests.result == 'skipped'
           ) ||
           (
             needs.resolve-plan.outputs.platform == 'WebGUI / Python' &&
+            needs.audio-integrity-webgui.result == 'success' &&
+            needs.audio-integrity-windows.result == 'skipped' &&
             needs.build-windows.result == 'skipped' &&
             needs.build-webgui.result == 'success' &&
             needs.webgui-tests.result == 'success'
           ) ||
           (
             needs.resolve-plan.outputs.platform == 'All' &&
+            needs.audio-integrity-webgui.result == 'success' &&
+            needs.audio-integrity-windows.result == 'success' &&
             needs.build-windows.result == 'success' &&
             needs.build-webgui.result == 'success' &&
             needs.webgui-tests.result == 'success'
@@ -1766,6 +1822,7 @@ jobs:
     name: Release or validation-only summary
     needs:
       - resolve-plan
+      - approve-plan
       - prepare-release
       - audio-integrity-webgui
       - audio-integrity-windows
@@ -1783,18 +1840,50 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Enforce unconditional Windows and WebGUI audio-integrity gate
+      - name: Report plan rejection or missing approval
+        if: ${{ needs.approve-plan.result != 'success' }}
+        shell: bash
+        run: |
+          {
+            echo "## Workflow 04 stopped before build"
+            echo
+            echo "The protected plan approval was rejected or did not complete."
+            echo "No validation, compilation, tagging or publication work was authorized."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Enforce selected-target audio-integrity gate
+        if: ${{ needs.approve-plan.result == 'success' }}
         shell: bash
         env:
+          RELEASE_PLATFORM: ${{ needs.resolve-plan.outputs.platform }}
           WEBGUI_INTEGRITY_RESULT: ${{ needs.audio-integrity-webgui.result }}
           WINDOWS_INTEGRITY_RESULT: ${{ needs.audio-integrity-windows.result }}
         run: |
-          if [ "$WEBGUI_INTEGRITY_RESULT" != "success" ] || [ "$WINDOWS_INTEGRITY_RESULT" != "success" ]; then
-            echo "::error title=Audio-integrity gate::WebGUI='$WEBGUI_INTEGRITY_RESULT', Windows='$WINDOWS_INTEGRITY_RESULT'; both are mandatory."
+          case "$RELEASE_PLATFORM" in
+            Windows)
+              expected_webgui=skipped
+              expected_windows=success
+              ;;
+            "WebGUI / Python")
+              expected_webgui=success
+              expected_windows=skipped
+              ;;
+            All)
+              expected_webgui=success
+              expected_windows=success
+              ;;
+            *)
+              echo "::error title=Audio-integrity gate::Unsupported release platform '$RELEASE_PLATFORM'."
+              exit 1
+              ;;
+          esac
+          if [ "$WEBGUI_INTEGRITY_RESULT" != "$expected_webgui" ] ||
+             [ "$WINDOWS_INTEGRITY_RESULT" != "$expected_windows" ]; then
+            echo "::error title=Audio-integrity gate::Platform='$RELEASE_PLATFORM', WebGUI='$WEBGUI_INTEGRITY_RESULT' (expected '$expected_webgui'), Windows='$WINDOWS_INTEGRITY_RESULT' (expected '$expected_windows')."
             exit 1
           fi
       - name: Enforce selected build and publication results
-        if: ${{ needs.resolve-plan.outputs.release_confirmation == 'Create release now' }}
+        if: ${{ needs.approve-plan.result == 'success' && needs.resolve-plan.outputs.release_confirmation == 'Create release now' }}
         shell: bash
         env:
           RELEASE_PLATFORM: ${{ needs.resolve-plan.outputs.platform }}
@@ -1877,7 +1966,7 @@ jobs:
           fi
 
       - name: Report published outputs
-        if: ${{ needs.resolve-plan.outputs.release_confirmation == 'Create release now' }}
+        if: ${{ needs.approve-plan.result == 'success' && needs.resolve-plan.outputs.release_confirmation == 'Create release now' }}
         shell: bash
         env:
           RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
@@ -1909,7 +1998,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Require validation-only build and archive results and confirm no publications
-        if: ${{ needs.resolve-plan.outputs.release_confirmation == 'Stop - no release' }}
+        if: ${{ needs.approve-plan.result == 'success' && needs.resolve-plan.outputs.release_confirmation == 'Stop - no release' }}
         shell: bash
         env:
           RELEASE_PLATFORM: ${{ needs.resolve-plan.outputs.platform }}

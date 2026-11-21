@@ -169,6 +169,47 @@ class OptimizedFullReleaseMirrorTests(unittest.TestCase):
         self.assertIn("Publish-StoreUpdate.ps1", job(self.workflow, "publish-store"))
         self.assertIn("Generate-StoreHighlights.ps1", job(self.workflow, "publish-store"))
 
+    def test_resolved_plan_requires_protected_approval_before_work_begins(self):
+        approval = job(self.workflow, "approve-plan")
+        self.assertIn("needs: resolve-plan", approval)
+        self.assertIn("environment:", approval)
+        self.assertIn("name: workflow-04-plan-approval", approval)
+        for label in (
+            "Preset", "Branch", "Release version", "Release target",
+            "Strict Windows validation", "Submit Update / No Draft",
+            "Review Bundle / No Submit", "Publish GHCR", "Final option",
+        ):
+            self.assertIn(label, approval)
+
+        webgui_integrity = job(self.workflow, "audio-integrity-webgui")
+        windows_integrity = job(self.workflow, "audio-integrity-windows")
+        self.assertIn("needs: [resolve-plan, approve-plan]", webgui_integrity)
+        self.assertIn("needs: [resolve-plan, approve-plan]", windows_integrity)
+        self.assertIn("platform == 'WebGUI / Python'", webgui_integrity)
+        self.assertIn("platform == 'All'", webgui_integrity)
+        self.assertIn("platform == 'Windows'", windows_integrity)
+        self.assertIn("platform == 'All'", windows_integrity)
+
+        prepare = job(self.workflow, "prepare-release")
+        self.assertIn(
+            "needs: [resolve-plan, approve-plan, audio-integrity-webgui, audio-integrity-windows]",
+            prepare,
+        )
+        self.assertIn("needs.approve-plan.result == 'success'", prepare)
+        self.assertIn("needs.audio-integrity-webgui.result == 'skipped'", prepare)
+        self.assertIn("needs.audio-integrity-windows.result == 'skipped'", prepare)
+
+        finalizer = job(self.workflow, "finalize-tag")
+        self.assertIn("      - approve-plan", finalizer)
+        self.assertIn("needs.audio-integrity-webgui.result == 'skipped'", finalizer)
+        self.assertIn("needs.audio-integrity-windows.result == 'skipped'", finalizer)
+
+        summary = job(self.workflow, "release-summary")
+        self.assertIn("      - approve-plan", summary)
+        self.assertIn("Report plan rejection or missing approval", summary)
+        self.assertIn("selected-target audio-integrity gate", summary)
+        self.assertIn("needs.approve-plan.result == 'success'", summary)
+
     def test_no_runs_real_versioned_build_without_remote_release(self):
         preflight = job(self.workflow, "prepare-release")
         self.assertIn('if [ "$RELEASE_CONFIRMATION" != "Create release now" ] &&', preflight)
