@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       build_preset:
-        description: "BUILD OPTION: selects the complete target, validation, Store, GHCR, and release plan. ALL is the default."
+        description: "LAUNCH FLOW: selects the target, validation, Store, GHCR, and release defaults. ALL is the default."
         required: true
         default: "ALL"
         type: choice
@@ -15,16 +15,71 @@ on:
           - "SOURCE BUILD"
           - "TEST BUILD"
       release_version:
-        description: "OPTIONAL VERSION: blank uses the exact committed next source version. TEST BUILD ignores this field and remains disposable."
+        description: "CURRENT COMPILED VERSION: must match Windows and WebGUI source. No-release validation remains disposable."
         required: false
-        default: ""
+        default: "3.0.22"
         type: string
+      release_target:
+        description: "Preset: ALL Win+Web; WEBGUI WebGUI; WINDOWS Windows; SOURCE Win+Web; TEST Win+Web. Select a target to override."
+        required: true
+        default: "Use preset default"
+        type: choice
+        options:
+          - "Use preset default"
+          - "Windows / WebGUI"
+          - "Windows"
+          - "WebGUI"
+      strict_validation:
+        description: "Preset: ALL No; WEBGUI No; WINDOWS No; SOURCE No; TEST Yes. Select Yes or No to override."
+        required: true
+        default: "Use preset default"
+        type: choice
+        options:
+          - "Use preset default"
+          - "Yes"
+          - "No"
+      submit_update:
+        description: "Submit Update / No Draft preset: all five build options use No. Select Yes only to override intentionally."
+        required: true
+        default: "Use preset default"
+        type: choice
+        options:
+          - "Use preset default"
+          - "Yes"
+          - "No"
+      review_bundle:
+        description: "Review Bundle / No Submit preset: ALL Yes; WEBGUI No; WINDOWS Yes; SOURCE Yes; TEST No. Select to override."
+        required: true
+        default: "Use preset default"
+        type: choice
+        options:
+          - "Use preset default"
+          - "Yes"
+          - "No"
+      publish_ghcr:
+        description: "Publish GHCR preset: ALL Yes; WEBGUI Yes; WINDOWS No; SOURCE Yes; TEST No. Select Yes or No to override."
+        required: true
+        default: "Use preset default"
+        type: choice
+        options:
+          - "Use preset default"
+          - "Yes"
+          - "No"
+      final_action:
+        description: "Final preset: ALL/WEBGUI/WINDOWS/SOURCE create a release; TEST creates no release. Select an action to override."
+        required: true
+        default: "Use preset default"
+        type: choice
+        options:
+          - "Use preset default"
+          - "Create release now"
+          - "No release creation"
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ inputs.build_preset == 'TEST BUILD' && format('splined-optimized-test-{0}', github.ref) || 'splined-release-next-patch' }}
+  group: ${{ (inputs.final_action == 'Create release now' || (inputs.final_action == 'Use preset default' && inputs.build_preset != 'TEST BUILD')) && 'splined-release-next-patch' || format('splined-optimized-test-{0}', github.ref) }}
   cancel-in-progress: false
 
 env:
@@ -59,6 +114,12 @@ jobs:
         env:
           BUILD_PRESET: ${{ inputs.build_preset }}
           REQUESTED_VERSION: ${{ inputs.release_version }}
+          TARGET_SELECTION: ${{ inputs.release_target }}
+          STRICT_SELECTION: ${{ inputs.strict_validation }}
+          STORE_UPDATE_SELECTION: ${{ inputs.submit_update }}
+          STORE_DRAFT_SELECTION: ${{ inputs.review_bundle }}
+          GHCR_SELECTION: ${{ inputs.publish_ghcr }}
+          FINAL_SELECTION: ${{ inputs.final_action }}
         run: |
           set -euo pipefail
 
@@ -129,13 +190,51 @@ jobs:
               ;;
           esac
 
+          case "$TARGET_SELECTION" in
+            "Use preset default") ;;
+            "Windows / WebGUI") platform="All"; target_label="Windows / WebGUI" ;;
+            "Windows") platform="Windows"; target_label="Windows" ;;
+            "WebGUI") platform="WebGUI / Python"; target_label="WebGUI" ;;
+            *) echo "::error title=Invalid target override::Unsupported Release Target '$TARGET_SELECTION'."; exit 1 ;;
+          esac
+          case "$STRICT_SELECTION" in
+            "Use preset default") ;;
+            "Yes") strict=true ;;
+            "No") strict=false ;;
+            *) echo "::error title=Invalid strict override::Unsupported Strict selection '$STRICT_SELECTION'."; exit 1 ;;
+          esac
+          case "$STORE_UPDATE_SELECTION" in
+            "Use preset default") ;;
+            "Yes") store_update=true ;;
+            "No") store_update=false ;;
+            *) echo "::error title=Invalid Store override::Unsupported Submit Update selection '$STORE_UPDATE_SELECTION'."; exit 1 ;;
+          esac
+          case "$STORE_DRAFT_SELECTION" in
+            "Use preset default") ;;
+            "Yes") store_draft=true ;;
+            "No") store_draft=false ;;
+            *) echo "::error title=Invalid Store override::Unsupported Review Bundle selection '$STORE_DRAFT_SELECTION'."; exit 1 ;;
+          esac
+          case "$GHCR_SELECTION" in
+            "Use preset default") ;;
+            "Yes") publish_ghcr=true ;;
+            "No") publish_ghcr=false ;;
+            *) echo "::error title=Invalid GHCR override::Unsupported Publish GHCR selection '$GHCR_SELECTION'."; exit 1 ;;
+          esac
+          case "$FINAL_SELECTION" in
+            "Use preset default") ;;
+            "Create release now") release_confirmation="Create release now" ;;
+            "No release creation") release_confirmation="Stop - no release" ;;
+            *) echo "::error title=Invalid final action::Unsupported Final Option '$FINAL_SELECTION'."; exit 1 ;;
+          esac
+
           if [ "$release_confirmation" = "Create release now" ] &&
              [ "$GITHUB_REF" != "refs/heads/main" ]; then
             echo "::error title=Main branch required::Release presets must be dispatched from main; received '$GITHUB_REF'."
             exit 1
           fi
 
-          if [ "$BUILD_PRESET" = "TEST BUILD" ]; then
+          if [ "$release_confirmation" = "Stop - no release" ]; then
             release_version=""
             display_version="n/a - disposable validation of source $SOURCE_VERSION"
           else
@@ -161,12 +260,12 @@ jobs:
             echo "- Preset: \`$BUILD_PRESET\`"
             echo "- Branch: \`$GITHUB_REF_NAME\`"
             echo "- Release version: \`$display_version\`"
-            echo "- Release target: \`$target_label\`"
-            echo "- Strict Windows validation: \`$strict\`"
-            echo "- Submit Update / No Draft: \`$store_update\`"
-            echo "- Review Bundle / No Submit: \`$store_draft\`"
-            echo "- Publish GHCR: \`$publish_ghcr\`"
-            echo "- Final option: \`$release_confirmation\`"
+            echo "- Release target: \`$target_label\` (form: \`$TARGET_SELECTION\`)"
+            echo "- Strict Windows validation: \`$strict\` (form: \`$STRICT_SELECTION\`)"
+            echo "- Submit Update / No Draft: \`$store_update\` (form: \`$STORE_UPDATE_SELECTION\`)"
+            echo "- Review Bundle / No Submit: \`$store_draft\` (form: \`$STORE_DRAFT_SELECTION\`)"
+            echo "- Publish GHCR: \`$publish_ghcr\` (form: \`$GHCR_SELECTION\`)"
+            echo "- Final option: \`$release_confirmation\` (form: \`$FINAL_SELECTION\`)"
           } >> "$GITHUB_STEP_SUMMARY"
 
   audio-integrity-webgui:
@@ -193,15 +292,83 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Run mandatory Rust/Lofty artwork integrity tests
+      - name: Calculate normalized Windows integrity cache key
+        id: integrity-cache-key
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          $lock = Get-Content -Raw -LiteralPath build/Windows/Cargo.lock
+          $pattern = '(?ms)(\[\[package\]\]\r?\nname = "splined-windows"\r?\n)version = "[^"]+"'
+          $normalized = [regex]::Replace($lock, $pattern, '${1}version = "<release>"')
+          if ($normalized -eq $lock) {
+            throw "Unable to normalize the release-only Windows package version for the integrity cache key."
+          }
+          $bytes = [Text.Encoding]::UTF8.GetBytes($normalized)
+          $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+          "hash=$hash" | Add-Content $env:GITHUB_OUTPUT
+
+      - name: Restore Windows integrity Cargo downloads
+        id: integrity-dependency-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-splined-integrity-dependencies-v1-${{ env.RUST_TOOLCHAIN }}-${{ steps.integrity-cache-key.outputs.hash }}
+          restore-keys: |
+            ${{ runner.os }}-splined-integrity-dependencies-v1-${{ env.RUST_TOOLCHAIN }}-
+
+      - name: Restore Windows integrity test intermediates
+        id: integrity-compiled-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            build/Windows/target/x86_64-pc-windows-msvc/debug/build
+            build/Windows/target/x86_64-pc-windows-msvc/debug/deps
+            build/Windows/target/x86_64-pc-windows-msvc/debug/.fingerprint
+            build/Windows/target/x86_64-pc-windows-msvc/debug/incremental
+          key: ${{ runner.os }}-splined-integrity-compiled-v1-${{ env.RUST_TOOLCHAIN }}-${{ env.WINDOWS_TARGET }}-${{ steps.integrity-cache-key.outputs.hash }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-splined-integrity-compiled-v1-${{ env.RUST_TOOLCHAIN }}-${{ env.WINDOWS_TARGET }}-${{ steps.integrity-cache-key.outputs.hash }}-
+
+      - name: Run mandatory Rust/Lofty artwork integrity tests
+        id: integrity-tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $timer = [Diagnostics.Stopwatch]::StartNew()
           rustup toolchain install 1.99.0 --profile minimal
           rustup target add x86_64-pc-windows-msvc --toolchain 1.99.0
           cargo +1.99.0 test --locked --manifest-path build/Windows/Cargo.toml --lib --target x86_64-pc-windows-msvc artwork_integrity::tests -- --nocapture
           cargo +1.99.0 test --locked --manifest-path build/Windows/Cargo.toml --lib --target x86_64-pc-windows-msvc embedded_artwork -- --nocapture
           cargo +1.99.0 test --locked --manifest-path build/Windows/Cargo.toml --lib --target x86_64-pc-windows-msvc local_artwork -- --nocapture
+          $timer.Stop()
+          "elapsed_seconds=$([Math]::Round($timer.Elapsed.TotalSeconds, 1))" | Add-Content $env:GITHUB_OUTPUT
+
+      - name: Remove final Windows test artifacts before cache save
+        if: ${{ always() }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $deps = "build/Windows/target/x86_64-pc-windows-msvc/debug/deps"
+          if (Test-Path -LiteralPath $deps) {
+            Get-ChildItem -LiteralPath $deps -Recurse -File |
+              Where-Object { $_.Extension -in ".exe", ".dll", ".pdb" } |
+              Remove-Item -Force
+          }
+
+      - name: Report Windows integrity cache results
+        if: ${{ always() }}
+        shell: pwsh
+        run: |
+          @"
+          ## Windows artwork-integrity test cache
+
+          - Cargo download cache exact-key hit: ``${{ steps.integrity-dependency-cache.outputs.cache-hit }}``
+          - Compiled test-intermediate cache exact-key hit: ``${{ steps.integrity-compiled-cache.outputs.cache-hit }}``
+          - Mandatory test elapsed time: ``${{ steps.integrity-tests.outputs.elapsed_seconds || 'not completed' }} seconds``
+          - Final ``.exe``, ``.dll`` and ``.pdb`` test artifacts are removed before cache save.
+          "@ | Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY
   prepare-release:
     needs: [resolve-plan, audio-integrity-webgui, audio-integrity-windows]
     name: Prepare exact release source for build or unpublished validation
