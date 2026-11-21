@@ -6,7 +6,6 @@ use crate::config::{Config, Mode, OutputConfig, configured_samples_dir};
 use crate::download::DownloadedCandidate;
 use crate::embedded_artwork::{
     embedded_front_matches, embedded_front_metadata, replace_embedded_front,
-    replace_musicbrainz_identity,
 };
 use crate::final_artwork::{
     FinalArtworkAction, FinalArtworkResult, PreparedArtwork, PreparedArtworkInfo,
@@ -2273,7 +2272,7 @@ fn persist_validated_track_identity(
         return Err("A validated Artist ID is required before saving track identity.".to_string());
     }
     let artist_ids = artists.join(", ");
-    replace_musicbrainz_identity(&track.path, recording_mbid, &artist_ids)?;
+    // Validated COMP identities may be recorded in SQLite, never in audio tags.
     persist_track_musicbrainz_identity(config, &track.path, recording_mbid, &artist_ids)
 }
 
