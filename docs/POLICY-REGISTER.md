@@ -8,7 +8,8 @@ PR documents are not alternate policy authorities.
 
 **Scope:** Artist/Album FILE-LIST **name colors**, ordered multiple Album
 status dots, approved visual indicators, policy consistency across
-deployment modes, and safeguards for changing shared policy JSON.
+deployment modes, safeguards for changing shared policy JSON, and the
+**artwork-only media-write invariant** (both runtimes, including COMP).
 For implementation verification, see
 [SCHEMA-VALIDATION.md](SCHEMA-VALIDATION.md).
 
@@ -129,6 +130,33 @@ to alter frames, dots, banners, COMP rows, or their counted states.
 | `STATE-POLICY-002` | `schema/media-state-classification.json` is the canonical checked-in contract. Windows may embed this **same** JSON for offline operation; it is **not** a different standalone policy. |
 | `STATE-POLICY-003` | Existing credential-directory files, PostgreSQL persisted revisions and Windows mirrors are delivery/persistence mechanisms; they must not silently substitute different name rankings, forbidden colors or dot ordering. Flag revision or behavior drift for deliberate reconciliation. |
 | `STATE-POLICY-004` | `Unprocessed` is a MEDIA FILTER count, **not** a name-color or dot category. The fallback for an unmatched Artist/Album NAME remains **Red**. |
+
+## Artwork-only audio integrity — permanent owner-approved contract
+
+S:P:L:I:N:E:D is an artwork application, **never an audio metadata tagger**.
+Its sole authorized *audio-file* mutation is embedding an approved front-cover
+picture. Eligible Albums use the preferred embedded thumbnail size in Settings;
+Curated Compilation COMP writes remain single-track events under the existing
+separate `schema/comp-report-policy.json`. Folder/Artist artwork files are
+managed separately and do not authorize any audio-tag edits.
+
+| ID | Mandatory product rule |
+| --- | --- |
+| `AUDIO-INTEGRITY-001` | The only permitted audio-file mutation is approved front artwork; all text, custom, MB extended and other non-artwork tags are immutable. |
+| `AUDIO-INTEGRITY-002` | Preserve the exact incoming ID3v2.x version (including v2.4), field/frame data, separate multivalues, non-front pictures, and every MusicBrainz tag. ID3 support does **not** permit any version conversion, reserialization changes, slash joining or normalization. |
+| `AUDIO-INTEGRITY-003` | Write only to a staged copy and compare its full non-artwork metadata and audio stream against the original **before** replacement. Any mismatch, unreadable tag, or unsupported verification must fail closed without replacing the original. |
+| `AUDIO-INTEGRITY-004` | Enforce the same restriction in Windows Rust/Lofty and WebGUI Python/Mutagen across Album thumbnail queues, COMP/Fallback, and all supported audio containers; a selected COMP track's artwork may change, never its metadata. |
+| `AUDIO-INTEGRITY-005` | Explicitly prohibit **all** MusicBrainz Recording/Artist/Release and extended-tag writes in COMP. Alternate covers, fuzzy matches, Artist/Recording lookup and manual ID edits are search/session/database information only. Preserve the separate COMP policy's percentage bands, completion authority, pinned revisions, reporting and coordination flags. |
+| `AUDIO-INTEGRITY-006` | Fail PR and Workflow 01/04 release/validation when audio-integrity tests fail, are skipped or missing; fast/strict Windows modes may not bypass this requirement. Mandatory negative controls must reject source-tag corruption and preserve the original file. |
+
+These rules authorize **no additional tag editing**. They do not rewrite either
+protected JSON contract. COMP `publish_verified_artwork_write=true`,
+`publish_unresolved_identity_write=true` and
+`completion_requires_authoritative_ids=true` remain unchanged: valid artwork
+can be published while identity is unresolved, without a successful completion
+record or any audio MBID write. The media-state JSON continues to govern name
+and dot classification; a failed staged write cannot produce Green/completed
+status or verified-write coordination.
 
 ## Protected behavioral policy JSON
 
