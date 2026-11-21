@@ -2920,11 +2920,10 @@ class Services:
         return {"written": written}
 
     def _persist_comp_track_authority(self, track, recording_mbid, artist_mbids):
-        """Validate COMP selection only; never write MusicBrainz IDs to audio.
+        """Validate COMP discovery identity without changing any audio tags.
 
-        The COMP policy authorizes fuzzy recovery and source selection, not
-        physical tag edits. Caller maintains per-operation authority evidence
-        and the existing completion/coordination state separately.
+        A MusicBrainz match informs artwork selection and the current
+        in-memory/catalog workflow; it never grants SPLINED tagging authority.
         """
         recording = str(recording_mbid or "").strip().casefold()
         artists = compilation._mbids(artist_mbids)
@@ -2933,9 +2932,8 @@ class Services:
         path = Path(track.path).resolve()
         if not inside(path, self.runtime.music):
             raise ValueError("COMP track is outside the configured music library")
-        if not path.is_file():
-            raise FileNotFoundError(f"COMP track is missing: {path}")
-        return None
+        # The COMP runner retains validated IDs in this operation's track
+        # authority. No MP3/FLAC/MP4/Vorbis metadata may be saved here.
 
     def _comp_target(self, payload):
         artist_id = str(payload.get("artist_id", "")).strip()
