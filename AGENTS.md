@@ -145,6 +145,14 @@ tests, policy JSON or a workflow to hide it is not an approved fix.
   `release/cliff.toml`. Do not restore retired root-native Linux CLI,
   root Config, root fixtures, root cliff or obsolete source paths.
 
+### Non-negotiable audio write authorization
+
+**AUDIO-INTEGRITY-001..006** in `docs/POLICY-REGISTER.md` bind all Rust/Slint Windows and Python WebGUI code. SPLINED is an **artwork-only manager, never an audio tagger**. The only authorized alteration to an audio file is its selected embedded front picture. ID3v2.3/v2.4 input must retain its original version and exact non-artwork frame/value/multivalue structure; no version conversion, tag normalization, MusicBrainz metadata rewrite or audio-stream alteration is allowed. When frame-level verification cannot prove preservation, the artwork operation must fail without replacing the original. Never add an exception based on existing code, MBID matching, or a successful artwork readback.
+
+**COMP is a separate read/matching/artwork-selection policy.** Preserve `schema/comp-report-policy.json` entirely, including percentage-based results, fuzzy Artist recovery, batch revision pinning, verified-write events and unresolved-authority coordination. **COMP must never write MusicBrainz metadata to any media file.** The same universal non-artwork metadata prohibition applies to ordinary Album thumbnail embedding. Keep the canonical media-state JSON, existing classifications, status dots and COMP-track colors unchanged.
+
+Every PR and Workflow 01/04 release path must run **mandatory fail-closed real-writer audio integrity tests for both clients**, even in fast/validation-only mode. A skipped test is not a pass. A standalone schema JSON validation or optional Windows advisory does not certify audio write safety. Protect the integrity tests, writer guards and CI calls from removal or dilution without separate, narrow owner authorization.
+
 ## 5. Required PR validation and merge stop conditions
 
 **No PR merge until ALL of these are true:**
