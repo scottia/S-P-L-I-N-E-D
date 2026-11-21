@@ -96,6 +96,28 @@ These rankings and separations have **already been approved**. Never
 request new approval merely to restate or document them; investigate
 implementation drift independently against the exact policy.
 
+## 3a. Universal artwork-only media-write authority
+
+The owner-approved `AUDIO-INTEGRITY-001..006` requirements in
+`docs/POLICY-REGISTER.md` prohibit **every** non-artwork audio-tag mutation.
+SPLINED is an artwork app, not a tagger. An embedded front artwork operation
+may update the intended picture only; preserve incoming ID3v2.x version,
+multi-value boundaries, unknown/custom frames, every MusicBrainz extended
+field, non-front artwork and audio bytes. **Never convert an ID3 version**.
+
+The independent `schema/comp-report-policy.json` retains fuzzy Artist/Recording
+discovery, result percentage ranking, single-track COMP artwork selection,
+batch orchestration, identity requirements and coordination rules. It grants
+**no permission to write MusicBrainz IDs to audio files**. Never turn a
+selected alternate cover or manually corrected identity into audio metadata.
+
+All Windows and WebGUI media writers must stage and verify before publication.
+If preservation is not provable, reject the write with the original untouched.
+Maintain mandatory real-writer and deliberately failing mutation tests in PR
+and both release workflows, independent of fast/strict validation choices.
+A source change that introduces audio-tag editing is prohibited; changing
+tests, policy JSON or a workflow to hide it is not an approved fix.
+
 ## 4. Protected contracts and source ownership
 
 - BOTH `schema/media-state-classification.json` and
