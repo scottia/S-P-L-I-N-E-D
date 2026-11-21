@@ -815,19 +815,21 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             "mbid:correct",
         )
 
-    def test_posix_paths_differing_only_by_case_remain_separate(self):
+    def test_same_name_artist_rows_with_distinct_mbids_and_paths_share_one_presentation(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             database = root / "index.sqlite"
             credentials = root / "credentials"
             credentials.mkdir()
             album_rows = [
-                ("album-upper", "artist-upper", "Upper Album", root / "albums" / "upper"),
-                ("album-lower", "artist-lower", "Lower Album", root / "albums" / "lower"),
+                ("album-one", "artist-one", "First Album", root / "Beyonce-One" / "First Album"),
+                ("album-two", "artist-two", "Second Album", root / "Beyonce-Two" / "Second Album"),
             ]
             for _, _, _, folder in album_rows:
                 folder.mkdir(parents=True)
                 (folder / "song.mp3").touch()
+            portrait = album_rows[0][3].parent / "artist.jpg"
+            Image.new("RGB", (16, 16), "purple").save(portrait)
 
             with closing(connect(database)) as db:
                 db.execute(
@@ -843,8 +845,8 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                     "CREATE TABLE tracks (track_key TEXT PRIMARY KEY,album_key TEXT,path TEXT,title TEXT,artist_name TEXT)"
                 )
                 db.executemany("INSERT INTO artists VALUES (?,?,?,?,?,?)", [
-                    ("artist-upper", "Band", "mbid-upper", "/music/Band", 1, "processed"),
-                    ("artist-lower", "Band", "mbid-lower", "/music/band", 1, "processed"),
+                    ("artist-one", "Beyoncé", "mbid-one", str(root / "Beyonce-One"), 1, "processed"),
+                    ("artist-two", "Beyoncé", "mbid-two", str(root / "Beyonce-Two"), 1, "processed"),
                 ])
                 db.executemany(
                     "INSERT INTO albums VALUES (?,?,?,?,NULL,1,'processed',0,?,'2026',1,0)",
@@ -853,23 +855,22 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                 )
                 db.executemany(
                     "INSERT INTO tracks VALUES (?,?,?,?,?)",
-                    [("track-" + key, key, str(folder / "song.mp3"), name + " Song", "Band")
+                    [("track-" + key, key, str(folder / "song.mp3"), name + " Song", "Beyoncé")
                      for key, _, name, folder in album_rows],
                 )
                 db.commit()
 
             app = PreviewApp(root, database, root, credentials, cache=root / "cache")
 
-            listed = [item for item in app.artists("") if item["name"] == "Band"]
-            self.assertEqual({item["id"] for item in listed}, {"artist-upper", "artist-lower"})
+            listed = [item for item in app.artists("") if item["name"] == "Beyoncé"]
+            self.assertEqual(len(listed), 1)
+            self.assertEqual(listed[0]["albums"], 2)
+            selected = app.artist(str(listed[0]["id"]))
             self.assertEqual(
-                {item["id"] for item in app.artist("artist-upper")["albums"]},
-                {"album-upper"},
+                {item["id"] for item in selected["albums"]},
+                {"album-one", "album-two"},
             )
-            self.assertEqual(
-                {item["id"] for item in app.artist("artist-lower")["albums"]},
-                {"album-lower"},
-            )
+            self.assertEqual(app.artist_thumbnail(str(listed[0]["id"])), portrait)
 
     def test_first_load_merges_duplicate_identity_and_projects_every_album_class(self):
         with TemporaryDirectory() as directory:

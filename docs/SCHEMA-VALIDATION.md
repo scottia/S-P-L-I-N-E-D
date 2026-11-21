@@ -23,6 +23,7 @@ The owner-approved requirements live exclusively in [POLICY-REGISTER.md](POLICY-
 | Unprocessed MEDIA FILTER | WebGUI count now comes from raw Album inventory rather than ranked NAME state | Verify shown/count behavior independently of processing/write semantics |
 | Preferred embedded thumbnail | Physical WebGUI readback checks exact square side; summary flags missing, undersized, oversized and nonsquare artwork with `outside_preference` | Verify in installed clients and protect physical `retry` on unreadable tags |
 | COMP rules | Protected `schema/comp-report-policy.json`; Rust and Python policy consumers | Verify actual COMP batches/track-level behavior and saved revisions without rewriting live state |
+| One normalized Artist presentation | Windows already projects by normalized display identity; WebGUI groups same-name PostgreSQL rows independently of MBID/path while preserving their Album keys | Exercise distinct MBIDs, distinct folders, duplicate names, unique Album cards and noncanonical saved Artist Art in disposable catalogs |
 
 **Protected JSON labels versus approved meaning:** The current canonical seed still uses the narrower display text `Missing Artist Art` for Artist Yellow and `Incomplete album tracks` for Album Red. The approved meaning is missing Artist **or static Album** art and independent **Incomplete/Error**, respectively. Rank/color validation is correct; a label-only JSON revision would still require an independently authorized protected-policy PR, not a docs-only edit.
 
