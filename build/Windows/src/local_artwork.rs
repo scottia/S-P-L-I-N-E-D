@@ -984,26 +984,37 @@ mod tests {
     }
 
     #[test]
-    fn webp_output_commits_source_and_static_still_together() {
+    fn existing_webp_is_never_replaced_and_only_jpeg_still_is_generated() {
         let temp = tempdir().unwrap();
         let album = temp.path().join("Album");
         fs::create_dir(&album).unwrap();
         write_image(&album.join("cover.jpg"), 64, 64, ImageFormat::Jpeg);
         write_image(&album.join("cover.webp"), 64, 64, ImageFormat::WebP);
-        let source = temp.path().join("replacement.webp");
-        write_image(&source, 96, 80, ImageFormat::WebP);
-        let prepared = prepared_image(&source, StaticFormat::Webp);
+        let webp_path = album.join("cover.webp");
+        let webp_bytes = fs::read(&webp_path).unwrap();
+        let prepared = prepared_image(&webp_path, StaticFormat::Webp);
 
-        install_prepared_canonical_artwork(&album, "cover", &album.join("cover.webp"), &prepared)
-            .unwrap();
-
-        assert_eq!(fs::read(album.join("cover.webp")).unwrap(), prepared.bytes);
+        install_prepared_canonical_artwork(&album, "cover", &webp_path, &prepared).unwrap();
+        assert_eq!(fs::read(&webp_path).unwrap(), webp_bytes);
         let still = inspect_image(&album.join("cover.jpg")).unwrap();
         assert_eq!(still.format, StaticFormat::Jpeg);
         assert_eq!(
             (still.width, still.height),
             (prepared.info.width, prepared.info.height)
         );
+
+        // An explicit different WebP cannot replace the already retained
+        // source, nor can the failed attempt affect the generated JPEG.
+        let source = temp.path().join("replacement.webp");
+        write_image(&source, 96, 80, ImageFormat::WebP);
+        let different = prepared_image(&source, StaticFormat::Webp);
+        let still_before = fs::read(album.join("cover.jpg")).unwrap();
+        let error = install_prepared_canonical_artwork(
+            &album, "cover", &webp_path, &different
+        ).expect_err("existing cover.webp is immutable");
+        assert!(error.contains("immutable"));
+        assert_eq!(fs::read(&webp_path).unwrap(), webp_bytes);
+        assert_eq!(fs::read(album.join("cover.jpg")).unwrap(), still_before);
         assert_eq!(
             fs::read_dir(&album)
                 .unwrap()
