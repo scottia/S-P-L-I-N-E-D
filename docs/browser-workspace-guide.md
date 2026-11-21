@@ -141,8 +141,12 @@ With **Preserve File** disabled, a verified WRITE Cover owns one canonical
 static JPG/JPEG/PNG per configured Album cover basename, removing superseded
 static variants only within that Album. Existing `cover.webp` source artwork
 is preserved independently, so one WebP plus one static presentation is valid.
-An explicit WebP WRITE saves its validated WebP and a JPEG still; discovering or
-previewing a WebP alone does not create an Album still. Existing Preserve File
+An explicit WebP WRITE may install a new source WebP only when one does not
+already exist, alongside its JPEG still. An existing `cover.webp` is immutable:
+selecting the identical local source creates or updates only `cover.jpg`,
+and attempting to replace the source with different WebP bytes is rejected.
+Discovering or previewing a WebP alone does not create an Album still.
+Existing Preserve File
 numbering remains available when that setting is enabled. Failed replacement
 attempts restore the previous files. Cross-client write revisions invalidate
 stale card image handles and resolve a readable artwork path for the affected
