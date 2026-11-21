@@ -140,6 +140,13 @@ Curated Compilation COMP writes remain single-track events under the existing
 separate `schema/comp-report-policy.json`. Folder/Artist artwork files are
 managed separately and do not authorize any audio-tag edits.
 
+**Retained WebP source rule:** An existing `cover.webp` is immutable source
+artwork, never a replacement or cleanup target. Its original bytes and animation
+remain intact; an explicit WRITE Cover may derive a separate static `cover.jpg`
+still, and audio embeds use independently prepared static thumbnails. An attempt
+to overwrite an existing WebP with different content must fail before any
+publication. This file-artwork rule is independent of the ID3/audio integrity gate.
+
 | ID | Mandatory product rule |
 | --- | --- |
 | `AUDIO-INTEGRITY-001` | The only permitted audio-file mutation is approved front artwork; all text, custom, MB extended and other non-artwork tags are immutable. |
