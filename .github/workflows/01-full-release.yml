@@ -169,6 +169,10 @@ jobs:
           import os
           import re
           import subprocess
+          import sys
+
+          sys.path.insert(0, str(Path(".github/scripts").resolve()))
+          from release_source_version import choose_release_version
 
           tags = subprocess.check_output(
               ["git", "tag", "--list"],
@@ -198,40 +202,14 @@ jobs:
           if not source_match:
               raise SystemExit("Windows Cargo package version was not found")
 
-          source_version = tuple(map(int, source_match.group(1).split(".")))
-
-          compatible_versions = [
-              version for version in versions
-              if version[:2] == source_version[:2]
-          ]
+          source_version = source_match.group(1)
           requested = os.environ.get("REQUESTED_VERSION", "").strip()
-          if requested:
-              if not re.fullmatch(r"\d+\.\d+\.\d+", requested):
-                  raise SystemExit("Requested release version must be numeric X.Y.Z")
-              if tuple(map(int, requested.split("."))) <= max([source_version, *versions]):
-                  raise SystemExit("Requested release version must exceed the current source and numeric tags on main")
-              release_version = requested
-          else:
-              baseline = max([source_version, *compatible_versions])
-              # The 1.0.99 -> 2.0.0 jump is intentional, not a semantic-
-              # versioning rollover. Subsequent blank runs resume patch bumps.
-              candidate = (
-                  (2, 0, 0) if baseline == (1, 0, 99)
-                  else (baseline[0], baseline[1], baseline[2] + 1)
+          try:
+              release_version = choose_release_version(
+                  source_version, versions, tags, requested
               )
-              # Tags on abandoned histories do not define the active release
-              # line, but their globally unique names still cannot be reused.
-              # Skip those occupied names when the version field is blank.
-              while (
-                  ".".join(map(str, candidate)) in tags
-                  or f"v{'.'.join(map(str, candidate))}" in tags
-              ):
-                  candidate = (candidate[0], candidate[1], candidate[2] + 1)
-              release_version = ".".join(map(str, candidate))
-              if tuple(map(int, release_version.split("."))) <= max([source_version, *versions]):
-                  raise SystemExit("Automatic release version must exceed the current main release line")
-          if release_version in tags or f"v{release_version}" in tags:
-              raise SystemExit(f"Release tag already exists: {release_version}")
+          except ValueError as error:
+              raise SystemExit(str(error)) from error
 
           cargo, cargo_count = re.subn(
               r'(?ms)(^\[package\].*?^version\s*=\s*")[^"]+("\s*$)',
@@ -323,15 +301,13 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           mapfile -t changed < <(git diff --name-only | sort)
-          expected=("build/WEBGui/webgui/backend/splined.py" "build/Windows/Cargo.lock" "build/Windows/Cargo.toml" "build/Windows/gui/app.manifest" "build/Windows/package/Package.appxmanifest" "build/Windows/package/SPLINED.appinstaller.template")
-          if [ "${changed[*]}" != "${expected[*]}" ]; then
-            echo "ERROR: Release provisioning changed unexpected files."
+          if [ "${#changed[@]}" -ne 0 ]; then
+            echo "ERROR: Committed Windows and WebGUI release metadata is inconsistent."
             printf '  %s\n' "${changed[@]}"
             exit 1
           fi
 
-          git add build/WEBGui/webgui/backend/splined.py build/Windows/Cargo.toml build/Windows/Cargo.lock build/Windows/gui/app.manifest build/Windows/package/Package.appxmanifest build/Windows/package/SPLINED.appinstaller.template
-          git commit -m "release: prepare ${RELEASE_VERSION}"
+          git commit -m "release: prepare ${RELEASE_VERSION}" --allow-empty
 
           RELEASE_COMMIT=$(git rev-parse HEAD)
           test "$(git rev-parse HEAD^)" = "$BASE_MAIN_SHA"

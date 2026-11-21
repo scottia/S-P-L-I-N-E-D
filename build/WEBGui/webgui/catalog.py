@@ -135,7 +135,7 @@ def indexed_track_credit_values(
 
 
 def normalized_artist_identity(value: str) -> str:
-    """Collapse invisible/tag-only differences without merging distinct MBIDs."""
+    """Return the display identity without rewriting stored Artist/Album IDs."""
     normalized = unicodedata.normalize("NFKC", str(value or ""))
     visible = "".join(
         character for character in normalized
@@ -1036,37 +1036,17 @@ class Catalog:
 
     @staticmethod
     def _artist_groups(rows):
-        """Merge aliases without collapsing distinct same-name artists.
+        """Build one visible group per normalized Artist display name.
 
-        Two different non-empty MBIDs normally remain distinct.  When every
-        row has the same non-empty primary library path, however, the path and
-        display name are stronger local evidence than a stray tag MBID.  This
-        removes the common 19-album/1-album split while keeping genuinely
-        different same-name artists separate.
+        PostgreSQL may retain several owner rows for Albums carrying different,
+        missing, or conflicting MusicBrainz Artist IDs.  Those database rows and
+        their Album associations remain independent; MBID variation must not
+        manufacture duplicate rows in the visible Artist list.
         """
         by_name: dict[str, list] = {}
         for row in rows:
             by_name.setdefault(normalized_artist_identity(row["artist_name"]), []).append(row)
-        groups = []
-        for name_rows in by_name.values():
-            by_mbid: dict[str, list] = {}
-            blank = []
-            for row in name_rows:
-                mbid = str(row["musicbrainz_artistid"] or "").strip().casefold()
-                (by_mbid.setdefault(mbid, []) if mbid else blank).append(row)
-            paths = [
-                str(row["primary_path"] or "").replace("\\", "/").rstrip("/")
-                if "primary_path" in row.keys() else ""
-                for row in name_rows
-            ]
-            same_primary_path = bool(paths) and all(paths) and len(set(paths)) == 1
-            if len(by_mbid) <= 1 or same_primary_path:
-                groups.append(name_rows)
-            else:
-                groups.extend(by_mbid.values())
-                if blank:
-                    groups.append(blank)
-        return groups
+        return list(by_name.values())
 
     def _projected_track_artists(self, db) -> dict[str, dict[str, object]]:
         """Project selectable Artists from Artist-library Album credits.
@@ -1272,28 +1252,13 @@ class Catalog:
             return selected, [selected]
         identity = normalized_artist_identity(selected["artist_name"])
         selected_mbid = str(selected["musicbrainz_artistid"] or "").strip().casefold()
-        selected_path = str(selected["primary_path"] or "").replace("\\", "/").rstrip("/")
         candidates = [
             row for row in candidates
             if normalized_artist_identity(row["artist_name"]) == identity
             or bool(selected_mbid) and str(row["musicbrainz_artistid"] or "").strip().casefold()
             == selected_mbid
         ]
-        nonempty = {
-            str(row["musicbrainz_artistid"] or "").strip().casefold()
-            for row in candidates if str(row["musicbrainz_artistid"] or "").strip()
-        }
-        if selected_mbid:
-            aliases = [
-                row for row in candidates
-                if not str(row["musicbrainz_artistid"] or "").strip()
-                or str(row["musicbrainz_artistid"] or "").strip().casefold() == selected_mbid
-                or bool(selected_path) and str(row["primary_path"] or "").replace("\\", "/").rstrip("/") == selected_path
-            ]
-        elif len(nonempty) <= 1:
-            aliases = candidates
-        else:
-            aliases = [row for row in candidates if not str(row["musicbrainz_artistid"] or "").strip()]
+        aliases = candidates
         return self._canonical_artist_row(aliases), aliases
 
     @staticmethod
@@ -2168,8 +2133,12 @@ class Catalog:
     def artist_thumbnail(self, artist_id: str) -> Path:
         """Resolve saved Artist Art without emitting speculative 404 requests."""
         with closing(self.connect()) as db:
-            artist, _aliases = self._artist_identity_rows(db, artist_id)
-        portrait = self.artist_thumbnail_path(artist)
+            artist, aliases = self._artist_identity_rows(db, artist_id)
+        portrait = None
+        for candidate in [artist, *(row for row in aliases if row is not artist)]:
+            portrait = self.artist_thumbnail_path(candidate)
+            if portrait is not None:
+                break
         if portrait is None:
             if self.index_maintenance_active():
                 raise KeyError("Artist thumbnail hydration is paused while indexing")
