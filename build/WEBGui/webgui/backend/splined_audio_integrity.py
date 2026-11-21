@@ -140,4 +140,4 @@ def assert_artwork_only(original: Path, staged: Path) -> None:
     else:
         allowed = before == after
     if not allowed:
-        raise AudioMetadataChanged("Non-artwork metadata, ID3 version, or audio stream changed; original preserved")
+        raise AudioMetadataChanged("ARTWORK-ONLY INTEGRITY VIOLATION: Non-artwork metadata, ID3 version, or audio stream changed; original preserved")
