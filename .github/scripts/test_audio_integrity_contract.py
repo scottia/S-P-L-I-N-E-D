@@ -89,9 +89,10 @@ class AudioIntegritySourceContract(unittest.TestCase):
             source(".github/workflows/01-full-release.yml"),
         )
         optimized = source(".github/workflows/04-optimized-build-test.yml")
-        self.assertIn("selected-target audio-integrity gate", optimized)
-        self.assertIn("needs.audio-integrity-webgui.result == 'skipped'", optimized)
-        self.assertIn("needs.audio-integrity-windows.result == 'skipped'", optimized)
+        self.assertIn("unconditional Windows and WebGUI audio-integrity gate", optimized)
+        self.assertIn("unconditional cross-client audio-integrity gate", optimized)
+        self.assertNotIn("needs.audio-integrity-webgui.result == 'skipped'", optimized)
+        self.assertNotIn("needs.audio-integrity-windows.result == 'skipped'", optimized)
 
 
 if __name__ == "__main__":

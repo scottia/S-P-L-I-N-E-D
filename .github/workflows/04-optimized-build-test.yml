@@ -1,5 +1,8 @@
 name: 04. Optimized Release or Test - Select One of Five Build Presets
 
+# AUDIO-INTEGRITY-001..006: unconditional Windows and WebGUI audio-integrity
+# gate. Build targeting may be selective; writer preservation validation is not.
+
 on:
   workflow_dispatch:
     inputs:
@@ -297,7 +300,6 @@ jobs:
   audio-integrity-webgui:
     name: Audio integrity — WebGUI real artwork writer
     needs: [resolve-plan, approve-plan]
-    if: ${{ needs.resolve-plan.outputs.platform == 'WebGUI / Python' || needs.resolve-plan.outputs.platform == 'All' }}
     runs-on: ubuntu-latest
     env:
       PYTHONPATH: .:build/WEBGui:build/WEBGui/webgui/backend
@@ -316,7 +318,6 @@ jobs:
   audio-integrity-windows:
     name: Audio integrity — Windows real artwork writer
     needs: [resolve-plan, approve-plan]
-    if: ${{ needs.resolve-plan.outputs.platform == 'Windows' || needs.resolve-plan.outputs.platform == 'All' }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -404,23 +405,8 @@ jobs:
         always() &&
         needs.resolve-plan.result == 'success' &&
         needs.approve-plan.result == 'success' &&
-        (
-          (
-            needs.resolve-plan.outputs.platform == 'Windows' &&
-            needs.audio-integrity-windows.result == 'success' &&
-            needs.audio-integrity-webgui.result == 'skipped'
-          ) ||
-          (
-            needs.resolve-plan.outputs.platform == 'WebGUI / Python' &&
-            needs.audio-integrity-webgui.result == 'success' &&
-            needs.audio-integrity-windows.result == 'skipped'
-          ) ||
-          (
-            needs.resolve-plan.outputs.platform == 'All' &&
-            needs.audio-integrity-webgui.result == 'success' &&
-            needs.audio-integrity-windows.result == 'success'
-          )
-        )
+        needs.audio-integrity-webgui.result == 'success' &&
+        needs.audio-integrity-windows.result == 'success'
       }}
     name: Prepare exact release source for build or unpublished validation
     runs-on: ubuntu-latest
@@ -1194,7 +1180,7 @@ jobs:
           (
             needs.resolve-plan.outputs.platform == 'Windows' &&
             needs.audio-integrity-windows.result == 'success' &&
-            needs.audio-integrity-webgui.result == 'skipped' &&
+            needs.audio-integrity-webgui.result == 'success' &&
             needs.build-windows.result == 'success' &&
             needs.build-webgui.result == 'skipped' &&
             needs.webgui-tests.result == 'skipped'
@@ -1202,7 +1188,7 @@ jobs:
           (
             needs.resolve-plan.outputs.platform == 'WebGUI / Python' &&
             needs.audio-integrity-webgui.result == 'success' &&
-            needs.audio-integrity-windows.result == 'skipped' &&
+            needs.audio-integrity-windows.result == 'success' &&
             needs.build-windows.result == 'skipped' &&
             needs.build-webgui.result == 'success' &&
             needs.webgui-tests.result == 'success'
@@ -1851,7 +1837,7 @@ jobs:
             echo "No validation, compilation, tagging or publication work was authorized."
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Enforce selected-target audio-integrity gate
+      - name: Enforce unconditional cross-client audio-integrity gate
         if: ${{ needs.approve-plan.result == 'success' }}
         shell: bash
         env:
@@ -1859,27 +1845,9 @@ jobs:
           WEBGUI_INTEGRITY_RESULT: ${{ needs.audio-integrity-webgui.result }}
           WINDOWS_INTEGRITY_RESULT: ${{ needs.audio-integrity-windows.result }}
         run: |
-          case "$RELEASE_PLATFORM" in
-            Windows)
-              expected_webgui=skipped
-              expected_windows=success
-              ;;
-            "WebGUI / Python")
-              expected_webgui=success
-              expected_windows=skipped
-              ;;
-            All)
-              expected_webgui=success
-              expected_windows=success
-              ;;
-            *)
-              echo "::error title=Audio-integrity gate::Unsupported release platform '$RELEASE_PLATFORM'."
-              exit 1
-              ;;
-          esac
-          if [ "$WEBGUI_INTEGRITY_RESULT" != "$expected_webgui" ] ||
-             [ "$WINDOWS_INTEGRITY_RESULT" != "$expected_windows" ]; then
-            echo "::error title=Audio-integrity gate::Platform='$RELEASE_PLATFORM', WebGUI='$WEBGUI_INTEGRITY_RESULT' (expected '$expected_webgui'), Windows='$WINDOWS_INTEGRITY_RESULT' (expected '$expected_windows')."
+          if [ "$WEBGUI_INTEGRITY_RESULT" != "success" ] ||
+             [ "$WINDOWS_INTEGRITY_RESULT" != "success" ]; then
+            echo "::error title=Audio-integrity gate::Platform='$RELEASE_PLATFORM', WebGUI='$WEBGUI_INTEGRITY_RESULT' (expected 'success'), Windows='$WINDOWS_INTEGRITY_RESULT' (expected 'success')."
             exit 1
           fi
       - name: Enforce selected build and publication results

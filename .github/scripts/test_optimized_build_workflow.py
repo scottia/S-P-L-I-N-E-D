@@ -185,10 +185,8 @@ class OptimizedFullReleaseMirrorTests(unittest.TestCase):
         windows_integrity = job(self.workflow, "audio-integrity-windows")
         self.assertIn("needs: [resolve-plan, approve-plan]", webgui_integrity)
         self.assertIn("needs: [resolve-plan, approve-plan]", windows_integrity)
-        self.assertIn("platform == 'WebGUI / Python'", webgui_integrity)
-        self.assertIn("platform == 'All'", webgui_integrity)
-        self.assertIn("platform == 'Windows'", windows_integrity)
-        self.assertIn("platform == 'All'", windows_integrity)
+        self.assertNotIn("needs.resolve-plan.outputs.platform", webgui_integrity)
+        self.assertNotIn("needs.resolve-plan.outputs.platform", windows_integrity)
 
         prepare = job(self.workflow, "prepare-release")
         self.assertIn(
@@ -196,18 +194,20 @@ class OptimizedFullReleaseMirrorTests(unittest.TestCase):
             prepare,
         )
         self.assertIn("needs.approve-plan.result == 'success'", prepare)
-        self.assertIn("needs.audio-integrity-webgui.result == 'skipped'", prepare)
-        self.assertIn("needs.audio-integrity-windows.result == 'skipped'", prepare)
+        self.assertIn("needs.audio-integrity-webgui.result == 'success'", prepare)
+        self.assertIn("needs.audio-integrity-windows.result == 'success'", prepare)
+        self.assertNotIn("needs.audio-integrity-webgui.result == 'skipped'", prepare)
+        self.assertNotIn("needs.audio-integrity-windows.result == 'skipped'", prepare)
 
         finalizer = job(self.workflow, "finalize-tag")
         self.assertIn("      - approve-plan", finalizer)
-        self.assertIn("needs.audio-integrity-webgui.result == 'skipped'", finalizer)
-        self.assertIn("needs.audio-integrity-windows.result == 'skipped'", finalizer)
+        self.assertNotIn("needs.audio-integrity-webgui.result == 'skipped'", finalizer)
+        self.assertNotIn("needs.audio-integrity-windows.result == 'skipped'", finalizer)
 
         summary = job(self.workflow, "release-summary")
         self.assertIn("      - approve-plan", summary)
         self.assertIn("Report plan rejection or missing approval", summary)
-        self.assertIn("selected-target audio-integrity gate", summary)
+        self.assertIn("unconditional cross-client audio-integrity gate", summary)
         self.assertIn("needs.approve-plan.result == 'success'", summary)
 
     def test_no_runs_real_versioned_build_without_remote_release(self):
