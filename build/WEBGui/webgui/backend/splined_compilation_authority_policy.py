@@ -32,6 +32,7 @@ import requests
 from splined_db_audit import connect_sqlite
 
 from splined_media_tags import inspect_album_tracks
+from splined_audio_integrity import assert_artwork_only
 from webgui.comp_report_policy import (
     artist_names_compatible as shared_artist_names_compatible,
     comp_report_policy,
@@ -1958,19 +1959,102 @@ def prepare_embedded_artwork(
 
 
 def _replace_id3_front(path: Path, data: bytes, mime: str) -> None:
-    try:
-        tags = ID3(path)
-    except ID3NoHeaderError:
-        tags = ID3()
-    preserved = [
-        value for value in tags.getall("APIC")
-        if int(getattr(value, "type", 0) or 0) != 3
-    ]
-    tags.delall("APIC")
-    for value in preserved:
-        tags.add(value)
-    tags.add(APIC(encoding=3, mime=mime, type=3, desc="Cover", data=data))
-    tags.save(path, v2_version=3)
+    """Replace only the front APIC frame, preserving other ID3v2 bytes.
+
+    Mutagen's full ID3.save() serializes *every* frame and previously forced
+    v2.4 multi-value fields into slash-packed v2.3. No full tag writer is
+    permitted for a picture-only operation.
+    """
+    content = path.read_bytes()
+
+    def synchsafe_size(raw: bytes) -> int:
+        if len(raw) != 4 or any(byte & 0x80 for byte in raw):
+            raise ValueError("Invalid ID3v2 synchsafe size")
+        return (
+            (raw[0] << 21) | (raw[1] << 14) | (raw[2] << 7) | raw[3]
+        )
+
+    def encode_synchsafe(value: int) -> bytes:
+        if value < 0 or value > 0x0FFFFFFF:
+            raise ValueError("ID3 tag is too large")
+        return bytes((
+            (value >> 21) & 0x7F, (value >> 14) & 0x7F,
+            (value >> 7) & 0x7F, value & 0x7F,
+        ))
+
+    if content.startswith(b"ID3"):
+        if len(content) < 10:
+            raise ValueError("Truncated original ID3v2 header")
+        version, revision, flags = content[3:6]
+        if version not in (3, 4):
+            raise ValueError(
+                f"ID3v2.{version} cannot be safely edited without conversion"
+            )
+        if flags:
+            raise ValueError(
+                "ID3 unsynchronization/extended-header/footer requires "
+                "a verified lossless writer; original audio was not changed"
+            )
+        original_size = synchsafe_size(content[6:10])
+        if 10 + original_size > len(content):
+            raise ValueError("Invalid original ID3v2 tag size")
+        tag_bytes = content[10:10 + original_size]
+        audio_bytes = content[10 + original_size:]
+    else:
+        version, revision, flags = 4, 0, 0
+        tag_bytes, audio_bytes = b"", content
+
+    preserved = bytearray()
+    cursor = 0
+    while cursor + 10 <= len(tag_bytes):
+        header = tag_bytes[cursor:cursor + 10]
+        if header == b"\0" * 10:
+            break
+        frame_id = header[:4]
+        if not all(
+            65 <= char <= 90 or 48 <= char <= 57 for char in frame_id
+        ):
+            raise ValueError("Unsafe or malformed original ID3 frame")
+        frame_length = (
+            synchsafe_size(header[4:8])
+            if version == 4 else int.from_bytes(header[4:8], "big")
+        )
+        frame_end = cursor + 10 + frame_length
+        if frame_length == 0 or frame_end > len(tag_bytes):
+            raise ValueError("Invalid original ID3 frame length")
+        original_frame = tag_bytes[cursor:frame_end]
+        is_front = False
+        if frame_id == b"APIC":
+            if header[8:10] != b"\0\0":
+                raise ValueError("Unsupported protected APIC flags")
+            payload = original_frame[10:]
+            mime_end = payload.find(b"\0", 1)
+            if mime_end < 0 or mime_end + 1 >= len(payload):
+                raise ValueError("Malformed existing APIC frame")
+            is_front = payload[mime_end + 1] == 3
+        if not is_front:
+            preserved.extend(original_frame)
+        cursor = frame_end
+    if any(byte != 0 for byte in tag_bytes[cursor:]):
+        raise ValueError("Invalid ID3 frame padding or trailing data")
+
+    # The APIC description is Latin-1 for v2.3, UTF-8 for v2.4.
+    # This adds only the approved front picture; every other frame remains
+    # *byte-identical* to its original representation and ordering.
+    text_encoding = 0 if version == 3 else 3
+    picture_body = (
+        bytes([text_encoding]) + mime.encode("ascii") + b"\0"
+        + b"\x03Cover\0" + data
+    )
+    frame_size = (
+        len(picture_body).to_bytes(4, "big")
+        if version == 3 else encode_synchsafe(len(picture_body))
+    )
+    preserved.extend(b"APIC" + frame_size + b"\0\0" + picture_body)
+    tag_size = len(preserved)
+    header = b"ID3" + bytes((version, revision, flags))
+    header += encode_synchsafe(tag_size)
+    path.write_bytes(header + preserved + audio_bytes)
 
 
 def _replace_flac_front(
@@ -2096,6 +2180,10 @@ def replace_embedded_artwork(
             _replace_vorbis_front(staged, data, mime, info)
         else:
             raise ValueError(f"unsupported embedded-artwork format: {suffix}")
+        # Compare source and staged metadata/stream before publication. Any
+        # changed ID3 version, Artist/MB/custom frame, non-front image, or
+        # altered audio leaves the original source file untouched.
+        assert_artwork_only(path, staged)
         # Windows, SMB, and antivirus readers can briefly retain a handle after
         # preview/readback. The staged audio is already complete at this point,
         # so retry only the atomic publication step; never rewrite the source in

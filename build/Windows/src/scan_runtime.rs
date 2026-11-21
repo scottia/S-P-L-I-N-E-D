@@ -6,7 +6,6 @@ use crate::config::{Config, Mode, OutputConfig, configured_samples_dir};
 use crate::download::DownloadedCandidate;
 use crate::embedded_artwork::{
     embedded_front_matches, embedded_front_metadata, replace_embedded_front,
-    replace_musicbrainz_identity,
 };
 use crate::final_artwork::{
     FinalArtworkAction, FinalArtworkResult, PreparedArtwork, PreparedArtworkInfo,
@@ -2273,7 +2272,7 @@ fn persist_validated_track_identity(
         return Err("A validated Artist ID is required before saving track identity.".to_string());
     }
     let artist_ids = artists.join(", ");
-    replace_musicbrainz_identity(&track.path, recording_mbid, &artist_ids)?;
+    // Validated COMP identities may be recorded in SQLite, never in audio tags.
     persist_track_musicbrainz_identity(config, &track.path, recording_mbid, &artist_ids)
 }
 
@@ -3509,8 +3508,8 @@ async fn run_compilation_album(
             let selected_release = selected_match
                 .as_ref()
                 .map(|item| item.release_mbid.as_str());
-            // Apply IDs is durable authority. Keep the completion ledger in
-            // lockstep with the safely written track tags and splined.db.
+            // Apply IDs validates COMP selection and records SQLite identity; audio
+            // MusicBrainz tags remain strictly read-only.
             let track_recording = authority.recording_mbid.clone().unwrap_or_default();
             let track_artists = authority.artist_mbids.join(",");
             let already_has_artwork = effective_mode == Mode::Write
