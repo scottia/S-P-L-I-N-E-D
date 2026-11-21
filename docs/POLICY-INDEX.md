@@ -37,6 +37,27 @@ The two behavioral JSONs are **protected by approved repository policy**. Their 
 
 The test fixture that once lived under root `fixtures/` was retired; it was never a production policy. Independent Windows and WebGUI compilation tests now own the applicable release/category cases. Release scripts and synthetic Store test fixtures belong in root `release/`.
 
+## Audio mutation ownership and mandatory coverage
+
+`AUDIO-INTEGRITY-001..006` from the owner-approved
+[Policy Register](POLICY-REGISTER.md) are universal, **non-editable**
+audio-file permissions. The independent COMP-only
+[`comp-report-policy.json`](../schema/comp-report-policy.json) governs
+discovery, fuzzy scoring, revision-pinned batches and completion,
+**not** the right to edit MusicBrainz or other audio tags.
+
+| Operation | Windows source | WebGUI source | Safety validation |
+| --- | --- | --- | --- |
+| Album preferred-size thumbnail and one-track COMP artwork | `src/scan_runtime.rs`, `src/embedded_artwork.rs` | `webgui/services.py`, `webgui/backend/splined_compilation_authority_policy.py` | `src/artwork_integrity.rs` checks MP3/FLAC stages; `webgui/backend/splined_audio_integrity.py` checks supported stages before replacement |
+| COMP MBID selection and fuzzy alternate-cover matching | `src/comp_report_policy.rs`, `src/scan_runtime.rs`; SQLite catalog only | `webgui/comp_report_policy.py`, `webgui/backend/splined_scan.py`; session/catalog only | No MusicBrainz/audio-text writes permitted under any branch |
+| Regression and required release gate | `src/artwork_integrity.rs` Rust tests | `webgui/tests/test_audio_integrity.py`, `test_comp_job_scope.py` | `.github/workflows/validate.yml`, both `01-full-release.yml` and `04-optimized-build-test.yml` |
+
+Native Windows test evidence, fail-closed supported-format coverage and installed-client
+acceptance must be recorded before any release. If a format cannot be proven
+metadata-safe, its embedded artwork write must reject the file unchanged,
+not silently downgrade tags or skip protection. Protected `/schema` policies
+are never edited to legitimize a writer.
+
 ## CI and deployment distinctions
 
 `.github/workflows/validate.yml` executes scope checks, WebGUI Python/JavaScript/Docker/PostgreSQL checks when applicable, the independent **Canonical policy JSON — review gate** and a **Windows advisory** (not native Windows compilation). The policy-review job fails on a diff to either protected JSON, while `.github/scripts/validate_release_policy_contracts.py` uses the existing runtime validators plus in-memory SQLite and Config v5 structural checks. Workflow 01 runs that preflight and the shared `.github/scripts/test_*.py` suite **before** release version-stamping; its Store Submit Update mode also requires Extended Windows validation. These are checks of the owner-approved contracts, **not another source of policy rules**, nor proof of live Windows/PostgreSQL mirror parity. GitHub rulesets must separately designate appropriate checks as required; adding a workflow alone does not guarantee branch protection.
