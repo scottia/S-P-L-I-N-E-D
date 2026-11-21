@@ -13,6 +13,24 @@ deployment modes, safeguards for changing shared policy JSON, and the
 For implementation verification, see
 [SCHEMA-VALIDATION.md](SCHEMA-VALIDATION.md).
 
+## Approved Artist identity presentation and saved Artist Art
+
+These rules govern the visible Artist projection without changing catalog
+identity or MusicBrainz data.
+
+| ID | Approved requirement |
+| --- | --- |
+| `ART-001` | In the Artist listing, duplicate normalized Artist names collapse to one visible Artist presentation. Different, duplicate, missing, or conflicting MusicBrainz Artist IDs on associated Albums do not create additional visible Artist rows. |
+| `ART-002` | Artist display grouping is not an Artist-MBID rewrite rule. Preserve distinct Album associations, per-Album identities and legitimate credits; display each distinct Album card once and never coalesce unrelated Albums. |
+| `ART-003` | Discover saved `artist.*` and `banner.*` through the established bounded inventory/refresh path across every owned folder and managed package in the grouped presentation. A canonical row's missing Art, release MBID or Artist MBID cannot hide valid physical Artist Art stored under another grouped row. |
+| `UI-001` | Windows and WebGUI Header, Embedding Center, status bar and equivalent progress surfaces publish the newest locally committed state promptly. Remote coordination polling must not block unrelated rendering; opposing-client reconciliation remains asynchronous. |
+| `SAFE-001` | Multiple MBIDs or duplicate visible rows are diagnostic evidence, not permission to rewrite identities or merge database rows. Preserve legitimate unrelated Artists and Album associations and report ambiguous mappings. |
+
+`ART-001` groups the presentation key only. `ART-002` and `SAFE-001` preserve
+the independent underlying PostgreSQL/SQLite rows and Album keys. This allows
+one Beyoncé-style visible Artist entry to retain all distinct Albums and saved
+Art without turning name equality into a destructive catalog operation.
+
 ## Owner-confirmed exact classification priorities (November 20, 2026)
 
 **These requirements apply simultaneously to Windows and WebGUI, and to

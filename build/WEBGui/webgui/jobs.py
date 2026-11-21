@@ -214,12 +214,16 @@ class JobQueue:
         request_status="",
         severity="info",
         error="",
+        raw=None,
+        job=None,
     ):
         try:
-            with closing(self.db.connect()) as db:
-                row = db.execute(
-                    "SELECT kind,payload FROM web_jobs WHERE id=?", (job_id,)
-                ).fetchone()
+            row = job
+            if row is None:
+                with closing(self.db.connect()) as db:
+                    row = db.execute(
+                        "SELECT kind,payload FROM web_jobs WHERE id=?", (job_id,)
+                    ).fetchone()
             payload = row["payload"] if row else {}
             correlation = payload.get("_audit", {}) if isinstance(payload, dict) else {}
             scope = {
@@ -229,10 +233,20 @@ class JobQueue:
             }
             if not scope and len(payload.get("track_keys") or []) == 1:
                 scope["track_key"] = payload["track_keys"][0]
-            self.services.audit(
+            audit = (
+                self.services.audit_in_transaction
+                if raw is not None
+                else self.services.audit
+            )
+            arguments = (
                 action,
                 row["kind"] if row else "job",
                 details or {},
+            )
+            if raw is not None:
+                arguments = (raw, *arguments)
+            audit(
+                *arguments,
                 severity=severity,
                 action_id=str(correlation.get("action_id") or ""),
                 trace_id=str(correlation.get("trace_id") or ""),
@@ -426,14 +440,16 @@ class JobQueue:
                     "AND (payload->'album_ids') @> ?",
                     (Jsonb([str(payload.get("album_id", ""))]),),
                 )
+            self.audit_job(
+                job_id,
+                "job-transition",
+                stage="queue",
+                state_to="staged" if staged else "queued",
+                request_status="queued",
+                raw=db.raw,
+                job={"kind": kind, "payload": payload},
+            )
         self.wake.set()
-        self.audit_job(
-            job_id,
-            "job-transition",
-            stage="queue",
-            state_to="staged" if staged else "queued",
-            request_status="queued",
-        )
         return {"id": job_id, "state": "staged" if staged else "queued"}
 
     def enqueue_comp_batch(self, payloads):
@@ -489,6 +505,16 @@ class JobQueue:
                     "VALUES(%s,'comp','queued',%s,clock_timestamp(),clock_timestamp())",
                     (job_id, Jsonb(payload)),
                 )
+                self.audit_job(
+                    job_id,
+                    "job-transition",
+                    stage="queue",
+                    details={"batch": True, "batch_size": len(prepared)},
+                    state_to="queued",
+                    request_status="queued",
+                    raw=db.raw,
+                    job={"kind": "comp", "payload": payload},
+                )
                 results.append({
                     "id": job_id,
                     "state": "queued",
@@ -511,15 +537,6 @@ class JobQueue:
                     scope={"album_id": result["payload"].get("album_id", "")},
                     stage="queue",
                     request_status="existing",
-                )
-            else:
-                self.audit_job(
-                    result["id"],
-                    "job-transition",
-                    stage="queue",
-                    details={"batch": True, "batch_size": len(results)},
-                    state_to="queued",
-                    request_status="queued",
                 )
         return {
             "id": results[0]["id"],

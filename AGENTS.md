@@ -96,7 +96,29 @@ These rankings and separations have **already been approved**. Never
 request new approval merely to restate or document them; investigate
 implementation drift independently against the exact policy.
 
-## 3a. Universal artwork-only media-write authority
+## 3a. Owner-approved Artist presentation and physical Art
+
+- **ART-001 — One visible Artist presentation:** duplicate normalized Artist
+  names collapse to one visible Artist-list row. Different, duplicate, missing,
+  or conflicting MusicBrainz Artist IDs on associated Albums do not create
+  additional visible Artist rows.
+- **ART-002 — Preserve Album identity:** presentation grouping is not a data
+  merge or MBID rewrite. Preserve every distinct underlying Album association,
+  credit and identifier, and display each distinct Album card once.
+- **ART-003 — Resolve physical Artist Art across aliases:** inspect the bounded
+  owned Artist folders and managed Artist-Art packages for every row in the
+  presentation group. The canonical row's MBID or path cannot hide valid
+  `artist.*` or `banner.*` saved under another grouped row.
+- **UI-001 — Publish local progress immediately:** Header, Embedding Center,
+  status bar and equivalent progress surfaces must update from newly committed
+  local state without waiting for remote coordination polling. Reconcile an
+  opposing client asynchronously and never invent completion.
+
+These are display and discovery rules only. Never merge or delete catalog rows,
+rewrite MusicBrainz IDs, coalesce unrelated Albums, or scan an unbounded library
+to make the presentation appear correct.
+
+## 3b. Universal artwork-only media-write authority
 
 The owner-approved `AUDIO-INTEGRITY-001..006` requirements in
 `docs/POLICY-REGISTER.md` prohibit **every** non-artwork audio-tag mutation.
