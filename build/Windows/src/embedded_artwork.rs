@@ -188,7 +188,12 @@ mod tests {
         std::fs::write(&path, &original).unwrap();
 
         let before = protected_mp3_bytes(&path).unwrap();
-        write_mp3_front_only(&path, b"artwork bytes", "image/png").unwrap();
+        // Exercise the production staged writer and lofty readback, not
+        // merely a mocked or internal byte-stream helper.
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(1, 1)
+            .write_to(&mut encoded, image::ImageFormat::Png).unwrap();
+        replace_embedded_front(&path, &encoded.into_inner()).unwrap();
         assert_eq!(protected_mp3_bytes(&path).unwrap(), before);
         assert!(std::fs::read(&path).unwrap().ends_with(&audio));
 
