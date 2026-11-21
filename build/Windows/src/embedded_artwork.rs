@@ -158,6 +158,18 @@ pub fn replace_embedded_front_with_trace(
 mod tests {
     use super::*;
 
+    fn encode_synchsafe(value: usize) -> Result<[u8; 4], String> {
+        if value >= (1 << 28) {
+            return Err("ID3 frame size exceeds synchsafe range".to_string());
+        }
+        Ok([
+            ((value >> 21) & 0x7f) as u8,
+            ((value >> 14) & 0x7f) as u8,
+            ((value >> 7) & 0x7f) as u8,
+            (value & 0x7f) as u8,
+        ])
+    }
+
     #[test]
     fn id3v24_front_picture_never_alters_multivalue_artist_or_mb_frames() {
         let dir = tempfile::tempdir().unwrap();
@@ -187,21 +199,23 @@ mod tests {
         original.extend_from_slice(&audio);
         std::fs::write(&path, &original).unwrap();
 
-        let before = protected_mp3_bytes(&path).unwrap();
+        // Save a separate immutable source for pre-/post-write comparison.
+        let baseline = dir.path().join("untouched-original.mp3");
+        std::fs::copy(&path, &baseline).unwrap();
         // Exercise the production staged writer and lofty readback, not
         // merely a mocked or internal byte-stream helper.
         let mut encoded = std::io::Cursor::new(Vec::new());
         image::DynamicImage::new_rgba8(1, 1)
             .write_to(&mut encoded, image::ImageFormat::Png).unwrap();
         replace_embedded_front(&path, &encoded.into_inner()).unwrap();
-        assert_eq!(protected_mp3_bytes(&path).unwrap(), before);
+        crate::artwork_integrity::verify_only_front_artwork(&baseline, &path).unwrap();
         assert!(std::fs::read(&path).unwrap().ends_with(&audio));
 
         let mut tampered = std::fs::read(&path).unwrap();
         let index = tampered.windows(5).position(|w| w == b"Sammy").unwrap();
         tampered[index] = b'X';
         std::fs::write(&path, tampered).unwrap();
-        assert_ne!(protected_mp3_bytes(&path).unwrap(), before);
+        assert!(crate::artwork_integrity::verify_only_front_artwork(&baseline, &path).is_err());
     }
 
     #[test]
@@ -211,10 +225,11 @@ mod tests {
         let mut input = b"ID3\x04\x00\x00\x00\x00\x00\x00".to_vec();
         input.extend_from_slice(b"\xff\xfb\x90\x64");
         std::fs::write(&path, &input).unwrap();
-        let baseline = protected_mp3_bytes(&path).unwrap();
+        let baseline = dir.path().join("untouched-original.mp3");
+        std::fs::copy(&path, &baseline).unwrap();
         input[3] = 3;
         std::fs::write(&path, input).unwrap();
-        assert_ne!(protected_mp3_bytes(&path).unwrap(), baseline);
+        assert!(crate::artwork_integrity::verify_only_front_artwork(&baseline, &path).is_err());
     }
 
     #[test]
