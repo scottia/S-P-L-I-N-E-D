@@ -32,6 +32,7 @@ import requests
 from splined_db_audit import connect_sqlite
 
 from splined_media_tags import inspect_album_tracks
+from splined_audio_integrity import assert_artwork_only
 from webgui.comp_report_policy import (
     artist_names_compatible as shared_artist_names_compatible,
     comp_report_policy,
@@ -1970,7 +1971,10 @@ def _replace_id3_front(path: Path, data: bytes, mime: str) -> None:
     for value in preserved:
         tags.add(value)
     tags.add(APIC(encoding=3, mime=mime, type=3, desc="Cover", data=data))
-    tags.save(path, v2_version=3)
+    # Artwork is the sole authorized mutation. Never downgrade v2.4 to v2.3
+    # (or upgrade v2.3) while saving a front-cover frame.
+    original_id3_version = tags.version[1] if tags.version[0] == 2 else 4
+    tags.save(path, v2_version=original_id3_version)
 
 
 def _replace_flac_front(
@@ -2096,6 +2100,10 @@ def replace_embedded_artwork(
             _replace_vorbis_front(staged, data, mime, info)
         else:
             raise ValueError(f"unsupported embedded-artwork format: {suffix}")
+        # Compare source and staged metadata/stream before publication. Any
+        # changed ID3 version, Artist/MB/custom frame, non-front image, or
+        # altered audio leaves the original source file untouched.
+        assert_artwork_only(path, staged)
         # Windows, SMB, and antivirus readers can briefly retain a handle after
         # preview/readback. The staged audio is already complete at this point,
         # so retry only the atomic publication step; never rewrite the source in
