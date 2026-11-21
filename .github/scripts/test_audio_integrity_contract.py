@@ -25,12 +25,15 @@ class AudioIntegritySourceContract(unittest.TestCase):
         self.assertIn("AUDIO-INTEGRITY-001..006", index)
         self.assertIn("AUDIO-INTEGRITY-001..006", agents)
         self.assertIn("MusicBrainz", register)
-        self.assertIn("audio-file", agents)
+        self.assertIn("audio files", agents)
 
     def test_mutagen_mp3_writer_never_downgrades_v24(self):
         writer = source("build/WEBGui/webgui/backend/splined_compilation_authority_policy.py")
         self.assertNotIn("tags.save(path, v2_version=3)", writer)
-        self.assertIn("original_id3_version", writer)
+        self.assertIn("path.write_bytes(header + preserved + audio_bytes)", writer)
+        raw_writer = writer.split("def _replace_id3_front(", 1)[1].split("def _replace_flac_front(", 1)[0]
+        self.assertNotIn("tags.save(", raw_writer)
+        self.assertIn("if version not in (3, 4):", raw_writer)
         self.assertIn("assert_artwork_only(path, staged)", writer)
 
     def test_comp_has_no_musicbrainz_media_writers(self):
