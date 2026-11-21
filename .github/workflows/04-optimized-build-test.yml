@@ -55,7 +55,35 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
+  audio-integrity-webgui:
+    name: Audio integrity — WebGUI real artwork writer
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: .:build/WEBGui:build/WEBGui/webgui/backend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Verify ID3v2.x real-writer and injected mutation protections
+        run: |
+          python -m pip install -r build/WEBGui/webgui/requirements-test.txt
+          python -m unittest discover -s build/WEBGui/webgui/tests -p test_splined_compilation_authority_policy.py -v
+          python -m unittest discover -s build/WEBGui/webgui/tests -p test_comp_job_scope.py -v
+  audio-integrity-windows:
+    name: Audio integrity — Windows real artwork writer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Run mandatory Rust/Lofty artwork integrity tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          rustup toolchain install 1.99.0 --profile minimal
+          rustup target add x86_64-pc-windows-msvc --toolchain 1.99.0
+          cargo +1.99.0 test --locked --manifest-path build/Windows/Cargo.toml --lib --target x86_64-pc-windows-msvc embedded_artwork -- --nocapture
   prepare-release:
+    needs: [audio-integrity-webgui, audio-integrity-windows]
     name: Prepare exact release source for build or unpublished validation
     runs-on: ubuntu-latest
     outputs:
