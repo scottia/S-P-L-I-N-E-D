@@ -388,10 +388,12 @@ With **Preserve File** disabled, a successful Album WRITE replaces competing
 canonical JPG/JPEG/PNG covers (and matching numbered static variants) for the
 selected Album and configured filename stem. A retained `cover.webp` is a
 high-resolution/animated source, not a static-cleanup target: it may coexist
-with the one canonical static cover. If a WebP is explicitly written as artwork,
-SPLINED commits its validated WebP output and a JPEG presentation still; an
-explicit WebP replacement may replace the previous WebP. Merely discovering,
-selecting, or previewing a WebP does not install a still in the Album.
+with the one canonical static cover. An existing `cover.webp` is immutable source artwork. Selecting that local
+WebP and choosing WRITE Cover may create or update only the separate
+`cover.jpg` still; it never replaces, deletes, renames, or rewrites the WebP.
+A new WebP may be saved only when the destination did not previously exist.
+Attempting to replace a retained WebP with different bytes is rejected.
+Merely discovering, selecting, or previewing WebP does not install a still.
 
 Replacement output is verified before competing static covers are removed. If
 publication or cleanup fails, SPLINED attempts to restore the previous covers.
