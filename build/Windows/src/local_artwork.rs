@@ -242,7 +242,24 @@ where
         return Err("Canonical cover extension does not match prepared artwork.".to_string());
     }
 
-    let mut outputs = vec![(destination.to_path_buf(), prepared.clone())];
+    // An existing WebP is retained local source artwork. It cannot be
+    // quarantined, renamed, rewritten or replaced when creating cover.jpg.
+    let existing_webp = prepared.info.format == StaticFormat::Webp && destination.exists();
+    if prepared.info.format == StaticFormat::Webp && destination.is_symlink() {
+        return Err("Existing WebP artwork source must not be a symlink.".to_string());
+    }
+    if existing_webp {
+        let original = fs::read(destination)
+            .map_err(|error| format!("Unable to inspect immutable WebP source: {error}"))?;
+        if original != prepared.bytes {
+            return Err("Existing cover.webp is immutable; select the retained WebP source for a JPEG still or choose a static JPEG candidate.".to_string());
+        }
+    }
+    let mut outputs = if existing_webp {
+        Vec::new()
+    } else {
+        vec![(destination.to_path_buf(), prepared.clone())]
+    };
     if prepared.info.format == StaticFormat::Webp {
         let image = image::load_from_memory(&prepared.bytes)
             .map_err(|error| format!("Unable to decode WebP source for its still: {error}"))?;
@@ -297,12 +314,8 @@ where
         .map(|entry| entry.path())
         .filter(|path| matching_static_canonical(path, &configured_lower))
         .collect::<Vec<_>>();
-    if prepared.info.format == StaticFormat::Webp
-        && destination.is_file()
-        && !destination.is_symlink()
-    {
-        targets.push(destination.to_path_buf());
-    }
+    // A retained cover.webp is deliberately absent from the quarantine
+    // target set; only static JPG/JPEG/PNG destinations are replaceable.
     targets.sort_by_key(|path| path.to_string_lossy().to_ascii_lowercase());
     targets.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
 
