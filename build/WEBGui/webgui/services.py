@@ -18,9 +18,6 @@ import tempfile
 import threading
 import time
 
-from mutagen import File as MutagenFile
-from mutagen.id3 import ID3, TXXX, UFID
-from mutagen.mp4 import MP4
 from PIL import Image, ImageOps
 from psycopg import sql
 from psycopg.types.json import Jsonb
@@ -2923,90 +2920,22 @@ class Services:
         return {"written": written}
 
     def _persist_comp_track_authority(self, track, recording_mbid, artist_mbids):
-        """Atomically save validated Recording/Artist IDs without Album identity."""
+        """Validate COMP selection only; never write MusicBrainz IDs to audio.
+
+        The COMP policy authorizes fuzzy recovery and source selection, not
+        physical tag edits. Caller maintains per-operation authority evidence
+        and the existing completion/coordination state separately.
+        """
         recording = str(recording_mbid or "").strip().casefold()
-        artists = "; ".join(sorted(compilation._mbids(artist_mbids)))
+        artists = compilation._mbids(artist_mbids)
         if not core.valid_mbid(recording) or not artists:
             raise ValueError("Validated Recording and Artist IDs are required")
         path = Path(track.path).resolve()
         if not inside(path, self.runtime.music):
             raise ValueError("COMP track is outside the configured music library")
-        descriptor, staged_name = tempfile.mkstemp(
-            prefix=f".{path.name}.splined-identity-",
-            suffix=path.suffix,
-            dir=path.parent,
-        )
-        os.close(descriptor)
-        staged = Path(staged_name)
-        try:
-            shutil.copyfile(path, staged)
-            try:
-                shutil.copymode(path, staged)
-            except OSError:
-                pass
-            audio = MutagenFile(staged)
-            if audio is None:
-                raise ValueError("Unsupported COMP track format")
-            if audio.tags is None:
-                audio.add_tags()
-            if isinstance(audio, MP4):
-                assert audio.tags is not None
-                audio.tags["----:com.apple.iTunes:MusicBrainz Track Id"] = [
-                    recording.encode("utf-8")
-                ]
-                audio.tags["----:com.apple.iTunes:MusicBrainz Artist Id"] = [
-                    artists.encode("utf-8")
-                ]
-            elif isinstance(audio.tags, ID3):
-                retained = []
-                for frame in audio.tags.getall("TXXX"):
-                    description = str(getattr(frame, "desc", "") or "").strip().casefold()
-                    if description not in {
-                        "musicbrainz recording id",
-                        "musicbrainz track id",
-                        "musicbrainz_trackid",
-                        "musicbrainz artist id",
-                        "musicbrainz_artistid",
-                    }:
-                        retained.append(frame)
-                audio.tags.delall("TXXX")
-                for frame in retained:
-                    audio.tags.add(frame)
-                retained_ufid = [
-                    frame
-                    for frame in audio.tags.getall("UFID")
-                    if str(getattr(frame, "owner", "") or "")
-                    .rstrip("/")
-                    .casefold()
-                    != "http://musicbrainz.org"
-                ]
-                audio.tags.delall("UFID")
-                for frame in retained_ufid:
-                    audio.tags.add(frame)
-                audio.tags.add(
-                    TXXX(encoding=3, desc="MusicBrainz Track Id", text=[recording])
-                )
-                audio.tags.add(
-                    TXXX(encoding=3, desc="MusicBrainz Artist Id", text=[artists])
-                )
-                audio.tags.add(
-                    UFID(owner="http://musicbrainz.org", data=recording.encode("ascii"))
-                )
-            else:
-                assert audio.tags is not None
-                audio.tags["musicbrainz_trackid"] = [recording]
-                audio.tags["musicbrainz_artistid"] = [artists]
-            audio.save()
-            verified = core.read_track(staged)
-            if str(verified.recording_mbid or "").strip().casefold() != recording:
-                raise ValueError("Staged track did not retain the Recording ID")
-            if compilation._mbids(verified.artist_mbid) != compilation._mbids(
-                artists
-            ):
-                raise ValueError("Staged track did not retain the Artist ID")
-            os.replace(staged, path)
-        finally:
-            staged.unlink(missing_ok=True)
+        if not path.is_file():
+            raise FileNotFoundError(f"COMP track is missing: {path}")
+        return None
 
     def _comp_target(self, payload):
         artist_id = str(payload.get("artist_id", "")).strip()
