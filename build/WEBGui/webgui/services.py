@@ -743,7 +743,7 @@ class Services:
             ),
         ).fetchone()
 
-    def audit(
+    def _audit_event(
         self,
         action,
         subject="",
@@ -761,7 +761,6 @@ class Services:
         state_to="",
         error="",
     ):
-        """Record one ordered, structured event using the existing audit authority."""
         action = sanitize_text(action, limit=120)
         subject = sanitize_text(subject, limit=500)
         details = sanitize(details or {})
@@ -796,6 +795,63 @@ class Services:
         core.runtime_log(
             normalize_severity(severity),
             f"webgui.audit action={action} subject={core._redact_log_message(subject)}",
+        )
+        return event
+
+    def audit_in_transaction(self, raw, action, subject="", details=None, **values):
+        """Insert an event in the caller's transaction without making work visible first."""
+        event = self._audit_event(action, subject, details, **values)
+        with self._audit_lock:
+            try:
+                # psycopg uses a savepoint when the caller already owns a
+                # transaction.  A diagnostic failure therefore remains
+                # fail-open for the queued job while preserving its fallback.
+                with raw.transaction():
+                    row = self._insert_audit_event(raw, event)
+                self._audit_events_written += 1
+            except Exception as insertion_error:
+                core.runtime_log(
+                    "error",
+                    "webgui.audit postgresql insertion failed; event retained locally "
+                    + core._redact_log_message(sanitize_text(insertion_error)),
+                )
+                return self._append_audit_fallback(event, insertion_error)
+        return int(row["id"] if isinstance(row, dict) else row[0])
+
+    def audit(
+        self,
+        action,
+        subject="",
+        details=None,
+        *,
+        severity="info",
+        action_id="",
+        trace_id="",
+        job_id="",
+        scope=None,
+        stage="",
+        request_status="",
+        elapsed_ms=None,
+        state_from="",
+        state_to="",
+        error="",
+    ):
+        """Record one ordered, structured event using the existing audit authority."""
+        event = self._audit_event(
+            action,
+            subject,
+            details,
+            severity=severity,
+            action_id=action_id,
+            trace_id=trace_id,
+            job_id=job_id,
+            scope=scope,
+            stage=stage,
+            request_status=request_status,
+            elapsed_ms=elapsed_ms,
+            state_from=state_from,
+            state_to=state_to,
+            error=error,
         )
         with self._audit_lock:
             pending, fallback_files = self._load_audit_fallback()
