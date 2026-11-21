@@ -1,4 +1,5 @@
 pub mod application;
+pub mod artwork_integrity;
 pub mod backup;
 pub mod candidate;
 pub mod catalog_index_coordinator;
