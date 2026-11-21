@@ -30,13 +30,24 @@ The release executable is:
 build\Windows\target\x86_64-pc-windows-msvc\release\splined.exe
 ```
 
-### Workflow 04 optimized Windows build mirror (No = validate, Yes = publish)
+### Workflow 04 optimized Windows build presets
 
-[Workflow 04](../.github/workflows/04-optimized-build-test.yml) reuses the same release confirmation as Workflow 01 as its **last input**. Choosing **Stop - no release** performs the full selected Windows Rust/Slint build, portable ZIP and update metadata checks, optional Extended Windows suite, and Store MSIX/development installation QA, but **never publishes** a commit, tag, GitHub Release, GHCR image or Store submission. The versioned test source exists only in an unpushed temporary runner commit, and downloaded outputs are marked QA-only. Choosing **Create release now** follows Workflow 01's full production publication graph with the optimized compiler cache, including GHCR and requested Store handling.
+[Workflow 04](../.github/workflows/04-optimized-build-test.yml) resolves one
+of five complete build presets. **ALL** is the default release; **WINDOWS**
+builds the portable ZIP and Store review bundle without publishing GHCR;
+**SOURCE BUILD** releases both clients at the exact committed source version;
+and **TEST BUILD** runs strict Windows plus WebGUI validation without creating
+a tag, GitHub Release, GHCR push or Store action. The run summary lists every
+effective choice before compilation begins. Publishing presets require the
+`main` branch; TEST BUILD may validate a Draft PR branch.
 
 The optimized Windows build caches compiled Rust dependencies as well as downloaded crates. It cleans only `splined-windows`, compiles a **fresh** locked optimized binary, and validates the exact temporary/real release commit identity, x64 PE, first-run native smoke, portable ZIP and Store package. **All** also validates WebGUI in parallel; WebGUI's full Python/PostgreSQL/Node suite runs alongside Docker image/health/packaging checks without removing test cases.
 
-Measure at least two equivalent Workflow 04 runs: the first may populate the compiled cache, and later runs report a cache hit and compilation seconds. Evaluate end-to-end wall time (including cache transfer), not only Rust compile time. Workflow 01's existing clean production build is unchanged, and pull-request advisory checks alone cannot prove Windows performance.
+Measure at least two equivalent Workflow 04 runs: the first may populate the
+compiled cache, and later runs report a cache hit and compilation seconds.
+Evaluate end-to-end wall time (including cache transfer), not only Rust compile
+time. Workflow 01's existing clean production build is unchanged, and
+pull-request advisory checks alone cannot prove Windows performance.
 
 ### Production-equivalent local PC test build
 
