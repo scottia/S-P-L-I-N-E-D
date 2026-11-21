@@ -1,7 +1,7 @@
 # SPLINED WebGUI
 
 This is the user guide for the Python/browser implementation. WebGUI handles
-providers, image processing, library files, and tag writes; PostgreSQL stores
+providers, image processing, library files, and artwork-only media writes; PostgreSQL stores
 its catalog, completion ledger, audit events, administrator account, and
 persistent work queue. Windows is a separate native Rust/Slint application with
 its own SQLite store. The two runtimes share concepts, not a live database or
