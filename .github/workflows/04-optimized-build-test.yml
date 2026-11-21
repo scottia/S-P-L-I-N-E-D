@@ -1603,7 +1603,15 @@ jobs:
           name: splined-windows-store-package
           path: store-package
 
+      - name: Download generated release context for local review
+        if: ${{ needs.resolve-plan.outputs.store_draft == 'true' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: splined-release-notes
+          path: release-notes
+
       - name: Require Microsoft Store credentials
+        if: ${{ needs.resolve-plan.outputs.store_update == 'true' }}
         shell: pwsh
         env:
           AZURE_AD_APPLICATION_CLIENT_ID: ${{ secrets.AZURE_AD_APPLICATION_CLIENT_ID }}
@@ -1619,6 +1627,7 @@ jobs:
           }
 
       - name: Install pinned Microsoft Store CLI
+        if: ${{ needs.resolve-plan.outputs.store_update == 'true' }}
         uses: microsoft/microsoft-store-apppublisher@cc9910a8d59f2eb55cbb83df0a3800cf3b5300e0 # v1.4
         with:
           version: v0.4.3
@@ -1633,12 +1642,21 @@ jobs:
           }
 
       - name: Test Store history baseline resolution
+        if: ${{ needs.resolve-plan.outputs.store_update == 'true' }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           & release/Test-StoreBaseline.ps1 -RepositoryRoot .
 
+      - name: Test local-only Store review bundle
+        if: ${{ needs.resolve-plan.outputs.store_draft == 'true' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & release/Test-LocalStoreReviewBundle.ps1 -RepositoryRoot .
+
       - name: Authenticate Microsoft Store before resolving published history
+        if: ${{ needs.resolve-plan.outputs.store_update == 'true' }}
         shell: pwsh
         env:
           AZURE_AD_APPLICATION_CLIENT_ID: ${{ secrets.AZURE_AD_APPLICATION_CLIENT_ID }}
@@ -1656,6 +1674,7 @@ jobs:
           }
 
       - name: Resolve last-published Store baseline
+        if: ${{ needs.resolve-plan.outputs.store_update == 'true' }}
         id: store-baseline
         shell: pwsh
         env:
@@ -1671,6 +1690,7 @@ jobs:
             -AllowPendingSubmission:$reviewOnly
 
       - name: Render cumulative Store Highlights from published baseline
+        if: ${{ needs.resolve-plan.outputs.store_update == 'true' }}
         id: store-highlights
         shell: pwsh
         env:
@@ -1686,6 +1706,7 @@ jobs:
             -OutputDirectory store-notes
 
       - name: Assemble Store submission audit artifact
+        if: ${{ needs.resolve-plan.outputs.store_update == 'true' }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -1694,14 +1715,34 @@ jobs:
           Copy-Item -LiteralPath "store-notes/STORE-HIGHLIGHTS.txt" -Destination "store-submission/STORE-HIGHLIGHTS.txt"
           Copy-Item -LiteralPath "store-notes/STORE-SUBMISSION.json" -Destination "store-submission/STORE-SUBMISSION.json"
 
+      - name: Render local-only Store review files
+        if: ${{ needs.resolve-plan.outputs.store_draft == 'true' }}
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.prepare-release.outputs.commit }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          [IO.Directory]::CreateDirectory("store-notes") | Out-Null
+          & git-cliff `
+            --config release/cliff.toml `
+            --from-context release-notes/release-context.json `
+            --body-file release/templates/store-highlights.tera `
+            --strip all `
+            --output store-notes/STORE-HIGHLIGHTS.txt
+          & release/New-LocalStoreReviewBundle.ps1 `
+            -PackagePath store-package/SPLINED-x64-store-unsigned.msix `
+            -HighlightsPath store-notes/STORE-HIGHLIGHTS.txt `
+            -ReleaseContextPath release-notes/release-context.json `
+            -TargetVersion $env:RELEASE_VERSION `
+            -TargetCommit $env:RELEASE_COMMIT `
+            -OutputDirectory store-submission
+
       - name: Upload Store submission audit artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: splined-windows-store-submission
-          path: |
-            store-submission/SPLINED-x64-store-unsigned.msix
-            store-submission/STORE-HIGHLIGHTS.txt
-            store-submission/STORE-SUBMISSION.json
+          path: store-submission/
           if-no-files-found: error
 
       - name: Stage package and Highlights and submit the selected Store update
@@ -1858,7 +1899,7 @@ jobs:
               if [ "${{ needs.resolve-plan.outputs.store_update }}" = true ]; then
                 echo "- Microsoft Store: package and Highlights submitted for certification"
               else
-                echo "- Microsoft Store: MSIX-only package and complete review bundle retained; Partner Center history read only; nothing staged or submitted"
+                echo "- Microsoft Store: local MSIX review ZIP retained; Partner Center was not contacted and the existing draft was untouched"
               fi
             elif [ "${{ needs.resolve-plan.outputs.store_draft }}" = true ]; then
               echo "- Microsoft Store: requested review bundle was not created"
