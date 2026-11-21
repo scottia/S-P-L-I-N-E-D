@@ -4887,10 +4887,19 @@ def canonical_cover_outputs(
         still = source.convert("RGB")
         encoded = io.BytesIO()
         still.save(encoded, format="JPEG", quality=95)
-    return [
-        (canonical, content),
-        (canonical.with_name(f"{file_name}.jpg"), encoded.getvalue()),
-    ]
+    still_output = (canonical.with_name(f"{file_name}.jpg"), encoded.getvalue())
+    # An existing cover.webp is immutable source material, not an output.
+    # It can be referenced to create a JPEG still, never replaced or moved.
+    if canonical.is_symlink():
+        raise SplinedError("Refusing a symlinked WebP artwork source.")
+    if canonical.exists():
+        if not canonical.is_file() or canonical.read_bytes() != content:
+            raise SplinedError(
+                "Existing cover.webp is immutable; select the retained local WebP "
+                "to create a JPEG still, or choose a static JPEG candidate."
+            )
+        return [still_output]
+    return [(canonical, content), still_output]
 
 
 def write_sample(sample_dir: Path, rel: Release, c: Candidate, preserve: bool) -> tuple[Path,bool]:
