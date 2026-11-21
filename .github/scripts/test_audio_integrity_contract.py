@@ -60,17 +60,27 @@ class AudioIntegritySourceContract(unittest.TestCase):
 
     def test_required_pr_and_release_jobs_cannot_skip_integrity(self):
         pr = source(".github/workflows/validate.yml")
-        self.assertIn("  audio-integrity:", pr)
-        self.assertIn("Fail on WebGUI metadata mutation during artwork embedding", pr)
-        self.assertIn("Fail on Rust metadata mutation or ID3 conversion", pr)
+        for key in ("  audio-integrity-webgui:", "  audio-integrity-windows:"):
+            self.assertIn(key, pr)
+        self.assertNotIn("  audio-integrity:\n", pr)
+        self.assertIn("test_audio_integrity.py -v", pr)
+        self.assertIn("test_cross_format_cover_overwrite.py -v", pr)
+        self.assertIn("artwork_integrity::tests -- --nocapture", pr)
+        self.assertIn("local_artwork -- --nocapture", pr)
         for path in (".github/workflows/01-full-release.yml",
                      ".github/workflows/04-optimized-build-test.yml"):
             content = source(path)
-            self.assertIn("  audio-integrity:", content)
-            self.assertIn("needs.audio-integrity.result == 'success'", content)
-            self.assertIn("AUDIO_INTEGRITY_RESULT:", content)
+            self.assertIn("needs: [audio-integrity-webgui, audio-integrity-windows]", content)
+            self.assertIn("needs.audio-integrity-webgui.result == 'success'", content)
+            self.assertIn("needs.audio-integrity-windows.result == 'success'", content)
+            self.assertIn("WEBGUI_INTEGRITY_RESULT:", content)
+            self.assertIn("WINDOWS_INTEGRITY_RESULT:", content)
             self.assertIn("unconditional Windows and WebGUI audio-integrity gate", content)
-            self.assertIn("artwork_integrity::tests", content)
+            self.assertIn("test_audio_integrity.py -v", content)
+            self.assertIn("test_cross_format_cover_overwrite.py -v", content)
+            self.assertIn("artwork_integrity::tests -- --nocapture", content)
+            self.assertIn("local_artwork -- --nocapture", content)
+            self.assertNotIn("  audio-integrity:\n", content)
 
 
 if __name__ == "__main__":
