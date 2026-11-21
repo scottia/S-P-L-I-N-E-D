@@ -6,8 +6,10 @@ published history belongs in Git tags and GitHub Releases.
 
 ## Active automation
 
-- `Generate-ReleaseNotes.ps1`, `Generate-StoreHighlights.ps1`, and
-  `Resolve-StoreBaseline.ps1` are called by the numbered release workflows.
+- `Generate-ReleaseNotes.ps1`, `Generate-StoreHighlights.ps1`,
+  `Resolve-StoreBaseline.ps1`, and `New-LocalStoreReviewBundle.ps1` are called
+  by the numbered release workflows. The local review builder packages files
+  for download only and never contacts Partner Center.
 - `StoreHighlightsPolicy.ps1` keeps over-limit Store notes within Microsoft's
   1,500-character boundary at complete, priority-ordered bullet boundaries and
   adds the full GitHub Release link for omitted details.
@@ -18,9 +20,10 @@ published history belongs in Git tags and GitHub Releases.
   grouping; they do not declare a current application build target.
 - `templates/` contains the active GitHub Release and Microsoft Store Tera
   renderers.
-- `Test-ReleaseNoteClassification.ps1` and `Test-StoreBaseline.ps1` exercise
-  classification, Store history selection, cumulative highlights, and failure
-  boundaries.
+- `Test-ReleaseNoteClassification.ps1`, `Test-StoreBaseline.ps1`, and
+  `Test-LocalStoreReviewBundle.ps1` exercise classification, Store history
+  selection, cumulative highlights, local-only review audit evidence, and
+  failure boundaries.
 - `tests/` contains intentionally historical, synthetic Microsoft Store JSON
   fixtures. Their old version numbers are regression inputs, not current
   product-version documentation.

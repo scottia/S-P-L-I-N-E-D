@@ -27,6 +27,15 @@ def job(source: str, name: str) -> str:
     return source[start:end]
 
 
+def step(source: str, name: str) -> str:
+    marker = f"      - name: {name}\n"
+    if source.count(marker) != 1:
+        raise AssertionError(f"Expected exactly one step {name}")
+    tail = source.split(marker, 1)[1]
+    following = re.search(r"(?m)^      - name: ", tail)
+    return tail[:following.start()] if following else tail
+
+
 class OptimizedFullReleaseMirrorTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -232,6 +241,36 @@ class OptimizedFullReleaseMirrorTests(unittest.TestCase):
             self.assertIn(token, self.workflow)
         self.assertIn("Test-DevelopmentPackage.ps1", job(self.workflow, "build-windows"))
         self.assertIn("Build-StorePackage.ps1", job(self.workflow, "build-windows"))
+
+    def test_store_review_bundle_is_local_only_and_submit_mode_is_explicit(self):
+        store = job(self.workflow, "publish-store")
+        review_condition = "needs.resolve-plan.outputs.store_draft == 'true'"
+        submit_condition = "needs.resolve-plan.outputs.store_update == 'true'"
+
+        for name in (
+            "Download generated release context for local review",
+            "Test local-only Store review bundle",
+            "Render local-only Store review files",
+        ):
+            self.assertIn(review_condition, step(store, name))
+
+        for name in (
+            "Require Microsoft Store credentials",
+            "Install pinned Microsoft Store CLI",
+            "Test Store history baseline resolution",
+            "Authenticate Microsoft Store before resolving published history",
+            "Resolve last-published Store baseline",
+            "Render cumulative Store Highlights from published baseline",
+            "Assemble Store submission audit artifact",
+            "Stage package and Highlights and submit the selected Store update",
+        ):
+            self.assertIn(submit_condition, step(store, name))
+
+        local_review = step(store, "Render local-only Store review files")
+        self.assertIn("release/New-LocalStoreReviewBundle.ps1", local_review)
+        self.assertIn("release-notes/release-context.json", local_review)
+        self.assertNotIn("msstore", local_review.lower())
+        self.assertIn("path: store-submission/", step(store, "Upload Store submission audit artifact"))
 
     def test_compiled_cache_reuses_dependencies_not_final_binary(self):
         windows = job(self.workflow, "build-windows")
