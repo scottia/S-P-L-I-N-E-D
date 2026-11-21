@@ -70,6 +70,7 @@ jobs:
           python -m pip install -r build/WEBGui/webgui/requirements-test.txt
           python -m unittest discover -s build/WEBGui/webgui/tests -p test_splined_compilation_authority_policy.py -v
           python -m unittest discover -s build/WEBGui/webgui/tests -p test_comp_job_scope.py -v
+          python -m unittest discover -s build/WEBGui/webgui/tests -p test_cross_format_cover_overwrite.py -v
   audio-integrity-windows:
     name: Audio integrity — Windows real artwork writer
     runs-on: windows-latest
@@ -82,6 +83,7 @@ jobs:
           rustup toolchain install 1.99.0 --profile minimal
           rustup target add x86_64-pc-windows-msvc --toolchain 1.99.0
           cargo +1.99.0 test --locked --manifest-path build/Windows/Cargo.toml --lib --target x86_64-pc-windows-msvc embedded_artwork -- --nocapture
+          cargo +1.99.0 test --locked --manifest-path build/Windows/Cargo.toml --lib --target x86_64-pc-windows-msvc local_artwork -- --nocapture
   prepare-release:
     needs: [audio-integrity-webgui, audio-integrity-windows]
     name: Prepare exact release source for build or unpublished validation
