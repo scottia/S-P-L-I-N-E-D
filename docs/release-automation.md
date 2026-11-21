@@ -145,20 +145,22 @@ only **Submit Update/No Draft** stages and submits the package.
 
 ## Workflow 04: five optimized build presets
 
-[Workflow 04](../.github/workflows/04-optimized-build-test.yml) presents one
-authoritative **Build option** and an optional exact version. GitHub's manual
-dispatch form cannot dynamically redraw dependent checkboxes after another
-field changes, so target, strictness, Store handling, GHCR publication and
-release creation are resolved from the selected preset. The first job prints
-the complete effective plan before expensive build jobs start.
+[Workflow 04](../.github/workflows/04-optimized-build-test.yml) contains five
+launch flows in one manual form. The selected flow supplies target, strictness,
+Store, GHCR and final-action defaults. Every individual control remains visible
+under the selector with **Use preset default**, **Yes** and **No** (or the
+equivalent target/action choices), so an owner can review or deliberately
+override the flow before pressing Run. The first job prints both the form
+selection and complete effective plan before expensive build jobs start.
 
 The repository default branch, `main`, is the default GitHub branch selector.
 Every publishing preset also enforces `main`; **TEST BUILD** may run from a
-Draft PR branch to validate an unmerged Workflow 04 change. A blank version
-selects the exact committed source version and the release preflight proves it
-is the next unused numeric tag. An entered version must equal that committed
-Windows/WebGUI version. TEST BUILD ignores the field and reports its version as
-disposable while still compiling the source's embedded numeric identity.
+Draft PR branch to validate an unmerged Workflow 04 change. Release Version is
+populated with the current compiled Windows/WebGUI source version. A contract
+test requires the form default to advance with those source versions, and the
+release preflight proves it is the next unused numeric tag. Any no-release
+selection reports a disposable version while still compiling the source's
+embedded numeric identity.
 
 | Preset | Target | Strict | Submit update | Store review bundle | Publish GHCR | Final action |
 |---|---|---:|---:|---:|---:|---|
@@ -168,10 +170,10 @@ disposable while still compiling the source's embedded numeric identity.
 | **SOURCE BUILD** | Windows + WebGUI at the exact committed version | No | No | Yes | Yes | Create release now |
 | **TEST BUILD** | Windows + WebGUI | Yes | No | No | No | No release creation |
 
-ALL and SOURCE BUILD intentionally produce the same selected artifacts when
-the optional version field is blank. SOURCE BUILD makes the exact committed
-source-version intent explicit; ALL is the routine default release preset.
-Neither mode invents or stamps an uncommitted application version.
+ALL and SOURCE BUILD intentionally produce the same selected artifacts with
+their defaults. SOURCE BUILD makes the exact committed source-version intent
+explicit; ALL is the routine default release preset. Neither mode invents or
+stamps an uncommitted application version.
 
 The four publishing presets execute the selected production release graph:
 canonical preflight, target builds, numeric tag promotion, git-cliff notes and
@@ -188,7 +190,7 @@ does not create a GitHub Release, push GHCR, or contact Partner Center.
 
 ### Build-time optimization and verification
 
-Windows retains Workflow 01's Cargo registry/Git download cache and adds a separate cached **compiled release dependency graph**, keyed to the pinned Rust toolchain, Windows MSVC target and version-normalized `Cargo.lock`. Instead of deleting all compiled dependencies, it runs a package-scoped `cargo clean -p splined-windows --release --target ...` before the locked optimized build, ensuring a **fresh application executable for the exact staged commit** while Cargo fingerprints invalidate any changed dependency. The original PE x64, version/commit identity, clean native-smoke and portable/MSIX archive checks remain in place.
+Windows retains Workflow 01's Cargo registry/Git download cache and adds a separate cached **compiled release dependency graph**, keyed to the pinned Rust toolchain, Windows MSVC target and version-normalized `Cargo.lock`. The mandatory Windows artwork-integrity lane also caches its Cargo registry/Git downloads and debug test intermediates under a source-aware key; final `.exe`, `.dll` and `.pdb` test artifacts are removed before cache save. Its three locked Rust/Lofty test commands and pinned toolchain remain unchanged. Both Windows lanes report exact cache hits and elapsed compile/test time. The production lane still compiles a **fresh application executable for the exact staged commit** while Cargo fingerprints invalidate changed dependencies. The original PE x64, version/commit identity, clean native-smoke and portable/MSIX archive checks remain in place.
 
 WebGUI runs the **complete unsharded** Python/PostgreSQL/Node suite concurrently with the original Docker build/health and source-archive job. Both have independent disposable PostgreSQL services; both must pass before Yes mode can publish or No mode can report success. No tests are removed or skipped for speed.
 
