@@ -70,7 +70,11 @@ class AudioIntegritySourceContract(unittest.TestCase):
         for path in (".github/workflows/01-full-release.yml",
                      ".github/workflows/04-optimized-build-test.yml"):
             content = source(path)
-            self.assertIn("needs: [audio-integrity-webgui, audio-integrity-windows]", content)
+            prepare_header = content.split("  prepare-release:\n", 1)[1].split(
+                "    steps:\n", 1
+            )[0]
+            self.assertIn("audio-integrity-webgui", prepare_header)
+            self.assertIn("audio-integrity-windows", prepare_header)
             self.assertIn("needs.audio-integrity-webgui.result == 'success'", content)
             self.assertIn("needs.audio-integrity-windows.result == 'success'", content)
             self.assertIn("WEBGUI_INTEGRITY_RESULT:", content)
