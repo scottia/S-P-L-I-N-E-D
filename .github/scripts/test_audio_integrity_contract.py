@@ -79,12 +79,19 @@ class AudioIntegritySourceContract(unittest.TestCase):
             self.assertIn("needs.audio-integrity-windows.result == 'success'", content)
             self.assertIn("WEBGUI_INTEGRITY_RESULT:", content)
             self.assertIn("WINDOWS_INTEGRITY_RESULT:", content)
-            self.assertIn("unconditional Windows and WebGUI audio-integrity gate", content)
             self.assertIn("test_audio_integrity.py -v", content)
             self.assertIn("test_cross_format_cover_overwrite.py -v", content)
             self.assertIn("artwork_integrity::tests -- --nocapture", content)
             self.assertIn("local_artwork -- --nocapture", content)
             self.assertNotIn("  audio-integrity:\n", content)
+        self.assertIn(
+            "unconditional Windows and WebGUI audio-integrity gate",
+            source(".github/workflows/01-full-release.yml"),
+        )
+        optimized = source(".github/workflows/04-optimized-build-test.yml")
+        self.assertIn("selected-target audio-integrity gate", optimized)
+        self.assertIn("needs.audio-integrity-webgui.result == 'skipped'", optimized)
+        self.assertIn("needs.audio-integrity-windows.result == 'skipped'", optimized)
 
 
 if __name__ == "__main__":
