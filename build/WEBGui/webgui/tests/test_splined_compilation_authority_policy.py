@@ -94,6 +94,140 @@ class CompilationAuthorityPolicyTests(unittest.TestCase):
             self.assertEqual(attempts, 3)
             self.assertEqual(ID3(track).getall("APIC")[0].data, artwork.getvalue())
 
+    def test_real_mp3_writer_preserves_id3v24_multivalue_and_musicbrainz(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            track = Path(directory) / "tagged.mp3"
+            tags = ID3()
+            tags.add(TIT2(encoding=3, text=["Fooey"]))
+            tags.add(TPE1(encoding=3, text=["Sammy Hagar", "Taj Mahal"]))
+            tags.add(TPE2(encoding=3, text=["Sammy Hagar", "Sammy Hagar & Friends"]))
+            tags.add(TXXX(encoding=3, desc="MusicBrainz Artist Id", text=[ARTIST_ID]))
+            tags.add(TXXX(encoding=3, desc="CUSTOM MULTIVALUE", text=["One", "Two"]))
+            tags.save(track, v2_version=4)
+            before = ID3(track)
+            picture = BytesIO()
+            Image.new("RGB", (32, 32), "red").save(picture, "PNG")
+
+            policy.replace_embedded_artwork(
+                track, picture.getvalue(), "png", {"width": 32, "height": 32}
+            )
+
+            after = ID3(track)
+            self.assertEqual(after.version, before.version)
+            for key in ("TIT2", "TPE1", "TPE2", "TXXX:MusicBrainz Artist Id", "TXXX:CUSTOM MULTIVALUE"):
+                self.assertEqual(repr(after[key]), repr(before[key]), key)
+            self.assertEqual(after["TPE1"].text, ["Sammy Hagar", "Taj Mahal"])
+            self.assertEqual(after["TXXX:CUSTOM MULTIVALUE"].text, ["One", "Two"])
+            self.assertEqual(after.getall("APIC")[0].data, picture.getvalue())
+
+    def test_integrity_rejects_mutated_artist_before_original_is_replaced(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            track = Path(directory) / "tagged.mp3"
+            tags = ID3()
+            tags.add(TPE1(encoding=3, text=["Sammy Hagar", "Taj Mahal"]))
+            tags.save(track, v2_version=4)
+            original = track.read_bytes()
+            picture = BytesIO()
+            Image.new("RGB", (32, 32), "blue").save(picture, "PNG")
+            real_writer = policy._replace_id3_front
+
+            def injected_mutation(path, content, mime):
+                real_writer(path, content, mime)
+                edited = ID3(path)
+                edited["TPE1"].text = ["Corrupted Artist"]
+                edited.save(path, v2_version=4)
+
+            with patch.object(policy, "_replace_id3_front", side_effect=injected_mutation):
+                with self.assertRaisesRegex(ValueError, "INTEGRITY VIOLATION"):
+                    policy.replace_embedded_artwork(
+                        track, picture.getvalue(), "png", {"width": 32, "height": 32}
+                    )
+            self.assertEqual(track.read_bytes(), original)
+
+    def test_integrity_rejects_musicbrainz_tag_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            track = Path(directory) / "original.mp3"
+            tags = ID3()
+            tags.add(TPE1(encoding=3, text=["Sammy Hagar", "Taj Mahal"]))
+            tags.add(TXXX(encoding=3, desc="MusicBrainz Artist Id", text=[ARTIST_ID]))
+            tags.save(track, v2_version=4)
+            original = track.read_bytes()
+            picture = BytesIO()
+            Image.new("RGB", (32, 32), "green").save(picture, "PNG")
+            valid = policy._replace_id3_front
+
+            def corrupt_mbids(path, content, mime):
+                valid(path, content, mime)
+                mutated = ID3(path)
+                mutated["TXXX:MusicBrainz Artist Id"].text = [OTHER_ARTIST_ID]
+                mutated.save(path, v2_version=4)
+
+            with patch.object(policy, "_replace_id3_front", side_effect=corrupt_mbids):
+                with self.assertRaisesRegex(ValueError, "INTEGRITY VIOLATION"):
+                    policy.replace_embedded_artwork(
+                        track, picture.getvalue(), "png", {"width": 32, "height": 32}
+                    )
+            self.assertEqual(track.read_bytes(), original)
+
+    def test_integrity_rejects_id3_version_downgrade(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            track = Path(directory) / "v24.mp3"
+            tags = ID3()
+            tags.add(TPE1(encoding=3, text=["Sammy Hagar", "Taj Mahal"]))
+            tags.save(track, v2_version=4)
+            original = track.read_bytes()
+            picture = BytesIO()
+            Image.new("RGB", (32, 32), "green").save(picture, "PNG")
+            valid = policy._replace_id3_front
+
+            def downgrade(path, content, mime):
+                valid(path, content, mime)
+                ID3(path).save(path, v2_version=3)
+
+            with patch.object(policy, "_replace_id3_front", side_effect=downgrade):
+                with self.assertRaisesRegex(ValueError, "INTEGRITY VIOLATION"):
+                    policy.replace_embedded_artwork(
+                        track, picture.getvalue(), "png", {"width": 32, "height": 32}
+                    )
+            self.assertEqual(track.read_bytes(), original)
+
+    def test_integrity_rejects_modified_mp3_audio_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            track = Path(directory) / "audio.mp3"
+            tags = ID3()
+            tags.add(TPE1(encoding=3, text=["Artist"]))
+            tags.save(track, v2_version=4)
+            original = track.read_bytes()
+            picture = BytesIO()
+            Image.new("RGB", (32, 32), "green").save(picture, "PNG")
+            valid = policy._replace_id3_front
+
+            def corrupt_audio(path, content, mime):
+                valid(path, content, mime)
+                with path.open("ab") as writer:
+                    writer.write(b"MODIFIED MPEG FRAME DATA")
+
+            with patch.object(policy, "_replace_id3_front", side_effect=corrupt_audio):
+                with self.assertRaisesRegex(ValueError, "INTEGRITY VIOLATION"):
+                    policy.replace_embedded_artwork(
+                        track, picture.getvalue(), "png", {"width": 32, "height": 32}
+                    )
+            self.assertEqual(track.read_bytes(), original)
+
+    def test_real_mp3_writer_never_converts_id3v23_to_v24(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            track = Path(directory) / "v23.mp3"
+            tags = ID3()
+            tags.add(TPE1(encoding=1, text=["Sammy Hagar"]))
+            tags.save(track, v2_version=3)
+            original = ID3(track)
+            picture = BytesIO()
+            Image.new("RGB", (32, 32), "green").save(picture, "PNG")
+            policy.replace_embedded_artwork(
+                track, picture.getvalue(), "png", {"width": 32, "height": 32}
+            )
+            self.assertEqual(ID3(track).version, original.version)
+
     def test_album_and_track_eligibility_use_local_tags_only(self) -> None:
         missing_album = SimpleNamespace(
             compilation="1",

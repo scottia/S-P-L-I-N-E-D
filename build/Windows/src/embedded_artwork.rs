@@ -4,11 +4,11 @@
 //! complete audio-file copy beside the source, changes only the front picture,
 //! verifies the staged tag, and then uses SPLINED's recoverable replacement.
 
-use crate::safe_write::{transform_existing_file, transform_existing_file_with_trace};
+use crate::safe_write::transform_existing_file_with_trace;
 use lofty::config::WriteOptions;
 use lofty::file::TaggedFileExt;
 use lofty::picture::{MimeType, Picture, PictureType};
-use lofty::tag::{ItemKey, Tag, TagExt};
+use lofty::tag::{Tag, TagExt};
 use sha2::{Digest, Sha256};
 use std::io::Cursor;
 use std::path::Path;
@@ -99,6 +99,13 @@ pub fn replace_embedded_front_with_trace(
         track_path,
         "compilation embedded artwork",
         move |staged| {
+            if staged.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("mp3")) {
+                let mime = match picture.mime_type() {
+                    Some(MimeType::Png) => "image/png",
+                    _ => "image/jpeg",
+                };
+                return crate::artwork_integrity::write_mp3_front(staged, artwork, mime);
+            }
             let tagged = lofty::read_from_path(staged).map_err(|error| {
                 format!(
                     "Unable to read staged audio tags from {}: {error}",
@@ -120,6 +127,9 @@ pub fn replace_embedded_front_with_trace(
                 })
         },
         move |staged| {
+            // Protect ID3 version, each non-front frame (including MusicBrainz),
+            // other audio metadata and the complete audio stream before commit.
+            crate::artwork_integrity::verify_only_front_artwork(track_path, staged)?;
             let tagged = lofty::read_from_path(staged).map_err(|error| {
                 format!(
                     "Unable to verify staged audio tags from {}: {error}",
@@ -144,72 +154,83 @@ pub fn replace_embedded_front_with_trace(
     )
 }
 
-/// Persist a user-validated MusicBrainz Recording/Artist identity without
-/// touching audio frames, embedded artwork, or the Album/Release identity.
-/// The same recoverable staging path used for artwork writes protects the
-/// source track from a partial tag save.
-pub fn replace_musicbrainz_identity(
-    track_path: &Path,
-    recording_mbid: &str,
-    artist_mbid: &str,
-) -> Result<(), String> {
-    let recording_mbid = recording_mbid.trim().to_ascii_lowercase();
-    let artist_mbid = artist_mbid.trim().to_ascii_lowercase();
-    if recording_mbid.is_empty() || artist_mbid.is_empty() {
-        return Err("Recording and Artist MBIDs are both required.".to_string());
-    }
-    let expected_recording = recording_mbid.clone();
-    let expected_artist = artist_mbid.clone();
-    transform_existing_file(
-        track_path,
-        "MusicBrainz track identity",
-        move |staged| {
-            let tagged = lofty::read_from_path(staged).map_err(|error| {
-                format!(
-                    "Unable to read staged MusicBrainz tags from {}: {error}",
-                    staged.display()
-                )
-            })?;
-            let mut tag = tagged
-                .primary_tag()
-                .cloned()
-                .unwrap_or_else(|| Tag::new(tagged.primary_tag_type()));
-            tag.remove_key(ItemKey::MusicBrainzRecordingId);
-            tag.remove_key(ItemKey::MusicBrainzArtistId);
-            tag.insert_text(ItemKey::MusicBrainzRecordingId, recording_mbid.clone());
-            tag.insert_text(ItemKey::MusicBrainzArtistId, artist_mbid.clone());
-            tag.save_to_path(staged, WriteOptions::default())
-                .map_err(|error| {
-                    format!(
-                        "Unable to save staged MusicBrainz tags to {}: {error}",
-                        staged.display()
-                    )
-                })
-        },
-        move |staged| {
-            let tagged = lofty::read_from_path(staged).map_err(|error| {
-                format!(
-                    "Unable to verify staged MusicBrainz tags from {}: {error}",
-                    staged.display()
-                )
-            })?;
-            let matches = tagged.tags().iter().any(|tag| {
-                tag.get_string(ItemKey::MusicBrainzRecordingId)
-                    .is_some_and(|value| value.eq_ignore_ascii_case(&expected_recording))
-                    && tag
-                        .get_string(ItemKey::MusicBrainzArtistId)
-                        .is_some_and(|value| value.eq_ignore_ascii_case(&expected_artist))
-            });
-            matches.then_some(()).ok_or_else(|| {
-                "Staged audio file did not retain the validated MusicBrainz identity.".to_string()
-            })
-        },
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn encode_synchsafe(value: usize) -> Result<[u8; 4], String> {
+        if value >= (1 << 28) {
+            return Err("ID3 frame size exceeds synchsafe range".to_string());
+        }
+        Ok([
+            ((value >> 21) & 0x7f) as u8,
+            ((value >> 14) & 0x7f) as u8,
+            ((value >> 7) & 0x7f) as u8,
+            (value & 0x7f) as u8,
+        ])
+    }
+
+    #[test]
+    fn id3v24_front_picture_never_alters_multivalue_artist_or_mb_frames() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credits.mp3");
+        let mut tag = Vec::new();
+        fn frame(id: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+            let mut encoded = Vec::new();
+            encoded.extend_from_slice(id);
+            encoded.extend_from_slice(&encode_synchsafe(payload.len()).unwrap());
+            encoded.extend_from_slice(&[0, 0]);
+            encoded.extend_from_slice(payload);
+            encoded
+        }
+        tag.extend_from_slice(&frame(b"TPE1", b"\x03Sammy Hagar\x00Taj Mahal"));
+        tag.extend_from_slice(&frame(b"TPE2", b"\x03Sammy Hagar\x00Sammy Hagar & Friends"));
+        tag.extend_from_slice(&frame(
+            b"TXXX", b"\x03MusicBrainz Artist Id\x00aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
+        ));
+        let mut original = b"ID3\x04\x00\x00".to_vec();
+        original.extend_from_slice(&encode_synchsafe(tag.len()).unwrap());
+        original.extend_from_slice(&tag);
+        // Existing MPEG payload is copied byte-for-byte, without decoding.
+        let mut audio = vec![0u8; 417 * 8];
+        for frame in audio.chunks_exact_mut(417) {
+            frame[..4].copy_from_slice(&[0xff, 0xfb, 0x90, 0x64]);
+        }
+        original.extend_from_slice(&audio);
+        std::fs::write(&path, &original).unwrap();
+
+        // Save a separate immutable source for pre-/post-write comparison.
+        let baseline = dir.path().join("untouched-original.mp3");
+        std::fs::copy(&path, &baseline).unwrap();
+        // Exercise the production staged writer and lofty readback, not
+        // merely a mocked or internal byte-stream helper.
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(1, 1)
+            .write_to(&mut encoded, image::ImageFormat::Png).unwrap();
+        replace_embedded_front(&path, &encoded.into_inner()).unwrap();
+        crate::artwork_integrity::verify_only_front_artwork(&baseline, &path).unwrap();
+        assert!(std::fs::read(&path).unwrap().ends_with(&audio));
+
+        let mut tampered = std::fs::read(&path).unwrap();
+        let index = tampered.windows(5).position(|w| w == b"Sammy").unwrap();
+        tampered[index] = b'X';
+        std::fs::write(&path, tampered).unwrap();
+        assert!(crate::artwork_integrity::verify_only_front_artwork(&baseline, &path).is_err());
+    }
+
+    #[test]
+    fn id3_major_version_conversion_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("version.mp3");
+        let mut input = b"ID3\x04\x00\x00\x00\x00\x00\x00".to_vec();
+        input.extend_from_slice(b"\xff\xfb\x90\x64");
+        std::fs::write(&path, &input).unwrap();
+        let baseline = dir.path().join("untouched-original.mp3");
+        std::fs::copy(&path, &baseline).unwrap();
+        input[3] = 3;
+        std::fs::write(&path, input).unwrap();
+        assert!(crate::artwork_integrity::verify_only_front_artwork(&baseline, &path).is_err());
+    }
 
     #[test]
     fn unsupported_image_is_rejected_before_track_mutation() {

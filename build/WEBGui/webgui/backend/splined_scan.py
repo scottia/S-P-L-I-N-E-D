@@ -1995,7 +1995,7 @@ def run_manual_compilation_album(
                             "authority_saved",
                             recording_mbid=authority["recording_id"],
                             artist_mbids=authority["artist_id"],
-                            message="Validated MusicBrainz Recording and Artist IDs saved to this track.",
+                            message="Validated MusicBrainz identity for this selection; audio tags were not changed.",
                         )
                     for release_item in resolution.candidates:
                         attempted_release = (
@@ -2294,7 +2294,7 @@ def run_manual_compilation_album(
                     _manual_unresolved(
                         track,
                         "Artwork was embedded and verified, but authoritative "
-                        "Recording and Artist IDs were not saved; the track remains pending",
+                        "Recording and Artist authority remains unresolved; the track remains pending",
                         unresolved_items,
                     )
                 coordination_policy = comp_report_policy()["coordination"]

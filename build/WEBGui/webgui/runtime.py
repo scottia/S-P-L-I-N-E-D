@@ -132,7 +132,7 @@ class Runtime:
     def require_write(self):
         if self.cfg.get("mode", "read").lower() != "write":
             raise PermissionError(
-                "Enable Live Write in Settings before writing artwork or track tags"
+                "Enable Live Write in Settings before writing artwork"
             )
 
     def settings(self):

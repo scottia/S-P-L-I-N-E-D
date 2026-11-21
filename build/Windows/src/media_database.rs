@@ -3406,9 +3406,8 @@ pub fn cached_artist_musicbrainz_identity(
     Ok((ids.len() == 1 && extract_mbids(&ids[0]).len() == 1).then(|| ids[0].clone()))
 }
 
-/// Update the already-indexed track row after the same IDs have been safely
-/// written and verified in the media file. Release identity intentionally is
-/// not changed: fallback Albums remain Albums without a Release ID.
+/// Record validated COMP MusicBrainz identity in SQLite only. The media file
+/// is read-only for every MB field. Fallback Albums retain their missing Release ID.
 pub fn persist_track_musicbrainz_identity(
     config: &Config,
     track_path: &Path,

@@ -341,6 +341,41 @@ class CanonicalCoverOverwriteTests(unittest.TestCase):
                 ["cover.jpg", "cover.webp"],
             )
 
+    def test_existing_webp_is_read_only_source_for_jpeg_still(self) -> None:
+        with TemporaryDirectory(dir=ISOLATED_FIXTURE_ROOT) as directory:
+            album = Path(directory)
+            source = image_bytes("WEBP", "green")
+            webp = album / "cover.webp"
+            webp.write_bytes(source)
+            (album / "cover.jpg").write_bytes(image_bytes("JPEG", "red"))
+            services = self._services(album, source)
+            services.preview = lambda _payload: {"image": "/prepared", "format": "webp"}
+
+            result = Services.write_cover.__wrapped__(services, {"album_id": "album-1"})
+            self.assertEqual(webp.read_bytes(), source)
+            self.assertEqual(result["written"], ["cover.jpg"])
+            with Image.open(album / "cover.jpg") as still:
+                self.assertEqual(still.format, "JPEG")
+            self.assertEqual(
+                [p.name for p in core.canonical_cover_files(album, "cover")],
+                ["cover.jpg", "cover.webp"],
+            )
+
+    def test_different_webp_output_cannot_replace_existing_source(self) -> None:
+        with TemporaryDirectory(dir=ISOLATED_FIXTURE_ROOT) as directory:
+            album = Path(directory)
+            original = image_bytes("WEBP", "green")
+            incoming = image_bytes("WEBP", "blue")
+            webp = album / "cover.webp"
+            webp.write_bytes(original)
+            still = album / "cover.jpg"
+            still.write_bytes(image_bytes("JPEG", "red"))
+            still_original = still.read_bytes()
+            with self.assertRaisesRegex(core.SplinedError, "immutable"):
+                core.install_canonical_cover(webp, incoming, "cover")
+            self.assertEqual(webp.read_bytes(), original)
+            self.assertEqual(still.read_bytes(), still_original)
+
     def test_live_webgui_failed_preserve_write_restores_original_layout(self) -> None:
         with TemporaryDirectory(dir=ISOLATED_FIXTURE_ROOT) as directory:
             album = Path(directory)

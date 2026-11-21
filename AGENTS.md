@@ -96,6 +96,34 @@ These rankings and separations have **already been approved**. Never
 request new approval merely to restate or document them; investigate
 implementation drift independently against the exact policy.
 
+## 3a. Universal artwork-only media-write authority
+
+The owner-approved `AUDIO-INTEGRITY-001..006` requirements in
+`docs/POLICY-REGISTER.md` prohibit **every** non-artwork audio-tag mutation.
+SPLINED is an artwork app, not a tagger. An embedded front artwork operation
+may update the intended picture only; preserve incoming ID3v2.x version,
+multi-value boundaries, unknown/custom frames, every MusicBrainz extended
+field, non-front artwork and audio bytes. **Never convert an ID3 version**.
+
+The independent `schema/comp-report-policy.json` retains fuzzy Artist/Recording
+discovery, result percentage ranking, single-track COMP artwork selection,
+batch orchestration, identity requirements and coordination rules. It grants
+**no permission to write MusicBrainz IDs to audio files**. Never turn a
+selected alternate cover or manually corrected identity into audio metadata.
+
+All Windows and WebGUI media writers must stage and verify before publication.
+If preservation is not provable, reject the write with the original untouched.
+Maintain mandatory real-writer and deliberately failing mutation tests in PR
+and both release workflows, independent of fast/strict validation choices.
+A source change that introduces audio-tag editing is prohibited; changing
+tests, policy JSON or a workflow to hide it is not an approved fix.
+
+**Immutable WebP source:** Existing `cover.webp` is read-only (including its
+animation and exact bytes); the only permitted derivation is a separate static
+`cover.jpg` still after an explicit artwork WRITE. Do not rename, remove,
+overwrite or re-encode the original WebP. Require real Windows and WebGUI
+folder-artwork tests that reject an attempted WebP replacement.
+
 ## 4. Protected contracts and source ownership
 
 - BOTH `schema/media-state-classification.json` and
@@ -122,6 +150,14 @@ implementation drift independently against the exact policy.
   `build/WEBGui/docker/config.example.toml`. Shared Git-cliff is
   `release/cliff.toml`. Do not restore retired root-native Linux CLI,
   root Config, root fixtures, root cliff or obsolete source paths.
+
+### Non-negotiable audio write authorization
+
+**AUDIO-INTEGRITY-001..006** in `docs/POLICY-REGISTER.md` bind all Rust/Slint Windows and Python WebGUI code. SPLINED is an **artwork-only manager, never an audio tagger**. The only authorized alteration to an audio file is its selected embedded front picture. ID3v2.3/v2.4 input must retain its original version and exact non-artwork frame/value/multivalue structure; no version conversion, tag normalization, MusicBrainz metadata rewrite or audio-stream alteration is allowed. When frame-level verification cannot prove preservation, the artwork operation must fail without replacing the original. Never add an exception based on existing code, MBID matching, or a successful artwork readback.
+
+**COMP is a separate read/matching/artwork-selection policy.** Preserve `schema/comp-report-policy.json` entirely, including percentage-based results, fuzzy Artist recovery, batch revision pinning, verified-write events and unresolved-authority coordination. **COMP must never write MusicBrainz metadata to any media file.** The same universal non-artwork metadata prohibition applies to ordinary Album thumbnail embedding. Keep the canonical media-state JSON, existing classifications, status dots and COMP-track colors unchanged.
+
+Every PR and Workflow 01/04 release path must run **mandatory fail-closed real-writer audio integrity tests for both clients**, even in fast/validation-only mode. A skipped test is not a pass. A standalone schema JSON validation or optional Windows advisory does not certify audio write safety. Protect the integrity tests, writer guards and CI calls from removal or dilution without separate, narrow owner authorization.
 
 ## 5. Required PR validation and merge stop conditions
 

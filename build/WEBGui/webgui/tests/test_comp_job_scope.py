@@ -253,7 +253,7 @@ class CompJobScopeTests(unittest.TestCase):
                 "bb505d8f86dddf3f2a9513df97de84be1a117ec6d1ffd0a6d1c3e02399217098",
             )
 
-    def test_validated_authority_write_is_atomic_and_preserves_embedded_art(self):
+    def test_validated_comp_authority_never_writes_media_tags(self):
         with TemporaryDirectory() as directory:
             music = Path(directory) / "music"
             music.mkdir()
@@ -278,11 +278,13 @@ class CompJobScopeTests(unittest.TestCase):
             recording = "e1efc38f-1f86-4c2c-bd90-df1e0796f789"
             artist = "291dcfb8-b31c-496a-905b-9955509d75b6"
 
+            original_file_bytes = track_path.read_bytes()
             service._persist_comp_track_authority(track, recording, artist)
 
             verified = FLAC(track_path)
-            self.assertEqual(verified["musicbrainz_trackid"], [recording])
-            self.assertEqual(verified["musicbrainz_artistid"], [artist])
+            self.assertEqual(track_path.read_bytes(), original_file_bytes)
+            self.assertNotIn("musicbrainz_trackid", verified)
+            self.assertNotIn("musicbrainz_artistid", verified)
             self.assertEqual(verified.pictures[0].data, original_art.getvalue())
 
     def test_multi_value_id3_artist_is_json_safe_and_preserves_each_credit(self):
