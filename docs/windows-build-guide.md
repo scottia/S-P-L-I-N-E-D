@@ -38,19 +38,22 @@ the exact current `origin/dev` commit. It never creates a PR, stamps source, or
 writes to either branch. Its numeric tag points directly at that selected dev
 source commit.
 
-Choose **ALL**, **WINDOWS**, or **WEBGUI**, then choose **FULL SOURCE** for a
-clean compile or **PARTIAL UPDATE** for a cache-assisted compile. Both Windows
-modes emit and audit the complete optimized executable, portable ZIP and MSIX;
-partial does not create a delta package. **BUILD ONLY** retains Actions
-artifacts without publication. **CREATE OR COMPLETE RELEASE** creates a new
-release or builds only a missing target for the current release without
+Choose **ALL**, **WINDOWS**, or **WEBGUI**. Workflow 10 compares the committed
+versions on `main` and `dev`: a match automatically selects cache-assisted
+**PARTIAL UPDATE**, while a different dev version selects clean **FULL SOURCE**.
+Both Windows modes emit and audit the complete optimized executable, portable
+ZIP and MSIX; partial does not create a delta package. **BUILD ONLY, REPORT**
+records the comparison, policy validation and Store-credential readiness and
+retains Actions artifacts without publication. **COMPLETE RELEASE** creates a
+new release or builds only a missing target for the current release without
 overwriting an existing asset.
 
 Windows builds always create the downloadable
-`splined-windows-store-submission` review ZIP. Workflow 10 never authenticates
-to or writes Partner Center, so an existing Store draft is untouched. Use the
-separate Workflow 01 or Store recovery path only for an explicitly authorized
-automated submission.
+`splined-windows-store-submission` review ZIP. **LOCAL REVIEW ONLY** never
+authenticates to or writes Partner Center, so an existing Store draft is
+untouched. The explicit **AUTO SUBMIT** choice is available only for a confirmed
+Windows/ALL release; it validates the existing credentials, retains a separate
+submission audit artifact and submits the validated package for certification.
 
 Workflow 10 relies on required source-PR Audio Integrity results for the exact
 commit and does not rerun the Windows or WebGUI real-writer suites. It verifies

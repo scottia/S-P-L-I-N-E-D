@@ -12,35 +12,34 @@ on:
           - "ALL"
           - "WINDOWS"
           - "WEBGUI"
-      compile_mode:
-        description: "FULL SOURCE performs clean compiles. PARTIAL UPDATE reuses validated caches but still emits complete distributables."
-        required: true
-        default: "PARTIAL UPDATE"
-        type: choice
-        options:
-          - "PARTIAL UPDATE"
-          - "FULL SOURCE"
       outcome:
-        description: "BUILD ONLY validates complete artifacts without publishing. CREATE OR COMPLETE RELEASE safely adds only missing target outputs."
+        description: "COMPLETE RELEASE safely adds missing release outputs. BUILD ONLY, REPORT validates and retains audited artifacts without publishing."
         required: true
-        default: "CREATE OR COMPLETE RELEASE"
+        default: "COMPLETE RELEASE"
         type: choice
         options:
-          - "CREATE OR COMPLETE RELEASE"
-          - "BUILD ONLY"
+          - "COMPLETE RELEASE"
+          - "BUILD ONLY, REPORT"
+      store_action:
+        description: "Windows/ALL: retain the local review bundle, or additionally submit the validated package to Partner Center after release publication."
+        required: true
+        default: "LOCAL REVIEW ONLY"
+        type: choice
+        options:
+          - "LOCAL REVIEW ONLY"
+          - "AUTO SUBMIT"
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ inputs.outcome == 'CREATE OR COMPLETE RELEASE' && 'splined-unified-release' || format('splined-unified-build-{0}', github.ref) }}
+  group: ${{ inputs.outcome == 'COMPLETE RELEASE' && 'splined-unified-release' || format('splined-unified-build-{0}', github.ref) }}
   cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: "1.99.0"
   WINDOWS_TARGET: "x86_64-pc-windows-msvc"
-  CARGO_INCREMENTAL: ${{ inputs.compile_mode == 'FULL SOURCE' && '0' || '1' }}
 
 jobs:
   resolve-plan:
@@ -49,8 +48,10 @@ jobs:
     outputs:
       platform: ${{ steps.plan.outputs.platform }}
       target_label: ${{ steps.plan.outputs.target_label }}
+      compile_mode: ${{ steps.plan.outputs.compile_mode }}
       clean: ${{ steps.plan.outputs.clean }}
       store_draft: ${{ steps.plan.outputs.store_draft }}
+      store_submit: ${{ steps.plan.outputs.store_submit }}
       publish_ghcr: ${{ steps.plan.outputs.publish_ghcr }}
       release_confirmation: ${{ steps.plan.outputs.release_confirmation }}
       release_version: ${{ steps.plan.outputs.release_version }}
@@ -72,8 +73,8 @@ jobs:
         shell: bash
         env:
           TARGET_SELECTION: ${{ inputs.target }}
-          COMPILE_MODE: ${{ inputs.compile_mode }}
           OUTCOME: ${{ inputs.outcome }}
+          STORE_ACTION: ${{ inputs.store_action }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -85,6 +86,10 @@ jobs:
           git fetch --force origin main dev
           MAIN_SHA=$(git rev-parse origin/main)
           DEV_SHA=$(git rev-parse origin/dev)
+          if ! git merge-base --is-ancestor "$MAIN_SHA" "$DEV_SHA"; then
+            echo "::error title=Unsafe branch relationship::origin/dev must contain origin/main before Workflow 10 can use it as a release candidate."
+            exit 1
+          fi
           MAIN_TREE=$(git rev-parse origin/main^{tree})
           DEV_TREE=$(git rev-parse origin/dev^{tree})
           if [ "$MAIN_TREE" = "$DEV_TREE" ]; then
@@ -119,6 +124,14 @@ jobs:
           PY
           )
 
+          if [ "${MAIN_VERSION:-}" = "$SOURCE_VERSION" ]; then
+            compile_mode="PARTIAL UPDATE"
+            clean=false
+          else
+            compile_mode="FULL SOURCE"
+            clean=true
+          fi
+
           case "$TARGET_SELECTION" in
             "ALL") platform="All"; target_label="Windows / WebGUI"; build_windows=true; build_webgui=true ;;
             "WINDOWS") platform="Windows"; target_label="Windows"; build_windows=true; build_webgui=false ;;
@@ -128,15 +141,25 @@ jobs:
               exit 1
               ;;
           esac
-          case "$COMPILE_MODE" in
-            "FULL SOURCE") clean=true ;;
-            "PARTIAL UPDATE") clean=false ;;
-            *) echo "::error title=Invalid compile mode::$COMPILE_MODE"; exit 1 ;;
-          esac
           case "$OUTCOME" in
-            "CREATE OR COMPLETE RELEASE") release_confirmation="Create release now" ;;
-            "BUILD ONLY") release_confirmation="Stop - no release" ;;
+            "COMPLETE RELEASE") release_confirmation="Create release now" ;;
+            "BUILD ONLY, REPORT") release_confirmation="Stop - no release" ;;
             *) echo "::error title=Invalid Workflow 10 outcome::$OUTCOME"; exit 1 ;;
+          esac
+          case "$STORE_ACTION" in
+            "LOCAL REVIEW ONLY") store_submit=false ;;
+            "AUTO SUBMIT")
+              if [ "$OUTCOME" != "COMPLETE RELEASE" ]; then
+                echo "::error title=Store submission requires a release::AUTO SUBMIT is unavailable for BUILD ONLY, REPORT."
+                exit 1
+              fi
+              if [ "$TARGET_SELECTION" = "WEBGUI" ]; then
+                echo "::error title=Windows target required::AUTO SUBMIT requires WINDOWS or ALL."
+                exit 1
+              fi
+              store_submit=true
+              ;;
+            *) echo "::error title=Invalid Store action::$STORE_ACTION"; exit 1 ;;
           esac
 
           release_version="$SOURCE_VERSION"
@@ -144,7 +167,7 @@ jobs:
           existing_release=false
           if gh release view "$SOURCE_VERSION" >/tmp/release.json 2>/dev/null; then
             existing_release=true
-            if [ "$OUTCOME" = "CREATE OR COMPLETE RELEASE" ]; then
+            if [ "$OUTCOME" = "COMPLETE RELEASE" ]; then
               mapfile -t existing_assets < <(gh release view "$SOURCE_VERSION" --json assets --jq '.assets[].name')
               if printf '%s\n' "${existing_assets[@]}" | grep -qx 'splined-windows-x86_64.zip'; then
                 build_windows=false
@@ -168,12 +191,17 @@ jobs:
           fi
           store_draft=$build_windows
           publish_ghcr=$build_webgui
+          if [ "$build_windows" != true ]; then
+            store_submit=false
+          fi
 
           {
             echo "platform=$platform"
             echo "target_label=$target_label"
+            echo "compile_mode=$compile_mode"
             echo "clean=$clean"
             echo "store_draft=$store_draft"
+            echo "store_submit=$store_submit"
             echo "publish_ghcr=$publish_ghcr"
             echo "release_confirmation=$release_confirmation"
             echo "release_version=$release_version"
@@ -190,7 +218,7 @@ jobs:
             echo "## Workflow 10 resolved build plan"
             echo
             echo "- Requested target: \`$TARGET_SELECTION\`"
-            echo "- Compile mode: \`$COMPILE_MODE\`"
+            echo "- Automatic compile mode: \`$compile_mode\` (main \`${MAIN_VERSION:-unknown}\`; dev \`$SOURCE_VERSION\`)"
             echo "- Workflow definition branch: \`$GITHUB_REF_NAME\`"
             echo "- Main commit/version: \`$MAIN_SHA\` / \`${MAIN_VERSION:-unknown}\`"
             echo "- Selected dev source: \`$DEV_SHA\` / \`$SOURCE_VERSION\`"
@@ -199,14 +227,85 @@ jobs:
             echo "- Build Windows now: \`$build_windows\`"
             echo "- Build WebGUI now: \`$build_webgui\`"
             echo "- Existing release completion: \`$existing_release\`"
-            echo "- Windows Store: local review bundle only; never submit"
+            echo "- Windows Store action: \`$STORE_ACTION\`; submit after release: \`$store_submit\`"
             echo "- Publish GHCR when WebGUI is built: \`$publish_ghcr\`"
             echo "- Outcome: \`$OUTCOME\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
+  build-only-report:
+    name: BUILD ONLY, REPORT — source, policy and credential audit
+    needs: resolve-plan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact dev comparison source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.resolve-plan.outputs.source_sha }}
+          fetch-depth: 0
+
+      - name: Validate source versions and canonical policy contracts
+        shell: bash
+        env:
+          PYTHONPATH: .:build/WEBGui:build/WEBGui/webgui/backend
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/validate_release_policy_contracts.py
+          python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
+
+      - name: Confirm Microsoft Store credential readiness without authentication
+        id: store-credentials
+        shell: bash
+        env:
+          BUILD_WINDOWS: ${{ needs.resolve-plan.outputs.build_windows }}
+          STORE_SUBMIT: ${{ needs.resolve-plan.outputs.store_submit }}
+          AZURE_AD_APPLICATION_CLIENT_ID: ${{ secrets.AZURE_AD_APPLICATION_CLIENT_ID }}
+          AZURE_AD_APPLICATION_SECRET: ${{ secrets.AZURE_AD_APPLICATION_SECRET }}
+          AZURE_AD_TENANT_ID: ${{ secrets.AZURE_AD_TENANT_ID }}
+          SELLER_ID: ${{ secrets.SELLER_ID }}
+        run: |
+          set -euo pipefail
+          if [ "$BUILD_WINDOWS" != true ]; then
+            echo "ready=not-applicable" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          missing=()
+          for name in AZURE_AD_APPLICATION_CLIENT_ID AZURE_AD_APPLICATION_SECRET AZURE_AD_TENANT_ID SELLER_ID; do
+            if [ -z "${!name:-}" ]; then
+              missing+=("$name")
+            fi
+          done
+          if [ "${#missing[@]}" -eq 0 ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Microsoft Store credentials unavailable::Missing credential names: ${missing[*]}. Local review remains available; AUTO SUBMIT is blocked."
+            if [ "$STORE_SUBMIT" = true ]; then
+              exit 1
+            fi
+          fi
+
+      - name: Publish BUILD ONLY audit report
+        shell: bash
+        run: |
+          {
+            echo "## BUILD ONLY, REPORT"
+            echo
+            echo "- Dispatcher: \`origin/main\` at \`${{ needs.resolve-plan.outputs.main_sha }}\`"
+            echo "- Compared and selected source: \`origin/dev\` at \`${{ needs.resolve-plan.outputs.source_sha }}\`"
+            echo "- Comparison: \`${{ needs.resolve-plan.outputs.source_relation }}\`"
+            echo "- Version: \`${{ needs.resolve-plan.outputs.display_version }}\`"
+            echo "- Target: \`${{ needs.resolve-plan.outputs.target_label }}\`"
+            echo "- Automatic mode: \`${{ needs.resolve-plan.outputs.compile_mode }}\`"
+            echo "- Canonical policy and release-source checks: \`passed\`"
+            echo "- Microsoft Store credentials: \`${{ steps.store-credentials.outputs.ready }}\`"
+            echo "- Branch write, PR, tag, release, GHCR, and Store submission: \`not performed by this report\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   approve-plan:
     name: Approve resolved Workflow 10 plan
-    needs: resolve-plan
+    needs: [resolve-plan, build-only-report]
     runs-on: ubuntu-latest
     environment:
       name: workflow-10-plan-approval
@@ -218,12 +317,13 @@ jobs:
             echo "## Workflow 10 plan approved"
             echo
             echo "- Requested target: \`${{ inputs.target }}\`"
-            echo "- Compile mode: \`${{ inputs.compile_mode }}\`"
+            echo "- Automatic compile mode: \`${{ needs.resolve-plan.outputs.compile_mode }}\`"
             echo "- Branch: \`${{ github.ref_name }}\`"
             echo "- Release version: \`${{ needs.resolve-plan.outputs.display_version }}\`"
             echo "- Release target: \`${{ needs.resolve-plan.outputs.target_label }}\`"
             echo "- Clean full-source compile: \`${{ needs.resolve-plan.outputs.clean }}\`"
             echo "- Review Bundle / No Submit: \`${{ needs.resolve-plan.outputs.store_draft }}\`"
+            echo "- Partner Center AUTO SUBMIT: \`${{ needs.resolve-plan.outputs.store_submit }}\`"
             echo "- Publish GHCR: \`${{ needs.resolve-plan.outputs.publish_ghcr }}\`"
             echo "- Final option: \`${{ needs.resolve-plan.outputs.release_confirmation }}\`"
             echo "- Existing release completion: \`${{ needs.resolve-plan.outputs.existing_release }}\`"
@@ -286,15 +386,6 @@ jobs:
         with:
           ref: ${{ needs.resolve-plan.outputs.source_sha }}
           fetch-depth: 0
-
-      - name: Validate canonical policies and indexer contracts before release commit
-        shell: bash
-        env:
-          PYTHONPATH: .:build/WEBGui:build/WEBGui/webgui/backend
-        run: |
-          set -euo pipefail
-          python3 .github/scripts/validate_release_policy_contracts.py
-          python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
 
       - name: Provision exact versioned source in temporary runner commit
         id: release
@@ -826,7 +917,7 @@ jobs:
       - name: Build and smoke-test WebGUI container
         shell: bash
         env:
-          COMPILE_MODE: ${{ inputs.compile_mode }}
+          COMPILE_MODE: ${{ needs.resolve-plan.outputs.compile_mode }}
           RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
           RELEASE_COMMIT: ${{ needs.prepare-release.outputs.commit }}
         run: |
@@ -903,6 +994,7 @@ jobs:
     name: Tag exact selected dev source after successful builds
     needs:
       - resolve-plan
+      - build-only-report
       - approve-plan
       - prepare-release
       - build-windows
@@ -1432,10 +1524,148 @@ jobs:
           path: store-submission/
           if-no-files-found: error
 
+  submit-store:
+    name: Submit validated Microsoft Store update
+    needs:
+      - resolve-plan
+      - prepare-release
+      - generate-release-notes
+      - publish-release
+      - publish-store
+    if: >-
+      ${{
+        always() &&
+        needs.resolve-plan.outputs.release_confirmation == 'Create release now' &&
+        needs.resolve-plan.outputs.store_submit == 'true' &&
+        needs.resolve-plan.outputs.build_windows == 'true' &&
+        needs.prepare-release.result == 'success' &&
+        needs.generate-release-notes.result == 'success' &&
+        needs.publish-release.result == 'success' &&
+        needs.publish-store.result == 'success'
+      }}
+    runs-on: windows-latest
+    concurrency:
+      group: splined-microsoft-store-submission
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout generated release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: refs/tags/${{ needs.prepare-release.outputs.version }}
+          fetch-depth: 0
+
+      - name: Download exact Store package
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: splined-windows-store-package
+          path: store-package
+
+      - name: Require Microsoft Store credentials
+        shell: pwsh
+        env:
+          AZURE_AD_APPLICATION_CLIENT_ID: ${{ secrets.AZURE_AD_APPLICATION_CLIENT_ID }}
+          AZURE_AD_APPLICATION_SECRET: ${{ secrets.AZURE_AD_APPLICATION_SECRET }}
+          AZURE_AD_TENANT_ID: ${{ secrets.AZURE_AD_TENANT_ID }}
+          SELLER_ID: ${{ secrets.SELLER_ID }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          foreach ($name in @("AZURE_AD_APPLICATION_CLIENT_ID", "AZURE_AD_APPLICATION_SECRET", "AZURE_AD_TENANT_ID", "SELLER_ID")) {
+            if ([String]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "Required Microsoft Store publishing credential is unavailable: $name"
+            }
+          }
+
+      - name: Install pinned Microsoft Store CLI
+        uses: microsoft/microsoft-store-apppublisher@cc9910a8d59f2eb55cbb83df0a3800cf3b5300e0 # v1.4
+        with:
+          version: v0.4.3
+
+      - name: Install and verify git-cliff 2.14.2
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & release/Install-GitCliff.ps1 -InstallDirectory (Join-Path $env:RUNNER_TEMP "git-cliff-2.14.2")
+          if (((git-cliff --version) -join "`n").Trim() -cne "git-cliff 2.14.2") {
+            throw "The release-note engine must be git-cliff 2.14.2."
+          }
+
+      - name: Test Store history baseline resolution
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & release/Test-StoreBaseline.ps1 -RepositoryRoot .
+
+      - name: Authenticate Microsoft Store before resolving published history
+        shell: pwsh
+        env:
+          AZURE_AD_APPLICATION_CLIENT_ID: ${{ secrets.AZURE_AD_APPLICATION_CLIENT_ID }}
+          AZURE_AD_APPLICATION_SECRET: ${{ secrets.AZURE_AD_APPLICATION_SECRET }}
+          AZURE_AD_TENANT_ID: ${{ secrets.AZURE_AD_TENANT_ID }}
+          SELLER_ID: ${{ secrets.SELLER_ID }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          & msstore reconfigure --tenantId $env:AZURE_AD_TENANT_ID --sellerId $env:SELLER_ID --clientId $env:AZURE_AD_APPLICATION_CLIENT_ID --clientSecret $env:AZURE_AD_APPLICATION_SECRET
+
+      - name: Resolve last-published Store baseline
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          & release/Resolve-StoreBaseline.ps1 `
+            -TargetVersion $env:RELEASE_VERSION `
+            -RepositoryRoot . `
+            -ProductId 9P8G4GMBBVBS `
+            -OutputDirectory store-notes
+
+      - name: Render cumulative Store Highlights from published baseline
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          & release/Generate-StoreHighlights.ps1 `
+            -Version $env:RELEASE_VERSION `
+            -BaselineMetadataPath store-notes/STORE-BASELINE.json `
+            -RepositoryRoot . `
+            -ConfigPath release/cliff.toml `
+            -StoreTemplatePath release/templates/store-highlights.tera `
+            -OutputDirectory store-notes
+
+      - name: Assemble automatic Store submission audit artifact
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          [IO.Directory]::CreateDirectory("store-auto-submission") | Out-Null
+          Copy-Item -LiteralPath "store-package/SPLINED-x64-store-unsigned.msix" -Destination "store-auto-submission/SPLINED-x64-store-unsigned.msix"
+          Copy-Item -LiteralPath "store-notes/STORE-HIGHLIGHTS.txt" -Destination "store-auto-submission/STORE-HIGHLIGHTS.txt"
+          Copy-Item -LiteralPath "store-notes/STORE-SUBMISSION.json" -Destination "store-auto-submission/STORE-SUBMISSION.json"
+
+      - name: Upload automatic Store submission audit artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: splined-windows-store-auto-submission
+          path: store-auto-submission/
+          if-no-files-found: error
+
+      - name: Stage package and Highlights and submit for certification
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & build/Windows/package/Publish-StoreUpdate.ps1 `
+            -PackagePath store-auto-submission/SPLINED-x64-store-unsigned.msix `
+            -HighlightsPath store-auto-submission/STORE-HIGHLIGHTS.txt `
+            -BaselineMetadataPath store-auto-submission/STORE-SUBMISSION.json `
+            -ExpectedVersion ${{ needs.prepare-release.outputs.version }} `
+            -ProductId 9P8G4GMBBVBS
+
   release-summary:
     name: Release or validation-only summary
     needs:
       - resolve-plan
+      - build-only-report
       - approve-plan
       - prepare-release
       - build-windows
@@ -1445,6 +1675,7 @@ jobs:
       - publish-release
       - publish-ghcr
       - publish-store
+      - submit-store
       - webgui-tests
       - qa-artifacts
       - qa-ghcr-build
@@ -1471,6 +1702,7 @@ jobs:
           BUILD_WEBGUI: ${{ needs.resolve-plan.outputs.build_webgui }}
           EXISTING_RELEASE: ${{ needs.prepare-release.outputs.existing_release }}
           STORE_DRAFT: ${{ needs.resolve-plan.outputs.store_draft }}
+          STORE_SUBMIT: ${{ needs.resolve-plan.outputs.store_submit }}
           PUBLISH_GHCR: ${{ needs.resolve-plan.outputs.publish_ghcr }}
           PREPARE_RESULT: ${{ needs.prepare-release.result }}
           WINDOWS_RESULT: ${{ needs.build-windows.result }}
@@ -1483,6 +1715,7 @@ jobs:
           GITHUB_RELEASE_RESULT: ${{ needs.publish-release.result }}
           GHCR_RESULT: ${{ needs.publish-ghcr.result }}
           STORE_RESULT: ${{ needs.publish-store.result }}
+          STORE_SUBMIT_RESULT: ${{ needs.submit-store.result }}
         run: |
           set -euo pipefail
           failures=0
@@ -1531,6 +1764,11 @@ jobs:
           else
             expect_result "Microsoft Store selected mode" "$STORE_RESULT" skipped
           fi
+          if [ "$STORE_SUBMIT" = true ]; then
+            expect_result "Microsoft Store automatic submission" "$STORE_SUBMIT_RESULT" success
+          else
+            expect_result "Microsoft Store automatic submission" "$STORE_SUBMIT_RESULT" skipped
+          fi
 
           if [ "$failures" -ne 0 ]; then
             {
@@ -1560,13 +1798,20 @@ jobs:
             else
               echo "- GHCR: not published by the selected preset"
             fi
-            echo "- Partner Center contact: \`false\`; local review bundle: \`${{ needs.resolve-plan.outputs.store_draft }}\`"
+            echo "- Partner Center AUTO SUBMIT: \`${{ needs.resolve-plan.outputs.store_submit }}\`; local review bundle: \`${{ needs.resolve-plan.outputs.store_draft }}\`"
             if [ "${{ needs.publish-store.result }}" = "success" ]; then
-              echo "- Microsoft Store: local MSIX review ZIP retained; Partner Center was not contacted and the existing draft was untouched"
+              echo "- Microsoft Store: local MSIX review ZIP retained"
             elif [ "${{ needs.resolve-plan.outputs.store_draft }}" = true ]; then
               echo "- Microsoft Store: requested review bundle was not created"
             else
               echo "- Microsoft Store: not run (disabled or no Windows target selected)"
+            fi
+            if [ "${{ needs.submit-store.result }}" = "success" ]; then
+              echo "- Microsoft Store: validated package and Highlights submitted for certification"
+            elif [ "${{ needs.resolve-plan.outputs.store_submit }}" = true ]; then
+              echo "- Microsoft Store: requested automatic submission did not complete"
+            else
+              echo "- Microsoft Store: Partner Center was not contacted"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -1587,6 +1832,7 @@ jobs:
           RELEASE_RESULT: ${{ needs.publish-release.result }}
           GHCR_RESULT: ${{ needs.publish-ghcr.result }}
           STORE_RESULT: ${{ needs.publish-store.result }}
+          STORE_SUBMIT_RESULT: ${{ needs.submit-store.result }}
         run: |
           set -euo pipefail
           check() {
@@ -1607,6 +1853,7 @@ jobs:
           check "GitHub Release" "$RELEASE_RESULT" skipped
           check "GHCR publish" "$GHCR_RESULT" skipped
           check "Store submission" "$STORE_RESULT" skipped
+          check "Automatic Store submission" "$STORE_SUBMIT_RESULT" skipped
           if [ "$BUILD_WINDOWS" = true ]; then
             check "Windows build" "$WINDOWS_RESULT" success
           else
@@ -1620,7 +1867,7 @@ jobs:
             check "WebGUI tests" "$WEBGUI_TEST_RESULT" skipped
           fi
           {
-            echo "## Workflow 10 BUILD ONLY complete — NO RELEASE"
+            echo "## Workflow 10 BUILD ONLY, REPORT complete — NO RELEASE"
             echo "- Exact selected origin/dev source was compiled without a source or branch mutation"
             echo "- All selected build, policy, test, package and artifact checks passed"
             echo "- QA-only checksum artifacts: splined-validation-only-assets"

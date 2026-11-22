@@ -31,12 +31,17 @@ runnable from the repository.
 [Workflow 10](../.github/workflows/10-unified-build.yml) exposes three choices:
 
 - **Target:** `ALL`, `WINDOWS`, or `WEBGUI`.
-- **Compile mode:** `FULL SOURCE` or `PARTIAL UPDATE`.
-- **Outcome:** `CREATE OR COMPLETE RELEASE` or `BUILD ONLY`.
+- **Outcome:** `COMPLETE RELEASE` or `BUILD ONLY, REPORT`.
+- **Store action:** `LOCAL REVIEW ONLY` or the explicit `AUTO SUBMIT` option
+  for a Windows/ALL release.
 
-The first job fetches both branches, reports their SHAs, versions and tree
-relationship, checks out the exact `origin/dev` commit, resolves the complete
-plan, and checks for an existing release. The `workflow-10-plan-approval` environment is
+The first job runs from `main`, fetches both branches, reports their SHAs,
+versions and tree relationship, checks out the exact `origin/dev` commit,
+resolves the complete plan, and checks for an existing release. The compile
+mode is automatic: matching committed source versions select `PARTIAL UPDATE`;
+a different dev version selects `FULL SOURCE`. The workflow also requires
+`main` to be an ancestor of `dev`, so a divergent candidate stops before any
+build or publication. The `workflow-10-plan-approval` environment is
 the manual approval boundary before compilation. Repository administrators must
 configure that environment with required reviewers before the first run;
 an environment name alone does not mechanically create a pause. Once configured,
@@ -82,17 +87,23 @@ This supports Windows-first or WebGUI-first publication without rebuilding the
 completed target. A completion upload receives a target-specific checksum file
 and leaves the existing checksum asset untouched.
 
-`BUILD ONLY` builds the selected current version and retains checksum-verified
-Actions artifacts without creating a tag, GitHub Release, GHCR tag or Store
-write. If that version is already published, the exact tagged source is used.
+`BUILD ONLY, REPORT` first records the main/dev SHAs, source relationship,
+version, automatically selected compile mode, canonical-policy validation and
+Microsoft Store credential readiness. It then builds the selected current
+version and retains checksum-verified Actions artifacts without creating a
+branch write, PR, tag, GitHub Release, GHCR tag or Store write. If that version
+is already published, the exact tagged source is used.
 
 ### Publication boundaries
 
 `WINDOWS` produces the portable ZIP, update manifest, unsigned MSIX and local
-Store review ZIP. Workflow 10 never contacts Partner Center or submits a Store
-draft. `WEBGUI` produces the source archive and exact smoke-tested container
-image and publishes GHCR only for a publishing run. `ALL` performs both paths
-in parallel.
+Store review ZIP. `LOCAL REVIEW ONLY` never contacts Partner Center.
+`AUTO SUBMIT` is available only for a confirmed Windows/ALL release, verifies
+the existing four Store credentials, resolves the published Store baseline,
+retains a separate audit artifact, and submits the validated package and
+Highlights for certification. `WEBGUI` produces the source archive and exact
+smoke-tested container image and publishes that same image to GHCR only for a
+publishing run. `ALL` performs both build paths in parallel.
 
 Workflow 10 relies on required pull-request checks already completed before
 the exact source entered `dev`. It does not rerun either real-writer Audio

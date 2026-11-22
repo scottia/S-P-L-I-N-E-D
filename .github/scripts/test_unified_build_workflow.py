@@ -17,13 +17,14 @@ class UnifiedBuildWorkflowTests(unittest.TestCase):
         self.assertFalse((ROOT / ".github/workflows/04-optimized-build-test.yml").exists())
         self.assertFalse((ROOT / ".github/workflows/05-prepare-source-version.yml").exists())
 
-    def test_form_has_only_target_compile_mode_and_outcome(self):
+    def test_form_has_target_outcome_and_store_action(self):
         for value in (
-            "target:", "compile_mode:", "outcome:", '- "ALL"', '- "WINDOWS"',
-            '- "WEBGUI"', '- "FULL SOURCE"', '- "PARTIAL UPDATE"',
-            '- "CREATE OR COMPLETE RELEASE"', '- "BUILD ONLY"',
+            "target:", "outcome:", "store_action:", '- "ALL"', '- "WINDOWS"',
+            '- "WEBGUI"', '- "COMPLETE RELEASE"', '- "BUILD ONLY, REPORT"',
+            '- "LOCAL REVIEW ONLY"', '- "AUTO SUBMIT"',
         ):
             self.assertIn(value, self.source)
+        self.assertNotIn("      compile_mode:", self.source.split("permissions:", 1)[0])
         self.assertNotIn("release_version:", self.source.split("permissions:", 1)[0])
 
     def test_workflow_never_creates_or_merges_pull_requests(self):
@@ -35,6 +36,7 @@ class UnifiedBuildWorkflowTests(unittest.TestCase):
         self.assertIn('if [ "$GITHUB_REF" != "refs/heads/main" ]', self.source)
         self.assertIn("git fetch --force origin main dev", self.source)
         self.assertIn("git checkout --detach \"$DEV_SHA\"", self.source)
+        self.assertIn('git merge-base --is-ancestor "$MAIN_SHA" "$DEV_SHA"', self.source)
         self.assertIn("source_sha=$DEV_SHA", self.source)
         self.assertIn("Committed source versions disagree", self.source)
         self.assertIn('RELEASE_VERSION="$REQUESTED_VERSION"', self.source)
@@ -45,9 +47,10 @@ class UnifiedBuildWorkflowTests(unittest.TestCase):
         self.assertLess(approval, self.source.index("  build-windows:"))
         self.assertLess(approval, self.source.index("  build-webgui:"))
 
-    def test_full_and_partial_are_complete_compile_strategies(self):
-        self.assertIn('"FULL SOURCE") clean=true', self.source)
-        self.assertIn('"PARTIAL UPDATE") clean=false', self.source)
+    def test_full_and_partial_are_automatic_complete_compile_strategies(self):
+        self.assertIn('compile_mode="PARTIAL UPDATE"', self.source)
+        self.assertIn('compile_mode="FULL SOURCE"', self.source)
+        self.assertIn('if [ "${MAIN_VERSION:-}" = "$SOURCE_VERSION" ]', self.source)
         self.assertIn("cargo clean --manifest-path", self.source)
         self.assertIn("cargo build --locked --release", self.source)
         self.assertIn("--cache-from type=gha,scope=splined-workflow10-webgui", self.source)
@@ -77,10 +80,18 @@ class UnifiedBuildWorkflowTests(unittest.TestCase):
         ):
             self.assertIn(excluded, self.source)
 
-    def test_store_is_review_only(self):
+    def test_build_only_report_is_nonpublishing_and_audits_credentials(self):
+        self.assertIn("BUILD ONLY, REPORT — source, policy and credential audit", self.source)
+        self.assertIn("AZURE_AD_APPLICATION_CLIENT_ID", self.source)
+        self.assertIn("Branch write, PR, tag, release, GHCR, and Store submission", self.source)
+
+    def test_store_defaults_to_review_and_supports_explicit_auto_submit(self):
         self.assertIn("store_draft=$build_windows", self.source)
-        for forbidden in ("AZURE_AD_APPLICATION_SECRET", "msstore reconfigure", "Publish-StoreUpdate.ps1"):
-            self.assertNotIn(forbidden, self.source)
+        self.assertIn('"LOCAL REVIEW ONLY") store_submit=false', self.source)
+        self.assertIn("Submit validated Microsoft Store update", self.source)
+        self.assertIn("AZURE_AD_APPLICATION_SECRET", self.source)
+        self.assertIn("msstore reconfigure", self.source)
+        self.assertIn("Publish-StoreUpdate.ps1", self.source)
 
 
 if __name__ == "__main__":
