@@ -9,8 +9,41 @@ env:
   VALIDATION_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
   VALIDATION_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 jobs:
+  promotion-provenance:
+    name: Dev-to-main promotion — prior validation provenance
+    if: ${{ github.event_name == 'pull_request' && github.base_ref == 'main' && github.head_ref == 'dev' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require the exact same-repository promotion
+        env:
+          ACTUAL_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+        run: |
+          test "$ACTUAL_HEAD_REPOSITORY" = "$EXPECTED_REPOSITORY"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.VALIDATION_HEAD_SHA }}
+          fetch-depth: 0
+      - name: Verify current dev head and fast-forward ancestry
+        env:
+          BASE_SHA: ${{ env.VALIDATION_BASE_SHA }}
+          HEAD_SHA: ${{ env.VALIDATION_HEAD_SHA }}
+        run: |
+          git fetch --no-tags origin \
+            refs/heads/main:refs/remotes/origin/main \
+            refs/heads/dev:refs/remotes/origin/dev
+          test "$(git rev-parse HEAD)" = "$HEAD_SHA"
+          test "$(git rev-parse origin/dev)" = "$HEAD_SHA"
+          git merge-base --is-ancestor "$BASE_SHA" "$HEAD_SHA"
+          {
+            echo "### Exact dev-to-main promotion verified"
+            echo
+            echo "Source and Audio Integrity checks already passed before this commit entered dev."
+            echo "This promotion contains the current same-repository dev head and is fast-forward compatible with main."
+          } >> "$GITHUB_STEP_SUMMARY"
   audio-integrity-webgui:
     name: Audio integrity — WebGUI real artwork writer
+    if: ${{ github.event_name != 'pull_request' || github.base_ref != 'main' || github.head_ref != 'dev' }}
     runs-on: ubuntu-latest
     env:
       PYTHONPATH: .:build/WEBGui:build/WEBGui/webgui/backend
@@ -30,6 +63,7 @@ jobs:
           python -m unittest discover -s build/WEBGui/webgui/tests -p test_cross_format_cover_overwrite.py -v
   audio-integrity-windows:
     name: Audio integrity — Windows real artwork writer
+    if: ${{ github.event_name != 'pull_request' || github.base_ref != 'main' || github.head_ref != 'dev' }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -46,6 +80,7 @@ jobs:
           cargo +1.99.0 test --locked --manifest-path build/Windows/Cargo.toml --lib --target x86_64-pc-windows-msvc local_artwork -- --nocapture
   scope:
     name: Select relevant validation
+    if: ${{ github.event_name != 'pull_request' || github.base_ref != 'main' || github.head_ref != 'dev' }}
     runs-on: ubuntu-latest
     outputs:
       webgui: ${{ steps.scope.outputs.webgui }}
@@ -69,6 +104,7 @@ jobs:
           python3 .github/scripts/validation_scope.py "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"
   policy-review:
     name: Canonical policy JSON — review gate
+    if: ${{ github.event_name != 'pull_request' || github.base_ref != 'main' || github.head_ref != 'dev' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -91,7 +127,7 @@ jobs:
         run: python3 .github/scripts/validate_release_policy_contracts.py
   webgui:
     needs: scope
-    if: needs.scope.outputs.webgui == 'true'
+    if: ${{ (github.event_name != 'pull_request' || github.base_ref != 'main' || github.head_ref != 'dev') && needs.scope.outputs.webgui == 'true' }}
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -136,6 +172,7 @@ jobs:
   windows-advisory:
     name: Windows Rust/Slint — advisory
     needs: scope
+    if: ${{ github.event_name != 'pull_request' || github.base_ref != 'main' || github.head_ref != 'dev' }}
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
