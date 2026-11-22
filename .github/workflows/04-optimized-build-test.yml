@@ -1,4 +1,4 @@
-name: 04. Optimized Release or Test - Select One of Five Build Presets
+name: 04. Optimized Release or Test - Select One of Four Build Presets
 
 on:
   workflow_dispatch:
@@ -12,7 +12,6 @@ on:
           - "ALL"
           - "PYTHON / WEBGUI"
           - "WINDOWS"
-          - "SOURCE BUILD"
           - "TEST BUILD"
       release_version:
         description: "CURRENT COMPILED VERSION: must match Windows and WebGUI source. No-release validation remains disposable."
@@ -20,7 +19,7 @@ on:
         default: "3.0.22"
         type: string
       release_target:
-        description: "Preset: ALL Win+Web; WEBGUI WebGUI; WINDOWS Windows; SOURCE Win+Web; TEST Win+Web. Select a target to override."
+        description: "Preset: ALL Win+Web; WEBGUI WebGUI; WINDOWS Windows; TEST Win+Web. Select a target to override."
         required: true
         default: "Use preset default"
         type: choice
@@ -30,7 +29,7 @@ on:
           - "Windows"
           - "WebGUI"
       strict_validation:
-        description: "Preset: ALL No; WEBGUI No; WINDOWS No; SOURCE No; TEST Yes. Select Yes or No to override."
+        description: "Preset: ALL No; WEBGUI No; WINDOWS No; TEST Yes. Select Yes or No to override."
         required: true
         default: "Use preset default"
         type: choice
@@ -39,7 +38,7 @@ on:
           - "Yes"
           - "No"
       submit_update:
-        description: "Submit Update / No Draft preset: all five build options use No. Select Yes only to override intentionally."
+        description: "Submit Update / No Draft preset: all four build options use No. Select Yes only to override intentionally."
         required: true
         default: "Use preset default"
         type: choice
@@ -48,7 +47,7 @@ on:
           - "Yes"
           - "No"
       review_bundle:
-        description: "Review Bundle / No Submit preset: ALL Yes; WEBGUI No; WINDOWS Yes; SOURCE Yes; TEST No. Select to override."
+        description: "Review Bundle / No Submit preset: ALL Yes; WEBGUI No; WINDOWS Yes; TEST No. Select to override."
         required: true
         default: "Use preset default"
         type: choice
@@ -57,7 +56,7 @@ on:
           - "Yes"
           - "No"
       publish_ghcr:
-        description: "Publish GHCR preset: ALL Yes; WEBGUI Yes; WINDOWS No; SOURCE Yes; TEST No. Select Yes or No to override."
+        description: "Publish GHCR preset: ALL Yes; WEBGUI Yes; WINDOWS No; TEST No. Select Yes or No to override."
         required: true
         default: "Use preset default"
         type: choice
@@ -66,7 +65,7 @@ on:
           - "Yes"
           - "No"
       final_action:
-        description: "Final preset: ALL/WEBGUI/WINDOWS/SOURCE create a release; TEST creates no release. Select an action to override."
+        description: "Final preset: ALL/WEBGUI/WINDOWS create a release; TEST creates no release. Select an action to override."
         required: true
         default: "Use preset default"
         type: choice
@@ -164,15 +163,6 @@ jobs:
               store_update=false
               store_draft=true
               publish_ghcr=false
-              release_confirmation="Create release now"
-              ;;
-            "SOURCE BUILD")
-              platform="All"
-              target_label="Windows / WebGUI"
-              strict=false
-              store_update=false
-              store_draft=true
-              publish_ghcr=true
               release_confirmation="Create release now"
               ;;
             "TEST BUILD")

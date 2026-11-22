@@ -1,9 +1,10 @@
 # Release automation
 
-SPLINED exposes four manual GitHub Actions workflows. **Workflow 01 creates
-releases when explicitly confirmed; Workflow 04 resolves one of five clear
-build presets before running its optimized release or disposable-test graph.**
-Workflows 02/03 recover existing releases.
+SPLINED exposes five manual GitHub Actions workflows. **Workflow 05 prepares
+the next committed Windows/WebGUI source version in a Draft PR; Workflow 04
+packages or releases only an already-approved committed version.** Workflow 01
+retains the original full-release path, and Workflows 02/03 recover existing
+releases.
 Workflows 01 and 02 use pinned `git-cliff 2.14.2` for release notes or Store
 Highlights; no workflow is run merely by editing these files.
 
@@ -12,20 +13,23 @@ Highlights; no workflow is run merely by editing these files.
 | `01. Full Release - Build Selected Target and Publish` | New versioned release from `main`; choose All, Windows, or WebGUI / Python. | Validates the selected release targets, creates the version commit and numeric tag only after they pass, publishes the GitHub Release and GHCR, and optionally stages or submits Store. |
 | `02. Store Recovery - Tagged Draft or Update` | Rebuild a Store MSIX from an **existing** numeric Git tag if workflow 01's Store path failed. | Rebuilds/validates Windows package, generates git-cliff Store Highlights, then stages a draft or submits for certification. Does not create a tag, release, or GHCR image. |
 | `03. GHCR Recovery - Existing Published Release` | Safely recover missing GHCR tags for the latest **existing published** numeric release if workflow 01's GHCR path failed. | Verifies existing tag digests and OCI source/version/revision labels, performs no work when both tags are valid, and publishes only missing GHCR tags. Never changes a GitHub Release, release asset, Git tag, version, or Store submission. |
-| `04. Optimized Release or Test - Select One of Five Build Presets` | Choose **ALL** (default), **PYTHON / WEBGUI**, **WINDOWS**, **SOURCE BUILD**, or **TEST BUILD**. | Resolves and reports the complete target/strict/Store/GHCR/release plan first, then uses cached Rust intermediates and parallel WebGUI validation. The four release presets publish their selected outputs; TEST BUILD performs strict disposable validation without publication. |
+| `04. Optimized Release or Test - Select One of Four Build Presets` | Choose **ALL** (default), **PYTHON / WEBGUI**, **WINDOWS**, or **TEST BUILD**. | Packages or publishes the exact version already committed to approved source. It never advances the source version. The three release presets publish their selected outputs; TEST BUILD performs strict disposable validation without publication. |
+| `05. Prepare Next Source Version - Draft PR and Compile` | Start the next patch source cycle after `main` and `dev` are synchronized. | Calculates the next patch, opens a Draft PR to `dev` before stamping, advances every Windows/WebGUI version field together, dispatches required validation, and compiles both candidates. Never merges, tags, releases, publishes GHCR, or contacts Microsoft Store. |
 
 The previous status, authentication-diagnostic, package-only, publish-only, and
 one-time 2.0.0 workflows have been retired. GitHub may retain their historical
 run pages, but they are no longer runnable from the repository's default
 branch. Use Workflow 01 for the original publishing path, Workflows 02/03 for
-tagged recovery, and Workflow 04 for a preset-driven optimized release or
-strict disposable test build.
+tagged recovery, Workflow 04 for a preset-driven optimized release or strict
+disposable test build, and Workflow 05 for the source-version step that must
+precede a new release.
 
 ## Workflow 01: full release
 
-Run from `main`. `Release version` may be left blank for the next patch version
-or set to a new numeric `X.Y.Z` version greater than the current version. The
-workflow requires **Create release now** confirmation. `Extended Windows
+Run from `main`. `Release version` may be left blank to use the version already
+committed by an approved Workflow 05 source PR, or set to that same numeric
+`X.Y.Z` value. It cannot invent a newer version during packaging. The workflow
+requires **Create release now** confirmation. `Extended Windows
 validation` is off by default; turn it on for `Windows` or `All` to run the
 Windows Rust formatting, Clippy, and library test checks. The standard Windows
 build always compiles the Rust/Slint executable; the checkbox adds strict
@@ -143,9 +147,9 @@ retains `splined-windows-store-submission` with the exact MSIX, Highlights, and
 submission metadata. The review mode stops after uploading those artifacts;
 only **Submit Update/No Draft** stages and submits the package.
 
-## Workflow 04: five optimized build presets
+## Workflow 04: four optimized build presets
 
-[Workflow 04](../.github/workflows/04-optimized-build-test.yml) contains five
+[Workflow 04](../.github/workflows/04-optimized-build-test.yml) contains four
 launch flows in one manual form. The selected flow supplies target, strictness,
 Store, GHCR and final-action defaults. Every individual control remains visible
 under the selector with **Use preset default**, **Yes** and **No** (or the
@@ -167,15 +171,13 @@ embedded numeric identity.
 | **ALL** (default) | Windows + WebGUI | No | No | Yes | Yes | Create release now |
 | **PYTHON / WEBGUI** | WebGUI | No | No | No | Yes | Create release now |
 | **WINDOWS** | Windows | No | No | Yes | No | Create release now |
-| **SOURCE BUILD** | Windows + WebGUI at the exact committed version | No | No | Yes | Yes | Create release now |
 | **TEST BUILD** | Windows + WebGUI | Yes | No | No | No | No release creation |
 
-ALL and SOURCE BUILD intentionally produce the same selected artifacts with
-their defaults. SOURCE BUILD makes the exact committed source-version intent
-explicit; ALL is the routine default release preset. Neither mode invents or
-stamps an uncommitted application version.
+ALL is the routine default release preset. Workflow 04 never invents or stamps
+an application version: its visible Release Version must equal the version
+already committed by the approved source-version PR.
 
-The four publishing presets execute the selected production release graph:
+The three publishing presets execute the selected production release graph:
 canonical preflight, target builds, numeric tag promotion, git-cliff notes and
 GitHub Release. GHCR and Store review behavior then follows the table. In
 Workflow 04, **Review Bundle/No Submit is entirely local to GitHub Actions**:
@@ -208,11 +210,41 @@ WebGUI runs its unsharded Python/PostgreSQL/Node package-validation suite concur
 
 Workflow 04 reports compiled-cache hits, Rust compile duration, independent WebGUI outcomes and the final stage results. An initial cache miss can still take as long as a cold compile; compare repeated successful runs and cache-transfer overhead before declaring a speed improvement. **No native Windows speedup is established solely by pull-request CI**: the PR Windows lane is advisory, and the full optimized workflow requires an owner-authorized manual dispatch after merge.
 
-Workflow 01 itself remains unchanged. Selecting one of Workflow 04's four
+Workflow 01 itself remains unchanged. Selecting one of Workflow 04's three
 release presets is the explicit publication choice; both release workflows
 share the same publication concurrency group to avoid simultaneous release
 commits. TEST BUILD is the nonpublishing choice. The two protected behavioral
 policy JSONs and [approved register](POLICY-REGISTER.md) remain normative.
+
+## Workflow 05: prepare and compile the next source version
+
+[Workflow 05](../.github/workflows/05-prepare-source-version.yml) separates
+source preparation from release packaging. Run it from `main` only after
+`origin/main` and `origin/dev` identify the same commit and the current source
+version equals the latest numeric tag on `main` history. It advances exactly
+one patch version; operators do not type or guess the next number.
+
+The workflow creates a topic branch and a minimal Draft PR targeting `dev`
+before changing versioned source. It then updates Cargo metadata, both Windows
+manifests, the App Installer template, the WebGUI version and user agent, and
+Workflow 04's visible default as one source commit. A mismatch in any of those
+fields fails closed.
+
+Because a PR created with the workflow's GitHub token cannot recursively start
+another Actions run, Workflow 05 explicitly dispatches the repository's normal
+required validation workflow against the exact candidate SHA. That dispatch
+uses the same base/head selection, protected-policy gate, both Audio Integrity
+writers, WebGUI/PostgreSQL checks, and Windows advisory contract as a normal
+source PR. Workflow 05's own candidate compilation does not duplicate Audio
+Integrity: it builds the locked optimized Rust/Slint executable, verifies its
+version/commit identity, builds and health-checks the WebGUI/PostgreSQL
+container, and retains QA-only artifacts.
+
+The PR remains Draft regardless of compilation outcome. A failure leaves the
+branch and Draft PR available for diagnosis. Success still requires owner
+review, merge to `dev`, separate promotion to `main`, and a later explicit
+Workflow 04 release. Workflow 05 has no tag, GitHub Release, GHCR, Store,
+automatic readiness, automatic merge, or protected-branch write path.
 
 ## Workflow 02: Store recovery
 
