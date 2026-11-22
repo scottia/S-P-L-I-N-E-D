@@ -87,7 +87,7 @@ class AudioIntegritySourceContract(unittest.TestCase):
             release,
         )
 
-        optimized = source(".github/workflows/04-optimized-build-test.yml")
+        optimized = source(".github/workflows/10-unified-build.yml")
         for marker in (
             "  audio-integrity-webgui:",
             "  audio-integrity-windows:",
@@ -102,9 +102,6 @@ class AudioIntegritySourceContract(unittest.TestCase):
             "test_audio_integrity.py",
             "test_comp_job_scope.py",
             "test_cross_format_cover_overwrite.py",
-            "--skip artwork_integrity::tests",
-            "--skip embedded_artwork",
-            "--skip local_artwork",
         ):
             self.assertIn(excluded, optimized)
 

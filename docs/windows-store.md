@@ -76,15 +76,15 @@ build, uses that exact executable for the Portable ZIP and Store MSIX,
 and validates both before the workflow may create the numeric tag. WebGUI /
 WebGUI/Python-only runs cannot select a Store mode.
 
-Workflow 04 uses a stricter local-only interpretation for **Review Bundle/No
-Submit**. Its downloadable Actions ZIP is assembled from the validated MSIX and
-generated release context without Partner Center authentication or lookup. The
+Workflow 10 always uses a local-only Store review mode. Its downloadable
+Actions ZIP is assembled from the validated MSIX and generated release context
+without Partner Center authentication or lookup. The
 bundle contains the unsigned MSIX, bounded Highlights,
 `STORE-SUBMISSION.json`, and `release-context.json`; its audit records that
 Partner Center was not contacted and no Store write occurred. This lets a
 maintainer test and correct the package before manually uploading the final
-MSIX while any existing Store draft remains untouched. Workflow 04 contacts
-Partner Center only when **Submit Update/No Draft** is explicitly selected.
+MSIX while any existing Store draft remains untouched. Workflow 10 never
+contacts Partner Center or submits a package.
 
 The production layout is created directly from the Partner Center manifest and
 the same version/commit-bound binaries used by the Portable ZIP. It updates

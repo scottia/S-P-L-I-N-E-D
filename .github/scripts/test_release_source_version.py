@@ -77,11 +77,13 @@ class ReleaseSourceVersionTests(unittest.TestCase):
             choose_release_version("3.0.22", [(3, 0, 21)], ["v3.0.22"])
 
     def test_release_workflows_call_shared_resolver(self) -> None:
-        for name in ("01-full-release.yml", "04-optimized-build-test.yml"):
-            workflow = (ROOT / ".github/workflows" / name).read_text(encoding="utf-8")
-            self.assertIn("from release_source_version import choose_release_version", workflow)
-            self.assertIn("git commit -m \"release: prepare ${RELEASE_VERSION}\" --allow-empty", workflow)
-            self.assertNotIn("Automatic release version must exceed", workflow)
+        release = (ROOT / ".github/workflows/01-full-release.yml").read_text(encoding="utf-8")
+        self.assertIn("from release_source_version import choose_release_version", release)
+        self.assertIn("git commit -m \"release: prepare ${RELEASE_VERSION}\" --allow-empty", release)
+        unified = (ROOT / ".github/workflows/10-unified-build.yml").read_text(encoding="utf-8")
+        self.assertIn("from release_source_version import choose_release_version", unified)
+        self.assertIn('RELEASE_COMMIT="$BASE_MAIN_SHA"', unified)
+        self.assertNotIn('$RELEASE_COMMIT:refs/heads/main', unified)
 
 
 if __name__ == "__main__":

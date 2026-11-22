@@ -31,7 +31,7 @@ The sole checked-in shared contracts are `schema/media-state-classification.json
 ## Release and build boundaries
 
 - [Build directory layout](build-layout.md) — current source paths and release inputs.
-- [Release/recovery and optimized Workflow 04](release-automation.md) — five resolved ALL/WebGUI/Windows/source/test presets, shared policy preflight, compiled Windows caching, Store safeguards, and explicit publication outcomes.
+- [Release/recovery and unified Workflow 10](release-automation.md) — exact promoted source, ALL/Windows/WebGUI targets, clean or incremental complete builds, safe release completion, and Store/GHCR boundaries.
 - [Root release support](../release/README.md) — scripts, templates and synthetic regression fixtures.
 
 Historical PR acceptance records, old screenshots, source audits and superseded platform instructions have been retired from active `docs/`; Git history retains them. The former fallback workflow guide was superseded by the current source-policy and COMP contracts and is not an independent authority.
