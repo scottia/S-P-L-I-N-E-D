@@ -144,9 +144,7 @@ jobs:
           # start Actions. Dispatch the same required validation explicitly on
           # the candidate branch so the exact revision receives the checks once.
           gh workflow run validate.yml \
-            --ref "$BRANCH_NAME" \
-            -f base_sha="$DEV_SHA" \
-            -f head_sha="$CANDIDATE_SHA"
+            --ref "$BRANCH_NAME"
 
           {
             echo "version=$NEXT_VERSION"

@@ -94,11 +94,14 @@ class SourceBuildWorkflowTests(unittest.TestCase):
     def test_candidate_receives_required_validation_once(self) -> None:
         prepare = job(self.workflow_05, "prepare-source")
         self.assertIn("gh workflow run validate.yml", prepare)
-        self.assertIn('-f base_sha="$DEV_SHA"', prepare)
-        self.assertIn('-f head_sha="$CANDIDATE_SHA"', prepare)
+        self.assertIn('--ref "$BRANCH_NAME"', prepare)
+        self.assertNotIn("-f base_sha=", prepare)
+        self.assertNotIn("-f head_sha=", prepare)
         self.assertIn("workflow_dispatch:", self.validate)
         self.assertIn("VALIDATION_BASE_SHA", self.validate)
         self.assertIn("VALIDATION_HEAD_SHA", self.validate)
+        self.assertIn("github.sha", self.validate)
+        self.assertEqual(self.validate.count("git fetch origin dev"), 2)
         self.assertEqual(
             self.validate.count("ref: ${{ env.VALIDATION_HEAD_SHA }}"),
             6,
