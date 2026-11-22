@@ -52,7 +52,7 @@ write Partner Center, so an existing Store draft is left untouched. Only an
 explicit **Submit Update/No Draft** override enables Store credentials and
 submission operations.
 
-The optimized Windows build caches compiled Rust dependencies as well as downloaded crates. Its mandatory artwork-integrity lane separately caches Cargo downloads and reusable test intermediates, removes final test binaries before cache save, preserves all three locked Rust/Lofty test groups, and reports cache hits plus elapsed time. The production lane compiles a **fresh** locked optimized binary and validates the exact temporary/real release commit identity, x64 PE, first-run native smoke, portable ZIP and Store package. **ALL** also validates WebGUI in parallel; WebGUI's full Python/PostgreSQL/Node suite runs alongside Docker image/health/packaging checks without removing test cases.
+The optimized Windows build caches compiled Rust dependencies as well as downloaded crates. Workflow 04 relies on the required source-PR Audio Integrity results for the exact commit and does not rerun the three Windows real-writer groups; strict library validation explicitly excludes those already-completed cases. The production lane compiles a **fresh** locked optimized binary and validates the exact temporary/real release commit identity, x64 PE, first-run native smoke, portable ZIP and Store package. **ALL** also validates WebGUI in parallel; its Python/PostgreSQL/Node package-validation suite excludes the four real-writer cases already completed by required PR validation and runs alongside Docker image/health/packaging checks.
 
 Measure at least two equivalent Workflow 04 runs: the first may populate the
 compiled cache, and later runs report a cache hit and compilation seconds.

@@ -58,7 +58,7 @@ class AudioIntegritySourceContract(unittest.TestCase):
         guard = source("build/WEBGui/webgui/backend/splined_audio_integrity.py")
         self.assertIn("Non-artwork metadata, ID3 version, or audio stream changed", guard)
 
-    def test_required_pr_and_release_jobs_cannot_skip_integrity(self):
+    def test_required_pr_and_workflow_one_cannot_skip_integrity(self):
         pr = source(".github/workflows/validate.yml")
         for key in ("  audio-integrity-webgui:", "  audio-integrity-windows:"):
             self.assertIn(key, pr)
@@ -67,31 +67,46 @@ class AudioIntegritySourceContract(unittest.TestCase):
         self.assertIn("test_cross_format_cover_overwrite.py -v", pr)
         self.assertIn("artwork_integrity::tests -- --nocapture", pr)
         self.assertIn("local_artwork -- --nocapture", pr)
-        for path in (".github/workflows/01-full-release.yml",
-                     ".github/workflows/04-optimized-build-test.yml"):
-            content = source(path)
-            prepare_header = content.split("  prepare-release:\n", 1)[1].split(
-                "    steps:\n", 1
-            )[0]
-            self.assertIn("audio-integrity-webgui", prepare_header)
-            self.assertIn("audio-integrity-windows", prepare_header)
-            self.assertIn("needs.audio-integrity-webgui.result == 'success'", content)
-            self.assertIn("needs.audio-integrity-windows.result == 'success'", content)
-            self.assertIn("WEBGUI_INTEGRITY_RESULT:", content)
-            self.assertIn("WINDOWS_INTEGRITY_RESULT:", content)
-            self.assertIn("test_audio_integrity.py -v", content)
-            self.assertIn("test_cross_format_cover_overwrite.py -v", content)
-            self.assertIn("artwork_integrity::tests -- --nocapture", content)
-            self.assertIn("local_artwork -- --nocapture", content)
-            self.assertNotIn("  audio-integrity:\n", content)
+        release = source(".github/workflows/01-full-release.yml")
+        prepare_header = release.split("  prepare-release:\n", 1)[1].split(
+            "    steps:\n", 1
+        )[0]
+        self.assertIn("audio-integrity-webgui", prepare_header)
+        self.assertIn("audio-integrity-windows", prepare_header)
+        self.assertIn("needs.audio-integrity-webgui.result == 'success'", release)
+        self.assertIn("needs.audio-integrity-windows.result == 'success'", release)
+        self.assertIn("WEBGUI_INTEGRITY_RESULT:", release)
+        self.assertIn("WINDOWS_INTEGRITY_RESULT:", release)
+        self.assertIn("test_audio_integrity.py -v", release)
+        self.assertIn("test_cross_format_cover_overwrite.py -v", release)
+        self.assertIn("artwork_integrity::tests -- --nocapture", release)
+        self.assertIn("local_artwork -- --nocapture", release)
+        self.assertNotIn("  audio-integrity:\n", release)
         self.assertIn(
             "unconditional Windows and WebGUI audio-integrity gate",
-            source(".github/workflows/01-full-release.yml"),
+            release,
         )
+
         optimized = source(".github/workflows/04-optimized-build-test.yml")
-        self.assertIn("selected-target audio-integrity gate", optimized)
-        self.assertIn("needs.audio-integrity-webgui.result == 'skipped'", optimized)
-        self.assertIn("needs.audio-integrity-windows.result == 'skipped'", optimized)
+        for marker in (
+            "  audio-integrity-webgui:",
+            "  audio-integrity-windows:",
+            "needs.audio-integrity-webgui",
+            "needs.audio-integrity-windows",
+            "-p test_audio_integrity.py -v",
+            "-p test_cross_format_cover_overwrite.py -v",
+        ):
+            self.assertNotIn(marker, optimized)
+        for excluded in (
+            "test_splined_compilation_authority_policy.py",
+            "test_audio_integrity.py",
+            "test_comp_job_scope.py",
+            "test_cross_format_cover_overwrite.py",
+            "--skip artwork_integrity::tests",
+            "--skip embedded_artwork",
+            "--skip local_artwork",
+        ):
+            self.assertIn(excluded, optimized)
 
 
 if __name__ == "__main__":
