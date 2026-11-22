@@ -83,7 +83,9 @@ jobs:
             echo "::error title=Main workflow required::Workflow 10 must be dispatched from main; received '$GITHUB_REF'."
             exit 1
           fi
-          git fetch --force origin main dev
+          git fetch --force origin \
+            main:refs/remotes/origin/main \
+            dev:refs/remotes/origin/dev
           MAIN_SHA=$(git rev-parse origin/main)
           DEV_SHA=$(git rev-parse origin/dev)
           if ! git merge-base --is-ancestor "$MAIN_SHA" "$DEV_SHA"; then
@@ -448,7 +450,7 @@ jobs:
               raise SystemExit(f"Resolved release {actual} did not match committed source {requested}")
           PY
             RELEASE_COMMIT="$SOURCE_SHA"
-            git fetch --force origin dev
+            git fetch --force origin dev:refs/remotes/origin/dev
             if [ "$(git rev-parse origin/dev)" != "$SOURCE_SHA" ]; then
               echo "::error title=Dev source advanced::origin/dev changed after the approved plan; run Workflow 10 again to use the new exact source."
               exit 1

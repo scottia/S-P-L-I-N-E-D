@@ -34,7 +34,8 @@ class UnifiedBuildWorkflowTests(unittest.TestCase):
 
     def test_main_dispatch_selects_exact_dev_source_and_cross_client_version(self):
         self.assertIn('if [ "$GITHUB_REF" != "refs/heads/main" ]', self.source)
-        self.assertIn("git fetch --force origin main dev", self.source)
+        self.assertIn("main:refs/remotes/origin/main", self.source)
+        self.assertIn("dev:refs/remotes/origin/dev", self.source)
         self.assertIn("git checkout --detach \"$DEV_SHA\"", self.source)
         self.assertIn('git merge-base --is-ancestor "$MAIN_SHA" "$DEV_SHA"', self.source)
         self.assertIn("source_sha=$DEV_SHA", self.source)
