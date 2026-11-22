@@ -53,8 +53,6 @@ def source_versions(root: Path) -> dict[str, str]:
         root / "build/Windows/package/SPLINED.appinstaller.template"
     )
     webgui, _ = _read_utf8(root / "build/WEBGui/webgui/backend/splined.py")
-    workflow, _ = _read_utf8(root / ".github/workflows/04-optimized-build-test.yml")
-
     versions = {
         "windows_cargo": _one(
             r'(?ms)^\[package\].*?^version\s*=\s*"(\d+\.\d+\.\d+)"',
@@ -85,11 +83,6 @@ def source_versions(root: Path) -> dict[str, str]:
             r'(?m)^USER_AGENT = "SPLINED/(\d+\.\d+\.\d+) ',
             webgui,
             "WebGUI user-agent version",
-        ),
-        "workflow_04_default": _one(
-            r'(?ms)^      release_version:\r?\n.*?^        default: "(\d+\.\d+\.\d+)"\r?$',
-            workflow,
-            "Workflow 04 release-version default",
         ),
     }
     appinstaller_versions = re.findall(
@@ -211,13 +204,6 @@ def stamp_source_version(root: Path, version: str) -> None:
         f'USER_AGENT = "SPLINED/{version} ',
         "WebGUI user-agent version",
     )
-    _replace_one(
-        root / ".github/workflows/04-optimized-build-test.yml",
-        r'(?ms)(^      release_version:\r?\n.*?^        default: ")\d+\.\d+\.\d+("\r?$)',
-        rf"\g<1>{version}\g<2>",
-        "Workflow 04 release-version default",
-    )
-
     stamped = current_source_version(root)
     if stamped != version:
         raise ValueError(f"Stamped source version did not validate: {stamped}")

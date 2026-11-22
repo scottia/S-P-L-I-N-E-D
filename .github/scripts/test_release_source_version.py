@@ -19,7 +19,7 @@ from source_version import (
 
 
 class ReleaseSourceVersionTests(unittest.TestCase):
-    def test_current_windows_webgui_and_workflow_sources_match(self) -> None:
+    def test_current_windows_and_webgui_sources_match(self) -> None:
         versions = source_versions(ROOT)
         self.assertEqual(len(set(versions.values())), 1, versions)
         self.assertEqual(current_source_version(ROOT), next(iter(versions.values())))
@@ -35,7 +35,6 @@ class ReleaseSourceVersionTests(unittest.TestCase):
             "build/Windows/package/Package.appxmanifest",
             "build/Windows/package/SPLINED.appinstaller.template",
             "build/WEBGui/webgui/backend/splined.py",
-            ".github/workflows/04-optimized-build-test.yml",
         )
         with tempfile.TemporaryDirectory() as temporary:
             test_root = Path(temporary)
