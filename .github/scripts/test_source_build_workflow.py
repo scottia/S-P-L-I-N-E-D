@@ -88,24 +88,22 @@ class SourceBuildWorkflowTests(unittest.TestCase):
         ):
             self.assertNotIn(protected, self.workflow_05)
 
-    def test_exact_candidate_compiles_for_both_clients_without_integrity_rerun(self) -> None:
-        windows = job(self.workflow_05, "compile-windows")
-        webgui = job(self.workflow_05, "compile-webgui")
-        for block in (windows, webgui):
-            self.assertIn("needs.prepare-source.outputs.commit", block)
-        self.assertIn("cargo build --locked --release", windows)
-        self.assertIn("--write-build-info", windows)
-        self.assertIn("docker build --file build/WEBGui/Dockerfile", webgui)
-        self.assertIn("curl --fail --silent", webgui)
+    def test_release_compilation_is_deferred_to_workflow_04(self) -> None:
+        prepare = job(self.workflow_05, "prepare-source")
         for forbidden in (
-            "test_audio_integrity.py",
-            "test_comp_job_scope.py",
-            "test_cross_format_cover_overwrite.py",
-            "artwork_integrity::tests",
-            "embedded_artwork",
-            "local_artwork",
+            "  compile-windows:\n",
+            "  compile-webgui:\n",
+            "cargo build --locked --release",
+            "docker build --file build/WEBGui/Dockerfile",
+            "actions/upload-artifact",
+            "QA source candidate only",
         ):
             self.assertNotIn(forbidden, self.workflow_05)
+        self.assertIn("gh workflow run validate.yml", prepare)
+        self.assertIn(
+            "Release compilation: deferred to Workflow 04 after promotion",
+            prepare,
+        )
 
     def test_candidate_receives_required_validation_once(self) -> None:
         prepare = job(self.workflow_05, "prepare-source")
@@ -125,11 +123,15 @@ class SourceBuildWorkflowTests(unittest.TestCase):
         self.assertIn("Audio integrity — WebGUI real artwork writer", self.validate)
         self.assertIn("Audio integrity — Windows real artwork writer", self.validate)
 
-    def test_candidate_stays_draft_after_compilation(self) -> None:
+    def test_candidate_stays_draft_after_preparation(self) -> None:
         summary = job(self.workflow_05, "source-summary")
         self.assertIn("remains **Draft**", summary)
         self.assertIn("Automatic merge or publication: none", summary)
         self.assertIn("The Draft PR remains unmerged", summary)
+        self.assertIn(
+            "Windows/WebGUI release compilation: deferred to **Workflow 04**",
+            summary,
+        )
 
 
 if __name__ == "__main__":

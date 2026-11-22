@@ -14,7 +14,7 @@ Highlights; no workflow is run merely by editing these files.
 | `02. Store Recovery - Tagged Draft or Update` | Rebuild a Store MSIX from an **existing** numeric Git tag if workflow 01's Store path failed. | Rebuilds/validates Windows package, generates git-cliff Store Highlights, then stages a draft or submits for certification. Does not create a tag, release, or GHCR image. |
 | `03. GHCR Recovery - Existing Published Release` | Safely recover missing GHCR tags for the latest **existing published** numeric release if workflow 01's GHCR path failed. | Verifies existing tag digests and OCI source/version/revision labels, performs no work when both tags are valid, and publishes only missing GHCR tags. Never changes a GitHub Release, release asset, Git tag, version, or Store submission. |
 | `04. Optimized Release or Test - Select One of Four Build Presets` | Choose **ALL** (default), **PYTHON / WEBGUI**, **WINDOWS**, or **TEST BUILD**. | Packages or publishes the exact version already committed to approved source. It never advances the source version. The three release presets publish their selected outputs; TEST BUILD performs strict disposable validation without publication. |
-| `05. Prepare Next Source Version - Draft PR and Compile` | Start the next patch source cycle after `main` and `dev` are synchronized. | Calculates the next patch, opens a Draft PR to `dev` before stamping, advances every Windows/WebGUI version field together, dispatches required validation, and compiles both candidates. Never merges, tags, releases, publishes GHCR, or contacts Microsoft Store. |
+| `05. Prepare Next Source Version - Draft PR and Validate` | Start the next patch source cycle after `main` and `dev` are synchronized. | Calculates the next patch, opens a Draft PR to `dev` before stamping, advances every Windows/WebGUI version field together, and dispatches required validation. It does not compile release artifacts; Workflow 04 performs the single release compilation after promotion. Never merges, tags, releases, publishes GHCR, or contacts Microsoft Store. |
 
 The previous status, authentication-diagnostic, package-only, publish-only, and
 one-time 2.0.0 workflows have been retired. GitHub may retain their historical
@@ -228,7 +228,7 @@ share the same publication concurrency group to avoid simultaneous release
 commits. TEST BUILD is the nonpublishing choice. The two protected behavioral
 policy JSONs and [approved register](POLICY-REGISTER.md) remain normative.
 
-## Workflow 05: prepare and compile the next source version
+## Workflow 05: prepare and validate the next source version
 
 [Workflow 05](../.github/workflows/05-prepare-source-version.yml) separates
 source preparation from release packaging. Run it from `main` only after
@@ -251,12 +251,12 @@ another Actions run, Workflow 05 explicitly dispatches the repository's normal
 required validation workflow against the exact candidate SHA. That dispatch
 uses the same base/head selection, protected-policy gate, both Audio Integrity
 writers, WebGUI/PostgreSQL checks, and Windows advisory contract as a normal
-source PR. Workflow 05's own candidate compilation does not duplicate Audio
-Integrity: it builds the locked optimized Rust/Slint executable, verifies its
-version/commit identity, builds and health-checks the WebGUI/PostgreSQL
-container, and retains QA-only artifacts.
+source PR. Workflow 05 does not duplicate those checks or compile Windows or
+WebGUI release artifacts, and it retains no candidate build artifacts. After
+owner-approved promotion, Workflow 04 performs the single production
+compilation and packaging cycle from the exact committed source version.
 
-The PR remains Draft regardless of compilation outcome. A failure leaves the
+The PR remains Draft regardless of validation outcome. A failure leaves the
 branch and Draft PR available for diagnosis. Success still requires owner
 review, merge to `dev`, separate promotion to `main`, and a later explicit
 Workflow 04 release. Workflow 05 has no tag, GitHub Release, GHCR, Store,
