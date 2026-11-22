@@ -3401,7 +3401,12 @@ pub struct ApplicationState {
     pub artist_overview_top_songs_loading: bool,
     /// None marks an in-flight request; Some includes an empty successful result.
     pub artist_top_songs_cache: HashMap<String, Option<Vec<String>>>,
+    /// Local Artist Art/package discovery still being prepared for immediate
+    /// presentation. This is deliberately shorter-lived than remote hydration.
     pub artist_overview_loading: bool,
+    /// Navidrome biography, appearance, similar-Artist and cover hydration that
+    /// continues after local Artist presentation becomes usable.
+    pub artist_overview_hydrating: bool,
     pub artist_overview_show_all: bool,
     pub artist_artwork_mode: bool,
     /// Per-session projection of Navidrome's authoritative artist metadata.
@@ -3679,6 +3684,7 @@ impl ApplicationState {
             artist_overview_top_songs_loading: false,
             artist_top_songs_cache: HashMap::new(),
             artist_overview_loading: false,
+            artist_overview_hydrating: false,
             artist_overview_show_all: false,
             artist_artwork_mode: false,
             artist_overview_cache: HashMap::new(),
@@ -3932,7 +3938,9 @@ impl ApplicationState {
             && self.library.view == LibraryView::Artists
             && self.library.artist_run_scope_active
             && self.library.focused_album_key.is_none()
-            && (self.artist_bulk_validation_pending || self.artist_overview_loading)
+            && (self.artist_bulk_validation_pending
+                || self.artist_overview_loading
+                || self.artist_overview_hydrating)
         {
             return Vec::new();
         }
@@ -8305,6 +8313,9 @@ mod tests {
         state.artist_overview_loading = true;
         assert!(state.launch_targets().is_empty());
         state.artist_overview_loading = false;
+        state.artist_overview_hydrating = true;
+        assert!(state.launch_targets().is_empty());
+        state.artist_overview_hydrating = false;
 
         assert_eq!(
             state.library.select_album_exclusive("done", false),

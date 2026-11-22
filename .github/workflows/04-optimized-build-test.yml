@@ -294,133 +294,12 @@ jobs:
             echo "Validation, compilation and publication may now begin."
           } >> "$GITHUB_STEP_SUMMARY"
 
-  audio-integrity-webgui:
-    name: Audio integrity — WebGUI real artwork writer
-    needs: [resolve-plan, approve-plan]
-    if: ${{ needs.resolve-plan.outputs.platform == 'WebGUI / Python' || needs.resolve-plan.outputs.platform == 'All' }}
-    runs-on: ubuntu-latest
-    env:
-      PYTHONPATH: .:build/WEBGui:build/WEBGui/webgui/backend
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: '3.12'
-      - name: Verify ID3v2.x real-writer and injected mutation protections
-        run: |
-          python -m pip install -r build/WEBGui/webgui/requirements-test.txt
-          python -m unittest discover -s build/WEBGui/webgui/tests -p test_splined_compilation_authority_policy.py -v
-          python -m unittest discover -s build/WEBGui/webgui/tests -p test_audio_integrity.py -v
-          python -m unittest discover -s build/WEBGui/webgui/tests -p test_comp_job_scope.py -v
-          python -m unittest discover -s build/WEBGui/webgui/tests -p test_cross_format_cover_overwrite.py -v
-  audio-integrity-windows:
-    name: Audio integrity — Windows real artwork writer
-    needs: [resolve-plan, approve-plan]
-    if: ${{ needs.resolve-plan.outputs.platform == 'Windows' || needs.resolve-plan.outputs.platform == 'All' }}
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Calculate normalized Windows integrity cache key
-        id: integrity-cache-key
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $lock = Get-Content -Raw -LiteralPath build/Windows/Cargo.lock
-          $pattern = '(?ms)(\[\[package\]\]\r?\nname = "splined-windows"\r?\n)version = "[^"]+"'
-          $normalized = [regex]::Replace($lock, $pattern, '${1}version = "<release>"')
-          if ($normalized -eq $lock) {
-            throw "Unable to normalize the release-only Windows package version for the integrity cache key."
-          }
-          $bytes = [Text.Encoding]::UTF8.GetBytes($normalized)
-          $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
-          "hash=$hash" | Add-Content $env:GITHUB_OUTPUT
-
-      - name: Restore Windows integrity Cargo downloads
-        id: integrity-dependency-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-splined-integrity-dependencies-v1-${{ env.RUST_TOOLCHAIN }}-${{ steps.integrity-cache-key.outputs.hash }}
-          restore-keys: |
-            ${{ runner.os }}-splined-integrity-dependencies-v1-${{ env.RUST_TOOLCHAIN }}-
-
-      - name: Restore Windows integrity test intermediates
-        id: integrity-compiled-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            build/Windows/target/x86_64-pc-windows-msvc/debug/build
-            build/Windows/target/x86_64-pc-windows-msvc/debug/deps
-            build/Windows/target/x86_64-pc-windows-msvc/debug/.fingerprint
-            build/Windows/target/x86_64-pc-windows-msvc/debug/incremental
-          key: ${{ runner.os }}-splined-integrity-compiled-v1-${{ env.RUST_TOOLCHAIN }}-${{ env.WINDOWS_TARGET }}-${{ steps.integrity-cache-key.outputs.hash }}-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-splined-integrity-compiled-v1-${{ env.RUST_TOOLCHAIN }}-${{ env.WINDOWS_TARGET }}-${{ steps.integrity-cache-key.outputs.hash }}-
-
-      - name: Run mandatory Rust/Lofty artwork integrity tests
-        id: integrity-tests
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $timer = [Diagnostics.Stopwatch]::StartNew()
-          rustup toolchain install 1.99.0 --profile minimal
-          rustup target add x86_64-pc-windows-msvc --toolchain 1.99.0
-          cargo +1.99.0 test --locked --manifest-path build/Windows/Cargo.toml --lib --target x86_64-pc-windows-msvc artwork_integrity::tests -- --nocapture
-          cargo +1.99.0 test --locked --manifest-path build/Windows/Cargo.toml --lib --target x86_64-pc-windows-msvc embedded_artwork -- --nocapture
-          cargo +1.99.0 test --locked --manifest-path build/Windows/Cargo.toml --lib --target x86_64-pc-windows-msvc local_artwork -- --nocapture
-          $timer.Stop()
-          "elapsed_seconds=$([Math]::Round($timer.Elapsed.TotalSeconds, 1))" | Add-Content $env:GITHUB_OUTPUT
-
-      - name: Remove final Windows test artifacts before cache save
-        if: ${{ always() }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $deps = "build/Windows/target/x86_64-pc-windows-msvc/debug/deps"
-          if (Test-Path -LiteralPath $deps) {
-            Get-ChildItem -LiteralPath $deps -Recurse -File |
-              Where-Object { $_.Extension -in ".exe", ".dll", ".pdb" } |
-              Remove-Item -Force
-          }
-
-      - name: Report Windows integrity cache results
-        if: ${{ always() }}
-        shell: pwsh
-        run: |
-          @"
-          ## Windows artwork-integrity test cache
-
-          - Cargo download cache exact-key hit: ``${{ steps.integrity-dependency-cache.outputs.cache-hit }}``
-          - Compiled test-intermediate cache exact-key hit: ``${{ steps.integrity-compiled-cache.outputs.cache-hit }}``
-          - Mandatory test elapsed time: ``${{ steps.integrity-tests.outputs.elapsed_seconds || 'not completed' }} seconds``
-          - Final ``.exe``, ``.dll`` and ``.pdb`` test artifacts are removed before cache save.
-          "@ | Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY
   prepare-release:
-    needs: [resolve-plan, approve-plan, audio-integrity-webgui, audio-integrity-windows]
+    needs: [resolve-plan, approve-plan]
     if: >-
       ${{
-        always() &&
         needs.resolve-plan.result == 'success' &&
-        needs.approve-plan.result == 'success' &&
-        (
-          (
-            needs.resolve-plan.outputs.platform == 'Windows' &&
-            needs.audio-integrity-windows.result == 'success' &&
-            needs.audio-integrity-webgui.result == 'skipped'
-          ) ||
-          (
-            needs.resolve-plan.outputs.platform == 'WebGUI / Python' &&
-            needs.audio-integrity-webgui.result == 'success' &&
-            needs.audio-integrity-windows.result == 'skipped'
-          ) ||
-          (
-            needs.resolve-plan.outputs.platform == 'All' &&
-            needs.audio-integrity-webgui.result == 'success' &&
-            needs.audio-integrity-windows.result == 'success'
-          )
-        )
+        needs.approve-plan.result == 'success'
       }}
     name: Prepare exact release source for build or unpublished validation
     runs-on: ubuntu-latest
@@ -799,7 +678,10 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           cargo fmt --manifest-path build/Windows/Cargo.toml -- --check
           cargo clippy --locked --manifest-path build/Windows/Cargo.toml --all-targets --target $env:WINDOWS_TARGET -- -D warnings
-          cargo test --locked --manifest-path build/Windows/Cargo.toml --lib --target $env:WINDOWS_TARGET
+          cargo test --locked --manifest-path build/Windows/Cargo.toml --lib --target $env:WINDOWS_TARGET -- `
+            --skip artwork_integrity::tests `
+            --skip embedded_artwork `
+            --skip local_artwork
 
       - name: Build optimized x64 Rust/Slint executable (fast or strict clean)
         id: windows-build
@@ -1073,7 +955,18 @@ jobs:
         run: pip install -r build/WEBGui/webgui/requirements-test.txt
 
       - name: Validate Python/PostgreSQL WebGUI
-        run: python -m unittest discover -s build/WEBGui/webgui/tests -v
+        shell: bash
+        run: |
+          set -euo pipefail
+          for test_path in build/WEBGui/webgui/tests/test_*.py; do
+            test_name="$(basename "$test_path")"
+            case "$test_name" in
+              test_splined_compilation_authority_policy.py|test_audio_integrity.py|test_comp_job_scope.py|test_cross_format_cover_overwrite.py)
+                continue
+                ;;
+            esac
+            python -m unittest "$test_path" -v
+          done
 
       - name: Validate browser JavaScript
         run: node --check build/WEBGui/webgui/static/app.js && node --check build/WEBGui/webgui/static/operations.js
@@ -1180,8 +1073,6 @@ jobs:
       - resolve-plan
       - approve-plan
       - prepare-release
-      - audio-integrity-webgui
-      - audio-integrity-windows
       - build-windows
       - build-webgui
       - webgui-tests
@@ -1193,24 +1084,18 @@ jobs:
         (
           (
             needs.resolve-plan.outputs.platform == 'Windows' &&
-            needs.audio-integrity-windows.result == 'success' &&
-            needs.audio-integrity-webgui.result == 'skipped' &&
             needs.build-windows.result == 'success' &&
             needs.build-webgui.result == 'skipped' &&
             needs.webgui-tests.result == 'skipped'
           ) ||
           (
             needs.resolve-plan.outputs.platform == 'WebGUI / Python' &&
-            needs.audio-integrity-webgui.result == 'success' &&
-            needs.audio-integrity-windows.result == 'skipped' &&
             needs.build-windows.result == 'skipped' &&
             needs.build-webgui.result == 'success' &&
             needs.webgui-tests.result == 'success'
           ) ||
           (
             needs.resolve-plan.outputs.platform == 'All' &&
-            needs.audio-integrity-webgui.result == 'success' &&
-            needs.audio-integrity-windows.result == 'success' &&
             needs.build-windows.result == 'success' &&
             needs.build-webgui.result == 'success' &&
             needs.webgui-tests.result == 'success'
@@ -1824,8 +1709,6 @@ jobs:
       - resolve-plan
       - approve-plan
       - prepare-release
-      - audio-integrity-webgui
-      - audio-integrity-windows
       - build-windows
       - build-webgui
       - finalize-tag
@@ -1851,37 +1734,6 @@ jobs:
             echo "No validation, compilation, tagging or publication work was authorized."
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Enforce selected-target audio-integrity gate
-        if: ${{ needs.approve-plan.result == 'success' }}
-        shell: bash
-        env:
-          RELEASE_PLATFORM: ${{ needs.resolve-plan.outputs.platform }}
-          WEBGUI_INTEGRITY_RESULT: ${{ needs.audio-integrity-webgui.result }}
-          WINDOWS_INTEGRITY_RESULT: ${{ needs.audio-integrity-windows.result }}
-        run: |
-          case "$RELEASE_PLATFORM" in
-            Windows)
-              expected_webgui=skipped
-              expected_windows=success
-              ;;
-            "WebGUI / Python")
-              expected_webgui=success
-              expected_windows=skipped
-              ;;
-            All)
-              expected_webgui=success
-              expected_windows=success
-              ;;
-            *)
-              echo "::error title=Audio-integrity gate::Unsupported release platform '$RELEASE_PLATFORM'."
-              exit 1
-              ;;
-          esac
-          if [ "$WEBGUI_INTEGRITY_RESULT" != "$expected_webgui" ] ||
-             [ "$WINDOWS_INTEGRITY_RESULT" != "$expected_windows" ]; then
-            echo "::error title=Audio-integrity gate::Platform='$RELEASE_PLATFORM', WebGUI='$WEBGUI_INTEGRITY_RESULT' (expected '$expected_webgui'), Windows='$WINDOWS_INTEGRITY_RESULT' (expected '$expected_windows')."
-            exit 1
-          fi
       - name: Enforce selected build and publication results
         if: ${{ needs.approve-plan.result == 'success' && needs.resolve-plan.outputs.release_confirmation == 'Create release now' }}
         shell: bash

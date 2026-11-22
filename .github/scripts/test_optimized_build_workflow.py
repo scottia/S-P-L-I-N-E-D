@@ -181,33 +181,22 @@ class OptimizedFullReleaseMirrorTests(unittest.TestCase):
         ):
             self.assertIn(label, approval)
 
-        webgui_integrity = job(self.workflow, "audio-integrity-webgui")
-        windows_integrity = job(self.workflow, "audio-integrity-windows")
-        self.assertIn("needs: [resolve-plan, approve-plan]", webgui_integrity)
-        self.assertIn("needs: [resolve-plan, approve-plan]", windows_integrity)
-        self.assertIn("platform == 'WebGUI / Python'", webgui_integrity)
-        self.assertIn("platform == 'All'", webgui_integrity)
-        self.assertIn("platform == 'Windows'", windows_integrity)
-        self.assertIn("platform == 'All'", windows_integrity)
-
         prepare = job(self.workflow, "prepare-release")
         self.assertIn(
-            "needs: [resolve-plan, approve-plan, audio-integrity-webgui, audio-integrity-windows]",
+            "needs: [resolve-plan, approve-plan]",
             prepare,
         )
         self.assertIn("needs.approve-plan.result == 'success'", prepare)
-        self.assertIn("needs.audio-integrity-webgui.result == 'skipped'", prepare)
-        self.assertIn("needs.audio-integrity-windows.result == 'skipped'", prepare)
+        self.assertNotIn("audio-integrity", prepare)
 
         finalizer = job(self.workflow, "finalize-tag")
         self.assertIn("      - approve-plan", finalizer)
-        self.assertIn("needs.audio-integrity-webgui.result == 'skipped'", finalizer)
-        self.assertIn("needs.audio-integrity-windows.result == 'skipped'", finalizer)
+        self.assertNotIn("audio-integrity", finalizer)
 
         summary = job(self.workflow, "release-summary")
         self.assertIn("      - approve-plan", summary)
         self.assertIn("Report plan rejection or missing approval", summary)
-        self.assertIn("selected-target audio-integrity gate", summary)
+        self.assertNotIn("audio-integrity", summary)
         self.assertIn("needs.approve-plan.result == 'success'", summary)
 
     def test_no_runs_real_versioned_build_without_remote_release(self):
@@ -342,26 +331,26 @@ class OptimizedFullReleaseMirrorTests(unittest.TestCase):
         self.assertIn("Build-StorePackage.ps1", windows)
         self.assertIn("Development-sign, install, activate, native-smoke, and uninstall", windows)
 
-    def test_windows_integrity_lane_caches_only_reusable_inputs_and_intermediates(self):
-        integrity = job(self.workflow, "audio-integrity-windows")
-        self.assertIn("Calculate normalized Windows integrity cache key", integrity)
-        self.assertIn("~/.cargo/registry", integrity)
-        self.assertIn("~/.cargo/git", integrity)
-        self.assertIn("splined-integrity-dependencies-v1", integrity)
-        self.assertIn("splined-integrity-compiled-v1", integrity)
-        self.assertIn("debug/deps", integrity)
-        self.assertIn("debug/.fingerprint", integrity)
-        self.assertIn("debug/incremental", integrity)
-        self.assertIn("${{ github.sha }}", integrity)
-        self.assertIn("Remove final Windows test artifacts before cache save", integrity)
-        self.assertIn('$_.Extension -in ".exe", ".dll", ".pdb"', integrity)
-        self.assertIn("elapsed_seconds", integrity)
-        for command in (
-            "artwork_integrity::tests -- --nocapture",
-            "embedded_artwork -- --nocapture",
-            "local_artwork -- --nocapture",
+    def test_package_cycle_does_not_repeat_source_pr_audio_integrity(self):
+        for marker in (
+            "  audio-integrity-webgui:",
+            "  audio-integrity-windows:",
+            "needs.audio-integrity-webgui",
+            "needs.audio-integrity-windows",
+            "splined-integrity-dependencies-v1",
+            "splined-integrity-compiled-v1",
         ):
-            self.assertIn(command, integrity)
+            self.assertNotIn(marker, self.workflow)
+        for excluded in (
+            "test_splined_compilation_authority_policy.py",
+            "test_audio_integrity.py",
+            "test_comp_job_scope.py",
+            "test_cross_format_cover_overwrite.py",
+            "--skip artwork_integrity::tests",
+            "--skip embedded_artwork",
+            "--skip local_artwork",
+        ):
+            self.assertIn(excluded, self.workflow)
 
     def test_validation_only_store_fixture_installs_pinned_git_cliff_first(self):
         windows = job(self.workflow, "build-windows")
@@ -375,14 +364,22 @@ class OptimizedFullReleaseMirrorTests(unittest.TestCase):
         self.assertIn("git-cliff 2.14.2", installer_block)
         self.assertIn("needs.resolve-plan.outputs.release_confirmation == 'Stop - no release'", installer_block)
 
-    def test_webgui_full_test_and_docker_checks_run_in_parallel(self):
+    def test_webgui_package_test_and_docker_checks_run_in_parallel(self):
         tests = job(self.workflow, "webgui-tests")
         docker = job(self.workflow, "build-webgui")
         for part in (tests, docker):
             self.assertIn("    needs: [resolve-plan, prepare-release]", part)
             self.assertIn("postgres:17", part)
             self.assertIn("release-source.bundle", part)
-        self.assertIn("python -m unittest discover -s build/WEBGui/webgui/tests -v", tests)
+        self.assertIn("for test_path in build/WEBGui/webgui/tests/test_*.py", tests)
+        self.assertIn('python -m unittest "$test_path" -v', tests)
+        for excluded in (
+            "test_splined_compilation_authority_policy.py",
+            "test_audio_integrity.py",
+            "test_comp_job_scope.py",
+            "test_cross_format_cover_overwrite.py",
+        ):
+            self.assertIn(excluded, tests)
         self.assertIn("node --check build/WEBGui/webgui/static/app.js", tests)
         self.assertIn("docker build --file build/WEBGui/Dockerfile", docker)
         self.assertIn("curl --fail --silent", docker)
