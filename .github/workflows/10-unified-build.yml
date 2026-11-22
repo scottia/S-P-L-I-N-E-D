@@ -58,6 +58,9 @@ jobs:
       build_windows: ${{ steps.plan.outputs.build_windows }}
       build_webgui: ${{ steps.plan.outputs.build_webgui }}
       existing_release: ${{ steps.plan.outputs.existing_release }}
+      source_sha: ${{ steps.plan.outputs.source_sha }}
+      main_sha: ${{ steps.plan.outputs.main_sha }}
+      source_relation: ${{ steps.plan.outputs.source_relation }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -74,6 +77,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error title=Main workflow required::Workflow 10 must be dispatched from main; received '$GITHUB_REF'."
+            exit 1
+          fi
+          git fetch --force origin main dev
+          MAIN_SHA=$(git rev-parse origin/main)
+          DEV_SHA=$(git rev-parse origin/dev)
+          MAIN_TREE=$(git rev-parse origin/main^{tree})
+          DEV_TREE=$(git rev-parse origin/dev^{tree})
+          if [ "$MAIN_TREE" = "$DEV_TREE" ]; then
+            source_relation="same tree"
+          else
+            source_relation="different trees - origin/dev selected"
+          fi
+          MAIN_VERSION=$(git show origin/main:build/Windows/Cargo.toml | sed -n '0,/^version = /s/^version = "\([0-9][0-9.]*\)"/\1/p')
+          git checkout --detach "$DEV_SHA"
 
           SOURCE_VERSION=$(python3 - <<'PY'
           from pathlib import Path
@@ -119,11 +139,6 @@ jobs:
             *) echo "::error title=Invalid Workflow 10 outcome::$OUTCOME"; exit 1 ;;
           esac
 
-          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
-            echo "::error title=Main branch required::Release presets must be dispatched from main; received '$GITHUB_REF'."
-            exit 1
-          fi
-
           release_version="$SOURCE_VERSION"
           display_version="$SOURCE_VERSION"
           existing_release=false
@@ -166,6 +181,9 @@ jobs:
             echo "build_windows=$build_windows"
             echo "build_webgui=$build_webgui"
             echo "existing_release=$existing_release"
+            echo "source_sha=$DEV_SHA"
+            echo "main_sha=$MAIN_SHA"
+            echo "source_relation=$source_relation"
           } >> "$GITHUB_OUTPUT"
 
           {
@@ -173,7 +191,10 @@ jobs:
             echo
             echo "- Requested target: \`$TARGET_SELECTION\`"
             echo "- Compile mode: \`$COMPILE_MODE\`"
-            echo "- Branch: \`$GITHUB_REF_NAME\`"
+            echo "- Workflow definition branch: \`$GITHUB_REF_NAME\`"
+            echo "- Main commit/version: \`$MAIN_SHA\` / \`${MAIN_VERSION:-unknown}\`"
+            echo "- Selected dev source: \`$DEV_SHA\` / \`$SOURCE_VERSION\`"
+            echo "- Dev/main comparison: \`$source_relation\`"
             echo "- Release version: \`$display_version\`"
             echo "- Build Windows now: \`$build_windows\`"
             echo "- Build WebGUI now: \`$build_webgui\`"
@@ -206,6 +227,9 @@ jobs:
             echo "- Publish GHCR: \`${{ needs.resolve-plan.outputs.publish_ghcr }}\`"
             echo "- Final option: \`${{ needs.resolve-plan.outputs.release_confirmation }}\`"
             echo "- Existing release completion: \`${{ needs.resolve-plan.outputs.existing_release }}\`"
+            echo "- Main commit: \`${{ needs.resolve-plan.outputs.main_sha }}\`"
+            echo "- Selected dev source: \`${{ needs.resolve-plan.outputs.source_sha }}\`"
+            echo "- Dev/main comparison: \`${{ needs.resolve-plan.outputs.source_relation }}\`"
             echo
             echo "Validation, compilation and publication may now begin."
           } >> "$GITHUB_STEP_SUMMARY"
@@ -260,7 +284,7 @@ jobs:
       - name: Checkout exact source with tags
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ needs.resolve-plan.outputs.release_confirmation == 'Create release now' && 'main' || github.sha }}
+          ref: ${{ needs.resolve-plan.outputs.source_sha }}
           fetch-depth: 0
 
       - name: Validate canonical policies and indexer contracts before release commit
@@ -278,12 +302,17 @@ jobs:
         env:
           REQUESTED_VERSION: ${{ needs.resolve-plan.outputs.release_version }}
           RELEASE_MODE: ${{ needs.resolve-plan.outputs.release_confirmation }}
+          EXPECTED_DEV_SHA: ${{ needs.resolve-plan.outputs.source_sha }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
           git fetch --force --tags origin
-          BASE_MAIN_SHA=$(git rev-parse HEAD)
+          SOURCE_SHA=$(git rev-parse HEAD)
+          if [ "$SOURCE_SHA" != "$EXPECTED_DEV_SHA" ]; then
+            echo "::error title=Incorrect dev checkout::Expected $EXPECTED_DEV_SHA; received $SOURCE_SHA."
+            exit 1
+          fi
           RELEASE_VERSION="$REQUESTED_VERSION"
           if ! [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error title=Invalid committed version::$RELEASE_VERSION is not numeric X.Y.Z."
@@ -305,7 +334,6 @@ jobs:
               git diff --name-only "$RELEASE_COMMIT" HEAD -- build/Windows build/WEBGui schema
               exit 1
             fi
-            BASE_MAIN_SHA=$(git rev-parse "$RELEASE_COMMIT^")
             git checkout --detach "$RELEASE_COMMIT"
             echo "Completing missing outputs for existing release $RELEASE_VERSION from exact tagged source $RELEASE_COMMIT."
           else
@@ -322,24 +350,16 @@ jobs:
           versions = []
           for tag in tags:
               match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", tag)
-              if match and subprocess.run(
-                  ["git", "merge-base", "--is-ancestor", f"refs/tags/{tag}^{{commit}}", "HEAD"],
-                  check=False,
-              ).returncode == 0:
+              if match:
                   versions.append(tuple(map(int, match.groups())))
           actual = choose_release_version(requested, versions, tags, requested)
           if actual != requested:
               raise SystemExit(f"Resolved release {actual} did not match committed source {requested}")
           PY
-            RELEASE_COMMIT="$BASE_MAIN_SHA"
-            if [ "$RELEASE_MODE" = "Create release now" ]; then
-              git fetch --force origin main
-              if [ "$(git rev-parse origin/main)" != "$BASE_MAIN_SHA" ]; then
-                echo "ERROR: main changed while the release source was being prepared; run again."
-                exit 1
-              fi
-            elif [ "$BASE_MAIN_SHA" != "$GITHUB_SHA" ]; then
-              echo "::error title=Source advanced::BUILD ONLY must use the exact dispatched main commit."
+            RELEASE_COMMIT="$SOURCE_SHA"
+            git fetch --force origin dev
+            if [ "$(git rev-parse origin/dev)" != "$SOURCE_SHA" ]; then
+              echo "::error title=Dev source advanced::origin/dev changed after the approved plan; run Workflow 10 again to use the new exact source."
               exit 1
             fi
           fi
@@ -351,14 +371,14 @@ jobs:
 
           echo "version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
           echo "commit=$RELEASE_COMMIT" >> "$GITHUB_OUTPUT"
-          echo "base=$BASE_MAIN_SHA" >> "$GITHUB_OUTPUT"
+          echo "base=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
           echo "existing_release=$EXISTING_RELEASE" >> "$GITHUB_OUTPUT"
           if [ "$EXISTING_RELEASE" = true ]; then
             echo "Prepared existing tagged source $RELEASE_VERSION at $RELEASE_COMMIT"
           elif [ "$RELEASE_MODE" = "Create release now" ]; then
-            echo "Prepared exact promoted main source $RELEASE_VERSION at $RELEASE_COMMIT"
+            echo "Prepared exact origin/dev source $RELEASE_VERSION at $RELEASE_COMMIT"
           else
-            echo "Prepared temporary local QA source commit $RELEASE_VERSION at $RELEASE_COMMIT (never pushed)"
+            echo "Prepared exact origin/dev source $RELEASE_VERSION at $RELEASE_COMMIT for BUILD ONLY"
           fi
 
       - name: Upload exact release source commit
@@ -880,7 +900,7 @@ jobs:
           if-no-files-found: error
 
   finalize-tag:
-    name: Tag exact promoted source after successful builds
+    name: Tag exact selected dev source after successful builds
     needs:
       - resolve-plan
       - approve-plan
@@ -902,7 +922,7 @@ jobs:
       contents: write
 
     steps:
-      - name: Checkout unchanged release base
+      - name: Checkout workflow branch before loading exact dev source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: main
@@ -914,17 +934,17 @@ jobs:
           name: release-source-commit
           path: .release-source
 
-      - name: Tag the unchanged promoted main commit
+      - name: Tag the unchanged selected dev commit
         shell: bash
         env:
           RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
           RELEASE_COMMIT: ${{ needs.prepare-release.outputs.commit }}
-          BASE_MAIN_SHA: ${{ needs.prepare-release.outputs.base }}
+          SOURCE_SHA: ${{ needs.prepare-release.outputs.base }}
         run: |
           set -euo pipefail
-          git fetch --force --tags origin main
-          if [ "$(git rev-parse origin/main)" != "$BASE_MAIN_SHA" ]; then
-            echo "ERROR: main changed while selected release builds were running; no tag was created."
+          git fetch --force --tags origin dev
+          if [ "$(git rev-parse origin/dev)" != "$SOURCE_SHA" ]; then
+            echo "ERROR: dev changed while selected builds were running; no tag was created. Run Workflow 10 again to use the new source."
             exit 1
           fi
           if git show-ref --verify --quiet "refs/tags/$RELEASE_VERSION"; then
@@ -933,13 +953,13 @@ jobs:
           fi
           git fetch .release-source/release-source.bundle HEAD
           test "$(git rev-parse FETCH_HEAD)" = "$RELEASE_COMMIT"
-          test "$RELEASE_COMMIT" = "$BASE_MAIN_SHA"
+          test "$RELEASE_COMMIT" = "$SOURCE_SHA"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$RELEASE_VERSION" "$RELEASE_COMMIT" -m "S:P:L:I:N:E:D ${RELEASE_VERSION}"
           git push origin "refs/tags/${RELEASE_VERSION}:refs/tags/${RELEASE_VERSION}"
           test "$(git ls-remote origin "refs/tags/$RELEASE_VERSION^{}" | awk '{print $1}')" = "$RELEASE_COMMIT"
-          test "$(git ls-remote origin "refs/heads/main" | awk '{print $1}')" = "$BASE_MAIN_SHA"
+          test "$(git ls-remote origin "refs/heads/dev" | awk '{print $1}')" = "$SOURCE_SHA"
 
   generate-release-notes:
     name: Generate incremental GitHub release notes
@@ -1601,7 +1621,7 @@ jobs:
           fi
           {
             echo "## Workflow 10 BUILD ONLY complete — NO RELEASE"
-            echo "- Exact promoted main source was compiled without a source or branch mutation"
+            echo "- Exact selected origin/dev source was compiled without a source or branch mutation"
             echo "- All selected build, policy, test, package and artifact checks passed"
             echo "- QA-only checksum artifacts: splined-validation-only-assets"
             echo "- Branch commits, published tags, GitHub Releases, GHCR, Store: NONE"

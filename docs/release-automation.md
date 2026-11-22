@@ -1,26 +1,26 @@
 # Release automation
 
-SPLINED keeps source review, branch promotion, compilation and publication as
-separate owner actions.
+SPLINED keeps source review, workflow definition, compilation and publication
+as separate owner actions.
 
 1. Accumulate application and version changes through reviewed pull requests
    into `dev`.
 2. Close each source pull request by merging it to `dev` after its required
    checks and owner approval.
-3. Promote the exact approved `dev` tree to `main` through the repository's
-   promotion pull request.
-4. Run Workflow 10 from `main` to build the committed source version.
+3. Keep the approved Workflow 10 definition on `main`.
+4. Run Workflow 10 from `main`; it compares `origin/main` with `origin/dev`,
+   selects the exact current `origin/dev` commit, and builds that source.
 
 Workflow 10 never creates a pull request, writes to `dev`, stamps a version, or
-pushes a source commit to `main`. The Windows and WebGUI source versions must
-already agree on one numeric `X.Y.Z` version in the promoted source.
+pushes a source commit to either protected branch. The Windows and WebGUI
+versions on `dev` must agree on one numeric `X.Y.Z` source version.
 
 | Workflow | Purpose |
 |---|---|
 | `01. Full Release - Build Selected Target and Publish` | Retained original release and optional Store-submission path. |
 | `02. Store Recovery - Tagged Draft or Update` | Rebuild Store material from an existing numeric tag. |
 | `03. GHCR Recovery - Existing Published Release` | Restore a missing GHCR tag for an existing published release when provenance can be proved. |
-| `10. Unified Source Build - Full or Incremental Windows and WebGUI` | Build, validate and optionally publish the exact source already promoted to `main`. |
+| `10. Unified Source Build - Full or Incremental Windows and WebGUI` | Run the approved workflow definition from `main`, then build, validate and optionally publish the exact current `origin/dev` source. |
 
 The former Workflow 04 preset launcher and Workflow 05 source-PR generator are
 retired. GitHub retains their historical run pages, but they are no longer
@@ -34,8 +34,9 @@ runnable from the repository.
 - **Compile mode:** `FULL SOURCE` or `PARTIAL UPDATE`.
 - **Outcome:** `CREATE OR COMPLETE RELEASE` or `BUILD ONLY`.
 
-The first job resolves the complete plan from the current committed source and
-checks for an existing release. The `workflow-10-plan-approval` environment is
+The first job fetches both branches, reports their SHAs, versions and tree
+relationship, checks out the exact `origin/dev` commit, resolves the complete
+plan, and checks for an existing release. The `workflow-10-plan-approval` environment is
 the manual approval boundary before compilation. Repository administrators must
 configure that environment with required reviewers before the first run;
 an environment name alone does not mechanically create a pause. Once configured,
@@ -59,12 +60,13 @@ publishes that image instead of rebuilding it.
 
 ### Current source and release completion
 
-Workflow 10 reads the version from both `build/Windows/Cargo.toml` and
+From the selected `origin/dev` commit, Workflow 10 reads the version from both `build/Windows/Cargo.toml` and
 `build/WEBGui/webgui/backend/splined.py`; disagreement fails before building.
 It does not accept an entered version and does not invent a next version.
 
-For a new version, the numeric tag points directly at the unchanged promoted
-`main` commit. The workflow never adds a release-preparation commit to `main`.
+For a new version, the numeric tag points directly at the unchanged selected
+`origin/dev` commit. The workflow rechecks that `dev` has not advanced while
+the build is running, but never pushes or merges either branch.
 
 If the same version already has a GitHub Release, Workflow 10 may complete a
 missing target:
@@ -73,7 +75,7 @@ missing target:
 - an existing WebGUI source archive suppresses the WebGUI build;
 - an explicitly selected target that already exists fails as a safe no-op;
 - existing release assets and GHCR version tags are never overwritten;
-- the tagged product source must match current `main` under `build/Windows/`,
+- the tagged product source must match current `dev` under `build/Windows/`,
   `build/WEBGui/` and `schema/`, or a new numeric source version is required.
 
 This supports Windows-first or WebGUI-first publication without rebuilding the
@@ -92,8 +94,8 @@ draft. `WEBGUI` produces the source archive and exact smoke-tested container
 image and publishes GHCR only for a publishing run. `ALL` performs both paths
 in parallel.
 
-Workflow 10 relies on required pull-request checks already completed for the
-exact source before promotion. It does not rerun either real-writer Audio
+Workflow 10 relies on required pull-request checks already completed before
+the exact source entered `dev`. It does not rerun either real-writer Audio
 Integrity suite. Its package-level WebGUI checks explicitly omit those required
 writer cases; Workflow 01 and required PR validation remain the fail-closed
 `AUDIO-INTEGRITY-001..006` gates.

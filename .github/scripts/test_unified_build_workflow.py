@@ -28,11 +28,14 @@ class UnifiedBuildWorkflowTests(unittest.TestCase):
 
     def test_workflow_never_creates_or_merges_pull_requests(self):
         lowered = self.source.lower()
-        for forbidden in ("gh pr create", "gh pr merge", "create-pull-request", "refs/heads/dev"):
+        for forbidden in ("gh pr create", "gh pr merge", "create-pull-request", ":refs/heads/dev", ":refs/heads/main"):
             self.assertNotIn(forbidden, lowered)
 
-    def test_exact_main_source_and_cross_client_version_are_required(self):
+    def test_main_dispatch_selects_exact_dev_source_and_cross_client_version(self):
         self.assertIn('if [ "$GITHUB_REF" != "refs/heads/main" ]', self.source)
+        self.assertIn("git fetch --force origin main dev", self.source)
+        self.assertIn("git checkout --detach \"$DEV_SHA\"", self.source)
+        self.assertIn("source_sha=$DEV_SHA", self.source)
         self.assertIn("Committed source versions disagree", self.source)
         self.assertIn('RELEASE_VERSION="$REQUESTED_VERSION"', self.source)
         self.assertNotIn('$RELEASE_COMMIT:refs/heads/main', self.source)

@@ -82,7 +82,7 @@ class ReleaseSourceVersionTests(unittest.TestCase):
         self.assertIn("git commit -m \"release: prepare ${RELEASE_VERSION}\" --allow-empty", release)
         unified = (ROOT / ".github/workflows/10-unified-build.yml").read_text(encoding="utf-8")
         self.assertIn("from release_source_version import choose_release_version", unified)
-        self.assertIn('RELEASE_COMMIT="$BASE_MAIN_SHA"', unified)
+        self.assertIn('RELEASE_COMMIT="$SOURCE_SHA"', unified)
         self.assertNotIn('$RELEASE_COMMIT:refs/heads/main', unified)
 
 

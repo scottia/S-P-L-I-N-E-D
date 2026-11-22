@@ -32,10 +32,11 @@ build\Windows\target\x86_64-pc-windows-msvc\release\splined.exe
 
 ### Workflow 10 unified source build
 
-[Workflow 10](../.github/workflows/10-unified-build.yml) builds only the exact
-Windows/WebGUI version already reviewed into `dev` and promoted to `main`. It
-never creates a PR, stamps source, writes to `dev`, or adds a release commit to
-`main`. Its numeric tag points directly at the promoted source commit.
+[Workflow 10](../.github/workflows/10-unified-build.yml) runs its approved
+definition from `main`, compares `main` with `dev`, then checks out and builds
+the exact current `origin/dev` commit. It never creates a PR, stamps source, or
+writes to either branch. Its numeric tag points directly at that selected dev
+source commit.
 
 Choose **ALL**, **WINDOWS**, or **WEBGUI**, then choose **FULL SOURCE** for a
 clean compile or **PARTIAL UPDATE** for a cache-assisted compile. Both Windows
