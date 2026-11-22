@@ -43,10 +43,11 @@ versions on `main` and `dev`: a match automatically selects cache-assisted
 **PARTIAL UPDATE**, while a different dev version selects clean **FULL SOURCE**.
 Both Windows modes emit and audit the complete optimized executable, portable
 ZIP and MSIX; partial does not create a delta package. **BUILD ONLY, REPORT**
-records the comparison, policy validation and Store-credential readiness and
-retains Actions artifacts without publication. **COMPLETE RELEASE** creates a
-new release or builds only a missing target for the current release without
-overwriting an existing asset.
+records the comparison, policy validation and Store-credential readiness, then
+stops without compiling or packaging. **BUILD ONLY** runs that report first,
+then retains complete Actions build artifacts without publication. **COMPLETE
+RELEASE** creates a new release or builds only a missing target for the current
+release without overwriting an existing asset.
 
 Windows builds always create the downloadable
 `splined-windows-store-submission` review ZIP. **LOCAL REVIEW ONLY** never
