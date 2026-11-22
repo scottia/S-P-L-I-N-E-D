@@ -3510,7 +3510,10 @@ class PostgreSQLBrowserTests(unittest.TestCase):
 
         def observed_stage(database, lease, rows, **kwargs):
             batch_sizes.append(len(rows))
-            batch_objects.append(id(rows))
+            # Keep each list alive through the final identity assertion. Saving
+            # only id(rows) lets CPython reuse a released list's address and
+            # falsely report that a later, distinct batch reused the object.
+            batch_objects.append(rows)
             flush_before_exhaustion.append(not source["exhausted"])
             result = original_stage(database, lease, rows, **kwargs)
             with closing(database.connect()) as db:
@@ -3539,7 +3542,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.assertEqual(batch_sizes, [3, 3, 2])
         self.assertEqual(durable_counts, [3, 6, 8])
         self.assertEqual(live_counts, [1, 1, 1])
-        self.assertEqual(len(set(batch_objects)), len(batch_objects))
+        self.assertEqual(
+            len({id(rows) for rows in batch_objects}), len(batch_objects)
+        )
         with closing(self.db.connect()) as db:
             counts = db.raw.execute(
                 "SELECT count(*) AS albums,count(DISTINCT path) AS paths,"
