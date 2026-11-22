@@ -1,7 +1,8 @@
-"""Select active WebGUI validation from a pull request source diff.
+"""Select cross-client validation from a pull request source diff.
 
-Windows builds remain governed by Workflow 01 and its optional extended
-Windows validation. No root-native CLI validation lane is enabled.
+Windows source changes still use their dedicated validation, but they also run
+the full WebGUI suite so shared policy/parity assertions are never represented
+by only one client. No root-native CLI validation lane is enabled.
 """
 
 import re
@@ -18,7 +19,15 @@ def select_checks(paths):
             continue
         if path in {".gitattributes", ".dockerignore", ".github/CODEOWNERS", ".github/dependabot.yml"}:
             checks["webgui"] = True
-        elif path.startswith((".github/workflows/", ".github/scripts/", "schema/", "build/WEBGui/")):
+        elif path.startswith(
+            (
+                ".github/workflows/",
+                ".github/scripts/",
+                "schema/",
+                "build/WEBGui/",
+                "build/Windows/",
+            )
+        ):
             checks["webgui"] = True
     return checks
 

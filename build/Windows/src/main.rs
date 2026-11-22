@@ -1779,6 +1779,7 @@ fn refresh_navidrome_thumbnails(
                 .is_none_or(|requested| !app.artist_overview_cache.contains_key(requested));
             if !full_refresh {
                 app.artist_overview_loading = needs_refresh;
+                app.artist_overview_hydrating = needs_refresh;
                 if needs_refresh && app.phase == RunPhase::Idle && !app.operation_busy {
                     app.operation_status = COMPILATION_GATHERING_STATUS.to_string();
                     app.operation_tone = "cyan".to_string();
@@ -1828,8 +1829,9 @@ fn refresh_navidrome_thumbnails(
                     .or_else(|| Some(source.to_path_buf()))
             });
             if let Ok(mut app) = state.lock()
-                && overview_artist_name(&app)
-                    .is_some_and(|current| current.trim().eq_ignore_ascii_case(artist))
+                && overview_artist_name(&app).is_some_and(|current| {
+                    artist_projection_identity(&current) == artist_projection_identity(artist)
+                })
             {
                 if let Some(path) = saved.portrait.as_deref().or(saved.banner.as_deref()) {
                     let cache = navidrome_thumbnail_cache_root(&config).join("artists");
@@ -1912,6 +1914,16 @@ fn refresh_navidrome_thumbnails(
                 )
             })
             .unwrap_or_default();
+        let saved_portrait_thumbnail = requested_artist.as_deref().and_then(|artist| {
+            saved_package
+                .portrait
+                .as_deref()
+                .or(saved_package.banner.as_deref())
+                .and_then(|source| {
+                    let cache = navidrome_thumbnail_cache_root(&config).join("artists");
+                    cached_circular_artist_thumbnail(source, &cache, artist).ok()
+                })
+        });
         let saved_banner = saved_package.banner.as_deref().map(|source| {
             let cache = navidrome_thumbnail_cache_root(&config).join("artist-banners");
             artist_banner_for_overview(
@@ -1935,11 +1947,7 @@ fn refresh_navidrome_thumbnails(
                 }
             })
             .unwrap_or_default();
-        if let Some(artist) = requested_artist.as_ref()
-            && (saved_package.portrait.is_some()
-                || saved_banner.is_some()
-                || !indexed_appearances.album_keys.is_empty())
-        {
+        if let Some(artist) = requested_artist.as_ref() {
             if let Some(path) = saved_package
                 .portrait
                 .as_deref()
@@ -1963,6 +1971,7 @@ fn refresh_navidrome_thumbnails(
             let state_local = Arc::clone(&state);
             let weak_local = weak.clone();
             let artist = artist.clone();
+            let thumbnail = saved_portrait_thumbnail.clone();
             let portrait = saved_package
                 .portrait
                 .clone()
@@ -1975,14 +1984,16 @@ fn refresh_navidrome_thumbnails(
                     return;
                 }
                 if let Ok(mut app) = state_local.lock()
-                    && overview_artist_name(&app)
-                        .is_some_and(|current| current.trim().eq_ignore_ascii_case(&artist))
+                    && overview_artist_name(&app).is_some_and(|current| {
+                        artist_projection_identity(&current) == artist_projection_identity(&artist)
+                    })
                 {
+                    // Local discovery is authoritative for immediate
+                    // presentation. Navidrome hydration continues under its
+                    // separate flag and must not hold the local UI hostage.
+                    mark_local_artist_presentation_ready(&mut app);
                     if let Some(path) = portrait {
-                        let cache = navidrome_thumbnail_cache_root(&app.config).join("artists");
-                        if let Ok(thumbnail) =
-                            cached_circular_artist_thumbnail(&path, &cache, &artist)
-                        {
+                        if let Some(thumbnail) = thumbnail {
                             app.library.set_artist_artwork_path(&artist, &thumbnail);
                         }
                         app.artist_overview_portrait_path = path.to_string_lossy().into_owned();
@@ -2473,12 +2484,11 @@ fn refresh_navidrome_thumbnails(
             })
         })()
         .map(|(mut artist_paths, album_paths, artist_ids, mut artist_metadata)| {
-            if let (Some(artist), Some(path)) =
-                (requested_for_local.as_ref(), saved_package.portrait.as_ref())
-            {
-                artist_paths.retain(|(name, _)| !name.eq_ignore_ascii_case(artist));
-                artist_paths.push((artist.clone(), path.clone()));
-            }
+            retain_saved_artist_thumbnail(
+                &mut artist_paths,
+                requested_for_local.as_deref(),
+                saved_portrait_thumbnail.as_ref(),
+            );
             if let (Some(path), Some(metadata)) =
                 (saved_banner.as_ref(), artist_metadata.as_mut())
             {
@@ -2498,6 +2508,7 @@ fn refresh_navidrome_thumbnails(
             }
             if !full_refresh && let Ok(mut app) = state.lock() {
                 app.artist_overview_loading = false;
+                app.artist_overview_hydrating = false;
                 if app.operation_status == COMPILATION_GATHERING_STATUS {
                     match &result {
                         Ok((_, _, _, Some(_))) => {
@@ -2979,29 +2990,38 @@ fn artist_art_targets_for_albums_with_projection<'a>(
     let mut directories = HashMap::<String, (PathBuf, usize)>::new();
     let mut has_eligible_album = false;
     let mut artist_ids = BTreeSet::new();
-    let normalized_artist = normalized_overview_identity(artist);
+    let mut artist_aliases = BTreeSet::new();
+    let artist_identity = artist_projection_identity(artist);
     for (album_artist, album_path, album_mbid, artist_mbid) in albums {
         // A missing Album ID is COMP fallback, whose artwork remains track-scoped.
         if album_mbid.trim().is_empty() {
             continue;
         }
-        if !album_artist.trim().eq_ignore_ascii_case(artist.trim()) {
+        let alias_identity = artist_projection_identity(album_artist);
+        let same_artist = if artist_identity.is_empty() {
+            album_artist.trim().eq_ignore_ascii_case(artist.trim())
+        } else {
+            alias_identity == artist_identity
+        };
+        if !same_artist {
             continue;
         }
         let Some(parent) = Path::new(album_path).parent() else {
             continue;
         };
         has_eligible_album = true;
+        artist_aliases.insert(album_artist.trim().to_string());
         if is_valid_mbid(artist_mbid) {
             artist_ids.insert(artist_mbid.trim().to_ascii_lowercase());
         }
-        if normalized_artist.is_empty()
-            || parent
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_none_or(|name| normalized_overview_identity(name) != normalized_artist)
+        let parent_artist = parent.file_name().and_then(|name| name.to_str());
+        if artist_identity.is_empty()
+            || parent_artist.is_none_or(|name| artist_projection_identity(name) != artist_identity)
         {
             continue;
+        }
+        if let Some(parent_artist) = parent_artist {
+            artist_aliases.insert(parent_artist.trim().to_string());
         }
         let key = parent.to_string_lossy().to_ascii_lowercase();
         let entry = directories
@@ -3032,23 +3052,35 @@ fn artist_art_targets_for_albums_with_projection<'a>(
     // Never use its unqualified artist.* for Artist Art. Callers that have
     // established an appearance-only Artist explicitly opt into the managed
     // target below without writing into another Artist's tree.
-    let artist_key = if artist_ids.len() == 1 {
-        let id = artist_ids.into_iter().next().expect("one Artist ID");
-        format!("mbid-{id}")
-    } else {
-        let digest = Sha256::digest(artist.trim().to_lowercase().as_bytes());
-        let name_key = digest[..16]
+    let name_key = |value: &str| {
+        let digest = Sha256::digest(value.trim().to_lowercase().as_bytes());
+        let hash = digest[..16]
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
-        format!("name-{name_key}")
+        format!("name-{hash}")
     };
-    targets.push(ArtistArtTarget {
-        directory: cache_dir.to_path_buf(),
-        stem: format!("artist-{artist_key}"),
-        album_count: 0,
-        managed: true,
-    });
+    let artist_key = if artist_ids.len() == 1 {
+        let id = artist_ids.iter().next().expect("one Artist ID");
+        format!("mbid-{id}")
+    } else {
+        name_key(artist)
+    };
+    let mut managed_keys = vec![artist_key];
+    managed_keys.extend(artist_ids.into_iter().map(|id| format!("mbid-{id}")));
+    artist_aliases.insert(artist.trim().to_string());
+    managed_keys.extend(artist_aliases.into_iter().map(|alias| name_key(&alias)));
+    let mut seen_managed = BTreeSet::new();
+    for key in managed_keys {
+        if seen_managed.insert(key.clone()) {
+            targets.push(ArtistArtTarget {
+                directory: cache_dir.to_path_buf(),
+                stem: format!("artist-{key}"),
+                album_count: 0,
+                managed: true,
+            });
+        }
+    }
     targets
 }
 
@@ -3236,6 +3268,23 @@ fn merge_artist_art_candidates(
         }
     }
     result
+}
+
+fn retain_saved_artist_thumbnail(
+    artist_paths: &mut Vec<(String, PathBuf)>,
+    artist: Option<&str>,
+    circular_thumbnail: Option<&PathBuf>,
+) {
+    let (Some(artist), Some(circular_thumbnail)) = (artist, circular_thumbnail) else {
+        return;
+    };
+    let identity = artist_projection_identity(artist);
+    artist_paths.retain(|(name, _)| artist_projection_identity(name) != identity);
+    artist_paths.push((artist.to_string(), circular_thumbnail.clone()));
+}
+
+fn mark_local_artist_presentation_ready(app: &mut ApplicationState) {
+    app.artist_overview_loading = false;
 }
 
 fn cached_circular_artist_thumbnail(
@@ -11586,7 +11635,7 @@ fn bind_callbacks(
                 let duplicate_inflight = prior_artist
                     .as_deref()
                     .is_some_and(|prior| prior.eq_ignore_ascii_case(&artist))
-                    && state.lock().is_ok_and(|app| app.artist_overview_loading);
+                    && state.lock().is_ok_and(|app| app.artist_overview_hydrating);
                 if duplicate_inflight {
                     if let Some(log) = action_log.as_ref() {
                         log.record(format!("artist-overview-refresh-reused artist={artist}"));
@@ -24023,7 +24072,7 @@ fn schedule_artist_compilation_report_preload(
     let prepared = state.lock().ok().and_then(|mut app| {
         if app.library.view != LibraryView::Artists
             || app.library.show_tracks
-            || app.artist_overview_loading
+            || app.artist_overview_hydrating
             || app.phase != RunPhase::Idle
             || app.operation_busy
         {
@@ -24175,7 +24224,7 @@ fn hydrate_artist_compilation_report(
                 .compilation_report_preloaded_artist
                 .eq_ignore_ascii_case(artist)
             && app.compilation_report_preload_selection_epoch == app.library.selection_epoch;
-        if !app.artist_overview_loading && !preload_for_artist {
+        if !app.artist_overview_hydrating && !preload_for_artist {
             break artist_compilation_report_inventory_requests(&app);
         }
         drop(app);
@@ -24687,7 +24736,7 @@ fn schedule_artist_album_embedded_checks(
         // simultaneously walk every audio file on the media share; completion
         // calls refresh_weak again and starts this validation immediately after
         // the overview becomes usable.
-        if artist_mode && app.artist_overview_loading {
+        if artist_mode && app.artist_overview_hydrating {
             return;
         }
         let side = app.config.output.embedded_thumbnail_size;
@@ -24826,7 +24875,7 @@ fn update_artist_bulk_completion(state: &Arc<Mutex<ApplicationState>>) {
     app.artist_bulk_complete_keys = complete;
     app.artist_bulk_validation_pending = pending;
     const VALIDATING: &str = "Checking artist albums for cover and embedded-art completion…";
-    if !app.artist_overview_loading && app.phase == RunPhase::Idle && !app.operation_busy {
+    if !app.artist_overview_hydrating && app.phase == RunPhase::Idle && !app.operation_busy {
         if pending {
             app.operation_status = VALIDATING.to_string();
             app.operation_tone = "cyan".to_string();
@@ -26962,6 +27011,10 @@ mod tests {
         app.library.view = LibraryView::Artists;
         app.library.focused_artist = Some("Alan Jackson".into());
         app.artist_overview_loading = true;
+        app.artist_overview_hydrating = true;
+        super::mark_local_artist_presentation_ready(&mut app);
+        assert!(!app.artist_overview_loading);
+        assert!(app.artist_overview_hydrating);
         // A warm ledger can contain a completed path without Artist tags.
         let first = app
             .library
@@ -27004,7 +27057,7 @@ mod tests {
                     .collect(),
             );
         }
-        app.artist_overview_loading = false;
+        app.artist_overview_hydrating = false;
         let state = Arc::new(Mutex::new(app));
         let (plan, report, errors) =
             super::hydrate_artist_compilation_report(&state, &artist, generation).unwrap();
@@ -28412,6 +28465,51 @@ mod tests {
         let package = super::saved_artist_package_for_albums(&albums, "Air", &managed);
         assert_eq!(package.portrait, Some(portrait));
         assert_eq!(package.banner, Some(banner));
+    }
+
+    #[test]
+    fn saved_artist_art_is_discovered_across_normalized_alias_folders_and_packages() {
+        let root = tempfile::TempDir::new().unwrap();
+        let alias_directory = root.path().join("AC-DC");
+        let album_directory = alias_directory.join("Back in Black");
+        let managed = root.path().join("artist-state");
+        fs::create_dir_all(&album_directory).unwrap();
+        fs::create_dir_all(&managed).unwrap();
+        let albums = [super::ThumbnailAlbumTarget {
+            album_key: "back-in-black".to_string(),
+            artist: "AC-DC".to_string(),
+            artist_mbid: String::new(),
+            title: "Back in Black".to_string(),
+            path: album_directory.to_string_lossy().into_owned(),
+            album_mbid: "release-id".to_string(),
+            release_year: "1980".to_string(),
+            cover_path: String::new(),
+        }];
+
+        let folder_portrait = alias_directory.join("artist.png");
+        image::RgbImage::from_pixel(24, 24, image::Rgb([30, 40, 50]))
+            .save(&folder_portrait)
+            .unwrap();
+        assert_eq!(
+            super::local_artist_art_for_albums(&albums, "AC/DC", &managed),
+            Some(folder_portrait.clone())
+        );
+
+        fs::remove_file(&folder_portrait).unwrap();
+        let rows = [("AC-DC", album_directory.to_str().unwrap(), "release-id", "")];
+        let alias_target = super::artist_art_targets_for_albums(rows, "AC/DC", &managed)
+            .into_iter()
+            .filter(|target| target.managed)
+            .last()
+            .expect("normalized alias package");
+        let managed_portrait = managed.join(format!("{}.png", alias_target.stem));
+        image::RgbImage::from_pixel(24, 24, image::Rgb([60, 70, 80]))
+            .save(&managed_portrait)
+            .unwrap();
+        assert_eq!(
+            super::local_artist_art_for_albums(&albums, "AC/DC", &managed),
+            Some(managed_portrait)
+        );
     }
 
     #[test]
@@ -30170,6 +30268,27 @@ mod tests {
         assert_eq!(decoded.dimensions(), (160, 160));
         assert_eq!(decoded.get_pixel(0, 0).0[3], 0);
         assert_eq!(decoded.get_pixel(80, 80).0[3], 255);
+    }
+
+    #[test]
+    fn saved_artist_thumbnail_retains_circular_derivative_for_normalized_identity() {
+        let raw = PathBuf::from("raw-portrait.png");
+        let round = PathBuf::from("round-portrait.png");
+        let other = PathBuf::from("other.png");
+        let mut artist_paths = vec![
+            ("AC-DC".to_string(), raw),
+            ("Other Artist".to_string(), other.clone()),
+        ];
+
+        super::retain_saved_artist_thumbnail(&mut artist_paths, Some("AC/DC"), Some(&round));
+
+        assert_eq!(
+            artist_paths,
+            vec![
+                ("Other Artist".to_string(), other),
+                ("AC/DC".to_string(), round),
+            ]
+        );
     }
 
     #[test]

@@ -1,44 +1,32 @@
-"""Select active WebGUI validation from a pull request source diff.
+"""Regression tests for cross-client pull-request validation selection."""
 
-Windows builds remain governed by Workflow 01 and its optional extended
-Windows validation. No root-native CLI validation lane is enabled.
-"""
+import unittest
 
-import re
-import subprocess
-import sys
+from validation_scope import select_checks
 
 
-def select_checks(paths):
-    checks = {"webgui": False}
-    for path in paths:
-        if path == "__all__":
-            return {"webgui": True}
-        if path.endswith(".md"):
-            continue
-        if path in {".gitattributes", ".dockerignore", ".github/CODEOWNERS", ".github/dependabot.yml"}:
-            checks["webgui"] = True
-        elif path.startswith((".github/workflows/", ".github/scripts/", "schema/", "build/WEBGui/")):
-            checks["webgui"] = True
-    return checks
+class ValidationScopeTests(unittest.TestCase):
+    def test_windows_source_runs_full_webgui_validation(self):
+        self.assertEqual(
+            select_checks(["build/Windows/src/main.rs"]),
+            {"webgui": True},
+        )
 
+    def test_webgui_and_shared_contract_changes_run_webgui_validation(self):
+        for path in (
+            "build/WEBGui/webgui/catalog.py",
+            "schema/media.sql",
+            ".github/workflows/validate.yml",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(select_checks([path]), {"webgui": True})
 
-def main():
-    try:
-        base, head = sys.argv[1:]
-        if not all(re.fullmatch(r"[0-9a-fA-F]{40}", ref) for ref in (base, head)):
-            raise ValueError("Expected commit SHAs")
-        changed = subprocess.check_output(
-            ["git", "diff", "--no-renames", "--name-only", "-z", f"{base}...{head}"],
-            text=True,
-            encoding="utf-8",
-        ).split("\0")
-        checks = select_checks(changed)
-    except (ValueError, subprocess.CalledProcessError, UnicodeError):
-        print("::warning::Changed files unavailable; running WebGUI checks", file=sys.stderr)
-        checks = select_checks(["__all__"])
-    print(f"webgui={str(checks['webgui']).lower()}")
+    def test_documentation_only_change_remains_non_runtime(self):
+        self.assertEqual(select_checks(["docs/POLICY-INDEX.md"]), {"webgui": False})
+
+    def test_unknown_diff_fails_open_to_full_webgui_validation(self):
+        self.assertEqual(select_checks(["__all__"]), {"webgui": True})
 
 
 if __name__ == "__main__":
-    main()
+    unittest.main()
