@@ -39,9 +39,11 @@ The first job runs from `main`, fetches both branches, reports their SHAs,
 versions and tree relationship, checks out the exact `origin/dev` commit,
 resolves the complete plan, and checks for an existing release. The compile
 mode is automatic: matching committed source versions select `PARTIAL UPDATE`;
-a different dev version selects `FULL SOURCE`. The workflow also requires
-`main` to be an ancestor of `dev`, so a divergent candidate stops before any
-build or publication. The `workflow-10-plan-approval` environment is
+a different dev version selects `FULL SOURCE`. An identical source tree is
+accepted after the normal `dev` → `main` promotion merge even though the merge
+commit exists only on `main`. When the trees differ, `main` must be an ancestor
+of `dev`; a genuinely divergent candidate stops before any build or
+publication. The `workflow-10-plan-approval` environment is
 the manual approval boundary before compilation. Repository administrators must
 configure that environment with required reviewers before the first run;
 an environment name alone does not mechanically create a pause. Once configured,
