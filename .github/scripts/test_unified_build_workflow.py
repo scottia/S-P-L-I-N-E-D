@@ -1,6 +1,7 @@
 """Nonmutating contract checks for the owner-approved Workflow 10 model."""
 
 from pathlib import Path
+import re
 import unittest
 
 
@@ -17,16 +18,41 @@ class UnifiedBuildWorkflowTests(unittest.TestCase):
         self.assertFalse((ROOT / ".github/workflows/04-optimized-build-test.yml").exists())
         self.assertFalse((ROOT / ".github/workflows/05-prepare-source-version.yml").exists())
 
-    def test_form_has_target_outcome_and_store_action(self):
-        for value in (
-            "target:", "outcome:", "store_action:", '- "ALL"', '- "WINDOWS"',
-            '- "WEBGUI"', '- "COMPLETE RELEASE"', '- "BUILD ONLY"',
-            '- "BUILD ONLY, REPORT"',
-            '- "LOCAL REVIEW ONLY"', '- "AUTO SUBMIT"',
-        ):
-            self.assertIn(value, self.source)
-        self.assertNotIn("      compile_mode:", self.source.split("permissions:", 1)[0])
-        self.assertNotIn("release_version:", self.source.split("permissions:", 1)[0])
+    def test_form_has_defaulted_exclusive_checkbox_groups(self):
+        dispatch = self.source.split("permissions:", 1)[0]
+        defaults = {
+            "target_all": True,
+            "target_windows": False,
+            "target_webgui": False,
+            "completion_release": True,
+            "completion_build_only": False,
+            "completion_report_only": False,
+            "store_local_review": True,
+            "store_auto_submit": False,
+        }
+        for input_name, checked in defaults.items():
+            match = re.search(
+                rf"(?ms)^      {input_name}:\n(?P<body>(?:        .*\n)+)",
+                dispatch,
+            )
+            self.assertIsNotNone(match, input_name)
+            block = match.group("body")
+            self.assertIn("type: boolean", block)
+            self.assertIn(f"default: {str(checked).lower()}", block)
+        for heading in ("TARGET —", "COMPLETION —", "MS STORE —"):
+            self.assertIn(heading, dispatch)
+        self.assertNotIn("type: choice", dispatch)
+        self.assertNotIn("      compile_mode:", dispatch)
+        self.assertNotIn("release_version:", dispatch)
+
+    def test_checkbox_groups_fail_closed_before_source_resolution(self):
+        validation = self.source.index("select_exactly_one()")
+        main_guard = self.source.index('if [ "$GITHUB_REF" != "refs/heads/main" ]')
+        self.assertLess(validation, main_guard)
+        self.assertIn('TARGET_SELECTION=$(select_exactly_one "TARGET"', self.source)
+        self.assertIn('OUTCOME=$(select_exactly_one "COMPLETION"', self.source)
+        self.assertIn('STORE_ACTION=$(select_exactly_one "MS STORE"', self.source)
+        self.assertIn("Check exactly one and run Workflow 10 again", self.source)
 
     def test_workflow_never_creates_or_merges_pull_requests(self):
         lowered = self.source.lower()
