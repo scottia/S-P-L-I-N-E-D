@@ -43,6 +43,18 @@ confirmations. **Workflow 01 now enforces this dependency in preflight**: choosi
 
 **Independent pull-request gate:** `.github/workflows/validate.yml` also runs **Canonical policy JSON — review gate**, blocking any change, rename, addition or deletion of either protected JSON while reporting the current contract validity. Branch rulesets must separately require the check; it does not substitute for owner approval.
 
+An exact same-repository `dev` to `main` promotion does not repeat the source,
+WebGUI, Windows advisory, or real-writer Audio Integrity suites that already
+passed before the commit entered `dev`. That promotion runs one provenance
+check instead: the PR head must be the current `origin/dev` commit, its base
+must be the current `origin/main` commit, and the head repository must be this
+repository. Because prior promotions create merge commits only on `main`, the
+branches do not need linear ancestry. Instead, a conflict-free computed merge
+of the two current heads must produce exactly the `dev` tree; this rejects stale
+heads, conflicts, and any `main` content omitted from `dev`. Feature/source PRs
+and Workflow 05 candidate dispatches continue to run the complete validation
+workflow.
+
 The **WebGUI / Python** target is the browser application, not a native Ubuntu
 Rust build. It runs the Python/PostgreSQL suite, validates browser JavaScript,
 builds and smoke-tests the container against PostgreSQL, and publishes a

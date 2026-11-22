@@ -108,7 +108,7 @@ class SourceBuildWorkflowTests(unittest.TestCase):
         self.assertEqual(self.validate.count("git fetch origin dev"), 2)
         self.assertEqual(
             self.validate.count("ref: ${{ env.VALIDATION_HEAD_SHA }}"),
-            6,
+            7,
         )
         self.assertIn("Audio integrity — WebGUI real artwork writer", self.validate)
         self.assertIn("Audio integrity — Windows real artwork writer", self.validate)
