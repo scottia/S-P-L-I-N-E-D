@@ -35,9 +35,11 @@ runnable from the repository.
 - **Outcome:** `CREATE OR COMPLETE RELEASE` or `BUILD ONLY`.
 
 The first job resolves the complete plan from the current committed source and
-checks for an existing release. A protected `workflow-10-plan-approval`
-environment pauses the run before compilation. Rejecting the plan performs no
-build, tag, release, registry or Store work.
+checks for an existing release. The `workflow-10-plan-approval` environment is
+the manual approval boundary before compilation. Repository administrators must
+configure that environment with required reviewers before the first run;
+an environment name alone does not mechanically create a pause. Once configured,
+rejecting the plan performs no build, tag, release, registry or Store work.
 
 ### Full source and partial update
 
