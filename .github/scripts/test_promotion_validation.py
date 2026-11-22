@@ -35,8 +35,11 @@ class PromotionValidationTests(unittest.TestCase):
         promotion = job(self.workflow, "promotion-provenance")
         self.assertIn(PROMOTION, promotion)
         self.assertIn("github.event.pull_request.head.repo.full_name", promotion)
+        self.assertIn('test "$(git rev-parse origin/main)" = "$BASE_SHA"', promotion)
         self.assertIn('test "$(git rev-parse origin/dev)" = "$HEAD_SHA"', promotion)
-        self.assertIn('git merge-base --is-ancestor "$BASE_SHA" "$HEAD_SHA"', promotion)
+        self.assertIn('git merge-tree --write-tree "$BASE_SHA" "$HEAD_SHA"', promotion)
+        self.assertIn('test "$MERGED_TREE" = "$HEAD_TREE"', promotion)
+        self.assertNotIn("merge-base --is-ancestor", promotion)
 
     def test_exact_promotion_does_not_repeat_source_suites(self) -> None:
         for name in (
