@@ -30,45 +30,38 @@ The release executable is:
 build\Windows\target\x86_64-pc-windows-msvc\release\splined.exe
 ```
 
-### Workflow 04 release presets and Workflow 05 source preparation
+### Workflow 10 unified source build
 
-[Workflow 04](../.github/workflows/04-optimized-build-test.yml) resolves one
-of four complete build presets. **ALL** is the default release; **WINDOWS**
-builds the portable ZIP and Store review bundle without publishing GHCR; and
-**TEST BUILD** runs strict Windows plus WebGUI validation without creating a
-tag, GitHub Release, GHCR push or Store action. The run summary lists every
-effective choice before compilation begins. Publishing presets require the
-`main` branch; TEST BUILD may validate a Draft PR branch. All target, strict,
-Store, GHCR and final-action controls remain visible and may either use the
-selected flow's default or an explicit owner override. Release Version displays
-the resolved committed source identity in the run plan and is contract-checked
-against it; the form field may remain blank to resolve that version.
+[Workflow 10](../.github/workflows/10-unified-build.yml) runs its approved
+definition from `main`, compares `main` with `dev`, then checks out and builds
+the exact current `origin/dev` commit. It never creates a PR, stamps source, or
+writes to either branch. Its numeric tag points directly at that selected dev
+source commit.
 
-[Workflow 05](../.github/workflows/05-prepare-source-version.yml) owns the
-separate source-version step. From synchronized `main`/`dev`, it calculates the
-next patch, opens a Draft PR to `dev` before changing source, stamps every
-Windows and WebGUI version field, dispatches the required PR validation, and
-performs no Windows or WebGUI release compilation. It creates no candidate
-build artifacts. Workflow 05 leaves the PR Draft and cannot merge, tag,
-release, publish GHCR, or contact Store. After owner-approved promotion to
-`main`, Workflow 04 performs the single compilation and packaging cycle for the
-exact committed version.
+Choose **ALL**, **WINDOWS**, or **WEBGUI**. Workflow 10 compares the committed
+versions on `main` and `dev`: a match automatically selects cache-assisted
+**PARTIAL UPDATE**, while a different dev version selects clean **FULL SOURCE**.
+Both Windows modes emit and audit the complete optimized executable, portable
+ZIP and MSIX; partial does not create a delta package. **BUILD ONLY, REPORT**
+records the comparison, policy validation and Store-credential readiness and
+retains Actions artifacts without publication. **COMPLETE RELEASE** creates a
+new release or builds only a missing target for the current release without
+overwriting an existing asset.
 
-Workflow 04's default Store review selection creates only the downloadable
-`splined-windows-store-submission` Actions artifact ZIP. It contains the
-validated unsigned MSIX, bounded Highlights, a local-only submission audit JSON,
-and its release-context JSON. Review mode does not authenticate to, query, or
-write Partner Center, so an existing Store draft is left untouched. Only an
-explicit **Submit Update/No Draft** override enables Store credentials and
-submission operations.
+Windows builds always create the downloadable
+`splined-windows-store-submission` review ZIP. **LOCAL REVIEW ONLY** never
+authenticates to or writes Partner Center, so an existing Store draft is
+untouched. The explicit **AUTO SUBMIT** choice is available only for a confirmed
+Windows/ALL release; it validates the existing credentials, retains a separate
+submission audit artifact and submits the validated package for certification.
 
-The optimized Windows build caches compiled Rust dependencies as well as downloaded crates. Workflow 04 relies on the required source-PR Audio Integrity results for the exact commit and does not rerun the three Windows real-writer groups; strict library validation explicitly excludes those already-completed cases. The production lane compiles a **fresh** locked optimized binary and validates the exact temporary/real release commit identity, x64 PE, first-run native smoke, portable ZIP and Store package. **ALL** also validates WebGUI in parallel; its Python/PostgreSQL/Node package-validation suite excludes the four real-writer cases already completed by required PR validation and runs alongside Docker image/health/packaging checks.
-
-Measure at least two equivalent Workflow 04 runs: the first may populate the
-compiled cache, and later runs report a cache hit and compilation seconds.
-Evaluate end-to-end wall time (including cache transfer), not only Rust compile
-time. Workflow 01's existing clean production build is unchanged, and
-pull-request advisory checks alone cannot prove Windows performance.
+Workflow 10 relies on required source-PR Audio Integrity results for the exact
+commit and does not rerun the Windows or WebGUI real-writer suites. It verifies
+the compiled executable identity, x64 PE, first-run native smoke, portable ZIP
+and Store package. ALL validates WebGUI packaging and PostgreSQL health in
+parallel. Measure at least two equivalent PARTIAL UPDATE runs: the first may
+populate Cargo/BuildKit caches, while later runs report cache reuse and Windows
+compile seconds. Evaluate total wall time, not only compiler time.
 
 ### Production-equivalent local PC test build
 

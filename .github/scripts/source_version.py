@@ -1,8 +1,8 @@
 """Read and advance SPLINED's repository-authoritative source version.
 
-Workflow 05 uses this module to create the next source-version Draft PR.
-Release workflows consume the already-committed version and must not call the
-stamping command.
+Reviewed source-version changes may use this module to advance every client
+field together. Release workflows consume the already-committed version and
+must not call the stamping command.
 """
 from __future__ import annotations
 
