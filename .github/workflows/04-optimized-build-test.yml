@@ -14,9 +14,9 @@ on:
           - "WINDOWS"
           - "TEST BUILD"
       release_version:
-        description: "CURRENT COMPILED VERSION: must match Windows and WebGUI source. No-release validation remains disposable."
+        description: "OPTIONAL: leave blank to use the committed Windows/WebGUI source version. An entered value must match it."
         required: false
-        default: "3.0.22"
+        default: ""
         type: string
       release_target:
         description: "Preset: ALL Win+Web; WEBGUI WebGUI; WINDOWS Windows; TEST Win+Web. Select a target to override."

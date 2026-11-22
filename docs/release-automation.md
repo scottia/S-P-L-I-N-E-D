@@ -172,11 +172,11 @@ selection and complete effective plan before expensive build jobs start.
 The repository default branch, `main`, is the default GitHub branch selector.
 Every publishing preset also enforces `main`; **TEST BUILD** may run from a
 Draft PR branch to validate an unmerged Workflow 04 change. Release Version is
-populated with the current compiled Windows/WebGUI source version. A contract
-test requires the form default to advance with those source versions, and the
-release preflight proves it is the next unused numeric tag. Any no-release
-selection reports a disposable version while still compiling the source's
-embedded numeric identity.
+blank by default: the resolved plan reads the current committed Windows/WebGUI
+source version and displays it before approval. An explicitly entered version
+must match that committed source version, and the release preflight proves it
+is the next unused numeric tag. Any no-release selection reports a disposable
+version while still compiling the source's embedded numeric identity.
 
 | Preset | Target | Strict | Submit update | Store review bundle | Publish GHCR | Final action |
 |---|---|---:|---:|---:|---:|---|
@@ -186,8 +186,8 @@ embedded numeric identity.
 | **TEST BUILD** | Windows + WebGUI | Yes | No | No | No | No release creation |
 
 ALL is the routine default release preset. Workflow 04 never invents or stamps
-an application version: its visible Release Version must equal the version
-already committed by the approved source-version PR.
+an application version: a blank Release Version resolves the version already
+committed by the approved source-version PR, while a typed value must equal it.
 
 The three publishing presets execute the selected production release graph:
 canonical preflight, target builds, numeric tag promotion, git-cliff notes and
@@ -241,9 +241,10 @@ not type or guess the next number.
 
 The workflow creates a topic branch and a minimal Draft PR targeting `dev`
 before changing versioned source. It then updates Cargo metadata, both Windows
-manifests, the App Installer template, the WebGUI version and user agent, and
-Workflow 04's visible default as one source commit. A mismatch in any of those
-fields fails closed.
+manifests, the App Installer template, and the WebGUI version and user agent as
+one source commit. It does not modify Workflow 04 or any other workflow file;
+Workflow 04 resolves the committed version when its form field is blank. A
+mismatch in any application/package version field fails closed.
 
 Because a PR created with the workflow's GitHub token cannot recursively start
 another Actions run, Workflow 05 explicitly dispatches the repository's normal

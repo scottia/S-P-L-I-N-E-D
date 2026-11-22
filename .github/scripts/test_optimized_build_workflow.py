@@ -66,14 +66,15 @@ class OptimizedFullReleaseMirrorTests(unittest.TestCase):
             self.assertIn(visible, dispatch)
         self.assertIn('- "Create release now"', dispatch)
         self.assertIn('- "No release creation"', dispatch)
-        cargo = (ROOT / "build/Windows/Cargo.toml").read_text(encoding="utf-8-sig")
-        source_version = re.search(
-            r'(?ms)^\[package\].*?^version\s*=\s*"(\d+\.\d+\.\d+)"', cargo
-        ).group(1)
         version_input = dispatch.split("      release_version:\n", 1)[1].split(
             "      release_target:\n", 1
         )[0]
-        self.assertIn(f'default: "{source_version}"', version_input)
+        self.assertIn('default: ""', version_input)
+        self.assertIn("leave blank to use the committed", version_input)
+
+        resolver = job(self.workflow, "resolve-plan")
+        self.assertIn('release_version="${REQUESTED_VERSION:-$SOURCE_VERSION}"', resolver)
+        self.assertIn('display_version="$release_version"', resolver)
 
     def test_presets_resolve_the_owner_defined_default_matrix(self):
         resolver = job(self.workflow, "resolve-plan")

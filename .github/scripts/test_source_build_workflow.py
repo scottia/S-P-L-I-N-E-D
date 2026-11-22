@@ -48,6 +48,15 @@ class SourceBuildWorkflowTests(unittest.TestCase):
         )
         self.assertNotIn("gh pr ready", self.workflow_05)
 
+    def test_version_commit_never_modifies_a_workflow_file(self) -> None:
+        prepare = job(self.workflow_05, "prepare-source")
+        add_block = prepare.split("          git add \\\n", 1)[1].split(
+            "          git commit -m \"release: prepare source", 1
+        )[0]
+        self.assertNotIn(".github/workflows/", add_block)
+        self.assertNotIn("04-optimized-build-test.yml", add_block)
+        self.assertIn("Workflow 04 unchanged", prepare)
+
     def test_preparation_requires_synchronized_main_and_dev_trees(self) -> None:
         prepare = job(self.workflow_05, "prepare-source")
         self.assertIn('git fetch origin main dev --tags --force', prepare)
