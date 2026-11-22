@@ -1,0 +1,1225 @@
+name: 00. Full Release - [dev-archive] Build Selected Target and Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: "FULL RELEASE: creates a tag, GitHub Release, and GHCR image. Store submission needs separate confirmation. Blank selects the next version."
+        required: false
+        default: ""
+        type: string
+      platform:
+        description: "Release target; WebGUI / Python validates and publishes the browser/PostgreSQL container. Windows or All can also build and submit a Store package."
+        required: true
+        default: "Windows"
+        type: choice
+        options:
+          - "All"
+          - "Windows"
+          - "WebGUI / Python"
+      extended_windows_validation:
+        description: "Run the full Rust/Slint Windows regression suite before packaging"
+        required: false
+        default: false
+        type: boolean
+      store_submit_update:
+        description: "RISK: Submit Update/No Draft - stage package and immediately submit for certification. No manual draft review."
+        required: false
+        default: false
+        type: boolean
+      store_submit_draft:
+        description: "Review Bundle/No Submit - use read-only Store history to retain the MSIX, Highlights, and audit JSON. Never stage or submit."
+        required: false
+        default: false
+        type: boolean
+      release_confirmation:
+        description: "RISK: creates a new version, tag, GitHub Release, and GHCR image. Choose Create release now to proceed."
+        required: true
+        default: "Stop - no release"
+        type: choice
+        options:
+          - "Stop - no release"
+          - "Create release now"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: splined-release-next-patch
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.99.0"
+  WINDOWS_TARGET: "x86_64-pc-windows-msvc"
+
+jobs:
+  audio-integrity-webgui:
+    name: Audio integrity — WebGUI real artwork writer
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: .:build/WEBGui:build/WEBGui/webgui/backend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Verify ID3v2.x real-writer and injected mutation protections
+        run: |
+          python -m pip install -r build/WEBGui/webgui/requirements-test.txt
+          python -m unittest discover -s build/WEBGui/webgui/tests -p test_splined_compilation_authority_policy.py -v
+          python -m unittest discover -s build/WEBGui/webgui/tests -p test_audio_integrity.py -v
+          python -m unittest discover -s build/WEBGui/webgui/tests -p test_comp_job_scope.py -v
+          python -m unittest discover -s build/WEBGui/webgui/tests -p test_cross_format_cover_overwrite.py -v
+  audio-integrity-windows:
+    name: Audio integrity — Windows real artwork writer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Run mandatory Rust/Lofty artwork integrity tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          rustup toolchain install 1.99.0 --profile minimal
+          rustup target add x86_64-pc-windows-msvc --toolchain 1.99.0
+          cargo +1.99.0 test --locked --manifest-path build/Windows/Cargo.toml --lib --target x86_64-pc-windows-msvc artwork_integrity::tests -- --nocapture
+          cargo +1.99.0 test --locked --manifest-path build/Windows/Cargo.toml --lib --target x86_64-pc-windows-msvc embedded_artwork -- --nocapture
+          cargo +1.99.0 test --locked --manifest-path build/Windows/Cargo.toml --lib --target x86_64-pc-windows-msvc local_artwork -- --nocapture
+  prepare-release:
+    needs: [audio-integrity-webgui, audio-integrity-windows]
+    name: Prepare next release commit
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      commit: ${{ steps.release.outputs.commit }}
+      base: ${{ steps.release.outputs.base }}
+
+    steps:
+      - name: Require explicit release and nonconflicting Store choices before any release work
+        shell: bash
+        env:
+          RELEASE_CONFIRMATION: ${{ inputs.release_confirmation }}
+          STORE_UPDATE: ${{ inputs.store_submit_update }}
+          STORE_DRAFT: ${{ inputs.store_submit_draft }}
+          RELEASE_PLATFORM: ${{ inputs.platform }}
+          EXTENDED_WINDOWS_VALIDATION: ${{ inputs.extended_windows_validation }}
+        run: |
+          set -euo pipefail
+          if [ "$RELEASE_CONFIRMATION" != "Create release now" ]; then
+            echo "::error title=Release not confirmed::Select 'Create release now' to authorize a version, tag, GitHub Release, and GHCR publication."
+            exit 1
+          fi
+          if [ "$STORE_UPDATE" = true ] && [ "$STORE_DRAFT" = true ]; then
+            echo "::error title=Conflicting Store choices::Select only one Store mode."
+            exit 1
+          fi
+          if { [ "$STORE_UPDATE" = true ] || [ "$STORE_DRAFT" = true ]; } &&
+             [ "$RELEASE_PLATFORM" != Windows ] && [ "$RELEASE_PLATFORM" != All ]; then
+            echo "::error title=Windows build required::Store bundle preparation requires Windows or All."
+            exit 1
+          fi
+          if [ "$EXTENDED_WINDOWS_VALIDATION" = true ] &&
+             [ "$RELEASE_PLATFORM" != Windows ] && [ "$RELEASE_PLATFORM" != All ]; then
+            echo "::error title=Windows validation unavailable::Strict Rust/Slint validation requires Windows or All."
+            exit 1
+          fi
+          if [ "$STORE_UPDATE" = true ] && [ "$EXTENDED_WINDOWS_VALIDATION" != true ]; then
+            echo "::error title=Store validation required::Submitting a Store update requires Extended Windows validation."
+            exit 1
+          fi
+
+      - name: Require main branch dispatch
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.ref }}" != "refs/heads/main" ]; then
+            echo "ERROR: Run this release workflow from the main branch."
+            echo "Received: ${{ github.ref }}"
+            exit 1
+          fi
+
+      - name: Checkout main with tags
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Validate canonical policies and indexer contracts before release commit
+        shell: bash
+        env:
+          PYTHONPATH: .:build/WEBGui:build/WEBGui/webgui/backend
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/validate_release_policy_contracts.py
+          python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
+
+      - name: Provision exact release metadata and commit
+        id: release
+        shell: bash
+        env:
+          REQUESTED_VERSION: ${{ inputs.release_version }}
+        run: |
+          set -euo pipefail
+
+          git fetch --force --tags origin
+          BASE_MAIN_SHA=$(git rev-parse HEAD)
+
+          RELEASE_VERSION=$(python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+          import subprocess
+          import sys
+
+          sys.path.insert(0, str(Path(".github/scripts").resolve()))
+          from release_source_version import choose_release_version
+
+          tags = subprocess.check_output(
+              ["git", "tag", "--list"],
+              text=True,
+          ).splitlines()
+          # Only tags on the current main history define its release line.
+          # Old tags on abandoned histories must not block a new version.
+          versions = []
+          for tag in tags:
+              match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", tag)
+              if match:
+                  result = subprocess.run(
+                      ["git", "merge-base", "--is-ancestor", f"refs/tags/{tag}^{{commit}}", "HEAD"],
+                      check=False,
+                  )
+                  if result.returncode == 0:
+                      versions.append(tuple(map(int, match.groups())))
+                  elif result.returncode != 1:
+                      raise SystemExit(f"Could not inspect release tag ancestry: {tag}")
+
+          cargo_path = Path("build/Windows/Cargo.toml")
+          cargo = cargo_path.read_text(encoding="utf-8-sig")
+          source_match = re.search(
+              r'(?ms)^\[package\].*?^version\s*=\s*"(\d+\.\d+\.\d+)"',
+              cargo,
+          )
+          if not source_match:
+              raise SystemExit("Windows Cargo package version was not found")
+
+          source_version = source_match.group(1)
+          requested = os.environ.get("REQUESTED_VERSION", "").strip()
+          try:
+              release_version = choose_release_version(
+                  source_version, versions, tags, requested
+              )
+          except ValueError as error:
+              raise SystemExit(str(error)) from error
+
+          cargo, cargo_count = re.subn(
+              r'(?ms)(^\[package\].*?^version\s*=\s*")[^"]+("\s*$)',
+              rf'\g<1>{release_version}\g<2>',
+              cargo,
+              count=1,
+          )
+          if cargo_count != 1:
+              raise SystemExit("Windows Cargo package version was not updated")
+          cargo_path.write_text(cargo, encoding="utf-8")
+
+          lock_path = Path("build/Windows/Cargo.lock")
+          lock = lock_path.read_text(encoding="utf-8")
+          lock, lock_count = re.subn(
+              r'(?m)(^name = "splined-windows"\r?\nversion = ")[^"]+("$)',
+              rf'\g<1>{release_version}\g<2>',
+              lock,
+              count=1,
+          )
+          if lock_count != 1:
+              raise SystemExit("Windows Cargo.lock package version was not updated")
+          lock_path.write_text(lock, encoding="utf-8")
+
+          app_manifest_path = Path("build/Windows/gui/app.manifest")
+          app_manifest = app_manifest_path.read_text(encoding="utf-8-sig")
+          app_manifest, count = re.subn(
+              r'(<assemblyIdentity version=")[^"]+(" name="SPLINED\.Windows"/>)',
+              rf'\g<1>{release_version}.0\g<2>',
+              app_manifest,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit("Windows executable manifest version was not updated")
+          app_manifest_path.write_text(app_manifest, encoding="utf-8")
+
+          package_manifest_path = Path("build/Windows/package/Package.appxmanifest")
+          package_manifest = package_manifest_path.read_text(encoding="utf-8-sig")
+          package_manifest, count = re.subn(
+              r'(?s)(<Identity\b[^>]*\bVersion=")[0-9]+\.[0-9]+\.[0-9]+\.0(")',
+              rf'\g<1>{release_version}.0\g<2>',
+              package_manifest,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit("Package.appxmanifest Identity.Version was not updated")
+          if 'MinVersion="10.0.17763.0"' not in package_manifest:
+              raise SystemExit("Package.appxmanifest Windows.Desktop MinVersion changed unexpectedly")
+          if 'MaxVersionTested="10.0.26100.0"' not in package_manifest:
+              raise SystemExit("Package.appxmanifest MaxVersionTested changed unexpectedly")
+          package_manifest_path.write_text(package_manifest, encoding="utf-8")
+
+          appinstaller_path = Path("build/Windows/package/SPLINED.appinstaller.template")
+          appinstaller = appinstaller_path.read_text(encoding="utf-8-sig")
+          appinstaller, count = re.subn(
+              r'(Version=")[0-9]+\.[0-9]+\.[0-9]+\.0(")',
+              rf'\g<1>{release_version}.0\g<2>',
+              appinstaller,
+          )
+          if count != 2:
+              raise SystemExit("App Installer template versions were not updated exactly twice")
+          appinstaller_path.write_text(appinstaller, encoding="utf-8")
+
+          python_path = Path("build/WEBGui/webgui/backend/splined.py")
+          source = python_path.read_text(encoding="utf-8")
+          source, version_count = re.subn(
+              r'^VERSION = "[^"]+"$',
+              f'VERSION = "{release_version}"',
+              source,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          source, agent_count = re.subn(
+              r'^USER_AGENT = "SPLINED/[^ ]+ \(https://github\.com/scottia/S-P-L-I-N-E-D\)"$',
+              f'USER_AGENT = "SPLINED/{release_version} '
+              '(https://github.com/scottia/S-P-L-I-N-E-D)"',
+              source,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          if version_count != 1 or agent_count != 1:
+              raise SystemExit("Python release metadata was not updated")
+          python_path.write_text(source, encoding="utf-8")
+
+          print(release_version)
+          PY
+          )
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          mapfile -t changed < <(git diff --name-only | sort)
+          if [ "${#changed[@]}" -ne 0 ]; then
+            echo "ERROR: Committed Windows and WebGUI release metadata is inconsistent."
+            printf '  %s\n' "${changed[@]}"
+            exit 1
+          fi
+
+          git commit -m "release: prepare ${RELEASE_VERSION}" --allow-empty
+
+          RELEASE_COMMIT=$(git rev-parse HEAD)
+          test "$(git rev-parse HEAD^)" = "$BASE_MAIN_SHA"
+
+          git fetch --force origin main
+          if [ "$(git rev-parse origin/main)" != "$BASE_MAIN_SHA" ]; then
+            echo "ERROR: main changed while the release tag was being prepared; run again."
+            exit 1
+          fi
+
+          git bundle create release-source.bundle HEAD "^$BASE_MAIN_SHA"
+          git bundle verify release-source.bundle
+
+          echo "version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "commit=$RELEASE_COMMIT" >> "$GITHUB_OUTPUT"
+          echo "base=$BASE_MAIN_SHA" >> "$GITHUB_OUTPUT"
+          echo "Prepared untagged release commit $RELEASE_VERSION at $RELEASE_COMMIT"
+
+      - name: Upload exact release source commit
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-source-commit
+          path: release-source.bundle
+          if-no-files-found: error
+
+  build-windows:
+    name: Build Release — Windows
+    needs: prepare-release
+    if: ${{ inputs.platform == 'Windows' || inputs.platform == 'All' }}
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout release base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Download exact release source commit
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-source-commit
+          path: .release-source
+
+      - name: Checkout exact untagged release commit
+        shell: bash
+        env:
+          RELEASE_COMMIT: ${{ needs.prepare-release.outputs.commit }}
+        run: |
+          set -euo pipefail
+          git fetch .release-source/release-source.bundle HEAD
+          test "$(git rev-parse FETCH_HEAD)" = "$RELEASE_COMMIT"
+          git checkout --detach "$RELEASE_COMMIT"
+          test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
+
+      - name: Install stable Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
+          rustup default "$RUST_TOOLCHAIN"
+          rustup target add "$WINDOWS_TARGET" --toolchain "$RUST_TOOLCHAIN"
+
+      - name: Install Rust quality components
+        if: ${{ inputs.extended_windows_validation == true }}
+        shell: bash
+        run: rustup component add rustfmt clippy --toolchain "$RUST_TOOLCHAIN"
+
+      - name: Calculate Windows dependency cache key
+        id: windows-dependency-cache-key
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $lock = Get-Content -Raw -LiteralPath build/Windows/Cargo.lock
+          $pattern = '(?ms)(\[\[package\]\]\r?\nname = "splined-windows"\r?\n)version = "[^"]+"'
+          $normalized = [regex]::Replace($lock, $pattern, '${1}version = "<release>"')
+          if ($normalized -eq $lock) {
+            throw "Unable to normalize the release-only Windows package version for the dependency cache key."
+          }
+          $bytes = [Text.Encoding]::UTF8.GetBytes($normalized)
+          $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+          "hash=$hash" | Add-Content $env:GITHUB_OUTPUT
+
+      - name: Restore Cargo dependency cache
+        id: rust-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-splined-windows-dependencies-v2-${{ env.RUST_TOOLCHAIN }}-${{ steps.windows-dependency-cache-key.outputs.hash }}
+          restore-keys: |
+            ${{ runner.os }}-splined-windows-dependencies-v2-${{ env.RUST_TOOLCHAIN }}-
+
+      - name: Run extended Windows regression suite
+        if: ${{ inputs.extended_windows_validation == true }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          cargo fmt --manifest-path build/Windows/Cargo.toml -- --check
+          cargo clippy --locked --manifest-path build/Windows/Cargo.toml --all-targets --target $env:WINDOWS_TARGET -- -D warnings
+          cargo test --locked --manifest-path build/Windows/Cargo.toml --lib --target $env:WINDOWS_TARGET
+
+      - name: Build clean x64 Rust/Slint executable
+        id: windows-build
+        shell: pwsh
+        env:
+          SPLINED_BUILD_COMMIT: ${{ needs.prepare-release.outputs.commit }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $releaseRoot = "build/Windows/target/$env:WINDOWS_TARGET/release"
+          if (Test-Path -LiteralPath $releaseRoot) {
+            Remove-Item -LiteralPath $releaseRoot -Recurse -Force
+          }
+          $started = Get-Date
+          cargo build --locked --release --manifest-path build/Windows/Cargo.toml --target $env:WINDOWS_TARGET
+          "elapsed_seconds=$([Math]::Round(((Get-Date) - $started).TotalSeconds))" | Add-Content $env:GITHUB_OUTPUT
+
+      - name: Stage and audit portable Windows release
+        shell: pwsh
+        env:
+          RELEASE_COMMIT: ${{ needs.prepare-release.outputs.commit }}
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $releaseRoot = "build/Windows/target/$env:WINDOWS_TARGET/release"
+          $portableRoot = "release-package/SPLINED"
+          New-Item -ItemType Directory -Force -Path $portableRoot, release-assets | Out-Null
+          Copy-Item "$releaseRoot/splined.exe" "$portableRoot/splined.exe"
+          Copy-Item release/README-WINDOWS.txt "$portableRoot/README-WINDOWS.txt"
+
+          function Assert-Amd64Pe([string]$path) {
+            $bytes = [IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $path).Path)
+            if ($bytes.Length -lt 64) { throw "PE image is truncated: $path" }
+            $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+            if ($peOffset -lt 0 -or $peOffset + 6 -gt $bytes.Length) { throw "PE header is invalid: $path" }
+            if ($bytes[$peOffset] -ne 0x50 -or $bytes[$peOffset + 1] -ne 0x45) { throw "PE signature is invalid: $path" }
+            $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+            if ($machine -ne 0x8664) { throw ("Expected AMD64 PE Machine 0x8664 for {0}; found 0x{1:X4}." -f $path, $machine) }
+          }
+          Assert-Amd64Pe "$portableRoot/splined.exe"
+
+          $buildInfoPath = Join-Path $env:RUNNER_TEMP "splined-build-info.json"
+          $identity = Start-Process -FilePath (Resolve-Path "$portableRoot/splined.exe") -ArgumentList @("--write-build-info", $buildInfoPath) -Wait -PassThru
+          if ($identity.ExitCode -ne 0) { throw "The Rust/Slint executable could not report its build identity." }
+          $buildInfo = Get-Content -Raw -LiteralPath $buildInfoPath | ConvertFrom-Json
+          if ($buildInfo.version -ne $env:RELEASE_VERSION) { throw "The Windows executable version does not match the release tag." }
+          if ($buildInfo.commit -ne $env:RELEASE_COMMIT) { throw "The Windows executable commit does not match the release commit." }
+          if ($buildInfo.architecture -ne "rust-slint") { throw "The Windows executable is not the Rust/Slint architecture." }
+
+          $files = @(Get-ChildItem -LiteralPath $portableRoot -Recurse -File | ForEach-Object {
+            $_.FullName.Substring((Resolve-Path $portableRoot).Path.Length + 1).Replace('\', '/')
+          } | Sort-Object)
+          $expected = @("README-WINDOWS.txt", "splined.exe")
+          if (Compare-Object $files $expected) { throw "Portable package contents do not match the release allowlist." }
+          if (Test-Path -LiteralPath "$portableRoot/data") { throw "A fresh portable package must not contain data/." }
+
+          $smokeStateRoot = Join-Path $env:RUNNER_TEMP "splined-portable-smoke-state"
+          New-Item -ItemType Directory -Force -Path $smokeStateRoot | Out-Null
+          $priorStateRoot = $env:SPLINED_INTERNAL_STATE_ROOT
+          $env:SPLINED_INTERNAL_STATE_ROOT = $smokeStateRoot
+          try {
+            $smoke = Start-Process -FilePath (Resolve-Path "$portableRoot/splined.exe") -ArgumentList "--native-smoke" -WorkingDirectory $env:RUNNER_TEMP -Wait -PassThru
+          } finally {
+            $env:SPLINED_INTERNAL_STATE_ROOT = $priorStateRoot
+          }
+          if ($smoke.ExitCode -ne 0) { throw "The clean portable Rust/Slint smoke test failed." }
+          $unexpectedState = @("data", "_cache", "_logs", "credentials", "docker_builds") | Where-Object {
+            Test-Path -LiteralPath (Join-Path $smokeStateRoot $_)
+          }
+          if ($unexpectedState) {
+            throw "Clean first-run smoke created state before Setup Save: $($unexpectedState -join ', ')"
+          }
+
+          Compress-Archive -Path $portableRoot -DestinationPath "release-assets/splined-windows-x86_64.zip" -Force
+          $archiveEntries = @(tar -tf release-assets/splined-windows-x86_64.zip | Where-Object { -not $_.EndsWith('/') } | Sort-Object)
+          $expectedEntries = @("SPLINED/README-WINDOWS.txt", "SPLINED/splined.exe")
+          if (Compare-Object $archiveEntries $expectedEntries) { throw "Portable archive contents do not match the release allowlist." }
+
+          $manifest = [ordered]@{
+            schema = 2
+            channel = "stable"
+            version = $env:RELEASE_VERSION
+            commit = $env:RELEASE_COMMIT
+            short_commit = $env:RELEASE_COMMIT.Substring(0, 7)
+            published_at = [DateTime]::UtcNow.ToString("o")
+            release_url = "https://github.com/scottia/S-P-L-I-N-E-D/releases/tag/$env:RELEASE_VERSION"
+          }
+          $manifest | ConvertTo-Json | Set-Content -Encoding utf8 release-assets/windows-update.json
+
+      - name: Install pinned upstream WinAppCli for Store packaging
+        if: ${{ inputs.store_submit_update == true || inputs.store_submit_draft == true }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $installRoot = Join-Path $env:RUNNER_TEMP "splined-winappcli"
+          npm install --prefix $installRoot --no-save --no-audit --no-fund "@microsoft/winappcli@0.7.1"
+          $commandDirectory = Join-Path $installRoot "node_modules\.bin"
+          $commandDirectory | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $reportedVersion = (& (Join-Path $commandDirectory "winapp.cmd") --version) -join "`n"
+          if ($reportedVersion -notmatch '0\.7\.1') {
+            throw "The pinned WinAppCli installation did not report version 0.7.1."
+          }
+
+      - name: Build and strictly validate unsigned production Store MSIX from release binaries
+        id: store-package
+        if: ${{ inputs.store_submit_update == true || inputs.store_submit_draft == true }}
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $releaseRoot = "build/Windows/target/$env:WINDOWS_TARGET/release"
+          $artifactRoot = Join-Path $env:RUNNER_TEMP "splined-store-artifact"
+          New-Item -ItemType Directory -Force -Path $artifactRoot | Out-Null
+          $storePackage = Join-Path $artifactRoot "SPLINED-x64-store-unsigned.msix"
+          $result = & build/Windows/package/Build-StorePackage.ps1 `
+            -ExecutablePath "$releaseRoot/splined.exe" `
+            -ManifestPath build/Windows/package/Package.appxmanifest `
+            -IconPath build/Windows/gui/splined-app-icon.png `
+            -LayoutRoot (Join-Path $env:RUNNER_TEMP "splined-msix-store-layout") `
+            -UnpackedRoot (Join-Path $env:RUNNER_TEMP "splined-msix-store-unpacked") `
+            -OutputPath $storePackage `
+            -ExpectedVersion "$env:RELEASE_VERSION.0"
+          $result | Format-List | Out-String | Write-Host
+          "path=$storePackage" | Add-Content $env:GITHUB_OUTPUT
+
+      - name: Development-sign, install, activate, native-smoke, and uninstall isolated Store QA package
+        if: ${{ inputs.store_submit_update == true || inputs.store_submit_draft == true }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $releaseRoot = "build/Windows/target/$env:WINDOWS_TARGET/release"
+          & build/Windows/package/Test-DevelopmentPackage.ps1 `
+            -ExecutablePath "$releaseRoot/splined.exe" `
+            -ManifestPath build/Windows/package/Package.appxmanifest `
+            -IconPath build/Windows/gui/splined-app-icon.png `
+            -LayoutRoot (Join-Path $env:RUNNER_TEMP "splined-msix-development-layout")
+
+      - name: Upload Windows portable release artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: splined-windows-x86_64
+          path: |
+            release-assets/splined-windows-x86_64.zip
+            release-assets/windows-update.json
+          if-no-files-found: error
+
+      - name: Upload manual Store submission MSIX artifact
+        if: ${{ inputs.store_submit_update == true || inputs.store_submit_draft == true }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: splined-windows-store-package
+          path: ${{ steps.store-package.outputs.path }}
+          if-no-files-found: error
+
+      - name: Report Windows build cache
+        shell: pwsh
+        run: |
+          @"
+          ## Windows release build
+
+          - Cargo dependency cache exact hit: ``${{ steps.rust-cache.outputs.cache-hit }}``
+          - Rust toolchain: ``${{ env.RUST_TOOLCHAIN }}``
+          - Cargo build: ``${{ steps.windows-build.outputs.elapsed_seconds }} seconds``
+          - Store package-only artifact: ``splined-windows-store-package``
+          - Automated Partner Center update: ``${{ inputs.store_submit_update }}``; complete review bundle: ``${{ inputs.store_submit_draft }}``
+          - Portable and Store outputs use the same release executable and Rust DLL build.
+          "@ | Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+
+  build-webgui:
+    name: Validate Release — WebGUI / Python
+    needs: prepare-release
+    if: ${{ inputs.platform == 'WebGUI / Python' || inputs.platform == 'All' }}
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: splined_test
+          POSTGRES_PASSWORD: splined_ci_only
+          POSTGRES_DB: splined_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U splined_test -d splined_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      SPLINED_TEST_DATABASE_URL: postgresql://splined_test:splined_ci_only@127.0.0.1:5432/splined_test
+      PYTHONPATH: .:build/WEBGui:build/WEBGui/webgui/backend
+
+    steps:
+      - name: Checkout release base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Download exact release source commit
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-source-commit
+          path: .release-source
+
+      - name: Checkout exact untagged release commit
+        shell: bash
+        env:
+          RELEASE_COMMIT: ${{ needs.prepare-release.outputs.commit }}
+        run: |
+          set -euo pipefail
+          git fetch .release-source/release-source.bundle HEAD
+          test "$(git rev-parse FETCH_HEAD)" = "$RELEASE_COMMIT"
+          git checkout --detach "$RELEASE_COMMIT"
+          test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+
+      - name: Install WebGUI test dependencies
+        run: pip install -r build/WEBGui/webgui/requirements-test.txt
+
+      - name: Validate Python/PostgreSQL WebGUI
+        run: python -m unittest discover -s build/WEBGui/webgui/tests -v
+
+      - name: Validate browser JavaScript
+        run: node --check build/WEBGui/webgui/static/app.js && node --check build/WEBGui/webgui/static/operations.js
+
+      - name: Build and smoke-test WebGUI container
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --file build/WEBGui/Dockerfile --tag splined-webgui:release-test .
+          docker run -d --name splined-webgui-release-test --network host \
+            -e PGHOST=127.0.0.1 -e PGUSER=splined_test -e PGPASSWORD=splined_ci_only \
+            -e PGDATABASE=splined_test -e SPLINED_WEB_TOKEN=ci-browser-only \
+            splined-webgui:release-test
+          ready=false
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8080/api/status > /tmp/splined-status.json; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" != true ]; then
+            docker logs splined-webgui-release-test
+            exit 1
+          fi
+          python - <<'PY'
+          import json
+          status = json.load(open('/tmp/splined-status.json', encoding='utf-8'))
+          assert status['database'] == 'PostgreSQL'
+          assert status['database_ready'] is True
+          assert status['auth_required'] is True
+          PY
+
+      - name: Report WebGUI container logs
+        if: always()
+        run: docker logs splined-webgui-release-test || true
+
+      - name: Package WebGUI / Python release source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-package/build release-assets
+          cp -R build/WEBGui release-package/build/
+          cp -R schema docs release-package/
+          cp .dockerignore release-package/
+          cp README.md LICENSE PRIVACY.md SECURITY.md SUPPORT.md release-package/
+          tar -czf release-assets/splined-webgui-python.tar.gz -C release-package .
+
+      - name: Upload WebGUI / Python artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: splined-webgui-python
+          path: release-assets/splined-webgui-python.tar.gz
+          if-no-files-found: error
+
+  finalize-tag:
+    name: Publish numeric tag and release commit after successful builds
+    needs:
+      - prepare-release
+      - audio-integrity-webgui
+      - audio-integrity-windows
+      - build-windows
+      - build-webgui
+    if: >-
+      ${{
+        always() &&
+        needs.prepare-release.result == 'success' &&
+        needs.audio-integrity-webgui.result == 'success' &&
+        needs.audio-integrity-windows.result == 'success' &&
+        (
+          (
+            inputs.platform == 'Windows' &&
+            needs.build-windows.result == 'success' &&
+            needs.build-webgui.result == 'skipped'
+          ) ||
+          (
+            inputs.platform == 'WebGUI / Python' &&
+            needs.build-windows.result == 'skipped' &&
+            needs.build-webgui.result == 'success'
+          ) ||
+          (
+            inputs.platform == 'All' &&
+            needs.build-windows.result == 'success' &&
+            needs.build-webgui.result == 'success'
+          )
+        )
+      }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout unchanged release base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Download exact release source commit
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-source-commit
+          path: .release-source
+
+      - name: Create tag and atomically promote release commit
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.prepare-release.outputs.commit }}
+          BASE_MAIN_SHA: ${{ needs.prepare-release.outputs.base }}
+        run: |
+          set -euo pipefail
+          git fetch --force --tags origin main
+          if [ "$(git rev-parse origin/main)" != "$BASE_MAIN_SHA" ]; then
+            echo "ERROR: main changed while selected release builds were running; no tag was created."
+            exit 1
+          fi
+          if git show-ref --verify --quiet "refs/tags/$RELEASE_VERSION"; then
+            echo "ERROR: Release tag already exists: $RELEASE_VERSION"
+            exit 1
+          fi
+          git fetch .release-source/release-source.bundle HEAD
+          test "$(git rev-parse FETCH_HEAD)" = "$RELEASE_COMMIT"
+          test "$(git rev-parse "$RELEASE_COMMIT^")" = "$BASE_MAIN_SHA"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$RELEASE_VERSION" "$RELEASE_COMMIT" -m "S:P:L:I:N:E:D ${RELEASE_VERSION}"
+          git push --atomic origin \
+            "refs/tags/${RELEASE_VERSION}:refs/tags/${RELEASE_VERSION}" \
+            "$RELEASE_COMMIT:refs/heads/main"
+          test "$(git ls-remote origin "refs/tags/$RELEASE_VERSION^{}" | awk '{print $1}')" = "$RELEASE_COMMIT"
+          test "$(git ls-remote origin "refs/heads/main" | awk '{print $1}')" = "$RELEASE_COMMIT"
+
+  generate-release-notes:
+    name: Generate incremental GitHub release notes
+    needs:
+      - prepare-release
+      - finalize-tag
+    if: >-
+      ${{
+        always() &&
+        needs.prepare-release.result == 'success' &&
+        needs.finalize-tag.result == 'success'
+      }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout generated release tag with history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: refs/tags/${{ needs.prepare-release.outputs.version }}
+          fetch-depth: 0
+
+      - name: Install and verify git-cliff 2.14.2
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & release/Install-GitCliff.ps1 -InstallDirectory (Join-Path $env:RUNNER_TEMP "git-cliff-2.14.2")
+          $reportedVersion = (git-cliff --version) -join "`n"
+          if ($reportedVersion.Trim() -cne "git-cliff 2.14.2") {
+            throw "Expected git-cliff 2.14.2; received '$($reportedVersion.Trim())'."
+          }
+
+      - name: Verify WebGUI release-note classification
+        shell: pwsh
+        run: ./release/Test-ReleaseNoteClassification.ps1
+
+      - name: Render incremental GitHub notes
+        id: notes
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          & release/Generate-ReleaseNotes.ps1 `
+            -Version $env:RELEASE_VERSION `
+            -RepositoryRoot . `
+            -ConfigPath release/cliff.toml `
+            -GitHubTemplatePath release/templates/github-release.tera `
+            -OutputDirectory release-notes
+
+      - name: Upload generated release-note context and outputs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: splined-release-notes
+          path: |
+            release-notes/release-context.json
+            release-notes/GITHUB-RELEASE.md
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub Release
+    needs:
+      - prepare-release
+      - build-windows
+      - build-webgui
+      - finalize-tag
+      - generate-release-notes
+    if: >-
+      ${{
+        always() &&
+        needs.prepare-release.result == 'success' &&
+        needs.finalize-tag.result == 'success' &&
+        needs.generate-release-notes.result == 'success' &&
+        (needs.build-windows.result == 'success' || needs.build-windows.result == 'skipped') &&
+        (needs.build-webgui.result == 'success' || needs.build-webgui.result == 'skipped')
+      }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download generated release notes
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: splined-release-notes
+          path: release-notes
+
+      - name: Download Windows release assets
+        if: ${{ inputs.platform == 'Windows' || inputs.platform == 'All' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: splined-windows-x86_64
+          path: release-assets
+
+      - name: Download WebGUI / Python release asset
+        if: ${{ inputs.platform == 'WebGUI / Python' || inputs.platform == 'All' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: splined-webgui-python
+          path: release-assets
+
+      - name: Create checksums and GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd release-assets
+          mapfile -t archives < <(find . -maxdepth 1 -type f \( -name 'splined-*.zip' -o -name 'splined-*.tar.gz' \) -printf '%f\n' | sort)
+          if [ "${#archives[@]}" -eq 0 ]; then
+            echo "ERROR: No selected release-target archive was produced."
+            exit 1
+          fi
+          release_files=("${archives[@]}")
+          for metadata in windows-update.json; do
+            if [ -f "$metadata" ]; then release_files+=("$metadata"); fi
+          done
+          sha256sum "${release_files[@]}" > SHA256SUMS.txt
+          gh release create "$RELEASE_VERSION" \
+            "${release_files[@]}" \
+            SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "S:P:L:I:N:E:D $RELEASE_VERSION" \
+            --notes-file ../release-notes/GITHUB-RELEASE.md
+
+  publish-ghcr:
+    name: Publish GHCR
+    needs:
+      - prepare-release
+      - publish-release
+    if: ${{ always() && needs.prepare-release.result == 'success' && needs.publish-release.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE_NAME: ghcr.io/scottia/splined
+      RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+
+    steps:
+      - name: Checkout generated release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: refs/tags/${{ needs.prepare-release.outputs.version }}
+
+      - name: Build GHCR image
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION_TAG="v${RELEASE_VERSION}"
+          docker build --pull \
+            --build-arg SPLINED_BUILD_CHANNEL=release \
+            --label "org.opencontainers.image.source=https://github.com/scottia/S-P-L-I-N-E-D" \
+            --label "org.opencontainers.image.version=$RELEASE_VERSION" \
+            --label "org.opencontainers.image.revision=${{ needs.prepare-release.outputs.commit }}" \
+            --tag "$IMAGE_NAME:$VERSION_TAG" \
+            --tag "$IMAGE_NAME:latest" \
+            --file build/WEBGui/Dockerfile .
+
+      - name: Log in to GHCR
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Push version and latest image tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker push "$IMAGE_NAME:v${RELEASE_VERSION}"
+          docker push "$IMAGE_NAME:latest"
+
+  publish-store:
+    name: Prepare or submit Microsoft Store bundle
+    needs:
+      - prepare-release
+      - generate-release-notes
+      - publish-release
+    if: >-
+      ${{
+        always() &&
+        (inputs.store_submit_update == true || inputs.store_submit_draft == true) &&
+        (inputs.platform == 'Windows' || inputs.platform == 'All') &&
+        needs.prepare-release.result == 'success' &&
+        needs.generate-release-notes.result == 'success' &&
+        needs.publish-release.result == 'success'
+      }}
+    runs-on: windows-latest
+    concurrency:
+      group: splined-microsoft-store-submission
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout generated release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: refs/tags/${{ needs.prepare-release.outputs.version }}
+          fetch-depth: 0
+
+      - name: Download exact Store package
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: splined-windows-store-package
+          path: store-package
+
+      - name: Require Microsoft Store credentials
+        shell: pwsh
+        env:
+          AZURE_AD_APPLICATION_CLIENT_ID: ${{ secrets.AZURE_AD_APPLICATION_CLIENT_ID }}
+          AZURE_AD_APPLICATION_SECRET: ${{ secrets.AZURE_AD_APPLICATION_SECRET }}
+          AZURE_AD_TENANT_ID: ${{ secrets.AZURE_AD_TENANT_ID }}
+          SELLER_ID: ${{ secrets.SELLER_ID }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          foreach ($name in @("AZURE_AD_APPLICATION_CLIENT_ID", "AZURE_AD_APPLICATION_SECRET", "AZURE_AD_TENANT_ID", "SELLER_ID")) {
+            if ([String]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "Required Microsoft Store publishing credential is unavailable: $name"
+            }
+          }
+
+      - name: Install pinned Microsoft Store CLI
+        uses: microsoft/microsoft-store-apppublisher@cc9910a8d59f2eb55cbb83df0a3800cf3b5300e0 # v1.4
+        with:
+          version: v0.4.3
+
+      - name: Install and verify git-cliff 2.14.2
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & release/Install-GitCliff.ps1 -InstallDirectory (Join-Path $env:RUNNER_TEMP "git-cliff-2.14.2")
+          if (((git-cliff --version) -join "`n").Trim() -cne "git-cliff 2.14.2") {
+            throw "The release-note engine must be git-cliff 2.14.2."
+          }
+
+      - name: Test Store history baseline resolution
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & release/Test-StoreBaseline.ps1 -RepositoryRoot .
+
+      - name: Authenticate Microsoft Store before resolving published history
+        shell: pwsh
+        env:
+          AZURE_AD_APPLICATION_CLIENT_ID: ${{ secrets.AZURE_AD_APPLICATION_CLIENT_ID }}
+          AZURE_AD_APPLICATION_SECRET: ${{ secrets.AZURE_AD_APPLICATION_SECRET }}
+          AZURE_AD_TENANT_ID: ${{ secrets.AZURE_AD_TENANT_ID }}
+          SELLER_ID: ${{ secrets.SELLER_ID }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          try {
+            & msstore reconfigure --tenantId $env:AZURE_AD_TENANT_ID --sellerId $env:SELLER_ID --clientId $env:AZURE_AD_APPLICATION_CLIENT_ID --clientSecret $env:AZURE_AD_APPLICATION_SECRET
+          }
+          catch {
+            throw "Microsoft Store authentication failed before release-history resolution. Verify Partner Center credentials and application permissions. $($_.Exception.Message)"
+          }
+
+      - name: Resolve last-published Store baseline
+        id: store-baseline
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $reviewOnly = "${{ inputs.store_submit_draft }}" -eq "true"
+          & release/Resolve-StoreBaseline.ps1 `
+            -TargetVersion $env:RELEASE_VERSION `
+            -RepositoryRoot . `
+            -ProductId 9P8G4GMBBVBS `
+            -OutputDirectory store-notes `
+            -AllowPendingSubmission:$reviewOnly
+
+      - name: Render cumulative Store Highlights from published baseline
+        id: store-highlights
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          & release/Generate-StoreHighlights.ps1 `
+            -Version $env:RELEASE_VERSION `
+            -BaselineMetadataPath store-notes/STORE-BASELINE.json `
+            -RepositoryRoot . `
+            -ConfigPath release/cliff.toml `
+            -StoreTemplatePath release/templates/store-highlights.tera `
+            -OutputDirectory store-notes
+
+      - name: Assemble Store submission audit artifact
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          [IO.Directory]::CreateDirectory("store-submission") | Out-Null
+          Copy-Item -LiteralPath "store-package/SPLINED-x64-store-unsigned.msix" -Destination "store-submission/SPLINED-x64-store-unsigned.msix"
+          Copy-Item -LiteralPath "store-notes/STORE-HIGHLIGHTS.txt" -Destination "store-submission/STORE-HIGHLIGHTS.txt"
+          Copy-Item -LiteralPath "store-notes/STORE-SUBMISSION.json" -Destination "store-submission/STORE-SUBMISSION.json"
+
+      - name: Upload Store submission audit artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: splined-windows-store-submission
+          path: |
+            store-submission/SPLINED-x64-store-unsigned.msix
+            store-submission/STORE-HIGHLIGHTS.txt
+            store-submission/STORE-SUBMISSION.json
+          if-no-files-found: error
+
+      - name: Stage package and Highlights and submit the selected Store update
+        if: ${{ inputs.store_submit_update == true }}
+        shell: pwsh
+        env:
+          AZURE_AD_APPLICATION_CLIENT_ID: ${{ secrets.AZURE_AD_APPLICATION_CLIENT_ID }}
+          AZURE_AD_APPLICATION_SECRET: ${{ secrets.AZURE_AD_APPLICATION_SECRET }}
+          AZURE_AD_TENANT_ID: ${{ secrets.AZURE_AD_TENANT_ID }}
+          SELLER_ID: ${{ secrets.SELLER_ID }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          & build/Windows/package/Publish-StoreUpdate.ps1 `
+            -PackagePath store-submission/SPLINED-x64-store-unsigned.msix `
+            -HighlightsPath store-submission/STORE-HIGHLIGHTS.txt `
+            -BaselineMetadataPath store-submission/STORE-SUBMISSION.json `
+            -ExpectedVersion ${{ needs.prepare-release.outputs.version }} `
+            -ProductId 9P8G4GMBBVBS
+
+  release-summary:
+    name: Release summary
+    needs:
+      - prepare-release
+      - audio-integrity-webgui
+      - audio-integrity-windows
+      - build-windows
+      - build-webgui
+      - finalize-tag
+      - generate-release-notes
+      - publish-release
+      - publish-ghcr
+      - publish-store
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Enforce unconditional Windows and WebGUI audio-integrity gate
+        shell: bash
+        env:
+          WEBGUI_INTEGRITY_RESULT: ${{ needs.audio-integrity-webgui.result }}
+          WINDOWS_INTEGRITY_RESULT: ${{ needs.audio-integrity-windows.result }}
+        run: |
+          if [ "$WEBGUI_INTEGRITY_RESULT" != "success" ] || [ "$WINDOWS_INTEGRITY_RESULT" != "success" ]; then
+            echo "::error title=Audio-integrity gate::WebGUI='$WEBGUI_INTEGRITY_RESULT', Windows='$WINDOWS_INTEGRITY_RESULT'; both are mandatory."
+            exit 1
+          fi
+      - name: Enforce selected build and publication results
+        shell: bash
+        env:
+          RELEASE_PLATFORM: ${{ inputs.platform }}
+          STORE_UPDATE: ${{ inputs.store_submit_update }}
+          STORE_DRAFT: ${{ inputs.store_submit_draft }}
+          PREPARE_RESULT: ${{ needs.prepare-release.result }}
+          WINDOWS_RESULT: ${{ needs.build-windows.result }}
+          WEBGUI_RESULT: ${{ needs.build-webgui.result }}
+          TAG_RESULT: ${{ needs.finalize-tag.result }}
+          NOTES_RESULT: ${{ needs.generate-release-notes.result }}
+          GITHUB_RELEASE_RESULT: ${{ needs.publish-release.result }}
+          GHCR_RESULT: ${{ needs.publish-ghcr.result }}
+          STORE_RESULT: ${{ needs.publish-store.result }}
+        run: |
+          set -euo pipefail
+          failures=0
+
+          expect_result() {
+            local stage="$1"
+            local actual="$2"
+            local expected="$3"
+            if [ "$actual" != "$expected" ]; then
+              echo "::error title=Unexpected release stage result::$stage was '$actual'; expected '$expected'."
+              failures=1
+            fi
+          }
+
+          expect_result "Prepare release" "$PREPARE_RESULT" success
+          case "$RELEASE_PLATFORM" in
+            Windows)
+              expect_result "Windows build" "$WINDOWS_RESULT" success
+              expect_result "WebGUI / Python validation" "$WEBGUI_RESULT" skipped
+              ;;
+            "WebGUI / Python")
+              expect_result "Windows build" "$WINDOWS_RESULT" skipped
+              expect_result "WebGUI / Python validation" "$WEBGUI_RESULT" success
+              ;;
+            All)
+              expect_result "Windows build" "$WINDOWS_RESULT" success
+              expect_result "WebGUI / Python validation" "$WEBGUI_RESULT" success
+              ;;
+            *)
+              echo "::error title=Invalid release platform::Unsupported platform '$RELEASE_PLATFORM'."
+              failures=1
+              ;;
+          esac
+
+          expect_result "Numeric tag" "$TAG_RESULT" success
+          expect_result "git-cliff release notes" "$NOTES_RESULT" success
+          expect_result "GitHub Release" "$GITHUB_RELEASE_RESULT" success
+          expect_result "GHCR publication" "$GHCR_RESULT" success
+
+          if { [ "$RELEASE_PLATFORM" = Windows ] || [ "$RELEASE_PLATFORM" = All ]; } &&
+             { [ "$STORE_UPDATE" = true ] || [ "$STORE_DRAFT" = true ]; }; then
+            expect_result "Microsoft Store selected mode" "$STORE_RESULT" success
+          else
+            expect_result "Microsoft Store selected mode" "$STORE_RESULT" skipped
+          fi
+
+          if [ "$failures" -ne 0 ]; then
+            {
+              echo "## SPLINED release incomplete"
+              echo
+              echo "One or more required build/publication stages failed or were unexpectedly skipped."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: Report published outputs
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          {
+            echo "## SPLINED release complete"
+            echo
+            echo "- Version and Git tag: \`$RELEASE_VERSION\`"
+            echo "- Selected release target: \`${{ inputs.platform }}\`"
+            echo "- GitHub Release: published"
+            echo "- GHCR: \`ghcr.io/scottia/splined:v$RELEASE_VERSION\`"
+            echo "- GHCR latest: \`ghcr.io/scottia/splined:latest\`"
+            echo "- Automated Partner Center update: \`${{ inputs.store_submit_update }}\`; complete review bundle: \`${{ inputs.store_submit_draft }}\`"
+            if [ "${{ needs.publish-store.result }}" = "success" ]; then
+              if [ "${{ inputs.store_submit_update }}" = true ]; then
+                echo "- Microsoft Store: package and Highlights submitted for certification"
+              else
+                echo "- Microsoft Store: MSIX-only package and complete review bundle retained; Partner Center history read only; nothing staged or submitted"
+              fi
+            elif [ "${{ inputs.store_submit_draft }}" = true ]; then
+              echo "- Microsoft Store: requested review bundle was not created"
+            else
+              echo "- Microsoft Store: not run (disabled or no Windows target selected)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
