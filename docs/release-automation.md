@@ -232,9 +232,12 @@ policy JSONs and [approved register](POLICY-REGISTER.md) remain normative.
 
 [Workflow 05](../.github/workflows/05-prepare-source-version.yml) separates
 source preparation from release packaging. Run it from `main` only after
-`origin/main` and `origin/dev` identify the same commit and the current source
-version equals the latest numeric tag on `main` history. It advances exactly
-one patch version; operators do not type or guess the next number.
+the current `origin/main` and `origin/dev` commits contain the exact same Git
+tree and the current source version equals the latest numeric tag on `main`
+history. Their commit IDs normally differ because a promotion PR creates a
+merge commit on `main`; tree equality proves that neither branch has additional
+or missing source. Workflow 05 advances exactly one patch version; operators do
+not type or guess the next number.
 
 The workflow creates a topic branch and a minimal Draft PR targeting `dev`
 before changing versioned source. It then updates Cargo metadata, both Windows

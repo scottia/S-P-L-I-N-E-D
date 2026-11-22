@@ -48,12 +48,15 @@ class SourceBuildWorkflowTests(unittest.TestCase):
         )
         self.assertNotIn("gh pr ready", self.workflow_05)
 
-    def test_preparation_requires_synchronized_main_and_dev(self) -> None:
+    def test_preparation_requires_synchronized_main_and_dev_trees(self) -> None:
         prepare = job(self.workflow_05, "prepare-source")
         self.assertIn('git fetch origin main dev --tags --force', prepare)
         self.assertIn('MAIN_SHA=$(git rev-parse origin/main)', prepare)
         self.assertIn('DEV_SHA=$(git rev-parse origin/dev)', prepare)
-        self.assertIn('if [ "$MAIN_SHA" != "$DEV_SHA" ]', prepare)
+        self.assertIn('MAIN_TREE=$(git rev-parse "$MAIN_SHA^{tree}")', prepare)
+        self.assertIn('DEV_TREE=$(git rev-parse "$DEV_SHA^{tree}")', prepare)
+        self.assertIn('if [ "$MAIN_TREE" != "$DEV_TREE" ]', prepare)
+        self.assertNotIn('if [ "$MAIN_SHA" != "$DEV_SHA" ]', prepare)
         self.assertIn('if [ "$GITHUB_REF" != "refs/heads/main" ]', prepare)
 
     def test_preparation_never_writes_protected_branches_or_publishes(self) -> None:
