@@ -136,7 +136,9 @@ selected alternate cover or manually corrected identity into audio metadata.
 All Windows and WebGUI media writers must stage and verify before publication.
 If preservation is not provable, reject the write with the original untouched.
 Maintain mandatory real-writer and deliberately failing mutation tests in PR
-and both release workflows, independent of fast/strict validation choices.
+validation and Workflow 01, independent of fast/strict validation choices.
+Workflow 04 packages an exact commit that already passed required PR checks;
+it must not rerun either client's Audio Integrity suite.
 A source change that introduces audio-tag editing is prohibited; changing
 tests, policy JSON or a workflow to hide it is not an approved fix.
 
@@ -179,7 +181,7 @@ folder-artwork tests that reject an attempted WebP replacement.
 
 **COMP is a separate read/matching/artwork-selection policy.** Preserve `schema/comp-report-policy.json` entirely, including percentage-based results, fuzzy Artist recovery, batch revision pinning, verified-write events and unresolved-authority coordination. **COMP must never write MusicBrainz metadata to any media file.** The same universal non-artwork metadata prohibition applies to ordinary Album thumbnail embedding. Keep the canonical media-state JSON, existing classifications, status dots and COMP-track colors unchanged.
 
-Every PR and Workflow 01/04 release path must run **mandatory fail-closed real-writer audio integrity tests for both clients**, even in fast/validation-only mode. A skipped test is not a pass. A standalone schema JSON validation or optional Windows advisory does not certify audio write safety. Protect the integrity tests, writer guards and CI calls from removal or dilution without separate, narrow owner authorization.
+Every PR and Workflow 01 release path must run **mandatory fail-closed real-writer audio integrity tests for both clients**, even in fast/validation-only mode. A skipped test is not a pass. Workflow 04 is the package/build cycle for an exact already-approved commit and must rely on that commit's required PR results rather than rerun either writer suite. A standalone schema JSON validation or optional Windows advisory does not certify audio write safety. Protect the integrity tests, writer guards and required PR/Workflow 01 CI calls from removal or dilution without separate, narrow owner authorization.
 
 ## 5. Required PR validation and merge stop conditions
 

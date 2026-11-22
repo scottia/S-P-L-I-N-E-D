@@ -189,16 +189,22 @@ uses Store credentials or the Store CLI. None of the presets automatically
 selects that riskier path.
 
 TEST BUILD performs canonical preflight, both target builds, strict Windows
-format/Clippy/library validation, complete WebGUI/PostgreSQL checks, QA-only
+format/Clippy/library validation, WebGUI/PostgreSQL checks, QA-only
 release notes and checksum artifacts, plus a local release-channel container
 label check. Its temporary commit/tag never reaches `main` or remote tags; it
 does not create a GitHub Release, push GHCR, or contact Partner Center.
 
+Workflow 04 does not rerun the Windows or WebGUI real-writer Audio Integrity
+gate. Those suites must already have passed for both clients in the required
+PR checks on the exact source commit before promotion. Broader Workflow 04
+test commands explicitly exclude the same real-writer cases rather than
+silently executing the gate a second time.
+
 ### Build-time optimization and verification
 
-Windows retains Workflow 01's Cargo registry/Git download cache and adds a separate cached **compiled release dependency graph**, keyed to the pinned Rust toolchain, Windows MSVC target and version-normalized `Cargo.lock`. The mandatory Windows artwork-integrity lane also caches its Cargo registry/Git downloads and debug test intermediates under a source-aware key; final `.exe`, `.dll` and `.pdb` test artifacts are removed before cache save. Its three locked Rust/Lofty test commands and pinned toolchain remain unchanged. Both Windows lanes report exact cache hits and elapsed compile/test time. The production lane still compiles a **fresh application executable for the exact staged commit** while Cargo fingerprints invalidate changed dependencies. The original PE x64, version/commit identity, clean native-smoke and portable/MSIX archive checks remain in place.
+Windows retains Workflow 01's Cargo registry/Git download cache and adds a separate cached **compiled release dependency graph**, keyed to the pinned Rust toolchain, Windows MSVC target and version-normalized `Cargo.lock`. The production lane reports exact cache hits and elapsed compile time and still compiles a **fresh application executable for the exact staged commit** while Cargo fingerprints invalidate changed dependencies. Strict validation retains the remaining locked library checks while excluding the real-writer cases already required on the source PR. The original PE x64, version/commit identity, clean native-smoke and portable/MSIX archive checks remain in place.
 
-WebGUI runs the **complete unsharded** Python/PostgreSQL/Node suite concurrently with the original Docker build/health and source-archive job. Both have independent disposable PostgreSQL services; both must pass before Yes mode can publish or No mode can report success. No tests are removed or skipped for speed.
+WebGUI runs its unsharded Python/PostgreSQL/Node package-validation suite concurrently with the original Docker build/health and source-archive job. The four real-writer Audio Integrity files already required by PR validation are excluded from this second pass. Both jobs have independent disposable PostgreSQL services; both must pass before Yes mode can publish or No mode can report success.
 
 Workflow 04 reports compiled-cache hits, Rust compile duration, independent WebGUI outcomes and the final stage results. An initial cache miss can still take as long as a cold compile; compare repeated successful runs and cache-transfer overhead before declaring a speed improvement. **No native Windows speedup is established solely by pull-request CI**: the PR Windows lane is advisory, and the full optimized workflow requires an owner-authorized manual dispatch after merge.
 
