@@ -13,12 +13,13 @@ on:
           - "WINDOWS"
           - "WEBGUI"
       outcome:
-        description: "COMPLETE RELEASE safely adds missing release outputs. BUILD ONLY, REPORT validates and retains audited artifacts without publishing."
+        description: "COMPLETE RELEASE publishes; BUILD ONLY reports then builds without publishing; BUILD ONLY, REPORT stops after the audit report."
         required: true
         default: "COMPLETE RELEASE"
         type: choice
         options:
           - "COMPLETE RELEASE"
+          - "BUILD ONLY"
           - "BUILD ONLY, REPORT"
       store_action:
         description: "Windows/ALL: retain the local review bundle, or additionally submit the validated package to Partner Center after release publication."
@@ -54,6 +55,7 @@ jobs:
       store_submit: ${{ steps.plan.outputs.store_submit }}
       publish_ghcr: ${{ steps.plan.outputs.publish_ghcr }}
       release_confirmation: ${{ steps.plan.outputs.release_confirmation }}
+      report_only: ${{ steps.plan.outputs.report_only }}
       release_version: ${{ steps.plan.outputs.release_version }}
       display_version: ${{ steps.plan.outputs.display_version }}
       build_windows: ${{ steps.plan.outputs.build_windows }}
@@ -143,8 +145,9 @@ jobs:
               ;;
           esac
           case "$OUTCOME" in
-            "COMPLETE RELEASE") release_confirmation="Create release now" ;;
-            "BUILD ONLY, REPORT") release_confirmation="Stop - no release" ;;
+            "COMPLETE RELEASE") release_confirmation="Create release now"; report_only=false ;;
+            "BUILD ONLY") release_confirmation="Stop - no release"; report_only=false ;;
+            "BUILD ONLY, REPORT") release_confirmation="Stop - no release"; report_only=true ;;
             *) echo "::error title=Invalid Workflow 10 outcome::$OUTCOME"; exit 1 ;;
           esac
           case "$STORE_ACTION" in
@@ -205,6 +208,7 @@ jobs:
             echo "store_submit=$store_submit"
             echo "publish_ghcr=$publish_ghcr"
             echo "release_confirmation=$release_confirmation"
+            echo "report_only=$report_only"
             echo "release_version=$release_version"
             echo "display_version=$display_version"
             echo "build_windows=$build_windows"
@@ -231,6 +235,7 @@ jobs:
             echo "- Windows Store action: \`$STORE_ACTION\`; submit after release: \`$store_submit\`"
             echo "- Publish GHCR when WebGUI is built: \`$publish_ghcr\`"
             echo "- Outcome: \`$OUTCOME\`"
+            echo "- Stop after report: \`$report_only\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
   build-only-report:
@@ -307,6 +312,7 @@ jobs:
   approve-plan:
     name: Approve resolved Workflow 10 plan
     needs: [resolve-plan, build-only-report]
+    if: ${{ needs.resolve-plan.outputs.report_only != 'true' }}
     runs-on: ubuntu-latest
     environment:
       name: workflow-10-plan-approval
@@ -340,7 +346,8 @@ jobs:
     if: >-
       ${{
         needs.resolve-plan.result == 'success' &&
-        needs.approve-plan.result == 'success'
+        needs.approve-plan.result == 'success' &&
+        needs.resolve-plan.outputs.report_only != 'true'
       }}
     name: Prepare exact release source for build or unpublished validation
     runs-on: ubuntu-latest
@@ -1685,7 +1692,7 @@ jobs:
 
     steps:
       - name: Report plan rejection or missing approval
-        if: ${{ needs.approve-plan.result != 'success' }}
+        if: ${{ needs.resolve-plan.outputs.report_only != 'true' && needs.approve-plan.result != 'success' }}
         shell: bash
         run: |
           {
@@ -1693,6 +1700,24 @@ jobs:
             echo
             echo "The protected plan approval was rejected or did not complete."
             echo "No validation, compilation, tagging or publication work was authorized."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Complete report-only outcome without build or publication
+        if: ${{ needs.resolve-plan.outputs.report_only == 'true' }}
+        shell: bash
+        env:
+          REPORT_RESULT: ${{ needs.build-only-report.result }}
+        run: |
+          set -euo pipefail
+          if [ "$REPORT_RESULT" != success ]; then
+            echo "::error title=BUILD ONLY, REPORT failed::The audit job concluded '$REPORT_RESULT'."
+            exit 1
+          fi
+          {
+            echo "## Workflow 10 BUILD ONLY, REPORT complete"
+            echo
+            echo "The source/version, target, policy and credential audit passed."
+            echo "Compilation, packaging, plan approval, branch writes, PRs, tags, Releases, GHCR and Store actions were not run."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Enforce selected build and publication results
@@ -1817,7 +1842,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Require validation-only build and archive results and confirm no publications
-        if: ${{ needs.approve-plan.result == 'success' && needs.resolve-plan.outputs.release_confirmation == 'Stop - no release' }}
+        if: ${{ needs.approve-plan.result == 'success' && needs.resolve-plan.outputs.release_confirmation == 'Stop - no release' && needs.resolve-plan.outputs.report_only != 'true' }}
         shell: bash
         env:
           BUILD_WINDOWS: ${{ needs.resolve-plan.outputs.build_windows }}

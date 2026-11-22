@@ -20,7 +20,8 @@ class UnifiedBuildWorkflowTests(unittest.TestCase):
     def test_form_has_target_outcome_and_store_action(self):
         for value in (
             "target:", "outcome:", "store_action:", '- "ALL"', '- "WINDOWS"',
-            '- "WEBGUI"', '- "COMPLETE RELEASE"', '- "BUILD ONLY, REPORT"',
+            '- "WEBGUI"', '- "COMPLETE RELEASE"', '- "BUILD ONLY"',
+            '- "BUILD ONLY, REPORT"',
             '- "LOCAL REVIEW ONLY"', '- "AUTO SUBMIT"',
         ):
             self.assertIn(value, self.source)
@@ -89,6 +90,10 @@ class UnifiedBuildWorkflowTests(unittest.TestCase):
         self.assertIn("BUILD ONLY, REPORT — source, policy and credential audit", self.source)
         self.assertIn("AZURE_AD_APPLICATION_CLIENT_ID", self.source)
         self.assertIn("Branch write, PR, tag, release, GHCR, and Store submission", self.source)
+        self.assertIn('"BUILD ONLY") release_confirmation="Stop - no release"; report_only=false', self.source)
+        self.assertIn('"BUILD ONLY, REPORT") release_confirmation="Stop - no release"; report_only=true', self.source)
+        self.assertIn("Complete report-only outcome without build or publication", self.source)
+        self.assertIn("needs.resolve-plan.outputs.report_only != 'true'", self.source)
 
     def test_store_defaults_to_review_and_supports_explicit_auto_submit(self):
         self.assertIn("store_draft=$build_windows", self.source)
