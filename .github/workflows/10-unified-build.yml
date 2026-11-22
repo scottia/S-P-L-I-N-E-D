@@ -3,38 +3,44 @@ name: 10. Unified Source Build - Full or Incremental Windows and WebGUI
 on:
   workflow_dispatch:
     inputs:
-      target:
-        description: "Build complete distributables for both clients or one selected client."
-        required: true
-        default: "ALL"
-        type: choice
-        options:
-          - "ALL"
-          - "WINDOWS"
-          - "WEBGUI"
-      outcome:
-        description: "COMPLETE RELEASE publishes; BUILD ONLY reports then builds without publishing; BUILD ONLY, REPORT stops after the audit report."
-        required: true
-        default: "COMPLETE RELEASE"
-        type: choice
-        options:
-          - "COMPLETE RELEASE"
-          - "BUILD ONLY"
-          - "BUILD ONLY, REPORT"
-      store_action:
-        description: "Windows/ALL: retain the local review bundle, or additionally submit the validated package to Partner Center after release publication."
-        required: true
-        default: "LOCAL REVIEW ONLY"
-        type: choice
-        options:
-          - "LOCAL REVIEW ONLY"
-          - "AUTO SUBMIT"
+      target_all:
+        description: "TARGET — ALL (default): build complete Windows and Python/WebGUI distributables. Choose one TARGET."
+        default: true
+        type: boolean
+      target_windows:
+        description: "TARGET — WINDOWS: build the complete Windows portable and Store distributables only."
+        default: false
+        type: boolean
+      target_webgui:
+        description: "TARGET — PYTHON/WEBGUI: build the complete WebGUI source and container distributables only."
+        default: false
+        type: boolean
+      completion_release:
+        description: "COMPLETION — COMPLETE RELEASE (default): audit, build, tag and publish selected outputs. Choose one COMPLETION."
+        default: true
+        type: boolean
+      completion_build_only:
+        description: "COMPLETION — BUILD ONLY: audit and build release-equivalent artifacts without publishing."
+        default: false
+        type: boolean
+      completion_report_only:
+        description: "COMPLETION — BUILD ONLY, REPORT: stop after the source, policy and credential audit; do not compile or publish."
+        default: false
+        type: boolean
+      store_local_review:
+        description: "MS STORE — LOCAL DRAFT REVIEW (default): retain the review bundle without submission. Choose one MS STORE option."
+        default: true
+        type: boolean
+      store_auto_submit:
+        description: "MS STORE — AUTO MSIX SUBMISSION: after release publication, submit the validated Windows package to Partner Center."
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ inputs.outcome == 'COMPLETE RELEASE' && 'splined-unified-release' || format('splined-unified-build-{0}', github.ref) }}
+  group: ${{ inputs.completion_release && 'splined-unified-release' || format('splined-unified-build-{0}', github.ref) }}
   cancel-in-progress: false
 
 env:
@@ -74,12 +80,50 @@ jobs:
         id: plan
         shell: bash
         env:
-          TARGET_SELECTION: ${{ inputs.target }}
-          OUTCOME: ${{ inputs.outcome }}
-          STORE_ACTION: ${{ inputs.store_action }}
+          TARGET_ALL: ${{ inputs.target_all }}
+          TARGET_WINDOWS: ${{ inputs.target_windows }}
+          TARGET_WEBGUI: ${{ inputs.target_webgui }}
+          COMPLETION_RELEASE: ${{ inputs.completion_release }}
+          COMPLETION_BUILD_ONLY: ${{ inputs.completion_build_only }}
+          COMPLETION_REPORT_ONLY: ${{ inputs.completion_report_only }}
+          STORE_LOCAL_REVIEW: ${{ inputs.store_local_review }}
+          STORE_AUTO_SUBMIT: ${{ inputs.store_auto_submit }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+
+          select_exactly_one() {
+            local group="$1"
+            shift
+            local selected=""
+            local count=0
+            while [ "$#" -gt 0 ]; do
+              local label="$1"
+              local checked="$2"
+              shift 2
+              if [ "$checked" = true ]; then
+                selected="$label"
+                count=$((count + 1))
+              fi
+            done
+            if [ "$count" -ne 1 ]; then
+              echo "::error title=Select exactly one $group option::$group has $count checked options. Check exactly one and run Workflow 10 again." >&2
+              return 1
+            fi
+            printf '%s' "$selected"
+          }
+
+          TARGET_SELECTION=$(select_exactly_one "TARGET" \
+            "ALL" "$TARGET_ALL" \
+            "WINDOWS" "$TARGET_WINDOWS" \
+            "WEBGUI" "$TARGET_WEBGUI")
+          OUTCOME=$(select_exactly_one "COMPLETION" \
+            "COMPLETE RELEASE" "$COMPLETION_RELEASE" \
+            "BUILD ONLY" "$COMPLETION_BUILD_ONLY" \
+            "BUILD ONLY, REPORT" "$COMPLETION_REPORT_ONLY")
+          STORE_ACTION=$(select_exactly_one "MS STORE" \
+            "LOCAL REVIEW ONLY" "$STORE_LOCAL_REVIEW" \
+            "AUTO SUBMIT" "$STORE_AUTO_SUBMIT")
 
           if [ "$GITHUB_REF" != "refs/heads/main" ]; then
             echo "::error title=Main workflow required::Workflow 10 must be dispatched from main; received '$GITHUB_REF'."
@@ -323,7 +367,7 @@ jobs:
           {
             echo "## Workflow 10 plan approved"
             echo
-            echo "- Requested target: \`${{ inputs.target }}\`"
+            echo "- Requested target: \`${{ needs.resolve-plan.outputs.target_label }}\`"
             echo "- Automatic compile mode: \`${{ needs.resolve-plan.outputs.compile_mode }}\`"
             echo "- Branch: \`${{ github.ref_name }}\`"
             echo "- Release version: \`${{ needs.resolve-plan.outputs.display_version }}\`"
