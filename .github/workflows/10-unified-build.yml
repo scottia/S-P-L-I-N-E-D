@@ -1,126 +1,106 @@
-name: 04. Optimized Release or Test - Select One of Four Build Presets
+name: 10. Unified Source Build - Full or Incremental Windows and WebGUI
 
 on:
   workflow_dispatch:
     inputs:
-      build_preset:
-        description: "LAUNCH FLOW: selects the target, validation, Store, GHCR, and release defaults. ALL is the default."
+      target:
+        description: "Build complete distributables for both clients or one selected client."
         required: true
         default: "ALL"
         type: choice
         options:
           - "ALL"
-          - "PYTHON / WEBGUI"
           - "WINDOWS"
-          - "TEST BUILD"
-      release_version:
-        description: "OPTIONAL: leave blank to use the committed Windows/WebGUI source version. An entered value must match it."
-        required: false
-        default: ""
-        type: string
-      release_target:
-        description: "Preset: ALL Win+Web; WEBGUI WebGUI; WINDOWS Windows; TEST Win+Web. Select a target to override."
+          - "WEBGUI"
+      outcome:
+        description: "COMPLETE RELEASE safely adds missing release outputs. BUILD ONLY, REPORT validates and retains audited artifacts without publishing."
         required: true
-        default: "Use preset default"
+        default: "COMPLETE RELEASE"
         type: choice
         options:
-          - "Use preset default"
-          - "Windows / WebGUI"
-          - "Windows"
-          - "WebGUI"
-      strict_validation:
-        description: "Preset: ALL No; WEBGUI No; WINDOWS No; TEST Yes. Select Yes or No to override."
+          - "COMPLETE RELEASE"
+          - "BUILD ONLY, REPORT"
+      store_action:
+        description: "Windows/ALL: retain the local review bundle, or additionally submit the validated package to Partner Center after release publication."
         required: true
-        default: "Use preset default"
+        default: "LOCAL REVIEW ONLY"
         type: choice
         options:
-          - "Use preset default"
-          - "Yes"
-          - "No"
-      submit_update:
-        description: "Submit Update / No Draft preset: all four build options use No. Select Yes only to override intentionally."
-        required: true
-        default: "Use preset default"
-        type: choice
-        options:
-          - "Use preset default"
-          - "Yes"
-          - "No"
-      review_bundle:
-        description: "Review Bundle / No Submit preset: ALL Yes; WEBGUI No; WINDOWS Yes; TEST No. Select to override."
-        required: true
-        default: "Use preset default"
-        type: choice
-        options:
-          - "Use preset default"
-          - "Yes"
-          - "No"
-      publish_ghcr:
-        description: "Publish GHCR preset: ALL Yes; WEBGUI Yes; WINDOWS No; TEST No. Select Yes or No to override."
-        required: true
-        default: "Use preset default"
-        type: choice
-        options:
-          - "Use preset default"
-          - "Yes"
-          - "No"
-      final_action:
-        description: "Final preset: ALL/WEBGUI/WINDOWS create a release; TEST creates no release. Select an action to override."
-        required: true
-        default: "Use preset default"
-        type: choice
-        options:
-          - "Use preset default"
-          - "Create release now"
-          - "No release creation"
+          - "LOCAL REVIEW ONLY"
+          - "AUTO SUBMIT"
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ (inputs.final_action == 'Create release now' || (inputs.final_action == 'Use preset default' && inputs.build_preset != 'TEST BUILD')) && 'splined-release-next-patch' || format('splined-optimized-test-{0}', github.ref) }}
+  group: ${{ inputs.outcome == 'COMPLETE RELEASE' && 'splined-unified-release' || format('splined-unified-build-{0}', github.ref) }}
   cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: "1.99.0"
   WINDOWS_TARGET: "x86_64-pc-windows-msvc"
-  CARGO_INCREMENTAL: "0"
 
 jobs:
   resolve-plan:
-    name: Resolve selected Workflow 04 build preset
+    name: Resolve Workflow 10 source, target and compile plan
     runs-on: ubuntu-latest
     outputs:
       platform: ${{ steps.plan.outputs.platform }}
       target_label: ${{ steps.plan.outputs.target_label }}
-      strict: ${{ steps.plan.outputs.strict }}
-      store_update: ${{ steps.plan.outputs.store_update }}
+      compile_mode: ${{ steps.plan.outputs.compile_mode }}
+      clean: ${{ steps.plan.outputs.clean }}
       store_draft: ${{ steps.plan.outputs.store_draft }}
+      store_submit: ${{ steps.plan.outputs.store_submit }}
       publish_ghcr: ${{ steps.plan.outputs.publish_ghcr }}
       release_confirmation: ${{ steps.plan.outputs.release_confirmation }}
       release_version: ${{ steps.plan.outputs.release_version }}
       display_version: ${{ steps.plan.outputs.display_version }}
+      build_windows: ${{ steps.plan.outputs.build_windows }}
+      build_webgui: ${{ steps.plan.outputs.build_webgui }}
+      existing_release: ${{ steps.plan.outputs.existing_release }}
+      source_sha: ${{ steps.plan.outputs.source_sha }}
+      main_sha: ${{ steps.plan.outputs.main_sha }}
+      source_relation: ${{ steps.plan.outputs.source_relation }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
 
-      - name: Resolve and validate preset defaults
+      - name: Resolve exact committed source and requested outputs
         id: plan
         shell: bash
         env:
-          BUILD_PRESET: ${{ inputs.build_preset }}
-          REQUESTED_VERSION: ${{ inputs.release_version }}
-          TARGET_SELECTION: ${{ inputs.release_target }}
-          STRICT_SELECTION: ${{ inputs.strict_validation }}
-          STORE_UPDATE_SELECTION: ${{ inputs.submit_update }}
-          STORE_DRAFT_SELECTION: ${{ inputs.review_bundle }}
-          GHCR_SELECTION: ${{ inputs.publish_ghcr }}
-          FINAL_SELECTION: ${{ inputs.final_action }}
+          TARGET_SELECTION: ${{ inputs.target }}
+          OUTCOME: ${{ inputs.outcome }}
+          STORE_ACTION: ${{ inputs.store_action }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error title=Main workflow required::Workflow 10 must be dispatched from main; received '$GITHUB_REF'."
+            exit 1
+          fi
+          git fetch --force origin \
+            main:refs/remotes/origin/main \
+            dev:refs/remotes/origin/dev
+          MAIN_SHA=$(git rev-parse origin/main)
+          DEV_SHA=$(git rev-parse origin/dev)
+          if ! git merge-base --is-ancestor "$MAIN_SHA" "$DEV_SHA"; then
+            echo "::error title=Unsafe branch relationship::origin/dev must contain origin/main before Workflow 10 can use it as a release candidate."
+            exit 1
+          fi
+          MAIN_TREE=$(git rev-parse origin/main^{tree})
+          DEV_TREE=$(git rev-parse origin/dev^{tree})
+          if [ "$MAIN_TREE" = "$DEV_TREE" ]; then
+            source_relation="same tree"
+          else
+            source_relation="different trees - origin/dev selected"
+          fi
+          MAIN_VERSION=$(git show origin/main:build/Windows/Cargo.toml | sed -n '0,/^version = /s/^version = "\([0-9][0-9.]*\)"/\1/p')
+          git checkout --detach "$DEV_SHA"
 
           SOURCE_VERSION=$(python3 - <<'PY'
           from pathlib import Path
@@ -133,153 +113,225 @@ jobs:
           )
           if not match:
               raise SystemExit("Windows source version was not found")
-          print(match.group(1))
+          windows_version = match.group(1)
+          webgui = Path("build/WEBGui/webgui/backend/splined.py").read_text(encoding="utf-8")
+          webgui_match = re.search(r'^VERSION = "(\d+\.\d+\.\d+)"$', webgui, re.MULTILINE)
+          if not webgui_match:
+              raise SystemExit("WebGUI source version was not found")
+          if webgui_match.group(1) != windows_version:
+              raise SystemExit(
+                  f"Committed source versions disagree: Windows {windows_version}, WebGUI {webgui_match.group(1)}"
+              )
+          print(windows_version)
           PY
           )
 
-          case "$BUILD_PRESET" in
-            "ALL")
-              platform="All"
-              target_label="Windows / WebGUI"
-              strict=false
-              store_update=false
-              store_draft=true
-              publish_ghcr=true
-              release_confirmation="Create release now"
-              ;;
-            "PYTHON / WEBGUI")
-              platform="WebGUI / Python"
-              target_label="WebGUI"
-              strict=false
-              store_update=false
-              store_draft=false
-              publish_ghcr=true
-              release_confirmation="Create release now"
-              ;;
-            "WINDOWS")
-              platform="Windows"
-              target_label="Windows"
-              strict=false
-              store_update=false
-              store_draft=true
-              publish_ghcr=false
-              release_confirmation="Create release now"
-              ;;
-            "TEST BUILD")
-              platform="All"
-              target_label="Windows / WebGUI"
-              strict=true
-              store_update=false
-              store_draft=false
-              publish_ghcr=false
-              release_confirmation="Stop - no release"
-              ;;
+          if [ "${MAIN_VERSION:-}" = "$SOURCE_VERSION" ]; then
+            compile_mode="PARTIAL UPDATE"
+            clean=false
+          else
+            compile_mode="FULL SOURCE"
+            clean=true
+          fi
+
+          case "$TARGET_SELECTION" in
+            "ALL") platform="All"; target_label="Windows / WebGUI"; build_windows=true; build_webgui=true ;;
+            "WINDOWS") platform="Windows"; target_label="Windows"; build_windows=true; build_webgui=false ;;
+            "WEBGUI") platform="WebGUI / Python"; target_label="WebGUI"; build_windows=false; build_webgui=true ;;
             *)
-              echo "::error title=Unknown Workflow 04 preset::Unsupported build preset '$BUILD_PRESET'."
+              echo "::error title=Unknown Workflow 10 target::Unsupported target '$TARGET_SELECTION'."
               exit 1
               ;;
           esac
-
-          case "$TARGET_SELECTION" in
-            "Use preset default") ;;
-            "Windows / WebGUI") platform="All"; target_label="Windows / WebGUI" ;;
-            "Windows") platform="Windows"; target_label="Windows" ;;
-            "WebGUI") platform="WebGUI / Python"; target_label="WebGUI" ;;
-            *) echo "::error title=Invalid target override::Unsupported Release Target '$TARGET_SELECTION'."; exit 1 ;;
+          case "$OUTCOME" in
+            "COMPLETE RELEASE") release_confirmation="Create release now" ;;
+            "BUILD ONLY, REPORT") release_confirmation="Stop - no release" ;;
+            *) echo "::error title=Invalid Workflow 10 outcome::$OUTCOME"; exit 1 ;;
           esac
-          case "$STRICT_SELECTION" in
-            "Use preset default") ;;
-            "Yes") strict=true ;;
-            "No") strict=false ;;
-            *) echo "::error title=Invalid strict override::Unsupported Strict selection '$STRICT_SELECTION'."; exit 1 ;;
-          esac
-          case "$STORE_UPDATE_SELECTION" in
-            "Use preset default") ;;
-            "Yes") store_update=true ;;
-            "No") store_update=false ;;
-            *) echo "::error title=Invalid Store override::Unsupported Submit Update selection '$STORE_UPDATE_SELECTION'."; exit 1 ;;
-          esac
-          case "$STORE_DRAFT_SELECTION" in
-            "Use preset default") ;;
-            "Yes") store_draft=true ;;
-            "No") store_draft=false ;;
-            *) echo "::error title=Invalid Store override::Unsupported Review Bundle selection '$STORE_DRAFT_SELECTION'."; exit 1 ;;
-          esac
-          case "$GHCR_SELECTION" in
-            "Use preset default") ;;
-            "Yes") publish_ghcr=true ;;
-            "No") publish_ghcr=false ;;
-            *) echo "::error title=Invalid GHCR override::Unsupported Publish GHCR selection '$GHCR_SELECTION'."; exit 1 ;;
-          esac
-          case "$FINAL_SELECTION" in
-            "Use preset default") ;;
-            "Create release now") release_confirmation="Create release now" ;;
-            "No release creation") release_confirmation="Stop - no release" ;;
-            *) echo "::error title=Invalid final action::Unsupported Final Option '$FINAL_SELECTION'."; exit 1 ;;
+          case "$STORE_ACTION" in
+            "LOCAL REVIEW ONLY") store_submit=false ;;
+            "AUTO SUBMIT")
+              if [ "$OUTCOME" != "COMPLETE RELEASE" ]; then
+                echo "::error title=Store submission requires a release::AUTO SUBMIT is unavailable for BUILD ONLY, REPORT."
+                exit 1
+              fi
+              if [ "$TARGET_SELECTION" = "WEBGUI" ]; then
+                echo "::error title=Windows target required::AUTO SUBMIT requires WINDOWS or ALL."
+                exit 1
+              fi
+              store_submit=true
+              ;;
+            *) echo "::error title=Invalid Store action::$STORE_ACTION"; exit 1 ;;
           esac
 
-          if [ "$release_confirmation" = "Create release now" ] &&
-             [ "$GITHUB_REF" != "refs/heads/main" ]; then
-            echo "::error title=Main branch required::Release presets must be dispatched from main; received '$GITHUB_REF'."
-            exit 1
+          release_version="$SOURCE_VERSION"
+          display_version="$SOURCE_VERSION"
+          existing_release=false
+          if gh release view "$SOURCE_VERSION" >/tmp/release.json 2>/dev/null; then
+            existing_release=true
+            if [ "$OUTCOME" = "COMPLETE RELEASE" ]; then
+              mapfile -t existing_assets < <(gh release view "$SOURCE_VERSION" --json assets --jq '.assets[].name')
+              if printf '%s\n' "${existing_assets[@]}" | grep -qx 'splined-windows-x86_64.zip'; then
+                build_windows=false
+              fi
+              if printf '%s\n' "${existing_assets[@]}" | grep -qx 'splined-webgui-python.tar.gz'; then
+                build_webgui=false
+              fi
+              if [ "$TARGET_SELECTION" = "WINDOWS" ] && [ "$build_windows" = false ]; then
+                echo "::error title=Windows output already published::Version $SOURCE_VERSION already contains the Windows distributable; Workflow 10 never overwrites it."
+                exit 1
+              fi
+              if [ "$TARGET_SELECTION" = "WEBGUI" ] && [ "$build_webgui" = false ]; then
+                echo "::error title=WebGUI output already published::Version $SOURCE_VERSION already contains the WebGUI distributable; Workflow 10 never overwrites it."
+                exit 1
+              fi
+              if [ "$TARGET_SELECTION" = "ALL" ] && [ "$build_windows" = false ] && [ "$build_webgui" = false ]; then
+                echo "::error title=Release already complete::Version $SOURCE_VERSION already contains both complete distributables."
+                exit 1
+              fi
+            fi
           fi
-
-          if [ "$release_confirmation" = "Stop - no release" ]; then
-            release_version=""
-            display_version="n/a - disposable validation of source $SOURCE_VERSION"
-          else
-            release_version="${REQUESTED_VERSION:-$SOURCE_VERSION}"
-            display_version="$release_version"
+          store_draft=$build_windows
+          publish_ghcr=$build_webgui
+          if [ "$build_windows" != true ]; then
+            store_submit=false
           fi
 
           {
             echo "platform=$platform"
             echo "target_label=$target_label"
-            echo "strict=$strict"
-            echo "store_update=$store_update"
+            echo "compile_mode=$compile_mode"
+            echo "clean=$clean"
             echo "store_draft=$store_draft"
+            echo "store_submit=$store_submit"
             echo "publish_ghcr=$publish_ghcr"
             echo "release_confirmation=$release_confirmation"
             echo "release_version=$release_version"
             echo "display_version=$display_version"
+            echo "build_windows=$build_windows"
+            echo "build_webgui=$build_webgui"
+            echo "existing_release=$existing_release"
+            echo "source_sha=$DEV_SHA"
+            echo "main_sha=$MAIN_SHA"
+            echo "source_relation=$source_relation"
           } >> "$GITHUB_OUTPUT"
 
           {
-            echo "## Workflow 04 resolved build plan"
+            echo "## Workflow 10 resolved build plan"
             echo
-            echo "- Preset: \`$BUILD_PRESET\`"
-            echo "- Branch: \`$GITHUB_REF_NAME\`"
+            echo "- Requested target: \`$TARGET_SELECTION\`"
+            echo "- Automatic compile mode: \`$compile_mode\` (main \`${MAIN_VERSION:-unknown}\`; dev \`$SOURCE_VERSION\`)"
+            echo "- Workflow definition branch: \`$GITHUB_REF_NAME\`"
+            echo "- Main commit/version: \`$MAIN_SHA\` / \`${MAIN_VERSION:-unknown}\`"
+            echo "- Selected dev source: \`$DEV_SHA\` / \`$SOURCE_VERSION\`"
+            echo "- Dev/main comparison: \`$source_relation\`"
             echo "- Release version: \`$display_version\`"
-            echo "- Release target: \`$target_label\` (form: \`$TARGET_SELECTION\`)"
-            echo "- Strict Windows validation: \`$strict\` (form: \`$STRICT_SELECTION\`)"
-            echo "- Submit Update / No Draft: \`$store_update\` (form: \`$STORE_UPDATE_SELECTION\`)"
-            echo "- Review Bundle / No Submit: \`$store_draft\` (form: \`$STORE_DRAFT_SELECTION\`)"
-            echo "- Publish GHCR: \`$publish_ghcr\` (form: \`$GHCR_SELECTION\`)"
-            echo "- Final option: \`$release_confirmation\` (form: \`$FINAL_SELECTION\`)"
+            echo "- Build Windows now: \`$build_windows\`"
+            echo "- Build WebGUI now: \`$build_webgui\`"
+            echo "- Existing release completion: \`$existing_release\`"
+            echo "- Windows Store action: \`$STORE_ACTION\`; submit after release: \`$store_submit\`"
+            echo "- Publish GHCR when WebGUI is built: \`$publish_ghcr\`"
+            echo "- Outcome: \`$OUTCOME\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build-only-report:
+    name: BUILD ONLY, REPORT — source, policy and credential audit
+    needs: resolve-plan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact dev comparison source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.resolve-plan.outputs.source_sha }}
+          fetch-depth: 0
+
+      - name: Validate source versions and canonical policy contracts
+        shell: bash
+        env:
+          PYTHONPATH: .:build/WEBGui:build/WEBGui/webgui/backend
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/validate_release_policy_contracts.py
+          python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
+
+      - name: Confirm Microsoft Store credential readiness without authentication
+        id: store-credentials
+        shell: bash
+        env:
+          BUILD_WINDOWS: ${{ needs.resolve-plan.outputs.build_windows }}
+          STORE_SUBMIT: ${{ needs.resolve-plan.outputs.store_submit }}
+          AZURE_AD_APPLICATION_CLIENT_ID: ${{ secrets.AZURE_AD_APPLICATION_CLIENT_ID }}
+          AZURE_AD_APPLICATION_SECRET: ${{ secrets.AZURE_AD_APPLICATION_SECRET }}
+          AZURE_AD_TENANT_ID: ${{ secrets.AZURE_AD_TENANT_ID }}
+          SELLER_ID: ${{ secrets.SELLER_ID }}
+        run: |
+          set -euo pipefail
+          if [ "$BUILD_WINDOWS" != true ]; then
+            echo "ready=not-applicable" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          missing=()
+          for name in AZURE_AD_APPLICATION_CLIENT_ID AZURE_AD_APPLICATION_SECRET AZURE_AD_TENANT_ID SELLER_ID; do
+            if [ -z "${!name:-}" ]; then
+              missing+=("$name")
+            fi
+          done
+          if [ "${#missing[@]}" -eq 0 ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Microsoft Store credentials unavailable::Missing credential names: ${missing[*]}. Local review remains available; AUTO SUBMIT is blocked."
+            if [ "$STORE_SUBMIT" = true ]; then
+              exit 1
+            fi
+          fi
+
+      - name: Publish BUILD ONLY audit report
+        shell: bash
+        run: |
+          {
+            echo "## BUILD ONLY, REPORT"
+            echo
+            echo "- Dispatcher: \`origin/main\` at \`${{ needs.resolve-plan.outputs.main_sha }}\`"
+            echo "- Compared and selected source: \`origin/dev\` at \`${{ needs.resolve-plan.outputs.source_sha }}\`"
+            echo "- Comparison: \`${{ needs.resolve-plan.outputs.source_relation }}\`"
+            echo "- Version: \`${{ needs.resolve-plan.outputs.display_version }}\`"
+            echo "- Target: \`${{ needs.resolve-plan.outputs.target_label }}\`"
+            echo "- Automatic mode: \`${{ needs.resolve-plan.outputs.compile_mode }}\`"
+            echo "- Canonical policy and release-source checks: \`passed\`"
+            echo "- Microsoft Store credentials: \`${{ steps.store-credentials.outputs.ready }}\`"
+            echo "- Branch write, PR, tag, release, GHCR, and Store submission: \`not performed by this report\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
   approve-plan:
-    name: Approve resolved Workflow 04 plan
-    needs: resolve-plan
+    name: Approve resolved Workflow 10 plan
+    needs: [resolve-plan, build-only-report]
     runs-on: ubuntu-latest
     environment:
-      name: workflow-04-plan-approval
+      name: workflow-10-plan-approval
     steps:
       - name: Record the approved plan
         shell: bash
         run: |
           {
-            echo "## Workflow 04 plan approved"
+            echo "## Workflow 10 plan approved"
             echo
-            echo "- Preset: \`${{ inputs.build_preset }}\`"
+            echo "- Requested target: \`${{ inputs.target }}\`"
+            echo "- Automatic compile mode: \`${{ needs.resolve-plan.outputs.compile_mode }}\`"
             echo "- Branch: \`${{ github.ref_name }}\`"
             echo "- Release version: \`${{ needs.resolve-plan.outputs.display_version }}\`"
             echo "- Release target: \`${{ needs.resolve-plan.outputs.target_label }}\`"
-            echo "- Strict Windows validation: \`${{ needs.resolve-plan.outputs.strict }}\`"
-            echo "- Submit Update / No Draft: \`${{ needs.resolve-plan.outputs.store_update }}\`"
+            echo "- Clean full-source compile: \`${{ needs.resolve-plan.outputs.clean }}\`"
             echo "- Review Bundle / No Submit: \`${{ needs.resolve-plan.outputs.store_draft }}\`"
+            echo "- Partner Center AUTO SUBMIT: \`${{ needs.resolve-plan.outputs.store_submit }}\`"
             echo "- Publish GHCR: \`${{ needs.resolve-plan.outputs.publish_ghcr }}\`"
             echo "- Final option: \`${{ needs.resolve-plan.outputs.release_confirmation }}\`"
+            echo "- Existing release completion: \`${{ needs.resolve-plan.outputs.existing_release }}\`"
+            echo "- Main commit: \`${{ needs.resolve-plan.outputs.main_sha }}\`"
+            echo "- Selected dev source: \`${{ needs.resolve-plan.outputs.source_sha }}\`"
+            echo "- Dev/main comparison: \`${{ needs.resolve-plan.outputs.source_relation }}\`"
             echo
             echo "Validation, compilation and publication may now begin."
           } >> "$GITHUB_STEP_SUMMARY"
@@ -297,16 +349,15 @@ jobs:
       version: ${{ steps.release.outputs.version }}
       commit: ${{ steps.release.outputs.commit }}
       base: ${{ steps.release.outputs.base }}
+      existing_release: ${{ steps.release.outputs.existing_release }}
 
     steps:
       - name: Validate resolved preset before any release work
         shell: bash
         env:
           RELEASE_CONFIRMATION: ${{ needs.resolve-plan.outputs.release_confirmation }}
-          STORE_UPDATE: ${{ needs.resolve-plan.outputs.store_update }}
           STORE_DRAFT: ${{ needs.resolve-plan.outputs.store_draft }}
           RELEASE_PLATFORM: ${{ needs.resolve-plan.outputs.platform }}
-          EXTENDED_WINDOWS_VALIDATION: ${{ needs.resolve-plan.outputs.strict }}
         run: |
           set -euo pipefail
           if [ "$RELEASE_CONFIRMATION" != "Create release now" ] && [ "$RELEASE_CONFIRMATION" != "Stop - no release" ]; then
@@ -316,22 +367,8 @@ jobs:
           if [ "$RELEASE_CONFIRMATION" = "Stop - no release" ]; then
             echo "::notice title=Validation only::Build and package the exact candidate locally; no branch, tag, Release, GHCR or Store publication."
           fi
-          if [ "$STORE_UPDATE" = true ] && [ "$STORE_DRAFT" = true ]; then
-            echo "::error title=Conflicting Store choices::Select only one Store mode."
-            exit 1
-          fi
-          if { [ "$STORE_UPDATE" = true ] || [ "$STORE_DRAFT" = true ]; } &&
-             [ "$RELEASE_PLATFORM" != Windows ] && [ "$RELEASE_PLATFORM" != All ]; then
+          if [ "$STORE_DRAFT" = true ] && [ "$RELEASE_PLATFORM" != Windows ] && [ "$RELEASE_PLATFORM" != All ]; then
             echo "::error title=Windows build required::Store bundle preparation requires Windows or All."
-            exit 1
-          fi
-          if [ "$EXTENDED_WINDOWS_VALIDATION" = true ] &&
-             [ "$RELEASE_PLATFORM" != Windows ] && [ "$RELEASE_PLATFORM" != All ]; then
-            echo "::error title=Windows validation unavailable::Strict Rust/Slint validation requires Windows or All."
-            exit 1
-          fi
-          if [ "$STORE_UPDATE" = true ] && [ "$EXTENDED_WINDOWS_VALIDATION" != true ]; then
-            echo "::error title=Store validation required::Submitting a Store update requires Extended Windows validation."
             exit 1
           fi
 
@@ -349,17 +386,8 @@ jobs:
       - name: Checkout exact source with tags
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ needs.resolve-plan.outputs.release_confirmation == 'Create release now' && 'main' || github.sha }}
+          ref: ${{ needs.resolve-plan.outputs.source_sha }}
           fetch-depth: 0
-
-      - name: Validate canonical policies and indexer contracts before release commit
-        shell: bash
-        env:
-          PYTHONPATH: .:build/WEBGui:build/WEBGui/webgui/backend
-        run: |
-          set -euo pipefail
-          python3 .github/scripts/validate_release_policy_contracts.py
-          python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
 
       - name: Provision exact versioned source in temporary runner commit
         id: release
@@ -367,183 +395,83 @@ jobs:
         env:
           REQUESTED_VERSION: ${{ needs.resolve-plan.outputs.release_version }}
           RELEASE_MODE: ${{ needs.resolve-plan.outputs.release_confirmation }}
+          EXPECTED_DEV_SHA: ${{ needs.resolve-plan.outputs.source_sha }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
           git fetch --force --tags origin
-          BASE_MAIN_SHA=$(git rev-parse HEAD)
+          SOURCE_SHA=$(git rev-parse HEAD)
+          if [ "$SOURCE_SHA" != "$EXPECTED_DEV_SHA" ]; then
+            echo "::error title=Incorrect dev checkout::Expected $EXPECTED_DEV_SHA; received $SOURCE_SHA."
+            exit 1
+          fi
+          RELEASE_VERSION="$REQUESTED_VERSION"
+          if ! [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error title=Invalid committed version::$RELEASE_VERSION is not numeric X.Y.Z."
+            exit 1
+          fi
 
-          RELEASE_VERSION=$(python3 - <<'PY'
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          EXISTING_RELEASE=false
+          if git show-ref --verify --quiet "refs/tags/$RELEASE_VERSION"; then
+            if ! gh release view "$RELEASE_VERSION" >/dev/null 2>&1; then
+              echo "::error title=Tag without release::Tag $RELEASE_VERSION exists but has no published GitHub Release. Use the recovery workflow."
+              exit 1
+            fi
+            EXISTING_RELEASE=true
+            RELEASE_COMMIT=$(git rev-list -n 1 "$RELEASE_VERSION")
+            if ! git diff --quiet "$RELEASE_COMMIT" HEAD -- build/Windows build/WEBGui schema; then
+              echo "::error title=Source changed after this release::The current product source differs from tag $RELEASE_VERSION. Promote a new numeric source version before building."
+              git diff --name-only "$RELEASE_COMMIT" HEAD -- build/Windows build/WEBGui schema
+              exit 1
+            fi
+            git checkout --detach "$RELEASE_COMMIT"
+            echo "Completing missing outputs for existing release $RELEASE_VERSION from exact tagged source $RELEASE_COMMIT."
+          else
+            python3 - <<'PY'
           from pathlib import Path
           import os
           import re
           import subprocess
           import sys
-
           sys.path.insert(0, str(Path(".github/scripts").resolve()))
           from release_source_version import choose_release_version
-
-          tags = subprocess.check_output(
-              ["git", "tag", "--list"],
-              text=True,
-          ).splitlines()
-          # Only tags on the current main history define its release line.
-          # Old tags on abandoned histories must not block a new version.
+          requested = os.environ["REQUESTED_VERSION"]
+          tags = subprocess.check_output(["git", "tag", "--list"], text=True).splitlines()
           versions = []
           for tag in tags:
               match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", tag)
               if match:
-                  result = subprocess.run(
-                      ["git", "merge-base", "--is-ancestor", f"refs/tags/{tag}^{{commit}}", "HEAD"],
-                      check=False,
-                  )
-                  if result.returncode == 0:
-                      versions.append(tuple(map(int, match.groups())))
-                  elif result.returncode != 1:
-                      raise SystemExit(f"Could not inspect release tag ancestry: {tag}")
-
-          cargo_path = Path("build/Windows/Cargo.toml")
-          cargo = cargo_path.read_text(encoding="utf-8-sig")
-          source_match = re.search(
-              r'(?ms)^\[package\].*?^version\s*=\s*"(\d+\.\d+\.\d+)"',
-              cargo,
-          )
-          if not source_match:
-              raise SystemExit("Windows Cargo package version was not found")
-
-          source_version = source_match.group(1)
-          requested = os.environ.get("REQUESTED_VERSION", "").strip()
-          try:
-              release_version = choose_release_version(
-                  source_version, versions, tags, requested
-              )
-          except ValueError as error:
-              raise SystemExit(str(error)) from error
-
-          cargo, cargo_count = re.subn(
-              r'(?ms)(^\[package\].*?^version\s*=\s*")[^"]+("\s*$)',
-              rf'\g<1>{release_version}\g<2>',
-              cargo,
-              count=1,
-          )
-          if cargo_count != 1:
-              raise SystemExit("Windows Cargo package version was not updated")
-          cargo_path.write_text(cargo, encoding="utf-8")
-
-          lock_path = Path("build/Windows/Cargo.lock")
-          lock = lock_path.read_text(encoding="utf-8")
-          lock, lock_count = re.subn(
-              r'(?m)(^name = "splined-windows"\r?\nversion = ")[^"]+("$)',
-              rf'\g<1>{release_version}\g<2>',
-              lock,
-              count=1,
-          )
-          if lock_count != 1:
-              raise SystemExit("Windows Cargo.lock package version was not updated")
-          lock_path.write_text(lock, encoding="utf-8")
-
-          app_manifest_path = Path("build/Windows/gui/app.manifest")
-          app_manifest = app_manifest_path.read_text(encoding="utf-8-sig")
-          app_manifest, count = re.subn(
-              r'(<assemblyIdentity version=")[^"]+(" name="SPLINED\.Windows"/>)',
-              rf'\g<1>{release_version}.0\g<2>',
-              app_manifest,
-              count=1,
-          )
-          if count != 1:
-              raise SystemExit("Windows executable manifest version was not updated")
-          app_manifest_path.write_text(app_manifest, encoding="utf-8")
-
-          package_manifest_path = Path("build/Windows/package/Package.appxmanifest")
-          package_manifest = package_manifest_path.read_text(encoding="utf-8-sig")
-          package_manifest, count = re.subn(
-              r'(?s)(<Identity\b[^>]*\bVersion=")[0-9]+\.[0-9]+\.[0-9]+\.0(")',
-              rf'\g<1>{release_version}.0\g<2>',
-              package_manifest,
-              count=1,
-          )
-          if count != 1:
-              raise SystemExit("Package.appxmanifest Identity.Version was not updated")
-          if 'MinVersion="10.0.17763.0"' not in package_manifest:
-              raise SystemExit("Package.appxmanifest Windows.Desktop MinVersion changed unexpectedly")
-          if 'MaxVersionTested="10.0.26100.0"' not in package_manifest:
-              raise SystemExit("Package.appxmanifest MaxVersionTested changed unexpectedly")
-          package_manifest_path.write_text(package_manifest, encoding="utf-8")
-
-          appinstaller_path = Path("build/Windows/package/SPLINED.appinstaller.template")
-          appinstaller = appinstaller_path.read_text(encoding="utf-8-sig")
-          appinstaller, count = re.subn(
-              r'(Version=")[0-9]+\.[0-9]+\.[0-9]+\.0(")',
-              rf'\g<1>{release_version}.0\g<2>',
-              appinstaller,
-          )
-          if count != 2:
-              raise SystemExit("App Installer template versions were not updated exactly twice")
-          appinstaller_path.write_text(appinstaller, encoding="utf-8")
-
-          python_path = Path("build/WEBGui/webgui/backend/splined.py")
-          source = python_path.read_text(encoding="utf-8")
-          source, version_count = re.subn(
-              r'^VERSION = "[^"]+"$',
-              f'VERSION = "{release_version}"',
-              source,
-              count=1,
-              flags=re.MULTILINE,
-          )
-          source, agent_count = re.subn(
-              r'^USER_AGENT = "SPLINED/[^ ]+ \(https://github\.com/scottia/S-P-L-I-N-E-D\)"$',
-              f'USER_AGENT = "SPLINED/{release_version} '
-              '(https://github.com/scottia/S-P-L-I-N-E-D)"',
-              source,
-              count=1,
-              flags=re.MULTILINE,
-          )
-          if version_count != 1 or agent_count != 1:
-              raise SystemExit("Python release metadata was not updated")
-          python_path.write_text(source, encoding="utf-8")
-
-          print(release_version)
+                  versions.append(tuple(map(int, match.groups())))
+          actual = choose_release_version(requested, versions, tags, requested)
+          if actual != requested:
+              raise SystemExit(f"Resolved release {actual} did not match committed source {requested}")
           PY
-          )
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          mapfile -t changed < <(git diff --name-only | sort)
-          if [ "${#changed[@]}" -ne 0 ]; then
-            echo "ERROR: Committed Windows and WebGUI release metadata is inconsistent."
-            printf '  %s\n' "${changed[@]}"
-            exit 1
-          fi
-
-          git commit -m "release: prepare ${RELEASE_VERSION}" --allow-empty
-
-          RELEASE_COMMIT=$(git rev-parse HEAD)
-          test "$(git rev-parse HEAD^)" = "$BASE_MAIN_SHA"
-
-          if [ "$RELEASE_MODE" = "Create release now" ]; then
-            git fetch --force origin main
-            if [ "$(git rev-parse origin/main)" != "$BASE_MAIN_SHA" ]; then
-              echo "ERROR: main changed while the release tag was being prepared; run again."
-              exit 1
-            fi
-          else
-            if [ "$BASE_MAIN_SHA" != "$GITHUB_SHA" ]; then
-              echo "::error title=Source advanced::Validation-only build must use the exact dispatched main commit."
+            RELEASE_COMMIT="$SOURCE_SHA"
+            git fetch --force origin dev:refs/remotes/origin/dev
+            if [ "$(git rev-parse origin/dev)" != "$SOURCE_SHA" ]; then
+              echo "::error title=Dev source advanced::origin/dev changed after the approved plan; run Workflow 10 again to use the new exact source."
               exit 1
             fi
           fi
 
-          git bundle create release-source.bundle HEAD "^$BASE_MAIN_SHA"
+          BUNDLE_BASE=$(git rev-parse "$RELEASE_COMMIT^")
+          git checkout --detach "$RELEASE_COMMIT"
+          git bundle create release-source.bundle HEAD "^$BUNDLE_BASE"
           git bundle verify release-source.bundle
 
           echo "version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
           echo "commit=$RELEASE_COMMIT" >> "$GITHUB_OUTPUT"
-          echo "base=$BASE_MAIN_SHA" >> "$GITHUB_OUTPUT"
-          if [ "$RELEASE_MODE" = "Create release now" ]; then
-            echo "Prepared untagged release commit $RELEASE_VERSION at $RELEASE_COMMIT"
+          echo "base=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "existing_release=$EXISTING_RELEASE" >> "$GITHUB_OUTPUT"
+          if [ "$EXISTING_RELEASE" = true ]; then
+            echo "Prepared existing tagged source $RELEASE_VERSION at $RELEASE_COMMIT"
+          elif [ "$RELEASE_MODE" = "Create release now" ]; then
+            echo "Prepared exact origin/dev source $RELEASE_VERSION at $RELEASE_COMMIT"
           else
-            echo "Prepared temporary local QA source commit $RELEASE_VERSION at $RELEASE_COMMIT (never pushed)"
+            echo "Prepared exact origin/dev source $RELEASE_VERSION at $RELEASE_COMMIT for BUILD ONLY"
           fi
 
       - name: Upload exact release source commit
@@ -556,12 +484,12 @@ jobs:
   build-windows:
     name: Build Release — Windows
     needs: [resolve-plan, prepare-release]
-    if: ${{ needs.resolve-plan.outputs.platform == 'Windows' || needs.resolve-plan.outputs.platform == 'All' }}
+    if: ${{ needs.resolve-plan.outputs.build_windows == 'true' }}
     runs-on: windows-latest
     env:
-      # A fast Windows build reuses compiler state. Strict retains the standard
-      # non-incremental release build behavior used by Workflow 01.
-      CARGO_INCREMENTAL: ${{ needs.resolve-plan.outputs.strict == 'true' && '0' || '1' }}
+      # FULL SOURCE is clean; PARTIAL UPDATE reuses compiler state while still
+      # emitting and auditing the complete Windows distributable.
+      CARGO_INCREMENTAL: ${{ needs.resolve-plan.outputs.clean == 'true' && '0' || '1' }}
 
     steps:
       - name: Checkout release base
@@ -595,11 +523,6 @@ jobs:
           rustup default "$RUST_TOOLCHAIN"
           rustup target add "$WINDOWS_TARGET" --toolchain "$RUST_TOOLCHAIN"
 
-      - name: Install Rust quality components
-        if: ${{ needs.resolve-plan.outputs.strict == 'true' }}
-        shell: bash
-        run: rustup component add rustfmt clippy --toolchain "$RUST_TOOLCHAIN"
-
       - name: Calculate Windows dependency cache key
         id: windows-dependency-cache-key
         shell: pwsh
@@ -627,7 +550,7 @@ jobs:
             ${{ runner.os }}-splined-windows-dependencies-v2-${{ env.RUST_TOOLCHAIN }}-
 
       - name: Restore cached compiled Windows intermediates (fast mode only)
-        if: ${{ needs.resolve-plan.outputs.strict != 'true' }}
+        if: ${{ needs.resolve-plan.outputs.clean != 'true' }}
         id: compiled-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -647,7 +570,7 @@ jobs:
             ${{ runner.os }}-splined-optimized-compiled-v2-${{ env.RUST_TOOLCHAIN }}-${{ env.WINDOWS_TARGET }}-${{ steps.windows-dependency-cache-key.outputs.hash }}-
 
       - name: Restore previous compiled dependencies (v1 cache migration)
-        if: ${{ needs.resolve-plan.outputs.strict != 'true' && steps.compiled-cache.outputs.cache-hit == '' }}
+        if: ${{ needs.resolve-plan.outputs.clean != 'true' && steps.compiled-cache.outputs.cache-hit == '' }}
         id: legacy-compiled-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -660,20 +583,7 @@ jobs:
             build/Windows/target/release/.fingerprint
           key: ${{ runner.os }}-splined-optimized-compiled-v1-${{ env.RUST_TOOLCHAIN }}-${{ env.WINDOWS_TARGET }}-${{ steps.windows-dependency-cache-key.outputs.hash }}
 
-      - name: Run extended Windows regression suite
-        if: ${{ needs.resolve-plan.outputs.strict == 'true' }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $PSNativeCommandUseErrorActionPreference = $true
-          cargo fmt --manifest-path build/Windows/Cargo.toml -- --check
-          cargo clippy --locked --manifest-path build/Windows/Cargo.toml --all-targets --target $env:WINDOWS_TARGET -- -D warnings
-          cargo test --locked --manifest-path build/Windows/Cargo.toml --lib --target $env:WINDOWS_TARGET -- `
-            --skip artwork_integrity::tests `
-            --skip embedded_artwork `
-            --skip local_artwork
-
-      - name: Build optimized x64 Rust/Slint executable (fast or strict clean)
+      - name: Build optimized x64 Rust/Slint executable (incremental or clean)
         id: windows-build
         shell: pwsh
         env:
@@ -774,7 +684,7 @@ jobs:
           $manifest | ConvertTo-Json | Set-Content -Encoding utf8 release-assets/windows-update.json
 
       - name: Install pinned upstream WinAppCli for Store packaging
-        if: ${{ needs.resolve-plan.outputs.store_update == 'true' || needs.resolve-plan.outputs.store_draft == 'true' }}
+        if: ${{ needs.resolve-plan.outputs.store_draft == 'true' }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -790,7 +700,7 @@ jobs:
 
       - name: Build and strictly validate unsigned production Store MSIX from release binaries
         id: store-package
-        if: ${{ needs.resolve-plan.outputs.store_update == 'true' || needs.resolve-plan.outputs.store_draft == 'true' }}
+        if: ${{ needs.resolve-plan.outputs.store_draft == 'true' }}
         shell: pwsh
         env:
           RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
@@ -813,7 +723,7 @@ jobs:
           "path=$storePackage" | Add-Content $env:GITHUB_OUTPUT
 
       - name: Development-sign, install, activate, native-smoke, and uninstall isolated Store QA package
-        if: ${{ needs.resolve-plan.outputs.store_update == 'true' || needs.resolve-plan.outputs.store_draft == 'true' }}
+        if: ${{ needs.resolve-plan.outputs.store_draft == 'true' }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -844,7 +754,7 @@ jobs:
           if-no-files-found: error
 
       - name: Install and verify git-cliff 2.14.2 for Store fixture validation
-        if: ${{ (needs.resolve-plan.outputs.store_update == 'true' || needs.resolve-plan.outputs.store_draft == 'true') && needs.resolve-plan.outputs.release_confirmation == 'Stop - no release' }}
+        if: ${{ needs.resolve-plan.outputs.store_draft == 'true' && needs.resolve-plan.outputs.release_confirmation == 'Stop - no release' }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -854,7 +764,7 @@ jobs:
           }
 
       - name: Validate Store published-baseline logic against synthetic regression fixtures
-        if: ${{ (needs.resolve-plan.outputs.store_update == 'true' || needs.resolve-plan.outputs.store_draft == 'true') && needs.resolve-plan.outputs.release_confirmation == 'Stop - no release' }}
+        if: ${{ needs.resolve-plan.outputs.store_draft == 'true' && needs.resolve-plan.outputs.release_confirmation == 'Stop - no release' }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -862,7 +772,7 @@ jobs:
           & release/Test-StoreBaseline.ps1 -RepositoryRoot .
 
       - name: Upload manual Store submission MSIX artifact
-        if: ${{ needs.resolve-plan.outputs.store_update == 'true' || needs.resolve-plan.outputs.store_draft == 'true' }}
+        if: ${{ needs.resolve-plan.outputs.store_draft == 'true' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: splined-windows-store-package
@@ -876,21 +786,21 @@ jobs:
           ## Windows release build
 
           - Downloaded Cargo cache hit: ``${{ steps.rust-cache.outputs.cache-hit }}``
-          - Windows build mode: ``${{ needs.resolve-plan.outputs.strict == 'true' && 'STRICT - clean' || 'FAST - incremental' }}``
+          - Windows build mode: ``${{ needs.resolve-plan.outputs.clean == 'true' && 'FULL SOURCE - clean' || 'PARTIAL UPDATE - incremental' }}``
           - Compiled cache exact-key hit: ``${{ steps.compiled-cache.outputs.cache-hit }}`` (a prefix match can also restore cache)
           - Legacy v1 cache fallback hit: ``${{ steps.legacy-compiled-cache.outputs.cache-hit }}``
           - Rust toolchain: ``${{ env.RUST_TOOLCHAIN }}``
           - Rust incremental flag: ``$env:CARGO_INCREMENTAL``
           - Release build duration: ``${{ steps.windows-build.outputs.elapsed_seconds }} seconds``
           - Store package-only artifact: ``splined-windows-store-package``
-          - Automated Partner Center update: ``${{ needs.resolve-plan.outputs.store_update }}``; complete review bundle: ``${{ needs.resolve-plan.outputs.store_draft }}``
+          - Partner Center contact: ``false``; local review bundle: ``${{ needs.resolve-plan.outputs.store_draft }}``
           - Portable and Store outputs use the same release executable and Rust DLL build.
           "@ | Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY
 
   webgui-tests:
     name: Full WebGUI Python/PostgreSQL/Node validation
     needs: [resolve-plan, prepare-release]
-    if: ${{ needs.resolve-plan.outputs.platform == 'WebGUI / Python' || needs.resolve-plan.outputs.platform == 'All' }}
+    if: ${{ needs.resolve-plan.outputs.build_webgui == 'true' }}
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -965,7 +875,7 @@ jobs:
   build-webgui:
     name: WebGUI production Docker and source-archive validation
     needs: [resolve-plan, prepare-release]
-    if: ${{ needs.resolve-plan.outputs.platform == 'WebGUI / Python' || needs.resolve-plan.outputs.platform == 'All' }}
+    if: ${{ needs.resolve-plan.outputs.build_webgui == 'true' }}
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -1008,9 +918,25 @@ jobs:
 
       - name: Build and smoke-test WebGUI container
         shell: bash
+        env:
+          COMPILE_MODE: ${{ needs.resolve-plan.outputs.compile_mode }}
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.prepare-release.outputs.commit }}
         run: |
           set -euo pipefail
-          docker build --file build/WEBGui/Dockerfile --tag splined-webgui:release-test .
+          docker buildx create --driver docker-container --name splined-workflow10 --use
+          cache_args=(--cache-to type=gha,mode=max,scope=splined-workflow10-webgui)
+          if [ "$COMPILE_MODE" = "FULL SOURCE" ]; then
+            cache_args+=(--no-cache)
+          else
+            cache_args+=(--cache-from type=gha,scope=splined-workflow10-webgui)
+          fi
+          docker buildx build "${cache_args[@]}" --load \
+            --build-arg SPLINED_BUILD_CHANNEL=release \
+            --label "org.opencontainers.image.source=https://github.com/scottia/S-P-L-I-N-E-D" \
+            --label "org.opencontainers.image.version=$RELEASE_VERSION" \
+            --label "org.opencontainers.image.revision=$RELEASE_COMMIT" \
+            --file build/WEBGui/Dockerfile --tag splined-webgui:release-test .
           docker run -d --name splined-webgui-release-test --network host \
             -e PGHOST=127.0.0.1 -e PGUSER=splined_test -e PGPASSWORD=splined_ci_only \
             -e PGDATABASE=splined_test -e SPLINED_WEB_TOKEN=ci-browser-only \
@@ -1034,6 +960,8 @@ jobs:
           assert status['database_ready'] is True
           assert status['auth_required'] is True
           PY
+          mkdir -p release-assets
+          docker save splined-webgui:release-test | gzip -9 > release-assets/splined-webgui-container-image.tar.gz
 
       - name: Report WebGUI container logs
         if: always()
@@ -1057,10 +985,18 @@ jobs:
           path: release-assets/splined-webgui-python.tar.gz
           if-no-files-found: error
 
+      - name: Upload exact smoke-tested WebGUI container image
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: splined-webgui-container-image
+          path: release-assets/splined-webgui-container-image.tar.gz
+          if-no-files-found: error
+
   finalize-tag:
-    name: Publish numeric tag and release commit after successful builds
+    name: Tag exact selected dev source after successful builds
     needs:
       - resolve-plan
+      - build-only-report
       - approve-plan
       - prepare-release
       - build-windows
@@ -1070,34 +1006,17 @@ jobs:
       ${{
         always() &&
         needs.resolve-plan.outputs.release_confirmation == 'Create release now' &&
+        needs.prepare-release.outputs.existing_release != 'true' &&
         needs.prepare-release.result == 'success' &&
-        (
-          (
-            needs.resolve-plan.outputs.platform == 'Windows' &&
-            needs.build-windows.result == 'success' &&
-            needs.build-webgui.result == 'skipped' &&
-            needs.webgui-tests.result == 'skipped'
-          ) ||
-          (
-            needs.resolve-plan.outputs.platform == 'WebGUI / Python' &&
-            needs.build-windows.result == 'skipped' &&
-            needs.build-webgui.result == 'success' &&
-            needs.webgui-tests.result == 'success'
-          ) ||
-          (
-            needs.resolve-plan.outputs.platform == 'All' &&
-            needs.build-windows.result == 'success' &&
-            needs.build-webgui.result == 'success' &&
-            needs.webgui-tests.result == 'success'
-          )
-        )
+        (needs.resolve-plan.outputs.build_windows == 'true' && needs.build-windows.result == 'success' || needs.resolve-plan.outputs.build_windows == 'false' && needs.build-windows.result == 'skipped') &&
+        (needs.resolve-plan.outputs.build_webgui == 'true' && needs.build-webgui.result == 'success' && needs.webgui-tests.result == 'success' || needs.resolve-plan.outputs.build_webgui == 'false' && needs.build-webgui.result == 'skipped' && needs.webgui-tests.result == 'skipped')
       }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
-      - name: Checkout unchanged release base
+      - name: Checkout workflow branch before loading exact dev source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: main
@@ -1109,17 +1028,17 @@ jobs:
           name: release-source-commit
           path: .release-source
 
-      - name: Create tag and atomically promote release commit
+      - name: Tag the unchanged selected dev commit
         shell: bash
         env:
           RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
           RELEASE_COMMIT: ${{ needs.prepare-release.outputs.commit }}
-          BASE_MAIN_SHA: ${{ needs.prepare-release.outputs.base }}
+          SOURCE_SHA: ${{ needs.prepare-release.outputs.base }}
         run: |
           set -euo pipefail
-          git fetch --force --tags origin main
-          if [ "$(git rev-parse origin/main)" != "$BASE_MAIN_SHA" ]; then
-            echo "ERROR: main changed while selected release builds were running; no tag was created."
+          git fetch --force --tags origin dev
+          if [ "$(git rev-parse origin/dev)" != "$SOURCE_SHA" ]; then
+            echo "ERROR: dev changed while selected builds were running; no tag was created. Run Workflow 10 again to use the new source."
             exit 1
           fi
           if git show-ref --verify --quiet "refs/tags/$RELEASE_VERSION"; then
@@ -1128,15 +1047,13 @@ jobs:
           fi
           git fetch .release-source/release-source.bundle HEAD
           test "$(git rev-parse FETCH_HEAD)" = "$RELEASE_COMMIT"
-          test "$(git rev-parse "$RELEASE_COMMIT^")" = "$BASE_MAIN_SHA"
+          test "$RELEASE_COMMIT" = "$SOURCE_SHA"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$RELEASE_VERSION" "$RELEASE_COMMIT" -m "S:P:L:I:N:E:D ${RELEASE_VERSION}"
-          git push --atomic origin \
-            "refs/tags/${RELEASE_VERSION}:refs/tags/${RELEASE_VERSION}" \
-            "$RELEASE_COMMIT:refs/heads/main"
+          git push origin "refs/tags/${RELEASE_VERSION}:refs/tags/${RELEASE_VERSION}"
           test "$(git ls-remote origin "refs/tags/$RELEASE_VERSION^{}" | awk '{print $1}')" = "$RELEASE_COMMIT"
-          test "$(git ls-remote origin "refs/heads/main" | awk '{print $1}')" = "$RELEASE_COMMIT"
+          test "$(git ls-remote origin "refs/heads/dev" | awk '{print $1}')" = "$SOURCE_SHA"
 
   generate-release-notes:
     name: Generate incremental GitHub release notes
@@ -1155,7 +1072,10 @@ jobs:
         (needs.build-webgui.result == 'success' || needs.build-webgui.result == 'skipped') &&
         (needs.webgui-tests.result == 'success' || needs.webgui-tests.result == 'skipped') &&
         (
-          (needs.resolve-plan.outputs.release_confirmation == 'Create release now' && needs.finalize-tag.result == 'success') ||
+          (needs.resolve-plan.outputs.release_confirmation == 'Create release now' && (
+            needs.finalize-tag.result == 'success' ||
+            (needs.prepare-release.outputs.existing_release == 'true' && needs.finalize-tag.result == 'skipped')
+          )) ||
           (needs.resolve-plan.outputs.release_confirmation == 'Stop - no release' && needs.finalize-tag.result == 'skipped')
         )
       }}
@@ -1176,7 +1096,7 @@ jobs:
           path: .release-source
 
       - name: Create temporary local tag for release-note validation (never pushed)
-        if: ${{ needs.resolve-plan.outputs.release_confirmation == 'Stop - no release' }}
+        if: ${{ needs.resolve-plan.outputs.release_confirmation == 'Stop - no release' && needs.prepare-release.outputs.existing_release != 'true' }}
         shell: bash
         env:
           RELEASE_COMMIT: ${{ needs.prepare-release.outputs.commit }}
@@ -1193,6 +1113,17 @@ jobs:
           fi
           git tag "$RELEASE_VERSION" "$RELEASE_COMMIT"
           echo "Local tag $RELEASE_VERSION exists only in this disposable runner."
+
+      - name: Checkout exact tagged source for an existing-version BUILD ONLY run
+        if: ${{ needs.resolve-plan.outputs.release_confirmation == 'Stop - no release' && needs.prepare-release.outputs.existing_release == 'true' }}
+        shell: bash
+        env:
+          RELEASE_COMMIT: ${{ needs.prepare-release.outputs.commit }}
+        run: |
+          set -euo pipefail
+          git fetch .release-source/release-source.bundle HEAD
+          test "$(git rev-parse FETCH_HEAD)" = "$RELEASE_COMMIT"
+          git checkout --detach "$RELEASE_COMMIT"
 
 
       - name: Install and verify git-cliff 2.14.2
@@ -1246,7 +1177,7 @@ jobs:
         always() &&
         needs.resolve-plan.outputs.release_confirmation == 'Create release now' &&
         needs.prepare-release.result == 'success' &&
-        needs.finalize-tag.result == 'success' &&
+        (needs.finalize-tag.result == 'success' || (needs.prepare-release.outputs.existing_release == 'true' && needs.finalize-tag.result == 'skipped')) &&
         needs.generate-release-notes.result == 'success' &&
         (needs.build-windows.result == 'success' || needs.build-windows.result == 'skipped') &&
         (needs.build-webgui.result == 'success' || needs.build-webgui.result == 'skipped')
@@ -1263,24 +1194,27 @@ jobs:
           path: release-notes
 
       - name: Download Windows release assets
-        if: ${{ needs.resolve-plan.outputs.platform == 'Windows' || needs.resolve-plan.outputs.platform == 'All' }}
+        if: ${{ needs.resolve-plan.outputs.build_windows == 'true' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: splined-windows-x86_64
           path: release-assets
 
       - name: Download WebGUI / Python release asset
-        if: ${{ needs.resolve-plan.outputs.platform == 'WebGUI / Python' || needs.resolve-plan.outputs.platform == 'All' }}
+        if: ${{ needs.resolve-plan.outputs.build_webgui == 'true' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: splined-webgui-python
           path: release-assets
 
-      - name: Create checksums and GitHub Release
+      - name: Create a new release or add only its missing target outputs
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+          EXISTING_RELEASE: ${{ needs.prepare-release.outputs.existing_release }}
+          BUILD_WINDOWS: ${{ needs.resolve-plan.outputs.build_windows }}
+          BUILD_WEBGUI: ${{ needs.resolve-plan.outputs.build_webgui }}
         run: |
           set -euo pipefail
           cd release-assets
@@ -1293,14 +1227,35 @@ jobs:
           for metadata in windows-update.json; do
             if [ -f "$metadata" ]; then release_files+=("$metadata"); fi
           done
-          sha256sum "${release_files[@]}" > SHA256SUMS.txt
-          gh release create "$RELEASE_VERSION" \
-            "${release_files[@]}" \
-            SHA256SUMS.txt \
-            --repo "$GITHUB_REPOSITORY" \
-            --verify-tag \
-            --title "S:P:L:I:N:E:D $RELEASE_VERSION" \
-            --notes-file ../release-notes/GITHUB-RELEASE.md
+          if [ "$EXISTING_RELEASE" = true ]; then
+            if [ "$BUILD_WINDOWS" = true ] && [ "$BUILD_WEBGUI" = false ]; then
+              checksum_file=SHA256SUMS-WINDOWS.txt
+            elif [ "$BUILD_WINDOWS" = false ] && [ "$BUILD_WEBGUI" = true ]; then
+              checksum_file=SHA256SUMS-WEBGUI.txt
+            else
+              checksum_file=SHA256SUMS-COMPLETION.txt
+            fi
+            mapfile -t published < <(gh release view "$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+            for file in "${release_files[@]}" "$checksum_file"; do
+              if printf '%s\n' "${published[@]}" | grep -qx "$file"; then
+                echo "::error title=Refusing release-asset overwrite::$file already exists on release $RELEASE_VERSION."
+                exit 1
+              fi
+            done
+            sha256sum "${release_files[@]}" > "$checksum_file"
+            gh release upload "$RELEASE_VERSION" \
+              "${release_files[@]}" "$checksum_file" \
+              --repo "$GITHUB_REPOSITORY"
+          else
+            sha256sum "${release_files[@]}" > SHA256SUMS.txt
+            gh release create "$RELEASE_VERSION" \
+              "${release_files[@]}" \
+              SHA256SUMS.txt \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "S:P:L:I:N:E:D $RELEASE_VERSION" \
+              --notes-file ../release-notes/GITHUB-RELEASE.md
+          fi
 
   qa-artifacts:
     name: Validate and checksum selected artifacts without creating a release
@@ -1326,13 +1281,13 @@ jobs:
       contents: read
     steps:
       - name: Download selected Windows portable artifacts
-        if: ${{ needs.resolve-plan.outputs.platform == 'Windows' || needs.resolve-plan.outputs.platform == 'All' }}
+        if: ${{ needs.resolve-plan.outputs.build_windows == 'true' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: splined-windows-x86_64
           path: release-assets
       - name: Download selected WebGUI source archive
-        if: ${{ needs.resolve-plan.outputs.platform == 'WebGUI / Python' || needs.resolve-plan.outputs.platform == 'All' }}
+        if: ${{ needs.resolve-plan.outputs.build_webgui == 'true' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: splined-webgui-python
@@ -1347,7 +1302,8 @@ jobs:
         env:
           PREPARED_VERSION: ${{ needs.prepare-release.outputs.version }}
           PREPARED_COMMIT: ${{ needs.prepare-release.outputs.commit }}
-          SELECTED_PLATFORM: ${{ needs.resolve-plan.outputs.platform }}
+          BUILD_WINDOWS: ${{ needs.resolve-plan.outputs.build_windows }}
+          BUILD_WEBGUI: ${{ needs.resolve-plan.outputs.build_webgui }}
         run: |
           set -euo pipefail
           mkdir -p release-assets
@@ -1357,15 +1313,13 @@ jobs:
             echo "::error title=Missing QA artifacts::No selected target archive was produced."
             exit 1
           fi
-          case "$SELECTED_PLATFORM" in
-            Windows) test -f release-assets/splined-windows-x86_64.zip
-                     test -f release-assets/windows-update.json ;;
-            "WebGUI / Python") test -f release-assets/splined-webgui-python.tar.gz ;;
-            All) test -f release-assets/splined-windows-x86_64.zip
-                 test -f release-assets/splined-webgui-python.tar.gz
-                 test -f release-assets/windows-update.json ;;
-            *) echo "Unexpected platform: $SELECTED_PLATFORM"; exit 1 ;;
-          esac
+          if [ "$BUILD_WINDOWS" = true ]; then
+            test -f release-assets/splined-windows-x86_64.zip
+            test -f release-assets/windows-update.json
+          fi
+          if [ "$BUILD_WEBGUI" = true ]; then
+            test -f release-assets/splined-webgui-python.tar.gz
+          fi
           test -s release-notes/GITHUB-RELEASE.md
           test -s release-notes/release-context.json
           (
@@ -1377,7 +1331,7 @@ jobs:
           {
             echo "QA ONLY — NO RELEASE CREATED"
             echo "Version candidate: $PREPARED_VERSION"
-            echo "Temporary unpushed source commit: $PREPARED_COMMIT"
+            echo "Exact source commit: $PREPARED_COMMIT"
             echo "No remote branch, tag, Release, GHCR or Store change."
           } > release-assets/QA-NOT-A-RELEASE.txt
           cp release-notes/GITHUB-RELEASE.md release-assets/GITHUB-RELEASE-PREVIEW.md
@@ -1390,49 +1344,27 @@ jobs:
 
   qa-ghcr-build:
     name: Validate release-channel GHCR image locally, never push
-    needs: [resolve-plan, prepare-release]
-    if: ${{ needs.resolve-plan.outputs.release_confirmation == 'Stop - no release' }}
+    needs: [resolve-plan, prepare-release, build-webgui]
+    if: ${{ needs.resolve-plan.outputs.release_confirmation == 'Stop - no release' && needs.resolve-plan.outputs.build_webgui == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
-      - name: Checkout exact release base
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ needs.resolve-plan.outputs.release_confirmation == 'Create release now' && 'main' || github.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Download exact versioned candidate source
+      - name: Download exact smoke-tested container image
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: release-source-commit
-          path: .release-source
-      - name: Checkout ephemeral candidate for production GHCR image parity
-        shell: bash
-        env:
-          RELEASE_COMMIT: ${{ needs.prepare-release.outputs.commit }}
-        run: |
-          set -euo pipefail
-          git fetch .release-source/release-source.bundle HEAD
-          test "$(git rev-parse FETCH_HEAD)" = "$RELEASE_COMMIT"
-          git checkout --detach "$RELEASE_COMMIT"
-          test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
-      - name: Build release-channel OCI image and inspect labels without registry push
+          name: splined-webgui-container-image
+          path: container-image
+      - name: Load and inspect the smoke-tested image without registry push
         shell: bash
         env:
           RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
           RELEASE_COMMIT: ${{ needs.prepare-release.outputs.commit }}
         run: |
           set -euo pipefail
-          docker build --pull \
-            --build-arg SPLINED_BUILD_CHANNEL=release \
-            --label "org.opencontainers.image.source=https://github.com/scottia/S-P-L-I-N-E-D" \
-            --label "org.opencontainers.image.version=$RELEASE_VERSION" \
-            --label "org.opencontainers.image.revision=$RELEASE_COMMIT" \
-            --tag splined-ghcr:qa-validation-only \
-            --file build/WEBGui/Dockerfile .
-          actual_version=$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.version" }}' splined-ghcr:qa-validation-only)
-          actual_revision=$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' splined-ghcr:qa-validation-only)
+          gzip -dc container-image/splined-webgui-container-image.tar.gz | docker load
+          actual_version=$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.version" }}' splined-webgui:release-test)
+          actual_revision=$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' splined-webgui:release-test)
           test "$actual_version" = "$RELEASE_VERSION"
           test "$actual_revision" = "$RELEASE_COMMIT"
           {
@@ -1447,6 +1379,7 @@ jobs:
     needs:
       - resolve-plan
       - prepare-release
+      - build-webgui
       - publish-release
     if: >-
       ${{
@@ -1465,24 +1398,21 @@ jobs:
       RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
 
     steps:
-      - name: Checkout generated release tag
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Download exact smoke-tested container image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          ref: refs/tags/${{ needs.prepare-release.outputs.version }}
+          name: splined-webgui-container-image
+          path: container-image
 
-      - name: Build GHCR image
+      - name: Load and tag the exact smoke-tested image
         shell: bash
         run: |
           set -euo pipefail
-          VERSION_TAG="v${RELEASE_VERSION}"
-          docker build --pull \
-            --build-arg SPLINED_BUILD_CHANNEL=release \
-            --label "org.opencontainers.image.source=https://github.com/scottia/S-P-L-I-N-E-D" \
-            --label "org.opencontainers.image.version=$RELEASE_VERSION" \
-            --label "org.opencontainers.image.revision=${{ needs.prepare-release.outputs.commit }}" \
-            --tag "$IMAGE_NAME:$VERSION_TAG" \
-            --tag "$IMAGE_NAME:latest" \
-            --file build/WEBGui/Dockerfile .
+          gzip -dc container-image/splined-webgui-container-image.tar.gz | docker load
+          test "$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.version" }}' splined-webgui:release-test)" = "$RELEASE_VERSION"
+          test "$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' splined-webgui:release-test)" = "${{ needs.prepare-release.outputs.commit }}"
+          docker tag splined-webgui:release-test "$IMAGE_NAME:v${RELEASE_VERSION}"
+          docker tag splined-webgui:release-test "$IMAGE_NAME:latest"
 
       - name: Log in to GHCR
         shell: bash
@@ -1494,13 +1424,24 @@ jobs:
 
       - name: Push version and latest image tags
         shell: bash
+        env:
+          RELEASE_COMMIT: ${{ needs.prepare-release.outputs.commit }}
         run: |
           set -euo pipefail
-          docker push "$IMAGE_NAME:v${RELEASE_VERSION}"
+          if docker pull "$IMAGE_NAME:v${RELEASE_VERSION}" >/dev/null 2>&1; then
+            existing_revision=$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$IMAGE_NAME:v${RELEASE_VERSION}")
+            if [ "$existing_revision" != "$RELEASE_COMMIT" ]; then
+              echo "::error title=Refusing GHCR overwrite::v${RELEASE_VERSION} already identifies revision $existing_revision, not $RELEASE_COMMIT."
+              exit 1
+            fi
+            echo "GHCR v${RELEASE_VERSION} already contains the exact release revision; no version tag was overwritten."
+          else
+            docker push "$IMAGE_NAME:v${RELEASE_VERSION}"
+          fi
           docker push "$IMAGE_NAME:latest"
 
   publish-store:
-    name: Prepare or submit Microsoft Store bundle
+    name: Prepare local Microsoft Store review bundle
     needs:
       - resolve-plan
       - prepare-release
@@ -1510,8 +1451,8 @@ jobs:
       ${{
         always() &&
         needs.resolve-plan.outputs.release_confirmation == 'Create release now' &&
-        (needs.resolve-plan.outputs.store_update == 'true' || needs.resolve-plan.outputs.store_draft == 'true') &&
-        (needs.resolve-plan.outputs.platform == 'Windows' || needs.resolve-plan.outputs.platform == 'All') &&
+        needs.resolve-plan.outputs.store_draft == 'true' &&
+        needs.resolve-plan.outputs.build_windows == 'true' &&
         needs.prepare-release.result == 'success' &&
         needs.generate-release-notes.result == 'success' &&
         needs.publish-release.result == 'success'
@@ -1541,28 +1482,6 @@ jobs:
           name: splined-release-notes
           path: release-notes
 
-      - name: Require Microsoft Store credentials
-        if: ${{ needs.resolve-plan.outputs.store_update == 'true' }}
-        shell: pwsh
-        env:
-          AZURE_AD_APPLICATION_CLIENT_ID: ${{ secrets.AZURE_AD_APPLICATION_CLIENT_ID }}
-          AZURE_AD_APPLICATION_SECRET: ${{ secrets.AZURE_AD_APPLICATION_SECRET }}
-          AZURE_AD_TENANT_ID: ${{ secrets.AZURE_AD_TENANT_ID }}
-          SELLER_ID: ${{ secrets.SELLER_ID }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          foreach ($name in @("AZURE_AD_APPLICATION_CLIENT_ID", "AZURE_AD_APPLICATION_SECRET", "AZURE_AD_TENANT_ID", "SELLER_ID")) {
-            if ([String]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
-              throw "Required Microsoft Store publishing credential is unavailable: $name"
-            }
-          }
-
-      - name: Install pinned Microsoft Store CLI
-        if: ${{ needs.resolve-plan.outputs.store_update == 'true' }}
-        uses: microsoft/microsoft-store-apppublisher@cc9910a8d59f2eb55cbb83df0a3800cf3b5300e0 # v1.4
-        with:
-          version: v0.4.3
-
       - name: Install and verify git-cliff 2.14.2
         shell: pwsh
         run: |
@@ -1572,82 +1491,13 @@ jobs:
             throw "The release-note engine must be git-cliff 2.14.2."
           }
 
-      - name: Test Store history baseline resolution
-        if: ${{ needs.resolve-plan.outputs.store_update == 'true' }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          & release/Test-StoreBaseline.ps1 -RepositoryRoot .
-
       - name: Test local-only Store review bundle
-        if: ${{ needs.resolve-plan.outputs.store_draft == 'true' }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           & release/Test-LocalStoreReviewBundle.ps1 -RepositoryRoot .
 
-      - name: Authenticate Microsoft Store before resolving published history
-        if: ${{ needs.resolve-plan.outputs.store_update == 'true' }}
-        shell: pwsh
-        env:
-          AZURE_AD_APPLICATION_CLIENT_ID: ${{ secrets.AZURE_AD_APPLICATION_CLIENT_ID }}
-          AZURE_AD_APPLICATION_SECRET: ${{ secrets.AZURE_AD_APPLICATION_SECRET }}
-          AZURE_AD_TENANT_ID: ${{ secrets.AZURE_AD_TENANT_ID }}
-          SELLER_ID: ${{ secrets.SELLER_ID }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          $PSNativeCommandUseErrorActionPreference = $true
-          try {
-            & msstore reconfigure --tenantId $env:AZURE_AD_TENANT_ID --sellerId $env:SELLER_ID --clientId $env:AZURE_AD_APPLICATION_CLIENT_ID --clientSecret $env:AZURE_AD_APPLICATION_SECRET
-          }
-          catch {
-            throw "Microsoft Store authentication failed before release-history resolution. Verify Partner Center credentials and application permissions. $($_.Exception.Message)"
-          }
-
-      - name: Resolve last-published Store baseline
-        if: ${{ needs.resolve-plan.outputs.store_update == 'true' }}
-        id: store-baseline
-        shell: pwsh
-        env:
-          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          $reviewOnly = "${{ needs.resolve-plan.outputs.store_draft }}" -eq "true"
-          & release/Resolve-StoreBaseline.ps1 `
-            -TargetVersion $env:RELEASE_VERSION `
-            -RepositoryRoot . `
-            -ProductId 9P8G4GMBBVBS `
-            -OutputDirectory store-notes `
-            -AllowPendingSubmission:$reviewOnly
-
-      - name: Render cumulative Store Highlights from published baseline
-        if: ${{ needs.resolve-plan.outputs.store_update == 'true' }}
-        id: store-highlights
-        shell: pwsh
-        env:
-          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          & release/Generate-StoreHighlights.ps1 `
-            -Version $env:RELEASE_VERSION `
-            -BaselineMetadataPath store-notes/STORE-BASELINE.json `
-            -RepositoryRoot . `
-            -ConfigPath release/cliff.toml `
-            -StoreTemplatePath release/templates/store-highlights.tera `
-            -OutputDirectory store-notes
-
-      - name: Assemble Store submission audit artifact
-        if: ${{ needs.resolve-plan.outputs.store_update == 'true' }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          [IO.Directory]::CreateDirectory("store-submission") | Out-Null
-          Copy-Item -LiteralPath "store-package/SPLINED-x64-store-unsigned.msix" -Destination "store-submission/SPLINED-x64-store-unsigned.msix"
-          Copy-Item -LiteralPath "store-notes/STORE-HIGHLIGHTS.txt" -Destination "store-submission/STORE-HIGHLIGHTS.txt"
-          Copy-Item -LiteralPath "store-notes/STORE-SUBMISSION.json" -Destination "store-submission/STORE-SUBMISSION.json"
-
       - name: Render local-only Store review files
-        if: ${{ needs.resolve-plan.outputs.store_draft == 'true' }}
         shell: pwsh
         env:
           RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
@@ -1676,8 +1526,44 @@ jobs:
           path: store-submission/
           if-no-files-found: error
 
-      - name: Stage package and Highlights and submit the selected Store update
-        if: ${{ needs.resolve-plan.outputs.store_update == 'true' }}
+  submit-store:
+    name: Submit validated Microsoft Store update
+    needs:
+      - resolve-plan
+      - prepare-release
+      - generate-release-notes
+      - publish-release
+      - publish-store
+    if: >-
+      ${{
+        always() &&
+        needs.resolve-plan.outputs.release_confirmation == 'Create release now' &&
+        needs.resolve-plan.outputs.store_submit == 'true' &&
+        needs.resolve-plan.outputs.build_windows == 'true' &&
+        needs.prepare-release.result == 'success' &&
+        needs.generate-release-notes.result == 'success' &&
+        needs.publish-release.result == 'success' &&
+        needs.publish-store.result == 'success'
+      }}
+    runs-on: windows-latest
+    concurrency:
+      group: splined-microsoft-store-submission
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout generated release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: refs/tags/${{ needs.prepare-release.outputs.version }}
+          fetch-depth: 0
+
+      - name: Download exact Store package
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: splined-windows-store-package
+          path: store-package
+
+      - name: Require Microsoft Store credentials
         shell: pwsh
         env:
           AZURE_AD_APPLICATION_CLIENT_ID: ${{ secrets.AZURE_AD_APPLICATION_CLIENT_ID }}
@@ -1686,10 +1572,94 @@ jobs:
           SELLER_ID: ${{ secrets.SELLER_ID }}
         run: |
           $ErrorActionPreference = "Stop"
+          foreach ($name in @("AZURE_AD_APPLICATION_CLIENT_ID", "AZURE_AD_APPLICATION_SECRET", "AZURE_AD_TENANT_ID", "SELLER_ID")) {
+            if ([String]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "Required Microsoft Store publishing credential is unavailable: $name"
+            }
+          }
+
+      - name: Install pinned Microsoft Store CLI
+        uses: microsoft/microsoft-store-apppublisher@cc9910a8d59f2eb55cbb83df0a3800cf3b5300e0 # v1.4
+        with:
+          version: v0.4.3
+
+      - name: Install and verify git-cliff 2.14.2
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & release/Install-GitCliff.ps1 -InstallDirectory (Join-Path $env:RUNNER_TEMP "git-cliff-2.14.2")
+          if (((git-cliff --version) -join "`n").Trim() -cne "git-cliff 2.14.2") {
+            throw "The release-note engine must be git-cliff 2.14.2."
+          }
+
+      - name: Test Store history baseline resolution
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & release/Test-StoreBaseline.ps1 -RepositoryRoot .
+
+      - name: Authenticate Microsoft Store before resolving published history
+        shell: pwsh
+        env:
+          AZURE_AD_APPLICATION_CLIENT_ID: ${{ secrets.AZURE_AD_APPLICATION_CLIENT_ID }}
+          AZURE_AD_APPLICATION_SECRET: ${{ secrets.AZURE_AD_APPLICATION_SECRET }}
+          AZURE_AD_TENANT_ID: ${{ secrets.AZURE_AD_TENANT_ID }}
+          SELLER_ID: ${{ secrets.SELLER_ID }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          & msstore reconfigure --tenantId $env:AZURE_AD_TENANT_ID --sellerId $env:SELLER_ID --clientId $env:AZURE_AD_APPLICATION_CLIENT_ID --clientSecret $env:AZURE_AD_APPLICATION_SECRET
+
+      - name: Resolve last-published Store baseline
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          & release/Resolve-StoreBaseline.ps1 `
+            -TargetVersion $env:RELEASE_VERSION `
+            -RepositoryRoot . `
+            -ProductId 9P8G4GMBBVBS `
+            -OutputDirectory store-notes
+
+      - name: Render cumulative Store Highlights from published baseline
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          & release/Generate-StoreHighlights.ps1 `
+            -Version $env:RELEASE_VERSION `
+            -BaselineMetadataPath store-notes/STORE-BASELINE.json `
+            -RepositoryRoot . `
+            -ConfigPath release/cliff.toml `
+            -StoreTemplatePath release/templates/store-highlights.tera `
+            -OutputDirectory store-notes
+
+      - name: Assemble automatic Store submission audit artifact
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          [IO.Directory]::CreateDirectory("store-auto-submission") | Out-Null
+          Copy-Item -LiteralPath "store-package/SPLINED-x64-store-unsigned.msix" -Destination "store-auto-submission/SPLINED-x64-store-unsigned.msix"
+          Copy-Item -LiteralPath "store-notes/STORE-HIGHLIGHTS.txt" -Destination "store-auto-submission/STORE-HIGHLIGHTS.txt"
+          Copy-Item -LiteralPath "store-notes/STORE-SUBMISSION.json" -Destination "store-auto-submission/STORE-SUBMISSION.json"
+
+      - name: Upload automatic Store submission audit artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: splined-windows-store-auto-submission
+          path: store-auto-submission/
+          if-no-files-found: error
+
+      - name: Stage package and Highlights and submit for certification
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
           & build/Windows/package/Publish-StoreUpdate.ps1 `
-            -PackagePath store-submission/SPLINED-x64-store-unsigned.msix `
-            -HighlightsPath store-submission/STORE-HIGHLIGHTS.txt `
-            -BaselineMetadataPath store-submission/STORE-SUBMISSION.json `
+            -PackagePath store-auto-submission/SPLINED-x64-store-unsigned.msix `
+            -HighlightsPath store-auto-submission/STORE-HIGHLIGHTS.txt `
+            -BaselineMetadataPath store-auto-submission/STORE-SUBMISSION.json `
             -ExpectedVersion ${{ needs.prepare-release.outputs.version }} `
             -ProductId 9P8G4GMBBVBS
 
@@ -1697,6 +1667,7 @@ jobs:
     name: Release or validation-only summary
     needs:
       - resolve-plan
+      - build-only-report
       - approve-plan
       - prepare-release
       - build-windows
@@ -1706,6 +1677,7 @@ jobs:
       - publish-release
       - publish-ghcr
       - publish-store
+      - submit-store
       - webgui-tests
       - qa-artifacts
       - qa-ghcr-build
@@ -1718,7 +1690,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## Workflow 04 stopped before build"
+            echo "## Workflow 10 stopped before build"
             echo
             echo "The protected plan approval was rejected or did not complete."
             echo "No validation, compilation, tagging or publication work was authorized."
@@ -1728,9 +1700,11 @@ jobs:
         if: ${{ needs.approve-plan.result == 'success' && needs.resolve-plan.outputs.release_confirmation == 'Create release now' }}
         shell: bash
         env:
-          RELEASE_PLATFORM: ${{ needs.resolve-plan.outputs.platform }}
-          STORE_UPDATE: ${{ needs.resolve-plan.outputs.store_update }}
+          BUILD_WINDOWS: ${{ needs.resolve-plan.outputs.build_windows }}
+          BUILD_WEBGUI: ${{ needs.resolve-plan.outputs.build_webgui }}
+          EXISTING_RELEASE: ${{ needs.prepare-release.outputs.existing_release }}
           STORE_DRAFT: ${{ needs.resolve-plan.outputs.store_draft }}
+          STORE_SUBMIT: ${{ needs.resolve-plan.outputs.store_submit }}
           PUBLISH_GHCR: ${{ needs.resolve-plan.outputs.publish_ghcr }}
           PREPARE_RESULT: ${{ needs.prepare-release.result }}
           WINDOWS_RESULT: ${{ needs.build-windows.result }}
@@ -1743,6 +1717,7 @@ jobs:
           GITHUB_RELEASE_RESULT: ${{ needs.publish-release.result }}
           GHCR_RESULT: ${{ needs.publish-ghcr.result }}
           STORE_RESULT: ${{ needs.publish-store.result }}
+          STORE_SUBMIT_RESULT: ${{ needs.submit-store.result }}
         run: |
           set -euo pipefail
           failures=0
@@ -1760,29 +1735,24 @@ jobs:
           expect_result "Prepare release" "$PREPARE_RESULT" success
           expect_result "Validation-only artifacts" "$QA_ASSETS_RESULT" skipped
           expect_result "Validation-only GHCR build" "$QA_GHCR_RESULT" skipped
-          case "$RELEASE_PLATFORM" in
-            Windows)
-              expect_result "Windows build" "$WINDOWS_RESULT" success
-              expect_result "WebGUI / Python validation" "$WEBGUI_RESULT" skipped
-              expect_result "WebGUI Python/PostgreSQL tests" "$WEBGUI_TEST_RESULT" skipped
-              ;;
-            "WebGUI / Python")
-              expect_result "Windows build" "$WINDOWS_RESULT" skipped
-              expect_result "WebGUI / Python validation" "$WEBGUI_RESULT" success
-              expect_result "WebGUI Python/PostgreSQL tests" "$WEBGUI_TEST_RESULT" success
-              ;;
-            All)
-              expect_result "Windows build" "$WINDOWS_RESULT" success
-              expect_result "WebGUI / Python validation" "$WEBGUI_RESULT" success
-              expect_result "WebGUI Python/PostgreSQL tests" "$WEBGUI_TEST_RESULT" success
-              ;;
-            *)
-              echo "::error title=Invalid release platform::Unsupported platform '$RELEASE_PLATFORM'."
-              failures=1
-              ;;
-          esac
+          if [ "$BUILD_WINDOWS" = true ]; then
+            expect_result "Windows build" "$WINDOWS_RESULT" success
+          else
+            expect_result "Windows build" "$WINDOWS_RESULT" skipped
+          fi
+          if [ "$BUILD_WEBGUI" = true ]; then
+            expect_result "WebGUI / Python validation" "$WEBGUI_RESULT" success
+            expect_result "WebGUI Python/PostgreSQL tests" "$WEBGUI_TEST_RESULT" success
+          else
+            expect_result "WebGUI / Python validation" "$WEBGUI_RESULT" skipped
+            expect_result "WebGUI Python/PostgreSQL tests" "$WEBGUI_TEST_RESULT" skipped
+          fi
 
-          expect_result "Numeric tag" "$TAG_RESULT" success
+          if [ "$EXISTING_RELEASE" = true ]; then
+            expect_result "Existing numeric tag" "$TAG_RESULT" skipped
+          else
+            expect_result "Numeric tag" "$TAG_RESULT" success
+          fi
           expect_result "git-cliff release notes" "$NOTES_RESULT" success
           expect_result "GitHub Release" "$GITHUB_RELEASE_RESULT" success
           if [ "$PUBLISH_GHCR" = true ]; then
@@ -1791,11 +1761,15 @@ jobs:
             expect_result "GHCR publication" "$GHCR_RESULT" skipped
           fi
 
-          if { [ "$RELEASE_PLATFORM" = Windows ] || [ "$RELEASE_PLATFORM" = All ]; } &&
-             { [ "$STORE_UPDATE" = true ] || [ "$STORE_DRAFT" = true ]; }; then
+          if [ "$BUILD_WINDOWS" = true ] && [ "$STORE_DRAFT" = true ]; then
             expect_result "Microsoft Store selected mode" "$STORE_RESULT" success
           else
             expect_result "Microsoft Store selected mode" "$STORE_RESULT" skipped
+          fi
+          if [ "$STORE_SUBMIT" = true ]; then
+            expect_result "Microsoft Store automatic submission" "$STORE_SUBMIT_RESULT" success
+          else
+            expect_result "Microsoft Store automatic submission" "$STORE_SUBMIT_RESULT" skipped
           fi
 
           if [ "$failures" -ne 0 ]; then
@@ -1818,24 +1792,28 @@ jobs:
             echo
             echo "- Version and Git tag: \`$RELEASE_VERSION\`"
             echo "- Selected release target: \`${{ needs.resolve-plan.outputs.platform }}\`"
-            echo "- GitHub Release: published"
+            echo "- Existing release completion: \`${{ needs.prepare-release.outputs.existing_release }}\`"
+            echo "- GitHub Release: created or completed without overwriting an existing target asset"
             if [ "${{ needs.resolve-plan.outputs.publish_ghcr }}" = true ]; then
               echo "- GHCR: \`ghcr.io/scottia/splined:v$RELEASE_VERSION\`"
               echo "- GHCR latest: \`ghcr.io/scottia/splined:latest\`"
             else
               echo "- GHCR: not published by the selected preset"
             fi
-            echo "- Automated Partner Center update: \`${{ needs.resolve-plan.outputs.store_update }}\`; complete review bundle: \`${{ needs.resolve-plan.outputs.store_draft }}\`"
+            echo "- Partner Center AUTO SUBMIT: \`${{ needs.resolve-plan.outputs.store_submit }}\`; local review bundle: \`${{ needs.resolve-plan.outputs.store_draft }}\`"
             if [ "${{ needs.publish-store.result }}" = "success" ]; then
-              if [ "${{ needs.resolve-plan.outputs.store_update }}" = true ]; then
-                echo "- Microsoft Store: package and Highlights submitted for certification"
-              else
-                echo "- Microsoft Store: local MSIX review ZIP retained; Partner Center was not contacted and the existing draft was untouched"
-              fi
+              echo "- Microsoft Store: local MSIX review ZIP retained"
             elif [ "${{ needs.resolve-plan.outputs.store_draft }}" = true ]; then
               echo "- Microsoft Store: requested review bundle was not created"
             else
               echo "- Microsoft Store: not run (disabled or no Windows target selected)"
+            fi
+            if [ "${{ needs.submit-store.result }}" = "success" ]; then
+              echo "- Microsoft Store: validated package and Highlights submitted for certification"
+            elif [ "${{ needs.resolve-plan.outputs.store_submit }}" = true ]; then
+              echo "- Microsoft Store: requested automatic submission did not complete"
+            else
+              echo "- Microsoft Store: Partner Center was not contacted"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -1843,7 +1821,8 @@ jobs:
         if: ${{ needs.approve-plan.result == 'success' && needs.resolve-plan.outputs.release_confirmation == 'Stop - no release' }}
         shell: bash
         env:
-          RELEASE_PLATFORM: ${{ needs.resolve-plan.outputs.platform }}
+          BUILD_WINDOWS: ${{ needs.resolve-plan.outputs.build_windows }}
+          BUILD_WEBGUI: ${{ needs.resolve-plan.outputs.build_webgui }}
           PREPARE_RESULT: ${{ needs.prepare-release.result }}
           WINDOWS_RESULT: ${{ needs.build-windows.result }}
           WEBGUI_RESULT: ${{ needs.build-webgui.result }}
@@ -1855,6 +1834,7 @@ jobs:
           RELEASE_RESULT: ${{ needs.publish-release.result }}
           GHCR_RESULT: ${{ needs.publish-ghcr.result }}
           STORE_RESULT: ${{ needs.publish-store.result }}
+          STORE_SUBMIT_RESULT: ${{ needs.submit-store.result }}
         run: |
           set -euo pipefail
           check() {
@@ -1866,35 +1846,31 @@ jobs:
           check "Temporary candidate preparation" "$PREPARE_RESULT" success
           check "Release notes preview" "$NOTES_RESULT" success
           check "QA-only checksum and artifacts" "$QA_RESULT" success
-          check "Local release-channel GHCR image build" "$QA_GHCR_RESULT" success
+          if [ "$BUILD_WEBGUI" = true ]; then
+            check "Local release-channel GHCR image build" "$QA_GHCR_RESULT" success
+          else
+            check "Local release-channel GHCR image build" "$QA_GHCR_RESULT" skipped
+          fi
           check "Published tag" "$TAG_RESULT" skipped
           check "GitHub Release" "$RELEASE_RESULT" skipped
           check "GHCR publish" "$GHCR_RESULT" skipped
           check "Store submission" "$STORE_RESULT" skipped
-          case "$RELEASE_PLATFORM" in
-            Windows)
-              check "Windows build" "$WINDOWS_RESULT" success
-              check "WebGUI package" "$WEBGUI_RESULT" skipped
-              check "WebGUI tests" "$WEBGUI_TEST_RESULT" skipped
-              ;;
-            "WebGUI / Python")
-              check "Windows build" "$WINDOWS_RESULT" skipped
-              check "WebGUI package" "$WEBGUI_RESULT" success
-              check "WebGUI tests" "$WEBGUI_TEST_RESULT" success
-              ;;
-            All)
-              check "Windows build" "$WINDOWS_RESULT" success
-              check "WebGUI package" "$WEBGUI_RESULT" success
-              check "WebGUI tests" "$WEBGUI_TEST_RESULT" success
-              ;;
-            *)
-              echo "::error title=Unknown platform::$RELEASE_PLATFORM"
-              exit 1
-              ;;
-          esac
+          check "Automatic Store submission" "$STORE_SUBMIT_RESULT" skipped
+          if [ "$BUILD_WINDOWS" = true ]; then
+            check "Windows build" "$WINDOWS_RESULT" success
+          else
+            check "Windows build" "$WINDOWS_RESULT" skipped
+          fi
+          if [ "$BUILD_WEBGUI" = true ]; then
+            check "WebGUI package" "$WEBGUI_RESULT" success
+            check "WebGUI tests" "$WEBGUI_TEST_RESULT" success
+          else
+            check "WebGUI package" "$WEBGUI_RESULT" skipped
+            check "WebGUI tests" "$WEBGUI_TEST_RESULT" skipped
+          fi
           {
-            echo "## Workflow 04 validation-only complete — NO RELEASE"
-            echo "- Version candidate was compiled in a temporary, unpushed runner commit"
+            echo "## Workflow 10 BUILD ONLY, REPORT complete — NO RELEASE"
+            echo "- Exact selected origin/dev source was compiled without a source or branch mutation"
             echo "- All selected build, policy, test, package and artifact checks passed"
             echo "- QA-only checksum artifacts: splined-validation-only-assets"
             echo "- Branch commits, published tags, GitHub Releases, GHCR, Store: NONE"
