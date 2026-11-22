@@ -94,7 +94,8 @@ jobs:
           ## Source preparation plan
 
           - Advance the synchronized Windows and WebGUI source from \`${CURRENT_VERSION}\` to \`${NEXT_VERSION}\`.
-          - Update Cargo, Windows manifests, WebGUI identity, and Workflow 04's visible committed-version default together.
+          - Update Cargo, Windows manifests, App Installer metadata, and WebGUI identity together.
+          - Leave Workflow 04 unchanged; its blank version field resolves this committed source version at runtime.
           - Compile the exact candidate commit for Windows and WebGUI.
           - Run the required PR validation on the exact candidate revision.
 
@@ -129,9 +130,6 @@ jobs:
           python3 .github/scripts/test_optimized_build_workflow.py
           git diff --check
           git add \
-            .github/scripts/source_version.py \
-            .github/scripts/test_release_source_version.py \
-            .github/workflows/04-optimized-build-test.yml \
             build/Windows/Cargo.toml \
             build/Windows/Cargo.lock \
             build/Windows/gui/app.manifest \
