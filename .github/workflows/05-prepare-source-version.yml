@@ -109,6 +109,14 @@ jobs:
             --title "Draft: prepare SPLINED source v${NEXT_VERSION}" \
             --body-file "$RUNNER_TEMP/source-pr-body.md")
           PR_NUMBER=$(gh pr view "$PR_URL" --json number --jq .number)
+          BOOTSTRAP_SHA=$(git rev-parse HEAD)
+          {
+            echo "version=$NEXT_VERSION"
+            echo "branch=$BRANCH_NAME"
+            echo "commit=$BOOTSTRAP_SHA"
+            echo "pr_number=$PR_NUMBER"
+            echo "pr_url=$PR_URL"
+          } >> "$GITHUB_OUTPUT"
 
           python3 .github/scripts/source_version.py stamp "$NEXT_VERSION"
           rm .github/pr-intent/source-version-preparation.md

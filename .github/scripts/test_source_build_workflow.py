@@ -42,6 +42,10 @@ class SourceBuildWorkflowTests(unittest.TestCase):
         self.assertIn("--base dev", prepare)
         self.assertIn("source-version-preparation.md", prepare)
         self.assertIn("rm .github/pr-intent/source-version-preparation.md", prepare)
+        self.assertLess(
+            prepare.index('echo "pr_url=$PR_URL"'),
+            prepare.index("source_version.py stamp"),
+        )
         self.assertNotIn("gh pr ready", self.workflow_05)
 
     def test_preparation_requires_synchronized_main_and_dev(self) -> None:
