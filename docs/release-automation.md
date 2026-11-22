@@ -31,7 +31,7 @@ runnable from the repository.
 [Workflow 10](../.github/workflows/10-unified-build.yml) exposes three choices:
 
 - **Target:** `ALL`, `WINDOWS`, or `WEBGUI`.
-- **Outcome:** `COMPLETE RELEASE` or `BUILD ONLY, REPORT`.
+- **Outcome:** `COMPLETE RELEASE`, `BUILD ONLY`, or `BUILD ONLY, REPORT`.
 - **Store action:** `LOCAL REVIEW ONLY` or the explicit `AUTO SUBMIT` option
   for a Windows/ALL release.
 
@@ -89,12 +89,18 @@ This supports Windows-first or WebGUI-first publication without rebuilding the
 completed target. A completion upload receives a target-specific checksum file
 and leaves the existing checksum asset untouched.
 
-`BUILD ONLY, REPORT` first records the main/dev SHAs, source relationship,
-version, automatically selected compile mode, canonical-policy validation and
-Microsoft Store credential readiness. It then builds the selected current
-version and retains checksum-verified Actions artifacts without creating a
-branch write, PR, tag, GitHub Release, GHCR tag or Store write. If that version
-is already published, the exact tagged source is used.
+Every outcome first records the main/dev SHAs, source relationship, version,
+automatically selected compile mode, canonical-policy validation and Microsoft
+Store credential readiness.
+
+`BUILD ONLY, REPORT` stops immediately after that audit. It performs no plan
+approval, compilation, packaging, branch write, PR, tag, GitHub Release, GHCR
+or Store action.
+
+`BUILD ONLY` continues after the passing report and plan approval, builds the
+selected current version, and retains checksum-verified Actions artifacts
+without publication. If that version is already published, the exact tagged
+source is used.
 
 ### Publication boundaries
 
