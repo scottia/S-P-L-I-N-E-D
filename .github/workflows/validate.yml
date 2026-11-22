@@ -24,7 +24,7 @@ jobs:
         with:
           ref: ${{ env.VALIDATION_HEAD_SHA }}
           fetch-depth: 0
-      - name: Verify current dev head and fast-forward ancestry
+      - name: Verify current branch heads and promotion tree
         env:
           BASE_SHA: ${{ env.VALIDATION_BASE_SHA }}
           HEAD_SHA: ${{ env.VALIDATION_HEAD_SHA }}
@@ -33,13 +33,16 @@ jobs:
             refs/heads/main:refs/remotes/origin/main \
             refs/heads/dev:refs/remotes/origin/dev
           test "$(git rev-parse HEAD)" = "$HEAD_SHA"
+          test "$(git rev-parse origin/main)" = "$BASE_SHA"
           test "$(git rev-parse origin/dev)" = "$HEAD_SHA"
-          git merge-base --is-ancestor "$BASE_SHA" "$HEAD_SHA"
+          MERGED_TREE=$(git merge-tree --write-tree "$BASE_SHA" "$HEAD_SHA")
+          HEAD_TREE=$(git rev-parse "$HEAD_SHA^{tree}")
+          test "$MERGED_TREE" = "$HEAD_TREE"
           {
             echo "### Exact dev-to-main promotion verified"
             echo
             echo "Source and Audio Integrity checks already passed before this commit entered dev."
-            echo "This promotion contains the current same-repository dev head and is fast-forward compatible with main."
+            echo "Combining the current main base with the current dev head produces exactly the dev tree."
           } >> "$GITHUB_STEP_SUMMARY"
   audio-integrity-webgui:
     name: Audio integrity — WebGUI real artwork writer

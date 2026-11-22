@@ -47,9 +47,13 @@ An exact same-repository `dev` to `main` promotion does not repeat the source,
 WebGUI, Windows advisory, or real-writer Audio Integrity suites that already
 passed before the commit entered `dev`. That promotion runs one provenance
 check instead: the PR head must be the current `origin/dev` commit, its base
-must be an ancestor of that head, and the head repository must be this
-repository. Feature/source PRs and Workflow 05 candidate dispatches continue
-to run the complete validation workflow.
+must be the current `origin/main` commit, and the head repository must be this
+repository. Because prior promotions create merge commits only on `main`, the
+branches do not need linear ancestry. Instead, a conflict-free computed merge
+of the two current heads must produce exactly the `dev` tree; this rejects stale
+heads, conflicts, and any `main` content omitted from `dev`. Feature/source PRs
+and Workflow 05 candidate dispatches continue to run the complete validation
+workflow.
 
 The **WebGUI / Python** target is the browser application, not a native Ubuntu
 Rust build. It runs the Python/PostgreSQL suite, validates browser JavaScript,
