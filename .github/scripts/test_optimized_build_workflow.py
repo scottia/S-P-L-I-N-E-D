@@ -14,7 +14,7 @@ MIRRORED_JOBS = (
     "generate-release-notes", "publish-release", "publish-ghcr",
     "publish-store", "release-summary",
 )
-PRESETS = ("ALL", "PYTHON / WEBGUI", "WINDOWS", "SOURCE BUILD", "TEST BUILD")
+PRESETS = ("ALL", "PYTHON / WEBGUI", "WINDOWS", "TEST BUILD")
 
 
 def job(source: str, name: str) -> str:
@@ -42,7 +42,7 @@ class OptimizedFullReleaseMirrorTests(unittest.TestCase):
         cls.workflow = WORKFLOW.read_text(encoding="utf-8")
         cls.release = RELEASE.read_text(encoding="utf-8")
 
-    def test_five_dispatch_presets_replace_ambiguous_independent_controls(self):
+    def test_four_dispatch_presets_replace_ambiguous_independent_controls(self):
         def inputs(source):
             form = source.split("  workflow_dispatch:\n", 1)[1].split("\npermissions:", 1)[0]
             return re.findall(r"(?m)^      ([a-z][a-z0-9_]+):\s*$", form)
@@ -86,8 +86,7 @@ class OptimizedFullReleaseMirrorTests(unittest.TestCase):
         cases = {
             "ALL": ("PYTHON / WEBGUI", "All", "false", "true", "true", "Create release now"),
             "PYTHON / WEBGUI": ("WINDOWS", "WebGUI / Python", "false", "false", "true", "Create release now"),
-            "WINDOWS": ("SOURCE BUILD", "Windows", "false", "true", "false", "Create release now"),
-            "SOURCE BUILD": ("TEST BUILD", "All", "false", "true", "true", "Create release now"),
+            "WINDOWS": ("TEST BUILD", "Windows", "false", "true", "false", "Create release now"),
         }
         for name, (following, platform, strict, draft, ghcr, release) in cases.items():
             with self.subTest(preset=name):
@@ -153,7 +152,7 @@ class OptimizedFullReleaseMirrorTests(unittest.TestCase):
     def test_all_workflow_one_jobs_and_full_publish_graph_remain(self):
         self.assertTrue(
             self.workflow.startswith(
-                "name: 04. Optimized Release or Test - Select One of Five Build Presets"
+                "name: 04. Optimized Release or Test - Select One of Four Build Presets"
             )
         )
         for name in MIRRORED_JOBS:

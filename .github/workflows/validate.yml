@@ -2,8 +2,21 @@ name: Validate supported runtimes
 on:
   pull_request:
     branches: [dev, main]
+  workflow_dispatch:
+    inputs:
+      base_sha:
+        description: "Exact dev base SHA for a Workflow 05 source-version Draft PR"
+        required: true
+        type: string
+      head_sha:
+        description: "Exact Workflow 05 source candidate SHA to validate"
+        required: true
+        type: string
 permissions:
   contents: read
+env:
+  VALIDATION_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || inputs.base_sha }}
+  VALIDATION_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || inputs.head_sha }}
 jobs:
   audio-integrity-webgui:
     name: Audio integrity — WebGUI real artwork writer
@@ -12,6 +25,8 @@ jobs:
       PYTHONPATH: .:build/WEBGui:build/WEBGui/webgui/backend
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.VALIDATION_HEAD_SHA }}
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
@@ -27,6 +42,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.VALIDATION_HEAD_SHA }}
       - name: Run mandatory Rust/Lofty ID3 metadata-preservation regressions
         shell: pwsh
         run: |
@@ -44,14 +61,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ env.VALIDATION_HEAD_SHA }}
           fetch-depth: 0
       - name: Check validation selection rules
         run: python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
       - name: Select checks for changed files
         id: scope
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ env.VALIDATION_BASE_SHA }}
+          HEAD_SHA: ${{ env.VALIDATION_HEAD_SHA }}
         run: python3 .github/scripts/validation_scope.py "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"
   policy-review:
     name: Canonical policy JSON — review gate
@@ -59,11 +77,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ env.VALIDATION_HEAD_SHA }}
           fetch-depth: 0
       - name: Reject changed protected behavioural JSON
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ env.VALIDATION_BASE_SHA }}
+          HEAD_SHA: ${{ env.VALIDATION_HEAD_SHA }}
         run: python3 .github/scripts/check_protected_policies.py "$BASE_SHA" "$HEAD_SHA"
       - name: Validate canonical policy, SQLite DDL and settings contracts
         env:
@@ -89,6 +108,8 @@ jobs:
       PYTHONPATH: .:build/WEBGui:build/WEBGui/webgui/backend
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.VALIDATION_HEAD_SHA }}
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
@@ -119,9 +140,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ env.VALIDATION_HEAD_SHA }}
       - name: Report permanent PR policy exception
         env:
-          TESTED_REVISION: ${{ github.event.pull_request.head.sha }}
+          TESTED_REVISION: ${{ env.VALIDATION_HEAD_SHA }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: python3 .github/scripts/windows_advisory.py

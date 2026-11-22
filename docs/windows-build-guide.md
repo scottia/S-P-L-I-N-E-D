@@ -30,19 +30,28 @@ The release executable is:
 build\Windows\target\x86_64-pc-windows-msvc\release\splined.exe
 ```
 
-### Workflow 04 optimized Windows build presets
+### Workflow 04 release presets and Workflow 05 source preparation
 
 [Workflow 04](../.github/workflows/04-optimized-build-test.yml) resolves one
-of five complete build presets. **ALL** is the default release; **WINDOWS**
-builds the portable ZIP and Store review bundle without publishing GHCR;
-**SOURCE BUILD** releases both clients at the exact committed source version;
-and **TEST BUILD** runs strict Windows plus WebGUI validation without creating
-a tag, GitHub Release, GHCR push or Store action. The run summary lists every
+of four complete build presets. **ALL** is the default release; **WINDOWS**
+builds the portable ZIP and Store review bundle without publishing GHCR; and
+**TEST BUILD** runs strict Windows plus WebGUI validation without creating a
+tag, GitHub Release, GHCR push or Store action. The run summary lists every
 effective choice before compilation begins. Publishing presets require the
 `main` branch; TEST BUILD may validate a Draft PR branch. All target, strict,
 Store, GHCR and final-action controls remain visible and may either use the
 selected flow's default or an explicit owner override. Release Version displays
-the current compiled source identity and is contract-checked against it.
+the current committed source identity and is contract-checked against it.
+
+[Workflow 05](../.github/workflows/05-prepare-source-version.yml) owns the
+separate source-version step. From synchronized `main`/`dev`, it calculates the
+next patch, opens a Draft PR to `dev` before changing source, stamps every
+Windows and WebGUI version field, dispatches the required PR validation, and
+compiles both exact candidates. The Windows candidate reuses only Cargo-managed
+dependencies and verifies its embedded version and commit. Workflow 05 leaves
+the PR Draft and cannot merge, tag, release, publish GHCR, or contact Store.
+After owner-approved promotion to `main`, Workflow 04 packages the exact
+committed version.
 
 Workflow 04's default Store review selection creates only the downloadable
 `splined-windows-store-submission` Actions artifact ZIP. It contains the
