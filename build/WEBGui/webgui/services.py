@@ -609,6 +609,7 @@ class Services:
                     core.VERSION,
                 ),
             )
+        self.catalog.invalidate_artist_projection()
         return True
 
     def start_audit_session(self):
@@ -640,6 +641,7 @@ class Services:
         app.artist_sources = tuple(core.resolve_artist_sources(r.cfg))
         app.metadata_cache.clear()
         app.appearance_cache.clear()
+        app.invalidate_artist_projection()
         app.portrait_cache.clear()
 
     def _audit_fallback_files(self):
@@ -1866,6 +1868,7 @@ class Services:
         # Artist appearances come from the refreshed catalog plus Navidrome.
         # Never retain an empty or partial artist projection across a refresh.
         self.catalog.appearance_cache.clear()
+        self.catalog.invalidate_artist_projection()
         self.catalog.metadata_cache.clear()
         self.catalog.portrait_cache.clear()
         result.update(
@@ -2333,6 +2336,7 @@ class Services:
                     )
         if refresh_embedding_stats:
             self.refresh_embedding_stats(row)
+        self.catalog.invalidate_artist_projection()
         return records
 
     def ensure_tracks(self, album_id):
@@ -2382,6 +2386,7 @@ class Services:
             for record in records:
                 record["splined_version"] = core.VERSION
                 self._upsert(db, "tracks", record, "track_key")
+        self.catalog.invalidate_artist_projection()
         refreshed = {str(item["track_key"]): item for item in records}
         return [refreshed[key] for key in track_keys if key in refreshed]
 
@@ -2643,6 +2648,7 @@ class Services:
                 ),
             )
             media.update_artist_aggregate(db, row["artist_key"])
+        self.catalog.invalidate_artist_projection()
 
     def preview(self, payload, *, publish=True):
         source = self.catalog.image_source(str(payload.get("image", "")))
@@ -3273,6 +3279,7 @@ class Services:
                     core.VERSION,
                 ),
             )
+        self.catalog.invalidate_artist_projection()
         return authoritative
 
     @serialized
@@ -4069,5 +4076,6 @@ class Services:
                 (int(enabled), int(enabled), tags.utc_now(), album_id),
             )
             media.update_artist_aggregate(db, row["artist_key"])
+        self.catalog.invalidate_artist_projection()
         self.audit("bypass" if enabled else "unbypass", album_id)
         return {"bypassed": bool(enabled)}
