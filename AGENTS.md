@@ -159,12 +159,12 @@ folder-artwork tests that reject an attempted WebP replacement.
 - Preserve operation generation authority, bounded nonblocking work, durable
   queue/nonces, honest stage/completion status, current Artist/Album evidence,
   configured COMP embedded-size authority, and cross-client DB ownership.
-- In particular, selecting a Green, verified-complete Artist must not turn its
-  NAME Red through an incomplete selection-time projection or transient
-  fallback. Genuine independent Incomplete/Error and the canonical Red
-  unmatched default retain their approved meanings and priorities.
-- Revalidation and Windows-owned field/version handling remain cross-client
-  parity concerns in PR #307, not unilateral WebGUI policy exceptions in #314.
+- Selection, focus or transient hydration must not invent a new Artist/Album
+  name classification: preserve existing verified state until current evidence
+  establishes a different result. Canonical ranking and unmatched defaults
+  retain their approved meanings.
+- Preserve Windows-owned synchronized field authority. Unresolved cross-client
+  data semantics require separate owner review, never unilateral policy edits.
 - Do not amend `AGENTS.md`, normative policy documents or protected policy
   JSON merely because Codex implements or validates a product change.
   Owner-approved **separate documentation scope** is required; report policy
