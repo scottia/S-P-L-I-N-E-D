@@ -25,6 +25,74 @@ from splined_media_database import aggregate_artist, update_artist_aggregate
 
 
 class ArtistCatalogProjectionTests(unittest.TestCase):
+    def test_artist_projection_is_linear_and_reused_per_published_generation(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "index.sqlite"
+            credentials = root / "credentials"
+            credentials.mkdir()
+            with closing(connect(database)) as db:
+                db.execute(
+                    "CREATE TABLE catalog_index_state (singleton BOOLEAN PRIMARY KEY,"
+                    "active_generation_id TEXT)"
+                )
+                db.execute("INSERT INTO catalog_index_state VALUES (TRUE,'generation-one')")
+                db.execute(
+                    "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,"
+                    "musicbrainz_artistid TEXT,primary_path TEXT,status TEXT)"
+                )
+                db.execute(
+                    "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,"
+                    "path TEXT,status TEXT,compilation INTEGER,musicbrainz_albumid TEXT)"
+                )
+                db.execute(
+                    "CREATE TABLE tracks (track_key TEXT PRIMARY KEY,album_key TEXT,path TEXT,"
+                    "title TEXT,artist_name TEXT,musicbrainz_artistid TEXT)"
+                )
+                db.execute(
+                    "CREATE TABLE compilation_track_artwork (track_path TEXT PRIMARY KEY,"
+                    "outcome TEXT)"
+                )
+                db.execute(
+                    "INSERT INTO artists VALUES ('artist','Artist','','','processed')"
+                )
+                db.execute(
+                    "INSERT INTO albums VALUES ('album','artist','/music/Artist/Album',"
+                    "'processed',0,'release')"
+                )
+                db.execute(
+                    "INSERT INTO tracks VALUES ('track','album','/music/Artist/Album/1.flac',"
+                    "'Duet','Artist & Guest','')"
+                )
+                db.execute(
+                    "INSERT INTO compilation_track_artwork VALUES "
+                    "('/MUSIC/ARTIST/ALBUM/1.FLAC','embedded-existing')"
+                )
+                db.commit()
+
+            app = PreviewApp(root, database, root, credentials, cache=root / "cache")
+            statements = []
+            with closing(app.connect()) as db:
+                db.set_trace_callback(statements.append)
+                first = app._projected_track_artists(db)
+                second = app._projected_track_artists(db)
+                app.invalidate_artist_projection()
+                third = app._projected_track_artists(db)
+
+            track_queries = [
+                statement for statement in statements
+                if "FROM tracks JOIN albums" in statement
+            ]
+            ledger_queries = [
+                statement for statement in statements
+                if "SELECT track_path FROM compilation_track_artwork" in statement
+            ]
+            self.assertIs(first, second)
+            self.assertIsNot(second, third)
+            self.assertEqual(len(track_queries), 2)
+            self.assertEqual(len(ledger_queries), 2)
+            self.assertTrue(all("EXISTS(" not in statement for statement in track_queries))
+
     def test_guarded_collaboration_credits_match_windows_presentation(self):
         self.assertEqual(
             potential_collaboration_credits("Rob Wasserman & Aaron Neville"),
