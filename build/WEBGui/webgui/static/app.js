@@ -81,7 +81,7 @@ const state = {
   sourceOrder: [],
   sourcePolicies: {}, artistSourceEnabled: [],
   sourceCounts: {artist: {}, cover: {}},
-  libraryLoading: false, artistMetadataRequest: 0, artistQuery: "",
+  libraryLoading: false, libraryReady: false, artistMetadataRequest: 0, artistQuery: "",
   activeActionId: "", artistInfoExpanded: false,
   albumOverrides: new Map(), albumOverrideRevision: 0,
   compTrackOverrides: new Map(), compTrackOverrideRevision: 0,
@@ -2748,6 +2748,7 @@ async function loadLibrary(query = "") {
     else state.albumsIndex = await api("/api/albums?view=" + state.libraryMode + "&q=" + encodeURIComponent(query));
     if (request !== state.listRequest) return;
     state.libraryLoading = false;
+    state.libraryReady = true;
     renderLibrary();
     // Artist rows already carry lazy, authenticated thumbnail URLs. Resolving
     // all Artist folders in a second bulk request defeats the viewport queue
