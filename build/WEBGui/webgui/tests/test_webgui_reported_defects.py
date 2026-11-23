@@ -535,6 +535,27 @@ class ReportedDefectTests(unittest.TestCase):
         self.assertIn("refreshVisibleCompTrackStatuses", completed)
         self.assertNotIn("/api/artist/comp-report", completed)
 
+    def test_embedding_progress_and_resolved_overrides_publish_without_blocking(self):
+        static = Path(__file__).parents[1] / "static"
+        application = (static / "app.js").read_text(encoding="utf-8")
+        operations = (static / "operations.js").read_text(encoding="utf-8")
+
+        self.assertIn("Embedding ${activeCompleted}/${activeTotal", operations)
+        self.assertIn("Embedding ${album} · ${completed}/${total", operations)
+        self.assertIn("async function pollSharedState()", operations)
+        self.assertIn("void pollSharedState();", operations)
+        self.assertIn(
+            "const targets = albumIds.filter(albumId => visible.has(albumId));",
+            operations,
+        )
+        self.assertIn("const groups = state.compReportVisible && state.compGroups.length", operations)
+        self.assertIn("const compTrackOverridden = compTracks.some", application)
+        self.assertIn("card.fullyComplete || card.albumOverridden", application)
+        self.assertIn(
+            'button.classList.toggle("opposing-override", cardState.albumOverridden)',
+            application,
+        )
+
     def test_explicit_cover_replacement_preserves_old_file_but_updates_canonical_name(self):
         with TemporaryDirectory() as directory:
             folder = Path(directory)

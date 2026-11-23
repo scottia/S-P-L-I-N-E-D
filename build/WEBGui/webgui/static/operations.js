@@ -1091,6 +1091,13 @@ function renderQueue() {
   state.embedQueue = pending.map(job => ({...job.payload, id: job.payload.album_id}));
   $("embedTab").classList.toggle("has-queued-albums", !!pending.length);
   const processing = jobs.some(job => ["running", "waiting"].includes(job.state));
+  const active = jobs.find(job => job.state === "running")
+    || jobs.find(job => ["queued", "waiting"].includes(job.state));
+  const activeTotal = Number(active?.progress?.total || active?.payload?.tracks || 0);
+  const activeCompleted = Number(active?.progress?.completed || 0);
+  const activeProgress = active
+    ? `Embedding ${activeCompleted}/${activeTotal || "?"} tracks${active.progress?.message ? ` · ${active.progress.message}` : ""}`
+    : "";
   const staged = jobs.filter(job => job.state === "staged").length;
   const paused = jobs.filter(job => job.state === "paused").length;
   const failed = jobs.filter(job => job.state === "failed").length;
@@ -1100,7 +1107,8 @@ function renderQueue() {
   $("pauseAllAlbums").textContent = state.queueControls.pause_all_albums ? "Resume All Albums" : "Pause ALL Albums";
   $("pauseAllAlbums").disabled = !jobs.some(job => ["queued", "running", "waiting", "paused"].includes(job.state)) && !state.queueControls.pause_all_albums;
   $("removeAllStaged").disabled = !jobs.length || processing;
-  const summary = jobs.length ? `${pending.length} active · ${staged} staged · ${paused} paused · ${failed} failed.` : "No albums staged for embedding.";
+  const queueCounts = jobs.length ? `${pending.length} active · ${staged} staged · ${paused} paused · ${failed} failed.` : "No albums staged for embedding.";
+  const summary = activeProgress ? `${activeProgress} · ${queueCounts}` : queueCounts;
   $("embedQueueStatus").textContent = summary;
   $("embedQueueFooter").textContent = summary;
 };
@@ -1124,8 +1132,9 @@ async function refreshOpposingAlbumThumbnails(albumIds) {
     ...(state.artist?.albums || []).map(album => album.id),
     ...(state.albumsIndex || []).map(album => album.id),
   ].filter(Boolean));
-  const targets = albumIds.filter(albumId => visible.has(albumId)
-    && state.albumOverrides.get(albumId)?.writer === "windows");
+  // Refresh both newly overridden and newly resolved Albums. Filtering only
+  // the current Windows rows left a removed override cached until a reload.
+  const targets = albumIds.filter(albumId => visible.has(albumId));
   if (!targets.length) return;
   const results = await Promise.allSettled(targets.map(albumId =>
     api("/api/album?id=" + encodeURIComponent(albumId))));
@@ -1136,6 +1145,10 @@ async function refreshOpposingAlbumThumbnails(albumIds) {
     if (state.album?.id === refreshed.id) state.album = update(state.album);
     if (Array.isArray(state.artist?.albums)) state.artist.albums = state.artist.albums.map(update);
     if (Array.isArray(state.albumsIndex)) state.albumsIndex = state.albumsIndex.map(update);
+  }
+  if (state.artist) {
+    if (typeof syncSelectedArtistStatus === "function") syncSelectedArtistStatus();
+    refreshLibraryArtistRow(state.artist.id);
   }
 }
 function assignVisibleCompTrackStatus(albumId, trackKey, value) {
@@ -1186,17 +1199,22 @@ async function refreshOpenCompReportAfterCoordination(changedPaths = []) {
   // that transition immediately, then validate only the affected tracks;
   // never block it behind a complete Artist report reload.
   renderLibrary(); renderHero(); renderCandidates(); renderReview();
-  if (state.editorMode === "artist" && state.compReportVisible && state.artist) {
-    const targets = state.compGroups.flatMap(group => (group.tracks || [])
-      .filter(track => !changed.size || changed.has(normalizedCoordinationPath(track.coordination_path)))
-      .map(track => ({albumId: group.id, trackKey: track.key})));
-    await refreshVisibleCompTrackStatuses(targets);
-    return;
-  }
   if (state.editorMode === "fallback" && state.album) {
     const targets = state.fallbackTracks
       .filter(track => !changed.size || changed.has(normalizedCoordinationPath(track.coordination_path)))
       .map(track => ({albumId: state.album.id, trackKey: track.key}));
+    await refreshVisibleCompTrackStatuses(targets);
+    return;
+  }
+  if (state.artist) {
+    // The closed report still has its precompiled COMP projection. Revalidate
+    // changed tracks there as well so resolving an override can immediately
+    // return the Artist to green without opening or reloading the report.
+    const groups = state.compReportVisible && state.compGroups.length
+      ? state.compGroups : state.compAlbums;
+    const targets = groups.flatMap(group => (group.tracks || [])
+      .filter(track => !changed.size || changed.has(normalizedCoordinationPath(track.coordination_path)))
+      .map(track => ({albumId: group.id, trackKey: track.key})));
     await refreshVisibleCompTrackStatuses(targets);
     return;
   }
@@ -1244,6 +1262,7 @@ async function refreshQueuedAlbumAfterSave(job = null) {
   renderLibrary(); renderHero(); renderSources(); renderCandidates(); renderWorkspace();
 }
 let jobsPolling = null, jobsPollAgain = false, lastPrompt = "";
+let sharedStatePolling = null;
 async function pollJobs(requestFollowUp = true) {
   if (!state.server?.authenticated || state.server?.setup_required) return;
   if (jobsPolling) {
@@ -1263,6 +1282,34 @@ async function pollJobs(requestFollowUp = true) {
   jobsPolling = task;
   try { return await task; }
   finally { if (jobsPolling === task) jobsPolling = null; }
+}
+async function pollSharedState() {
+  if (sharedStatePolling) return sharedStatePolling;
+  const task = (async () => {
+    try {
+      const [albumCoordination, compTrackCoordination, indexStatus] = await Promise.all([
+        api("/api/coordination/album-overrides").catch(() => null),
+        api("/api/coordination/comp-track-overrides").catch(() => null),
+        api("/api/library/index-status").catch(() => null),
+      ]);
+      state.indexStatus = indexStatus; renderIndexProgress();
+      const changedOverrides = applyAlbumCoordination(albumCoordination);
+      const changedTrackOverrides = applyCompTrackCoordination(compTrackCoordination);
+      if (changedOverrides.length) {
+        await refreshOpposingAlbumThumbnails(changedOverrides);
+        renderLibrary(); renderHero(); renderReview();
+      }
+      if (changedTrackOverrides.length)
+        await refreshOpenCompReportAfterCoordination(changedTrackOverrides);
+    } catch (error) {
+      auditEvent("shared-state-poll", "coordination", {
+        severity: "warning", request_status: "failed", error: error.message,
+      });
+    }
+  })();
+  sharedStatePolling = task;
+  try { return await task; }
+  finally { if (sharedStatePolling === task) sharedStatePolling = null; }
 }
 function activeIndexJob() {
   return (state.jobs || []).find(job => job.kind === "index"
@@ -1347,14 +1394,26 @@ async function performJobsPoll() {
     const priorCompActive = [...priorJobs.values()].some(job => job.kind === "comp"
       && ["queued", "running", "waiting"].includes(job.state));
     const priorStaged = new Set(state.embedQueue.map(item => item.id));
-    const [jobs, queueControls, albumCoordination, compTrackCoordination, indexStatus] = await Promise.all([
+    // Publish the authoritative queue snapshot before slower coordination and
+    // index-health reads. UI-001 requires local progress to remain visible
+    // even when shared PostgreSQL/NAS status endpoints take longer.
+    const [jobs, queueControls] = await Promise.all([
       api("/api/jobs"),
       api("/api/jobs/control-state"),
-      api("/api/coordination/album-overrides").catch(() => null),
-      api("/api/coordination/comp-track-overrides").catch(() => null),
-      api("/api/library/index-status").catch(() => null),
     ]);
-    state.jobs = jobs; state.queueControls = queueControls; state.indexStatus = indexStatus; renderQueue(); renderIndexProgress();
+    state.jobs = jobs; state.queueControls = queueControls; renderQueue();
+    const activeEmbed = jobs.find(job => job.kind === "embed-album"
+      && ["running", "queued", "waiting"].includes(job.state));
+    if (activeEmbed) {
+      const completed = Number(activeEmbed.progress?.completed || 0);
+      const total = Number(activeEmbed.progress?.total || activeEmbed.payload?.tracks || 0);
+      const album = activeEmbed.payload?.name || "Album";
+      const track = activeEmbed.progress?.message || "preparing track artwork";
+      setStatus(`Embedding ${album} · ${completed}/${total || "?"} tracks · ${track}`, "busy");
+    }
+    // Shared coordination/health is deliberately asynchronous. A slow remote
+    // state read must not hold the next 1.5-second local job-progress poll.
+    void pollSharedState();
     const currentCompActive = jobs.some(job => job.kind === "comp"
       && ["queued", "running", "waiting"].includes(job.state));
     if (typeof renderCandidateLaunchControl === "function") renderCandidateLaunchControl();
@@ -1363,15 +1422,6 @@ async function performJobsPoll() {
     // control behind when a cancellation finishes between browser polls.
     if (priorCompActive !== currentCompActive
       && (state.editorMode === "fallback" || state.compReportVisible)) renderHero();
-    const changedOverrides = applyAlbumCoordination(albumCoordination);
-    const changedTrackOverrides = applyCompTrackCoordination(compTrackCoordination);
-    if (changedOverrides.length) {
-      await refreshOpposingAlbumThumbnails(changedOverrides);
-      renderLibrary(); renderHero(); renderReview();
-    }
-    if (changedTrackOverrides.length) {
-      await refreshOpenCompReportAfterCoordination(changedTrackOverrides);
-    }
     const stagedChanged = priorStaged.size !== state.embedQueue.length
       || state.embedQueue.some(item => !priorStaged.has(item.id));
     const completedAlbums = state.jobs.filter(job => job.kind === "embed-album" && job.state === "done"

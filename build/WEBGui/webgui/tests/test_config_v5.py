@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import tempfile
+import time
 import tomllib
 import unittest
 from copy import deepcopy
@@ -77,6 +79,39 @@ class ConfigV5ParityTests(unittest.TestCase):
             self.assertEqual(splined.logging_verbosity(config), "none")
             self.assertIsNone(splined.init_debug_log(config_file, config))
             self.assertFalse((root / "logs").exists())
+
+    def test_runtime_logs_preserve_other_live_invocations(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_file = root / "config" / "config.toml"
+            config = load_example("build/WEBGui/docker/config.example.toml")
+            config["verbosity"] = "debug"
+            config["scan"]["log_dir"] = str(root / "logs")
+            config["logging"]["retention_days"] = 14
+            first = splined.init_debug_log(config_file, config)
+            self.assertIsNotNone(first)
+            assert first is not None
+            second = splined.init_debug_log(config_file, config)
+            try:
+                self.assertIsNotNone(second)
+                assert second is not None
+                self.assertNotEqual(first, second)
+                self.assertTrue(first.is_file())
+                self.assertTrue(second.is_file())
+                expired = root / "logs" / "run" / "expired.log"
+                expired.write_text("expired", encoding="utf-8")
+                old = time.time() - 15 * 86_400
+                expired.touch()
+                os.utime(expired, (old, old))
+                third = splined.init_debug_log(config_file, config)
+                self.assertIsNotNone(third)
+                assert third is not None
+                self.assertTrue(first.is_file())
+                self.assertTrue(second.is_file())
+                self.assertTrue(third.is_file())
+                self.assertFalse(expired.exists())
+            finally:
+                splined._close_runtime_log()
 
     def test_blank_artist_art_directory_uses_persistent_cache_itself(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

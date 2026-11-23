@@ -81,6 +81,31 @@ def explicit_artist_credits(
     return tuple(dict.fromkeys(credit.strip() for credit in parts if credit.strip()))
 
 
+def potential_collaboration_credits(value: str) -> tuple[str, ...]:
+    """Mirror Windows' guarded Artist-presentation credit expansion.
+
+    A real multi-value Artist tag is always separable. Human-readable ``&``
+    and comma joins are only *potential* collaborations; callers must still
+    require an independently indexed Artist before exposing either part.
+    """
+    raw = str(value or "")
+    normalized = raw.replace("\0", ARTIST_CREDIT_SEPARATOR)
+    explicit = ARTIST_CREDIT_SEPARATOR in normalized
+    parts = normalized.split(ARTIST_CREDIT_SEPARATOR)
+    if not explicit:
+        parts = [piece for credit in parts for piece in credit.split(" & ")]
+        parts = [piece for credit in parts for piece in credit.split(", ")]
+    result: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        display = part.strip()
+        identity = normalized_artist_identity(display)
+        if display and identity and identity not in seen:
+            seen.add(identity)
+            result.append(display)
+    return tuple(result) or ((raw.strip(),) if raw.strip() else ())
+
+
 def artist_credit_position(
     track_artist: str,
     artist: str,
@@ -94,6 +119,10 @@ def artist_credit_position(
         explicit_artist_credits(track_artist, separator_regex)
     ):
         if credit.casefold() == selected:
+            return position
+    selected_identity = normalized_artist_identity(artist)
+    for position, credit in enumerate(potential_collaboration_credits(track_artist)):
+        if normalized_artist_identity(credit) == selected_identity:
             return position
     return None
 
@@ -363,6 +392,7 @@ class Catalog:
     metadata_cache: dict[str, dict[str, object]] = field(default_factory=dict)
     metadata_locks: dict[str, Lock] = field(default_factory=dict, repr=False)
     appearance_cache: dict[str, dict[str, object]] = field(default_factory=dict)
+    artist_projection_cache: dict[str, dict[str, object]] | None = None
     portrait_cache: dict[str, Path] = field(default_factory=dict)
     portrait_retry_at: dict[str, float] = field(default_factory=dict)
     portrait_failures: dict[str, int] = field(default_factory=dict)
@@ -478,6 +508,7 @@ class Catalog:
         }
         with self.lock:
             self.category_overrides = loaded
+            self.artist_projection_cache = None
         return dict(loaded)
 
     def set_album_category(self, album_id: str, category: str) -> dict[str, object]:
@@ -520,6 +551,7 @@ class Catalog:
                 self.category_overrides[album_id] = category
             else:
                 self.category_overrides.pop(album_id, None)
+            self.artist_projection_cache = None
         return {
             "id": album_id,
             "category_override": category,
@@ -1055,6 +1087,10 @@ class Catalog:
         selected Artist's overview uses the separate appearance projection so
         its V/A, soundtrack, Featured, and curated Album cards remain visible.
         """
+        with self.lock:
+            cached = self.artist_projection_cache
+        if cached is not None:
+            return cached
         try:
             rows = db.execute(
                 "SELECT albums.album_key,albums.status,albums.path AS album_path,albums.compilation,"
@@ -1114,20 +1150,64 @@ class Catalog:
                 album_groups[album_key] = self.album_library_group(row)
             return album_groups[album_key]
 
-        def credits(row) -> tuple[str, ...]:
-            return tuple(dict.fromkeys(
-                credit
-                for value in indexed_track_credit_values(
-                    str(row["artist_name"] or ""),
-                    str(row["title"] or ""),
-                    str(row["path"] or ""),
-                    self.artist_separator_regex,
-                )
-                for credit in explicit_artist_credits(
+        def credit_values(row) -> tuple[str, ...]:
+            return indexed_track_credit_values(
+                str(row["artist_name"] or ""),
+                str(row["title"] or ""),
+                str(row["path"] or ""),
+                self.artist_separator_regex,
+            )
+
+        indexed_identities = {
+            normalized_artist_identity(str(row["album_artist"] or ""))
+            for row in rows
+            if not synthetic_album_artist(str(row["album_artist"] or ""))
+        }
+        indexed_identities.update(
+            normalized_artist_identity(credit)
+            for row in rows
+            for value in credit_values(row)
+            for credit in explicit_artist_credits(value, self.artist_separator_regex)
+            if not synthetic_album_artist(credit)
+        )
+
+        def projected_credits(row, eligible: set[str]) -> tuple[str, ...]:
+            mbids = re.findall(
+                r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+                r"[0-9a-f]{4}-[0-9a-f]{12}\b",
+                str(row["musicbrainz_artistid"] or ""),
+            )
+            result: list[str] = []
+            seen: set[str] = set()
+            for value in credit_values(row):
+                configured = explicit_artist_credits(
                     value, self.artist_separator_regex
                 )
-                if not synthetic_album_artist(credit)
-            ))
+                potential = potential_collaboration_credits(value)
+                authoritative = ARTIST_CREDIT_SEPARATOR in str(value).replace(
+                    "\0", ARTIST_CREDIT_SEPARATOR
+                ) or len(configured) > 1
+                anchored = any(
+                    normalized_artist_identity(credit)
+                    in indexed_identities | eligible
+                    for credit in potential
+                )
+                credits = (
+                    potential
+                    if len(potential) > 1
+                    and (authoritative or (len(mbids) != 1 and anchored))
+                    else configured
+                )
+                for credit in credits:
+                    identity = normalized_artist_identity(credit)
+                    if (
+                        identity
+                        and identity not in seen
+                        and not synthetic_album_artist(credit)
+                    ):
+                        seen.add(identity)
+                        result.append(credit)
+            return tuple(result)
 
         # Artist Albums establish selectable Artist identities. Categorized
         # V/A and OST credits can enrich those identities, but cannot create a
@@ -1138,15 +1218,36 @@ class Catalog:
                 continue
             owner = str(row["album_artist"] or "").strip()
             if owner and not synthetic_album_artist(owner):
-                eligible_identities.add(normalized_artist_identity(owner))
+                owner_parts = potential_collaboration_credits(owner)
+                independently_known = any(
+                    normalized_artist_identity(part) in indexed_identities
+                    for part in owner_parts
+                )
+                projection = (
+                    owner_parts
+                    if len(owner_parts) > 1
+                    and (
+                        ARTIST_CREDIT_SEPARATOR
+                        in owner.replace("\0", ARTIST_CREDIT_SEPARATOR)
+                        or independently_known
+                    )
+                    else (owner,)
+                )
+                eligible_identities.update(
+                    normalized_artist_identity(part) for part in projection
+                )
+        for row in rows:
+            if library_group(row) != "artist":
+                continue
             eligible_identities.update(
-                normalized_artist_identity(credit) for credit in credits(row)
+                normalized_artist_identity(credit)
+                for credit in projected_credits(row, eligible_identities)
             )
 
         result: dict[str, dict[str, object]] = {}
         for row in rows:
             group = library_group(row)
-            row_credits = credits(row)
+            row_credits = projected_credits(row, eligible_identities)
             mbids = re.findall(
                 r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
                 r"[0-9a-f]{4}-[0-9a-f]{12}\b",
@@ -1185,6 +1286,8 @@ class Catalog:
                 album_key: "complete" if states and all(states) else "incomplete"
                 for album_key, states in projection.pop("comp_track_states", {}).items()
             }
+        with self.lock:
+            self.artist_projection_cache = result
         return result
 
     @staticmethod
