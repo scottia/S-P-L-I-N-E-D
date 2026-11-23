@@ -1207,7 +1207,17 @@ function selectedArtistAggregateStatus(artist = state.artist) {
   if ((!artist.portrait && !artist.banner) || cards.some(card => card.missingArt)) conditions.push("missing_artist_art");
   if (cards.some(card => card.checkEmbedded || card.stateKey === "partial")) conditions.push("embedding_issues");
   if (cards.some(card => card.incomplete)) conditions.push("incomplete_or_error");
-  if (cards.length && cards.every(card => card.fullyComplete || card.albumOverridden)) conditions.push("all_albums_complete_or_overridden");
+  // The overview response already carries the current indexed Artist
+  // aggregate.  Album-card hydration is deliberately incremental, so an
+  // otherwise complete Artist can temporarily have no client-side completion
+  // condition even though PostgreSQL has verified it.  Preserve that indexed
+  // Green evidence until current card evidence establishes a higher-ranked
+  // Red, Yellow, or Purple condition.  This is completion evidence only: an
+  // unmatched Artist still follows the canonical default Red rule.
+  const indexedComplete = rawMediaStatusKey(artist) === "albumsComplete";
+  const cardsComplete = cards.length
+    && cards.every(card => card.fullyComplete || card.albumOverridden);
+  if (cardsComplete || indexedComplete) conditions.push("all_albums_complete_or_overridden");
   return classifyMediaState("artist", conditions).ui_status_key;
 }
 function syncSelectedArtistStatus() {
