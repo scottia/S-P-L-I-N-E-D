@@ -1268,7 +1268,7 @@ async function refreshQueuedAlbumAfterSave(job = null) {
 let jobsPolling = null, jobsPollAgain = false, lastPrompt = "";
 let sharedStatePolling = null;
 async function pollJobs(requestFollowUp = true) {
-  if (!state.server?.authenticated || state.server?.setup_required) return;
+  if (!state.server?.authenticated || state.server?.setup_required || !state.libraryReady) return;
   if (jobsPolling) {
     // A launch or write can finish its POST while the periodic poll still
     // carries the pre-action queue snapshot.  Queue one authoritative
@@ -1291,9 +1291,15 @@ async function pollSharedState() {
   if (sharedStatePolling) return sharedStatePolling;
   const task = (async () => {
     try {
+      // Initial library publication owns the PostgreSQL read budget.  Opposing
+      // COMP verification can touch shared media and is deferred while a
+      // durable index generation is active; the next idle heartbeat catches up.
+      const compTrackRequest = activeIndexJob()
+        ? Promise.resolve(null)
+        : api("/api/coordination/comp-track-overrides").catch(() => null);
       const [albumCoordination, compTrackCoordination, indexStatus] = await Promise.all([
         api("/api/coordination/album-overrides").catch(() => null),
-        api("/api/coordination/comp-track-overrides").catch(() => null),
+        compTrackRequest,
         api("/api/library/index-status").catch(() => null),
       ]);
       state.indexStatus = indexStatus; renderIndexProgress();
@@ -2585,7 +2591,8 @@ setInterval(() => {
   // A slow NAS/database poll can legitimately take longer than this timer.
   // Periodic ticks must never extend the shared poll promise indefinitely:
   // action-triggered callers await that promise before releasing UI locks.
-  if (!document.hidden && !jobsPolling) runAction(() => pollJobs(false));
+  if (!document.hidden && state.libraryReady && !jobsPolling)
+    runAction(() => pollJobs(false));
 }, 1500);
 initialize().catch(error => { document.body.className = "auth-required"; $("authError").textContent = error.message; });
 

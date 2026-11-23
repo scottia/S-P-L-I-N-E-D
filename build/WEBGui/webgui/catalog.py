@@ -392,6 +392,8 @@ class Catalog:
     metadata_cache: dict[str, dict[str, object]] = field(default_factory=dict)
     metadata_locks: dict[str, Lock] = field(default_factory=dict, repr=False)
     appearance_cache: dict[str, dict[str, object]] = field(default_factory=dict)
+    artist_projection_cache: dict[str, dict[str, object]] | None = None
+    artist_projection_generation: str = ""
     portrait_cache: dict[str, Path] = field(default_factory=dict)
     portrait_retry_at: dict[str, float] = field(default_factory=dict)
     portrait_failures: dict[str, int] = field(default_factory=dict)
@@ -404,6 +406,29 @@ class Catalog:
         default_factory=lambda: BoundedSemaphore(3), repr=False
     )
     image_key: bytes = field(default_factory=lambda: secrets.token_bytes(32),repr=False)
+
+    def invalidate_artist_projection(self) -> None:
+        """Discard the published-generation Artist credit projection.
+
+        Local writes call this at their commit boundary.  A published index
+        generation also changes the database token checked by the reader, so
+        a maintenance generation can continue without hiding its predecessor
+        or forcing every browser request to rebuild the complete projection.
+        """
+        with self.lock:
+            self.artist_projection_cache = None
+            self.artist_projection_generation = ""
+
+    @staticmethod
+    def _artist_projection_generation(db) -> str:
+        try:
+            row = db.execute(
+                "SELECT active_generation_id FROM catalog_index_state "
+                "WHERE singleton=TRUE"
+            ).fetchone()
+        except (sqlite3.OperationalError, sqlite3.DatabaseError):
+            return ""
+        return str(row["active_generation_id"] or "") if row is not None else ""
 
     def _distinct_category_path(self, value: Path | None) -> Path | None:
         """Return a category override only when it narrows Music Library.
@@ -507,6 +532,7 @@ class Catalog:
         }
         with self.lock:
             self.category_overrides = loaded
+        self.invalidate_artist_projection()
         return dict(loaded)
 
     def set_album_category(self, album_id: str, category: str) -> dict[str, object]:
@@ -549,6 +575,7 @@ class Catalog:
                 self.category_overrides[album_id] = category
             else:
                 self.category_overrides.pop(album_id, None)
+        self.invalidate_artist_projection()
         return {
             "id": album_id,
             "category_override": category,
@@ -1084,57 +1111,63 @@ class Catalog:
         selected Artist's overview uses the separate appearance projection so
         its V/A, soundtrack, Featured, and curated Album cards remain visible.
         """
+        started = time.perf_counter()
+        generation = self._artist_projection_generation(db)
+        if generation:
+            with self.lock:
+                if (
+                    self.artist_projection_cache is not None
+                    and self.artist_projection_generation == generation
+                ):
+                    LOGGER.debug(
+                        "Artist projection cache hit: generation=%s artists=%d",
+                        generation,
+                        len(self.artist_projection_cache),
+                    )
+                    return self.artist_projection_cache
+
+        # Fetch the small completion ledger once.  A correlated LOWER(path)
+        # EXISTS forced PostgreSQL to rescan that table for every Track because
+        # it could not use the track_path primary key.  Normalizing the two
+        # bounded result sets in Python is linear and preserves path semantics.
+        try:
+            completed_paths = {
+                str(row["track_path"] or "").casefold()
+                for row in db.execute(
+                    "SELECT track_path FROM compilation_track_artwork "
+                    "WHERE outcome IN ('embedded-replaced','embedded-existing')"
+                ).fetchall()
+            }
+        except (sqlite3.OperationalError, sqlite3.DatabaseError):
+            completed_paths = set()
+
+        base = (
+            "SELECT albums.album_key,albums.status,albums.path AS album_path,"
+            "albums.compilation,albums.musicbrainz_albumid,"
+            "owners.artist_name AS album_artist,tracks.artist_name,"
+            "{artist_mbid} AS musicbrainz_artistid,tracks.title,tracks.path "
+            "FROM tracks JOIN albums ON albums.album_key=tracks.album_key "
+            "JOIN artists owners ON owners.artist_key=albums.artist_key "
+            "ORDER BY albums.album_key,tracks.path COLLATE NOCASE"
+        )
         try:
             rows = db.execute(
-                "SELECT albums.album_key,albums.status,albums.path AS album_path,albums.compilation,"
-                "albums.musicbrainz_albumid,"
-                "owners.artist_name AS album_artist,tracks.artist_name,"
-                "tracks.musicbrainz_artistid,tracks.title,tracks.path,"
-                "EXISTS(SELECT 1 FROM compilation_track_artwork artwork "
-                "WHERE lower(artwork.track_path)=lower(tracks.path) "
-                "AND artwork.outcome IN ('embedded-replaced','embedded-existing')) "
-                "AS comp_complete "
-                "FROM tracks JOIN albums "
-                "ON albums.album_key=tracks.album_key "
-                "JOIN artists owners ON owners.artist_key=albums.artist_key "
-                "ORDER BY albums.album_key,tracks.path COLLATE NOCASE"
+                base.format(artist_mbid="tracks.musicbrainz_artistid")
             ).fetchall()
         except sqlite3.OperationalError:
             try:
                 # Reduced read-only fixtures can predate per-track MBIDs; the
                 # real Artist credit remains sufficient for card projection.
-                rows = db.execute(
-                    "SELECT albums.album_key,albums.status,"
-                    "albums.path AS album_path,albums.compilation,"
-                    "albums.musicbrainz_albumid,"
-                    "owners.artist_name AS album_artist,tracks.artist_name,"
-                    "'' AS musicbrainz_artistid,tracks.title,tracks.path,"
-                    "EXISTS(SELECT 1 FROM compilation_track_artwork artwork "
-                    "WHERE lower(artwork.track_path)=lower(tracks.path) "
-                    "AND artwork.outcome IN ('embedded-replaced','embedded-existing')) "
-                    "AS comp_complete "
-                    "FROM tracks JOIN albums ON albums.album_key=tracks.album_key "
-                    "JOIN artists owners ON owners.artist_key=albums.artist_key "
-                    "ORDER BY albums.album_key,tracks.path COLLATE NOCASE"
-                ).fetchall()
+                rows = db.execute(base.format(artist_mbid="''")).fetchall()
             except sqlite3.OperationalError:
-                try:
-                    # The oldest reduced fixtures also predate the COMP
-                    # artwork ledger. Treat their projected COMP tracks as
-                    # incomplete instead of dropping established Artists.
-                    rows = db.execute(
-                        "SELECT albums.album_key,albums.status,"
-                        "albums.path AS album_path,albums.compilation,"
-                        "albums.musicbrainz_albumid,"
-                        "owners.artist_name AS album_artist,tracks.artist_name,"
-                        "'' AS musicbrainz_artistid,tracks.title,tracks.path,"
-                        "0 AS comp_complete "
-                        "FROM tracks JOIN albums ON albums.album_key=tracks.album_key "
-                        "JOIN artists owners ON owners.artist_key=albums.artist_key "
-                        "ORDER BY albums.album_key,tracks.path COLLATE NOCASE"
-                    ).fetchall()
-                except sqlite3.OperationalError:
-                    return {}
+                return {}
+        rows = [
+            {
+                **dict(row),
+                "comp_complete": str(row["path"] or "").casefold() in completed_paths,
+            }
+            for row in rows
+        ]
         album_groups: dict[str, str] = {}
 
         def library_group(row) -> str:
@@ -1143,13 +1176,19 @@ class Catalog:
                 album_groups[album_key] = self.album_library_group(row)
             return album_groups[album_key]
 
+        credit_value_cache: dict[tuple[str, str, str], tuple[str, ...]] = {}
+
         def credit_values(row) -> tuple[str, ...]:
-            return indexed_track_credit_values(
+            key = (
                 str(row["artist_name"] or ""),
                 str(row["title"] or ""),
                 str(row["path"] or ""),
-                self.artist_separator_regex,
             )
+            if key not in credit_value_cache:
+                credit_value_cache[key] = indexed_track_credit_values(
+                    *key, self.artist_separator_regex
+                )
+            return credit_value_cache[key]
 
         indexed_identities = {
             normalized_artist_identity(str(row["album_artist"] or ""))
@@ -1181,8 +1220,9 @@ class Catalog:
                     "\0", ARTIST_CREDIT_SEPARATOR
                 ) or len(configured) > 1
                 anchored = any(
-                    normalized_artist_identity(credit)
-                    in indexed_identities | eligible
+                    (identity := normalized_artist_identity(credit))
+                    in indexed_identities
+                    or identity in eligible
                     for credit in potential
                 )
                 credits = (
@@ -1279,6 +1319,17 @@ class Catalog:
                 album_key: "complete" if states and all(states) else "incomplete"
                 for album_key, states in projection.pop("comp_track_states", {}).items()
             }
+        if generation:
+            with self.lock:
+                self.artist_projection_cache = result
+                self.artist_projection_generation = generation
+        LOGGER.info(
+            "Artist projection ready: generation=%s tracks=%d artists=%d seconds=%.3f",
+            generation or "unversioned",
+            len(rows),
+            len(result),
+            time.perf_counter() - started,
+        )
         return result
 
     @staticmethod
