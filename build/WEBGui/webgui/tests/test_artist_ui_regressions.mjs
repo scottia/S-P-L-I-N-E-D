@@ -1123,7 +1123,8 @@ test("an action-triggered job refresh is not dropped behind a periodic poll", as
   let jobsCalls = 0;
   const firstJobs = new Promise(resolve => { releaseFirst = resolve; });
   const state = {
-    server: {authenticated: true, setup_required: false}, jobs: [], embedQueue: [],
+    server: {authenticated: true, setup_required: false}, libraryReady: true,
+    jobs: [], embedQueue: [],
     queueControls: {}, reviewJobId: null, reviewJobState: "",
     albumOverrides: new Map(), compTrackOverrides: new Map(),
   };
@@ -1159,7 +1160,8 @@ test("periodic job ticks do not perpetually extend a slow poll", async () => {
   let jobsCalls = 0;
   const firstJobs = new Promise(resolve => { releaseFirst = resolve; });
   const state = {
-    server: {authenticated: true, setup_required: false}, jobs: [], embedQueue: [],
+    server: {authenticated: true, setup_required: false}, libraryReady: true,
+    jobs: [], embedQueue: [],
     queueControls: {}, reviewJobId: null, reviewJobState: "",
     albumOverrides: new Map(), compTrackOverrides: new Map(),
   };
@@ -1474,7 +1476,8 @@ test("COMP report colors only validated artwork as complete or repairable", () =
 test("completed COMP work chains only within an explicit Artist scope", async () => {
   async function completedReview(current, returned) {
     const state = {
-      server: {authenticated: true, setup_required: false}, embedQueue: [],
+      server: {authenticated: true, setup_required: false}, libraryReady: true,
+      embedQueue: [],
       jobs: [{...current, state: "waiting"}], reviewJobId: current.id,
       reviewJobState: "waiting",
     };
@@ -1509,7 +1512,8 @@ test("completed COMP work chains only within an explicit Artist scope", async ()
 test("PostgreSQL refresh completion reloads the library and reports exact projections", async () => {
   const job = {id: "index-1", kind: "index", state: "waiting", payload: {mode: "full"}, created_at: "2026-11-09T12:00:00Z", updated_at: "2026-11-09T12:00:00Z"};
   const state = {
-    server: {authenticated: true, setup_required: false}, embedQueue: [],
+    server: {authenticated: true, setup_required: false}, libraryReady: true,
+    embedQueue: [],
     jobs: [job], reviewJobId: job.id, reviewJobState: "waiting", libraryMode: "artists",
   };
   const loaded = [], statuses = [];
@@ -1539,7 +1543,8 @@ test("PostgreSQL refresh completion reloads the library and reports exact projec
 test("PostgreSQL refresh cancellation reports preserved published catalog", async () => {
   const job = {id: "index-1", kind: "index", state: "running", payload: {mode: "full"}, progress: {}};
   const state = {
-    server: {authenticated: true, setup_required: false}, embedQueue: [],
+    server: {authenticated: true, setup_required: false}, libraryReady: true,
+    embedQueue: [],
     jobs: [job], reviewJobId: job.id, reviewJobState: "running", libraryMode: "artists",
   };
   const statuses = [];
