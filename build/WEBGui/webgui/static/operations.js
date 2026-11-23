@@ -1134,7 +1134,10 @@ async function refreshOpposingAlbumThumbnails(albumIds) {
   ].filter(Boolean));
   // Refresh both newly overridden and newly resolved Albums. Filtering only
   // the current Windows rows left a removed override cached until a reload.
-  const targets = albumIds.filter(albumId => visible.has(albumId));
+  const targets = albumIds.filter(albumId => {
+    const event = state.albumOverrides.get(albumId);
+    return visible.has(albumId) && (!event || event.writer === "windows");
+  });
   if (!targets.length) return;
   const results = await Promise.allSettled(targets.map(albumId =>
     api("/api/album?id=" + encodeURIComponent(albumId))));
@@ -1148,7 +1151,8 @@ async function refreshOpposingAlbumThumbnails(albumIds) {
   }
   if (state.artist) {
     if (typeof syncSelectedArtistStatus === "function") syncSelectedArtistStatus();
-    refreshLibraryArtistRow(state.artist.id);
+    if (typeof refreshLibraryArtistRow === "function")
+      refreshLibraryArtistRow(state.artist.id);
   }
 }
 function assignVisibleCompTrackStatus(albumId, trackKey, value) {

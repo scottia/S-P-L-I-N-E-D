@@ -392,7 +392,6 @@ class Catalog:
     metadata_cache: dict[str, dict[str, object]] = field(default_factory=dict)
     metadata_locks: dict[str, Lock] = field(default_factory=dict, repr=False)
     appearance_cache: dict[str, dict[str, object]] = field(default_factory=dict)
-    artist_projection_cache: dict[str, dict[str, object]] | None = None
     portrait_cache: dict[str, Path] = field(default_factory=dict)
     portrait_retry_at: dict[str, float] = field(default_factory=dict)
     portrait_failures: dict[str, int] = field(default_factory=dict)
@@ -508,7 +507,6 @@ class Catalog:
         }
         with self.lock:
             self.category_overrides = loaded
-            self.artist_projection_cache = None
         return dict(loaded)
 
     def set_album_category(self, album_id: str, category: str) -> dict[str, object]:
@@ -551,7 +549,6 @@ class Catalog:
                 self.category_overrides[album_id] = category
             else:
                 self.category_overrides.pop(album_id, None)
-            self.artist_projection_cache = None
         return {
             "id": album_id,
             "category_override": category,
@@ -1087,10 +1084,6 @@ class Catalog:
         selected Artist's overview uses the separate appearance projection so
         its V/A, soundtrack, Featured, and curated Album cards remain visible.
         """
-        with self.lock:
-            cached = self.artist_projection_cache
-        if cached is not None:
-            return cached
         try:
             rows = db.execute(
                 "SELECT albums.album_key,albums.status,albums.path AS album_path,albums.compilation,"
@@ -1286,8 +1279,6 @@ class Catalog:
                 album_key: "complete" if states and all(states) else "incomplete"
                 for album_key, states in projection.pop("comp_track_states", {}).items()
             }
-        with self.lock:
-            self.artist_projection_cache = result
         return result
 
     @staticmethod

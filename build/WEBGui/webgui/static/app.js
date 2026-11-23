@@ -1111,7 +1111,7 @@ function applyCompTrackCoordination(rows) {
   return [...changed];
 }
 function compTrackOverride(track) {
-  const event = state.compTrackOverrides.get(normalizedCoordinationPath(track?.coordination_path));
+  const event = state.compTrackOverrides?.get(normalizedCoordinationPath(track?.coordination_path));
   // A coordination row can arrive before a shared/network track is readable.
   // Do not present opposing ownership until the exact embedded bytes verify.
   if (event?.writer === "windows" && event.readable !== true) return null;
@@ -1123,8 +1123,8 @@ function albumCardState(album, artist) {
   const fallback = Boolean(album.fallback || album.library_group === "fallback");
   const albumOverridden = !fallback && albumOverride(album)?.writer === "windows";
   const compTracks = fallback
-    ? (state.compGroups.find(group => group.id === album.id)?.tracks
-      || state.compAlbums.find(group => group.id === album.id)?.tracks || [])
+    ? ((state.compGroups || []).find(group => group.id === album.id)?.tracks
+      || (state.compAlbums || []).find(group => group.id === album.id)?.tracks || [])
     : [];
   const compTrackOverridden = compTracks.some(track => compTrackOverride(track)?.writer === "windows");
   const overridden = albumOverridden || compTrackOverridden;

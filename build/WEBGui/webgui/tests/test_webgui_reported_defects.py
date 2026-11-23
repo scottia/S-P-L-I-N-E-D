@@ -331,7 +331,7 @@ class ReportedDefectTests(unittest.TestCase):
         self.assertIn('["COMP track rows", [', application)
         self.assertIn("grid-template-columns:repeat(4,minmax(0,1fr))", styles)
         self.assertIn(": processed ? frames.in_process.color : mediaStatusColor(status)", application)
-        self.assertIn('const staleUnprocessed = overridden && status === "unprocessed"', application)
+        self.assertIn('const staleUnprocessed = albumOverridden && status === "unprocessed"', application)
         self.assertIn(
             'const stateKey = classifyMediaState("album", conditions).ui_status_key',
             application,
@@ -544,10 +544,8 @@ class ReportedDefectTests(unittest.TestCase):
         self.assertIn("Embedding ${album} · ${completed}/${total", operations)
         self.assertIn("async function pollSharedState()", operations)
         self.assertIn("void pollSharedState();", operations)
-        self.assertIn(
-            "const targets = albumIds.filter(albumId => visible.has(albumId));",
-            operations,
-        )
+        self.assertIn('const event = state.albumOverrides.get(albumId);', operations)
+        self.assertIn('visible.has(albumId) && (!event || event.writer === "windows")', operations)
         self.assertIn("const groups = state.compReportVisible && state.compGroups.length", operations)
         self.assertIn("const compTrackOverridden = compTracks.some", application)
         self.assertIn("card.fullyComplete || card.albumOverridden", application)

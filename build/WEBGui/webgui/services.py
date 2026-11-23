@@ -609,7 +609,6 @@ class Services:
                     core.VERSION,
                 ),
             )
-        self.catalog.artist_projection_cache = None
         return True
 
     def start_audit_session(self):
@@ -641,7 +640,6 @@ class Services:
         app.artist_sources = tuple(core.resolve_artist_sources(r.cfg))
         app.metadata_cache.clear()
         app.appearance_cache.clear()
-        app.artist_projection_cache = None
         app.portrait_cache.clear()
 
     def _audit_fallback_files(self):
@@ -1868,7 +1866,6 @@ class Services:
         # Artist appearances come from the refreshed catalog plus Navidrome.
         # Never retain an empty or partial artist projection across a refresh.
         self.catalog.appearance_cache.clear()
-        self.catalog.artist_projection_cache = None
         self.catalog.metadata_cache.clear()
         self.catalog.portrait_cache.clear()
         result.update(
@@ -2646,7 +2643,6 @@ class Services:
                 ),
             )
             media.update_artist_aggregate(db, row["artist_key"])
-        self.catalog.artist_projection_cache = None
 
     def preview(self, payload, *, publish=True):
         source = self.catalog.image_source(str(payload.get("image", "")))
@@ -3277,7 +3273,6 @@ class Services:
                     core.VERSION,
                 ),
             )
-        self.catalog.artist_projection_cache = None
         return authoritative
 
     @serialized
@@ -4074,6 +4069,5 @@ class Services:
                 (int(enabled), int(enabled), tags.utc_now(), album_id),
             )
             media.update_artist_aggregate(db, row["artist_key"])
-        self.catalog.artist_projection_cache = None
         self.audit("bypass" if enabled else "unbypass", album_id)
         return {"bypassed": bool(enabled)}
