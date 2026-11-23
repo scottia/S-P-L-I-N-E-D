@@ -370,7 +370,7 @@ See [MusicBrainz OAuth](musicbrainz-oauth.md).
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `logging.retention_days` | `14` | Retention for ordinary diagnostic files; Windows keeps only its current `<configured log directory>\run` session |
+| `logging.retention_days` | `14` | Retention for ordinary diagnostics and the independent per-invocation files under `<configured log directory>/run` |
 | `logging.database_audit` | `false` | Optional bounded database activity diagnostics under `<scan.log_dir>/db-audit`; records database opens, transaction events, and write attempts without SQL values |
 | `history.enabled` | `true` | Enables persistent completion/status authority |
 | `history.retention_days` | `0` | History retention; `0` means forever |
@@ -381,9 +381,10 @@ Every initialized invocation creates one current-run diagnostic file under:
 <scan.log_dir>/run/
 ```
 
-The next invocation clears that dedicated run directory before creating the new
-file. The filename contains verbosity, timestamp, uniqueness value, and process
-ID.
+Each invocation keeps its own file until the configured retention period
+expires. One client never removes another live client's file when Windows and
+WebGUI share a NAS log directory. The filename contains verbosity, timestamp,
+uniqueness value, and process ID.
 
 Credentials, tokens, authorization headers, client secrets, and private
 credential values must never be logged. SPLINED applies central redaction to UI

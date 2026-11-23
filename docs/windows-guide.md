@@ -148,10 +148,11 @@ storage is recommended even when the library and database are on a network.
 
 #### Log directory
 
-This is the diagnostics root. The current invocation writes one file under
-`<Log directory>/run/`; the next invocation clears that dedicated `run`
-directory before creating its own file. The log contains runtime and audit
-output at the saved verbosity and no music catalog authority.
+This is the diagnostics root. Every invocation writes an independent file
+under `<Log directory>/run/`; files remain until the configured retention
+period expires. A Windows or WebGUI client therefore cannot remove another
+live client's log when both use the same NAS directory. Logs contain runtime
+and audit output at the saved verbosity and no music catalog authority.
 
 #### Credential directory
 

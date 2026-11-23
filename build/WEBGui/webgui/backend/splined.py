@@ -1818,8 +1818,9 @@ def init_debug_log(config_file: Path, cfg: dict[str, Any]) -> Path | None:
     """Initialize the one-file-per-run diagnostic log.
 
     The historical function name is retained for compatibility with existing
-    callers/tests. Runtime logs now live under <log_dir>/run and the prior run
-    is removed at the beginning of the next invocation.
+    callers/tests. Runtime logs live under <log_dir>/run and retain independent
+    per-invocation files for the configured retention period. This matters
+    when production and a test container share the same NAS log directory.
     """
     global _RUNTIME_FAULTHANDLER_ENABLED
     global _RUNTIME_LOG_PATH, _RUNTIME_LOG_HANDLE, _RUNTIME_LOG_PENDING
@@ -1841,8 +1842,12 @@ def init_debug_log(config_file: Path, cfg: dict[str, Any]) -> Path | None:
         section(cfg, "logging").get("retention_days", 14),
         "[logging].retention_days",
     )
-    if retention_days > 0:
-        cutoff = time.time() - retention_days * 86_400
+    cutoff = (
+        time.time() - retention_days * 86_400
+        if retention_days > 0
+        else None
+    )
+    if cutoff is not None:
         for entry in log_dir.iterdir():
             try:
                 if (
@@ -1860,13 +1865,18 @@ def init_debug_log(config_file: Path, cfg: dict[str, Any]) -> Path | None:
         raise SplinedError(f"Unsafe SPLINED runtime log directory: {run_dir}")
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    # /run intentionally contains this invocation only. Never follow symlinks.
+    # Never remove another live instance's log. SMB renames an open unlinked
+    # file to .__smb*, hiding the only useful diagnostics from operators.
+    # Retention is best-effort and never follows symlinks.
     for entry in run_dir.iterdir():
         try:
-            if entry.is_symlink() or entry.is_file():
+            if (
+                cutoff is not None
+                and entry.is_file()
+                and not entry.is_symlink()
+                and entry.stat().st_mtime < cutoff
+            ):
                 entry.unlink()
-            elif entry.is_dir():
-                shutil.rmtree(entry)
         except OSError:
             # A stale diagnostic must not prevent SPLINED from starting.
             pass
