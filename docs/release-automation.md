@@ -35,6 +35,12 @@ runnable from the repository.
 - **Store action:** `LOCAL REVIEW ONLY` or the explicit `AUTO SUBMIT` option
   for a Windows/ALL release.
 
+The Store choice is required only for `COMPLETE RELEASE` with a Windows target.
+`BUILD ONLY`, `BUILD ONLY, REPORT`, and WebGUI-only runs accept neither Store
+box being checked; `AUTO SUBMIT` remains invalid for those outcomes. A Windows
+`BUILD ONLY` run still retains its local review bundle with the other build
+artifacts and never contacts Partner Center.
+
 The first job runs from `main`, fetches both branches, reports their SHAs,
 versions and tree relationship, checks out the exact `origin/dev` commit,
 resolves the complete plan, and checks for an existing release. The compile
