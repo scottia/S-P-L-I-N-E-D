@@ -46,7 +46,8 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
   audio-integrity-webgui:
     name: Audio integrity — WebGUI real artwork writer
-    if: ${{ github.event_name != 'pull_request' || github.base_ref != 'main' || github.head_ref != 'dev' }}
+    needs: scope
+    if: ${{ (github.event_name != 'pull_request' || github.base_ref != 'main' || github.head_ref != 'dev') && needs.scope.outputs.audio_webgui == 'true' }}
     runs-on: ubuntu-latest
     env:
       PYTHONPATH: .:build/WEBGui:build/WEBGui/webgui/backend
@@ -66,7 +67,8 @@ jobs:
           python -m unittest discover -s build/WEBGui/webgui/tests -p test_cross_format_cover_overwrite.py -v
   audio-integrity-windows:
     name: Audio integrity — Windows real artwork writer
-    if: ${{ github.event_name != 'pull_request' || github.base_ref != 'main' || github.head_ref != 'dev' }}
+    needs: scope
+    if: ${{ (github.event_name != 'pull_request' || github.base_ref != 'main' || github.head_ref != 'dev') && needs.scope.outputs.audio_windows == 'true' }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -87,6 +89,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       webgui: ${{ steps.scope.outputs.webgui }}
+      audio_webgui: ${{ steps.scope.outputs.audio_webgui }}
+      audio_windows: ${{ steps.scope.outputs.audio_windows }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
