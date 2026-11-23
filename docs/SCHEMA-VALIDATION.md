@@ -61,13 +61,6 @@ build/release path for the exact already-approved commit, without rerunning
 either PR writer suite solely for packaging. Workflow 01 is still technically
 manually dispatchable and has not been disabled in this documentation PR.
 
-**Issue routing:** PR #314 remains a separate WebGUI product-issue Draft;
-selection-only Green → Red is explicitly covered by `WEB-LIFE-006` while
-the canonical Red default remains valid. The owner designated former PR #314
-item #16, including any PostgreSQL-vs-Windows `splined_version` revalidation
-decision, for cross-client parity review in PR #307. No approval to mutate
-Windows-owned synchronized version fields is implied.
-
 **Validation status:** documentation/source review only. This policy update
 changes no runtime, workflow file, protected schema JSON, migration, live
 database, media, CI enforcement rules or installed-client evidence. Existing
