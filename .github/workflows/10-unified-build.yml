@@ -121,9 +121,18 @@ jobs:
             "COMPLETE RELEASE" "$COMPLETION_RELEASE" \
             "BUILD ONLY" "$COMPLETION_BUILD_ONLY" \
             "BUILD ONLY, REPORT" "$COMPLETION_REPORT_ONLY")
-          STORE_ACTION=$(select_exactly_one "MS STORE" \
-            "LOCAL REVIEW ONLY" "$STORE_LOCAL_REVIEW" \
-            "AUTO SUBMIT" "$STORE_AUTO_SUBMIT")
+          if [ "$OUTCOME" = "COMPLETE RELEASE" ] && [ "$TARGET_SELECTION" != "WEBGUI" ]; then
+            STORE_ACTION=$(select_exactly_one "MS STORE" \
+              "LOCAL REVIEW ONLY" "$STORE_LOCAL_REVIEW" \
+              "AUTO SUBMIT" "$STORE_AUTO_SUBMIT")
+          elif [ "$STORE_AUTO_SUBMIT" = true ]; then
+            echo "::error title=Store submission requires a Windows release::AUTO SUBMIT requires COMPLETE RELEASE with WINDOWS or ALL."
+            exit 1
+          elif [ "$STORE_LOCAL_REVIEW" = true ]; then
+            STORE_ACTION="LOCAL REVIEW ONLY"
+          else
+            STORE_ACTION="NOT APPLICABLE"
+          fi
 
           if [ "$GITHUB_REF" != "refs/heads/main" ]; then
             echo "::error title=Main workflow required::Workflow 10 must be dispatched from main; received '$GITHUB_REF'."
@@ -196,6 +205,7 @@ jobs:
           esac
           case "$STORE_ACTION" in
             "LOCAL REVIEW ONLY") store_submit=false ;;
+            "NOT APPLICABLE") store_submit=false ;;
             "AUTO SUBMIT")
               if [ "$OUTCOME" != "COMPLETE RELEASE" ]; then
                 echo "::error title=Store submission requires a release::AUTO SUBMIT is unavailable for BUILD ONLY, REPORT."

@@ -45,13 +45,18 @@ class UnifiedBuildWorkflowTests(unittest.TestCase):
         self.assertNotIn("      compile_mode:", dispatch)
         self.assertNotIn("release_version:", dispatch)
 
-    def test_checkbox_groups_fail_closed_before_source_resolution(self):
+    def test_required_checkbox_groups_fail_closed_before_source_resolution(self):
         validation = self.source.index("select_exactly_one()")
         main_guard = self.source.index('if [ "$GITHUB_REF" != "refs/heads/main" ]')
         self.assertLess(validation, main_guard)
         self.assertIn('TARGET_SELECTION=$(select_exactly_one "TARGET"', self.source)
         self.assertIn('OUTCOME=$(select_exactly_one "COMPLETION"', self.source)
+        self.assertIn(
+            'if [ "$OUTCOME" = "COMPLETE RELEASE" ] && [ "$TARGET_SELECTION" != "WEBGUI" ]; then',
+            self.source,
+        )
         self.assertIn('STORE_ACTION=$(select_exactly_one "MS STORE"', self.source)
+        self.assertIn('STORE_ACTION="NOT APPLICABLE"', self.source)
         self.assertIn("Check exactly one and run Workflow 10 again", self.source)
 
     def test_workflow_never_creates_or_merges_pull_requests(self):
@@ -124,6 +129,8 @@ class UnifiedBuildWorkflowTests(unittest.TestCase):
     def test_store_defaults_to_review_and_supports_explicit_auto_submit(self):
         self.assertIn("store_draft=$build_windows", self.source)
         self.assertIn('"LOCAL REVIEW ONLY") store_submit=false', self.source)
+        self.assertIn('"NOT APPLICABLE") store_submit=false', self.source)
+        self.assertIn("AUTO SUBMIT requires COMPLETE RELEASE with WINDOWS or ALL", self.source)
         self.assertIn("Submit validated Microsoft Store update", self.source)
         self.assertIn("AZURE_AD_APPLICATION_SECRET", self.source)
         self.assertIn("msstore reconfigure", self.source)
