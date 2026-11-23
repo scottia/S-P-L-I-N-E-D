@@ -35,7 +35,7 @@ The two behavioral JSONs are **protected by approved repository policy**. Their 
 | `ART-COLOR-001..006`, `ALB-COLOR-001..006` | Windows `src/media_state_policy.rs`, `ui/app.slint`; WebGUI `media_state_policy.py`, `catalog.py`, `static/app.js` and `app.css`; `webgui/tests/test_media_state_classification_policy.py`, `.github/scripts/test_media_state_rendering.py` |
 | `ART-001..003`, `SAFE-001` | Windows normalized projection in `src/media_database.rs`/`src/application.rs`; WebGUI `_artist_groups`, `_artist_identity_rows`, Artist overview and thumbnail resolution in `webgui/catalog.py`; `webgui/tests/test_artist_catalog_projection.py` |
 | `UI-001` | Windows job/progress publication in `src/application.rs` and Slint bindings; WebGUI job state in `services.py`/`server.py` and polling/rendering in `static/operations.js` |
-| `WEB-LIFE-001..009` | WebGUI-only lifecycle rules in `POLICY-REGISTER.md`: `build/WEBGui/webgui/static/app.js`, `static/operations.js`, `webgui/catalog.py`, `services.py`, `jobs.py`, `server.py`, `database.py`, and `catalog_authority.py`. PR #314 is the separate product-issue review; the owner moved issue #16 to cross-client parity PR #307. Do not infer Windows parity or authorization to update Windows-owned fields from these requirements. |
+| `WEB-LIFE-001..009` | WebGUI lifecycle requirements in `POLICY-REGISTER.md`, mapped to `build/WEBGui/webgui/static/app.js`, `static/operations.js`, `webgui/catalog.py`, `services.py`, `jobs.py`, `server.py`, `database.py`, and `catalog_authority.py`. They do not imply Windows runtime parity or permission to update synchronized fields owned by Windows. |
 | `VISUAL-001..004` | Existing status dots, card frames/banners, override provenance and COMP-track presentation; do not infer those from NAME classification |
 | `STATE-POLICY-001..004` | Same canonical ordering in both runtimes; Windows policy loader/mirror, WebGUI PostgreSQL policy revision, inventory-derived Unprocessed count |
 | `GUARD-001..003` | Owner-approved review contract in `AGENTS.md` and the register; `.github/workflows/validate.yml` runs the independent `policy-review` job and `.github/scripts/check_protected_policies.py` rejects any diff to the two protected JSON files. Required PR validation protects both contracts. Workflow 10 audits canonical contracts and exact selected release source; Workflow 01 remains manually dispatchable but is operationally superseded. Required GitHub ruleset enforcement remains a separate repository-setting check. |
@@ -92,10 +92,8 @@ audio-write safety remain independent fail-closed gates.
 **WebGUI lifecycle acceptance:** `WEB-LIFE-001..009` in the owner-approved
 Policy Register govern asynchronous selection, queue decisions, status
 ownership, bounded background work, canonical presentation and scoped
-revalidation. PR #314 covers the WebGUI implementation proposal; the
-Windows/PostgreSQL validation-marker authority topic (#16) is reserved for
-cross-client parity PR #307. A policy-documentation change does not itself
-implement any product correction or certify deployed behavior.
+revalidation. This normative documentation does not implement product
+corrections, authorize cross-client database changes, or certify deployed behavior.
 The numbered release workflows live under `.github/workflows/`; source builds and Docker packaging use `build/Windows/` and `build/WEBGui/`, not retired root application folders. [Build layout](build-layout.md).
 
 **Still to establish independently:** native Windows Rust/Slint validation against a real build, installed Artist/Album UI appearance, saved Windows credential-directory policy revision, full deployed PostgreSQL policy/palette comparison, and end-to-end migration/indexer persistence. The owner provided read-only PostgreSQL singleton evidence for media-state revision 3 and COMP revision 1 with matching listed condition/color order; this does not verify all saved fields or Windows mirrors. Prior CI passes do not prove those deployed properties. [Validation ledger](SCHEMA-VALIDATION.md).
