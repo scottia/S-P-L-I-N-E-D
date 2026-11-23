@@ -44,3 +44,32 @@ Full production music-library tests, live network shares, installed policy mirro
 - Source revisions and PostgreSQL/Windows *saved* policy revisions are different objects. A safe installed comparison reads policies without invoking seeding/updating loader functions. Do not silently replace a saved policy.
 - Neither the retired root-native Linux instructions nor old PR acceptance reports belong in active `docs/`. Current supported source roots remain `build/Windows/` and `build/WEBGui/`, with release automation in `release/`.
 - Do not request re-approval of settled Artist/Album colors. Record implementation drift, missing runtime evidence and owner decisions in the appropriate future PR.
+
+## November 23, 2026 — owner-approved lifecycle and release-governance update
+
+This ledger's November 20 references to Workflow 01 describe the *historical*
+validation setup and do not designate today's active release path. The owner
+approved `WEB-LIFE-001..009` in the normative [Policy Register](POLICY-REGISTER.md)
+to govern WebGUI selection, queue/nonce, status, background-resource, search/COMP,
+presentation and validation acceptance. See [Policy Index](POLICY-INDEX.md)
+for source mapping and [AGENTS.md](../AGENTS.md) for the agent compliance boundary.
+
+**Current process:** required PR checks in `.github/workflows/validate.yml`
+retain applicable fail-closed writer tests. Workflow 10
+(`.github/workflows/10-unified-build.yml`) is the owner-designated unified
+build/release path for the exact already-approved commit, without rerunning
+either PR writer suite solely for packaging. Workflow 01 is still technically
+manually dispatchable and has not been disabled in this documentation PR.
+
+**Issue routing:** PR #314 remains a separate WebGUI product-issue Draft;
+selection-only Green → Red is explicitly covered by `WEB-LIFE-006` while
+the canonical Red default remains valid. The owner designated former PR #314
+item #16, including any PostgreSQL-vs-Windows `splined_version` revalidation
+decision, for cross-client parity review in PR #307. No approval to mutate
+Windows-owned synchronized version fields is implied.
+
+**Validation status:** documentation/source review only. This policy update
+changes no runtime, workflow file, protected schema JSON, migration, live
+database, media, CI enforcement rules or installed-client evidence. Existing
+deployed validation limitations above remain open; new policy acceptance gates
+must be checked against product implementation separately.
