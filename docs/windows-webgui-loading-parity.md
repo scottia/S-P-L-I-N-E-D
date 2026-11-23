@@ -321,3 +321,60 @@ Before installed-client acceptance, instrument and compare:
 Native Windows compilation and installed-client testing remain required for a
 later behavior PR. This documentation review supplies source evidence and an
 implementation boundary only.
+
+## Transferred WebGUI issue: persistent earlier-version reminder
+
+PR #314 item 16 reported that WebGUI continues to display the earlier-major
+catalog reminder after a successful Full Refresh. This issue is transferred to
+this parity review because the reminder is derived from synchronized catalog
+ownership, not from WebGUI presentation alone.
+
+### Current evidence
+
+- WebGUI `upgrade_status` counts Artist, Album and track rows whose
+  `splined_version` major differs from the running application and presents the
+  Full Refresh recommendation while any such rows remain.
+- `splined_version` belongs to the Windows synchronized field set for all three
+  entity types. Full Refresh therefore protects it on Windows-managed rows,
+  just as it protects the other synchronized identity and state fields.
+- Full Refresh may revalidate file-derived PostgreSQL data on protected rows,
+  but it does not transfer field ownership or rewrite the Windows source
+  version. That is required by `WEB-LIFE-008`, `STATE-POLICY-001..004` and
+  `SAFE-001`.
+- Existing catalog-generation records establish refresh generations and
+  manifests, but they do not retain a durable, per-entity application-version
+  assertion that can safely replace Windows' source `splined_version`.
+
+### Correct ownership and synchronization approach
+
+Do not advance `splined_version` on protected Windows-owned rows. The reminder
+should instead distinguish source-version provenance from successful WebGUI
+revalidation:
+
+1. Unmanaged PostgreSQL rows may continue to use their source
+   `splined_version` as revalidation evidence.
+2. Windows-managed rows require separate PostgreSQL-owned evidence recording
+   the entity identity, completed refresh generation and validated application
+   major.
+3. That evidence may be published only after the relevant Full Refresh
+   generation completes successfully; cancelled, failed, unread or unseen rows
+   remain eligible for the reminder.
+4. The reminder may clear a protected row only when its current durable marker
+   proves successful validation for the running major. It must never infer a
+   Windows field rewrite or database ownership transfer.
+
+### Approval boundary and acceptance criteria
+
+No implementation is included in this Draft. The current PostgreSQL schema
+does not expose an approved durable marker with this exact ownership contract.
+A new marker or schema change therefore requires explicit owner approval before
+code or migration work begins.
+
+Any later implementation must demonstrate that:
+
+- Full Refresh never changes protected Windows synchronized fields;
+- a successful refresh clears only rows actually validated by that generation;
+- failed, cancelled and incomplete refreshes leave the reminder intact;
+- subsequent major-version changes require revalidation again; and
+- Windows SQLite authority, protected policy JSON and Workflow 10 governance
+  remain unchanged.
