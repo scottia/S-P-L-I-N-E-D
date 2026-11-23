@@ -1111,7 +1111,7 @@ function applyCompTrackCoordination(rows) {
   return [...changed];
 }
 function compTrackOverride(track) {
-  const event = state.compTrackOverrides.get(normalizedCoordinationPath(track?.coordination_path));
+  const event = state.compTrackOverrides?.get(normalizedCoordinationPath(track?.coordination_path));
   // A coordination row can arrive before a shared/network track is readable.
   // Do not present opposing ownership until the exact embedded bytes verify.
   if (event?.writer === "windows" && event.readable !== true) return null;
@@ -1121,11 +1121,17 @@ function albumCardState(album, artist) {
   const rawStatus = String(album.status || "unprocessed").toLowerCase();
   const status = rawMediaStatusKey(album);
   const fallback = Boolean(album.fallback || album.library_group === "fallback");
-  const overridden = !fallback && albumOverride(album)?.writer === "windows";
+  const albumOverridden = !fallback && albumOverride(album)?.writer === "windows";
+  const compTracks = fallback
+    ? ((state.compGroups || []).find(group => group.id === album.id)?.tracks
+      || (state.compAlbums || []).find(group => group.id === album.id)?.tracks || [])
+    : [];
+  const compTrackOverridden = compTracks.some(track => compTrackOverride(track)?.writer === "windows");
+  const overridden = albumOverridden || compTrackOverridden;
   // A successful opposing write proves that an otherwise-unprocessed local
   // presentation is stale. Preserve every other independent status dot, but
   // replace that stale incomplete state with the override presentation.
-  const staleUnprocessed = overridden && status === "unprocessed";
+  const staleUnprocessed = albumOverridden && status === "unprocessed";
   // A cover.webp may be previewed but cannot satisfy a static cover.*.
   // The catalog sends this evidence separately from the preview URL.
   // Retain filename detection for older, non-indexed test/presentation data.
@@ -1192,7 +1198,7 @@ function albumCardState(album, artist) {
     ? fallback ? "green-purple" : "orange-purple" : "";
   const frame = overridden ? mediaPolicyColor(activeMediaStatePolicy().override_presentation?.frame_color || "dark_grey") : bypassed ? mediaPolicyColor("yellow") : validating ? "#55c7d8" : fullyComplete ? frames.complete.color
     : checkEmbedded ? frames.thumbnail.color : processed ? frames.in_process.color : mediaStatusColor(status);
-  return {dots, frame, fullyComplete, checkEmbedded, embeddedPending, embeddedRetry, validating, mixedFrame, overridden, bypassed, missingArt, incomplete: incompleteEvidence, stateKey};
+  return {dots, frame, fullyComplete, checkEmbedded, embeddedPending, embeddedRetry, validating, mixedFrame, overridden, albumOverridden, compTrackOverridden, bypassed, missingArt, incomplete: incompleteEvidence, stateKey};
 }
 function selectedArtistAggregateStatus(artist = state.artist) {
   if (!artist) return "incomplete";
@@ -1201,7 +1207,7 @@ function selectedArtistAggregateStatus(artist = state.artist) {
   if ((!artist.portrait && !artist.banner) || cards.some(card => card.missingArt)) conditions.push("missing_artist_art");
   if (cards.some(card => card.checkEmbedded || card.stateKey === "partial")) conditions.push("embedding_issues");
   if (cards.some(card => card.incomplete)) conditions.push("incomplete_or_error");
-  if (cards.length && cards.every(card => card.fullyComplete || card.overridden)) conditions.push("all_albums_complete_or_overridden");
+  if (cards.length && cards.every(card => card.fullyComplete || card.albumOverridden)) conditions.push("all_albums_complete_or_overridden");
   return classifyMediaState("artist", conditions).ui_status_key;
 }
 function syncSelectedArtistStatus() {
@@ -1483,7 +1489,9 @@ function renderHeroContents() {
     button.dataset.compAlbum = compIds.has(album.id) ? "true" : "false";
     button.disabled = compIds.has(album.id) && state.compReportLoading;
     const cardState = albumCardState(album, artist); button.style.setProperty("--frame-color", cardState.frame);
-    button.classList.toggle("opposing-override", cardState.overridden);
+    // A COMP track override owns the dark-grey frame/dot but never greys the
+    // Curated Album thumbnail. Only an opposing whole-Album write does that.
+    button.classList.toggle("opposing-override", cardState.albumOverridden);
     button.classList.toggle("mixed-frame", !!cardState.mixedFrame);
     if (cardState.mixedFrame) {
       button.style.setProperty("--mixed-frame-a", mediaPolicyColor(cardState.mixedFrame === "green-purple" ? "green" : "orange"));

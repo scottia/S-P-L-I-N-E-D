@@ -15,14 +15,32 @@ from PIL import Image
 
 from webgui.catalog import (
     PreviewApp,
+    artist_credit_position,
     artist_display_sort_key,
     embedded_album_artwork_summary,
     normalized_artist_identity,
+    potential_collaboration_credits,
 )
 from splined_media_database import aggregate_artist, update_artist_aggregate
 
 
 class ArtistCatalogProjectionTests(unittest.TestCase):
+    def test_guarded_collaboration_credits_match_windows_presentation(self):
+        self.assertEqual(
+            potential_collaboration_credits("Rob Wasserman & Aaron Neville"),
+            ("Rob Wasserman", "Aaron Neville"),
+        )
+        self.assertEqual(
+            potential_collaboration_credits("Big & Rich"),
+            ("Big", "Rich"),
+        )
+        self.assertEqual(
+            artist_credit_position("Rob Wasserman & Aaron Neville", "Aaron Neville"),
+            1,
+        )
+        # Expansion remains potential: the catalog projection requires an
+        # independently indexed identity before exposing human-readable parts.
+
     def test_verified_album_material_overrides_stale_unprocessed_status(self):
         stale = {
             "status": "unprocessed",
@@ -632,11 +650,11 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                     [
                         (
                             "gold-rob", "gold", str(gold / "1-16 - Rob Wasserman & Aaron Neville - Song.mp3"),
-                            "Song", "Rob Wasserman; Aaron Neville", "rob-mbid; aaron-mbid",
+                            "Song", "Rob Wasserman & Aaron Neville", "rob-mbid; aaron-mbid",
                         ),
                         (
                             "gold-linda", "gold", str(gold / "1-17 - Linda Ronstadt & Aaron Neville - Duet.mp3"),
-                            "Duet", "Linda Ronstadt; Aaron Neville", "linda-mbid; aaron-mbid",
+                            "Duet", "Linda Ronstadt & Aaron Neville", "linda-mbid; aaron-mbid",
                         ),
                         (
                             "film-rob", "film", str(soundtrack / "1-01 - Rob Wasserman - Theme.mp3"),
