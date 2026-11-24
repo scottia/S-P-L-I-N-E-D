@@ -20,13 +20,14 @@ This directory documents **only the supported source in** `build/Windows/` and `
 ## Shared contracts, policy and indexing
 
 - [Approved policy register](POLICY-REGISTER.md) — **owner-authoritative** Artist/Album rankings, dots, visual safeguards and review boundaries.
+- [Shared Windows/WebGUI lifecycle](lifecycle-policy.md) — [lifecycle-policy.json](../schema/lifecycle-policy.json) common behavior outcomes, native activation requirements, separate SQLite/PostgreSQL authority, WebGUI refinements and remaining validation gates.
 - [Policy and indexer source map](POLICY-INDEX.md) — each canonical contract's actual Windows/WebGUI consumers and tests.
 - [Source validation status](SCHEMA-VALIDATION.md) — completed source checks versus outstanding native/deployed verification.
 - [Artist/Album state policy delivery](media-state-classification-policy.md) and [COMP report policy](comp-report-policy.md) — operational handling of the two protected JSON contracts. Neither creates a second rulebook.
 - [Config v5 reference](config-v5-reference.md) and [source policies/ranges](source-policies-range-types.md) — settings and candidate/artwork rules.
 - [Credentials/providers](credentials-providers.md), [MusicBrainz OAuth](musicbrainz-oauth.md) and [OAuth validation](oauth-validation.md).
 
-The sole checked-in shared contracts are `schema/media-state-classification.json`, `schema/comp-report-policy.json`, `schema/media.sql` and `schema/settings-ui.json`. They are not copied into competing Windows or WebGUI policy directories. Windows SQLite remains authoritative for the designated synchronized catalog fields; WebGUI maintains its separate PostgreSQL catalog.
+The five checked-in shared contracts are `schema/media-state-classification.json`, `schema/comp-report-policy.json`, `schema/lifecycle-policy.json`, `schema/media.sql` and `schema/settings-ui.json`. They are not copied into competing Windows or WebGUI policy directories. The new lifecycle JSON is a **declarative, proposed shared contract**, not yet loaded by either client or protected by the existing two-JSON gate. Windows SQLite remains authoritative for designated synchronized catalog fields; WebGUI maintains a separate PostgreSQL catalog. A shared policy does not itself synchronize them.
 
 ## Release and build boundaries
 

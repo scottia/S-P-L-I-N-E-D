@@ -1,0 +1,172 @@
+{
+  "schema_version": 1,
+  "policy_id": "splined-shared-lifecycle-v1",
+  "description": "Owner-directed shared behavioral acceptance for equivalent Windows Rust/Slint/SQLite and WebGUI Python/browser/PostgreSQL workflows. A normative contract, not a data transport or already-wired runtime loader.",
+  "runtimes": [
+    "windows",
+    "webgui"
+  ],
+  "application_scope": {
+    "windows": "Rust/Slint and Windows SQLite catalog",
+    "webgui": "Python/browser and PostgreSQL catalog, jobs and local coordination"
+  },
+  "contract_relationships": {
+    "webgui_refinements": "WEB-LIFE-001..009 remain WebGUI-specific refinements of matching LIFE-001..009 shared outcomes",
+    "media_state": "schema/media-state-classification.json remains the authoritative Artist/Album color and status-dot policy",
+    "comp": "schema/comp-report-policy.json remains the independent COMP policy",
+    "artwork_integrity": "AUDIO-INTEGRITY-001..006 in docs/POLICY-REGISTER.md remain binding",
+    "catalog_authority": "Windows SQLite owns designated synchronized Artist/Album/Track fields; PostgreSQL retains its separately owned operational/derived state"
+  },
+  "enforcement_state": {
+    "format": "declarative JSON source contract",
+    "windows_runtime_loader": "not implemented by this policy PR",
+    "webgui_runtime_loader": "not implemented by this policy PR",
+    "automatic_sqlite_postgresql_sync": "not provided by JSON",
+    "independent_json_protection_gate": "not yet extended to this new file; requires separate owner-reviewed change"
+  },
+  "requirements": [
+    {
+      "id": "LIFE-001",
+      "applies_to": [
+        "windows",
+        "webgui"
+      ],
+      "webgui_refinement": "WEB-LIFE-001",
+      "title": "Current operation ownership",
+      "rule": "Use client-native generations, tokens or equivalent ownership to prevent superseded search, selection, preview, report, and queued decisions from committing stale UI state.",
+      "acceptance": [
+        "The newest valid selection or operation wins even when asynchronous responses complete out of order.",
+        "A stale result cannot overwrite the current Artist, Album, artwork, report, status, or queue decision.",
+        "Safe navigation remains available; only conflicting actions are blocked."
+      ]
+    },
+    {
+      "id": "LIFE-002",
+      "applies_to": [
+        "windows",
+        "webgui"
+      ],
+      "webgui_refinement": "WEB-LIFE-002",
+      "title": "Usable catalog before secondary work",
+      "rule": "Publish already indexed/published Artist and Album presentation promptly; defer unrelated thumbnail decoding, remote metadata/provider results, coordination and full candidate inspection.",
+      "acceptance": [
+        "The initial usable list and selected overview do not await unrelated secondary work.",
+        "Equivalent direct and related-Artist navigation converge on the correct current identity.",
+        "Startup and selection responsiveness are compared against accepted measured baselines, without inventing fixed latency requirements."
+      ]
+    },
+    {
+      "id": "LIFE-003",
+      "applies_to": [
+        "windows",
+        "webgui"
+      ],
+      "webgui_refinement": "WEB-LIFE-003",
+      "title": "Bounded background work",
+      "rule": "Bound parallel discovery, thumbnail, polling, probe, search and coordination work; coalesce identical requests and supersede or cancel obsolete work using each client's mechanisms.",
+      "acceptance": [
+        "No overlapping duplicate requests or unbounded polling loops.",
+        "Background activity becomes idle or backs off and cannot starve interactive work.",
+        "Retries do not manufacture new processing or ownership events."
+      ]
+    },
+    {
+      "id": "LIFE-004",
+      "applies_to": [
+        "windows",
+        "webgui"
+      ],
+      "webgui_refinement": "WEB-LIFE-004",
+      "title": "Durable queue and decision integrity",
+      "rule": "Represent eligible discovery, selection, staged, running, review, verification and terminal states according to each client's authoritative queue. Never treat a stale or invalid decision as valid.",
+      "acceptance": [
+        "Queued or staged work has a visible next state, explicit decision, or terminal outcome; it is not indefinitely stranded behind a hidden gate.",
+        "Cancelling or changing context reconciles pending UI against authoritative durable work.",
+        "A stale or duplicate action cannot skip extra Albums, bypass nonce/token validation where required, or publish an unverified result."
+      ]
+    },
+    {
+      "id": "LIFE-005",
+      "applies_to": [
+        "windows",
+        "webgui"
+      ],
+      "webgui_refinement": "WEB-LIFE-005",
+      "title": "Phase-accurate progress and completion",
+      "rule": "Progress belongs to its active operation and reflects observed work; staging/ready, embedding, verification, successful completion, cancellation and failure remain distinct.",
+      "acceptance": [
+        "A late provider, index or coordination message cannot overwrite newer operation status.",
+        "Only verified media/artwork outcomes appear completed or GREEN; staging alone never claims embedded completion.",
+        "Where available, report current item, processed/total counts and final outcome without blocking the client."
+      ]
+    },
+    {
+      "id": "LIFE-006",
+      "applies_to": [
+        "windows",
+        "webgui"
+      ],
+      "webgui_refinement": "WEB-LIFE-006",
+      "title": "Evidence-preserving visual classification",
+      "rule": "Preserve the owner-approved independent Artist NAME, Album NAME, Album CARD dot and COMP-track contracts while switching views or incrementally hydrating details.",
+      "acceptance": [
+        "Selection, focus or transient hydration cannot discard verified indexed evidence and manufacture an unmatched RED.",
+        "Genuine incomplete/error evidence and the Red no-match default remain valid; higher-priority Yellow/Purple evidence remains authoritative.",
+        "All independently applicable Album status dots and approved frame/banner semantics are retained."
+      ]
+    },
+    {
+      "id": "LIFE-007",
+      "applies_to": [
+        "windows",
+        "webgui"
+      ],
+      "webgui_refinement": "WEB-LIFE-007",
+      "title": "Deterministic search, COMP and thumbnail authority",
+      "rule": "Keep Artist search typed to Artists, Album search typed to Albums, and selected COMP/Album decisions pinned through discovery, artwork preparation and verified write, respecting the canonical COMP policy and configured preferred embedded dimensions.",
+      "acceptance": [
+        "No stale lookup reopens a completed discovery phase or replaces an accepted selected result.",
+        "Applicable COMP or Album writes derive their embedded square image at the current configured preferred side (1200 px is the default, not a fixed policy).",
+        "No non-artwork media metadata mutation; preserve immutable source WebP and the artwork-only verification gate."
+      ]
+    },
+    {
+      "id": "LIFE-008",
+      "applies_to": [
+        "windows",
+        "webgui"
+      ],
+      "webgui_refinement": "WEB-LIFE-008",
+      "title": "Database ownership and validation provenance",
+      "rule": "Maintain Windows SQLite authority for designated synchronized Artist/Album/Track fields and PostgreSQL ownership of WebGUI-only jobs, validation, audit and coordination; lifecycle progress or a refresh is not a transfer of authority.",
+      "acceptance": [
+        "No client silently rewrites the other client's protected catalog ownership fields to clear a notice or appear complete.",
+        "Revalidation/completion notices derive only from the actual successfully validated work; cancelled, failed and unseen records are not claimed as verified.",
+        "This JSON is a behavioral contract only: it is not database synchronization transport, schema migration or a new data owner."
+      ]
+    },
+    {
+      "id": "LIFE-009",
+      "applies_to": [
+        "windows",
+        "webgui"
+      ],
+      "webgui_refinement": "WEB-LIFE-009",
+      "title": "Shared acceptance without identical implementations",
+      "rule": "Equivalent supported Windows and WebGUI workflows must meet the same outcome and failure-boundary acceptance criteria while retaining native UI, job/queue, database and cancellation implementations.",
+      "acceptance": [
+        "Focused tests cover applicable normal, delayed, stale, double-click, cancellation, restart/recovery and terminal cases.",
+        "Measure and document genuine runtime parity or deviations independently; a green unit test alone does not prove installed parity.",
+        "Reuse accepted evidence; do not rerun unrelated real-writer suites for a documentation-only change."
+      ]
+    }
+  ],
+  "activation_requirements": {
+    "runtime_consumers": "Both Windows Rust/Slint and WebGUI Python/browser must load and validate the exact shared JSON and associate applicable LIFE-001..009 outcomes with their native behavior; schema_version, policy_id, rule IDs, runtime applicability and refinements must fail closed on invalid input.",
+    "source_binding": "Each accepted LIFE-00x outcome must have a source-path and focused test mapping for the appropriate runtime. Reading a JSON file without applying its acceptance rules is not evidence of behavior enforcement.",
+    "protection_gate": "After this JSON is introduced into the accepted base, add schema/lifecycle-policy.json to the independent canonical-policy change gate, and test add/change/delete/rename rejection. Never bypass the gate to land a first version or weaken existing two-JSON coverage.",
+    "performance_and_authority": "No new startup network wait, filesystem inventory, cross-client database replication, shared SQLite/PostgreSQL schema, implicit write, or revision mirroring. Preserve Windows-owned fields and WebGUI-owned operational state.",
+    "activation_evidence": "Document green focused Rust and Python validation, relevant WebGUI/browser/Slint acceptance for changed behavior, CI, and actual deployed parity only where observed. Keep unverified client aspects open.",
+    "downstream_prs": "Only after the shared contract is promoted to the applicable current dev base and activation evidence is recorded, update Draft PRs #307 and #314 to reference LIFE-001..009; WebGUI retains WEB-LIFE-001..009 refinements; do not merge workstreams or make Windows code changes under WebGUI-only authority."
+  }
+}
