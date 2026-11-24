@@ -143,7 +143,7 @@ class ReleaseSourceVersionTests(unittest.TestCase):
             choose_workflow10_release_version(
                 "3.0.26", [(3, 0, 27)], ["3.0.27"], True
             ),
-            ("3.0.27", True),
+            ("3.0.27", False),
         )
 
     def test_release_workflows_call_shared_resolver(self) -> None:

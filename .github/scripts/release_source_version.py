@@ -63,7 +63,7 @@ def choose_workflow10_release_version(
     latest = max(active)
     latest_text = ".".join(map(str, latest))
     if latest_product_matches:
-        return latest_text, latest_text != source_version
+        return latest_text, False
 
     if source > latest and source_version not in occupied and f"v{source_version}" not in occupied:
         return source_version, False
