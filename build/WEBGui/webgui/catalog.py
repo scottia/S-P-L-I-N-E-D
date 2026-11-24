@@ -50,6 +50,7 @@ AUDIO_EXTENSIONS = {".mp3", ".flac", ".m4a", ".mp4", ".ogg", ".opus", ".wav", ".
 LOGGER = logging.getLogger("uvicorn.error")
 DEFAULT_ARTIST_SEPARATOR_REGEX = r"(?i)(?: / | feat\. | feat | ft\. | ft |; )"
 ARTIST_CREDIT_SEPARATOR = "\x1f"
+ARTIST_PROJECTION_CACHE_KEY = "webgui:artist-projection:v1"
 
 
 def _artist_credit_pattern(separator_regex: str) -> re.Pattern[str]:
@@ -394,6 +395,8 @@ class Catalog:
     appearance_cache: dict[str, dict[str, object]] = field(default_factory=dict)
     artist_projection_cache: dict[str, dict[str, object]] | None = None
     artist_projection_generation: str = ""
+    artist_projection_pending: bool = False
+    artist_projection_build_lock: Lock = field(default_factory=Lock, repr=False)
     portrait_cache: dict[str, Path] = field(default_factory=dict)
     portrait_retry_at: dict[str, float] = field(default_factory=dict)
     portrait_failures: dict[str, int] = field(default_factory=dict)
@@ -407,7 +410,7 @@ class Catalog:
     )
     image_key: bytes = field(default_factory=lambda: secrets.token_bytes(32),repr=False)
 
-    def invalidate_artist_projection(self) -> None:
+    def invalidate_artist_projection(self, *, discard_persisted: bool = True) -> None:
         """Discard the published-generation Artist credit projection.
 
         Local writes call this at their commit boundary.  A published index
@@ -418,6 +421,22 @@ class Catalog:
         with self.lock:
             self.artist_projection_cache = None
             self.artist_projection_generation = ""
+        if not discard_persisted or not isinstance(self.database, Database):
+            return
+        try:
+            with closing(self.connect()) as db, db:
+                db.execute(
+                    "DELETE FROM cache_entries WHERE cache_key=?",
+                    (ARTIST_PROJECTION_CACHE_KEY,),
+                )
+        except Exception as error:
+            # Read-only SQLite fixtures and legacy disposable schemas do not
+            # carry the WebGUI projection cache. Their normal in-memory
+            # invalidation remains authoritative.
+            LOGGER.debug(
+                "Artist projection cache invalidation unavailable: error=%s",
+                type(error).__name__,
+            )
 
     @staticmethod
     def _artist_projection_generation(db) -> str:
@@ -429,6 +448,94 @@ class Catalog:
         except (sqlite3.OperationalError, sqlite3.DatabaseError):
             return ""
         return str(row["active_generation_id"] or "") if row is not None else ""
+
+    def _artist_projection_token(self, generation: str) -> str:
+        """Bind a persisted projection to its catalog and grouping inputs."""
+        grouping = json.dumps(
+            {
+                "generation": generation,
+                "separator": self.artist_separator_regex,
+                "categories": sorted(self.category_overrides.items()),
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        return sha256(grouping.encode("utf-8")).hexdigest()
+
+    def _load_persisted_artist_projection(
+        self, db, token: str
+    ) -> dict[str, dict[str, object]] | None:
+        try:
+            row = db.execute(
+                "SELECT payload_json FROM cache_entries WHERE cache_key=?",
+                (ARTIST_PROJECTION_CACHE_KEY,),
+            ).fetchone()
+        except Exception:
+            return None
+        if row is None:
+            return None
+        try:
+            payload = json.loads(str(row["payload_json"] or "{}"))
+            if payload.get("token") != token or not isinstance(
+                payload.get("artists"), dict
+            ):
+                return None
+            result = {}
+            for identity, raw in payload["artists"].items():
+                if not isinstance(raw, dict):
+                    return None
+                projection = dict(raw)
+                projection["album_keys"] = set(projection.get("album_keys", ()))
+                projection["artist_album_keys"] = set(
+                    projection.get("artist_album_keys", ())
+                )
+                result[str(identity)] = projection
+            return result
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+
+    def _save_persisted_artist_projection(
+        self, token: str, projections: dict[str, dict[str, object]]
+    ) -> None:
+        serializable = {}
+        for identity, raw in projections.items():
+            projection = dict(raw)
+            projection["album_keys"] = sorted(projection.get("album_keys", ()))
+            projection["artist_album_keys"] = sorted(
+                projection.get("artist_album_keys", ())
+            )
+            serializable[identity] = projection
+        payload = json.dumps(
+            {"token": token, "artists": serializable},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        try:
+            with closing(self.connect()) as db, db:
+                db.execute(
+                    "INSERT INTO cache_entries"
+                    "(cache_key,cache_type,payload_json,created_at,updated_at) "
+                    "VALUES(?,?,?,?,?) ON CONFLICT(cache_key) DO UPDATE SET "
+                    "cache_type=excluded.cache_type,payload_json=excluded.payload_json,"
+                    "updated_at=excluded.updated_at",
+                    (
+                        ARTIST_PROJECTION_CACHE_KEY,
+                        "artist-projection",
+                        payload,
+                        now,
+                        now,
+                    ),
+                )
+        except Exception as error:
+            # Persistence is an optimization only. Never make the catalog
+            # unavailable because a reduced fixture or legacy cache table is
+            # read-only.
+            LOGGER.debug(
+                "Artist projection cache persistence unavailable: error=%s",
+                type(error).__name__,
+            )
+            return
 
     def _distinct_category_path(self, value: Path | None) -> Path | None:
         """Return a category override only when it narrows Music Library.
@@ -532,7 +639,10 @@ class Catalog:
         }
         with self.lock:
             self.category_overrides = loaded
-        self.invalidate_artist_projection()
+        # The persisted token includes the complete override map, so startup
+        # can reuse a projection built from the same published generation and
+        # settings instead of deleting it before the first browser request.
+        self.invalidate_artist_projection(discard_persisted=False)
         return dict(loaded)
 
     def set_album_category(self, album_id: str, category: str) -> dict[str, object]:
@@ -575,7 +685,7 @@ class Catalog:
                 self.category_overrides[album_id] = category
             else:
                 self.category_overrides.pop(album_id, None)
-        self.invalidate_artist_projection()
+        self.invalidate_artist_projection(discard_persisted=False)
         return {
             "id": album_id,
             "category_override": category,
@@ -1104,15 +1214,17 @@ class Catalog:
             by_name.setdefault(normalized_artist_identity(row["artist_name"]), []).append(row)
         return list(by_name.values())
 
-    def _projected_track_artists(self, db) -> dict[str, dict[str, object]]:
+    def _projected_track_artists(
+        self, db, *, allow_build: bool = True
+    ) -> dict[str, dict[str, object]]:
         """Project selectable Artists from Artist-library Album credits.
 
         This projection owns membership in the left Artist file list.  The
         selected Artist's overview uses the separate appearance projection so
         its V/A, soundtrack, Featured, and curated Album cards remain visible.
         """
-        started = time.perf_counter()
         generation = self._artist_projection_generation(db)
+        token = self._artist_projection_token(generation)
         if generation:
             with self.lock:
                 if (
@@ -1125,6 +1237,71 @@ class Catalog:
                         len(self.artist_projection_cache),
                     )
                     return self.artist_projection_cache
+
+            persisted = self._load_persisted_artist_projection(db, token)
+            if persisted is not None:
+                with self.lock:
+                    self.artist_projection_cache = persisted
+                    self.artist_projection_generation = generation
+                    self.artist_projection_pending = False
+                LOGGER.info(
+                    "Artist projection restored: generation=%s artists=%d",
+                    generation,
+                    len(persisted),
+                )
+                return persisted
+
+        # Startup warms this projection on one daemon thread. Interactive
+        # requests never become the cold builder, even in the small race before
+        # the warmup thread acquires the lock.
+        if not allow_build:
+            with self.lock:
+                self.artist_projection_pending = True
+                return self.artist_projection_cache or {}
+
+        # A second builder receives the currently published result instead of
+        # duplicating catalog-wide work and exhausting the PostgreSQL pool.
+        if not self.artist_projection_build_lock.acquire(blocking=False):
+            with self.lock:
+                self.artist_projection_pending = True
+                return self.artist_projection_cache or {}
+        started = time.perf_counter()
+        with self.lock:
+            self.artist_projection_pending = True
+        try:
+            result, track_count = self._build_projected_track_artists(db)
+            if generation:
+                with self.lock:
+                    self.artist_projection_cache = result
+                    self.artist_projection_generation = generation
+                self._save_persisted_artist_projection(token, result)
+            LOGGER.info(
+                "Artist projection ready: generation=%s tracks=%d artists=%d seconds=%.3f",
+                generation or "unversioned",
+                track_count,
+                len(result),
+                time.perf_counter() - started,
+            )
+            return result
+        finally:
+            with self.lock:
+                self.artist_projection_pending = False
+            self.artist_projection_build_lock.release()
+
+    def warm_artist_projection(self) -> None:
+        """Warm or restore the published Artist projection off the HTTP path."""
+        try:
+            with closing(self.connect()) as db:
+                self._projected_track_artists(db)
+        except Exception as error:
+            LOGGER.warning(
+                "Artist projection warmup unavailable: error=%s",
+                type(error).__name__,
+            )
+
+    def _build_projected_track_artists(
+        self, db
+    ) -> tuple[dict[str, dict[str, object]], int]:
 
         # Fetch the small completion ledger once.  A correlated LOWER(path)
         # EXISTS forced PostgreSQL to rescan that table for every Track because
@@ -1160,7 +1337,7 @@ class Catalog:
                 # real Artist credit remains sufficient for card projection.
                 rows = db.execute(base.format(artist_mbid="''")).fetchall()
             except sqlite3.OperationalError:
-                return {}
+                return {}, 0
         rows = [
             {
                 **dict(row),
@@ -1319,18 +1496,7 @@ class Catalog:
                 album_key: "complete" if states and all(states) else "incomplete"
                 for album_key, states in projection.pop("comp_track_states", {}).items()
             }
-        if generation:
-            with self.lock:
-                self.artist_projection_cache = result
-                self.artist_projection_generation = generation
-        LOGGER.info(
-            "Artist projection ready: generation=%s tracks=%d artists=%d seconds=%.3f",
-            generation or "unversioned",
-            len(rows),
-            len(result),
-            time.perf_counter() - started,
-        )
-        return result
+        return result, len(rows)
 
     @staticmethod
     def _virtual_artist_row(projection: dict[str, object]) -> dict[str, object]:
@@ -1999,7 +2165,9 @@ class Catalog:
                 "source already meets the ideal" if requested <= 1 else
                 "required enlargement exceeds the 200% limit"}
 
-    def artists(self, query: str) -> list[dict[str, object]]:
+    def artists(
+        self, query: str, *, nonblocking_projection: bool = False
+    ) -> list[dict[str, object]]:
         with closing(self.connect()) as db:
             rows = db.execute(
                 "SELECT artists.artist_key, artists.artist_name, artists.musicbrainz_artistid, "
@@ -2010,7 +2178,9 @@ class Catalog:
                 "GROUP BY artists.artist_key "
                 "ORDER BY artists.artist_name COLLATE NOCASE ",
             ).fetchall()
-            projected = self._projected_track_artists(db)
+            projected = self._projected_track_artists(
+                db, allow_build=not nonblocking_projection
+            )
             try:
                 status_rows = db.execute(
                     "SELECT albums.*,owners.artist_name FROM albums "
@@ -2142,6 +2312,7 @@ class Catalog:
                 ),
                 "portrait": portrait_url,
                 "has_incomplete_error": has_incomplete_error,
+                "projection_pending": self.artist_projection_pending,
             })
         return sorted(
             result,
