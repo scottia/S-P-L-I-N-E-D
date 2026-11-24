@@ -1145,7 +1145,12 @@ impl Model for LibraryUiModel {
 
     fn row_data(&self, row: usize) -> Option<Self::Data> {
         let row = self.rows.get(row)?;
-        let artwork = load_scaled_image(&row.artwork_path, self.preview_size);
+        // Slint asks for virtual rows while scrolling and during model layout.
+        // That callback must remain memory-only: filesystem metadata checks or
+        // decoding here multiply across every delegate and can block input on
+        // a network library. `library-thumbnail-needed` owns bounded hydration
+        // and republishes the row after `preload_scaled_image` fills the cache.
+        let artwork = cached_library_thumbnail(&row.artwork_path, self.preview_size);
         let icon = match row.kind.as_str() {
             "artist" => "◉",
             "folder" => "▰",
@@ -25445,6 +25450,49 @@ fn cached_scaled_image(path: &str, maximum_dimension: u32) -> Option<slint::Imag
     Some(image)
 }
 
+/// Return a library-row thumbnail from process memory without touching its
+/// backing file. File identity is established by the explicit thumbnail
+/// hydration/invalidation path before publication, never by Slint row access.
+fn cached_library_thumbnail(path: &str, maximum_dimension: u32) -> slint::Image {
+    if path.trim().is_empty() {
+        return slint::Image::default();
+    }
+    let maximum_dimension = maximum_dimension.max(1);
+    let cache_key = format!("{path}\u{1f}{maximum_dimension}");
+    if let Some(image) = IMAGE_CACHE.with(|cache| {
+        cache
+            .borrow()
+            .get(&cache_key)
+            .map(|cached| cached.image.clone())
+    }) {
+        IMAGE_MEMORY_HITS.fetch_add(1, Ordering::Relaxed);
+        return image;
+    }
+    let Some(cached_pixels) = raw_image_cache()
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(&cache_key).cloned())
+    else {
+        return slint::Image::default();
+    };
+    let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+        cached_pixels.pixels.as_ref(),
+        cached_pixels.width,
+        cached_pixels.height,
+    );
+    let image = slint::Image::from_rgba8(buffer);
+    cache_slint_image(
+        cache_key,
+        maximum_dimension,
+        CachedImage {
+            identity: cached_pixels.identity,
+            image: image.clone(),
+        },
+    );
+    IMAGE_MEMORY_HITS.fetch_add(1, Ordering::Relaxed);
+    image
+}
+
 fn cache_slint_image(cache_key: String, maximum_dimension: u32, cached: CachedImage) {
     IMAGE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -25826,6 +25874,45 @@ mod tests {
         assert!(!root.starts_with(&config.scan.temporary_cache_dir));
         assert_eq!(NAVIDROME_ARTIST_DOWNLOAD_LIMIT, 4);
         assert_eq!(NAVIDROME_ALBUM_DOWNLOAD_LIMIT, 6);
+    }
+
+    #[test]
+    fn virtual_library_rows_never_decode_files_during_row_access() {
+        let directory = tempfile::tempdir().unwrap();
+        let artwork = directory.path().join("library-row.png");
+        image::RgbaImage::from_pixel(24, 24, image::Rgba([20, 80, 160, 255]))
+            .save(&artwork)
+            .unwrap();
+        let model = super::LibraryUiModel {
+            rows: vec![splined_core::application::LibraryRow {
+                key: "artist".to_string(),
+                primary: "Artist".to_string(),
+                secondary: "1 Album".to_string(),
+                status: "albumsComplete".to_string(),
+                artwork_path: artwork.to_string_lossy().into_owned(),
+                kind: "artist".to_string(),
+                depth: 0,
+                expanded: false,
+                selected: false,
+                eligible: true,
+                album_count: 1,
+            }],
+            preview_size: 64,
+            embed_locked_keys: HashSet::new(),
+        };
+
+        let decodes = super::IMAGE_FILE_DECODES.load(Ordering::Relaxed);
+        let cold = slint::Model::row_data(&model, 0).unwrap();
+        assert!(!cold.has_artwork);
+        assert_eq!(
+            super::IMAGE_FILE_DECODES.load(Ordering::Relaxed),
+            decodes,
+            "virtual row access must not decode its backing file"
+        );
+
+        assert!(preload_scaled_image(&artwork.to_string_lossy(), 64));
+        let warm = slint::Model::row_data(&model, 0).unwrap();
+        assert!(warm.has_artwork);
     }
 
     #[test]

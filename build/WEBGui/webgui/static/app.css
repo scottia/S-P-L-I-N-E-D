@@ -136,11 +136,11 @@ html[data-theme=light] .library-row .status-orbit.selected,html[data-theme=light
 .album-card.windows-card .album-card-picture img{width:100%;height:100%;object-fit:contain;aspect-ratio:auto;margin:0}
 .album-card-picture .album-placeholder{height:100%;width:100%;aspect-ratio:auto}
 .album-status-dots{position:absolute;z-index:2;right:1px;top:0;display:flex;flex-direction:column;align-items:center;gap:0;font-size:13px;line-height:15px;text-shadow:0 0 2px #000}
-.album-type-banner .album-staged-indicator{position:absolute;left:50%;top:2px;transform:translateX(-50%);writing-mode:horizontal-tb;color:#ffad32;font-size:15px;line-height:15px;text-shadow:0 0 2px #000;animation:staged-blink 1s steps(2,start) infinite}
+.album-type-banner .album-staged-indicator{position:absolute;left:50%;top:2px;transform:translateX(-50%);writing-mode:horizontal-tb;color:var(--staged-indicator-a,#ffad32);font-size:15px;line-height:15px;text-shadow:0 0 2px #000;animation:staged-blink 1s steps(2,start) infinite}
 .candidate-toolbar #bypassButton,.candidate-toolbar #uploadArtwork{min-width:58px;text-align:center}
 .review-actions #embedBatchButton.staged{background:#59616a;border-color:#77818c;color:#e3e7eb;filter:saturate(.25)}
-@keyframes staged-blink{50%{color:#ff4b36;opacity:.45}}
-@media(prefers-reduced-motion:reduce){.album-type-banner .album-staged-indicator{animation:none;color:#ff4b36}}
+@keyframes staged-blink{50%{color:var(--staged-indicator-b,#a66bff)}}
+@media(prefers-reduced-motion:reduce){.album-type-banner .album-staged-indicator{animation:none;color:var(--staged-indicator-b,#a66bff)}}
 .album-card.windows-card strong{display:block;min-height:26px;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center;font-size:13px;line-height:25px;color:var(--text)}
 .album-card-foot{display:flex;align-items:center;justify-content:space-between;white-space:pre;color:var(--yellow);font-size:12px;font-weight:800;overflow:hidden}
 .album-status-key{position:absolute;z-index:12;left:0;bottom:calc(100% + 4px);width:min(1240px,calc(100vw - 48px));max-height:min(350px,55vh);padding:10px;background:#050608;color:#f1f3f4;border:1px solid var(--cyan);border-radius:6px;overflow:auto;box-shadow:0 10px 30px #000b}
