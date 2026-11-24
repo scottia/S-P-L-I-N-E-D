@@ -60,39 +60,35 @@ channel and does not require package identity.
 
 ## Store release and update package
 
-`01. Full Release - Build Selected Target and Publish` is the only workflow that
-creates a release version and numeric tag. Its Store modes are both off by
-default. For Windows or All, choose **Submit Update/No Draft** only when
-Workflow 01 should contact Partner Center and submit for certification. Choose
-**Review Bundle/No Submit** to retain both the package-only MSIX artifact and a
-complete review bundle containing that MSIX, cumulative Highlights, and audit
-JSON. Review mode authenticates only to read the last published Store baseline;
-it never stages a draft or submits for certification. The run stops before
-release work unless **Create release now** is selected. Owner release policy
-also requires **Extended Windows
-validation** before automated Store submission; Workflow 01 rejects a submitting Store choice without that option enabled, before creating release metadata. The Windows
-job performs one clean x64
-build, uses that exact executable for the Portable ZIP and Store MSIX,
-and validates both before the workflow may create the numeric tag. WebGUI /
-WebGUI/Python-only runs cannot select a Store mode.
+[Workflow 22 — Windows Build & Microsoft Store](../.github/workflows/22-windows-build-store.yml)
+owns Windows packaging and Store submission. Its standard **BUILD ONLY** path
+consumes an approved Workflow 21 candidate and always produces the portable
+ZIP, unsigned production MSIX, isolated development-package validation, and a
+complete offline local review bundle. Both **PARTIAL UPDATE** and **FULL SOURCE**
+use the same final executable for the portable and Store packages.
 
-Workflow 10 defaults to **LOCAL REVIEW ONLY**. Its downloadable Actions ZIP is
-assembled from the validated MSIX and generated release context without
-Partner Center authentication or lookup. The
-bundle contains the unsigned MSIX, bounded Highlights,
-`STORE-SUBMISSION.json`, and `release-context.json`; its audit records that
-Partner Center was not contacted and no Store write occurred. This lets a
-maintainer test and correct the package before manually uploading the final
-MSIX while any existing Store draft remains untouched. Workflow 10 never
-contacts Partner Center in `BUILD ONLY, REPORT` or `LOCAL REVIEW ONLY` mode.
+The local review bundle contains the unsigned MSIX, bounded Highlights,
+`STORE-SUBMISSION.json`, and `release-context.json`. It requires no Store
+credentials, CLI installation, authentication, baseline query, staging, draft
+modification, or certification submission. Its audit explicitly records that
+Partner Center was not contacted. An existing pending submission therefore
+cannot block a normal Windows build.
 
-For a confirmed Windows/ALL **COMPLETE RELEASE**, Workflow 10 also exposes the
-explicit **AUTO SUBMIT** choice. That path requires all four existing Partner
-Center secrets, authenticates only after the GitHub release succeeds, resolves
-the last published Store baseline, retains a separate automatic-submission
-audit artifact, and submits the exact validated MSIX and Highlights for
-certification. Missing credentials, an unresolved Store submission, or any
-earlier build/publication failure stops submission.
+**BUILD ONLY, REPORT** validates the approved candidate and proposed build,
+cache, packaging, and Store-readiness plan without compiling or packaging.
+
+[Workflow 24 — Complete Release & Publication](../.github/workflows/24-complete-release.yml)
+later publishes the previously validated portable artifact and reports MSIX
+readiness. It never submits to Partner Center.
+
+After the corresponding GitHub release is published, run Workflow 22 with
+**SUBMIT EXISTING MSIX** and **AUTO MSIX SUBMISSION** to request Store
+publication. This path requires the exact originating Windows build run ID,
+verifies its build manifest, SHA-256 values, candidate commit and published
+numeric tag, then waits for explicit protected-environment approval. Only then
+does it authenticate, resolve the last published Store baseline, generate
+cumulative Highlights and submit the exact previously validated MSIX. Cargo,
+portable packaging and MSIX packaging are not present in the submission path.
 
 The production layout is created directly from the Partner Center manifest and
 the same version/commit-bound binaries used by the Portable ZIP. It updates
@@ -165,21 +161,17 @@ detector.
 
 The public listing is already live at the
 [official Microsoft Store URL](https://apps.microsoft.com/detail/9p8g4gmbbvbs?hl=en-US&gl=US).
-For a normal future Store update, maintainers choose **Submit Update/No Draft**
-and confirm the release in the corresponding
-`01. Full Release - Build Selected Target and Publish` run. Choose **Review
-Bundle/No Submit** instead when the package and generated Store metadata will
-be reviewed and uploaded manually. Enable **Extended Windows validation** before automated Store
-submission; this remains a required owner release-policy step in addition to
-the existing release and Store-mode confirmations. After selected build QA,
-the workflow creates the numeric tag, renders GitHub notes and concise Store
-Highlights with the same git-cliff 2.14.2 policy, and publishes the GitHub
-Release and GHCR. Submit mode then stages and submits the exact validated MSIX
-to the existing product with Store ID `9P8G4GMBBVBS`. It retrieves the pending
-submission after package staging, preserves all existing package/listing
-metadata, and changes only the en-US `BaseListing.ReleaseNotes` field before
-submission. Review mode stops after uploading both artifacts. Actions reports
-the Store API status without waiting indefinitely for certification.
+For a normal future Store update, maintainers choose **SUBMIT EXISTING MSIX**
+only after the exact Windows build has been published through Workflow 24.
+First run Workflow 22 in its standard local-review build mode, inspect the
+downloadable package and audit bundle, and publish the corresponding release
+without Store access. Then dispatch Workflow 22 again with **SUBMIT EXISTING
+MSIX**, the exact prior Windows build run ID, and **AUTO MSIX SUBMISSION**.
+The protected submission approval and existing Store credential requirements
+remain additional release-policy boundaries. Submit mode stages and submits the
+already validated MSIX to Store ID `9P8G4GMBBVBS`, preserves existing package
+and listing metadata, and changes only the en-US release-notes field before
+certification. Actions reports the Store API status without waiting indefinitely.
 
 GitHub notes cover the immediately previous numeric Git tag through the new
 release. Store Highlights instead cover the last package actually published by
@@ -193,20 +185,17 @@ machine-readable application record and verifies the retrieved submission
 against `lastPublishedApplicationSubmission`.
 The 1,500-character Store limit is enforced without silent truncation.
 
-The Actions-only `splined-windows-store-submission` artifact preserves the
-exact MSIX, `STORE-HIGHLIGHTS.txt`, and `STORE-SUBMISSION.json` audit record for
-recovery. It is generated for both Workflow 01 Store modes; the package-only
-`splined-windows-store-package` artifact remains available separately. Store
-history lookup or publication requires `AZURE_AD_APPLICATION_CLIENT_ID`,
+The Actions-only `splined-windows-release` artifact preserves the exact MSIX,
+offline review files, build manifest, checksums and candidate provenance for
+publication or submission recovery. Store history lookup or publication
+requires `AZURE_AD_APPLICATION_CLIENT_ID`,
 `AZURE_AD_APPLICATION_SECRET`,
 `AZURE_AD_TENANT_ID`, and `SELLER_ID` as GitHub Actions secrets; missing values
 fail clearly. Selecting **Review Bundle/No Submit** permits authentication and
 read-only published-history lookup but performs no staging or submission.
-Leaving both Store modes off performs no Partner Center authentication, history
-lookup, staging, audit-bundle generation, or Store API submission work. Workflow 01
-still builds, validates, smoke-tests, and uploads
-the unsigned `splined-windows-store-package` artifact on every Windows/All run
-for manual submission. Use
+Standard Workflow 22 builds perform no Partner Center authentication, history
+lookup, staging, or Store API submission. They always retain the unsigned MSIX
+and offline review bundle. Use
 `02. Store Recovery - Tagged Draft or Update` when an existing tag needs
 Store publication or a rebuilt package. See
 [Release automation](release-automation.md).

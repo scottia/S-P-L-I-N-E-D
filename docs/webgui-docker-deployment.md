@@ -10,7 +10,7 @@ it does not independently certify runtime migration or shared policy parity.
 - [Config v5 example](../build/WEBGui/docker/config.example.toml)
 - [WebGUI Dockerfile](../build/WEBGui/Dockerfile)
 - [Shared SQL and behavioral contracts](../schema)
-- [Workflow 01 build map](build-layout.md)
+- [Workflows 21–24 build and publication map](build-layout.md)
 
 The Compose file under `build/WEBGui/docker/` resolves its Docker
 **build context `../../..` to the repository root**, because the image

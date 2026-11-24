@@ -1,0 +1,503 @@
+name: 21. Release Preparation
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_all:
+        description: "TARGET — ALL (default). Choose exactly one target."
+        default: true
+        type: boolean
+      target_windows:
+        description: "TARGET — WINDOWS."
+        default: false
+        type: boolean
+      target_webgui:
+        description: "TARGET — PYTHON/WEBGUI."
+        default: false
+        type: boolean
+      completion_report_only:
+        description: "BUILD ONLY, REPORT (default): audit and stop without creating a candidate. Choose exactly one completion."
+        default: true
+        type: boolean
+      completion_prepare_candidate:
+        description: "PREPARE RELEASE CANDIDATE: require approval and retain the exact candidate source and manifest."
+        default: false
+        type: boolean
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: splined-release-preparation-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  resolve-plan:
+    name: Resolve source, version and release plan
+    runs-on: ubuntu-latest
+    outputs:
+      target: ${{ steps.plan.outputs.target }}
+      prepare_candidate: ${{ steps.plan.outputs.prepare_candidate }}
+      main_sha: ${{ steps.plan.outputs.main_sha }}
+      source_sha: ${{ steps.plan.outputs.source_sha }}
+      source_relation: ${{ steps.plan.outputs.source_relation }}
+      source_version: ${{ steps.plan.outputs.source_version }}
+      release_version: ${{ steps.plan.outputs.release_version }}
+      auto_stamp: ${{ steps.plan.outputs.auto_stamp }}
+      compile_mode: ${{ steps.plan.outputs.compile_mode }}
+      existing_release: ${{ steps.plan.outputs.existing_release }}
+      started_epoch: ${{ steps.plan.outputs.started_epoch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Resolve exact reviewed source and version
+        id: plan
+        shell: bash
+        env:
+          TARGET_ALL: ${{ inputs.target_all }}
+          TARGET_WINDOWS: ${{ inputs.target_windows }}
+          TARGET_WEBGUI: ${{ inputs.target_webgui }}
+          REPORT_ONLY: ${{ inputs.completion_report_only }}
+          PREPARE_CANDIDATE: ${{ inputs.completion_prepare_candidate }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          STARTED_EPOCH=$(date +%s)
+
+          select_exactly_one() {
+            local group="$1"
+            shift
+            local selected=""
+            local count=0
+            while [ "$#" -gt 0 ]; do
+              local label="$1"
+              local checked="$2"
+              shift 2
+              if [ "$checked" = true ]; then
+                selected="$label"
+                count=$((count + 1))
+              fi
+            done
+            if [ "$count" -ne 1 ]; then
+              echo "::error title=Select exactly one $group option::$group has $count checked options."
+              return 1
+            fi
+            printf '%s' "$selected"
+          }
+
+          TARGET=$(select_exactly_one TARGET \
+            ALL "$TARGET_ALL" WINDOWS "$TARGET_WINDOWS" WEBGUI "$TARGET_WEBGUI")
+          COMPLETION=$(select_exactly_one COMPLETION \
+            REPORT "$REPORT_ONLY" PREPARE "$PREPARE_CANDIDATE")
+
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error title=Main workflow required::Workflow 21 must be dispatched from main; received '$GITHUB_REF'."
+            exit 1
+          fi
+
+          git fetch --force origin \
+            main:refs/remotes/origin/main \
+            dev:refs/remotes/origin/dev
+          git fetch --force --tags origin
+          MAIN_SHA=$(git rev-parse origin/main)
+          SOURCE_SHA=$(git rev-parse origin/dev)
+          SOURCE_RELATION=$(python3 .github/scripts/resolve_workflow10_source_relation.py "$MAIN_SHA" "$SOURCE_SHA")
+          MAIN_VERSION=$(git show origin/main:build/Windows/Cargo.toml | sed -n '0,/^version = /s/^version = "\([0-9][0-9.]*\)"/\1/p')
+          git checkout --detach "$SOURCE_SHA"
+          SOURCE_VERSION=$(python3 .github/scripts/source_version.py current)
+
+          LATEST_TAG=$(python3 - <<'PY'
+          import re
+          import subprocess
+
+          numeric = []
+          for tag in subprocess.check_output(["git", "tag", "--list"], text=True).splitlines():
+              match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", tag)
+              if match:
+                  numeric.append((tuple(map(int, match.groups())), tag))
+          print(max(numeric)[1] if numeric else "")
+          PY
+          )
+          LATEST_PRODUCT_MATCH=false
+          if [ -n "$LATEST_TAG" ]; then
+            tagged_root=$(mktemp -d)
+            git archive "$LATEST_TAG" build/Windows build/WEBGui schema | tar -x -C "$tagged_root"
+            current_digest=$(python3 .github/scripts/source_version.py product-digest)
+            tagged_digest=$(python3 .github/scripts/source_version.py --root "$tagged_root" product-digest)
+            rm -rf "$tagged_root"
+            if [ "$current_digest" = "$tagged_digest" ]; then
+              LATEST_PRODUCT_MATCH=true
+            fi
+          fi
+
+          read -r RELEASE_VERSION AUTO_STAMP < <(
+            SOURCE_VERSION="$SOURCE_VERSION" LATEST_PRODUCT_MATCH="$LATEST_PRODUCT_MATCH" python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+          import subprocess
+          import sys
+
+          sys.path.insert(0, str(Path(".github/scripts").resolve()))
+          from release_source_version import choose_workflow10_release_version
+
+          tags = subprocess.check_output(["git", "tag", "--list"], text=True).splitlines()
+          versions = []
+          for tag in tags:
+              match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", tag)
+              if match:
+                  versions.append(tuple(map(int, match.groups())))
+          version, stamp = choose_workflow10_release_version(
+              os.environ["SOURCE_VERSION"],
+              versions,
+              tags,
+              os.environ["LATEST_PRODUCT_MATCH"] == "true",
+          )
+          print(version, str(stamp).lower())
+          PY
+          )
+
+          if [ "${MAIN_VERSION:-}" = "$SOURCE_VERSION" ]; then
+            COMPILE_MODE="PARTIAL UPDATE"
+          else
+            COMPILE_MODE="FULL SOURCE"
+          fi
+          EXISTING_RELEASE=false
+          if gh release view "$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            EXISTING_RELEASE=true
+          fi
+
+          {
+            echo "target=$TARGET"
+            echo "prepare_candidate=$([ "$COMPLETION" = PREPARE ] && echo true || echo false)"
+            echo "main_sha=$MAIN_SHA"
+            echo "source_sha=$SOURCE_SHA"
+            echo "source_relation=$SOURCE_RELATION"
+            echo "source_version=$SOURCE_VERSION"
+            echo "release_version=$RELEASE_VERSION"
+            echo "auto_stamp=$AUTO_STAMP"
+            echo "compile_mode=$COMPILE_MODE"
+            echo "existing_release=$EXISTING_RELEASE"
+            echo "started_epoch=$STARTED_EPOCH"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Workflow 21 release plan"
+            echo
+            echo "- Selected target: \`$TARGET\`"
+            echo "- Completion: \`$COMPLETION\`"
+            echo "- Main commit/version: \`$MAIN_SHA\` / \`${MAIN_VERSION:-unknown}\`"
+            echo "- Selected dev source/version: \`$SOURCE_SHA\` / \`$SOURCE_VERSION\`"
+            echo "- Source relation: \`$SOURCE_RELATION\`"
+            echo "- Release version: \`$RELEASE_VERSION\`"
+            echo "- Temporary version stamp: \`$AUTO_STAMP\`"
+            echo "- Recommended compilation mode: \`$COMPILE_MODE\`"
+            echo "- Existing GitHub Release: \`$EXISTING_RELEASE\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  audit:
+    name: Audit source, policies and readiness
+    needs: resolve-plan
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      validation_run_id: ${{ steps.validation.outputs.run_id }}
+      validation_commit: ${{ steps.validation.outputs.commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.resolve-plan.outputs.source_sha }}
+          fetch-depth: 0
+
+      - name: Validate synchronized source and canonical contracts
+        shell: bash
+        env:
+          PYTHONPATH: .:build/WEBGui:build/WEBGui/webgui/backend
+        run: |
+          set -euo pipefail
+          test "$(python3 .github/scripts/source_version.py current)" = "${{ needs.resolve-plan.outputs.source_version }}"
+          python3 .github/scripts/validate_release_policy_contracts.py
+
+      - name: Resolve successful required-validation provenance
+        id: validation
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.resolve-plan.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          source_tree=$(git show -s --format=%T "$SOURCE_SHA")
+          candidates=("$SOURCE_SHA")
+          while read -r parent; do
+            if [ "$(git show -s --format=%T "$parent")" = "$source_tree" ]; then
+              candidates+=("$parent")
+            fi
+          done < <(git show -s --format=%P "$SOURCE_SHA" | tr ' ' '\n')
+          validation_run=""
+          validation_commit=""
+          for candidate in "${candidates[@]}"; do
+            validation_run=$(gh api -X GET "repos/$GITHUB_REPOSITORY/actions/runs" \
+              -f head_sha="$candidate" -f event=pull_request -f per_page=100 \
+              --jq '.workflow_runs[] | select(.name == "Validate supported runtimes" and .status == "completed" and .conclusion == "success") | .id' | head -n 1)
+            if [ -n "$validation_run" ]; then
+              validation_commit="$candidate"
+              break
+            fi
+          done
+          if [ -z "$validation_run" ]; then
+            echo "::error title=Required validation provenance unavailable::No successful pull-request validation run was found for the exact source or a same-tree promotion parent."
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$validation_run/jobs?per_page=100" > /tmp/source-validation-jobs.json
+          python3 - <<'PY'
+          import json
+          jobs = json.load(open('/tmp/source-validation-jobs.json', encoding='utf-8'))['jobs']
+          if not jobs:
+              raise SystemExit('Required validation run has no jobs')
+          bad = [job for job in jobs if job['status'] != 'completed' or job['conclusion'] not in {'success', 'skipped'}]
+          if bad:
+              raise SystemExit('Required validation run contains an unsuccessful job: ' + ', '.join(job['name'] for job in bad))
+          PY
+          echo "run_id=$validation_run" >> "$GITHUB_OUTPUT"
+          echo "commit=$validation_commit" >> "$GITHUB_OUTPUT"
+
+      - name: Report Microsoft Store credential readiness without authentication
+        id: credentials
+        shell: bash
+        env:
+          AZURE_AD_APPLICATION_CLIENT_ID: ${{ secrets.AZURE_AD_APPLICATION_CLIENT_ID }}
+          AZURE_AD_APPLICATION_SECRET: ${{ secrets.AZURE_AD_APPLICATION_SECRET }}
+          AZURE_AD_TENANT_ID: ${{ secrets.AZURE_AD_TENANT_ID }}
+          SELLER_ID: ${{ secrets.SELLER_ID }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in AZURE_AD_APPLICATION_CLIENT_ID AZURE_AD_APPLICATION_SECRET AZURE_AD_TENANT_ID SELLER_ID; do
+            if [ -z "${!name:-}" ]; then missing+=("$name"); fi
+          done
+          if [ "${#missing[@]}" -eq 0 ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Microsoft Store credentials not ready::Missing credential names: ${missing[*]}. No authentication was attempted."
+          fi
+
+      - name: Publish audit summary
+        shell: bash
+        run: |
+          {
+            echo "## Workflow 21 audit"
+            echo
+            echo "- Source and version audit: \`passed\`"
+            echo "- Canonical policy/schema contracts: \`passed\`"
+            echo "- Required source validation: must be successful for exact commit \`${{ needs.resolve-plan.outputs.source_sha }}\` before candidate approval"
+            echo "- Required validation provenance: run \`${{ steps.validation.outputs.run_id }}\` for exact/same-tree commit \`${{ steps.validation.outputs.commit }}\`"
+            echo "- Microsoft Store credential readiness: \`${{ steps.credentials.outputs.ready }}\`"
+            echo "- Compilation, packaging, tagging, publication and Partner Center access: \`not performed\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  approve-candidate:
+    name: Approve immutable release candidate
+    needs: [resolve-plan, audit]
+    if: ${{ needs.resolve-plan.outputs.prepare_candidate == 'true' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: workflow-21-release-candidate-approval
+    steps:
+      - name: Record approval boundary
+        run: |
+          {
+            echo "## Release candidate approved"
+            echo
+            echo "- Source: \`${{ needs.resolve-plan.outputs.source_sha }}\`"
+            echo "- Version: \`${{ needs.resolve-plan.outputs.release_version }}\`"
+            echo "- Target: \`${{ needs.resolve-plan.outputs.target }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  prepare-candidate:
+    name: Retain exact approved release candidate
+    needs: [resolve-plan, audit, approve-candidate]
+    if: ${{ needs.resolve-plan.outputs.prepare_candidate == 'true' && needs.approve-candidate.result == 'success' }}
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.candidate.outputs.version }}
+      commit: ${{ steps.candidate.outputs.commit }}
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.resolve-plan.outputs.source_sha }}
+          fetch-depth: 0
+
+      - name: Create exact candidate bundle and manifest
+        id: candidate
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ needs.resolve-plan.outputs.source_sha }}
+          MAIN_SHA: ${{ needs.resolve-plan.outputs.main_sha }}
+          SOURCE_VERSION: ${{ needs.resolve-plan.outputs.source_version }}
+          RELEASE_VERSION: ${{ needs.resolve-plan.outputs.release_version }}
+          SOURCE_RELATION: ${{ needs.resolve-plan.outputs.source_relation }}
+          TARGET: ${{ needs.resolve-plan.outputs.target }}
+          COMPILE_MODE: ${{ needs.resolve-plan.outputs.compile_mode }}
+          AUTO_STAMP: ${{ needs.resolve-plan.outputs.auto_stamp }}
+          EXISTING_RELEASE: ${{ needs.resolve-plan.outputs.existing_release }}
+          VALIDATION_RUN_ID: ${{ needs.audit.outputs.validation_run_id }}
+          VALIDATION_COMMIT: ${{ needs.audit.outputs.validation_commit }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git fetch --force origin dev:refs/remotes/origin/dev
+          git fetch --force --tags origin
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          if [ "$(git rev-parse origin/dev)" != "$SOURCE_SHA" ]; then
+            echo "::error title=Dev source advanced::Run Workflow 21 again to review the new exact source."
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          CANDIDATE_COMMIT="$SOURCE_SHA"
+          if git show-ref --verify --quiet "refs/tags/$RELEASE_VERSION"; then
+            CANDIDATE_COMMIT=$(git rev-list -n 1 "$RELEASE_VERSION")
+            git checkout --detach "$CANDIDATE_COMMIT"
+            tagged_root=$(mktemp -d)
+            git archive "$CANDIDATE_COMMIT" build/Windows build/WEBGui schema | tar -x -C "$tagged_root"
+            source_root=$(mktemp -d)
+            git archive "$SOURCE_SHA" build/Windows build/WEBGui schema | tar -x -C "$source_root"
+            source_digest=$(python3 .github/scripts/source_version.py --root "$source_root" product-digest)
+            tagged_digest=$(python3 .github/scripts/source_version.py --root "$tagged_root" product-digest)
+            test "$source_digest" = "$tagged_digest"
+            rm -rf "$tagged_root" "$source_root"
+          elif [ "$AUTO_STAMP" = true ]; then
+            python3 .github/scripts/source_version.py stamp-release "$RELEASE_VERSION"
+            git add \
+              build/Windows/Cargo.toml \
+              build/Windows/Cargo.lock \
+              build/Windows/gui/app.manifest \
+              build/Windows/package/Package.appxmanifest \
+              build/Windows/package/SPLINED.appinstaller.template \
+              build/WEBGui/webgui/backend/splined.py
+            git commit -m "release: prepare ${RELEASE_VERSION}"
+            CANDIDATE_COMMIT=$(git rev-parse HEAD)
+            test "$(git rev-parse "$CANDIDATE_COMMIT^")" = "$SOURCE_SHA"
+          fi
+          git checkout --detach "$CANDIDATE_COMMIT"
+          test "$(python3 .github/scripts/source_version.py current)" = "$RELEASE_VERSION"
+
+          mkdir -p release-candidate
+          BUNDLE_BASE=$(git rev-parse "$CANDIDATE_COMMIT^")
+          git bundle create release-candidate/release-source.bundle HEAD "^$BUNDLE_BASE"
+          git bundle verify release-candidate/release-source.bundle
+          BUNDLE_SHA=$(sha256sum release-candidate/release-source.bundle | awk '{print $1}')
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$VALIDATION_RUN_ID/jobs?per_page=100" > release-candidate/source-validation.json
+          CANDIDATE_COMMIT="$CANDIDATE_COMMIT" BUNDLE_SHA="$BUNDLE_SHA" python3 - <<'PY'
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          manifest = {
+              "schema": "splined-release-candidate-v1",
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "workflow_run_id": int(os.environ["GITHUB_RUN_ID"]),
+              "workflow_run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+              "main_commit": os.environ["MAIN_SHA"],
+              "source_commit": os.environ["SOURCE_SHA"],
+              "candidate_commit": os.environ["CANDIDATE_COMMIT"],
+              "source_version": os.environ["SOURCE_VERSION"],
+              "release_version": os.environ["RELEASE_VERSION"],
+              "source_relation": os.environ["SOURCE_RELATION"],
+              "validation_commit": os.environ["VALIDATION_COMMIT"],
+              "validation_run_id": int(os.environ["VALIDATION_RUN_ID"]),
+              "target": os.environ["TARGET"],
+              "recommended_compile_mode": os.environ["COMPILE_MODE"],
+              "temporary_version_stamp": os.environ["AUTO_STAMP"] == "true",
+              "existing_release": os.environ["EXISTING_RELEASE"] == "true",
+              "bundle_sha256": os.environ["BUNDLE_SHA"],
+              "created_at": datetime.now(timezone.utc).isoformat(),
+          }
+          Path("release-candidate/release-candidate.json").write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          PY
+          (cd release-candidate && sha256sum release-source.bundle release-candidate.json source-validation.json > SHA256SUMS-CANDIDATE.txt)
+          echo "version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "commit=$CANDIDATE_COMMIT" >> "$GITHUB_OUTPUT"
+
+      - name: Upload immutable release candidate
+        id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: splined-release-candidate
+          path: release-candidate/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Report candidate provenance
+        shell: bash
+        run: |
+          {
+            echo "## Immutable release candidate"
+            echo
+            echo "- Version: \`${{ steps.candidate.outputs.version }}\`"
+            echo "- Candidate commit: \`${{ steps.candidate.outputs.commit }}\`"
+            echo "- Source commit: \`${{ needs.resolve-plan.outputs.source_sha }}\`"
+            echo "- Originating workflow run: \`${{ github.run_id }}\`"
+            echo "- Required validation run: \`${{ needs.audit.outputs.validation_run_id }}\`"
+            echo "- Candidate artifact ID: \`${{ steps.upload.outputs.artifact-id }}\`"
+            echo "- Compilation and packaging: \`not performed\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  summary:
+    name: Release preparation summary
+    needs: [resolve-plan, audit, approve-candidate, prepare-candidate]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report stage results and recovery action
+        shell: bash
+        run: |
+          {
+            echo "## Workflow 21 stage results"
+            echo
+            echo "- Plan: \`${{ needs.resolve-plan.result }}\`"
+            echo "- Audit: \`${{ needs.audit.result }}\`"
+            echo "- Candidate approval: \`${{ needs.approve-candidate.result }}\`"
+            echo "- Candidate retention: \`${{ needs.prepare-candidate.result }}\`"
+            echo "- Next action after failure: correct source, validation, version, policy, or approval readiness and rerun Workflow 21."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Enforce selected completion
+        shell: bash
+        env:
+          PLAN_RESULT: ${{ needs.resolve-plan.result }}
+          AUDIT_RESULT: ${{ needs.audit.result }}
+          PREPARE_REQUESTED: ${{ needs.resolve-plan.outputs.prepare_candidate }}
+          APPROVAL_RESULT: ${{ needs.approve-candidate.result }}
+          CANDIDATE_RESULT: ${{ needs.prepare-candidate.result }}
+        run: |
+          set -euo pipefail
+          test "$PLAN_RESULT" = success
+          test "$AUDIT_RESULT" = success
+          if [ "$PREPARE_REQUESTED" = true ]; then
+            test "$APPROVAL_RESULT" = success
+            test "$CANDIDATE_RESULT" = success
+            message="Approved candidate retained for Workflows 22 and 23."
+          else
+            test "$APPROVAL_RESULT" = skipped
+            test "$CANDIDATE_RESULT" = skipped
+            message="Report-only audit complete; no candidate was created."
+          fi
+          {
+            echo "## Workflow 21 complete"
+            echo
+            echo "$message"
+            echo "- Total elapsed time: \`$(($(date +%s) - ${{ needs.resolve-plan.outputs.started_epoch }})) seconds\`"
+            echo "Compilation, packaging, tagging, release publication and Partner Center modification were not performed."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,160 +1,159 @@
 # Release automation
 
-SPLINED keeps source review, workflow definition, compilation and publication
-as separate owner actions.
+SPLINED separates quick Windows evaluation, release preparation, platform
+builds, publication, and Microsoft Store submission. Each operation is
+independently dispatchable and retains a comprehensive GitHub Actions summary.
 
-1. Accumulate application changes through reviewed pull requests into `dev`.
-2. Close each source pull request by merging it to `dev` after its required
-   checks and owner approval.
-3. Keep the approved Workflow 10 definition on `main`.
-4. Run Workflow 10 from `main`; it compares `origin/main` with `origin/dev`,
-   selects the exact current `origin/dev` commit, and builds that source.
+| Workflow | Responsibility |
+| --- | --- |
+| `20. Quick Portable — Windows` | Compile or report on the exact current `origin/dev` Windows source. The standalone executable is QA-only and is never a release input. |
+| `21. Release Preparation` | Compare `origin/main` and `origin/dev`, audit source and policy contracts, resolve the version, and optionally retain an approved immutable release candidate. It never compiles or packages an application. |
+| `22. Windows Build & Microsoft Store` | Build complete Windows portable and Store outputs from a Workflow 21 candidate, or independently submit an existing validated MSIX. |
+| `23. Python / WebGUI Build` | Build and validate the Python source archive and exact smoke-tested container image from a Workflow 21 candidate. |
+| `24. Complete Release & Publication` | Audit prior build artifacts, create or verify the numeric tag, publish missing GitHub Release assets, and publish the exact smoke-tested image to GHCR. It never recompiles or repackages. |
 
-Workflow 10 never creates a pull request, writes to `dev`, or pushes a source
-commit to either protected branch. The Windows and WebGUI versions on `dev`
-must agree on one numeric `X.Y.Z` source version. When that version has already
-been published and approved product source changed, Workflow 10 computes the
-next numeric patch and stamps only the synchronized version fields in a
-temporary release commit. The temporary commit is built, audited, and tagged;
-the reviewed `dev` commit remains its immutable parent.
+The normal release path is:
 
-| Workflow | Purpose |
-|---|---|
-| `01. Full Release - Build Selected Target and Publish` | Retained original release and optional Store-submission path. |
-| `02. Store Recovery - Tagged Draft or Update` | Rebuild Store material from an existing numeric tag. |
-| `03. GHCR Recovery - Existing Published Release` | Restore a missing GHCR tag for an existing published release when provenance can be proved. |
-| `10. Unified Source Build - Full or Incremental Windows and WebGUI` | Run the approved workflow definition from `main`, then build, validate and optionally publish the exact current `origin/dev` source. |
+1. Merge approved source pull requests into `dev` after required validation.
+2. Run Workflow 21 and select **PREPARE RELEASE CANDIDATE**. Record its run ID.
+3. Run Workflow 22 and/or Workflow 23 with that exact candidate run ID.
+4. Run Workflow 24 with the selected platform build run IDs.
+5. If a Microsoft Store submission is required after publication, run
+   Workflow 22 with **SUBMIT EXISTING MSIX** and the exact Windows build run ID.
 
-The former Workflow 04 preset launcher and Workflow 05 source-PR generator are
-retired. GitHub retains their historical run pages, but they are no longer
-runnable from the repository.
+Workflow 22 and Workflow 23 may run independently or in parallel. A failed
+platform build can be rerun against the same approved candidate without
+repeating a successful build for the other platform.
 
-## Workflow 10
+## Source and candidate identity
 
-[Workflow 10](../.github/workflows/10-unified-build.yml) exposes three choices:
+Workflow 21 is dispatched from `main`, fetches both long-lived branches, and
+records their exact hashes. `main` is the workflow-definition and comparison
+baseline; `dev` is the reviewed product-source candidate. The branches are not
+required to have an old historical ancestry relationship. This is important
+when `dev` has been recreated from the current `main` commit.
 
-- **Target:** `ALL`, `WINDOWS`, or `WEBGUI`.
-- **Outcome:** `COMPLETE RELEASE`, `BUILD ONLY`, or `BUILD ONLY, REPORT`.
-- **Store action:** `LOCAL REVIEW ONLY` or the explicit `AUTO SUBMIT` option
-  for a Windows/ALL release.
+The source resolver accepts:
 
-The Store choice is required only for `COMPLETE RELEASE` with a Windows target.
-`BUILD ONLY`, `BUILD ONLY, REPORT`, and WebGUI-only runs accept neither Store
-box being checked; `AUTO SUBMIT` remains invalid for those outcomes. A Windows
-`BUILD ONLY` run still retains its local review bundle with the other build
-artifacts and never contacts Partner Center.
+- the same commit or complete Git tree on both branches;
+- `dev` directly advancing the current `main` commit; or
+- `dev` advancing the exact source parent of a content-preserving promotion
+  merge on `main`.
 
-The first job runs from `main`, fetches both branches, reports their SHAs,
-versions and tree relationship, checks out the exact `origin/dev` commit,
-resolves the complete plan, and checks for an existing release. The compile
-mode is automatic: matching committed source versions select `PARTIAL UPDATE`;
-a different dev version selects `FULL SOURCE`. An identical source tree is
-accepted after the normal `dev` → `main` promotion merge even though the merge
-commit exists only on `main`. When the trees differ, Workflow 10 accepts either
-a direct `main` ancestor or a content-preserving promotion merge whose exact
-promoted source parent remains an ancestor of current `dev`. This permits
-reviewed work to continue on `dev` after promotion without treating the
-promotion-only merge commit as missing source. A genuinely divergent candidate
-or a promotion merge that changed the promoted tree stops before any build or
-publication. The `workflow-10-plan-approval` environment is
-the manual approval boundary before compilation. Repository administrators must
-configure that environment with required reviewers before the first run;
-an environment name alone does not mechanically create a pause. Once configured,
-rejecting the plan performs no build, tag, release, registry or Store work.
+Any other differing-tree relationship fails before candidate preparation.
+The release-candidate manifest records the exact `main` hash, exact selected
+`dev` hash, relationship result, synchronized source version, release version,
+target, recommended compile mode, originating run, and source-bundle SHA-256.
 
-### Full source and partial update
+If the committed version is unused, the candidate points directly at the
+selected source. If approved product source changed after that version was
+published, Workflow 21 may create a temporary candidate commit whose parent is
+the selected `dev` commit and whose only changes are the synchronized version
+fields. No protected branch is written.
 
-Both modes produce complete distributables. A partial update is never a binary
-patch or a collection of changed files.
+Workflow 21 **BUILD ONLY, REPORT** performs the same source, policy, version,
+target, cache-plan, and credential-readiness audit but does not request
+approval or create a candidate artifact.
 
-- **FULL SOURCE** performs a clean Windows Cargo release compile and a no-cache
-  WebGUI container build.
-- **PARTIAL UPDATE** lets Cargo and Docker BuildKit restore compatible compiled
-  intermediates. Their fingerprints invalidate changed inputs, and the jobs
-  still stage and audit the complete Windows ZIP/MSIX or WebGUI archive/image.
+## Workflow 20 quick portable
 
-Windows reports dependency-cache status, compiled-cache status and elapsed
-compile time. WebGUI stores reusable BuildKit layers. The exact WebGUI image
-that passes the PostgreSQL health smoke is saved as an Actions artifact; GHCR
-publishes that image instead of rebuilding it.
+Workflow 20 builds the exact current `origin/dev` source using the same locked,
+optimized Rust/Slint target and compatible Cargo caches as release builds. It
+verifies build identity, version, commit, AMD64 PE architecture, native smoke,
+size, and SHA-256, then retains a standalone `splined.exe` artifact.
 
-### Current source and release completion
+This path reflects the repository's Quick Local Update compilation behavior
+without invoking the local installer, replacing an installed executable, or
+opening the application. Its manifest is explicitly `release_eligible: false`.
+It never creates an MSIX, release candidate, tag, release, or Store operation.
 
-From the selected `origin/dev` commit, Workflow 10 reads and validates every
-synchronized Windows/WebGUI/package version field; disagreement fails before
-building. It does not accept an entered version. If the committed version is
-the next unused numeric version, Workflow 10 uses it directly. If that version
-is already published and the normalized product tree changed, Workflow 10
-selects the next numeric patch automatically.
+**BUILD ONLY, REPORT** performs cache lookup and source identity reporting
+without restoring payloads, compiling, packaging, or uploading an executable.
 
-For an automatically advanced version, the numeric tag points at a temporary
-release commit whose parent is the unchanged selected `origin/dev` commit and
-whose only differences are the six synchronized version-bearing files. The
-workflow verifies that exact boundary, rechecks that `dev` has not advanced
-while builds run, and never pushes or merges either protected branch. When no
-stamp is necessary, the tag continues to point directly at selected `dev`.
+## Workflow 22 Windows build and Store submission
 
-Incremental release notes recognize that temporary topology without treating
-the stamp commit as reviewed branch history. When the immediately preceding
-numeric tag is not an ancestor, its commit must be a single-parent change to
-exactly the six synchronized version files, its normalized product tree must
-match its parent, and that parent must be an ancestor of the new release. The
-validated parent becomes the release-note baseline. Unrelated or malformed
-numeric tags fail closed instead of silently falling back to an older release.
+For **BUILD ONLY**, enter the originating Workflow 21 run ID and select one
+compilation mode:
 
-If the same version already has a GitHub Release, Workflow 10 may complete a
-missing target:
+- **PARTIAL UPDATE** restores compatible Cargo dependencies and optimized
+  intermediates. Cargo fingerprints still rebuild every changed input.
+- **FULL SOURCE** clears target-specific release output and performs a clean
+  locked optimized compilation.
 
-- an existing Windows archive suppresses the Windows build;
-- an existing WebGUI source archive suppresses the WebGUI build;
-- an explicitly selected target that already exists fails as a safe no-op;
-- existing release assets and GHCR version tags are never overwritten;
-- the tagged product source must match current `dev` under `build/Windows/`,
-  `build/WEBGui/` and `schema/` after normalizing the synchronized version-only
-  fields, or Workflow 10 prepares the next numeric version.
+Both modes produce and validate all of the following from the same executable:
 
-This supports Windows-first or WebGUI-first publication without rebuilding the
-completed target. A completion upload receives a target-specific checksum file
-and leaves the existing checksum asset untouched.
+- standalone portable `splined.exe` and complete ZIP;
+- update identity metadata;
+- unsigned production MSIX;
+- isolated development-package installation/activation smoke;
+- offline local Store review bundle and Highlights;
+- SHA-256 ledger and build provenance manifest.
 
-Every outcome first records the main/dev SHAs, source relationship, version,
-automatically selected compile mode, canonical-policy validation and Microsoft
-Store credential readiness.
+The local review path never authenticates to, queries, stages, cancels, or
+modifies Partner Center. An existing pending submission cannot block it.
 
-`BUILD ONLY, REPORT` stops immediately after that audit. It performs no plan
-approval, compilation, packaging, branch write, PR, tag, GitHub Release, GHCR
-or Store action.
+**BUILD ONLY, REPORT** validates the candidate and proposed cache/packaging
+plan without compiling or packaging.
 
-`BUILD ONLY` continues after the passing report and plan approval, builds the
-selected current version, and retains checksum-verified Actions artifacts
-without publication. If that version is already published, the exact tagged
-source is used.
+**SUBMIT EXISTING MSIX** ignores the compilation checkboxes. It requires the
+run ID of a successful Workflow 22 build, a published GitHub release whose tag
+matches that build's candidate commit, the explicit automatic-submission
+selection, and protected environment approval. It verifies the build manifest
+and checksums, resolves the last published Store baseline, and submits that
+exact MSIX without rebuilding or repackaging it.
 
-### Publication boundaries
+## Workflow 23 WebGUI build
 
-`WINDOWS` produces the portable ZIP, update manifest, unsigned MSIX and local
-Store review ZIP. `LOCAL REVIEW ONLY` never contacts Partner Center.
-`AUTO SUBMIT` is available only for a confirmed Windows/ALL release, verifies
-the existing four Store credentials, resolves the published Store baseline,
-retains a separate audit artifact, and submits the validated package and
-Highlights for certification. `WEBGUI` produces the source archive and exact
-smoke-tested container image and publishes that same image to GHCR only for a
-publishing run. `ALL` performs both build paths in parallel.
+Workflow 23 accepts the approved candidate run ID and one compilation mode.
+Partial mode restores compatible Docker BuildKit layers; full mode uses a clean
+container build. Both modes run the retained Python/PostgreSQL/Node package
+validation, start the production image against PostgreSQL, verify database and
+authentication health, retain the exact tested image, and generate the Python
+source archive.
 
-Workflow 10 relies on required pull-request checks already completed before
-the exact source entered `dev`. It does not rerun either real-writer Audio
-Integrity suite. Its package-level WebGUI checks explicitly omit those required
-writer cases; Workflow 01 and required PR validation remain the fail-closed
-`AUDIO-INTEGRITY-001..006` gates.
+The build manifest records measured validation, container, packaging, layer
+reuse, compression and artifact sizes. GHCR publication is excluded.
+**BUILD ONLY, REPORT** validates the candidate and reports anticipated layer
+reuse without running Docker or creating an archive.
 
-## Recovery workflows
+## Workflow 24 publication
 
-Workflow 02 is the Store recovery path for an existing numeric tag. Workflow 03
-can restore only a missing GHCR tag when an existing image proves the expected
-source/version/revision. Neither recovery workflow changes source, policy,
-release assets or Git tags.
+Workflow 24 requires exact Workflow 22 and/or Workflow 23 run IDs. Before its
+publication approval boundary it:
 
-Release notes and Store highlights continue to use the pinned shared
-[`release/cliff.toml`](../release/cliff.toml) configuration and checked-in Tera
-templates. Protected policy JSON review remains independent of release
-packaging.
+- verifies every build manifest and SHA-256 entry;
+- rejects mismatched candidates, versions, targets, expired artifacts, missing
+  validations, and tag/source conflicts;
+- generates and validates incremental release notes;
+- determines which selected GitHub Release assets are missing;
+- reports unsigned MSIX readiness without contacting Partner Center; and
+- retains a checksummed publication-readiness artifact.
+
+**COMPLETE RELEASE, REPORT** stops there. **COMPLETE RELEASE** requires the
+protected publication approval, creates or verifies the numeric tag at the
+exact candidate commit, creates the GitHub Release or adds only missing target
+assets, and publishes the exact smoke-tested WebGUI image to GHCR. Existing
+release assets and versioned GHCR images are never overwritten with different
+content.
+
+If publication fails after tag creation, rerun Workflow 24 with the same build
+run IDs. It verifies the existing exact tag and continues only missing work;
+it does not rebuild either platform.
+
+## Reporting and validation boundaries
+
+Every workflow reports selections, source/version identity, cache results,
+durations, sizes, SHA-256 values, artifact/run provenance, MSIX status,
+publication readiness, failures, and required next actions. Anticipated cache
+reuse is distinguished from measured reuse.
+
+Required source pull-request validation remains the fail-closed authority for
+`AUDIO-INTEGRITY-001..006`. Release packaging consumes the exact approved
+commit and does not repeat either platform's real-writer suite merely because
+a distributable was selected. Canonical policy JSON review remains independent
+of build and publication automation.
+
+The existing Store and GHCR recovery workflows remain available for their
+separately documented recovery scopes. Release notes and Store Highlights use
+the pinned shared [`release/cliff.toml`](../release/cliff.toml) configuration
+and checked-in templates.
