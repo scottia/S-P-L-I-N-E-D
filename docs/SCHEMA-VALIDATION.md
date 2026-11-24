@@ -84,6 +84,14 @@ Read-only source inspection confirms both clients have distinct indexers,
 queues, UI frameworks and catalog stores. No actual runtime consumer or
 cross-database transport is introduced by this proposed specification.
 
+**Required activation before declaring the lifecycle policy enforced:**
+Windows and WebGUI must load and validate the same canonical JSON via their
+native runtimes, with focused behavior-to-rule mapping, and the independent
+policy-diff gate must protect the new JSON once it is in the accepted base.
+No existing media-state/COMP gate weakening, implicit database write, catalog
+migration, or startup network dependency is permitted. The owner requires
+these prerequisites before downstream parity acceptance.
+
 **Not yet verified or enforced:** no Windows or WebGUI runtime loader reads
 the lifecycle JSON, no production or credential-directory revision is seeded,
 the independent protected-policy JSON diff gate still covers only
