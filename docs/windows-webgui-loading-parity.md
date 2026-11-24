@@ -1,7 +1,7 @@
 # Windows and WebGUI library-loading parity review
 
 **Review basis:** current `dev` at
-`87216303e7c333323c4d885a05ad9ceaf6d7256c`, plus operator-provided Windows
+`7aa8ac9e3e9de9cf6159b2f28da0c75fbc6b304f`, plus operator-provided Windows
 3.0.24 UI diagnostics from installed commit
 `c30489d9a3f91c4ad253e9ee5b19b45d3d16547c`.
 
@@ -242,6 +242,30 @@ the behavior. That result is consistent with the timings: database/model load
 is a small bounded part of the session, while repeated presentation and image
 work dominates interaction.
 
+## Shared lifecycle parity mapping
+
+The accepted `schema/lifecycle-policy.json` supplies equivalent outcome
+requirements for both clients. It does not require identical internals and it
+does not transfer SQLite/PostgreSQL ownership. The WebGUI-specific
+`WEB-LIFE-001..009` remain refinements for browser/Python/PostgreSQL behavior,
+not Windows implementation instructions.
+
+| Shared requirement | Windows evidence and gap | WebGUI comparison evidence and gap |
+| --- | --- | --- |
+| `LIFE-001` current selection identity | Selection is explicit, but broad refresh and synchronous row work can delay publication after a newer selection. A later implementation must prove stale workers cannot repaint a replaced Artist/Album. | Selection generations and stale-response checks are the comparison boundary; PR #314 retains demonstrated navigation/input races. |
+| `LIFE-002` nonblocking progressive hydration | SQLite/model construction is bounded, but repeated pre-event-loop synchronization and synchronous `row_data()` image work violate the desired shell-first, memory-only presentation boundary. | The shell paints before the Artist request and near-viewport thumbnails are bounded; direct selection and initial projection latency remain open in PR #314. |
+| `LIFE-003` bounded background work | Scan/index generation is bounded, while presentation image work and full refresh fan-out are not yet narrowly scheduled or measured. | Thumbnail work is bounded to three; COMP coordination, filter fan-out and index-probe polling remain open in PR #314. |
+| `LIFE-004` durable queue authority | Existing scan/COMP queues and cancellation must be preserved; this audit authorizes no replacement queue or nonce model. | Existing durable job/nonces remain authoritative; stale decision and staged-batch defects stay in PR #314. |
+| `LIFE-005` truthful current status | Global-lock/full-sync latency can delay local status publication; later work must publish narrow progress before remote or artwork work. | PR #314 retains stale embedding completion/status ownership evidence. |
+| `LIFE-006` canonical current presentation | Existing media-state policy, Album rows, frames, banners and dots remain unchanged; any row-level publication must retain current evidence. | PR #314 contains the focused complete-Artist GREEN→RED correction and its higher-priority Red/Yellow/Purple controls. |
+| `LIFE-007` coherent interaction stages | Selected Artist/Album detail should be scoped and asynchronous, but this audit changes no interaction or COMP stage. | PR #314 retains search, COMP discovery, preferred-size and post-selection stage defects under the existing COMP policy. |
+| `LIFE-008` database lifecycle authority | Windows SQLite remains synchronized-field authority. No proposed loading correction may merge/rewrite database identities or fields. | The transferred earlier-version reminder requires separate PostgreSQL-owned revalidation evidence; protected Windows fields must not be rewritten. |
+| `LIFE-009` focused regression evidence | Source diagnostics identify the hot path, but native build and installed timing acceptance remain required for a later behavior PR. | Existing focused browser evidence is comparative only; PR #314 remains independently Draft and unmerged. |
+
+This mapping records parity evidence and gaps only. Native lifecycle-policy
+loader/protection activation is reviewed separately in Draft PR #320; its
+presence or eventual acceptance does not make the open behaviors pass.
+
 ## Approval-gated Windows recommendation
 
 ### Phase 1 — match WebGUI's loading boundary
@@ -302,7 +326,7 @@ An implementation PR must preserve:
 - `ART-001..003`, `UI-001` and `SAFE-001`;
 - `VISUAL-001..004` and `STATE-POLICY-001..004`;
 - `AUDIO-INTEGRITY-001..006`;
-- the two protected policy JSON files without modification;
+- all protected policy JSON files without modification;
 - all distinct Album rows, paths, credits and MBIDs;
 - the existing accepted Slint frames, banners, status dots and COMP row colors.
 
@@ -339,8 +363,8 @@ ownership, not from WebGUI presentation alone.
   just as it protects the other synchronized identity and state fields.
 - Full Refresh may revalidate file-derived PostgreSQL data on protected rows,
   but it does not transfer field ownership or rewrite the Windows source
-  version. That is required by `WEB-LIFE-008`, `STATE-POLICY-001..004` and
-  `SAFE-001`.
+  version. That is required by shared `LIFE-008`, refined for WebGUI by
+  `WEB-LIFE-008`, plus `STATE-POLICY-001..004` and `SAFE-001`.
 - Existing catalog-generation records establish refresh generations and
   manifests, but they do not retain a durable, per-entity application-version
   assertion that can safely replace Windows' source `splined_version`.
