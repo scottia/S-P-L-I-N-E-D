@@ -47,8 +47,12 @@ resolves the complete plan, and checks for an existing release. The compile
 mode is automatic: matching committed source versions select `PARTIAL UPDATE`;
 a different dev version selects `FULL SOURCE`. An identical source tree is
 accepted after the normal `dev` → `main` promotion merge even though the merge
-commit exists only on `main`. When the trees differ, `main` must be an ancestor
-of `dev`; a genuinely divergent candidate stops before any build or
+commit exists only on `main`. When the trees differ, Workflow 10 accepts either
+a direct `main` ancestor or a content-preserving promotion merge whose exact
+promoted source parent remains an ancestor of current `dev`. This permits
+reviewed work to continue on `dev` after promotion without treating the
+promotion-only merge commit as missing source. A genuinely divergent candidate
+or a promotion merge that changed the promoted tree stops before any build or
 publication. The `workflow-10-plan-approval` environment is
 the manual approval boundary before compilation. Repository administrators must
 configure that environment with required reviewers before the first run;
