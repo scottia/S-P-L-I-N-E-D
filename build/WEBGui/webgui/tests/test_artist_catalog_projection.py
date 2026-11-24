@@ -6,6 +6,7 @@ from contextlib import closing
 from io import BytesIO
 import json
 from pathlib import Path
+import sqlite3
 from sqlite3 import connect
 from tempfile import TemporaryDirectory
 import unittest
@@ -92,6 +93,122 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             self.assertEqual(len(track_queries), 2)
             self.assertEqual(len(ledger_queries), 2)
             self.assertTrue(all("EXISTS(" not in statement for statement in track_queries))
+
+    def test_artist_projection_survives_process_restart_for_same_generation(self):
+        class WritablePreviewApp(PreviewApp):
+            def connect(self):
+                connection = sqlite3.connect(self.database)
+                connection.row_factory = sqlite3.Row
+                return connection
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "index.sqlite"
+            credentials = root / "credentials"
+            credentials.mkdir()
+            with closing(connect(database)) as db:
+                db.executescript(
+                    "CREATE TABLE catalog_index_state (singleton BOOLEAN PRIMARY KEY,"
+                    "active_generation_id TEXT);"
+                    "INSERT INTO catalog_index_state VALUES (TRUE,'generation-one');"
+                    "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,"
+                    "musicbrainz_artistid TEXT,primary_path TEXT,status TEXT);"
+                    "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,"
+                    "path TEXT,status TEXT,compilation INTEGER,musicbrainz_albumid TEXT);"
+                    "CREATE TABLE tracks (track_key TEXT PRIMARY KEY,album_key TEXT,path TEXT,"
+                    "title TEXT,artist_name TEXT,musicbrainz_artistid TEXT);"
+                    "CREATE TABLE compilation_track_artwork (track_path TEXT PRIMARY KEY,"
+                    "outcome TEXT);"
+                    "CREATE TABLE cache_entries (cache_key TEXT PRIMARY KEY,cache_type TEXT,"
+                    "payload_json TEXT,created_at TEXT,updated_at TEXT);"
+                    "INSERT INTO artists VALUES ('artist','Artist','','','processed');"
+                    "INSERT INTO albums VALUES ('album','artist','/music/Artist/Album',"
+                    "'processed',0,'release');"
+                    "INSERT INTO tracks VALUES ('track','album','/music/Artist/Album/1.flac',"
+                    "'Duet','Artist & Guest','');"
+                )
+                db.commit()
+
+            first_app = WritablePreviewApp(
+                root, database, root, credentials, cache=root / "cache"
+            )
+            with closing(first_app.connect()) as db:
+                expected = first_app._projected_track_artists(db)
+            with closing(connect(database)) as db:
+                self.assertEqual(
+                    db.execute(
+                        "SELECT count(*) FROM cache_entries "
+                        "WHERE cache_type='artist-projection'"
+                    ).fetchone()[0],
+                    1,
+                )
+
+            restarted = WritablePreviewApp(
+                root, database, root, credentials, cache=root / "cache"
+            )
+            statements = []
+            with closing(restarted.connect()) as db:
+                db.set_trace_callback(statements.append)
+                restored = restarted._projected_track_artists(db)
+
+            self.assertEqual(restored, expected)
+            self.assertFalse(
+                any("FROM tracks JOIN albums" in statement for statement in statements)
+            )
+
+    def test_artist_projection_request_does_not_duplicate_active_warmup(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "index.sqlite"
+            credentials = root / "credentials"
+            credentials.mkdir()
+            with closing(connect(database)) as db:
+                db.execute(
+                    "CREATE TABLE catalog_index_state (singleton BOOLEAN PRIMARY KEY,"
+                    "active_generation_id TEXT)"
+                )
+                db.execute("INSERT INTO catalog_index_state VALUES (TRUE,'generation-one')")
+                db.execute(
+                    "CREATE TABLE cache_entries (cache_key TEXT PRIMARY KEY,cache_type TEXT,"
+                    "payload_json TEXT,created_at TEXT,updated_at TEXT)"
+                )
+                db.commit()
+
+            app = PreviewApp(root, database, root, credentials, cache=root / "cache")
+            app.artist_projection_build_lock.acquire()
+            try:
+                with closing(app.connect()) as db:
+                    self.assertEqual(app._projected_track_artists(db), {})
+            finally:
+                app.artist_projection_build_lock.release()
+            self.assertTrue(app.artist_projection_pending)
+
+    def test_interactive_artist_projection_never_becomes_the_cold_builder(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "index.sqlite"
+            credentials = root / "credentials"
+            credentials.mkdir()
+            with closing(connect(database)) as db:
+                db.execute(
+                    "CREATE TABLE catalog_index_state (singleton BOOLEAN PRIMARY KEY,"
+                    "active_generation_id TEXT)"
+                )
+                db.execute("INSERT INTO catalog_index_state VALUES (TRUE,'generation-one')")
+                db.execute(
+                    "CREATE TABLE cache_entries (cache_key TEXT PRIMARY KEY,cache_type TEXT,"
+                    "payload_json TEXT,created_at TEXT,updated_at TEXT)"
+                )
+                db.commit()
+
+            app = PreviewApp(root, database, root, credentials, cache=root / "cache")
+            with closing(app.connect()) as db:
+                self.assertEqual(
+                    app._projected_track_artists(db, allow_build=False), {}
+                )
+            self.assertTrue(app.artist_projection_pending)
+            self.assertTrue(app.artist_projection_build_lock.acquire(blocking=False))
+            app.artist_projection_build_lock.release()
 
     def test_guarded_collaboration_credits_match_windows_presentation(self):
         self.assertEqual(

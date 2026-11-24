@@ -33,6 +33,13 @@ test("Artist Overview renders the saved banner without a tint layer", () => {
   assert.match(appSource, /\$\("hero"\)\.style\.backgroundImage = artist\?\.banner/);
 });
 
+test("cold Artist projection hydrates in one bounded background sequence", () => {
+  assert.match(appSource, /function scheduleArtistProjectionRefresh/);
+  assert.match(appSource, /projection_pending === true/);
+  assert.match(appSource, /Math\.min\(15000, 1000 \* \(2 \*\* Math\.min\(attempt, 4\)\)\)/);
+  assert.match(appSource, /request !== state\.listRequest/);
+});
+
 function between(source, start, end) {
   const first = source.indexOf(start);
   const last = source.indexOf(end, first + start.length);

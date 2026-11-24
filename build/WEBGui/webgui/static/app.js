@@ -82,6 +82,7 @@ const state = {
   sourcePolicies: {}, artistSourceEnabled: [],
   sourceCounts: {artist: {}, cover: {}},
   libraryLoading: false, libraryReady: false, artistMetadataRequest: 0, artistQuery: "",
+  artistProjectionRetry: 0,
   activeActionId: "", artistInfoExpanded: false,
   albumOverrides: new Map(), albumOverrideRevision: 0,
   compTrackOverrides: new Map(), compTrackOverrideRevision: 0,
@@ -2749,6 +2750,23 @@ function renderAll() {
   renderLibrary(); renderHero(); renderSources(); renderCandidates(); renderWorkspace();
 }
 
+function scheduleArtistProjectionRefresh(query, request) {
+  const attempt = ++state.artistProjectionRetry;
+  const delay = Math.min(15000, 1000 * (2 ** Math.min(attempt, 4)));
+  window.setTimeout(async () => {
+    if (request !== state.listRequest || state.libraryMode !== "artists" || state.artistQuery !== String(query || "")) return;
+    try {
+      const refreshed = await api("/api/artists?q=" + encodeURIComponent(query));
+      if (request !== state.listRequest || state.libraryMode !== "artists" || state.artistQuery !== String(query || "")) return;
+      state.artists = refreshed;
+      renderLibrary();
+      if (refreshed.some(item => item.projection_pending === true)) scheduleArtistProjectionRefresh(query, request);
+      else state.artistProjectionRetry = 0;
+    } catch {
+      if (request === state.listRequest && state.libraryMode === "artists") scheduleArtistProjectionRefresh(query, request);
+    }
+  }, delay);
+}
 async function loadLibrary(query = "") {
   const request = ++state.listRequest;
   if (state.libraryMode === "artists") state.artistQuery = String(query || "");
@@ -2760,6 +2778,10 @@ async function loadLibrary(query = "") {
     state.libraryLoading = false;
     state.libraryReady = true;
     renderLibrary();
+    if (state.libraryMode === "artists" && state.artists.some(item => item.projection_pending === true)) {
+      state.artistProjectionRetry = 0;
+      scheduleArtistProjectionRefresh(query, request);
+    } else state.artistProjectionRetry = 0;
     // Artist rows already carry lazy, authenticated thumbnail URLs. Resolving
     // all Artist folders in a second bulk request defeats the viewport queue
     // and blocks large libraries on NAS metadata I/O.
