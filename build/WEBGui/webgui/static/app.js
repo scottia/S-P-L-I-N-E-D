@@ -72,7 +72,7 @@ const state = {
   fx: {artist: {}, banner: {}, album: {}, comp: {}, current: {}, package: {}}, fit: {artist: {zoom: 1, x: 0, y: 0}, banner: {zoom: 1, x: 0, y: 0}},
   theme: "default", compare: new Set(), graphicalEnhancement: normalizeGraphicalEnhancement(),
   artworkRange: {min: 1200, ideal: 1800, max: 2400, ladder: 3600},
-  embedQueue: [], queueControls: {pause_after_album: false, pause_all_albums: false}, queuedDecision: null, reviewJobState: "", listRequest: 0, selectionRequest: 0, searchRequest: 0,
+  embedQueue: [], queueControls: {pause_after_album: false, pause_all_albums: false}, queuedDecision: null, queuedDecisionPending: false, reviewJobState: "", listRequest: 0, selectionRequest: 0, searchRequest: 0,
   jobs: [], launchActive: false, launchStopping: false, launchAbort: null,
   activeCompLaunch: "", writePending: false,
   pendingMusicBrainzExisting: null,
@@ -698,7 +698,9 @@ function renderLibraryContents() {
   $("artistsTab").classList.toggle("active", state.libraryMode === "artists");
   $("albumsTab").classList.toggle("active", state.libraryMode === "albums");
   $("fallbackTab").classList.toggle("active", state.libraryMode === "fallback");
-  $("libraryListTitle").textContent = state.libraryMode === "fallback" ? "Curated Compilations" : state.libraryMode === "albums" ? "V/A OST" : "Artists";
+  const albumQuery = state.libraryMode === "artists" ? $("albumSearch").value.trim() : "";
+  $("libraryListTitle").textContent = state.libraryMode === "fallback" ? "Curated Compilations"
+    : state.libraryMode === "albums" ? "V/A OST" : albumQuery ? "Album Search" : "Artists";
   const list = $("artistList"); resetLibraryThumbnailLoading(); clear(list);
   if (state.libraryLoading) {
     $("artistCount").textContent = "loading";
@@ -707,17 +709,33 @@ function renderLibraryContents() {
     return;
   }
   if (state.libraryMode === "artists") {
-    const albumQuery = $("albumSearch").value.trim();
-    const matchesByArtist = new Map();
-    if (albumQuery) for (const album of state.albumLibraryMatches.filter(artistFileListAlbum)) {
-      if (!matchesByArtist.has(album.artist_id)) matchesByArtist.set(album.artist_id, []);
-      matchesByArtist.get(album.artist_id).push(album);
+    if (albumQuery) {
+      const albums = state.albumLibraryMatches
+        .filter(artistFileListAlbum)
+        .filter(mediaMatches)
+        .sort(compareAlbumTitles);
+      $("artistCount").textContent = state.albumLibraryLoading ? "searching" : albums.length + " Albums shown";
+      for (const album of albums) {
+        const button = node("button", "library-row album-search-result"); button.type = "button";
+        button.dataset.albumId = String(album.id);
+        applyStatusPalette(button, mediaStatusKey(album));
+        const thumb = album.cover ? libraryThumbnail(album.cover, "library-thumb", album.name + " cover")
+          : node("span", "library-thumb", String(album.name || "?").slice(0, 1).toUpperCase());
+        const copy = node("span", "row-copy");
+        copy.append(node("strong", "", album.name), node("small", "", [album.artist_name, album.year].filter(Boolean).join(" · ")));
+        button.append(node("span", "status-orbit", "○"), thumb, copy, node("span", "expand-mark", "›"));
+        button.addEventListener("click", () => chooseAlbum(album.id));
+        list.append(button);
+      }
+      if (!list.childElementCount && !state.albumLibraryLoading)
+        list.append(node("p", "empty-copy", "No Albums match this search."));
+      renderMediaStatusChips();
+      return;
     }
     const artistQuery = String(state.artistQuery || $("artistSearch").value || "").trim().toLocaleLowerCase();
     const visibleArtists = state.artists.filter(artist => mediaMatches(artist)
-      && (!artistQuery || String(artist.name || "").toLocaleLowerCase().includes(artistQuery))
-      && (!albumQuery || matchesByArtist.has(artist.id)));
-    $("artistCount").textContent = state.albumLibraryLoading ? "loading" : visibleArtists.length + " shown";
+      && (!artistQuery || String(artist.name || "").toLocaleLowerCase().includes(artistQuery)));
+    $("artistCount").textContent = visibleArtists.length + " shown";
     for (const artist of visibleArtists) {
       const button = node("button", "library-row"); button.type = "button";
       button.dataset.artistId = String(artist.id);
@@ -727,15 +745,11 @@ function renderLibraryContents() {
       const thumb = thumbUrl ? libraryThumbnail(thumbUrl, "library-thumb", artist.name + " artist image", state.artist?.id === artist.id) : node("span", "library-thumb", artist.name.slice(0, 1).toUpperCase());
       if (thumbUrl) thumb.addEventListener("error", () => thumb.replaceWith(node("span", "library-thumb", artist.name.slice(0, 1).toUpperCase())), {once: true});
       button.append(thumb);
-      const matchingAlbums = matchesByArtist.get(artist.id) || [];
-      const shownAlbumCount = albumQuery ? matchingAlbums.length : artist.albums;
-      const copy = node("span", "row-copy"); copy.append(node("strong", "", artist.name), node("small", "", "(" + shownAlbumCount + " Albums)")); button.append(copy, node("span", "expand-mark", state.artist?.id === artist.id ? "−" : "+"));
+      const copy = node("span", "row-copy"); copy.append(node("strong", "", artist.name), node("small", "", "(" + artist.albums + " Albums)")); button.append(copy, node("span", "expand-mark", state.artist?.id === artist.id ? "−" : "+"));
       button.addEventListener("click", () => chooseArtist(artist.id)); list.append(button);
       if (state.artist?.id === artist.id) {
-        const matchingIds = new Set(matchingAlbums.map(album => album.id));
         for (const album of state.artist.albums
           .filter(artistFileListAlbum)
-          .filter(item => !albumQuery || matchingIds.has(item.id))
           .sort(compareAlbumTitles)) {
           list.append(albumRow(album, true));
         }
@@ -817,6 +831,14 @@ function refreshLibraryArtistRow(artistId) {
   if (thumbUrl) thumb.addEventListener("error", () => thumb.replaceWith(node("span", "library-thumb", artist.name.slice(0, 1).toUpperCase())), {once: true});
   row.querySelector(".library-thumb")?.replaceWith(thumb);
   renderMediaStatusChips();
+  return true;
+}
+function focusLibraryArtistRow(artistId) {
+  const row = Array.from($("artistList").querySelectorAll(".library-row[data-artist-id]"))
+    .find(item => item.dataset.artistId === String(artistId));
+  if (!row) return false;
+  row.scrollIntoView({block: "nearest"});
+  row.focus({preventScroll: true});
   return true;
 }
 function renderMediaStatusChips() {
@@ -1500,23 +1522,32 @@ function renderHeroContents() {
     button.dataset.compAlbum = compIds.has(album.id) ? "true" : "false";
     button.disabled = compIds.has(album.id) && state.compReportLoading;
     const cardState = albumCardState(album, artist); button.style.setProperty("--frame-color", cardState.frame);
+    const stagedForEmbedding = state.embedQueue.some(item => item.id === album.id);
     // A COMP track override owns the dark-grey frame/dot but never greys the
     // Curated Album thumbnail. Only an opposing whole-Album write does that.
     button.classList.toggle("opposing-override", cardState.albumOverridden);
-    button.classList.toggle("mixed-frame", !!cardState.mixedFrame);
-    if (cardState.mixedFrame) {
-      button.style.setProperty("--mixed-frame-a", mediaPolicyColor(cardState.mixedFrame === "green-purple" ? "green" : "orange"));
+    const mixedFrame = stagedForEmbedding ? "orange-purple" : cardState.mixedFrame;
+    button.classList.toggle("mixed-frame", !!mixedFrame);
+    button.classList.toggle("staged", stagedForEmbedding);
+    if (mixedFrame) {
+      button.style.setProperty("--mixed-frame-a", mediaPolicyColor(mixedFrame === "green-purple" ? "green" : "orange"));
       button.style.setProperty("--mixed-frame-b", mediaPolicyColor("purple"));
     }
     const presentedStatus = cardState.stateKey === "albumsComplete" ? "complete" : cardState.stateKey;
-    button.setAttribute("aria-label", album.name + ", " + (album.year || "year unknown") + ", " + presentedStatus);
+    button.setAttribute("aria-label", album.name + ", " + (album.year || "year unknown") + ", " + presentedStatus
+      + (stagedForEmbedding ? ", staged for embedding" : ""));
     const kind = albumDisplayBannerKind(album, artist), bannerStyle = albumBannerStyle(kind);
     const bannerNode = node("span", "album-type-banner", bannerStyle.name); bannerNode.style.setProperty("--banner-bg", bannerStyle.background); bannerNode.style.setProperty("--banner-ink", bannerStyle.letters); bannerNode.style.borderColor = bannerStyle.frame;
     const body = node("span", "album-card-body");
     const picture = node("span", "album-card-picture"); picture.append(albumArtworkNode(album, "", album.name + " cover", "album-placeholder", true));
     const dots = node("span", "album-status-dots"); for (const [color, tip] of cardState.dots) { const dot = node("span", "", "●"); dot.style.color = color; dot.title = tip; dots.append(dot); }
     picture.append(dots);
-    if (state.embedQueue.some(item => item.id === album.id)) { const staged = node("span", "album-staged-indicator", "●"); staged.title = "Staged for embedding"; bannerNode.append(staged); }
+    if (stagedForEmbedding) {
+      const staged = node("span", "album-staged-indicator", "●"); staged.title = "Staged for embedding";
+      staged.style.setProperty("--staged-indicator-a", mediaPolicyColor("orange"));
+      staged.style.setProperty("--staged-indicator-b", mediaPolicyColor("purple"));
+      bannerNode.append(staged);
+    }
     body.append(picture, node("strong", "", album.name), node("span", "album-card-foot", (album.year || "—") + "   ☆☆☆☆☆"));
     button.append(bannerNode, body);
     button.addEventListener("click", () => compIds.has(album.id) ? openArtistCompReport(album.id) : chooseAlbum(album.id)); grid.append(button);
@@ -2767,26 +2798,72 @@ function scheduleArtistProjectionRefresh(query, request) {
     }
   }, delay);
 }
+const LIBRARY_SEARCH_DEBOUNCE_MS = 250;
+const libraryListRequests = new Map();
+let artistSearchTimer = null, albumSearchTimer = null;
+function coalescedLibraryApi(path) {
+  let request = libraryListRequests.get(path);
+  if (!request) {
+    request = api(path).finally(() => {
+      if (libraryListRequests.get(path) === request) libraryListRequests.delete(path);
+    });
+    libraryListRequests.set(path, request);
+  }
+  return request;
+}
+function scheduleLibrarySearch(kind, query) {
+  const value = String(query || "");
+  if (kind === "artist") {
+    state.artistQuery = value;
+    renderLibrary();
+    window.clearTimeout(artistSearchTimer);
+    artistSearchTimer = window.setTimeout(() => {
+      artistSearchTimer = null;
+      if (state.libraryMode === "artists" && state.artistQuery === value) void loadLibrary(value);
+    }, LIBRARY_SEARCH_DEBOUNCE_MS);
+    return;
+  }
+  window.clearTimeout(albumSearchTimer);
+  if (state.libraryMode === "artists") {
+    if (!value.trim()) {
+      void loadAlbumLibraryMatches("");
+      return;
+    }
+    state.albumLibraryLoading = true;
+    renderLibrary();
+  }
+  const mode = state.libraryMode;
+  albumSearchTimer = window.setTimeout(() => {
+    albumSearchTimer = null;
+    if (state.libraryMode !== mode) return;
+    if (mode === "artists") void loadAlbumLibraryMatches(value);
+    else void loadLibrary(value);
+  }, LIBRARY_SEARCH_DEBOUNCE_MS);
+}
 async function loadLibrary(query = "") {
   const request = ++state.listRequest;
-  if (state.libraryMode === "artists") state.artistQuery = String(query || "");
+  const mode = state.libraryMode;
+  if (mode === "artists") state.artistQuery = String(query || "");
   state.libraryLoading = true;
   try {
-    if (state.libraryMode === "artists") state.artists = await api("/api/artists?q=" + encodeURIComponent(query));
-    else state.albumsIndex = await api("/api/albums?view=" + state.libraryMode + "&q=" + encodeURIComponent(query));
-    if (request !== state.listRequest) return;
+    const results = mode === "artists"
+      ? await coalescedLibraryApi("/api/artists?q=" + encodeURIComponent(query))
+      : await coalescedLibraryApi("/api/albums?view=" + mode + "&q=" + encodeURIComponent(query));
+    if (request !== state.listRequest || mode !== state.libraryMode) return;
+    if (mode === "artists") state.artists = results;
+    else state.albumsIndex = results;
     state.libraryLoading = false;
     state.libraryReady = true;
     renderLibrary();
-    if (state.libraryMode === "artists" && state.artists.some(item => item.projection_pending === true)) {
+    if (mode === "artists" && state.artists.some(item => item.projection_pending === true)) {
       state.artistProjectionRetry = 0;
       scheduleArtistProjectionRefresh(query, request);
     } else state.artistProjectionRetry = 0;
     // Artist rows already carry lazy, authenticated thumbnail URLs. Resolving
     // all Artist folders in a second bulk request defeats the viewport queue
     // and blocks large libraries on NAS metadata I/O.
-    if (state.libraryMode === "artists" && !state.artist && state.artists.length) await chooseArtist(state.artists[0].id, false);
-    else setStatus(state.libraryMode === "fallback" && !state.albumsIndex.length ? "No Albums are inside the Curated Compilations path" : "Library ready · WebGUI ready");
+    if (mode === "artists" && !state.artist && state.artists.length) await chooseArtist(state.artists[0].id, false);
+    else setStatus(mode === "fallback" && !state.albumsIndex.length ? "No Albums are inside the Curated Compilations path" : "Library ready · WebGUI ready");
   } catch (error) { if (request === state.listRequest) { state.libraryLoading = false; renderLibrary(); setStatus(error.message, "error"); } }
 }
 async function loadAlbumLibraryMatches(query) {
@@ -2801,7 +2878,7 @@ async function loadAlbumLibraryMatches(query) {
   state.albumLibraryLoading = true;
   renderLibrary();
   try {
-    const matches = await api("/api/albums?view=search&q=" + encodeURIComponent(value));
+    const matches = await coalescedLibraryApi("/api/albums?view=search&q=" + encodeURIComponent(value));
     if (request !== state.albumLibraryRequest || state.libraryMode !== "artists") return;
     state.albumLibraryMatches = matches;
     state.albumLibraryLoading = false;
@@ -2898,7 +2975,9 @@ async function chooseArtist(id, select = true) {
     state.radioCurrent = true; state.radioArtist = false; state.radioBanner = false;
     state.artistInfoExpanded = false;
     if (typeof syncSelectedArtistStatus === "function") syncSelectedArtistStatus();
-    renderAll(); setStatus("Loaded " + state.artist.name + " · " + state.artist.albums.length + " albums");
+    renderAll();
+    if (select) requestAnimationFrame(() => focusLibraryArtistRow(artist.id));
+    setStatus("Loaded " + state.artist.name + " · " + state.artist.albums.length + " albums");
     auditEvent("selection-change", "artist", {scope: {artist_id: artist.id}, details: {library_mode: state.libraryMode}});
     // Compile the Artist's track-scoped COMP projection in the background so
     // COMP Report remains closed until requested but opens immediately later.
@@ -3046,8 +3125,7 @@ function showDialog(title, lines) {
 }
 
 $("artistSearch").addEventListener("input", event => {
-  state.artistQuery = event.target.value;
-  if (state.libraryMode === "artists") loadLibrary(event.target.value);
+  if (state.libraryMode === "artists") scheduleLibrarySearch("artist", event.target.value);
 });
 $("biographyToggle").addEventListener("click", () => {
   state.biographyExpanded = !state.biographyExpanded;
@@ -3060,11 +3138,7 @@ $("artistInfoToggle").addEventListener("click", () => {
 });
 window.addEventListener("resize", () => requestAnimationFrame(updateBiographyToggle));
 $("albumSearch").addEventListener("input", event => {
-  if (state.libraryMode === "artists") {
-    loadAlbumLibraryMatches(event.target.value);
-    return;
-  }
-  loadLibrary(event.target.value);
+  scheduleLibrarySearch("album", event.target.value);
 });
 $("candidateSearch").addEventListener("input", renderCandidates);
 $("clearCandidateFilter").addEventListener("click", () => { $("candidateSearch").value = ""; state.activeSource = ""; resetCandidateFilters(); renderSources(); renderCandidates(); });

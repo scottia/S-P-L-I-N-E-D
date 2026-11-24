@@ -175,41 +175,62 @@ async function submitPasswordRecovery(payload) {
 }
 let libraryChangePollTimer = null;
 let libraryChangeHourlyTimer = null;
+let libraryChangePolling = null;
+let libraryChangePollAttempt = 0;
 const LIBRARY_CHANGE_HOURLY_MS = 60 * 60 * 1000;
+const LIBRARY_CHANGE_POLL_DELAYS_MS = [1000, 2000, 4000, 8000, 15000];
+function interactiveLifecycleWorkActive() {
+  return !!state.launchActive || !!state.writePending || !!state.libraryLoading
+    || (state.jobs || []).some(job => ["scan", "comp", "embed-album", "index"].includes(job.kind)
+      && ["queued", "running", "waiting"].includes(job.state));
+}
 function libraryChangeProbeFailed(error) {
   libraryChangePollTimer = null;
   state.libraryChanges = {...(state.libraryChanges || {}), checking: false};
-  setStatus("Unable to check the music library for changes", "error");
+  libraryChangePollAttempt = 0;
+  if (!interactiveLifecycleWorkActive()) setStatus("Unable to check the music library for changes", "error");
   auditEvent("library-change-check", "failed", {severity: "warning", error: error.message});
 }
 function scheduleLibraryChangePoll() {
   if (libraryChangePollTimer !== null) return;
-  // A completed probe must clear the busy banner even when the browser was
-  // backgrounded during the first one-second interval. Browser visibility may
-  // throttle this timer, but it must never cancel the only completion poll.
+  const delay = LIBRARY_CHANGE_POLL_DELAYS_MS[
+    Math.min(libraryChangePollAttempt, LIBRARY_CHANGE_POLL_DELAYS_MS.length - 1)
+  ];
+  libraryChangePollAttempt += 1;
+  // Keep one completion poll, but back it off so a long-running probe cannot
+  // produce a permanent one-second request loop beside interactive work.
   libraryChangePollTimer = setTimeout(async () => {
     libraryChangePollTimer = null;
     if (!state.libraryChanges?.checking) return;
     try { await checkLibraryChanges(); } catch (error) { libraryChangeProbeFailed(error); }
-  }, 1000);
+  }, delay);
 }
 async function checkLibraryChanges() {
-  const changes = await api("/api/library/changes");
-  const wasChecking = !!state.libraryChanges?.checking;
-  state.libraryChanges = changes;
-  const button = $("applyLibraryChanges");
-  button.hidden = !changes.count;
-  button.textContent = changes.count
-    ? `Apply Library Changes (${changes.count})`
-    : "Apply Library Changes";
-  if (changes.count) {
-    setStatus(`Music library changes · ${changes.added} added · ${changes.changed} changed · ${changes.moved || 0} moved · ${changes.removed} removed`);
-  } else if (changes.checking) {
-    setStatus("Checking the music library for changes…", "busy");
-  } else if (wasChecking) {
-    setStatus("Music library is up to date");
-  }
-  if (changes.checking) scheduleLibraryChangePoll();
+  if (libraryChangePolling) return libraryChangePolling;
+  const task = (async () => {
+    const changes = await api("/api/library/changes");
+    const wasChecking = !!state.libraryChanges?.checking;
+    state.libraryChanges = changes;
+    const button = $("applyLibraryChanges");
+    button.hidden = !changes.count;
+    button.textContent = changes.count
+      ? `Apply Library Changes (${changes.count})`
+      : "Apply Library Changes";
+    const ownsStatus = !interactiveLifecycleWorkActive();
+    if (changes.count && ownsStatus) {
+      setStatus(`Music library changes · ${changes.added} added · ${changes.changed} changed · ${changes.moved || 0} moved · ${changes.removed} removed`);
+    } else if (changes.checking && ownsStatus) {
+      setStatus("Checking the music library for changes…", "busy");
+    } else if (wasChecking && ownsStatus) {
+      setStatus("Music library is up to date");
+    }
+    if (changes.checking) scheduleLibraryChangePoll();
+    else libraryChangePollAttempt = 0;
+    return changes;
+  })();
+  libraryChangePolling = task;
+  try { return await task; }
+  finally { if (libraryChangePolling === task) libraryChangePolling = null; }
 }
 document.addEventListener("visibilitychange", () => {
   // Refresh immediately when returning to the workspace while retaining the
@@ -221,8 +242,9 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 async function requestLibraryChangeProbe() {
+  libraryChangePollAttempt = 0;
   const probe = await post("/api/library/check-changes");
-  if (["queued", "running", "waiting"].includes(probe.state)) {
+  if (["queued", "running", "waiting"].includes(probe.state) && !interactiveLifecycleWorkActive()) {
     setStatus("Checking the music library for changes…", "busy");
   }
   await checkLibraryChanges();
@@ -905,32 +927,47 @@ async function focusQueuedAlbum(decision) {
     await selectFallbackTrack(promptTrackKey, false, false);
 }
 async function submitQueuedDecision(value) {
+  if (state.queuedDecisionPending) return;
   const decision = state.queuedDecision;
   if (!decision) throw new Error("This queued decision is no longer current");
-  if (decision.jobKind === "direct-musicbrainz") {
-    const selected = Number.isInteger(decision.selectedResult)
-      ? decision.options?.[decision.selectedResult] : null;
-    const keepCurrent = value === "b" || value === "__manual_candidates__"
-      || String(value).includes("use-existing");
-    if (!selected && !keepCurrent) throw new Error("Select a MusicBrainz Album first");
+  state.queuedDecisionPending = true;
+  try {
+    if (decision.jobKind === "direct-musicbrainz") {
+      const selected = Number.isInteger(decision.selectedResult)
+        ? decision.options?.[decision.selectedResult] : null;
+      const keepCurrent = value === "b" || value === "__manual_candidates__"
+        || String(value).includes("use-existing");
+      if (!selected && !keepCurrent) throw new Error("Select a MusicBrainz Album first");
+      clearQueuedDecision();
+      if (selected) {
+        await searchAlbum(selected.id);
+        setStatus("MusicBrainz Album selected · artwork candidates loaded", "ready");
+      } else setStatus("Current Album retained", "ready");
+      return;
+    }
+    try {
+      await post("/api/jobs/action", {
+        action: "decision", id: decision.jobId, value: String(value), nonce: decision.nonce,
+      });
+    } catch (error) {
+      if (error?.message !== "This decision is no longer current") throw error;
+      clearQueuedDecision();
+      setStatus("Queued decision changed · refreshing the authoritative queue…", "busy");
+      await pollJobs();
+      if (!state.queuedDecision) setStatus("Queued decision reconciled with current work", "ready");
+      return;
+    }
+    const label = decision.selected?.queueNumber || value;
+    const musicBrainz = decision.kind === "musicbrainz-results";
+    const track = [decision.context?.track_artist, decision.context?.track_title].filter(Boolean).join(" — ");
     clearQueuedDecision();
-    if (selected) {
-      await searchAlbum(selected.id);
-      setStatus("MusicBrainz Album selected · artwork candidates loaded", "ready");
-    } else setStatus("Current Album retained", "ready");
-    return;
+    setStatus(musicBrainz
+      ? "MusicBrainz release selected" + (track ? " · " + track : "") + " · loading artwork candidates"
+      : "Queued choice " + label + " submitted · waiting for the next decision", "busy");
+    await pollJobs();
+  } finally {
+    state.queuedDecisionPending = false;
   }
-  await post("/api/jobs/action", {
-    action: "decision", id: decision.jobId, value: String(value), nonce: decision.nonce,
-  });
-  const label = decision.selected?.queueNumber || value;
-  const musicBrainz = decision.kind === "musicbrainz-results";
-  const track = [decision.context?.track_artist, decision.context?.track_title].filter(Boolean).join(" — ");
-  clearQueuedDecision();
-  setStatus(musicBrainz
-    ? "MusicBrainz release selected" + (track ? " · " + track : "") + " · loading artwork candidates"
-    : "Queued choice " + label + " submitted · waiting for the next decision", "busy");
-  await pollJobs();
 }
 async function selectExistingMusicBrainzArtwork(index) {
   const decision = activeArtworkDecision();
@@ -1267,6 +1304,15 @@ async function refreshQueuedAlbumAfterSave(job = null) {
 }
 let jobsPolling = null, jobsPollAgain = false, lastPrompt = "";
 let sharedStatePolling = null;
+let sharedStateNextPollAt = 0;
+let sharedStateFailures = 0;
+const SHARED_STATE_QUIET_MS = 30 * 1000;
+const SHARED_STATE_MAX_BACKOFF_MS = 5 * 60 * 1000;
+function sharedStateInteractiveWorkActive() {
+  return !!state.launchActive || !!state.writePending || !!state.libraryLoading
+    || (state.jobs || []).some(job => ["scan", "comp", "embed-album", "index", "index-probe"].includes(job.kind)
+      && ["queued", "running", "waiting"].includes(job.state));
+}
 async function pollJobs(requestFollowUp = true) {
   if (!state.server?.authenticated || state.server?.setup_required || !state.libraryReady) return;
   if (jobsPolling) {
@@ -1289,19 +1335,20 @@ async function pollJobs(requestFollowUp = true) {
 }
 async function pollSharedState() {
   if (sharedStatePolling) return sharedStatePolling;
+  if (sharedStateInteractiveWorkActive() || Date.now() < sharedStateNextPollAt) return null;
+  let failed = false;
   const task = (async () => {
     try {
-      // Initial library publication owns the PostgreSQL read budget.  Opposing
-      // COMP verification can touch shared media and is deferred while a
-      // durable index generation is active; the next idle heartbeat catches up.
-      const compTrackRequest = activeIndexJob()
-        ? Promise.resolve(null)
-        : api("/api/coordination/comp-track-overrides").catch(() => null);
-      const [albumCoordination, compTrackCoordination, indexStatus] = await Promise.all([
-        api("/api/coordination/album-overrides").catch(() => null),
-        compTrackRequest,
-        api("/api/library/index-status").catch(() => null),
+      const results = await Promise.allSettled([
+        api("/api/coordination/album-overrides"),
+        api("/api/coordination/comp-track-overrides"),
+        api("/api/library/index-status"),
       ]);
+      const rejected = results.filter(result => result.status === "rejected");
+      failed = rejected.length > 0;
+      const albumCoordination = results[0].status === "fulfilled" ? results[0].value : null;
+      const compTrackCoordination = results[1].status === "fulfilled" ? results[1].value : null;
+      const indexStatus = results[2].status === "fulfilled" ? results[2].value : null;
       state.indexStatus = indexStatus; renderIndexProgress();
       const changedOverrides = applyAlbumCoordination(albumCoordination);
       const changedTrackOverrides = applyCompTrackCoordination(compTrackCoordination);
@@ -1311,7 +1358,9 @@ async function pollSharedState() {
       }
       if (changedTrackOverrides.length)
         await refreshOpenCompReportAfterCoordination(changedTrackOverrides);
+      if (rejected.length) throw rejected[0].reason;
     } catch (error) {
+      failed = true;
       auditEvent("shared-state-poll", "coordination", {
         severity: "warning", request_status: "failed", error: error.message,
       });
@@ -1319,7 +1368,19 @@ async function pollSharedState() {
   })();
   sharedStatePolling = task;
   try { return await task; }
-  finally { if (sharedStatePolling === task) sharedStatePolling = null; }
+  finally {
+    if (sharedStatePolling === task) sharedStatePolling = null;
+    if (failed) {
+      sharedStateFailures += 1;
+      sharedStateNextPollAt = Date.now() + Math.min(
+        SHARED_STATE_MAX_BACKOFF_MS,
+        SHARED_STATE_QUIET_MS * (2 ** Math.min(sharedStateFailures, 4)),
+      );
+    } else {
+      sharedStateFailures = 0;
+      sharedStateNextPollAt = Date.now() + SHARED_STATE_QUIET_MS;
+    }
+  }
 }
 function activeIndexJob() {
   return (state.jobs || []).find(job => job.kind === "index"
@@ -1434,10 +1495,21 @@ async function performJobsPoll() {
       && (state.editorMode === "fallback" || state.compReportVisible)) renderHero();
     const stagedChanged = priorStaged.size !== state.embedQueue.length
       || state.embedQueue.some(item => !priorStaged.has(item.id));
-    const completedAlbums = state.jobs.filter(job => job.kind === "embed-album" && job.state === "done"
-      && priorJobs.has(job.id) && priorJobs.get(job.id).state !== "done")
-      .map(job => job.payload?.album_id).filter(Boolean);
+    const completedEmbedJobs = state.jobs.filter(job => job.kind === "embed-album" && job.state === "done"
+      && priorJobs.has(job.id) && priorJobs.get(job.id).state !== "done");
+    const completedAlbums = completedEmbedJobs.map(job => job.payload?.album_id).filter(Boolean);
     for (const albumId of completedAlbums) await refreshCompletedAlbum(albumId);
+    if (completedEmbedJobs.length && !activeEmbed) {
+      const completedJob = completedEmbedJobs.at(-1);
+      const album = completedJob.payload?.name || "Album";
+      const tracks = Number(completedJob.result?.tracks || completedJob.progress?.completed
+        || completedJob.progress?.total || completedJob.payload?.tracks || 0);
+      const side = Number(completedJob.result?.side || completedJob.payload?.embedded_side || 0);
+      const details = [tracks ? `${tracks}/${tracks} tracks` : "tracks verified",
+        side ? `verified ${side} × ${side}` : "", completedJob.progress?.message || ""]
+        .filter(Boolean).join(" · ");
+      setStatus(`Album track embedding completed and verified · ${album} · ${details}`, "ready");
+    }
     if (stagedChanged && !completedAlbums.length) { renderHero(); renderReview(); }
     if (state.reviewJobId) {
       const job = state.jobs.find(item => item.id === state.reviewJobId);
@@ -1465,7 +1537,8 @@ async function performJobsPoll() {
             .sort((left, right) => String(left.created_at || "").localeCompare(String(right.created_at || "")))[0] : null;
           state.reviewJobId = nextComp?.id || null;
           state.reviewJobState = nextComp?.state || "";
-          if (job.kind === "embed-album") setStatus("Album track embedding completed and verified · " + (state.album?.name || job.payload?.name || "Album"));
+          if (job.kind === "embed-album" && !completedEmbedJobs.some(item => item.id === job.id))
+            setStatus("Album track embedding completed and verified · " + (state.album?.name || job.payload?.name || "Album"), "ready");
           else if (job.kind === "index") {
             const query = state.libraryMode === "artists" ? ($("artistSearch").value || "") : ($("albumSearch").value || "");
             setStatus("PostgreSQL refresh complete · updating the library view…", "busy");
