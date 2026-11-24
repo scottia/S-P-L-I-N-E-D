@@ -20,7 +20,7 @@ This directory documents **only the supported source in** `build/Windows/` and `
 ## Shared contracts, policy and indexing
 
 - [Approved policy register](POLICY-REGISTER.md) — **owner-authoritative** Artist/Album rankings, dots, visual safeguards and review boundaries.
-- [Shared Windows/WebGUI lifecycle](lifecycle-policy.md) — [lifecycle-policy.json](../schema/lifecycle-policy.json) common behavior outcomes, separate SQLite/PostgreSQL authority, WebGUI refinements and actual validation limitations.
+- [Shared Windows/WebGUI lifecycle](lifecycle-policy.md) — [lifecycle-policy.json](../schema/lifecycle-policy.json) common behavior outcomes, native activation requirements, separate SQLite/PostgreSQL authority, WebGUI refinements and remaining validation gates.
 - [Policy and indexer source map](POLICY-INDEX.md) — each canonical contract's actual Windows/WebGUI consumers and tests.
 - [Source validation status](SCHEMA-VALIDATION.md) — completed source checks versus outstanding native/deployed verification.
 - [Artist/Album state policy delivery](media-state-classification-policy.md) and [COMP report policy](comp-report-policy.md) — operational handling of the two protected JSON contracts. Neither creates a second rulebook.
