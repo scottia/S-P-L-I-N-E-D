@@ -3,17 +3,20 @@
 SPLINED keeps source review, workflow definition, compilation and publication
 as separate owner actions.
 
-1. Accumulate application and version changes through reviewed pull requests
-   into `dev`.
+1. Accumulate application changes through reviewed pull requests into `dev`.
 2. Close each source pull request by merging it to `dev` after its required
    checks and owner approval.
 3. Keep the approved Workflow 10 definition on `main`.
 4. Run Workflow 10 from `main`; it compares `origin/main` with `origin/dev`,
    selects the exact current `origin/dev` commit, and builds that source.
 
-Workflow 10 never creates a pull request, writes to `dev`, stamps a version, or
-pushes a source commit to either protected branch. The Windows and WebGUI
-versions on `dev` must agree on one numeric `X.Y.Z` source version.
+Workflow 10 never creates a pull request, writes to `dev`, or pushes a source
+commit to either protected branch. The Windows and WebGUI versions on `dev`
+must agree on one numeric `X.Y.Z` source version. When that version has already
+been published and approved product source changed, Workflow 10 computes the
+next numeric patch and stamps only the synchronized version fields in a
+temporary release commit. The temporary commit is built, audited, and tagged;
+the reviewed `dev` commit remains its immutable parent.
 
 | Workflow | Purpose |
 |---|---|
@@ -77,13 +80,19 @@ publishes that image instead of rebuilding it.
 
 ### Current source and release completion
 
-From the selected `origin/dev` commit, Workflow 10 reads the version from both `build/Windows/Cargo.toml` and
-`build/WEBGui/webgui/backend/splined.py`; disagreement fails before building.
-It does not accept an entered version and does not invent a next version.
+From the selected `origin/dev` commit, Workflow 10 reads and validates every
+synchronized Windows/WebGUI/package version field; disagreement fails before
+building. It does not accept an entered version. If the committed version is
+the next unused numeric version, Workflow 10 uses it directly. If that version
+is already published and the normalized product tree changed, Workflow 10
+selects the next numeric patch automatically.
 
-For a new version, the numeric tag points directly at the unchanged selected
-`origin/dev` commit. The workflow rechecks that `dev` has not advanced while
-the build is running, but never pushes or merges either branch.
+For an automatically advanced version, the numeric tag points at a temporary
+release commit whose parent is the unchanged selected `origin/dev` commit and
+whose only differences are the six synchronized version-bearing files. The
+workflow verifies that exact boundary, rechecks that `dev` has not advanced
+while builds run, and never pushes or merges either protected branch. When no
+stamp is necessary, the tag continues to point directly at selected `dev`.
 
 If the same version already has a GitHub Release, Workflow 10 may complete a
 missing target:
@@ -93,7 +102,8 @@ missing target:
 - an explicitly selected target that already exists fails as a safe no-op;
 - existing release assets and GHCR version tags are never overwritten;
 - the tagged product source must match current `dev` under `build/Windows/`,
-  `build/WEBGui/` and `schema/`, or a new numeric source version is required.
+  `build/WEBGui/` and `schema/` after normalizing the synchronized version-only
+  fields, or Workflow 10 prepares the next numeric version.
 
 This supports Windows-first or WebGUI-first publication without rebuilding the
 completed target. A completion upload receives a target-specific checksum file
