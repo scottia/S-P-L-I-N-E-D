@@ -1,9 +1,4 @@
-"""Resolve a release from the version already committed in both source trees.
-
-Release workflows must build repository source exactly.  They may not invent a
-new version in a temporary runner commit because that leaves ``dev`` carrying
-metadata for an older, materially different build.
-"""
+"""Resolve reviewed source to a safe numeric release version."""
 from __future__ import annotations
 
 import re
@@ -45,4 +40,37 @@ def choose_release_version(
     if source_version in occupied or f"v{source_version}" in occupied:
         raise ValueError(f"Release tag already exists: {source_version}")
     return source_version
+
+
+def choose_workflow10_release_version(
+    source_version: str,
+    active_versions: Iterable[tuple[int, int, int]],
+    all_tags: Iterable[str],
+    latest_product_matches: bool,
+) -> tuple[str, bool]:
+    """Return Workflow 10's version and whether a temporary stamp is required.
+
+    A matching latest product tree completes that existing version. Otherwise
+    an untagged committed next version is used, or the next patch after the
+    latest numeric tag is stamped into a temporary release-only commit.
+    """
+    source = _numeric(source_version)
+    active = list(active_versions)
+    occupied = set(all_tags)
+    if not active:
+        return source_version, False
+
+    latest = max(active)
+    latest_text = ".".join(map(str, latest))
+    if latest_product_matches:
+        return latest_text, latest_text != source_version
+
+    if source > latest and source_version not in occupied and f"v{source_version}" not in occupied:
+        return source_version, False
+
+    major, minor, patch = latest
+    next_text = f"{major}.{minor}.{patch + 1}"
+    if next_text in occupied or f"v{next_text}" in occupied:
+        raise ValueError(f"Next release tag already exists: {next_text}")
+    return next_text, next_text != source_version
 

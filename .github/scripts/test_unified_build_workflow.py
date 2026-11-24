@@ -81,6 +81,23 @@ class UnifiedBuildWorkflowTests(unittest.TestCase):
         self.assertIn('RELEASE_VERSION="$REQUESTED_VERSION"', self.source)
         self.assertNotIn('$RELEASE_COMMIT:refs/heads/main', self.source)
 
+    def test_changed_published_source_advances_in_temporary_release_commit(self):
+        self.assertIn("choose_workflow10_release_version", self.source)
+        self.assertIn("source_version.py product-digest", self.source)
+        self.assertIn("source_version.py stamp-release", self.source)
+        self.assertIn('git commit -m "release: prepare ${RELEASE_VERSION}"', self.source)
+        self.assertIn('test "$(git rev-parse "$RELEASE_COMMIT^")" = "$SOURCE_SHA"', self.source)
+        self.assertIn("Temporary release-version stamp required", self.source)
+        for version_path in (
+            "build/Windows/Cargo.toml",
+            "build/Windows/Cargo.lock",
+            "build/Windows/gui/app.manifest",
+            "build/Windows/package/Package.appxmanifest",
+            "build/Windows/package/SPLINED.appinstaller.template",
+            "build/WEBGui/webgui/backend/splined.py",
+        ):
+            self.assertIn(version_path, self.source)
+
     def test_plan_is_approved_before_compilation(self):
         approval = self.source.index("name: workflow-10-plan-approval")
         self.assertLess(approval, self.source.index("  build-windows:"))

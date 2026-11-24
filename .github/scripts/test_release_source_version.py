@@ -9,11 +9,16 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".github" / "scripts"))
 
-from release_source_version import choose_release_version
+from release_source_version import (
+    choose_release_version,
+    choose_workflow10_release_version,
+)
 from source_version import (
     current_source_version,
     next_patch_version,
+    release_product_digest,
     source_versions,
+    stamp_release_version,
     stamp_source_version,
 )
 
@@ -57,6 +62,41 @@ class ReleaseSourceVersionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "latest main-history tag"):
             next_patch_version(current, [f"{major}.{minor}.{max(0, patch - 1)}"])
 
+    def test_temporary_release_stamp_can_follow_newer_release_tags(self) -> None:
+        current = current_source_version(ROOT)
+        major, minor, patch = map(int, current.split("."))
+        release_version = f"{major}.{minor}.{patch + 2}"
+        relative_paths = (
+            "build/Windows/Cargo.toml",
+            "build/Windows/Cargo.lock",
+            "build/Windows/gui/app.manifest",
+            "build/Windows/package/Package.appxmanifest",
+            "build/Windows/package/SPLINED.appinstaller.template",
+            "build/WEBGui/webgui/backend/splined.py",
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            source_root = Path(temporary) / "source"
+            stamped_root = Path(temporary) / "stamped"
+            for test_root in (source_root, stamped_root):
+                for relative in relative_paths:
+                    destination = test_root / relative
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(ROOT / relative, destination)
+                (test_root / "schema").mkdir(parents=True)
+                (test_root / "schema" / "sentinel.json").write_text("{}\n")
+            stamp_release_version(stamped_root, release_version)
+            self.assertEqual(current_source_version(stamped_root), release_version)
+            self.assertEqual(
+                release_product_digest(source_root),
+                release_product_digest(stamped_root),
+            )
+            with (stamped_root / "schema" / "sentinel.json").open("a") as handle:
+                handle.write("changed\n")
+            self.assertNotEqual(
+                release_product_digest(source_root),
+                release_product_digest(stamped_root),
+            )
+
     def test_blank_or_exact_request_uses_committed_source(self) -> None:
         active = [(3, 0, 21)]
         tags = ["3.0.21"]
@@ -76,13 +116,43 @@ class ReleaseSourceVersionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "already exists"):
             choose_release_version("3.0.22", [(3, 0, 21)], ["v3.0.22"])
 
+    def test_workflow10_uses_committed_next_version_when_available(self) -> None:
+        self.assertEqual(
+            choose_workflow10_release_version(
+                "3.0.27", [(3, 0, 26)], ["3.0.26"], False
+            ),
+            ("3.0.27", False),
+        )
+
+    def test_workflow10_advances_changed_source_after_published_version(self) -> None:
+        self.assertEqual(
+            choose_workflow10_release_version(
+                "3.0.26", [(3, 0, 26)], ["3.0.26"], False
+            ),
+            ("3.0.27", True),
+        )
+        self.assertEqual(
+            choose_workflow10_release_version(
+                "3.0.26", [(3, 0, 27)], ["3.0.27"], False
+            ),
+            ("3.0.28", True),
+        )
+
+    def test_workflow10_reuses_matching_latest_release(self) -> None:
+        self.assertEqual(
+            choose_workflow10_release_version(
+                "3.0.26", [(3, 0, 27)], ["3.0.27"], True
+            ),
+            ("3.0.27", True),
+        )
+
     def test_release_workflows_call_shared_resolver(self) -> None:
         release = (ROOT / ".github/workflows/01-full-release.yml").read_text(encoding="utf-8")
         self.assertIn("from release_source_version import choose_release_version", release)
         self.assertIn("git commit -m \"release: prepare ${RELEASE_VERSION}\" --allow-empty", release)
         unified = (ROOT / ".github/workflows/10-unified-build.yml").read_text(encoding="utf-8")
-        self.assertIn("from release_source_version import choose_release_version", unified)
-        self.assertIn('RELEASE_COMMIT="$SOURCE_SHA"', unified)
+        self.assertIn("choose_workflow10_release_version", unified)
+        self.assertIn("stamp-release", unified)
         self.assertNotIn('$RELEASE_COMMIT:refs/heads/main', unified)
 
 
