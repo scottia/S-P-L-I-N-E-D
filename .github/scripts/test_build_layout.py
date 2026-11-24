@@ -104,7 +104,13 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertEqual(stale, [])
 
     def test_shared_schema_stays_single_source(self):
-        for name in ("media.sql", "settings-ui.json", "media-state-classification.json", "comp-report-policy.json"):
+        for name in (
+            "media.sql",
+            "settings-ui.json",
+            "media-state-classification.json",
+            "comp-report-policy.json",
+            "lifecycle-policy.json",
+        ):
             self.assertTrue((ROOT / "schema" / name).is_file())
             self.assertFalse((ROOT / "build/Windows/schema" / name).exists())
             self.assertFalse((ROOT / "build/WEBGui/schema" / name).exists())

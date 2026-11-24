@@ -1,4 +1,4 @@
-"""Read-only pre-release check of the four canonical /schema contracts.
+"""Read-only pre-release check of the five canonical /schema contracts.
 
 Use the actual WebGUI policy validators rather than inventing another policy
 definition. This checks checked-in sources only; it never loads or seeds an
@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "build" / "WEBGui"))
 
 from webgui.comp_report_policy import validate_comp_report_policy
+from webgui.lifecycle_policy import validate_lifecycle_policy
 from webgui.media_state_policy import validate_media_state_policy
 
 CONTRACTS = ROOT / "schema"
@@ -35,6 +36,9 @@ def check_behavioural_policies() -> None:
 
     comp = _read_json("comp-report-policy.json")
     validate_comp_report_policy(comp)
+
+    lifecycle = _read_json("lifecycle-policy.json")
+    validate_lifecycle_policy(lifecycle)
 
 
 def check_sqlite_index_schema() -> None:
@@ -91,4 +95,4 @@ def check_all() -> None:
 
 if __name__ == "__main__":
     check_all()
-    print("PASS: canonical media-state, COMP, SQLite schema and Config v5 contracts")
+    print("PASS: canonical media-state, COMP, lifecycle, SQLite schema and Config v5 contracts")

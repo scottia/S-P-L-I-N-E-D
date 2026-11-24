@@ -30,9 +30,11 @@ class MainDocumentationAlignmentTests(unittest.TestCase):
             "build/WEBGui/webgui/catalog_authority.py",
             "schema/media-state-classification.json",
             "schema/comp-report-policy.json",
+            "schema/lifecycle-policy.json",
             "docs/POLICY-REGISTER.md",
             "docs/POLICY-INDEX.md",
             "docs/SCHEMA-VALIDATION.md",
+            "docs/lifecycle-policy.md",
         ):
             with self.subTest(path=required):
                 self.assertTrue((ROOT / required).is_file(), required)

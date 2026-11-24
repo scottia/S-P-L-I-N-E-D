@@ -4372,6 +4372,9 @@ fn run_database_upgrade_preparedness() -> Result<bool, slint::PlatformError> {
 
 fn main() -> Result<(), slint::PlatformError> {
     record_startup_timing("startup-process begin".to_string());
+    // Local and bounded: fail before any database, provider, or catalog work
+    // when the embedded shared lifecycle contract is invalid.
+    let _lifecycle_policy = splined_core::lifecycle_policy::policy();
     // The software renderer is deliberately selected on Windows. It avoids
     // multi-window OpenGL context loss that previously produced white frames
     // and crashed while opening or maximizing Custom Upscale.

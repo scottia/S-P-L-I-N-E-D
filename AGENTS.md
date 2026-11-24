@@ -164,14 +164,13 @@ folder-artwork tests that reject an attempted WebP replacement.
   PostgreSQL-owned operations. **GUI-only** remains the complete WebGUI
   application, not Windows Rust/Slint; shared `LIFE` outcomes do not broaden
   the scope of any existing WebGUI-only implementation PR.
-- The new JSON is **declarative only** until native Rust and Python consumers
-  validate it and affected behavior, with focused tests proving application
-  conformance. The owner requires closing those gaps and extending independent
-  fail-closed protection of the new JSON after its initial accepted version
-  is in the base; see `docs/lifecycle-policy.md` for the activation order.
-  It does not copy data between SQLite and PostgreSQL or establish automatic
-  revision mirroring. Never report runtime enforcement, production
-  synchronization or installed parity from documentation alone.
+- The JSON remains a **declarative behavioral contract**. Native Rust and
+  Python consumers now load and fail-closed validate its identity, client
+  scope, nine stable requirements and WebGUI refinement mapping before client
+  database/catalog startup. The independent canonical-policy gate protects
+  the accepted file. This source integration does not copy data between SQLite
+  and PostgreSQL, establish automatic revision mirroring, or by itself prove
+  every behavior or installed-client parity; see `docs/lifecycle-policy.md`.
 - Preserve operation generation authority, bounded nonblocking work, durable
   queue/nonces, honest stage/completion status, current Artist/Album evidence,
   configured COMP embedded-size authority, and cross-client DB ownership.
@@ -195,16 +194,14 @@ folder-artwork tests that reject an attempted WebP replacement.
   separately owner-approved, independently enforced authorization
   procedure. Never edit the gate in the same PR to evade it, forge a
   pass, or claim an owner message turns a failed check green.
-- `schema/lifecycle-policy.json` is the **new shared behavioral lifecycle
-  specification**. It supplements the two already-protected canonical JSONs,
-  without replacing their authority. The current independent JSON review gate
-  has **not yet been extended to this new file** and neither runtime loads it.
-  Revisions require a separate explicit owner-reviewed policy scope; do not
-  claim protection/enforcement or silently synchronize SQLite/PostgreSQL.
-  Native loader/validation and independent gate protection are **required
-  activation gates**, to be implemented under separately reviewed scope after
-  the new source contract is accepted. Do not describe those gaps as closed
-  until CI and focused runtime evidence demonstrate them.
+- `schema/lifecycle-policy.json` is the shared behavioral lifecycle
+  specification. It supplements the two existing canonical JSONs without
+  replacing their authority. Native Windows and WebGUI consumers validate the
+  checked-in file locally before catalog/database initialization, and the
+  independent JSON review gate rejects its add/change/delete/rename. Revisions
+  still require a separate explicit owner-reviewed policy scope; validation is
+  not permission to synchronize SQLite/PostgreSQL or claim unmeasured
+  installed parity.
 - `schema/media.sql` is SQLite DDL; `schema/settings-ui.json` is the
   Config v5 UI contract, not another behavior authority. Runtime JSON
   mirrors and persisted PostgreSQL policy revisions are delivery

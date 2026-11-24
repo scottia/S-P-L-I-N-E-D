@@ -1,4 +1,4 @@
-"""Independent, fail-closed PR diff gate for both protected behavioural JSONs.
+"""Independent, fail-closed PR diff gate for protected behavioural JSONs.
 
 This is a review boundary, not a way to approve, rewrite or auto-revert a
 policy. Intentional policy revisions require a separate owner-reviewed process.
@@ -12,6 +12,7 @@ import sys
 PROTECTED = (
     "schema/media-state-classification.json",
     "schema/comp-report-policy.json",
+    "schema/lifecycle-policy.json",
 )
 
 
@@ -45,4 +46,4 @@ if __name__ == "__main__":
     except (RuntimeError, ValueError, subprocess.CalledProcessError) as error:
         print(f"FAIL: {error}", file=sys.stderr)
         raise SystemExit(1) from error
-    print("PASS: both protected behavioural JSON files unchanged")
+    print("PASS: all protected behavioural JSON files unchanged")

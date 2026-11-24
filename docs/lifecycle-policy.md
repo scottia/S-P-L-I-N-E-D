@@ -54,6 +54,25 @@ Acceptance requires source tracing, targeted tests, and installed-client
 evidence for the affected behavior. Do not infer parity from shared terminology
 or a successful general CI job.
 
+## Focused source and behavior evidence
+
+The native consumers bind the same accepted IDs to each client, while the
+behavior remains implemented by each client's existing mechanisms. The table
+records current focused evidence and does not upgrade an open defect into a
+pass.
+
+| ID | Windows focused evidence | WebGUI focused evidence | Current parity gap |
+| --- | --- | --- | --- |
+| `LIFE-001` | `application.rs` selection/COMP event tests and `scan_controller.rs::duplicate_refresh_claims_attach_to_the_active_generation_result` | Browser tests for late API/metadata/COMP responses and single-flight writes | Installed rapid-selection parity remains unmeasured. |
+| `LIFE-002` | Resident-snapshot tests exist, but PR #307 records synchronous row artwork and broad model refresh during startup/selection | Visibility-queued thumbnails and stale-response tests; PR #314 retains measured load/selection defects | Windows shell-first/memory-only rows and both clients' accepted performance remain open. |
+| `LIFE-003` | Index batch bounds, generation claims and cancellation tests | Periodic-poll, action-refresh, single-flight and thumbnail-queue browser tests | PR #314 request fan-out/coordination/probe findings remain open; Windows image work remains under PR #307 review. |
+| `LIFE-004` | Scan queue, explicit COMP target, cancellation and recovery tests | Durable COMP submission, duplicate-selection, STOP and queue-decision browser tests | PR #314 stale SKIP/staged-batch defects remain open. |
+| `LIFE-005` | Target completion, failed-target recovery, index cancellation and published-catalog tests | Status ownership, verified COMP readback and refresh cancellation tests | PR #314 stale embedding/completion status remains open. |
+| `LIFE-006` | Artist aggregate, override, independent Album-row and media-state policy tests | Ranked classification and partial-hydration browser tests; PR #314 contains the focused GREEN→RED correction | PR #314 is still Draft; installed presentation parity is not claimed. |
+| `LIFE-007` | Explicit COMP target, selected MusicBrainz result, shared COMP policy and media-writer integrity tests | Preferred-size COMP, pinned result/track, typed Album view and real-writer integrity tests | PR #314 search typing, post-selection stage and normalization observations remain open. |
+| `LIFE-008` | SQLite generation ownership, resume/cancel and published-catalog preservation tests | `catalog_authority.py` field ownership and PostgreSQL refresh completion/cancellation tests | PR #307 documents the missing approved durable revalidation marker; no migration is authorized. |
+| `LIFE-009` | Native lifecycle loader negatives plus focused Rust behavior tests above | Native lifecycle loader negatives plus focused Python/browser tests above | Installed-client acceptance and remaining PR #307/#314 defect closure are still required. |
+
 ## Rule precedence
 
 The shared lifecycle contract **supplements**, and never replaces:
@@ -73,32 +92,45 @@ An operation showing Green or `completed` must have the applicable verified
 evidence. A partially hydrated UI or an invalid old queue decision cannot
 replace it with a fabricated default or green completion.
 
-## Documented versus implemented
+## Source activation versus behavioral parity
 
-This policy-review change introduces a **declarative contract** and updates
-the register, source index and agent instructions. Neither application has a
-new runtime loader for `schema/lifecycle-policy.json` in this PR. There is
-no new SQLite table, PostgreSQL table, synchronized revision, live policy
-mirror, database migration or automatic cross-client data exchange.
+The shared contract now has native, bounded, local fail-closed consumers:
 
-The existing independent canonical-policy JSON review gate protects
-`schema/media-state-classification.json` and
-`schema/comp-report-policy.json`. It does **not yet include** the new
-lifecycle JSON. Any expansion of that enforcement gate or runtime integration
-requires a separate owner-reviewed implementation scope; do not claim that
-the current gate mechanically protects this new file.
+- Windows embeds `schema/lifecycle-policy.json`, validates it once at process
+  start, and fails before database/provider/catalog work if identity, runtime
+  scope, ordered IDs, refinement mapping or acceptance shape is invalid.
+- WebGUI reads the checked-in/container copy once and validates the same fields
+  before `Context`, PostgreSQL, workers or providers are initialized.
+- The independent canonical-policy gate protects lifecycle policy addition,
+  modification, deletion and rename without weakening the existing
+  media-state or COMP protections.
 
-## Activation requirements before claiming enforced parity
+There is still no SQLite table, PostgreSQL table, synchronized revision, live
+policy mirror, database migration or automatic cross-client exchange. Loader
+success proves contract identity and availability, not every behavioral
+outcome or installed-client parity; the evidence table above remains binding.
 
-The owner requests **closing the current runtime-loader and JSON-protection gaps before downstream PR #307/#314 acceptance**. Adding the contract and its source map is the first stage, **not the completion of enforcement**. The following actions are mandatory acceptance gates for an independently reviewed implementation update:
+## Activation implementation and remaining acceptance
 
-1. **Native policy consumers:** introduce a bounded, local, fail-closed reader/validator in each Windows Rust and WebGUI Python/browser runtime for the exact checked-in `schema/lifecycle-policy.json`. Validate schema version, policy ID, nine stable `LIFE-00x` IDs, intended client scope and WebGUI refinement mapping. A file read alone is insufficient: map each applicable behavior to focused source/tests, using native queues and presentation mechanisms.
-2. **Independent JSON protection:** once the JSON is part of the accepted base, extend the existing canonical policy diff gate to reject unauthorized modification, deletion, addition or rename of `schema/lifecycle-policy.json`, with focused negative controls. **Do not** modify the protected-file gate in the same diff that initially introduces the JSON if that would block the authorized bootstrap; never bypass or weaken the current media-state/COMP gates.
-3. **Measured acceptance:** confirm that current selection/queue/status/search, canonical colors, artist/album state, COMP integrity and revalidation authority meet the shared contract. Run only affected Rust, Python and browser tests, adding targeted corrections only for demonstrated defects in their own approved PR scope; record actual installed parity only when tested.
-4. **Zero coupling regression:** startup remains local and bounded; loading the shared contract must not trigger database updates, network hydration, provider calls, catalog migration, protected-field modifications or new SQLite/PostgreSQL replication. A shared rulebook does not imply common storage or matching implementation internals.
-5. **Promotion sequencing:** keep this Draft as a policy specification. After the JSON is accepted in `dev`, the runtime-consumer and independent gate work must be validated through its own approved implementation review; only then should PR #307 (cross-client parity) and PR #314 (WebGUI corrections) be synchronized and mapped to the active common JSON. Both PRs retain their independent acceptance and merge gates.
+The accepted JSON was introduced first by PR #318. The independently reviewed
+activation stage implements the two source-enforcement prerequisites without
+claiming completion of the open behavior work:
 
-**Do not delete or weaken the current `not implemented` statements until the corresponding loader, gate and tests have actually passed.** Those statements describe current implementation state, while this section establishes the owner's required end state.
+1. **Native policy consumers — implemented and focused-test validated.** Both
+   clients validate schema version, policy ID, nine stable IDs, both-client
+   applicability and WebGUI refinement mapping before database/catalog work.
+2. **Independent JSON protection — implemented and focused-test validated.**
+   Add/change/delete/rename operations fail closed; existing protections remain.
+3. **Measured behavior acceptance — partially evidenced, still open where
+   recorded above.** Defects remain in their independently scoped Draft PRs.
+4. **Zero coupling — source verified.** Consumer code has no DB, network,
+   provider, inventory, persistence or cross-client synchronization path.
+5. **Downstream sequencing — pending activation acceptance in `dev`.** PR #307
+   and PR #314 may be synchronized and mapped after this activation is accepted
+   into their current base; they retain independent review and merge gates.
+
+Do not describe the remaining behavior or installed-client gaps as complete.
+Source activation and independent protection are narrower than observed parity.
 
 ## Future implementation and review
 

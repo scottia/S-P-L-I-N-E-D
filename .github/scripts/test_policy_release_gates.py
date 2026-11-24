@@ -53,6 +53,29 @@ class CanonicalReleaseContractTests(unittest.TestCase):
                 pr_gate.check_diff(sha, sha)
             self.assertIn("--no-renames", run.call_args.args[0])
             self.assertIn("schema/media-state-classification.json", run.call_args.args[0])
+            self.assertIn("schema/comp-report-policy.json", run.call_args.args[0])
+            self.assertIn("schema/lifecycle-policy.json", run.call_args.args[0])
+
+    def test_lifecycle_policy_add_change_delete_and_rename_fail_closed(self) -> None:
+        sha = "a" * 40
+        cases = {
+            "add": "A\tschema/lifecycle-policy.json\n",
+            "change": "M\tschema/lifecycle-policy.json\n",
+            "delete": "D\tschema/lifecycle-policy.json\n",
+            # --no-renames reports both sides of a rename independently.
+            "rename": (
+                "D\tschema/lifecycle-policy.json\n"
+                "A\tschema/lifecycle-policy-renamed.json\n"
+            ),
+        }
+        for operation, output in cases.items():
+            with self.subTest(operation=operation), patch.object(
+                pr_gate.subprocess, "run"
+            ) as run:
+                run.return_value.stdout = output
+                with self.assertRaisesRegex(RuntimeError, "independent owner-policy"):
+                    pr_gate.check_diff(sha, sha)
+                self.assertIn("--no-renames", run.call_args.args[0])
 
     def test_pr_gate_accepts_unchanged_policies_and_rejects_invalid_sha(self) -> None:
         with patch.object(pr_gate.subprocess, "run") as run:
