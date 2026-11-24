@@ -11,6 +11,8 @@ written rule as technically enforced unless its GitHub protection is verified.
 1. Before any repository action, read `AGENTS.md` and the complete relevant
    owner-approved `docs/POLICY-REGISTER.md`, plus `docs/POLICY-INDEX.md`,
    `docs/SCHEMA-VALIDATION.md` and affected source/schema/workflow files.
+   For lifecycle work, also read `docs/lifecycle-policy.md` and the current
+   checked-in `schema/lifecycle-policy.json` alongside the register.
    This reading is the mandatory first action, not optional post-hoc review.
 2. Identify the repository, base/head SHA, local uncommitted work, related
    existing PRs, owner-requested scope and stable policy IDs. Never destroy
@@ -150,12 +152,23 @@ animation and exact bytes); the only permitted derivation is a separate static
 overwrite or re-encode the original WebP. Require real Windows and WebGUI
 folder-artwork tests that reject an attempted WebP replacement.
 
-## 3c. Owner-approved WebGUI lifecycle acceptance and policy separation
+## 3c. Shared lifecycle contract and WebGUI-specific acceptance
 
-- The permanent owner-approved `WEB-LIFE-001..009` acceptance rules are in
-  `docs/POLICY-REGISTER.md`. They govern WebGUI browser interactions, Python
-  processing, queue and background workers, and PostgreSQL-owned operations.
-  **GUI-only means the complete WebGUI application**, not Windows Rust/Slint.
+- The owner-directed `LIFE-001..009` shared behavioral acceptance contract is
+  defined in `schema/lifecycle-policy.json` and the authoritative
+  `docs/POLICY-REGISTER.md`, with source and platform distinctions in
+  `docs/lifecycle-policy.md`. It applies to **equivalent supported Windows and
+  WebGUI operations**; it does not require identical code, job tables or UI.
+- The separately approved `WEB-LIFE-001..009` rules remain WebGUI-specific
+  refinements governing browser interactions, Python workers and
+  PostgreSQL-owned operations. **GUI-only** remains the complete WebGUI
+  application, not Windows Rust/Slint; shared `LIFE` outcomes do not broaden
+  the scope of any existing WebGUI-only implementation PR.
+- The new JSON is **declarative only** until separately implemented and
+  validated in both runtimes; it does not copy data between SQLite and
+  PostgreSQL or establish automatic revision mirroring. Never report runtime
+  enforcement, production synchronization or installed parity from the
+  JSON/documentation alone.
 - Preserve operation generation authority, bounded nonblocking work, durable
   queue/nonces, honest stage/completion status, current Artist/Album evidence,
   configured COMP embedded-size authority, and cross-client DB ownership.
@@ -179,6 +192,13 @@ folder-artwork tests that reject an attempted WebP replacement.
   separately owner-approved, independently enforced authorization
   procedure. Never edit the gate in the same PR to evade it, forge a
   pass, or claim an owner message turns a failed check green.
+- `schema/lifecycle-policy.json` is the **new shared behavioral lifecycle
+  specification**. It supplements the two already-protected canonical JSONs,
+  without replacing their authority. The current independent JSON review gate
+  has **not yet been extended to this new file** and neither runtime loads it.
+  Revisions require a separate explicit owner-reviewed policy scope; do not
+  claim protection/enforcement or silently synchronize SQLite/PostgreSQL.
+  A future independent gate/loader implementation requires its own review.
 - `schema/media.sql` is SQLite DDL; `schema/settings-ui.json` is the
   Config v5 UI contract, not another behavior authority. Runtime JSON
   mirrors and persisted PostgreSQL policy revisions are delivery
