@@ -65,8 +65,11 @@ class AudioIntegritySourceContract(unittest.TestCase):
         self.assertNotIn("  audio-integrity:\n", pr)
         self.assertIn("test_audio_integrity.py -v", pr)
         self.assertIn("test_cross_format_cover_overwrite.py -v", pr)
-        self.assertIn("artwork_integrity::tests -- --nocapture", pr)
-        self.assertIn("local_artwork -- --nocapture", pr)
+        self.assertIn('"artwork_integrity::tests"', pr)
+        self.assertIn('"embedded_artwork"', pr)
+        self.assertIn('"local_artwork"', pr)
+        self.assertIn("--no-run `", pr)
+        self.assertIn("--message-format=json-render-diagnostics", pr)
         release = source(".github/workflows/01-full-release.yml")
         prepare_header = release.split("  prepare-release:\n", 1)[1].split(
             "    steps:\n", 1
