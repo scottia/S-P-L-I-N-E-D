@@ -143,16 +143,8 @@ jobs:
             dev:refs/remotes/origin/dev
           MAIN_SHA=$(git rev-parse origin/main)
           DEV_SHA=$(git rev-parse origin/dev)
-          MAIN_TREE=$(git rev-parse origin/main^{tree})
-          DEV_TREE=$(git rev-parse origin/dev^{tree})
-          if [ "$MAIN_TREE" = "$DEV_TREE" ]; then
-            source_relation="same tree - approved promotion merge accepted"
-          elif git merge-base --is-ancestor "$MAIN_SHA" "$DEV_SHA"; then
-            source_relation="different trees - origin/dev is ahead and selected"
-          else
-            echo "::error title=Unsafe branch relationship::origin/main and origin/dev have different trees, but origin/dev does not contain origin/main. Reconcile the branches through reviewed source promotion before running Workflow 10."
-            exit 1
-          fi
+          source_relation=$(python3 .github/scripts/resolve_workflow10_source_relation.py \
+            "$MAIN_SHA" "$DEV_SHA")
           MAIN_VERSION=$(git show origin/main:build/Windows/Cargo.toml | sed -n '0,/^version = /s/^version = "\([0-9][0-9.]*\)"/\1/p')
           git checkout --detach "$DEV_SHA"
 
