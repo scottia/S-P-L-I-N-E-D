@@ -18,7 +18,7 @@ directory; `credential_file` and `token_file` are not Config v5 settings.
 | Provider | File | Normal artwork access |
 | --- | --- | --- |
 | Fanart.tv | `fanarttv.json` | API key required |
-| Last.fm | `lastfm.json` | API key required; account session optional |
+| Last.fm | `lastfm.json` | ⛔️<b style="color: red;">PRO 🔑 Required</b>⛔️ session optional  |
 | Discogs | `discogs.json` | Personal access token required |
 | MusicBrainz / Cover Art Archive | `musicbrainz.json` | Anonymous release authority and artwork; OAuth optional |
 | Navidrome / OpenSubsonic | `navidrome.json` | Server URL plus either a dedicated API key or username/password |
@@ -87,11 +87,20 @@ Operational provider discovery also always uses the v3.2 release-group album
 endpoint and its `albums` response shape. A credential-file marker never
 downgrades the runtime request to v3.
 
-## Last.fm
+Last.fm
 
-Normal `album.getInfo` artwork reads require only `api_key`. They do not require a username or an authorized session.
+⛔️ Last.fm PRO Subscription 🔑 Required ⛔️
 
-```json
+IMPORTANT NOTICE — Effective December 1, 2026
+
+Last.fm will discontinue free API key access and require an active Last.fm Pro subscription for all new and existing API key holders.
+
+Existing API keys associated with free accounts will cease functioning until the account holder upgrades to Last.fm Pro. Users supplying their own API credentials must maintain an active Pro subscription to continue retrieving artwork and metadata through Last.fm.
+
+API Credentials
+
+Standard album.getInfo artwork requests require only a valid api_key. A username and authorized session are not required for these read-only requests.
+
 {
   "api_key": "synthetic-api-key",
   "shared_secret": "synthetic-shared-secret",
@@ -99,18 +108,21 @@ Normal `album.getInfo` artwork reads require only `api_key`. They do not require
   "session_key": "synthetic-session-key",
   "subscriber": false
 }
-```
 
-Account authorization is a separate workflow:
+Account Authorization
 
-1. request a temporary token with `auth.getToken`;
-2. open the Last.fm browser authorization URL;
-3. exchange the authorized token with `auth.getSession`;
-4. retain `username`, `session_key`, and `subscriber` without losing the API key or shared secret.
+Account authorization remains a separate workflow:
 
-On Windows, save `lastfm.json`, choose **Authorize** in Credentials, approve the
-browser request, and choose **Complete**. Native Linux and Python/container
-commands expose `--lastfm-login` and perform the same API sequence.
+1. Request a temporary token using auth.getToken.
+2. Open the Last.fm browser authorization URL.
+3. Exchange the authorized token using auth.getSession.
+4. Retain username, session_key, and subscriber while preserving the existing API key and shared secret.
+
+Windows: Save lastfm.json, select Authorize in Credentials, approve the browser authorization request, and select Complete.
+
+Native Linux / Python / Docker: Use --lastfm-login to perform the equivalent account authorization sequence.
+
+This subscription requirement is a Last.fm policy change, not an application-imposed restriction.
 
 ## Discogs
 
