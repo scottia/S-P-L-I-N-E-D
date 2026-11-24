@@ -8,8 +8,9 @@ PR documents are not alternate policy authorities.
 
 **Scope:** Artist/Album FILE-LIST **name colors**, ordered multiple Album
 status dots, approved visual indicators, policy consistency across
-deployment modes, safeguards for changing shared policy JSON, and the
-**artwork-only media-write invariant** (both runtimes, including COMP).
+deployment modes, shared Windows/WebGUI lifecycle behavior, safeguards for
+changing shared policy JSON, and the **artwork-only media-write invariant**
+(both runtimes, including COMP).
 For implementation verification, see
 [SCHEMA-VALIDATION.md](SCHEMA-VALIDATION.md).
 
@@ -183,9 +184,49 @@ record or any audio MBID write. The media-state JSON continues to govern name
 and dot classification; a failed staged write cannot produce Green/completed
 status or verified-write coordination.
 
+## Shared Windows/WebGUI lifecycle contract — owner-directed review (November 23, 2026)
+
+The proposed **common lifecycle source contract** is
+[`schema/lifecycle-policy.json`](../schema/lifecycle-policy.json). It defines
+equal **behavioral acceptance outcomes** for equivalent supported operations
+in Windows Rust/Slint/SQLite and WebGUI Python/browser/PostgreSQL, without
+requiring identical UI code, token/queue primitives, or database engines.
+See [Shared lifecycle policy](lifecycle-policy.md) for runtime source mapping,
+native differences, acceptance and deployment limitations.
+
+| ID | Shared acceptance requirement | Evidence required |
+| --- | --- | --- |
+| `LIFE-001` | **Current operation ownership.** Use client-native generations, tokens or equivalent ownership to prevent superseded search, selection, preview, report, and queued decisions from committing stale UI state. | The newest valid selection or operation wins even when asynchronous responses complete out of order. A stale result cannot overwrite the current Artist, Album, artwork, report, status, or queue decision. Safe navigation remains available; only conflicting actions are blocked. |
+| `LIFE-002` | **Usable catalog before secondary work.** Publish already indexed/published Artist and Album presentation promptly; defer unrelated thumbnail decoding, remote metadata/provider results, coordination and full candidate inspection. | The initial usable list and selected overview do not await unrelated secondary work. Equivalent direct and related-Artist navigation converge on the correct current identity. Startup and selection responsiveness are compared against accepted measured baselines, without inventing fixed latency requirements. |
+| `LIFE-003` | **Bounded background work.** Bound parallel discovery, thumbnail, polling, probe, search and coordination work; coalesce identical requests and supersede or cancel obsolete work using each client's mechanisms. | No overlapping duplicate requests or unbounded polling loops. Background activity becomes idle or backs off and cannot starve interactive work. Retries do not manufacture new processing or ownership events. |
+| `LIFE-004` | **Durable queue and decision integrity.** Represent eligible discovery, selection, staged, running, review, verification and terminal states according to each client's authoritative queue. Never treat a stale or invalid decision as valid. | Queued or staged work has a visible next state, explicit decision, or terminal outcome; it is not indefinitely stranded behind a hidden gate. Cancelling or changing context reconciles pending UI against authoritative durable work. A stale or duplicate action cannot skip extra Albums, bypass nonce/token validation where required, or publish an unverified result. |
+| `LIFE-005` | **Phase-accurate progress and completion.** Progress belongs to its active operation and reflects observed work; staging/ready, embedding, verification, successful completion, cancellation and failure remain distinct. | A late provider, index or coordination message cannot overwrite newer operation status. Only verified media/artwork outcomes appear completed or GREEN; staging alone never claims embedded completion. Where available, report current item, processed/total counts and final outcome without blocking the client. |
+| `LIFE-006` | **Evidence-preserving visual classification.** Preserve the owner-approved independent Artist NAME, Album NAME, Album CARD dot and COMP-track contracts while switching views or incrementally hydrating details. | Selection, focus or transient hydration cannot discard verified indexed evidence and manufacture an unmatched RED. Genuine incomplete/error evidence and the Red no-match default remain valid; higher-priority Yellow/Purple evidence remains authoritative. All independently applicable Album status dots and approved frame/banner semantics are retained. |
+| `LIFE-007` | **Deterministic search, COMP and thumbnail authority.** Keep Artist search typed to Artists, Album search typed to Albums, and selected COMP/Album decisions pinned through discovery, artwork preparation and verified write, respecting the canonical COMP policy and configured preferred embedded dimensions. | No stale lookup reopens a completed discovery phase or replaces an accepted selected result. Applicable COMP or Album writes derive their embedded square image at the current configured preferred side (1200 px is the default, not a fixed policy). No non-artwork media metadata mutation; preserve immutable source WebP and the artwork-only verification gate. |
+| `LIFE-008` | **Database ownership and validation provenance.** Maintain Windows SQLite authority for designated synchronized Artist/Album/Track fields and PostgreSQL ownership of WebGUI-only jobs, validation, audit and coordination; lifecycle progress or a refresh is not a transfer of authority. | No client silently rewrites the other client's protected catalog ownership fields to clear a notice or appear complete. Revalidation/completion notices derive only from the actual successfully validated work; cancelled, failed and unseen records are not claimed as verified. This JSON is a behavioral contract only: it is not database synchronization transport, schema migration or a new data owner. |
+| `LIFE-009` | **Shared acceptance without identical implementations.** Equivalent supported Windows and WebGUI workflows must meet the same outcome and failure-boundary acceptance criteria while retaining native UI, job/queue, database and cancellation implementations. | Focused tests cover applicable normal, delayed, stale, double-click, cancellation, restart/recovery and terminal cases. Measure and document genuine runtime parity or deviations independently; a green unit test alone does not prove installed parity. Reuse accepted evidence; do not rerun unrelated real-writer suites for a documentation-only change. |
+
+The existing `WEB-LIFE-001..009` clauses below remain **owner-approved
+WebGUI-specific refinements**. The new `LIFE-001..009` clauses apply to
+both clients where an equivalent operation exists, rather than copying
+WebGUI's browser/nonce implementation into Windows. Shared lifecycle behavior
+does **not** move synchronized catalog ownership: Windows SQLite remains
+authoritative for designated Artist/Album/Track fields; PostgreSQL retains
+its own jobs, audit, revalidation evidence and coordination roles.
+
+**Activation requirement:** The shared JSON is not a SQLite/PostgreSQL
+synchronization transport, and neither runtime has a new loader yet. The owner
+requires native Rust and Python consumers/validators with focused lifecycle
+source-to-rule tests, and a fail-closed independent JSON review gate, before
+calling the contract runtime-enforced. Introduce the new JSON into the accepted
+base **before** extending protection so the new-file bootstrap cannot falsely
+fail an uncompromised gate. Existing media-state/COMP protections must remain
+unchanged. These are explicit pending acceptance tasks, not claims of completed
+parity, automatic policy mirroring or database synchronization. See
+[lifecycle-policy.md](lifecycle-policy.md) for their verification and PR sequence.
 ## Approved WebGUI lifecycle and interaction contract (November 23, 2026)
 
-**Authority and scope:** The owner approved `WEB-LIFE-001..009` as permanent WebGUI acceptance criteria. In this context, “GUI-only” includes the `build/WEBGui/` browser UI, Python backend, processing workers and its PostgreSQL-owned operations; it does **not** authorize Windows Rust/Slint changes or edits to Windows-owned synchronized fields.
+**Authority and scope:** The owner approved `WEB-LIFE-001..009` as permanent WebGUI-specific acceptance refinements. The proposed shared `LIFE-001..009` above specify equivalent outcomes on both supported clients. In this context, “GUI-only” refers to the `build/WEBGui/` browser UI, Python backend, processing workers and PostgreSQL-owned operations; it does **not** automatically authorize Windows source changes or edits to Windows-owned synchronized fields.
 
 These rules **supplement**, but do not alter, `ART-*`, `ART-COLOR-*`, `ALB-COLOR-*`, `VISUAL-*`, `STATE-POLICY-*`, `UI-001`, `AUDIO-INTEGRITY-*`, or the protected JSON contracts. An implementation proposal in a PR does not become owner-approved policy merely because code or tests suggest it.
 
@@ -204,6 +245,15 @@ These rules **supplement**, but do not alter, `ART-*`, `ART-COLOR-*`, `ALB-COLOR
 **Policy governance:** Codex may audit and implement owner-approved application corrections in the designated behavior PR, but **must not edit this register, `AGENTS.md`, `POLICY-INDEX.md`, other normative documentation, or protected policy JSON as an automatic side effect of product work**. A separate, explicit owner instruction and review scope are required for policy/documentation revisions. Policy conflicts are reported, not silently repaired by changing the contract.
 
 ## Protected behavioral policy JSON
+
+**Existing independent gate:** The two previously protected behavioral JSONs
+below remain subject to their strict fail-closed review gate. The new proposed
+`schema/lifecycle-policy.json` is a fifth checked-in `/schema` contract and
+is **not yet protected by that independent gate**. The owner requires adding it
+once the canonical seed is in the accepted base, with add/change/delete/rename
+negative tests and no reduction to the two existing protections. Until those
+checks pass, do not claim the JSON is independently enforced; it is never a
+SQLite/PostgreSQL replication mechanism.
 
 | ID | Approved safeguard |
 | --- | --- |
