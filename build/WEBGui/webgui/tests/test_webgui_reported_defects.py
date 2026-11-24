@@ -548,7 +548,11 @@ class ReportedDefectTests(unittest.TestCase):
         self.assertIn("libraryLoading: false, libraryReady: false", application)
         self.assertIn("state.libraryReady = true;", application)
         self.assertIn("!state.libraryReady) return;", operations)
-        self.assertIn("const compTrackRequest = activeIndexJob()", operations)
+        self.assertIn("if (sharedStateInteractiveWorkActive()", operations)
+        self.assertIn(
+            '["scan", "comp", "embed-album", "index", "index-probe"]',
+            operations,
+        )
         self.assertIn("state.libraryReady && !jobsPolling", operations)
         self.assertIn('const event = state.albumOverrides.get(albumId);', operations)
         self.assertIn('visible.has(albumId) && (!event || event.writer === "windows")', operations)
