@@ -1,6 +1,6 @@
 # S:P:L:I:N:E:D — policy and indexer source map
 
-**Basis:** `main` as audited November 20, 2026 after the approved Windows/WebGUI reconstruction and media-state corrections through PR #238. This index maps existing **approved requirements to current source**; it does not invent new rules or create another 38-row draft. [POLICY-REGISTER.md](POLICY-REGISTER.md) remains the owner-authoritative behavioral register.
+**Basis:** Windows/WebGUI implementation paths audited November 20, 2026, supplemented by an owner-directed shared lifecycle contract review on November 23. This index maps approved requirements and proposed shared lifecycle outcomes to actual source surfaces; mapping alone does not prove deployed compliance. [POLICY-REGISTER.md](POLICY-REGISTER.md) remains the owner-authoritative behavioral register.
 
 ## Two application roots and indexers
 
@@ -17,16 +17,17 @@
 
 [Catalog authority](catalog-authority.md) and [Windows media database](splined-media-database.md) describe write ownership and indexer persistence; [WebGUI guide](browser-workspace-guide.md) covers the browser's index/queue operation. Neither client's live database is a substitute policy definition.
 
-## Four canonical `schema/` contracts
+## Five checked-in `schema/` contracts
 
 | Source | Owner and usage | Review status |
 | --- | --- | --- |
 | [`media-state-classification.json`](../schema/media-state-classification.json) | Owner-approved Artist/Album NAME colors, all Album dots and serialized presentation settings. Embedded by Windows for offline defaults, loaded/revisioned by WebGUI PostgreSQL and optionally mirrored in Windows credentials. | Exact priority validation added in both languages; deployed revision/palette comparison remains a separate read-only task. |
 | [`comp-report-policy.json`](../schema/comp-report-policy.json) | Shared Artist/Recording identity, MusicBrainz ranking, source/COMP options and batch revision pinning. | Protected accepted working contract; test runtime parity independently. |
+| [`lifecycle-policy.json`](../schema/lifecycle-policy.json) | Owner-directed common lifecycle behavioral acceptance for equivalent Windows/SQLite and WebGUI/PostgreSQL workflows, with WebGUI-specific `WEB-LIFE` refinements. | **New declarative source contract**; no runtime loader or independent JSON protection gate extension yet; do not claim database transport or installed parity. |
 | [`media.sql`](../schema/media.sql) | Windows/compatible SQLite catalog DDL; not an Artist/Album color policy. | Validate schema and migrations with disposable databases before any change. |
 | [`settings-ui.json`](../schema/settings-ui.json) | Config v5 settings/UI field descriptions; no independent database or artwork authority. | Check defaults/ranges against both active implementations. |
 
-The two behavioral JSONs are **protected by approved repository policy**. Their governing Artist ranking is **Red > Yellow > Purple > Green**, Album NAME ranking **Dark Grey > Red > Yellow > Purple > Orange > Green**, and Album-dot ordering **Dark Grey > Red > Yellow > Purple > Orange > Green > auxiliary Blue**, with every applicable dot retained. See [POLICY-REGISTER.md](POLICY-REGISTER.md) for all conditions, exclusions, allowed defaults and separate COMP row semantics.
+The existing **two independently protected behavioral JSONs** are media-state and COMP. The new shared lifecycle JSON is **not yet gate-protected** and is not currently loaded/persisted in either runtime. Its `LIFE-001..009` requirements concern equivalent behavior and do not alter the canonical Artist ranking **Red > Yellow > Purple > Green**, Album NAME ranking **Dark Grey > Red > Yellow > Purple > Orange > Green**, or the independent Album-dot ordering **Dark Grey > Red > Yellow > Purple > Orange > Green > auxiliary Blue**. See [POLICY-REGISTER.md](POLICY-REGISTER.md) and [lifecycle-policy.md](lifecycle-policy.md) for exact acceptance and limits.
 
 ## Requirements mapped to live code and regression tests
 
@@ -35,7 +36,8 @@ The two behavioral JSONs are **protected by approved repository policy**. Their 
 | `ART-COLOR-001..006`, `ALB-COLOR-001..006` | Windows `src/media_state_policy.rs`, `ui/app.slint`; WebGUI `media_state_policy.py`, `catalog.py`, `static/app.js` and `app.css`; `webgui/tests/test_media_state_classification_policy.py`, `.github/scripts/test_media_state_rendering.py` |
 | `ART-001..003`, `SAFE-001` | Windows normalized projection in `src/media_database.rs`/`src/application.rs`; WebGUI `_artist_groups`, `_artist_identity_rows`, Artist overview and thumbnail resolution in `webgui/catalog.py`; `webgui/tests/test_artist_catalog_projection.py` |
 | `UI-001` | Windows job/progress publication in `src/application.rs` and Slint bindings; WebGUI job state in `services.py`/`server.py` and polling/rendering in `static/operations.js` |
-| `WEB-LIFE-001..009` | WebGUI lifecycle requirements in `POLICY-REGISTER.md`, mapped to `build/WEBGui/webgui/static/app.js`, `static/operations.js`, `webgui/catalog.py`, `services.py`, `jobs.py`, `server.py`, `database.py`, and `catalog_authority.py`. They do not imply Windows runtime parity or permission to update synchronized fields owned by Windows. |
+| `LIFE-001..009` — shared outcomes | Proposed canonical [shared lifecycle JSON](../schema/lifecycle-policy.json) and [source map](lifecycle-policy.md). Windows: `build/Windows/src/application.rs`, `scan_controller.rs`, `media_database.rs`, `catalog_index_coordinator.rs`, `comp_report_policy.rs`, `media_state_policy.rs`, `scan_runtime.rs`, `ui/app.slint`. WebGUI: `build/WEBGui/webgui/catalog.py`, `services.py`, `jobs.py`, `index_coordinator.py`, `catalog_authority.py`, `comp_report_policy.py`, `media_state_policy.py`, `static/app.js`, `static/operations.js`. Sources are inspection targets, **not evidence of verified shared runtime adoption**. |
+| `WEB-LIFE-001..009` — WebGUI refinements | Existing approved WebGUI lifecycle refinements in the [Policy Register](POLICY-REGISTER.md) for its browser/Python/PostgreSQL queue and interaction mechanisms. The common `LIFE` contract applies to equivalent operations in both runtimes, while WebGUI-only browser/nonce details remain here. No permission to rewrite Windows-owned synchronized fields. |
 | `VISUAL-001..004` | Existing status dots, card frames/banners, override provenance and COMP-track presentation; do not infer those from NAME classification |
 | `STATE-POLICY-001..004` | Same canonical ordering in both runtimes; Windows policy loader/mirror, WebGUI PostgreSQL policy revision, inventory-derived Unprocessed count |
 | `GUARD-001..003` | Owner-approved review contract in `AGENTS.md` and the register; `.github/workflows/validate.yml` runs the independent `policy-review` job and `.github/scripts/check_protected_policies.py` rejects any diff to the two protected JSON files. Required PR validation protects both contracts. Workflow 10 audits canonical contracts and exact selected release source; Workflow 01 remains manually dispatchable but is operationally superseded. Required GitHub ruleset enforcement remains a separate repository-setting check. |
@@ -89,11 +91,14 @@ GitHub Actions or verify ruleset enforcement. A failing or skipped required PR
 writer test is never legitimized by any build mode. Protected JSON review and
 audio-write safety remain independent fail-closed gates.
 
-**WebGUI lifecycle acceptance:** `WEB-LIFE-001..009` in the owner-approved
-Policy Register govern asynchronous selection, queue decisions, status
-ownership, bounded background work, canonical presentation and scoped
-revalidation. This normative documentation does not implement product
-corrections, authorize cross-client database changes, or certify deployed behavior.
+**Shared lifecycle acceptance:** `LIFE-001..009` in the new
+[shared JSON](../schema/lifecycle-policy.json) define common behavioral
+outcomes for equivalent Windows and WebGUI operations. The approved
+`WEB-LIFE-001..009` remain WebGUI-specific refinements. Refer to
+[lifecycle-policy.md](lifecycle-policy.md) for native source mapping,
+implementation boundaries and acceptance evidence. No runtime integration,
+SQLite/PostgreSQL synchronization, policy revision persistence or installed
+parity is implemented merely by this documentation change.
 The numbered release workflows live under `.github/workflows/`; source builds and Docker packaging use `build/Windows/` and `build/WEBGui/`, not retired root application folders. [Build layout](build-layout.md).
 
 **Still to establish independently:** native Windows Rust/Slint validation against a real build, installed Artist/Album UI appearance, saved Windows credential-directory policy revision, full deployed PostgreSQL policy/palette comparison, and end-to-end migration/indexer persistence. The owner provided read-only PostgreSQL singleton evidence for media-state revision 3 and COMP revision 1 with matching listed condition/color order; this does not verify all saved fields or Windows mirrors. Prior CI passes do not prove those deployed properties. [Validation ledger](SCHEMA-VALIDATION.md).
