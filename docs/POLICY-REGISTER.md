@@ -186,7 +186,7 @@ status or verified-write coordination.
 
 ## Shared Windows/WebGUI lifecycle contract — owner-directed review (November 23, 2026)
 
-The proposed **common lifecycle source contract** is
+The **common lifecycle source contract** is
 [`schema/lifecycle-policy.json`](../schema/lifecycle-policy.json). It defines
 equal **behavioral acceptance outcomes** for equivalent supported operations
 in Windows Rust/Slint/SQLite and WebGUI Python/browser/PostgreSQL, without
@@ -214,16 +214,15 @@ does **not** move synchronized catalog ownership: Windows SQLite remains
 authoritative for designated Artist/Album/Track fields; PostgreSQL retains
 its own jobs, audit, revalidation evidence and coordination roles.
 
-**Activation requirement:** The shared JSON is not a SQLite/PostgreSQL
-synchronization transport, and neither runtime has a new loader yet. The owner
-requires native Rust and Python consumers/validators with focused lifecycle
-source-to-rule tests, and a fail-closed independent JSON review gate, before
-calling the contract runtime-enforced. Introduce the new JSON into the accepted
-base **before** extending protection so the new-file bootstrap cannot falsely
-fail an uncompromised gate. Existing media-state/COMP protections must remain
-unchanged. These are explicit pending acceptance tasks, not claims of completed
-parity, automatic policy mirroring or database synchronization. See
-[lifecycle-policy.md](lifecycle-policy.md) for their verification and PR sequence.
+**Activation status:** The accepted shared JSON is locally loaded and
+fail-closed validated by native Rust and Python consumers before client
+database/catalog initialization. The independent canonical-policy review gate
+protects it in addition to the existing media-state/COMP files. Focused tests
+verify identity, client scope, ordered rule IDs, WebGUI refinement mapping and
+add/change/delete/rename rejection. This activates the source contract; it is
+not a claim of completed behavioral or installed parity, automatic policy
+mirroring, or SQLite/PostgreSQL synchronization. See
+[lifecycle-policy.md](lifecycle-policy.md) for evidence and remaining gaps.
 ## Approved WebGUI lifecycle and interaction contract (November 23, 2026)
 
 **Authority and scope:** The owner approved `WEB-LIFE-001..009` as permanent WebGUI-specific acceptance refinements. The proposed shared `LIFE-001..009` above specify equivalent outcomes on both supported clients. In this context, “GUI-only” refers to the `build/WEBGui/` browser UI, Python backend, processing workers and PostgreSQL-owned operations; it does **not** automatically authorize Windows source changes or edits to Windows-owned synchronized fields.
@@ -246,20 +245,19 @@ These rules **supplement**, but do not alter, `ART-*`, `ART-COLOR-*`, `ALB-COLOR
 
 ## Protected behavioral policy JSON
 
-**Existing independent gate:** The two previously protected behavioral JSONs
-below remain subject to their strict fail-closed review gate. The new proposed
-`schema/lifecycle-policy.json` is a fifth checked-in `/schema` contract and
-is **not yet protected by that independent gate**. The owner requires adding it
-once the canonical seed is in the accepted base, with add/change/delete/rename
-negative tests and no reduction to the two existing protections. Until those
-checks pass, do not claim the JSON is independently enforced; it is never a
-SQLite/PostgreSQL replication mechanism.
+**Independent gate:** The two previously protected behavioral JSONs below
+remain subject to their strict fail-closed review gate. The accepted
+`schema/lifecycle-policy.json` is now protected by the same independent gate,
+with add/change/delete/rename negative tests and no reduction to the existing
+protections. Protection is a review boundary, never a SQLite/PostgreSQL
+replication mechanism or automatic authorization to revise policy.
 
 | ID | Approved safeguard |
 | --- | --- |
 | `GUARD-001` | Protect **both** `schema/media-state-classification.json` and `schema/comp-report-policy.json` in the independent canonical-policy PR gate. A diff, deletion or rename must trigger a **failure and owner-policy review**. |
 | `GUARD-002` | A failed check directs Codex to `AGENTS.md`, this register and [POLICY-INDEX.md](POLICY-INDEX.md). It **does not automatically revert** files or allow a test pass to stand in for approval. |
 | `GUARD-003` | Owner authorization must be explicit, narrow and auditable. GitHub required checks and rulesets remain independent; owner consent does **not** forge a green status or implicitly bypass a technical restriction. |
+| `GUARD-004` | Protect `schema/lifecycle-policy.json` independently after its accepted seed. Add, change, delete and rename operations fail closed, while native Rust and Python readers validate the exact checked-in identity, runtime scope, stable `LIFE-001..009` order and WebGUI refinement mapping without creating database synchronization. |
 
 ## Codex governance — active in AGENTS.md
 

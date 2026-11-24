@@ -20,6 +20,7 @@ pub mod gui_events;
 pub mod history;
 pub mod index_batch_policy;
 pub mod inspect;
+pub mod lifecycle_policy;
 pub mod local_artwork;
 pub mod media_database;
 pub mod media_state_policy;

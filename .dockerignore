@@ -10,6 +10,7 @@
 !schema/settings-ui.json
 !schema/media-state-classification.json
 !schema/comp-report-policy.json
+!schema/lifecycle-policy.json
 build/WEBGui/webgui/tests/
 build/WEBGui/webgui/**/__pycache__/
 build/WEBGui/webgui/**/*.pyc

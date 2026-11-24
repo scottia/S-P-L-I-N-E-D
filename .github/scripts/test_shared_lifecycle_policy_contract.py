@@ -1,7 +1,7 @@
-"""Structural coverage for the declarative shared lifecycle policy.
+"""Structural coverage for the activated shared lifecycle policy.
 
-These tests do not open SQLite/PostgreSQL, exercise audio writers, or assert
-that Windows/WebGUI have implemented a runtime lifecycle JSON loader.
+These tests do not open SQLite/PostgreSQL or exercise audio writers. Native
+loader behavior is covered by focused Rust and WebGUI tests.
 """
 from __future__ import annotations
 
@@ -16,6 +16,11 @@ INDEX = ROOT / "docs" / "POLICY-INDEX.md"
 AGENTS = ROOT / "AGENTS.md"
 DOCS = ROOT / "docs" / "lifecycle-policy.md"
 DOCS_README = ROOT / "docs" / "README.md"
+WINDOWS_LOADER = ROOT / "build" / "Windows" / "src" / "lifecycle_policy.rs"
+WINDOWS_MAIN = ROOT / "build" / "Windows" / "src" / "main.rs"
+WEBGUI_LOADER = ROOT / "build" / "WEBGui" / "webgui" / "lifecycle_policy.py"
+WEBGUI_SERVER = ROOT / "build" / "WEBGui" / "webgui" / "server.py"
+PROTECTION = ROOT / ".github" / "scripts" / "check_protected_policies.py"
 
 
 class SharedLifecyclePolicyContractTests(unittest.TestCase):
@@ -98,6 +103,21 @@ class SharedLifecyclePolicyContractTests(unittest.TestCase):
                 self.assertTrue(enforcement[key].strip())
         self.assertEqual(enforcement["automatic_sqlite_postgresql_sync"],
                          "not provided by JSON")
+
+    def test_native_consumers_and_independent_protection_are_source_bound(self):
+        windows = WINDOWS_LOADER.read_text(encoding="utf-8")
+        windows_main = WINDOWS_MAIN.read_text(encoding="utf-8")
+        webgui = WEBGUI_LOADER.read_text(encoding="utf-8")
+        webgui_server = WEBGUI_SERVER.read_text(encoding="utf-8")
+        protection = PROTECTION.read_text(encoding="utf-8")
+        self.assertIn('include_str!("../../../schema/lifecycle-policy.json")', windows)
+        self.assertIn("lifecycle_policy::policy()", windows_main)
+        self.assertIn('"schema" / "lifecycle-policy.json"', webgui)
+        self.assertLess(
+            webgui_server.index("lifecycle_policy()"),
+            webgui_server.index("context = Context("),
+        )
+        self.assertIn('"schema/lifecycle-policy.json"', protection)
 
 
 if __name__ == "__main__":
