@@ -160,5 +160,13 @@
         "Reuse accepted evidence; do not rerun unrelated real-writer suites for a documentation-only change."
       ]
     }
-  ]
+  ],
+  "activation_requirements": {
+    "runtime_consumers": "Both Windows Rust/Slint and WebGUI Python/browser must load and validate the exact shared JSON and associate applicable LIFE-001..009 outcomes with their native behavior; schema_version, policy_id, rule IDs, runtime applicability and refinements must fail closed on invalid input.",
+    "source_binding": "Each accepted LIFE-00x outcome must have a source-path and focused test mapping for the appropriate runtime. Reading a JSON file without applying its acceptance rules is not evidence of behavior enforcement.",
+    "protection_gate": "After this JSON is introduced into the accepted base, add schema/lifecycle-policy.json to the independent canonical-policy change gate, and test add/change/delete/rename rejection. Never bypass the gate to land a first version or weaken existing two-JSON coverage.",
+    "performance_and_authority": "No new startup network wait, filesystem inventory, cross-client database replication, shared SQLite/PostgreSQL schema, implicit write, or revision mirroring. Preserve Windows-owned fields and WebGUI-owned operational state.",
+    "activation_evidence": "Document green focused Rust and Python validation, relevant WebGUI/browser/Slint acceptance for changed behavior, CI, and actual deployed parity only where observed. Keep unverified client aspects open.",
+    "downstream_prs": "Only after the shared contract is promoted to the applicable current dev base and activation evidence is recorded, update Draft PRs #307 and #314 to reference LIFE-001..009; WebGUI retains WEB-LIFE-001..009 refinements; do not merge workstreams or make Windows code changes under WebGUI-only authority."
+  }
 }
