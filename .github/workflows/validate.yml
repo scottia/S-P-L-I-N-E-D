@@ -74,15 +74,128 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ env.VALIDATION_HEAD_SHA }}
-      - name: Run mandatory Rust/Lofty ID3 metadata-preservation regressions
+      - name: Install pinned Rust toolchain
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          rustup toolchain install 1.99.0 --profile minimal
+          rustup toolchain install 1.99.0 --profile minimal --no-self-update
           rustup target add x86_64-pc-windows-msvc --toolchain 1.99.0
-          cargo +1.99.0 test --locked --manifest-path build/Windows/Cargo.toml --lib --target x86_64-pc-windows-msvc artwork_integrity::tests -- --nocapture
-          cargo +1.99.0 test --locked --manifest-path build/Windows/Cargo.toml --lib --target x86_64-pc-windows-msvc embedded_artwork -- --nocapture
-          cargo +1.99.0 test --locked --manifest-path build/Windows/Cargo.toml --lib --target x86_64-pc-windows-msvc local_artwork -- --nocapture
+
+      - name: Calculate normalized Windows dependency cache key
+        id: windows-audio-cache-key
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $lock = Get-Content -Raw -LiteralPath build/Windows/Cargo.lock
+          $pattern = '(?ms)(\[\[package\]\]\r?\nname = "splined-windows"\r?\n)version = "[^"]+"'
+          $normalized = [regex]::Replace($lock, $pattern, '${1}version = "<release>"')
+          if ($normalized -eq $lock) {
+            throw "Unable to normalize the release-only Windows package version for the validation cache key."
+          }
+          $bytes = [Text.Encoding]::UTF8.GetBytes($normalized)
+          $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+          "hash=$hash" | Add-Content $env:GITHUB_OUTPUT
+
+      - name: Restore Cargo registry and Git dependencies
+        id: windows-audio-dependency-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-splined-windows-dependencies-v2-1.99.0-${{ steps.windows-audio-cache-key.outputs.hash }}
+          restore-keys: |
+            ${{ runner.os }}-splined-windows-dependencies-v2-1.99.0-
+
+      - name: Restore compatible Windows test intermediates
+        id: windows-audio-compiled-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            build/Windows/target/x86_64-pc-windows-msvc/debug/deps
+            !build/Windows/target/x86_64-pc-windows-msvc/debug/deps/*.exe
+            !build/Windows/target/x86_64-pc-windows-msvc/debug/deps/*.pdb
+            build/Windows/target/x86_64-pc-windows-msvc/debug/build
+            build/Windows/target/x86_64-pc-windows-msvc/debug/.fingerprint
+            build/Windows/target/x86_64-pc-windows-msvc/debug/incremental
+          key: ${{ runner.os }}-splined-windows-audio-tests-v1-1.99.0-x86_64-pc-windows-msvc-${{ steps.windows-audio-cache-key.outputs.hash }}-${{ env.VALIDATION_HEAD_SHA }}
+          restore-keys: |
+            ${{ runner.os }}-splined-windows-audio-tests-v1-1.99.0-x86_64-pc-windows-msvc-${{ steps.windows-audio-cache-key.outputs.hash }}-
+
+      - name: Compile once and run mandatory Rust/Lofty regressions
+        shell: pwsh
+        env:
+          CARGO_INCREMENTAL: "1"
+          CARGO_DEPENDENCY_CACHE_HIT: ${{ steps.windows-audio-dependency-cache.outputs.cache-hit }}
+          COMPILED_CACHE_HIT: ${{ steps.windows-audio-compiled-cache.outputs.cache-hit }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $overallStarted = Get-Date
+          $compileStarted = Get-Date
+          $messages = Join-Path $env:RUNNER_TEMP "splined-audio-integrity-cargo.jsonl"
+
+          cargo +1.99.0 test `
+            --locked `
+            --manifest-path build/Windows/Cargo.toml `
+            --lib `
+            --target x86_64-pc-windows-msvc `
+            --no-run `
+            --message-format=json-render-diagnostics 2>&1 | Tee-Object -FilePath $messages
+          if ($LASTEXITCODE -ne 0) {
+            throw "Windows audio-integrity test compilation failed with exit code $LASTEXITCODE."
+          }
+          $compileSeconds = [math]::Round(((Get-Date) - $compileStarted).TotalSeconds, 2)
+
+          $testExecutables = @(
+            Get-Content -LiteralPath $messages | ForEach-Object {
+              try {
+                $message = $_ | ConvertFrom-Json -ErrorAction Stop
+              } catch {
+                $message = $null
+              }
+              if (
+                $null -ne $message -and
+                $message.reason -eq "compiler-artifact" -and
+                $message.profile.test -eq $true -and
+                $message.target.name -eq "splined_core" -and
+                $message.executable
+              ) {
+                [string]$message.executable
+              }
+            }
+          )
+          if ($testExecutables.Count -ne 1 -or -not (Test-Path -LiteralPath $testExecutables[0] -PathType Leaf)) {
+            throw "Expected exactly one compiled splined_core test executable; found $($testExecutables.Count)."
+          }
+
+          $testStarted = Get-Date
+          $testExecutable = $testExecutables[0]
+          $filters = @(
+            "artwork_integrity::tests",
+            "embedded_artwork",
+            "local_artwork"
+          )
+          foreach ($filter in $filters) {
+            & $testExecutable $filter --nocapture
+            if ($LASTEXITCODE -ne 0) {
+              throw "Windows audio-integrity filter '$filter' failed with exit code $LASTEXITCODE."
+            }
+          }
+          $testSeconds = [math]::Round(((Get-Date) - $testStarted).TotalSeconds, 2)
+          $totalSeconds = [math]::Round(((Get-Date) - $overallStarted).TotalSeconds, 2)
+
+          $summary = @"
+          ### Windows audio-integrity validation timing
+
+          - Cargo dependency cache exact hit: $env:CARGO_DEPENDENCY_CACHE_HIT
+          - Compiled-intermediate cache exact hit: $env:COMPILED_CACHE_HIT
+          - Test executable compilations: 1
+          - Mandatory filters executed: 3
+          - Compile seconds: $compileSeconds
+          - Test seconds: $testSeconds
+          - Total compile/test seconds: $totalSeconds
+          "@
+          $summary | Add-Content $env:GITHUB_STEP_SUMMARY
   scope:
     name: Select relevant validation
     if: ${{ github.event_name != 'pull_request' || github.base_ref != 'main' || github.head_ref != 'dev' }}
