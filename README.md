@@ -146,7 +146,7 @@ Recognized artwork and enrichment sources include:
 
 - 🍎 **iTunes / Apple artwork**
 - 🎨 **Fanart.tv**
-- 🎧 **Last.fm**
+- 🎧 **Last.fm** ⛔️<b style="color: red;">PRO Subscription 🔑 Required</b>⛔️
 - 🧠 **MusicBrainz / Cover Art Archive authority**
 - 💿 **Cover Art Archive**
 - 🔵 **Deezer**
