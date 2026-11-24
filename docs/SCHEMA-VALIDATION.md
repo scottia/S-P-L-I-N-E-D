@@ -66,3 +66,29 @@ changes no runtime, workflow file, protected schema JSON, migration, live
 database, media, CI enforcement rules or installed-client evidence. Existing
 deployed validation limitations above remain open; new policy acceptance gates
 must be checked against product implementation separately.
+
+## November 23, 2026 — proposed cross-client lifecycle parity contract
+
+The owner requested a single new declarative lifecycle JSON under
+`schema/lifecycle-policy.json` for **equivalent Windows and WebGUI behaviors**.
+The [Policy Register](POLICY-REGISTER.md) enumerates the proposed common
+`LIFE-001..009` requirements and retains the previously approved
+`WEB-LIFE-001..009` browser/Python refinements. The
+[Policy Index](POLICY-INDEX.md) and [Lifecycle mapping](lifecycle-policy.md)
+identify each client source surface, without claiming identical implementation.
+
+**Verified at this checkpoint:** the checked-in JSON has nine unique shared
+requirements; the documentation identifies both supported runtimes and
+existing Windows SQLite ownership / WebGUI PostgreSQL-local boundaries.
+Read-only source inspection confirms both clients have distinct indexers,
+queues, UI frameworks and catalog stores. No actual runtime consumer or
+cross-database transport is introduced by this proposed specification.
+
+**Not yet verified or enforced:** no Windows or WebGUI runtime loader reads
+the lifecycle JSON, no production or credential-directory revision is seeded,
+the independent protected-policy JSON diff gate still covers only
+`media-state-classification.json` and `comp-report-policy.json`, and the
+new shared semantic requirements have not received installed-client parity
+acceptance. Any new loader, gate, migration, or transport change must be
+proposed and approved separately; existing PR validation and artwork-only
+media-writer safeguards remain in force.
