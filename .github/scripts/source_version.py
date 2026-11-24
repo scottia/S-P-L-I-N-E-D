@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import argparse
 import codecs
+import hashlib
 import re
 from collections.abc import Iterable
 from pathlib import Path
 
 
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
+PRODUCT_ROOTS = ("build/Windows", "build/WEBGui", "schema")
 
 
 def numeric_version(value: str) -> tuple[int, int, int]:
@@ -129,6 +131,86 @@ def next_patch_version(current: str, tags: Iterable[str]) -> str:
     return f"{major}.{minor}.{patch + 1}"
 
 
+def _normalized_release_content(relative: str, data: bytes) -> bytes:
+    """Ignore only synchronized release-number fields in product-tree comparisons."""
+    if relative not in {
+        "build/Windows/Cargo.toml",
+        "build/Windows/Cargo.lock",
+        "build/Windows/gui/app.manifest",
+        "build/Windows/package/Package.appxmanifest",
+        "build/Windows/package/SPLINED.appinstaller.template",
+        "build/WEBGui/webgui/backend/splined.py",
+    }:
+        return data
+    has_bom = data.startswith(codecs.BOM_UTF8)
+    text = data.decode("utf-8-sig" if has_bom else "utf-8")
+    if relative == "build/Windows/Cargo.toml":
+        text = re.sub(
+            r'(?ms)(^\[package\].*?^version\s*=\s*")\d+\.\d+\.\d+("\s*$)',
+            r"\g<1><release>\g<2>",
+            text,
+            count=1,
+        )
+    elif relative == "build/Windows/Cargo.lock":
+        text = re.sub(
+            r'(?m)(^name = "splined-windows"\r?\nversion = ")\d+\.\d+\.\d+("\r?$)',
+            r"\g<1><release>\g<2>",
+            text,
+            count=1,
+        )
+    elif relative == "build/Windows/gui/app.manifest":
+        text = re.sub(
+            r'(<assemblyIdentity version=")\d+\.\d+\.\d+\.0(" name="SPLINED\.Windows"/?>)',
+            r"\g<1><release>.0\g<2>",
+            text,
+            count=1,
+        )
+    elif relative == "build/Windows/package/Package.appxmanifest":
+        text = re.sub(
+            r'(?s)(<Identity\b.*?\bVersion=")\d+\.\d+\.\d+\.0(")',
+            r"\g<1><release>.0\g<2>",
+            text,
+            count=1,
+        )
+    elif relative == "build/Windows/package/SPLINED.appinstaller.template":
+        text = re.sub(
+            r'(Version=")\d+\.\d+\.\d+\.0(")',
+            r"\g<1><release>.0\g<2>",
+            text,
+        )
+    else:
+        text = re.sub(
+            r'(?m)^VERSION = "\d+\.\d+\.\d+"\r?$',
+            'VERSION = "<release>"',
+            text,
+            count=1,
+        )
+        text = re.sub(
+            r'(?m)^USER_AGENT = "SPLINED/\d+\.\d+\.\d+ ',
+            'USER_AGENT = "SPLINED/<release> ',
+            text,
+            count=1,
+        )
+    return text.encode("utf-8-sig" if has_bom else "utf-8")
+
+
+def release_product_digest(root: Path) -> str:
+    """Hash release product source while ignoring synchronized version fields."""
+    root = root.resolve()
+    digest = hashlib.sha256()
+    for product_root in PRODUCT_ROOTS:
+        base = root / product_root
+        if not base.is_dir():
+            raise ValueError(f"Missing release product root: {product_root}")
+        for path in sorted(item for item in base.rglob("*") if item.is_file()):
+            relative = path.relative_to(root).as_posix()
+            digest.update(relative.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(_normalized_release_content(relative, path.read_bytes()))
+            digest.update(b"\0")
+    return digest.hexdigest()
+
+
 def _replace_one(
     path: Path,
     pattern: str,
@@ -143,17 +225,9 @@ def _replace_one(
     _write_utf8(path, updated, has_bom)
 
 
-def stamp_source_version(root: Path, version: str) -> None:
+def _stamp_version_fields(root: Path, version: str) -> None:
     root = root.resolve()
     numeric_version(version)
-    current = current_source_version(root)
-    current_numeric = numeric_version(current)
-    expected = f"{current_numeric[0]}.{current_numeric[1]}.{current_numeric[2] + 1}"
-    if version != expected:
-        raise ValueError(
-            f"Source preparation may advance exactly one patch: expected {expected}, got {version}"
-        )
-
     _replace_one(
         root / "build/Windows/Cargo.toml",
         r'(?ms)(^\[package\].*?^version\s*=\s*")\d+\.\d+\.\d+("\s*$)',
@@ -209,6 +283,28 @@ def stamp_source_version(root: Path, version: str) -> None:
         raise ValueError(f"Stamped source version did not validate: {stamped}")
 
 
+def stamp_source_version(root: Path, version: str) -> None:
+    """Advance reviewed branch source metadata by exactly one patch."""
+    current = current_source_version(root)
+    current_numeric = numeric_version(current)
+    expected = f"{current_numeric[0]}.{current_numeric[1]}.{current_numeric[2] + 1}"
+    if version != expected:
+        raise ValueError(
+            f"Source preparation may advance exactly one patch: expected {expected}, got {version}"
+        )
+    _stamp_version_fields(root, version)
+
+
+def stamp_release_version(root: Path, version: str) -> None:
+    """Stamp a workflow-computed release version into a temporary source commit."""
+    current = current_source_version(root)
+    if numeric_version(version) <= numeric_version(current):
+        raise ValueError(
+            f"Temporary release version must exceed committed source {current}: {version}"
+        )
+    _stamp_version_fields(root, version)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=Path.cwd())
@@ -218,15 +314,23 @@ def main() -> int:
     next_parser.add_argument("--tag", action="append", default=[])
     stamp_parser = subparsers.add_parser("stamp")
     stamp_parser.add_argument("version")
+    release_stamp_parser = subparsers.add_parser("stamp-release")
+    release_stamp_parser.add_argument("version")
+    subparsers.add_parser("product-digest")
     args = parser.parse_args()
 
     if args.command == "current":
         print(current_source_version(args.root))
     elif args.command == "next":
         print(next_patch_version(current_source_version(args.root), args.tag))
-    else:
+    elif args.command == "stamp":
         stamp_source_version(args.root, args.version)
         print(current_source_version(args.root))
+    elif args.command == "stamp-release":
+        stamp_release_version(args.root, args.version)
+        print(current_source_version(args.root))
+    else:
+        print(release_product_digest(args.root))
     return 0
 
 

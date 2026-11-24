@@ -24,6 +24,9 @@ published history belongs in Git tags and GitHub Releases.
   `Test-LocalStoreReviewBundle.ps1` exercise classification, Store history
   selection, cumulative highlights, local-only review audit evidence, and
   failure boundaries.
+- `.github/scripts/release_note_baseline.py` resolves the immediately prior
+  numeric release. It accepts either a direct ancestor tag or a validated
+  Workflow 10 temporary version stamp and fails closed on unrelated history.
 - `tests/` contains intentionally historical, synthetic Microsoft Store JSON
   fixtures. Their old version numbers are regression inputs, not current
   product-version documentation.

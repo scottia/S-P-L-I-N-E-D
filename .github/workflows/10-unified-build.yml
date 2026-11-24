@@ -64,6 +64,8 @@ jobs:
       report_only: ${{ steps.plan.outputs.report_only }}
       release_version: ${{ steps.plan.outputs.release_version }}
       display_version: ${{ steps.plan.outputs.display_version }}
+      source_version: ${{ steps.plan.outputs.source_version }}
+      auto_stamp: ${{ steps.plan.outputs.auto_stamp }}
       build_windows: ${{ steps.plan.outputs.build_windows }}
       build_webgui: ${{ steps.plan.outputs.build_webgui }}
       existing_release: ${{ steps.plan.outputs.existing_release }}
@@ -141,6 +143,7 @@ jobs:
           git fetch --force origin \
             main:refs/remotes/origin/main \
             dev:refs/remotes/origin/dev
+          git fetch --force --tags origin
           MAIN_SHA=$(git rev-parse origin/main)
           DEV_SHA=$(git rev-parse origin/dev)
           source_relation=$(python3 .github/scripts/resolve_workflow10_source_relation.py \
@@ -169,6 +172,58 @@ jobs:
                   f"Committed source versions disagree: Windows {windows_version}, WebGUI {webgui_match.group(1)}"
               )
           print(windows_version)
+          PY
+          )
+
+          LATEST_TAG=$(python3 - <<'PY'
+          import re
+          import subprocess
+
+          tags = subprocess.check_output(["git", "tag", "--list"], text=True).splitlines()
+          numeric = []
+          for tag in tags:
+              match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", tag)
+              if match:
+                  numeric.append((tuple(map(int, match.groups())), tag))
+          print(max(numeric)[1] if numeric else "")
+          PY
+          )
+          LATEST_PRODUCT_MATCH=false
+          if [ -n "$LATEST_TAG" ]; then
+            tagged_root=$(mktemp -d)
+            git archive "$LATEST_TAG" build/Windows build/WEBGui schema | tar -x -C "$tagged_root"
+            current_digest=$(python3 .github/scripts/source_version.py product-digest)
+            tagged_digest=$(python3 .github/scripts/source_version.py --root "$tagged_root" product-digest)
+            rm -rf "$tagged_root"
+            if [ "$current_digest" = "$tagged_digest" ]; then
+              LATEST_PRODUCT_MATCH=true
+            fi
+          fi
+
+          read -r release_version auto_stamp < <(SOURCE_VERSION="$SOURCE_VERSION" LATEST_PRODUCT_MATCH="$LATEST_PRODUCT_MATCH" python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+          import subprocess
+          import sys
+
+          sys.path.insert(0, str(Path(".github/scripts").resolve()))
+          from release_source_version import choose_workflow10_release_version
+
+          source = os.environ["SOURCE_VERSION"]
+          tags = subprocess.check_output(["git", "tag", "--list"], text=True).splitlines()
+          versions = []
+          for tag in tags:
+              match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", tag)
+              if match:
+                  versions.append(tuple(map(int, match.groups())))
+          version, stamp = choose_workflow10_release_version(
+              source,
+              versions,
+              tags,
+              os.environ["LATEST_PRODUCT_MATCH"] == "true",
+          )
+          print(version, str(stamp).lower())
           PY
           )
 
@@ -212,13 +267,12 @@ jobs:
             *) echo "::error title=Invalid Store action::$STORE_ACTION"; exit 1 ;;
           esac
 
-          release_version="$SOURCE_VERSION"
-          display_version="$SOURCE_VERSION"
+          display_version="$release_version"
           existing_release=false
-          if gh release view "$SOURCE_VERSION" >/tmp/release.json 2>/dev/null; then
+          if gh release view "$release_version" >/tmp/release.json 2>/dev/null; then
             existing_release=true
             if [ "$OUTCOME" = "COMPLETE RELEASE" ]; then
-              mapfile -t existing_assets < <(gh release view "$SOURCE_VERSION" --json assets --jq '.assets[].name')
+              mapfile -t existing_assets < <(gh release view "$release_version" --json assets --jq '.assets[].name')
               if printf '%s\n' "${existing_assets[@]}" | grep -qx 'splined-windows-x86_64.zip'; then
                 build_windows=false
               fi
@@ -226,15 +280,15 @@ jobs:
                 build_webgui=false
               fi
               if [ "$TARGET_SELECTION" = "WINDOWS" ] && [ "$build_windows" = false ]; then
-                echo "::error title=Windows output already published::Version $SOURCE_VERSION already contains the Windows distributable; Workflow 10 never overwrites it."
+                echo "::error title=Windows output already published::Version $release_version already contains the Windows distributable; Workflow 10 never overwrites it."
                 exit 1
               fi
               if [ "$TARGET_SELECTION" = "WEBGUI" ] && [ "$build_webgui" = false ]; then
-                echo "::error title=WebGUI output already published::Version $SOURCE_VERSION already contains the WebGUI distributable; Workflow 10 never overwrites it."
+                echo "::error title=WebGUI output already published::Version $release_version already contains the WebGUI distributable; Workflow 10 never overwrites it."
                 exit 1
               fi
               if [ "$TARGET_SELECTION" = "ALL" ] && [ "$build_windows" = false ] && [ "$build_webgui" = false ]; then
-                echo "::error title=Release already complete::Version $SOURCE_VERSION already contains both complete distributables."
+                echo "::error title=Release already complete::Version $release_version already contains both complete distributables."
                 exit 1
               fi
             fi
@@ -257,6 +311,8 @@ jobs:
             echo "report_only=$report_only"
             echo "release_version=$release_version"
             echo "display_version=$display_version"
+            echo "source_version=$SOURCE_VERSION"
+            echo "auto_stamp=$auto_stamp"
             echo "build_windows=$build_windows"
             echo "build_webgui=$build_webgui"
             echo "existing_release=$existing_release"
@@ -272,9 +328,10 @@ jobs:
             echo "- Automatic compile mode: \`$compile_mode\` (main \`${MAIN_VERSION:-unknown}\`; dev \`$SOURCE_VERSION\`)"
             echo "- Workflow definition branch: \`$GITHUB_REF_NAME\`"
             echo "- Main commit/version: \`$MAIN_SHA\` / \`${MAIN_VERSION:-unknown}\`"
-            echo "- Selected dev source: \`$DEV_SHA\` / \`$SOURCE_VERSION\`"
+            echo "- Selected dev source: \`$DEV_SHA\` / committed \`$SOURCE_VERSION\`"
             echo "- Dev/main comparison: \`$source_relation\`"
             echo "- Release version: \`$display_version\`"
+            echo "- Temporary release-version stamp required: \`$auto_stamp\`"
             echo "- Build Windows now: \`$build_windows\`"
             echo "- Build WebGUI now: \`$build_webgui\`"
             echo "- Existing release completion: \`$existing_release\`"
@@ -446,6 +503,7 @@ jobs:
         shell: bash
         env:
           REQUESTED_VERSION: ${{ needs.resolve-plan.outputs.release_version }}
+          COMMITTED_SOURCE_VERSION: ${{ needs.resolve-plan.outputs.source_version }}
           RELEASE_MODE: ${{ needs.resolve-plan.outputs.release_confirmation }}
           EXPECTED_DEV_SHA: ${{ needs.resolve-plan.outputs.source_sha }}
           GH_TOKEN: ${{ github.token }}
@@ -466,6 +524,7 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          test "$(python3 .github/scripts/source_version.py current)" = "$COMMITTED_SOURCE_VERSION"
           EXISTING_RELEASE=false
           if git show-ref --verify --quiet "refs/tags/$RELEASE_VERSION"; then
             if ! gh release view "$RELEASE_VERSION" >/dev/null 2>&1; then
@@ -474,38 +533,38 @@ jobs:
             fi
             EXISTING_RELEASE=true
             RELEASE_COMMIT=$(git rev-list -n 1 "$RELEASE_VERSION")
-            if ! git diff --quiet "$RELEASE_COMMIT" HEAD -- build/Windows build/WEBGui schema; then
-              echo "::error title=Source changed after this release::The current product source differs from tag $RELEASE_VERSION. Promote a new numeric source version before building."
-              git diff --name-only "$RELEASE_COMMIT" HEAD -- build/Windows build/WEBGui schema
+            tagged_root=$(mktemp -d)
+            git archive "$RELEASE_COMMIT" build/Windows build/WEBGui schema | tar -x -C "$tagged_root"
+            current_digest=$(python3 .github/scripts/source_version.py product-digest)
+            tagged_digest=$(python3 .github/scripts/source_version.py --root "$tagged_root" product-digest)
+            rm -rf "$tagged_root"
+            if [ "$current_digest" != "$tagged_digest" ]; then
+              echo "::error title=Source changed after this release::The current product source differs from tag $RELEASE_VERSION after normalizing release-only version fields."
               exit 1
             fi
             git checkout --detach "$RELEASE_COMMIT"
             echo "Completing missing outputs for existing release $RELEASE_VERSION from exact tagged source $RELEASE_COMMIT."
           else
-            python3 - <<'PY'
-          from pathlib import Path
-          import os
-          import re
-          import subprocess
-          import sys
-          sys.path.insert(0, str(Path(".github/scripts").resolve()))
-          from release_source_version import choose_release_version
-          requested = os.environ["REQUESTED_VERSION"]
-          tags = subprocess.check_output(["git", "tag", "--list"], text=True).splitlines()
-          versions = []
-          for tag in tags:
-              match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", tag)
-              if match:
-                  versions.append(tuple(map(int, match.groups())))
-          actual = choose_release_version(requested, versions, tags, requested)
-          if actual != requested:
-              raise SystemExit(f"Resolved release {actual} did not match committed source {requested}")
-          PY
-            RELEASE_COMMIT="$SOURCE_SHA"
             git fetch --force origin dev:refs/remotes/origin/dev
             if [ "$(git rev-parse origin/dev)" != "$SOURCE_SHA" ]; then
               echo "::error title=Dev source advanced::origin/dev changed after the approved plan; run Workflow 10 again to use the new exact source."
               exit 1
+            fi
+            if [ "$RELEASE_VERSION" = "$COMMITTED_SOURCE_VERSION" ]; then
+              RELEASE_COMMIT="$SOURCE_SHA"
+            else
+              python3 .github/scripts/source_version.py stamp-release "$RELEASE_VERSION"
+              git add \
+                build/Windows/Cargo.toml \
+                build/Windows/Cargo.lock \
+                build/Windows/gui/app.manifest \
+                build/Windows/package/Package.appxmanifest \
+                build/Windows/package/SPLINED.appinstaller.template \
+                build/WEBGui/webgui/backend/splined.py
+              git commit -m "release: prepare ${RELEASE_VERSION}"
+              RELEASE_COMMIT=$(git rev-parse HEAD)
+              test "$(git rev-parse "$RELEASE_COMMIT^")" = "$SOURCE_SHA"
+              test "$(python3 .github/scripts/source_version.py current)" = "$RELEASE_VERSION"
             fi
           fi
 
@@ -521,9 +580,9 @@ jobs:
           if [ "$EXISTING_RELEASE" = true ]; then
             echo "Prepared existing tagged source $RELEASE_VERSION at $RELEASE_COMMIT"
           elif [ "$RELEASE_MODE" = "Create release now" ]; then
-            echo "Prepared exact origin/dev source $RELEASE_VERSION at $RELEASE_COMMIT"
+            echo "Prepared approved origin/dev product source as $RELEASE_VERSION at $RELEASE_COMMIT (base $SOURCE_SHA)"
           else
-            echo "Prepared exact origin/dev source $RELEASE_VERSION at $RELEASE_COMMIT for BUILD ONLY"
+            echo "Prepared approved origin/dev product source as $RELEASE_VERSION at $RELEASE_COMMIT for BUILD ONLY (base $SOURCE_SHA)"
           fi
 
       - name: Upload exact release source commit
@@ -1045,7 +1104,7 @@ jobs:
           if-no-files-found: error
 
   finalize-tag:
-    name: Tag exact selected dev source after successful builds
+    name: Tag exact approved release source after successful builds
     needs:
       - resolve-plan
       - build-only-report
@@ -1080,7 +1139,7 @@ jobs:
           name: release-source-commit
           path: .release-source
 
-      - name: Tag the unchanged selected dev commit
+      - name: Tag the exact built source derived from selected dev
         shell: bash
         env:
           RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
@@ -1099,7 +1158,26 @@ jobs:
           fi
           git fetch .release-source/release-source.bundle HEAD
           test "$(git rev-parse FETCH_HEAD)" = "$RELEASE_COMMIT"
-          test "$RELEASE_COMMIT" = "$SOURCE_SHA"
+          if [ "$RELEASE_COMMIT" != "$SOURCE_SHA" ]; then
+            test "$(git rev-parse "$RELEASE_COMMIT^")" = "$SOURCE_SHA"
+            mapfile -t changed < <(git diff --name-only "$SOURCE_SHA" "$RELEASE_COMMIT")
+            allowed=(
+              build/Windows/Cargo.toml
+              build/Windows/Cargo.lock
+              build/Windows/gui/app.manifest
+              build/Windows/package/Package.appxmanifest
+              build/Windows/package/SPLINED.appinstaller.template
+              build/WEBGui/webgui/backend/splined.py
+            )
+            test "${#changed[@]}" = "${#allowed[@]}"
+            for path in "${changed[@]}"; do
+              printf '%s\n' "${allowed[@]}" | grep -Fxq "$path"
+            done
+            release_root=$(mktemp -d)
+            git archive "$RELEASE_COMMIT" | tar -x -C "$release_root"
+            test "$(python3 "$release_root/.github/scripts/source_version.py" --root "$release_root" current)" = "$RELEASE_VERSION"
+            rm -rf "$release_root"
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$RELEASE_VERSION" "$RELEASE_COMMIT" -m "S:P:L:I:N:E:D ${RELEASE_VERSION}"

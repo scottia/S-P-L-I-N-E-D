@@ -31,35 +31,30 @@ if ($LASTEXITCODE -ne 0) { throw "Release tag does not exist: $Version" }
 $releaseCommit = (& git -C $repository rev-parse "refs/tags/$Version^{commit}").Trim()
 if ($LASTEXITCODE -ne 0) { throw "Unable to resolve release tag: $Version" }
 
-$current = [Version]$Version
-$numericTags = @(
-    foreach ($tag in (& git -C $repository tag --list)) {
-        if ($tag -notmatch '^\d+\.\d+\.\d+$' -or [Version]$tag -ge $current) {
-            continue
-        }
-        # A newer-looking tag on another history is not the prior release.
-        # Exit 1 means this older numeric tag belongs to another history.
-        # PowerShell's native-command error preference must not turn that
-        # expected result into a terminating exception.
-        $PSNativeCommandUseErrorActionPreference = $false
-        try {
-            & git -C $repository merge-base --is-ancestor "refs/tags/$tag^{commit}" $releaseCommit
-            $ancestorExitCode = $LASTEXITCODE
-        } finally {
-            $PSNativeCommandUseErrorActionPreference = $true
-        }
-        if ($ancestorExitCode -eq 0) {
-            [PSCustomObject]@{ Text = $tag; Version = [Version]$tag }
-        } elseif ($ancestorExitCode -ne 1) {
-            throw "Unable to inspect release tag ancestry: $tag"
-        }
-    }
-) | Sort-Object Version -Descending
-if ($numericTags.Count -eq 0) {
-    throw "No previous numeric release tag exists before $Version."
+$resolverPath = Join-Path $repository ".github/scripts/release_note_baseline.py"
+if (-not (Test-Path -LiteralPath $resolverPath -PathType Leaf)) {
+    throw "Release-note baseline resolver is missing: $resolverPath"
 }
-$previousTag = $numericTags[0].Text
-$range = "$previousTag..$Version"
+$pythonCommand = if ([String]::IsNullOrWhiteSpace($env:SPLINED_PYTHON)) {
+    "python3"
+} else {
+    $env:SPLINED_PYTHON
+}
+$resolvedJson = (& $pythonCommand $resolverPath --repository $repository --version $Version) -join "`n"
+if ($LASTEXITCODE -ne 0) {
+    throw "Release-note baseline resolution failed for $Version."
+}
+$resolved = $resolvedJson | ConvertFrom-Json
+$previousTag = $resolved.previous_tag
+$baselineCommit = $resolved.baseline_commit
+$range = $resolved.range
+$baselineMode = $resolved.mode
+if ([String]::IsNullOrWhiteSpace($previousTag) -or
+    [String]::IsNullOrWhiteSpace($baselineCommit) -or
+    [String]::IsNullOrWhiteSpace($range) -or
+    [String]::IsNullOrWhiteSpace($baselineMode)) {
+    throw "Release-note baseline resolver returned incomplete evidence for $Version."
+}
 
 [IO.Directory]::CreateDirectory($OutputDirectory) | Out-Null
 $contextPath = Join-Path $OutputDirectory "release-context.json"
@@ -82,8 +77,10 @@ if (-not ($releases | Where-Object { $_.version -eq $Version })) {
 
 if (-not [String]::IsNullOrWhiteSpace($env:GITHUB_OUTPUT)) {
     "previous_tag=$previousTag" | Add-Content -Encoding utf8 $env:GITHUB_OUTPUT
+    "baseline_commit=$baselineCommit" | Add-Content -Encoding utf8 $env:GITHUB_OUTPUT
+    "baseline_mode=$baselineMode" | Add-Content -Encoding utf8 $env:GITHUB_OUTPUT
     "context_path=$contextPath" | Add-Content -Encoding utf8 $env:GITHUB_OUTPUT
     "github_notes_path=$githubNotesPath" | Add-Content -Encoding utf8 $env:GITHUB_OUTPUT
 }
 
-Write-Output "Generated incremental git-cliff GitHub release notes for $range"
+Write-Output "Generated incremental git-cliff GitHub release notes for $range ($baselineMode; previous tag $previousTag)"
