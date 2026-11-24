@@ -132,8 +132,18 @@ class Context:
         )
         if self.start_worker:
             self.jobs = JobQueue(self.services)
+            self._start_artist_projection_warmup()
         self.url = url
         self.error = ""
+
+    def _start_artist_projection_warmup(self):
+        if not self.start_worker or self.services is None:
+            return
+        threading.Thread(
+            target=self.services.catalog.warm_artist_projection,
+            name="splined-artist-projection-warmup",
+            daemon=True,
+        ).start()
 
     def database_monitor(self) -> dict[str, object]:
         with self._database_monitor_lock:
@@ -267,6 +277,7 @@ class Context:
             )
             self.url = url
             self.error = ""
+        self._start_artist_projection_warmup()
         return self.settings()
 
     def _rebuild_services(self):
@@ -286,6 +297,7 @@ class Context:
             album_validator=self.services.validate_album_embedding,
         )
         self.jobs = JobQueue(self.services) if self.start_worker else None
+        self._start_artist_projection_warmup()
 
     def reset_database(self, target: str, confirmation: str):
         with self.lifecycle_lock:
@@ -1018,7 +1030,10 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
 
     @app.get("/api/artists")
     def artists(q: str = ""):
-        return context.require().catalog.artists(q)
+        runtime = context.require()
+        return runtime.catalog.artists(
+            q, nonblocking_projection=context.start_worker
+        )
 
     @app.get("/api/artists/thumbnails")
     def artist_thumbnails():
