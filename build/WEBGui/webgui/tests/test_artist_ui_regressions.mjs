@@ -2829,6 +2829,54 @@ test("selected Artist status includes its track-scoped COMP report", () => {
   assert.equal(state.artist.has_incomplete_error, false);
 });
 
+test("selected Artist preserves indexed Green across load, select, and reselect", () => {
+  const completeAlbum = {
+    id: "album-1", album_mbid: "release-1", cover_found: true,
+    static_cover_found: true, cover: "cover.jpg", status: "processed",
+    tracks: 2, embedded: 0, embedded_validation: "unknown",
+  };
+  const state = {
+    graphicalEnhancement: {frame_styles: {
+      complete: {color: "green"}, in_process: {color: "orange"}, thumbnail: {color: "purple"},
+    }},
+    artist: {id: "complete", portrait: "artist.jpg", status: "complete", albums: [completeAlbum]},
+    artists: [{id: "complete", status: "complete"}],
+    compAlbums: [],
+    compGroups: [],
+  };
+  const context = load(artistAggregateFunctions, {
+    state, rawMediaStatusKey: item => ["complete", "albumsComplete"].includes(item.status)
+      ? "albumsComplete" : item.status,
+    mediaStatusColor: status => status,
+    normalizedCompTrackStatus: track => track.status || (track.completed ? "checking" : "blue"),
+    singleAlbumOverviewActive: () => false,
+    albumPresentationGroup: () => 0,
+    compareAlbumTitles: () => 0,
+  });
+
+  assert.equal(context.syncSelectedArtistStatus(), "albumsComplete",
+    "selection retains the indexed completion while card hydration is partial");
+  assert.equal(state.artists[0].status, "albumsComplete");
+
+  state.artist = {
+    id: "complete", portrait: "artist.jpg", status: "complete",
+    albums: [{...completeAlbum}],
+  };
+  assert.equal(context.syncSelectedArtistStatus(), "albumsComplete",
+    "reselection does not replace verified Green with default Red");
+
+  state.artist.albums[0].status = "incomplete";
+  assert.equal(context.syncSelectedArtistStatus(), "incomplete",
+    "current incomplete/error evidence still outranks indexed Green");
+  state.artist.albums[0].status = "partial";
+  assert.equal(context.syncSelectedArtistStatus(), "partial",
+    "current embedding evidence still outranks indexed Green");
+  state.artist.albums[0].status = "processed";
+  state.artist.portrait = "";
+  assert.equal(context.syncSelectedArtistStatus(), "bypassed",
+    "current missing-art evidence still outranks indexed Green");
+});
+
 test("Artist overview lazily verifies unresolved regular Albums without touching COMP fallback", async () => {
   let renders = 0;
   const state = {
