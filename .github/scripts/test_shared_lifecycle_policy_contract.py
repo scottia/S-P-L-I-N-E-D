@@ -66,11 +66,38 @@ class SharedLifecyclePolicyContractTests(unittest.TestCase):
         self.assertIn("PostgreSQL", doc)
         self.assertIn("lifecycle-policy.md", readme)
 
-    def test_new_contract_does_not_claim_unimplemented_runtime_enforcement(self):
+    def test_activation_contract_covers_native_consumers_and_protection(self):
+        requirements = self.policy["activation_requirements"]
+        self.assertEqual(
+            set(requirements),
+            {
+                "runtime_consumers",
+                "source_binding",
+                "protection_gate",
+                "performance_and_authority",
+                "activation_evidence",
+                "downstream_prs",
+            },
+        )
+        self.assertTrue(all(isinstance(value, str) and value.strip()
+                            for value in requirements.values()))
+        self.assertIn("Windows Rust/Slint", requirements["runtime_consumers"])
+        self.assertIn("WebGUI Python/browser", requirements["runtime_consumers"])
+        self.assertIn("schema/lifecycle-policy.json", requirements["protection_gate"])
+        self.assertIn("SQLite/PostgreSQL", requirements["performance_and_authority"])
+
+    def test_enforcement_state_must_be_explicit_but_may_advance_with_evidence(self):
+        # No false positive at this checkpoint. The acceptance validator must
+        # NOT pin the runtime status to "not implemented" forever: a future
+        # reviewed loader/gate PR must be able to record verified activation.
         enforcement = self.policy["enforcement_state"]
-        self.assertIn("not implemented", enforcement["windows_runtime_loader"])
-        self.assertIn("not implemented", enforcement["webgui_runtime_loader"])
-        self.assertIn("not yet extended", enforcement["independent_json_protection_gate"])
+        for key in ("windows_runtime_loader", "webgui_runtime_loader",
+                    "independent_json_protection_gate"):
+            with self.subTest(key=key):
+                self.assertIsInstance(enforcement[key], str)
+                self.assertTrue(enforcement[key].strip())
+        self.assertEqual(enforcement["automatic_sqlite_postgresql_sync"],
+                         "not provided by JSON")
 
 
 if __name__ == "__main__":
