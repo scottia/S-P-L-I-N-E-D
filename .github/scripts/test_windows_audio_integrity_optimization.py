@@ -38,9 +38,15 @@ class WindowsAudioIntegrityOptimizationTests(unittest.TestCase):
         self.assertIn('version = "<release>"', self.job)
         self.assertIn("~/.cargo/registry", self.job)
         self.assertIn("~/.cargo/git", self.job)
+        self.assertIn("build/Windows/target/debug/deps", self.job)
+        self.assertIn("build/Windows/target/debug/build", self.job)
+        self.assertIn("build/Windows/target/debug/.fingerprint", self.job)
         self.assertIn("debug/deps", self.job)
+        self.assertIn("!build/Windows/target/debug/deps/*.exe", self.job)
+        self.assertIn("!build/Windows/target/debug/deps/*.pdb", self.job)
         self.assertIn("!build/Windows/target/x86_64-pc-windows-msvc/debug/deps/*.exe", self.job)
         self.assertIn("!build/Windows/target/x86_64-pc-windows-msvc/debug/deps/*.pdb", self.job)
+        self.assertIn("splined-windows-audio-tests-v2", self.job)
         self.assertNotIn("target/x86_64-pc-windows-msvc/debug/splined.exe", self.job)
 
     def test_reports_cache_and_elapsed_time(self) -> None:

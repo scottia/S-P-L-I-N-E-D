@@ -112,15 +112,21 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
+            build/Windows/target/debug/deps
+            !build/Windows/target/debug/deps/*.exe
+            !build/Windows/target/debug/deps/*.pdb
+            build/Windows/target/debug/build
+            build/Windows/target/debug/.fingerprint
+            build/Windows/target/debug/incremental
             build/Windows/target/x86_64-pc-windows-msvc/debug/deps
             !build/Windows/target/x86_64-pc-windows-msvc/debug/deps/*.exe
             !build/Windows/target/x86_64-pc-windows-msvc/debug/deps/*.pdb
             build/Windows/target/x86_64-pc-windows-msvc/debug/build
             build/Windows/target/x86_64-pc-windows-msvc/debug/.fingerprint
             build/Windows/target/x86_64-pc-windows-msvc/debug/incremental
-          key: ${{ runner.os }}-splined-windows-audio-tests-v1-1.99.0-x86_64-pc-windows-msvc-${{ steps.windows-audio-cache-key.outputs.hash }}-${{ env.VALIDATION_HEAD_SHA }}
+          key: ${{ runner.os }}-splined-windows-audio-tests-v2-1.99.0-x86_64-pc-windows-msvc-${{ steps.windows-audio-cache-key.outputs.hash }}-${{ env.VALIDATION_HEAD_SHA }}
           restore-keys: |
-            ${{ runner.os }}-splined-windows-audio-tests-v1-1.99.0-x86_64-pc-windows-msvc-${{ steps.windows-audio-cache-key.outputs.hash }}-
+            ${{ runner.os }}-splined-windows-audio-tests-v2-1.99.0-x86_64-pc-windows-msvc-${{ steps.windows-audio-cache-key.outputs.hash }}-
 
       - name: Compile once and run mandatory Rust/Lofty regressions
         shell: pwsh
