@@ -1223,6 +1223,20 @@ function albumCardState(album, artist) {
     : checkEmbedded ? frames.thumbnail.color : processed ? frames.in_process.color : mediaStatusColor(status);
   return {dots, frame, fullyComplete, checkEmbedded, embeddedPending, embeddedRetry, validating, mixedFrame, overridden, albumOverridden, compTrackOverridden, bypassed, missingArt, incomplete: incompleteEvidence, stateKey};
 }
+function albumEmbedIsStaged(albumId) {
+  const id = String(albumId || "");
+  return !!id && state.embedQueue.some(item => String(item.id) === id && item.jobState === "staged");
+}
+function albumCardPresentation(cardState, stagedForEmbedding) {
+  return {
+    stagedIndicator: !!stagedForEmbedding,
+    // Opposing-app authority owns the Dark Grey frame even while this client
+    // has a durable staged job. The transient indicator can still expose that
+    // queue state without replacing canonical frame or dot evidence.
+    mixedFrame: cardState.overridden ? ""
+      : stagedForEmbedding ? "orange-purple" : cardState.mixedFrame,
+  };
+}
 function selectedArtistAggregateStatus(artist = state.artist) {
   if (!artist) return "incomplete";
   const cards = artistOverviewAlbums(artist, false).map(album => albumCardState(album, artist));
@@ -1522,13 +1536,14 @@ function renderHeroContents() {
     button.dataset.compAlbum = compIds.has(album.id) ? "true" : "false";
     button.disabled = compIds.has(album.id) && state.compReportLoading;
     const cardState = albumCardState(album, artist); button.style.setProperty("--frame-color", cardState.frame);
-    const stagedForEmbedding = state.embedQueue.some(item => item.id === album.id);
+    const stagedForEmbedding = albumEmbedIsStaged(album.id);
+    const cardPresentation = albumCardPresentation(cardState, stagedForEmbedding);
     // A COMP track override owns the dark-grey frame/dot but never greys the
     // Curated Album thumbnail. Only an opposing whole-Album write does that.
     button.classList.toggle("opposing-override", cardState.albumOverridden);
-    const mixedFrame = stagedForEmbedding ? "orange-purple" : cardState.mixedFrame;
+    const mixedFrame = cardPresentation.mixedFrame;
     button.classList.toggle("mixed-frame", !!mixedFrame);
-    button.classList.toggle("staged", stagedForEmbedding);
+    button.classList.toggle("staged", cardPresentation.stagedIndicator);
     if (mixedFrame) {
       button.style.setProperty("--mixed-frame-a", mediaPolicyColor(mixedFrame === "green-purple" ? "green" : "orange"));
       button.style.setProperty("--mixed-frame-b", mediaPolicyColor("purple"));
@@ -1542,7 +1557,7 @@ function renderHeroContents() {
     const picture = node("span", "album-card-picture"); picture.append(albumArtworkNode(album, "", album.name + " cover", "album-placeholder", true));
     const dots = node("span", "album-status-dots"); for (const [color, tip] of cardState.dots) { const dot = node("span", "", "●"); dot.style.color = color; dot.title = tip; dots.append(dot); }
     picture.append(dots);
-    if (stagedForEmbedding) {
+    if (cardPresentation.stagedIndicator) {
       const staged = node("span", "album-staged-indicator", "●"); staged.title = "Staged for embedding";
       staged.style.setProperty("--staged-indicator-a", mediaPolicyColor("orange"));
       staged.style.setProperty("--staged-indicator-b", mediaPolicyColor("purple"));
@@ -2844,7 +2859,11 @@ async function loadLibrary(query = "") {
   const request = ++state.listRequest;
   const mode = state.libraryMode;
   if (mode === "artists") state.artistQuery = String(query || "");
-  state.libraryLoading = true;
+  const usableRows = mode === "artists" ? state.artists : state.albumsIndex;
+  // Retain an already published list while a search generation is in flight.
+  // A job/status rerender during the request must not replace usable rows with
+  // the initial-load placeholder.
+  state.libraryLoading = !(state.libraryReady && usableRows.length);
   try {
     const results = mode === "artists"
       ? await coalescedLibraryApi("/api/artists?q=" + encodeURIComponent(query))

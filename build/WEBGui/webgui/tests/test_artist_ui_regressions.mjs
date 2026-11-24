@@ -102,6 +102,34 @@ test("a superseded library response cannot commit stale rows", async () => {
   assert.deepEqual(JSON.parse(JSON.stringify(state.artists)), [{id: "new"}]);
 });
 
+test("Artist search retains a usable list while its delayed request is pending", async () => {
+  let release;
+  const response = new Promise(resolve => { release = resolve; });
+  const renders = [];
+  const state = {
+    libraryMode: "artists", artistQuery: "", listRequest: 0, libraryLoading: false,
+    libraryReady: true, artists: [{id: "abba", name: "ABBA"}], albumsIndex: [],
+    artist: {id: "selected"}, artistProjectionRetry: 0,
+    albumLibraryRequest: 0, albumLibraryMatches: [], albumLibraryLoading: false,
+  };
+  const context = load(librarySearchFunctions, {
+    state, api: async () => response,
+    renderLibrary: () => renders.push({loading: state.libraryLoading, artists: [...state.artists]}),
+    chooseArtist: async () => {}, setStatus() {},
+    window: {setTimeout() { return 1; }, clearTimeout() {}},
+  });
+
+  const pending = context.loadLibrary("abb");
+  assert.equal(state.libraryLoading, false, "a settled Artist list remains publishable during search");
+  context.renderLibrary();
+  assert.deepEqual(renders.at(-1), {loading: false, artists: [{id: "abba", name: "ABBA"}]});
+
+  release([{id: "abba", name: "ABBA"}, {id: "abbath", name: "Abbath"}]);
+  await pending;
+  assert.equal(state.libraryLoading, false);
+  assert.equal(state.artists.length, 2);
+});
+
 function between(source, start, end) {
   const first = source.indexOf(start);
   const last = source.indexOf(end, first + start.length);
@@ -605,6 +633,11 @@ const albumSummaryFunctions = mediaStatusFunctions + "\n" + between(
   appSource,
   "function albumOverride",
   "function renderAlbumStatusKey",
+);
+const albumCardPresentationFunctions = between(
+  appSource,
+  "function albumEmbedIsStaged",
+  "function selectedArtistAggregateStatus",
 );
 const artistAggregateFunctions = between(
   appSource,
@@ -1357,6 +1390,45 @@ test("an Album embed completion publishes terminal verified progress without an 
   ]);
 });
 
+test("a reviewed Album embed completion cannot fall through to COMP status", async () => {
+  const prior = {
+    id: "embed-reviewed", kind: "embed-album", state: "running",
+    payload: {album_id: "album-2", name: "Adios", tracks: 12, embedded_side: 1200},
+    progress: {completed: 11, total: 12, message: "11.flac"},
+  };
+  const state = {
+    server: {authenticated: true, setup_required: false}, libraryReady: true,
+    jobs: [prior], embedQueue: [], queueControls: {},
+    reviewJobId: prior.id, reviewJobState: "running",
+    albumOverrides: new Map(), compTrackOverrides: new Map(),
+  };
+  const statuses = [], refreshedReviews = [];
+  const context = load(pollJobsFunction, {
+    state,
+    api: async path => path === "/api/jobs" ? [{...prior, state: "done",
+      progress: {completed: 12, total: 12, message: "12.flac"},
+      result: {tracks: 12, side: 1200, verified: true}}]
+      : path === "/api/jobs/control-state" ? {}
+      : path === "/api/library/index-status" ? {generation: null} : [],
+    renderQueue() {}, renderCandidateLaunchControl() {},
+    applyAlbumCoordination: () => [], applyCompTrackCoordination: () => [],
+    refreshOpposingAlbumThumbnails: async () => {}, refreshOpenCompReportAfterCoordination: async () => {},
+    refreshCompletedAlbum: async () => {}, renderHero() {}, renderReview() {}, renderLibrary() {},
+    refreshQueuedAlbumAfterSave: async job => { refreshedReviews.push(job.id); },
+    setStatus: (...values) => { statuses.push(values); }, renderJob: async () => {},
+    $: () => ({open: false, value: ""}),
+  });
+
+  await context.pollJobs();
+
+  assert.deepEqual(refreshedReviews, [prior.id]);
+  assert.deepEqual(statuses.at(-1), [
+    "Album track embedding completed and verified · Adios · 12/12 tracks · verified 1200 × 1200 · 12.flac",
+    "ready",
+  ]);
+  assert.equal(statuses.some(([message]) => message.startsWith("COMP track artwork work complete")), false);
+});
+
 test("shared coordination waits for an idle quiet interval", async () => {
   const calls = [];
   const state = {jobs: [], launchActive: false, writePending: false, libraryLoading: false};
@@ -1381,6 +1453,42 @@ test("shared coordination waits for an idle quiet interval", async () => {
   const activeCalls = calls.length;
   await context.pollSharedState();
   assert.equal(calls.length, activeCalls, "interactive work suppresses coordination polling");
+});
+
+test("a failed index-status read preserves its last snapshot and applies other coordination", async () => {
+  const lastIndexStatus = {generation: {id: "generation-9", state: "completed"}};
+  const state = {
+    jobs: [], launchActive: false, writePending: false, libraryLoading: false,
+    indexStatus: lastIndexStatus,
+  };
+  const calls = [], audits = [];
+  let appliedAlbums = null, appliedTracks = null, indexRenders = 0;
+  const context = load(sharedStatePollFunctions, {
+    state,
+    api: async path => {
+      calls.push(path);
+      if (path === "/api/coordination/album-overrides") return [{album_key: "album-1", revision: 4}];
+      if (path === "/api/coordination/comp-track-overrides") return [{track_key: "track-1", revision: 8}];
+      throw new Error("index status unavailable");
+    },
+    renderIndexProgress: () => { indexRenders += 1; },
+    applyAlbumCoordination: value => { appliedAlbums = value; return []; },
+    applyCompTrackCoordination: value => { appliedTracks = value; return []; },
+    refreshOpposingAlbumThumbnails: async () => {}, refreshOpenCompReportAfterCoordination: async () => {},
+    renderLibrary() {}, renderHero() {}, renderReview() {},
+    auditEvent: (...values) => { audits.push(values); },
+  });
+
+  await context.pollSharedState();
+
+  assert.equal(state.indexStatus, lastIndexStatus);
+  assert.equal(indexRenders, 0, "a failed endpoint cannot publish an empty index snapshot");
+  assert.equal(appliedAlbums[0].album_key, "album-1");
+  assert.equal(appliedTracks[0].track_key, "track-1");
+  assert.equal(audits.length, 1);
+  const callsAfterFailure = calls.length;
+  await context.pollSharedState();
+  assert.equal(calls.length, callsAfterFailure, "the partial failure still enters bounded backoff");
 });
 
 test("ordinary queued scan work also stays in the status area without a modal", async () => {
@@ -1672,32 +1780,38 @@ test("completed COMP work chains only within an explicit Artist scope", async ()
       jobs: [{...current, state: "waiting"}], reviewJobId: current.id,
       reviewJobState: "waiting",
     };
+    const statuses = [];
     const context = load(pollJobsFunction, {
       state,
       api: async path => path === "/api/jobs" ? returned.map(job => ({progress: {}, ...job}))
         : {pause_after_album: false, pause_all_albums: false},
       renderQueue() {}, refreshCompletedAlbum: async () => {}, refreshQueuedAlbumAfterSave: async () => {},
-      renderHero() {}, renderReview() {}, renderJob: async () => {}, setStatus() {},
+      renderHero() {}, renderReview() {}, renderJob: async () => {},
+      setStatus: (...values) => { statuses.push(values); },
       applyAlbumCoordination() { return false; },
       applyCompTrackCoordination() { return []; },
       $: () => ({open: false}),
     });
     await context.pollJobs();
-    return state.reviewJobId;
+    return {reviewJobId: state.reviewJobId, statuses};
   }
 
   const full = {id: "full-1", kind: "comp", payload: {album_id: "comp-1"}};
-  assert.equal(await completedReview(full, [
+  const completedFull = await completedReview(full, [
     {...full, state: "done", result: {}},
     {id: "unrelated-full", kind: "comp", state: "queued", payload: {album_id: "comp-2"}},
-  ]), null);
+  ]);
+  assert.equal(completedFull.reviewJobId, null);
+  assert.match(completedFull.statuses.at(-1)[0], /^COMP track artwork work complete/);
 
   const scoped = {id: "artist-1", kind: "comp", payload: {artist_id: "10k", album_id: "comp-1"}};
-  assert.equal(await completedReview(scoped, [
+  const completedScoped = await completedReview(scoped, [
     {...scoped, state: "done", result: {}},
     {id: "artist-2", kind: "comp", state: "queued", payload: {artist_id: "10k", album_id: "comp-2"}},
     {id: "other-artist", kind: "comp", state: "queued", payload: {artist_id: "other", album_id: "comp-3"}},
-  ]), "artist-2");
+  ]);
+  assert.equal(completedScoped.reviewJobId, "artist-2");
+  assert.match(completedScoped.statuses.at(-1)[0], /^COMP track artwork work complete/);
 });
 
 test("PostgreSQL refresh completion reloads the library and reports exact projections", async () => {
@@ -2398,6 +2512,7 @@ test("Album Track Embedding shows album details and excludes COMP and scan jobs"
   assert.ok(copy.children.some(child => child.text.includes("staged cover resolution 1800 × 1800")));
   assert.ok(copy.children.some(child => child.text.includes("Preferred embedded size")));
   assert.equal(state.embedQueue.length, 1);
+  assert.equal(state.embedQueue[0].jobState, "staged");
   assert.equal(elements.embedQueueStatus.textContent, "1 active · 1 staged · 0 paused · 0 failed.");
   assert.equal(elements.embedQueueFooter.textContent, elements.embedQueueStatus.textContent);
   assert.equal(elements.startStaged.disabled, false);
@@ -3442,9 +3557,25 @@ test("accepted Artist navigation focuses the matching file-list row", () => {
   assert.match(chooseSource, /if \(select\) requestAnimationFrame\(\(\) => focusLibraryArtistRow\(artist\.id\)\)/);
 });
 
-test("staged Albums use transient Orange Purple presentation without changing evidence dots", () => {
-  assert.match(appSource, /const stagedForEmbedding = state\.embedQueue\.some\(item => item\.id === album\.id\)/);
-  assert.match(appSource, /const mixedFrame = stagedForEmbedding \? "orange-purple" : cardState\.mixedFrame/);
+test("only actual staged Albums receive transient presentation and opposing Dark Grey wins", () => {
+  const state = {embedQueue: []};
+  const context = load(albumCardPresentationFunctions, {state});
+  for (const jobState of ["queued", "running", "waiting", "paused"]) {
+    state.embedQueue = [{id: "album-1", jobState}];
+    assert.equal(context.albumEmbedIsStaged("album-1"), false, `${jobState} is not staged`);
+  }
+  state.embedQueue = [{id: "album-1", jobState: "staged"}];
+  assert.equal(context.albumEmbedIsStaged("album-1"), true);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.albumCardPresentation(
+    {overridden: false, mixedFrame: ""}, true,
+  ))), {stagedIndicator: true, mixedFrame: "orange-purple"});
+  assert.deepEqual(JSON.parse(JSON.stringify(context.albumCardPresentation(
+    {overridden: true, mixedFrame: "orange-purple"}, true,
+  ))), {stagedIndicator: true, mixedFrame: ""});
+  assert.deepEqual(JSON.parse(JSON.stringify(context.albumCardPresentation(
+    {overridden: false, mixedFrame: "green-purple"}, false,
+  ))), {stagedIndicator: false, mixedFrame: "green-purple"});
+  assert.match(operationsSource, /jobState: job\.state/);
   assert.match(appSource, /--staged-indicator-a", mediaPolicyColor\("orange"\)/);
   assert.match(appSource, /--staged-indicator-b", mediaPolicyColor\("purple"\)/);
   assert.match(appSource, /for \(const \[color, tip\] of cardState\.dots\)/);

@@ -486,7 +486,7 @@ renderReview = function () {
     : state.editorMode === "fallback" ? !editableArtworkSource() : state.compReportVisible ? !state.compTrack?.image : !(currentPackage || (state.radioArtist && (state.selectedPortrait || state.artist?.portrait)) || (state.radioBanner && (state.selectedBanner || state.artist?.banner))));
   $("writeButton").disabled = state.writePending || writeUnavailable;
   const compContext = compContextActive();
-  const staged = state.editorMode === "album" && state.embedQueue.some(item => item.id === state.album?.id);
+  const staged = state.editorMode === "album" && albumEmbedIsStaged(state.album?.id);
   $("writeButton").textContent = compContext ? "EMBED Comp" : $("writeButton").textContent;
   if (state.writePending) $("writeButton").textContent = compContext ? "EMBEDDING…" : "WRITING…";
   $("embedBatchButton").textContent = "EMBED Batch";
@@ -1125,7 +1125,7 @@ function renderQueue() {
     host.append(card);
   }
   const pending = jobs.filter(job => !["done", "failed", "cancelled"].includes(job.state));
-  state.embedQueue = pending.map(job => ({...job.payload, id: job.payload.album_id}));
+  state.embedQueue = pending.map(job => ({...job.payload, id: job.payload.album_id, jobState: job.state}));
   $("embedTab").classList.toggle("has-queued-albums", !!pending.length);
   const processing = jobs.some(job => ["running", "waiting"].includes(job.state));
   const active = jobs.find(job => job.state === "running")
@@ -1308,6 +1308,16 @@ let sharedStateNextPollAt = 0;
 let sharedStateFailures = 0;
 const SHARED_STATE_QUIET_MS = 30 * 1000;
 const SHARED_STATE_MAX_BACKOFF_MS = 5 * 60 * 1000;
+function completedEmbedStatusMessage(job) {
+  const album = job.payload?.name || "Album";
+  const tracks = Number(job.result?.tracks || job.progress?.completed
+    || job.progress?.total || job.payload?.tracks || 0);
+  const side = Number(job.result?.side || job.payload?.embedded_side || 0);
+  const details = [tracks ? `${tracks}/${tracks} tracks` : "tracks verified",
+    side ? `verified ${side} × ${side}` : "", job.progress?.message || ""]
+    .filter(Boolean).join(" · ");
+  return `Album track embedding completed and verified · ${album} · ${details}`;
+}
 function sharedStateInteractiveWorkActive() {
   return !!state.launchActive || !!state.writePending || !!state.libraryLoading
     || (state.jobs || []).some(job => ["scan", "comp", "embed-album", "index", "index-probe"].includes(job.kind)
@@ -1348,8 +1358,10 @@ async function pollSharedState() {
       failed = rejected.length > 0;
       const albumCoordination = results[0].status === "fulfilled" ? results[0].value : null;
       const compTrackCoordination = results[1].status === "fulfilled" ? results[1].value : null;
-      const indexStatus = results[2].status === "fulfilled" ? results[2].value : null;
-      state.indexStatus = indexStatus; renderIndexProgress();
+      if (results[2].status === "fulfilled") {
+        state.indexStatus = results[2].value;
+        renderIndexProgress();
+      }
       const changedOverrides = applyAlbumCoordination(albumCoordination);
       const changedTrackOverrides = applyCompTrackCoordination(compTrackCoordination);
       if (changedOverrides.length) {
@@ -1501,14 +1513,7 @@ async function performJobsPoll() {
     for (const albumId of completedAlbums) await refreshCompletedAlbum(albumId);
     if (completedEmbedJobs.length && !activeEmbed) {
       const completedJob = completedEmbedJobs.at(-1);
-      const album = completedJob.payload?.name || "Album";
-      const tracks = Number(completedJob.result?.tracks || completedJob.progress?.completed
-        || completedJob.progress?.total || completedJob.payload?.tracks || 0);
-      const side = Number(completedJob.result?.side || completedJob.payload?.embedded_side || 0);
-      const details = [tracks ? `${tracks}/${tracks} tracks` : "tracks verified",
-        side ? `verified ${side} × ${side}` : "", completedJob.progress?.message || ""]
-        .filter(Boolean).join(" · ");
-      setStatus(`Album track embedding completed and verified · ${album} · ${details}`, "ready");
+      setStatus(completedEmbedStatusMessage(completedJob), "ready");
     }
     if (stagedChanged && !completedAlbums.length) { renderHero(); renderReview(); }
     if (state.reviewJobId) {
@@ -1537,9 +1542,10 @@ async function performJobsPoll() {
             .sort((left, right) => String(left.created_at || "").localeCompare(String(right.created_at || "")))[0] : null;
           state.reviewJobId = nextComp?.id || null;
           state.reviewJobState = nextComp?.state || "";
-          if (job.kind === "embed-album" && !completedEmbedJobs.some(item => item.id === job.id))
-            setStatus("Album track embedding completed and verified · " + (state.album?.name || job.payload?.name || "Album"), "ready");
-          else if (job.kind === "index") {
+          if (job.kind === "embed-album") {
+            if (!completedEmbedJobs.some(item => item.id === job.id))
+              setStatus(completedEmbedStatusMessage(job), "ready");
+          } else if (job.kind === "index") {
             const query = state.libraryMode === "artists" ? ($("artistSearch").value || "") : ($("albumSearch").value || "");
             setStatus("PostgreSQL refresh complete · updating the library view…", "busy");
             await loadLibrary(query);
