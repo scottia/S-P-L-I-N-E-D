@@ -94,6 +94,14 @@ workflow verifies that exact boundary, rechecks that `dev` has not advanced
 while builds run, and never pushes or merges either protected branch. When no
 stamp is necessary, the tag continues to point directly at selected `dev`.
 
+Incremental release notes recognize that temporary topology without treating
+the stamp commit as reviewed branch history. When the immediately preceding
+numeric tag is not an ancestor, its commit must be a single-parent change to
+exactly the six synchronized version files, its normalized product tree must
+match its parent, and that parent must be an ancestor of the new release. The
+validated parent becomes the release-note baseline. Unrelated or malformed
+numeric tags fail closed instead of silently falling back to an older release.
+
 If the same version already has a GitHub Release, Workflow 10 may complete a
 missing target:
 
