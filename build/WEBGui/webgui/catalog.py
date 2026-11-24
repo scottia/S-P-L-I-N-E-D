@@ -1337,7 +1337,7 @@ class Catalog:
                 # real Artist credit remains sufficient for card projection.
                 rows = db.execute(base.format(artist_mbid="''")).fetchall()
             except sqlite3.OperationalError:
-                return {}
+                return {}, 0
         rows = [
             {
                 **dict(row),
