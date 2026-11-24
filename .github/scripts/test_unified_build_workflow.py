@@ -69,11 +69,13 @@ class UnifiedBuildWorkflowTests(unittest.TestCase):
         self.assertIn("main:refs/remotes/origin/main", self.source)
         self.assertIn("dev:refs/remotes/origin/dev", self.source)
         self.assertIn("git checkout --detach \"$DEV_SHA\"", self.source)
-        tree_match = self.source.index('if [ "$MAIN_TREE" = "$DEV_TREE" ]; then')
-        ancestry = self.source.index('elif git merge-base --is-ancestor "$MAIN_SHA" "$DEV_SHA"; then')
-        self.assertLess(tree_match, ancestry)
-        self.assertIn("approved promotion merge accepted", self.source)
-        self.assertIn("different trees, but origin/dev does not contain origin/main", self.source)
+        self.assertIn(
+            "python3 .github/scripts/resolve_workflow10_source_relation.py",
+            self.source,
+        )
+        self.assertTrue(
+            (ROOT / ".github/scripts/resolve_workflow10_source_relation.py").is_file()
+        )
         self.assertIn("source_sha=$DEV_SHA", self.source)
         self.assertIn("Committed source versions disagree", self.source)
         self.assertIn('RELEASE_VERSION="$REQUESTED_VERSION"', self.source)
