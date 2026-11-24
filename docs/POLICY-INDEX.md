@@ -27,7 +27,7 @@
 | [`media.sql`](../schema/media.sql) | Windows/compatible SQLite catalog DDL; not an Artist/Album color policy. | Validate schema and migrations with disposable databases before any change. |
 | [`settings-ui.json`](../schema/settings-ui.json) | Config v5 settings/UI field descriptions; no independent database or artwork authority. | Check defaults/ranges against both active implementations. |
 
-The existing **two independently protected behavioral JSONs** are media-state and COMP. The new shared lifecycle JSON is **not yet gate-protected** and is not currently loaded/persisted in either runtime. Its `LIFE-001..009` requirements concern equivalent behavior and do not alter the canonical Artist ranking **Red > Yellow > Purple > Green**, Album NAME ranking **Dark Grey > Red > Yellow > Purple > Orange > Green**, or the independent Album-dot ordering **Dark Grey > Red > Yellow > Purple > Orange > Green > auxiliary Blue**. See [POLICY-REGISTER.md](POLICY-REGISTER.md) and [lifecycle-policy.md](lifecycle-policy.md) for exact acceptance and limits.
+The existing **two independently protected behavioral JSONs** are media-state and COMP. The new shared lifecycle JSON is **not yet gate-protected or loaded** in either runtime; native consumers and protection are now explicit activation gates before enforcement may be claimed. Its `LIFE-001..009` requirements concern equivalent behavior and do not alter the canonical Artist ranking **Red > Yellow > Purple > Green**, Album NAME ranking **Dark Grey > Red > Yellow > Purple > Orange > Green**, or the independent Album-dot ordering **Dark Grey > Red > Yellow > Purple > Orange > Green > auxiliary Blue**. See [POLICY-REGISTER.md](POLICY-REGISTER.md) and [lifecycle-policy.md](lifecycle-policy.md) for exact acceptance and limits.
 
 ## Requirements mapped to live code and regression tests
 
@@ -96,9 +96,9 @@ audio-write safety remain independent fail-closed gates.
 outcomes for equivalent Windows and WebGUI operations. The approved
 `WEB-LIFE-001..009` remain WebGUI-specific refinements. Refer to
 [lifecycle-policy.md](lifecycle-policy.md) for native source mapping,
-implementation boundaries and acceptance evidence. No runtime integration,
-SQLite/PostgreSQL synchronization, policy revision persistence or installed
-parity is implemented merely by this documentation change.
+**required runtime-load/validation and fail-closed JSON-protection activation**,
+and outstanding parity evidence. The source JSON alone does not implement
+SQLite/PostgreSQL synchronization or installed behavioral parity.
 The numbered release workflows live under `.github/workflows/`; source builds and Docker packaging use `build/Windows/` and `build/WEBGui/`, not retired root application folders. [Build layout](build-layout.md).
 
 **Still to establish independently:** native Windows Rust/Slint validation against a real build, installed Artist/Album UI appearance, saved Windows credential-directory policy revision, full deployed PostgreSQL policy/palette comparison, and end-to-end migration/indexer persistence. The owner provided read-only PostgreSQL singleton evidence for media-state revision 3 and COMP revision 1 with matching listed condition/color order; this does not verify all saved fields or Windows mirrors. Prior CI passes do not prove those deployed properties. [Validation ledger](SCHEMA-VALIDATION.md).
