@@ -92,11 +92,33 @@ No existing media-state/COMP gate weakening, implicit database write, catalog
 migration, or startup network dependency is permitted. The owner requires
 these prerequisites before downstream parity acceptance.
 
-**Not yet verified or enforced:** no Windows or WebGUI runtime loader reads
-the lifecycle JSON, no production or credential-directory revision is seeded,
-the independent protected-policy JSON diff gate still covers only
-`media-state-classification.json` and `comp-report-policy.json`, and the
-new shared semantic requirements have not received installed-client parity
-acceptance. Any new loader, gate, migration, or transport change must be
-proposed and approved separately; existing PR validation and artwork-only
-media-writer safeguards remain in force.
+**Still not verified:** no production or credential-directory lifecycle
+revision is seeded, and the shared semantic requirements have not received
+installed-client parity acceptance. The source consumers and independent gate
+described below do not create a migration or transport. Any future database,
+mirror or installed-runtime change requires separate owner review; existing PR
+validation and artwork-only media-writer safeguards remain in force.
+
+## November 23, 2026 — shared lifecycle source activation evidence
+
+The independently reviewed activation stage adds native local consumers and
+extends protection after PR #318 established the canonical base:
+
+- Windows embeds and validates the exact checked-in lifecycle JSON once before
+  database/provider/catalog startup. Focused Rust tests reject invalid identity,
+  runtime scope, rule order and WebGUI refinement mapping.
+- WebGUI reads and validates the checked-in/container JSON once before Context,
+  PostgreSQL, workers or providers. Focused Python tests prove fail-closed
+  ordering and the same identity/scope/rule/refinement requirements.
+- The independent canonical-policy diff gate now covers lifecycle policy as
+  well as media-state and COMP. Focused negatives reject add, change, delete
+  and rename while retaining `--no-renames` fail-closed behavior.
+- Release-contract validation invokes the real Python lifecycle validator.
+  Docker packaging includes the same checked-in JSON.
+
+This is source activation, not a database revision or installed parity claim.
+No SQLite/PostgreSQL schema, policy singleton, credentials, catalog row, queue,
+media or production service is changed. Current behavioral evidence and gaps
+are listed in [lifecycle-policy.md](lifecycle-policy.md); PR #307 retains the
+Windows loading/revalidation authority review, and PR #314 retains WebGUI-only
+lifecycle defects and corrections.

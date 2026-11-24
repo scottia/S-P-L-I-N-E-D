@@ -27,6 +27,7 @@ from webgui.database import Database
 from webgui.runtime import Runtime
 from webgui.services import Services, _web_image_signing_key
 from webgui.jobs import JobQueue
+from webgui.lifecycle_policy import lifecycle_policy
 from webgui.credentials import Credentials
 from webgui.auth import AdminAuth
 from webgui.browser_sessions import BrowserSessionStore, SESSION_MAX_AGE_SECONDS
@@ -319,6 +320,9 @@ class Context:
 
 
 def create_app(config_file=None, database_url=None, *, token=None, start_worker=True):
+    # Validate the local shared contract before database, worker, provider, or
+    # catalog initialization. The cached read adds no network/DB coupling.
+    lifecycle_policy()
     config_file = config_file or os.environ.get("SPLINED_CONFIG", "/config/config.toml")
     access_token = (
         token if token is not None else os.environ.get("SPLINED_WEB_TOKEN", "")
