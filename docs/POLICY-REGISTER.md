@@ -214,11 +214,16 @@ does **not** move synchronized catalog ownership: Windows SQLite remains
 authoritative for designated Artist/Album/Track fields; PostgreSQL retains
 its own jobs, audit, revalidation evidence and coordination roles.
 
-**Non-implementation boundary:** This proposed JSON is not a SQLite/PostgreSQL
-synchronization transport and is not yet loaded by either runtime. The
-separate canonical-media-state and COMP JSON remain unchanged. Do not claim
-installed parity or independent protection of this newly introduced JSON
-until a separately reviewed loader/validation/gate makes it true.
+**Activation requirement:** The shared JSON is not a SQLite/PostgreSQL
+synchronization transport, and neither runtime has a new loader yet. The owner
+requires native Rust and Python consumers/validators with focused lifecycle
+source-to-rule tests, and a fail-closed independent JSON review gate, before
+calling the contract runtime-enforced. Introduce the new JSON into the accepted
+base **before** extending protection so the new-file bootstrap cannot falsely
+fail an uncompromised gate. Existing media-state/COMP protections must remain
+unchanged. These are explicit pending acceptance tasks, not claims of completed
+parity, automatic policy mirroring or database synchronization. See
+[lifecycle-policy.md](lifecycle-policy.md) for their verification and PR sequence.
 ## Approved WebGUI lifecycle and interaction contract (November 23, 2026)
 
 **Authority and scope:** The owner approved `WEB-LIFE-001..009` as permanent WebGUI-specific acceptance refinements. The proposed shared `LIFE-001..009` above specify equivalent outcomes on both supported clients. In this context, “GUI-only” refers to the `build/WEBGui/` browser UI, Python backend, processing workers and PostgreSQL-owned operations; it does **not** automatically authorize Windows source changes or edits to Windows-owned synchronized fields.
@@ -244,10 +249,11 @@ These rules **supplement**, but do not alter, `ART-*`, `ART-COLOR-*`, `ALB-COLOR
 **Existing independent gate:** The two previously protected behavioral JSONs
 below remain subject to their strict fail-closed review gate. The new proposed
 `schema/lifecycle-policy.json` is a fifth checked-in `/schema` contract and
-has **not yet been added to that independent gate**. The common lifecycle
-contract requires explicit owner review for revisions, and a separate scoped
-change is required to add mechanical enforcement without bypassing the current
-gate. Do not claim automatic JSON policy mirroring or synchronization.
+is **not yet protected by that independent gate**. The owner requires adding it
+once the canonical seed is in the accepted base, with add/change/delete/rename
+negative tests and no reduction to the two existing protections. Until those
+checks pass, do not claim the JSON is independently enforced; it is never a
+SQLite/PostgreSQL replication mechanism.
 
 | ID | Approved safeguard |
 | --- | --- |
