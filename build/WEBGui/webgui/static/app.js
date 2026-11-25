@@ -732,9 +732,9 @@ function renderLibraryContents() {
       renderMediaStatusChips();
       return;
     }
-    const artistQuery = String(state.artistQuery || $("artistSearch").value || "").trim().toLocaleLowerCase();
-    const visibleArtists = state.artists.filter(artist => mediaMatches(artist)
-      && (!artistQuery || String(artist.name || "").toLocaleLowerCase().includes(artistQuery)));
+    // The catalog matches the complete local alias vocabulary. Keep its last
+    // published results visible while a new typed query is pending.
+    const visibleArtists = state.artists.filter(mediaMatches);
     $("artistCount").textContent = visibleArtists.length + " shown";
     for (const artist of visibleArtists) {
       const button = node("button", "library-row"); button.type = "button";
@@ -2870,6 +2870,8 @@ async function loadLibrary(query = "") {
   const request = ++state.listRequest;
   const mode = state.libraryMode;
   if (mode === "artists") state.artistQuery = String(query || "");
+  const isCurrent = () => request === state.listRequest && mode === state.libraryMode
+    && (mode !== "artists" || state.artistQuery === String(query || ""));
   const usableRows = mode === "artists" ? state.artists : state.albumsIndex;
   // Retain an already published list while a search generation is in flight.
   // A job/status rerender during the request must not replace usable rows with
@@ -2879,7 +2881,7 @@ async function loadLibrary(query = "") {
     const results = mode === "artists"
       ? await coalescedLibraryApi("/api/artists?q=" + encodeURIComponent(query))
       : await coalescedLibraryApi("/api/albums?view=" + mode + "&q=" + encodeURIComponent(query));
-    if (request !== state.listRequest || mode !== state.libraryMode) return;
+    if (!isCurrent()) return;
     if (mode === "artists") state.artists = results;
     else state.albumsIndex = results;
     state.libraryLoading = false;
@@ -2894,7 +2896,13 @@ async function loadLibrary(query = "") {
     // and blocks large libraries on NAS metadata I/O.
     if (mode === "artists" && !state.artist && state.artists.length) await chooseArtist(state.artists[0].id, false);
     else setStatus(mode === "fallback" && !state.albumsIndex.length ? "No Albums are inside the Curated Compilations path" : "Library ready · WebGUI ready");
-  } catch (error) { if (request === state.listRequest) { state.libraryLoading = false; renderLibrary(); setStatus(error.message, "error"); } }
+  } catch (error) {
+    if (isCurrent()) {
+      state.libraryLoading = false;
+      renderLibrary();
+      setStatus(error.message, "error");
+    }
+  }
 }
 async function loadAlbumLibraryMatches(query) {
   const request = ++state.albumLibraryRequest;
