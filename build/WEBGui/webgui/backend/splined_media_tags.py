@@ -240,6 +240,19 @@ class _TagReader:
         raw = self.raw_file()
         return _raw_alias_values(raw, *keys) if raw else ""
 
+    def catalog_values(self, *keys: str) -> str:
+        """Capture the native slots, including conflicting alias fields."""
+        tags = getattr(self.raw_file(), "tags", None)
+        wanted = {_raw_alias_key(key, None) for key in keys}
+        if tags:
+            collected = [
+                _all_text_multivalue(value)
+                for key, value in tags.items() if _raw_alias_key(key, value) in wanted
+            ]
+            if any(collected):
+                return ARTIST_CREDIT_SEPARATOR.join(value for value in collected if value)
+        return self.values(*keys)
+
 
 def _album_tags(reader: _TagReader) -> dict[str, Any]:
     raw_year = reader.value("date", "originaldate", "original year", "year")
@@ -389,9 +402,11 @@ def read_track_identity_tags(
 
 def _capture_album_credit_evidence(reader: _TagReader, track: dict[str, str]) -> None:
     track.update(
+        original_artist=reader.catalog_values("artist", "TPE1", "TP1", "©ART"),
+        original_track_artist_mbids=reader.catalog_values("musicbrainz_artistid", "musicbrainz artist id"),
         original_album=reader.value("album"),
-        original_album_artist=reader.value("albumartist", "album artist"),
-        original_album_artist_mbids=reader.values(
+        original_album_artist=reader.catalog_values("albumartist", "album artist", "TPE2", "TP2", "aART"),
+        original_album_artist_mbids=reader.catalog_values(
             "musicbrainz_albumartistid", "musicbrainz album artist id", "musicbrainz release artist id",
         ),
         original_album_mbid=reader.value(
@@ -413,7 +428,10 @@ def read_album_and_track_identity_tags(
     reader = _TagReader(audio_path)
     track = _track_identity_tags(reader, artist_separator_regex)
     _capture_album_credit_evidence(reader, track)
-    return _album_tags(reader), track
+    album = _album_tags(reader)
+    album["album_artist"] = first_artist_value(track["original_album_artist"])
+    album["artist_mbid"] = first_artist_value(track["original_album_artist_mbids"])
+    return album, track
 
 
 def inspect_album_tracks(
@@ -552,7 +570,7 @@ def inspect_album_tracks(
         if capture_original_artist_credit and "original_artist" in tags:
             rows[-1]["original_artist_credit"] = {
                 "artist": tags["original_artist"].replace("\0", ARTIST_CREDIT_SEPARATOR),
-                "mbids": tags["artist_mbid"].replace("\0", ARTIST_CREDIT_SEPARATOR),
+                "mbids": tags.get("original_track_artist_mbids", tags["artist_mbid"]).replace("\0", ARTIST_CREDIT_SEPARATOR),
                 "title": tags["title"].replace("\0", ARTIST_CREDIT_SEPARATOR),
                 "recording_mbid": tags["recording_mbid"].replace("\0", ARTIST_CREDIT_SEPARATOR) or None,
                 "album_artist_mbids": tags.get("original_album_artist_mbids", "").replace("\0", ARTIST_CREDIT_SEPARATOR),

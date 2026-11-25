@@ -2,6 +2,10 @@
   "policy_id": "ART-004",
   "version": 1,
   "presentation_normalization": "NFKC + Unicode casefold + alphanumeric",
+  "conflicting_owner_artist_ids": [
+    "ff000000-0000-4000-8000-000000000001",
+    "ff000000-0000-4000-8000-000000000002"
+  ],
   "local_inventory_case": {
     "album": "Credits and Ownership",
     "album_artist": "Local Owner",

@@ -3059,17 +3059,18 @@ async function chooseAlbum(id) {
   try {
     const album = await api("/api/album?id=" + encodeURIComponent(id));
     if (request !== state.selectionRequest) return;
+    const fallback = Boolean(album.fallback || album.library_group === "fallback");
     // Featured, soundtrack, Various Artists, and COMP cards belong to the
     // currently displayed artist projection even when the physical album is
     // owned by another catalog artist.  Keep that artist context on click.
-    if (!albumInCurrentArtistContext(id) && state.artist?.id !== album.artist_id) {
+    if (!fallback && (!album.library_group || album.library_group === "artist")
+        && !albumInCurrentArtistContext(id) && state.artist?.id !== album.artist_id) {
       const overview = await api("/api/artist/overview?id=" + encodeURIComponent(album.artist_id));
       if (request !== state.selectionRequest) return;
       state.artist = overview.artist; state.artistMetadata = overview.metadata || null;
       state.compAlbums = overview.comp_albums || [];
       loadArtistMetadata(overview.artist.id);
     }
-    const fallback = Boolean(album.fallback || album.library_group === "fallback");
     const tracks = fallback ? await api("/api/fallback/tracks?id=" + encodeURIComponent(id)) : [];
     if (request !== state.selectionRequest) return;
     state.album = album; state.editorMode = fallback ? "fallback" : "album"; state.workspace = "find";

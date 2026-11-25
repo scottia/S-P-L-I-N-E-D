@@ -677,15 +677,9 @@ impl ArtistCatalogInventory {
                 continue;
             };
             if owner.representative == track.path {
-                if let Some(name) = tags
-                    .album_artist
-                    .as_ref()
-                    .filter(|name| !name.trim().is_empty())
-                {
-                    owner.name.clone_from(name);
-                } else if let Some(name) = tags
-                    .artist
-                    .split(['\0', '\x1f'])
+                if let Some(name) = [tags.album_artist.as_deref().unwrap_or_default(), &tags.artist]
+                    .into_iter()
+                    .flat_map(|value| value.split(['\0', '\x1f']))
                     .map(str::trim)
                     .find(|name| !name.is_empty())
                 {
@@ -7835,6 +7829,26 @@ mod tests {
             }).collect::<Vec<_>>();
             assert_eq!(Value::Array(actual), case["expected"], "{}", field("id"));
         }
+    }
+
+    #[test]
+    fn art004_owner_artist_id_alias_conflicts_remain_local_evidence() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../.github/test-data/artist-identity-conformance.json"
+        )).unwrap();
+        let ids = &fixture["conflicting_owner_artist_ids"];
+        let first = ids[0].as_str().unwrap();
+        let second = ids[1].as_str().unwrap();
+        let temporary = tempfile::TempDir::new().unwrap();
+        let path = temporary.path().join("01.mp3");
+        write_index_test_frames(&path, &[
+            id3_test_frame("TPE2", "Stage Owner"),
+            id3_test_frame("TXXX", &format!("MUSICBRAINZ_ALBUMARTISTID\0{first}")),
+            id3_test_frame("TXXX", &format!("MUSICBRAINZ_RELEASEARTISTID\0{second}")),
+        ]);
+        let (album, track) = read_album_index_tags_and_track_evidence(&path).unwrap();
+        assert_eq!(album.musicbrainz_album_artist_id, first);
+        assert_eq!(track.unwrap().album_artist_mbids, Some(format!("{first}\0{second}")));
     }
 
     #[test]

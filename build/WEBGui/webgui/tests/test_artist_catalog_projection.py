@@ -25,7 +25,10 @@ from webgui.catalog import (
     normalized_artist_identity,
     potential_collaboration_credits,
 )
-from splined_media_tags import ARTIST_CREDIT_SEPARATOR, normalize_artist_credit_text
+from splined_media_tags import (
+    ARTIST_CREDIT_SEPARATOR, normalize_artist_credit_text, read_album_and_track_identity_tags,
+)
+from mutagen.id3 import ID3, TPE2, TXXX
 from splined_media_database import aggregate_artist, update_artist_aggregate
 
 
@@ -40,6 +43,21 @@ CONFORMANCE = json.loads(
 
 
 class ArtistCatalogProjectionTests(unittest.TestCase):
+    def test_original_album_artist_id_alias_conflicts_are_captured_without_reparenting(self):
+        first, second = CONFORMANCE["conflicting_owner_artist_ids"]
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "01.mp3"
+            path.write_bytes((b"\xff\xfb\x90\x64" + bytes(413)) * 5)
+            tags = ID3()
+            tags.add(TPE2(encoding=3, text=["Stage Owner"]))
+            tags.add(TXXX(encoding=3, desc="MUSICBRAINZ_ALBUMARTISTID", text=[first]))
+            tags.add(TXXX(encoding=3, desc="MUSICBRAINZ_RELEASEARTISTID", text=[second]))
+            tags.save(path)
+            album, evidence = read_album_and_track_identity_tags(path)
+        self.assertEqual(album["artist_mbid"], first)
+        self.assertEqual(evidence["original_album_artist_mbids"].split(ARTIST_CREDIT_SEPARATOR),
+                         [first, second])
+
     def test_shared_art004_positioned_local_credits(self):
         for case in CONFORMANCE["positioned_credit_cases"]:
             with self.subTest(case=case["id"]):

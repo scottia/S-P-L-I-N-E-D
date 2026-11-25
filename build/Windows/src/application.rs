@@ -589,6 +589,7 @@ impl LibraryState {
         self.curated_compilations_path = inherited(&config.library.curated_compilations_path);
         self.category_paths_configured = true;
         self.classify_artist_catalog_albums();
+        self.artist_inventory_revision = self.artist_inventory_revision.wrapping_add(1);
         self.artist_classification_signature = 0;
     }
 

@@ -273,19 +273,14 @@ class Services:
         except (KeyError, TypeError, ValueError):
             active_artist_separator = configured_artist_separator
         image_key = image_signing_key or _web_image_signing_key()
-        library = runtime.cfg.get("library", {})
-        category_path = lambda name: core.resolve_path(
-            runtime.config_file,
-            str(library.get(name, "") or library.get("music_library", "")),
-        ).resolve()
         self.catalog = Catalog(
             runtime.music,
             runtime.database,
             runtime.artist_art,
             runtime.credentials,
-            various_artist_path=category_path("various_artist_path"),
-            soundtracks_path=category_path("soundtracks_path"),
-            curated_compilations_path=category_path("curated_compilations_path"),
+            various_artist_path=self._category_path("various_artist_path"),
+            soundtracks_path=self._category_path("soundtracks_path"),
+            curated_compilations_path=self._category_path("curated_compilations_path"),
             comp_thumbnail_side=int(
                 runtime.cfg.get("output", {}).get("embedded_thumbnail_size", 1200)
             ),
@@ -624,10 +619,18 @@ class Services:
             request_status="started",
         )
 
+    def _category_path(self, name: str) -> Path:
+        library = self.runtime.cfg.get("library", {})
+        value = str(library.get(name, "") or "").strip() or str(library.get("music_library", ""))
+        return core.resolve_path(self.runtime.config_file, value).resolve()
+
     def reload_settings(self):
         app = self.catalog
         r = self.runtime
         app.music = r.music
+        app.various_artist_path = self._category_path("various_artist_path")
+        app.soundtracks_path = self._category_path("soundtracks_path")
+        app.curated_compilations_path = self._category_path("curated_compilations_path")
         app.artist_art = r.artist_art
         app.credentials = r.credentials
         app.cache = r.cache
@@ -2962,6 +2965,7 @@ class Services:
             _canonical, aliases = self.catalog._artist_identity_rows(
                 db, artist_id, require_eligible=True, album_inputs=owner_inputs,
             )
+            alias_ids = {artist_id, *(str(row["artist_key"]) for row in aliases)}
             physical_owners = {
                 row["art004_album_key"]: row for row in aliases if "art004_album_key" in row
             }

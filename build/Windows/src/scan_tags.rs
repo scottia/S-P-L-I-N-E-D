@@ -25,6 +25,8 @@ struct Id3v2Fields {
     musicbrainz_album_artist_id: Option<String>,
     musicbrainz_track_id: Option<String>,
     musicbrainz_artist_id: Option<String>,
+    catalog_track_artist_ids: Vec<String>,
+    catalog_album_artist_ids: Vec<String>,
     compilation: Option<String>,
 }
 
@@ -299,7 +301,11 @@ fn evidence_from_tagged_file_with(
         title,
         artist,
         album: read_optional(tagged_file, &ItemKey::AlbumTitle),
-        album_artist: read_optional(tagged_file, &ItemKey::AlbumArtist),
+        album_artist: if catalog {
+            read_catalog_values(tagged_file, &ItemKey::AlbumArtist)
+        } else {
+            read_optional(tagged_file, &ItemKey::AlbumArtist)
+        },
         musicbrainz_album_id,
         musicbrainz_track_id: read_optional(tagged_file, &ItemKey::MusicBrainzRecordingId),
         musicbrainz_artist_id: artist_values(tagged_file, &ItemKey::MusicBrainzArtistId),
@@ -343,7 +349,12 @@ fn album_index_from_id3(fields: Id3v2Fields) -> AlbumIndexTags {
         album_sort: fields.album_sort.unwrap_or_default(),
         musicbrainz_album_id: fields.musicbrainz_album_id.unwrap_or_default(),
         musicbrainz_release_group_id: fields.musicbrainz_release_group_id.unwrap_or_default(),
-        musicbrainz_album_artist_id: fields.musicbrainz_album_artist_id.unwrap_or_default(),
+        musicbrainz_album_artist_id: fields.catalog_album_artist_ids.iter()
+            .flat_map(|value| value.split('\0'))
+            .map(str::trim)
+            .find(|value| !value.is_empty())
+            .unwrap_or_default()
+            .to_string(),
         year,
         compilation,
     }
@@ -364,8 +375,12 @@ fn evidence_from_id3(path: &Path, fields: Id3v2Fields, catalog: bool) -> Result<
         album_artist: fields.album_artist,
         musicbrainz_album_id: fields.musicbrainz_album_id,
         musicbrainz_track_id: fields.musicbrainz_track_id,
-        musicbrainz_artist_id: fields.musicbrainz_artist_id,
-        album_artist_mbids: catalog.then(|| fields.musicbrainz_album_artist_id.unwrap_or_default()),
+        musicbrainz_artist_id: if catalog && !fields.catalog_track_artist_ids.is_empty() {
+            Some(fields.catalog_track_artist_ids.join("\0"))
+        } else {
+            fields.musicbrainz_artist_id
+        },
+        album_artist_mbids: catalog.then(|| fields.catalog_album_artist_ids.join("\0")),
         release_group_mbid: catalog.then(|| fields.musicbrainz_release_group_id.unwrap_or_default()),
         tag_source: "id3v2",
         compilation: fields.compilation,
@@ -512,10 +527,14 @@ fn apply_user_text(fields: &mut Id3v2Fields, payload: &[u8]) {
         "musicbrainzalbumid" | "musicbrainzreleaseid" => fields.musicbrainz_album_id = value,
         "musicbrainzreleasegroupid" => fields.musicbrainz_release_group_id = value,
         "musicbrainzalbumartistid" | "musicbrainzreleaseartistid" => {
+            fields.catalog_album_artist_ids.extend(value.iter().cloned());
             fields.musicbrainz_album_artist_id = value
         }
         "musicbrainztrackid" | "musicbrainzrecordingid" => fields.musicbrainz_track_id = value,
-        "musicbrainzartistid" => fields.musicbrainz_artist_id = value,
+        "musicbrainzartistid" => {
+            fields.catalog_track_artist_ids.extend(value.iter().cloned());
+            fields.musicbrainz_artist_id = value;
+        },
         "compilation" => fields.compilation = value,
         _ => {}
     }
