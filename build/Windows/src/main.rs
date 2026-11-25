@@ -1827,6 +1827,17 @@ fn refresh_navidrome_thumbnails(
                 artist,
                 &configured_shared_artist_art_dir(&config),
             );
+            let portrait = saved
+                .portrait
+                .as_deref()
+                .or(saved.banner.as_deref())
+                .and_then(|source| {
+                    let cache =
+                        navidrome_thumbnail_cache_root(&config).join("artist-overview-sources");
+                    artist_portrait_for_overview(source, &cache, artist)
+                        .ok()
+                        .or_else(|| Some(source.to_path_buf()))
+                });
             let banner = saved.banner.as_deref().and_then(|source| {
                 let cache = navidrome_thumbnail_cache_root(&config).join("artist-banners");
                 artist_banner_for_overview(source, &cache, artist)
@@ -1838,11 +1849,14 @@ fn refresh_navidrome_thumbnails(
                     artist_projection_identity(&current) == artist_projection_identity(artist)
                 })
             {
-                if let Some(path) = saved.portrait.as_deref().or(saved.banner.as_deref()) {
+                if let Some(source) = saved.portrait.as_deref().or(saved.banner.as_deref()) {
                     let cache = navidrome_thumbnail_cache_root(&config).join("artists");
-                    if let Ok(thumbnail) = cached_circular_artist_thumbnail(path, &cache, artist) {
+                    if let Ok(thumbnail) = cached_circular_artist_thumbnail(source, &cache, artist)
+                    {
                         app.library.set_artist_artwork_path(artist, &thumbnail);
                     }
+                }
+                if let Some(path) = portrait {
                     app.artist_overview_portrait_path = path.to_string_lossy().into_owned();
                 }
                 if let Some(path) = banner {
@@ -1929,6 +1943,19 @@ fn refresh_navidrome_thumbnails(
                     cached_circular_artist_thumbnail(source, &cache, artist).ok()
                 })
         });
+        let saved_portrait = requested_artist.as_deref().and_then(|artist| {
+            saved_package
+                .portrait
+                .as_deref()
+                .or(saved_package.banner.as_deref())
+                .and_then(|source| {
+                    let cache =
+                        navidrome_thumbnail_cache_root(&config).join("artist-overview-sources");
+                    artist_portrait_for_overview(source, &cache, artist)
+                        .ok()
+                        .or_else(|| Some(source.to_path_buf()))
+                })
+        });
         let saved_banner = saved_package.banner.as_deref().map(|source| {
             let cache = navidrome_thumbnail_cache_root(&config).join("artist-banners");
             artist_banner_for_overview(
@@ -1977,10 +2004,7 @@ fn refresh_navidrome_thumbnails(
             let weak_local = weak.clone();
             let artist = artist.clone();
             let thumbnail = saved_portrait_thumbnail.clone();
-            let portrait = saved_package
-                .portrait
-                .clone()
-                .or(saved_package.banner.clone());
+            let portrait = saved_portrait.clone();
             let banner = saved_banner.clone();
             let album_keys = indexed_appearances.album_keys.clone();
             let featured_album_keys = indexed_appearances.featured_album_keys.clone();
@@ -3562,16 +3586,71 @@ fn write_prepared_artist_art_file_with_stem(
     Ok((target, unchanged, warnings))
 }
 
-fn artist_banner_for_overview(
+fn cached_artist_overview_source(
     source: &Path,
-    _cache_directory: &Path,
-    _artist_id: &str,
+    cache_directory: &Path,
+    artist_id: &str,
+    role: &str,
 ) -> Result<PathBuf, String> {
     inspect_image(source)?;
-    // Artist Overview must display the approved banner bytes directly. Cropping
-    // belongs to the view's image-fit operation; a blurred or colour-adjusted
-    // runtime derivative changes the artwork the operator already approved.
-    Ok(source.to_path_buf())
+    let bytes = fs::read(source).map_err(|error| {
+        format!(
+            "Unable to read Artist Overview artwork {}: {error}",
+            source.display()
+        )
+    })?;
+    let digest = Sha256::digest(&bytes);
+    let identity = digest[..12]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let extension = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("png")
+        .to_ascii_lowercase();
+    fs::create_dir_all(cache_directory).map_err(|error| {
+        format!(
+            "Unable to create Artist Overview artwork cache {}: {error}",
+            cache_directory.display()
+        )
+    })?;
+    let path = cache_directory.join(format!(
+        "source-v1-{role}-{}-{identity}.{extension}",
+        sanitize_sample_component(artist_id),
+    ));
+    if path.is_file()
+        && fs::read(&path).is_ok_and(|existing| existing == bytes)
+        && inspect_image(&path).is_ok()
+    {
+        return Ok(path);
+    }
+    // Preserve the exact approved pixels and format. The content-addressed
+    // path is solely an image-cache generation token: when WebGUI replaces
+    // artist.* or banner.* in place, Slint receives a new path instead of
+    // retaining decoded pixels for the old path.
+    replace_binary_file(&path, &bytes, "Artist Overview artwork cache", |staged| {
+        inspect_image(staged).map(|_| ())
+    })?;
+    Ok(path)
+}
+
+fn artist_portrait_for_overview(
+    source: &Path,
+    cache_directory: &Path,
+    artist_id: &str,
+) -> Result<PathBuf, String> {
+    cached_artist_overview_source(source, cache_directory, artist_id, "portrait")
+}
+
+fn artist_banner_for_overview(
+    source: &Path,
+    cache_directory: &Path,
+    artist_id: &str,
+) -> Result<PathBuf, String> {
+    // Cropping belongs to the view's image-fit operation; this cache copies
+    // the approved bytes exactly and changes only the source path generation.
+    cached_artist_overview_source(source, cache_directory, artist_id, "banner")
 }
 
 fn compose_artist_banner_with_position(
@@ -28555,6 +28634,34 @@ mod tests {
         let package = super::saved_artist_package_for_albums(&albums, "Air", &managed);
         assert_eq!(package.portrait, Some(portrait));
         assert_eq!(package.banner, Some(banner));
+    }
+
+    #[test]
+    fn external_artist_art_overwrite_publishes_a_new_overview_source_path() {
+        let root = tempfile::TempDir::new().unwrap();
+        let source = root.path().join("artist.png");
+        let cache = root.path().join("overview-cache");
+        image::RgbImage::from_pixel(24, 24, image::Rgb([200, 10, 10]))
+            .save(&source)
+            .unwrap();
+        let first = super::artist_portrait_for_overview(&source, &cache, "A. R. Rahman").unwrap();
+
+        image::RgbImage::from_pixel(24, 24, image::Rgb([10, 10, 200]))
+            .save(&source)
+            .unwrap();
+        let second = super::artist_portrait_for_overview(&source, &cache, "A. R. Rahman").unwrap();
+
+        assert_ne!(first, second);
+        assert!(first.is_file());
+        assert!(second.is_file());
+        assert_eq!(
+            image::open(first).unwrap().to_rgb8().get_pixel(12, 12).0,
+            [200, 10, 10]
+        );
+        assert_eq!(
+            image::open(second).unwrap().to_rgb8().get_pixel(12, 12).0,
+            [10, 10, 200]
+        );
     }
 
     #[test]
