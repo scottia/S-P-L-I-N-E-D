@@ -329,10 +329,12 @@ fn artist_credit_values_with_mbids(
         .collect::<Vec<_>>();
     // A configured display separator can also occur inside one real Artist
     // name. One MusicBrainz Artist ID is decisive evidence that a joined
-    // value such as `Ike & Tina Turner` or `Elvis Costello & The Attractions`
-    // is one identity, not multiple credits. Multiple ordered IDs continue to
-    // authorize the configured split without rereading or rewriting tags.
-    if separated.len() > 1 && mbids.len() == 1 {
+    // value such as `Ike & Tina Turner` is one identity. Several IDs authorize
+    // positions only when their cardinality exactly matches the split; a
+    // nonzero mismatch cannot manufacture associations.
+    if separated.len() > 1
+        && (mbids.len() == 1 || !mbids.is_empty() && mbids.len() != separated.len())
+    {
         vec![joined.clone()]
     } else {
         separated
@@ -7235,7 +7237,7 @@ fn status_counts<'a>(statuses: impl Iterator<Item = &'a str>) -> (i64, i64, i64,
     values
 }
 
-fn artist_key(name: &str, mbid: &str) -> String {
+pub(crate) fn artist_key(name: &str, mbid: &str) -> String {
     if mbid.trim().is_empty() {
         let normalized = normalize(name);
         format!(
@@ -7313,6 +7315,27 @@ pub fn artist_projection_identity(value: &str) -> String {
         .case_fold()
         .filter(|character| character.is_alphanumeric())
         .collect()
+}
+
+pub fn artist_search_literal(value: &str) -> String {
+    value
+        .nfkc()
+        .case_fold()
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+pub fn artist_search_matches(query: &str, candidate: &str) -> bool {
+    let literal_query = artist_search_literal(query);
+    if literal_query.is_empty() {
+        return true;
+    }
+    artist_search_literal(candidate).contains(&literal_query) || {
+        let identity_query = artist_projection_identity(query);
+        !identity_query.is_empty()
+            && artist_projection_identity(candidate).contains(&identity_query)
+    }
 }
 
 fn modified_ns(metadata: &fs::Metadata) -> i64 {
@@ -8398,6 +8421,51 @@ mod tests {
             ),
             ["Ike & Tina Turner"]
         );
+    }
+
+    #[test]
+    fn shared_art004_credit_and_search_conformance() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../.github/test-data/artist-identity-conformance.json"
+        ))
+        .unwrap();
+        assert_eq!(fixture["policy_id"], "ART-004");
+        for case in fixture["credit_cases"].as_array().unwrap() {
+            let separator = Regex::new(case["separator_regex"].as_str().unwrap()).unwrap();
+            let actual = artist_credit_values_with_mbids(
+                case["value"].as_str().unwrap(),
+                case["artist_mbids"].as_str().unwrap(),
+                &separator,
+            );
+            let expected = case["expected_names"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|value| value.as_str().unwrap().to_string())
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected, "{}", case["id"]);
+        }
+        for case in fixture["search_cases"].as_array().unwrap() {
+            let name = case["name"].as_str().unwrap();
+            assert_eq!(
+                artist_projection_identity(name),
+                case["presentation_identity"].as_str().unwrap()
+            );
+            for query in case["matches"].as_array().unwrap() {
+                assert!(
+                    artist_search_matches(query.as_str().unwrap(), name),
+                    "{} should match {name}",
+                    query
+                );
+            }
+            for query in case["rejects"].as_array().unwrap() {
+                assert!(
+                    !artist_search_matches(query.as_str().unwrap(), name),
+                    "{} should not match {name}",
+                    query
+                );
+            }
+        }
     }
 
     #[test]

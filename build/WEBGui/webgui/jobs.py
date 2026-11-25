@@ -425,21 +425,11 @@ class JobQueue:
                 "INSERT INTO web_jobs(id,kind,state,payload) VALUES(%s,%s,%s,%s)",
                 (job_id, kind, "staged" if staged else "queued", Jsonb(payload)),
             )
-            if kind == "embed-album":
-                # An Album staged from the normal candidate workspace owns an
-                # immutable prepared-artwork snapshot.  The interactive scan
-                # that supplied that candidate is now superseded; leaving its
-                # browser decision waiting would occupy the single durable
-                # worker forever and strand the explicit Album embed at 0/N.
-                # Cancel only normal Album scans. COMP work has independent
-                # track-scoped authority and must not be disturbed here.
-                db.execute(
-                    "UPDATE web_jobs SET state='cancelled',decision=NULL,"
-                    "error='Superseded by staged Album embedding',updated_at=now() "
-                    "WHERE kind='scan' AND state IN ('queued','running','waiting') "
-                    "AND (payload->'album_ids') @> ?",
-                    (Jsonb([str(payload.get("album_id", ""))]),),
-                )
+            # Staging is an immutable future embed decision, not cancellation
+            # authority for an interactive Artist scan. The scan keeps its
+            # current nonce and advances through the remaining selected
+            # Albums; staged embedding starts only after the explicit queue
+            # action can acquire the worker.
             self.audit_job(
                 job_id,
                 "job-transition",

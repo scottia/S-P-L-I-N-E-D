@@ -147,9 +147,10 @@ class ReleaseSourceVersionTests(unittest.TestCase):
         )
 
     def test_release_workflows_call_shared_resolver(self) -> None:
-        release = (ROOT / ".github/workflows/01-full-release.yml").read_text(encoding="utf-8")
-        self.assertIn("from release_source_version import choose_release_version", release)
-        self.assertIn("git commit -m \"release: prepare ${RELEASE_VERSION}\" --allow-empty", release)
+        release = (ROOT / ".github/workflows/21-release-preparation.yml").read_text(encoding="utf-8")
+        self.assertIn("choose_workflow10_release_version", release)
+        self.assertIn("source_version.py stamp-release", release)
+        self.assertIn("git commit -m \"release: prepare ${RELEASE_VERSION}\"", release)
         unified = (ROOT / ".github/workflows/10-unified-build.yml").read_text(encoding="utf-8")
         self.assertIn("choose_workflow10_release_version", unified)
         self.assertIn("stamp-release", unified)

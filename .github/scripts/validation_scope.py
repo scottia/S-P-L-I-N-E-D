@@ -21,7 +21,10 @@ SHARED_POLICY_PATHS = {
 
 VALIDATION_GATE_PATHS = {
     ".github/workflows/validate.yml",
-    ".github/workflows/01-full-release.yml",
+    ".github/workflows/21-release-preparation.yml",
+    ".github/workflows/22-windows-build-store.yml",
+    ".github/workflows/23-webgui-build.yml",
+    ".github/workflows/24-complete-release.yml",
     ".github/scripts/check_protected_policies.py",
     ".github/scripts/test_audio_integrity_contract.py",
     ".github/scripts/test_policy_release_gates.py",

@@ -85,15 +85,16 @@ class CanonicalReleaseContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "invalid base"):
             pr_gate.check_diff("bad", "b" * 40)
 
-    def test_workflow_one_fails_before_version_stamp_when_policy_invalid(self) -> None:
-        release = (ROOT / ".github/workflows/01-full-release.yml").read_text(encoding="utf-8")
+    def test_candidate_preparation_fails_before_version_stamp_when_policy_invalid(self) -> None:
+        release = (ROOT / ".github/workflows/21-release-preparation.yml").read_text(encoding="utf-8")
         self.assertLess(
-            release.index("Validate canonical policies and indexer contracts"),
-            release.index("Provision exact release metadata and commit"),
+            release.index("python3 .github/scripts/validate_release_policy_contracts.py"),
+            release.index('source_version.py stamp-release "$RELEASE_VERSION"'),
         )
         self.assertIn("python3 .github/scripts/validate_release_policy_contracts.py", release)
-        self.assertIn("python3 -m unittest discover -s .github/scripts", release)
-        self.assertIn('if [ "$STORE_UPDATE" = true ] && [ "$EXTENDED_WINDOWS_VALIDATION" != true ]', release)
+        self.assertIn("Resolve successful required-validation provenance", release)
+        self.assertIn('select(.name == "Validate supported runtimes"', release)
+        self.assertIn("Required validation run contains an unsuccessful job", release)
 
     def test_pr_policy_check_is_independent_of_windows_advisory(self) -> None:
         content = (ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")

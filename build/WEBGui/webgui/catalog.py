@@ -32,6 +32,7 @@ import requests
 
 from splined_artist_art import ArtistAlbum, ArtistArtTarget, artist_targets, local_candidates, saved_package
 from splined_compilation_authority_policy import replace_embedded_artwork
+from splined_media_tags import normalize_artist_credit_text
 from interaction.artist_search import discover_artist_images, discover_artist_profile
 from webgui.database import Database
 from webgui import imaging
@@ -50,7 +51,7 @@ AUDIO_EXTENSIONS = {".mp3", ".flac", ".m4a", ".mp4", ".ogg", ".opus", ".wav", ".
 LOGGER = logging.getLogger("uvicorn.error")
 DEFAULT_ARTIST_SEPARATOR_REGEX = r"(?i)(?: / | feat\. | feat | ft\. | ft |; )"
 ARTIST_CREDIT_SEPARATOR = "\x1f"
-ARTIST_PROJECTION_CACHE_KEY = "webgui:artist-projection:v1"
+ARTIST_PROJECTION_CACHE_KEY = "webgui:artist-projection:v2"
 
 
 def _artist_credit_pattern(separator_regex: str) -> re.Pattern[str]:
@@ -172,6 +173,25 @@ def normalized_artist_identity(value: str) -> str:
         if unicodedata.category(character) != "Cf"
     )
     return "".join(character.casefold() for character in visible if character.isalnum())
+
+
+def artist_search_literal(value: object) -> str:
+    """Unicode search text that retains literal punctuation."""
+    return unicodedata.normalize("NFKC", str(value or "")).casefold().strip()
+
+
+def artist_search_matches(query: object, candidate: object) -> bool:
+    """Match literal punctuation first, then catalog-equivalent identity."""
+    literal_query = artist_search_literal(query)
+    if not literal_query:
+        return True
+    if literal_query in artist_search_literal(candidate):
+        return True
+    identity_query = normalized_artist_identity(query)
+    return bool(
+        identity_query
+        and identity_query in normalized_artist_identity(candidate)
+    )
 
 
 def synthetic_album_artist(value: str) -> bool:
@@ -397,7 +417,7 @@ class Catalog:
     artist_projection_generation: str = ""
     artist_projection_pending: bool = False
     artist_projection_build_lock: Lock = field(default_factory=Lock, repr=False)
-    portrait_cache: dict[str, Path] = field(default_factory=dict)
+    portrait_cache: dict[str, tuple[str, Path]] = field(default_factory=dict)
     portrait_retry_at: dict[str, float] = field(default_factory=dict)
     portrait_failures: dict[str, int] = field(default_factory=dict)
     navidrome_artist_directory: dict[str, dict[str, object]] = field(default_factory=dict)
@@ -1191,6 +1211,10 @@ class Catalog:
         return max(
             rows,
             key=lambda row: (
+                # A projected credit participates in presentation aliases but
+                # never replaces an available durable owner as the selected
+                # PostgreSQL identity.
+                not str(row["artist_key"] or "").startswith("credit:"),
                 # A tagged MusicBrainz identity is the stable authority even
                 # when a legacy name-only duplicate currently owns more album
                 # rows.  The aliases below still contribute every album.
@@ -1202,17 +1226,171 @@ class Catalog:
 
     @staticmethod
     def _artist_groups(rows):
-        """Build one visible group per normalized Artist display name.
+        """Build non-destructive presentation groups from local identity evidence.
 
         PostgreSQL may retain several owner rows for Albums carrying different,
         missing, or conflicting MusicBrainz Artist IDs.  Those database rows and
         their Album associations remain independent; MBID variation must not
-        manufacture duplicate rows in the visible Artist list.
+        manufacture duplicate rows in the visible Artist list. Equal normalized
+        names always share a presentation. A non-empty local MBID may also join
+        differently named owner rows and positionally paired local ``credit:``
+        rows. Credit rows without an unambiguous local MBID remain name-only.
         """
-        by_name: dict[str, list] = {}
-        for row in rows:
-            by_name.setdefault(normalized_artist_identity(row["artist_name"]), []).append(row)
-        return list(by_name.values())
+        rows = list(rows)
+        parents = list(range(len(rows)))
+
+        def find(index: int) -> int:
+            while parents[index] != index:
+                parents[index] = parents[parents[index]]
+                index = parents[index]
+            return index
+
+        def union(left: int, right: int) -> None:
+            left_root = find(left)
+            right_root = find(right)
+            if left_root != right_root:
+                parents[right_root] = left_root
+
+        by_name: dict[str, int] = {}
+        by_mbid: dict[str, int] = {}
+        for index, row in enumerate(rows):
+            identity = normalized_artist_identity(row["artist_name"])
+            if identity in by_name:
+                union(index, by_name[identity])
+            else:
+                by_name[identity] = index
+            keys = set(row.keys()) if hasattr(row, "keys") else set(row)
+            mbid_field = (
+                "alias_musicbrainz_artistid"
+                if "alias_musicbrainz_artistid" in keys
+                else "musicbrainz_artistid"
+            )
+            mbid = str(row[mbid_field] or "").strip().casefold()
+            if not mbid:
+                continue
+            if mbid in by_mbid:
+                union(index, by_mbid[mbid])
+            else:
+                by_mbid[mbid] = index
+
+        groups: dict[int, list] = {}
+        for index, row in enumerate(rows):
+            groups.setdefault(find(index), []).append(row)
+        return list(groups.values())
+
+    @staticmethod
+    def _artist_group_projection(projected, group) -> dict[str, object]:
+        """Merge presentation evidence without changing persisted identities."""
+        entries = [
+            projected[identity]
+            for identity in dict.fromkeys(
+                normalized_artist_identity(row["artist_name"]) for row in group
+            )
+            if identity in projected
+        ]
+        if not entries:
+            return {}
+        preferred = max(
+            entries,
+            key=lambda value: (
+                bool(str(value.get("musicbrainz_artistid") or "").strip()),
+                len(value.get("artist_album_keys", set())),
+                normalized_artist_identity(str(value.get("artist_name") or "")),
+            ),
+        )
+        merged = {
+            "artist_key": preferred["artist_key"],
+            "artist_name": preferred["artist_name"],
+            "musicbrainz_artistid": preferred.get("musicbrainz_artistid", ""),
+            "primary_path": preferred.get("primary_path", ""),
+            "album_keys": set(),
+            "artist_album_keys": set(),
+            "statuses": {},
+            "comp_statuses": {},
+        }
+        for value in entries:
+            merged["album_keys"].update(value.get("album_keys", set()))
+            merged["artist_album_keys"].update(value.get("artist_album_keys", set()))
+            merged["statuses"].update(value.get("statuses", {}))
+            merged["comp_statuses"].update(value.get("comp_statuses", {}))
+        return merged
+
+    @staticmethod
+    def _artist_display_name(
+        group, projected, owned_album_keys: dict[str, set[str]] | None = None
+    ) -> str:
+        """Apply ART-004's identical local display-label precedence."""
+        candidates: list[tuple[tuple, str]] = []
+        group_identities = tuple(dict.fromkeys(
+            normalized_artist_identity(row["artist_name"]) for row in group
+        ))
+        for row in group:
+            label = str(row["artist_name"] or "").strip()
+            if not label:
+                continue
+            artist_key = str(row["artist_key"] or "")
+            mbid = str(row["musicbrainz_artistid"] or "").strip().casefold()
+            owned_count = (
+                len((owned_album_keys or {}).get(artist_key, set()))
+                if owned_album_keys is not None
+                else int(row["album_count"] or 0)
+            )
+            candidates.append(((
+                False,
+                bool(mbid),
+                owned_count,
+                artist_key.casefold(),
+                normalized_artist_identity(label),
+                label.casefold(),
+            ), label))
+        for identity in group_identities:
+            value = projected.get(identity)
+            if not value:
+                continue
+            for paired in value.get("paired_credit_labels", ()):
+                mbid = str(paired.get("mbid") or "").strip().casefold()
+                label = str(paired.get("name") or "").strip()
+                if not mbid or not label:
+                    continue
+                candidates.append(((
+                    True,
+                    False,
+                    len(value.get("artist_album_keys", set())),
+                    ("mbid:" + mbid).casefold(),
+                    normalized_artist_identity(label),
+                    label.casefold(),
+                ), label))
+        if not candidates:
+            return str(Catalog._canonical_artist_row(group)["artist_name"])
+        return max(candidates, key=lambda item: item[0])[1]
+
+    def _owned_artist_album_keys(self, db, rows) -> dict[str, set[str]]:
+        artist_keys = [
+            str(row["artist_key"])
+            for row in rows
+            if not str(row["artist_key"] or "").startswith("credit:")
+        ]
+        if not artist_keys:
+            return {}
+        placeholders = ",".join("?" for _ in artist_keys)
+        try:
+            albums = db.execute(
+                "SELECT albums.album_key,albums.artist_key,albums.path,"
+                "albums.compilation,albums.musicbrainz_albumid,"
+                "owners.artist_name FROM albums JOIN artists owners "
+                "ON owners.artist_key=albums.artist_key "
+                f"WHERE albums.artist_key IN ({placeholders})",
+                tuple(artist_keys),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return {}
+        result: dict[str, set[str]] = {}
+        for album in albums:
+            if self.artist_album_allowed(album):
+                result.setdefault(str(album["artist_key"]), set()).add(
+                    str(album["album_key"])
+                )
+        return result
 
     def _projected_track_artists(
         self, db, *, allow_build: bool = True
@@ -1372,13 +1550,24 @@ class Catalog:
             for row in rows
             if not synthetic_album_artist(str(row["album_artist"] or ""))
         }
-        indexed_identities.update(
-            normalized_artist_identity(credit)
-            for row in rows
-            for value in credit_values(row)
-            for credit in explicit_artist_credits(value, self.artist_separator_regex)
-            if not synthetic_album_artist(credit)
-        )
+        for row in rows:
+            for value_index, value in enumerate(credit_values(row)):
+                resolved = normalize_artist_credit_text(
+                    value,
+                    self.artist_separator_regex,
+                    str(row["musicbrainz_artistid"] or "")
+                    if value_index == 0 else "",
+                ).replace("\0", ARTIST_CREDIT_SEPARATOR)
+                credits = tuple(
+                    part.strip()
+                    for part in resolved.split(ARTIST_CREDIT_SEPARATOR)
+                    if part.strip()
+                )
+                indexed_identities.update(
+                    normalized_artist_identity(credit)
+                    for credit in credits
+                    if not synthetic_album_artist(credit)
+                )
 
         def projected_credits(row, eligible: set[str]) -> tuple[str, ...]:
             mbids = re.findall(
@@ -1388,9 +1577,18 @@ class Catalog:
             )
             result: list[str] = []
             seen: set[str] = set()
-            for value in credit_values(row):
-                configured = explicit_artist_credits(
-                    value, self.artist_separator_regex
+            for value_index, value in enumerate(credit_values(row)):
+                positional_mbids = (
+                    str(row["musicbrainz_artistid"] or "")
+                    if value_index == 0 else ""
+                )
+                resolved = normalize_artist_credit_text(
+                    value, self.artist_separator_regex, positional_mbids
+                ).replace("\0", ARTIST_CREDIT_SEPARATOR)
+                configured = tuple(
+                    part.strip()
+                    for part in resolved.split(ARTIST_CREDIT_SEPARATOR)
+                    if part.strip()
                 )
                 potential = potential_collaboration_credits(value)
                 authoritative = ARTIST_CREDIT_SEPARATOR in str(value).replace(
@@ -1405,7 +1603,7 @@ class Catalog:
                 credits = (
                     potential
                     if len(potential) > 1
-                    and (authoritative or (len(mbids) != 1 and anchored))
+                    and (authoritative or (not mbids and anchored))
                     else configured
                 )
                 for credit in credits:
@@ -1471,6 +1669,8 @@ class Catalog:
                     "artist_key": projected_artist_id(credit),
                     "artist_name": credit,
                     "musicbrainz_artistid": "",
+                    "musicbrainz_artistids": set(),
+                    "paired_label_ids": {},
                     "primary_path": "",
                     "album_keys": set(),
                     "artist_album_keys": set(),
@@ -1478,7 +1678,11 @@ class Catalog:
                     "comp_track_states": {},
                 })
                 if len(mbids) == len(row_credits):
-                    projection["musicbrainz_artistid"] = mbids[index].casefold()
+                    paired_mbid = mbids[index].casefold()
+                    projection["musicbrainz_artistids"].add(paired_mbid)
+                    projection["paired_label_ids"].setdefault(credit, set()).add(
+                        paired_mbid
+                    )
                 album_key = str(row["album_key"])
                 if group == "fallback":
                     projection["comp_track_states"].setdefault(album_key, []).append(
@@ -1492,6 +1696,25 @@ class Catalog:
                     row["status"] or "unprocessed"
                 )
         for projection in result.values():
+            paired_ids = projection.pop("musicbrainz_artistids", set())
+            projection["musicbrainz_artistid"] = (
+                next(iter(paired_ids)) if len(paired_ids) == 1 else ""
+            )
+            paired_labels = [
+                {"name": name, "mbid": next(iter(ids))}
+                for name, ids in projection.pop("paired_label_ids", {}).items()
+                if len(ids) == 1
+            ]
+            paired_labels.sort(
+                key=lambda value: (
+                    ("mbid:" + value["mbid"]).casefold(),
+                    normalized_artist_identity(value["name"]),
+                    value["name"].casefold(),
+                )
+            )
+            projection["paired_credit_labels"] = paired_labels
+            if paired_labels:
+                projection["artist_name"] = paired_labels[-1]["name"]
             projection["comp_statuses"] = {
                 album_key: "complete" if states and all(states) else "incomplete"
                 for album_key, states in projection.pop("comp_track_states", {}).items()
@@ -1500,10 +1723,20 @@ class Catalog:
 
     @staticmethod
     def _virtual_artist_row(projection: dict[str, object]) -> dict[str, object]:
+        paired_alias_ids = {
+            str(value.get("mbid") or "").strip().casefold()
+            for value in projection.get("paired_credit_labels", ())
+            if normalized_artist_identity(value.get("name", ""))
+            == normalized_artist_identity(projection["artist_name"])
+            and str(value.get("mbid") or "").strip()
+        }
         return {
             "artist_key": projection["artist_key"],
             "artist_name": projection["artist_name"],
             "musicbrainz_artistid": projection["musicbrainz_artistid"],
+            "alias_musicbrainz_artistid": (
+                next(iter(paired_alias_ids)) if len(paired_alias_ids) == 1 else ""
+            ),
             "primary_path": "",
             "album_count": len(projection["album_keys"]),
             "status": "unprocessed",
@@ -1544,33 +1777,43 @@ class Catalog:
                     "SELECT artist_key,artist_name,'' AS musicbrainz_artistid,'' AS primary_path,"
                     "0 AS album_count,'unprocessed' AS status FROM artists"
                 ).fetchall()
+        projected = self._projected_track_artists(db)
+        existing_identities = {
+            normalized_artist_identity(row["artist_name"]) for row in candidates
+        }
+        candidates = [*candidates, *(
+            self._virtual_artist_row(value)
+            for identity, value in projected.items()
+            if identity not in existing_identities and value.get("artist_album_keys")
+        )]
         if selected is None:
-            projection = next(
+            selected = next(
                 (
-                    value for value in self._projected_track_artists(db).values()
-                    if str(value["artist_key"]) == str(artist_id)
-                    and value.get("artist_album_keys")
+                    row for row in candidates
+                    if str(row["artist_key"]) == str(artist_id)
+                    and str(row["artist_key"]).startswith("credit:")
                 ),
                 None,
             )
-            if projection is None:
+            if selected is None:
                 raise KeyError("Artist not found")
-            selected = self._virtual_artist_row(projection)
-            # A projected track-credit Artist has no persisted owner row.  It
-            # must never merge into an Album owner merely because catalog
-            # metadata supplied a colliding MBID. Existing same-name Artists
-            # are not projected by artists().
-            return selected, [selected]
-        identity = normalized_artist_identity(selected["artist_name"])
-        selected_mbid = str(selected["musicbrainz_artistid"] or "").strip().casefold()
-        candidates = [
-            row for row in candidates
-            if normalized_artist_identity(row["artist_name"]) == identity
-            or bool(selected_mbid) and str(row["musicbrainz_artistid"] or "").strip().casefold()
-            == selected_mbid
-        ]
-        aliases = candidates
-        return self._canonical_artist_row(aliases), aliases
+            # A positionally paired local MBID participates in the same alias
+            # rule as a persisted owner. Provider-only and ambiguous credits
+            # have no MBID here and therefore remain name-scoped.
+        aliases = next(
+            group for group in self._artist_groups(candidates)
+            if any(str(row["artist_key"]) == str(selected["artist_key"]) for row in group)
+        )
+        canonical = self._canonical_artist_row(aliases)
+        display_name = self._artist_display_name(
+            aliases,
+            projected,
+            self._owned_artist_album_keys(db, aliases),
+        )
+        # The returned mapping overlays presentation text only; the canonical
+        # PostgreSQL key, MBID, paths and Album ownership stay intact.
+        canonical = {**dict(canonical), "artist_name": display_name}
+        return canonical, aliases
 
     @staticmethod
     def _navidrome_auth_query(credential: dict[str, object]) -> dict[str, str]:
@@ -1623,11 +1866,25 @@ class Catalog:
             for item in artists
         )
 
+    @staticmethod
+    def _artist_portrait_identity(artist) -> str:
+        return (
+            str(artist["artist_key"])
+            + "\0"
+            + normalized_artist_identity(artist["artist_name"])
+        )
+
     def _navidrome_thumbnail_path(self, artist, variant: str = "web-v1") -> Path | None:
         directory = self.cache / "navidrome-thumbnails" if self.cache is not None else None
         if directory is None:
             return None
-        identity = sha256(str(artist["artist_key"]).encode("utf-8")).hexdigest()[:32]
+        # Bind persistent provider pixels to both the durable row and visible
+        # Artist identity. A catalog refresh may legitimately reuse a
+        # transport key; an old Bette Midler cache entry must never become an
+        # A. R. Rahman portrait merely because that key was reused.
+        identity = sha256(
+            self._artist_portrait_identity(artist).encode("utf-8")
+        ).hexdigest()[:32]
         path = directory / "artists" / (variant + "-" + identity + ".png")
         return path if path.is_file() else None
 
@@ -1665,7 +1922,9 @@ class Catalog:
                 opened.verify()
             directory = directory / "artists"
             directory.mkdir(parents=True, exist_ok=True)
-            identity = sha256(str(artist["artist_key"]).encode("utf-8")).hexdigest()[:32]
+            identity = sha256(
+                self._artist_portrait_identity(artist).encode("utf-8")
+            ).hexdigest()[:32]
             path = directory / (variant + "-" + identity + ".png")
             descriptor, temporary = tempfile.mkstemp(prefix=".navidrome-", suffix=".png", dir=directory)
             try:
@@ -2232,10 +2491,17 @@ class Catalog:
             canonical = self._canonical_artist_row(group)
             if synthetic_album_artist(canonical["artist_name"]):
                 continue
-            if query.casefold() not in str(canonical["artist_name"]).casefold():
+            alias_names = {
+                str(row["artist_name"] or "") for row in group
+            }
+            if query and not any(
+                artist_search_matches(query, alias) for alias in alias_names
+            ):
                 continue
-            identity = normalized_artist_identity(canonical["artist_name"])
-            appearance = projected.get(identity, {})
+            appearance = self._artist_group_projection(projected, group)
+            display_name = self._artist_display_name(
+                group, projected, owned_album_keys
+            )
             stored_album_count = sum(int(row["album_count"] or 0) for row in group)
             album_keys = {
                 key
@@ -2303,7 +2569,7 @@ class Catalog:
             )
             result.append({
                 "id": canonical["artist_key"],
-                "name": canonical["artist_name"],
+                "name": display_name,
                 "albums": effective_album_count,
                 "status": (
                     self._aggregate_album_status(status_group)
@@ -2366,18 +2632,18 @@ class Catalog:
             canonical = self._canonical_artist_row(group)
             if synthetic_album_artist(canonical["artist_name"]):
                 continue
-            identity = normalized_artist_identity(canonical["artist_name"])
+            appearance = self._artist_group_projection(projected, group)
             has_owner_album = any(
                 str(row["artist_key"]) in eligible_owner_ids for row in group
             )
             if self.path_album_grouping_enabled():
                 visible = has_owner_album or bool(
-                    projected.get(identity, {}).get("artist_album_keys")
+                    appearance.get("artist_album_keys")
                 )
             else:
                 visible = bool(
                     sum(int(row["album_count"] or 0) for row in group)
-                    or projected.get(identity, {}).get("album_keys")
+                    or appearance.get("album_keys")
                 )
             if not visible:
                 continue
@@ -2398,6 +2664,7 @@ class Catalog:
 
     def artist_thumbnail_path(self, artist) -> Path | None:
         artist_id = str(artist["artist_key"])
+        portrait_identity = self._artist_portrait_identity(artist)
         raw_id = str(artist["musicbrainz_artistid"] or "").strip()
         name_identity = (
             "name-"
@@ -2428,8 +2695,12 @@ class Catalog:
         # Re-resolve local Artist Art before consulting the session cache. A
         # Windows write or external artist.* creation must replace an older
         # provider portrait without requiring a WebGUI restart.
-        if portrait is None and artist_id in self.portrait_cache:
-            cached = self.portrait_cache[artist_id]
+        cached_entry = self.portrait_cache.get(artist_id)
+        if cached_entry is not None and cached_entry[0] != portrait_identity:
+            self.portrait_cache.pop(artist_id, None)
+            cached_entry = None
+        if portrait is None and cached_entry is not None:
+            cached = cached_entry[1]
             portrait = cached if cached.is_file() else None
         if portrait is None:
             portrait = self._navidrome_thumbnail_path(artist)
@@ -2441,7 +2712,7 @@ class Catalog:
         # Art may be written by this WebGUI or the Windows application while
         # the server remains open.
         if portrait is not None:
-            self.portrait_cache[artist_id] = portrait
+            self.portrait_cache[artist_id] = (portrait_identity, portrait)
         else:
             self.portrait_cache.pop(artist_id, None)
         return portrait
@@ -2475,7 +2746,9 @@ class Catalog:
                     portrait = None
                 with self.lock:
                     if portrait is not None:
-                        self.portrait_cache[artist_key] = portrait
+                        self.portrait_cache[artist_key] = (
+                            self._artist_portrait_identity(artist), portrait
+                        )
                         self.portrait_retry_at.pop(artist_key, None)
                         self.portrait_failures.pop(artist_key, None)
                     else:
@@ -3300,7 +3573,6 @@ class Catalog:
                 return {
                     **cached,
                     "artist": self.artist(artist_id),
-                    "comp_albums": self.artist_comp_albums(artist_id),
                 }
             return self._load_artist_metadata(artist_id)
 
@@ -3339,7 +3611,14 @@ class Catalog:
                 matches = search.get("searchResult3", {}).get("artist", [])
                 if isinstance(matches, dict):
                     matches = [matches]
-                match = next((item for item in matches if str(item.get("name", "")).casefold() == str(artist["name"]).casefold()), None)
+                match = next(
+                    (
+                        item for item in matches
+                        if normalized_artist_identity(item.get("name", ""))
+                        == normalized_artist_identity(artist["name"])
+                    ),
+                    None,
+                )
                 if match:
                     info = call("getArtistInfo2", {"id": str(match["id"])}).get("artistInfo2", {})
                     biography = re.sub(r"<[^>]+>", " ", str(info.get("biography") or ""))
@@ -3434,27 +3713,18 @@ class Catalog:
                 result.update(profile)
                 result.pop("reason", None)
                 self._save_artist_profile(artist_id, profile)
-        # Navidrome's lightweight getArtist response does not consistently
-        # include the per-track genres exposed by search3.  Match the native
-        # Windows Artist Overview contract by resolving the selected Artist's
-        # bounded appearance catalog once on a metadata-cache miss.  This also
-        # keeps Featured roles tied to the exact selected Artist identity; the
-        # cached result prevents repeat traversal during ordinary rerenders.
-        if not result.get("genres") and credential_path.is_file():
-            try:
-                appearance = self.refresh_artist_appearances(artist_id)
-                result["genres"] = list(appearance.get("genres", []))
-            except (OSError, ValueError, KeyError, TypeError, requests.RequestException):
-                pass
+        # Biography presentation must not wait behind the optional provider
+        # song/appearance traversal. Indexed/stored appearances already feed
+        # the Overview; a deliberate appearance refresh remains independent
+        # instead of holding this response for as many as twenty song pages.
         with self.lock:
             self.metadata_cache[artist_id] = result
-        projected_artist = self.artist(artist_id)
+        projected_artist = artist
         if result.get("genres"):
             projected_artist["genres"] = sorted(set(projected_artist.get("genres", [])) | set(result["genres"]))
         return {
             **result,
             "artist": projected_artist,
-            "comp_albums": self.artist_comp_albums(artist_id),
         }
 
     def search_artist(self, artist_id: str) -> dict[str, object]:

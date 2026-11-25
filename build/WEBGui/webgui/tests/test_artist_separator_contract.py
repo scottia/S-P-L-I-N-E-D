@@ -54,6 +54,23 @@ class ArtistSeparatorContractTests(unittest.TestCase):
             "AC/DC",
         )
 
+    def test_one_mbid_preserves_a_real_name_containing_configured_separator(self):
+        identity = "3df0d7b5-79e8-4a3f-8f7b-2ea66b5ed106"
+        self.assertEqual(
+            normalize_artist_credit_text(
+                "Ike & Tina Turner", r"\s+&\s+", artist_mbids=identity
+            ),
+            "Ike & Tina Turner",
+        )
+        self.assertEqual(
+            normalize_artist_credit_text(
+                "Owner & Guest",
+                r"\s+&\s+",
+                artist_mbids=f"{identity}; 2f53411b-ec29-4979-aa46-62786a2bb377",
+            ),
+            f"Owner{ARTIST_CREDIT_SEPARATOR}Guest",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
