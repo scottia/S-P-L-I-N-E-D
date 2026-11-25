@@ -2329,12 +2329,16 @@ class Catalog:
 
     def _artist_appearance_context(self, artist, aliases, db, *, refresh=False) -> dict[str, object]:
         canonical_id = str(artist["artist_key"])
+        selection_id = str(artist.get("selection_id") or canonical_id)
         generation = self._artist_projection_generation(db)
         token = self._artist_projection_token(generation, db)
         with self.lock:
-            cached_entry = self.appearance_cache.get(canonical_id)
+            cached_entry = self.appearance_cache.get(selection_id)
             cached = cached_entry[1] if cached_entry is not None and cached_entry[0] == token else None
-        stored = self._stored_artist_appearances(db, canonical_id)
+        # A reused durable key can address more than one presentation when
+        # local IDs conflict. The durable provider cache has no way to
+        # distinguish those presentations, so use their selection-scoped data.
+        stored = self._stored_artist_appearances(db, canonical_id) if selection_id == canonical_id else {}
         indexed = self._indexed_artist_appearances(db, artist, aliases)
         baseline = self._merge_artist_appearances(stored, indexed)
         if not refresh:
@@ -2480,7 +2484,7 @@ class Catalog:
                 self._artist_projection_token(self._artist_projection_generation(db), db) != token
             ):
                 return baseline
-            if isinstance(self.database, Database) and db.execute(
+            if selection_id == canonical_id and isinstance(self.database, Database) and db.execute(
                 "SELECT 1 FROM artists WHERE artist_key=?", (canonical_id,)
             ).fetchone() is not None:
                 db.execute("DELETE FROM artist_album_appearances WHERE artist_key=?", (canonical_id,))
@@ -2497,7 +2501,7 @@ class Catalog:
                     )
                 db.commit()
             with self.lock:
-                self.appearance_cache[canonical_id] = (token, remote_context)
+                self.appearance_cache[selection_id] = (token, remote_context)
             LOGGER.info(
                 "Artist appearance catalog ready: artist=%s albums=%d featured=%d comp_paths=%d",
                 str(artist["artist_name"]),
