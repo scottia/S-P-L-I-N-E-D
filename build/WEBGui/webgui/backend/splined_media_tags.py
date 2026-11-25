@@ -300,12 +300,21 @@ def normalize_artist_credit_text(
     # IDs provide unambiguous cardinality: split only when the slash values
     # and IDs have the same count. Windows/Lofty already decodes this form as
     # a native multi-value sequence, so PostgreSQL now projects it identically.
+    mbids = _mbids(artist_mbids)
     slash_parts = tuple(
         part.strip() for part in explicit[0].split("/") if part.strip()
     )
-    if len(slash_parts) > 1 and len(_mbids(artist_mbids)) == len(slash_parts):
+    if len(slash_parts) > 1 and len(mbids) == len(slash_parts):
         return ARTIST_CREDIT_SEPARATOR.join(dict.fromkeys(slash_parts))
-    mbids = _mbids(artist_mbids)
+    # Ampersand and comma are meaningful inside real Artist names, but exact
+    # ordered MBID cardinality is stronger local evidence than presentation
+    # punctuation and therefore establishes positional credits first.
+    for delimiter in (" & ", ", "):
+        cardinal_parts = tuple(
+            part.strip() for part in explicit[0].split(delimiter) if part.strip()
+        )
+        if len(cardinal_parts) > 1 and len(mbids) == len(cardinal_parts):
+            return ARTIST_CREDIT_SEPARATOR.join(dict.fromkeys(cardinal_parts))
     try:
         parts = re.split(separator_regex, explicit[0])
     except re.error as exc:

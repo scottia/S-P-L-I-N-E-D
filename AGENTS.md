@@ -111,16 +111,21 @@ implementation drift independently against the exact policy.
   owned Artist folders and managed Artist-Art packages for every row in the
   presentation group. The canonical row's MBID or path cannot hide valid
   `artist.*` or `banner.*` saved under another grouped row.
-- **ART-004 — Shared Artist identity and credit resolution:** derive equivalent
-  Artist presentations and media associations from the same ordered local
-  Album Artist, Track Artist multi-value, MusicBrainz-ID, category and alias
-  evidence. Preserve physical Album ownership and distinct owned-Album,
-  Album-appearance and positioned track-credit associations. Apply explicit
-  multi-values and positionally paired MBIDs before collaboration separators;
-  group equal normalized names without merging durable identities; permit
-  providers to enrich only an existing locally eligible presentation; and use
-  the same eligible presentation/alias resolution for typed Artist search and
-  inventory reporting. The independent COMP matcher remains unchanged.
+- **ART-004 — Shared Artist identity and credit resolution:** both clients use
+  one ordered catalog method while retaining native storage: (1) capture
+  original local metadata evidence; (2) establish durable Artist identity and
+  physical Album ownership; (3) resolve category overrides before folder
+  classification; (4) resolve explicit multi-value credits, ordered MBID
+  cardinality and positional associations before collaboration separators;
+  (5) establish distinct ownership, Album-appearance and track-credit edges;
+  (6) apply the shared catalog presentation normalization; (7) group normalized
+  identities and resolve only locally evidenced, unambiguous aliases; (8) apply
+  identical deterministic display-label precedence; (9) determine Artist
+  membership eligibility; (10) apply secondary-provider enrichment without
+  membership authority; and (11) apply equivalent typed search semantics and
+  unique presentation/association counting. Preserve all durable keys, MBIDs
+  and edges. Catalog presentation, search-token and COMP-match normalization
+  remain separate namespaces; the independent COMP matcher is unchanged.
 - **UI-001 — Publish local progress immediately:** Header, Embedding Center,
   status bar and equivalent progress surfaces must update from newly committed
   local state without waiting for remote coordination polling. Reconcile an

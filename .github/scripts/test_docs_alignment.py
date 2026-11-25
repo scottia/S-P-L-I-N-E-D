@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import unittest
 from pathlib import Path
@@ -71,6 +72,17 @@ class MainDocumentationAlignmentTests(unittest.TestCase):
         ):
             with self.subTest(path=path.relative_to(ROOT)):
                 self.assertIn("ART-004", path.read_text(encoding="utf-8"))
+        register = (DOCS / "POLICY-REGISTER.md").read_text(encoding="utf-8")
+        for position in range(1, 12):
+            self.assertIn(f"**({position})**", register)
+        conformance = (
+            ROOT / ".github" / "test-data" / "artist-identity-conformance.json"
+        )
+        self.assertTrue(conformance.is_file())
+        self.assertEqual(
+            json.loads(conformance.read_text(encoding="utf-8"))["policy_id"],
+            "ART-004",
+        )
         self.assertNotIn(
             "ART-004",
             (ROOT / "schema" / "lifecycle-policy.json").read_text(encoding="utf-8"),
