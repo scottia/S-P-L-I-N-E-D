@@ -241,6 +241,7 @@ pub struct IndexedArtistCatalogProjection {
     pub musicbrainz_ids: BTreeMap<String, String>,
     pub credit_ids_by_identity: BTreeMap<String, BTreeSet<String>>,
     pub credit_labels_by_identity: BTreeMap<String, BTreeSet<String>>,
+    pub paired_label_ids: BTreeMap<String, BTreeSet<String>>,
 }
 
 fn synthetic_album_artist(artist: &str) -> bool {
@@ -405,6 +406,21 @@ fn indexed_track_artist_credits<'a>(
     separator: &Regex,
 ) -> Vec<String> {
     let mut credits = artist_credit_values_with_mbids(track_artist, track_artist_mbids, separator);
+    if credits.len() == 1 {
+        static FEATURE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+        let feature = FEATURE.get_or_init(|| Regex::new(r"(?i) (?:feat\.?|ft\.?|featuring) ").unwrap());
+        if let Some(feature) = feature.find(track_artist)
+            && separator.find(feature.as_str()).is_some_and(|matched| matched.as_str() == feature.as_str())
+        {
+            let leading = track_artist[..feature.start()].trim();
+            let guest = track_artist[feature.end()..].trim();
+            if !leading.is_empty() && !guest.is_empty()
+                && artist_search_literal(leading) == artist_search_literal(owner)
+            {
+                return vec![leading.to_string(), guest.to_string()];
+            }
+        }
+    }
     // Explicit multi-value ARTIST/TPE1 tags are authoritative.  Adding the
     // filename's joined display credit would manufacture a duplicate combined
     // Artist (for example, "Rob Wasserman & Aaron Neville") beside the two
@@ -572,6 +588,7 @@ pub fn indexed_artist_catalog_projection(
     let mut ambiguous_ids = BTreeSet::<String>::new();
     let mut credit_ids_by_identity = BTreeMap::<String, BTreeSet<String>>::new();
     let mut credit_labels_by_identity = BTreeMap::<String, BTreeSet<String>>::new();
+    let mut paired_label_ids = BTreeMap::<String, BTreeSet<String>>::new();
     for row in rows {
         let (album_key, owner, track_artist, title, path, track_artist_mbids) =
             row.map_err(db_error("read indexed Artist catalog"))?;
@@ -623,6 +640,7 @@ pub fn indexed_artist_catalog_projection(
             if authoritative_credit {
                 let candidate = mbids[position].to_ascii_lowercase();
                 credit_ids_by_identity.entry(identity.clone()).or_default().insert(candidate.clone());
+                paired_label_ids.entry(credit.clone()).or_default().insert(candidate.clone());
                 if ambiguous_ids.contains(&identity) {
                     continue;
                 }
@@ -651,6 +669,7 @@ pub fn indexed_artist_catalog_projection(
         musicbrainz_ids,
         credit_ids_by_identity,
         credit_labels_by_identity,
+        paired_label_ids,
     })
 }
 

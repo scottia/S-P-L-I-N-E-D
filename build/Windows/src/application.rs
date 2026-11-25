@@ -349,6 +349,7 @@ pub struct LibraryState {
     pub artist_appearance_musicbrainz_ids: HashMap<String, String>,
     artist_credit_ids: BTreeMap<String, BTreeSet<String>>,
     artist_credit_labels: BTreeMap<String, BTreeSet<String>>,
+    artist_paired_label_ids: BTreeMap<String, BTreeSet<String>>,
     /// Artist membership is catalog-generation evidence. Cache the completed
     /// projection so filtering, status counts, and Slint publication do not
     /// repeatedly rebuild thousands of track-credit associations.
@@ -456,6 +457,7 @@ impl LibraryState {
             artist_appearance_musicbrainz_ids,
             artist_credit_ids: projection.credit_ids_by_identity,
             artist_credit_labels: projection.credit_labels_by_identity,
+            artist_paired_label_ids: projection.paired_label_ids,
             artist_projection_cache: RefCell::new(None),
             fallback_track_identity_cache: RefCell::new(HashMap::new()),
             fallback_track_progress_cache: RefCell::new(HashMap::new()),
@@ -497,6 +499,7 @@ impl LibraryState {
             artist_appearance_musicbrainz_ids: HashMap::new(),
             artist_credit_ids: BTreeMap::new(),
             artist_credit_labels: BTreeMap::new(),
+            artist_paired_label_ids: BTreeMap::new(),
             artist_projection_cache: RefCell::new(None),
             fallback_track_identity_cache: RefCell::new(HashMap::new()),
             fallback_track_progress_cache: RefCell::new(HashMap::new()),
@@ -1166,6 +1169,26 @@ impl LibraryState {
                     artist_key(&display, mbid),
                 );
             }
+        }
+
+        for (label, ids) in &self.artist_paired_label_ids {
+            let identity = Self::presentation_identity(&aliases, label);
+            if ids.len() != 1 || !eligible_identities.contains(&identity) {
+                continue;
+            }
+            let owned_artist_albums = owner_counts
+                .get(&(identity.clone(), label.to_lowercase()))
+                .map_or(0, HashSet::len);
+            let mbid = ids.first().expect("one validated ID");
+            Self::record_artist_display(
+                &mut display_names,
+                identity,
+                label,
+                true,
+                false,
+                owned_artist_albums,
+                artist_key(label, mbid),
+            );
         }
 
         let mut values = BTreeMap::<String, Vec<usize>>::new();

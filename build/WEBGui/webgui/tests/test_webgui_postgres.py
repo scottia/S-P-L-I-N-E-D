@@ -104,6 +104,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 "albumartist": "Test Artist",
                 "album": "Test Album",
                 "musicbrainz_albumid": "33333333-3333-4333-8333-333333333333",
+                "musicbrainz_albumartistid": "22222222-2222-4222-8222-222222222222",
                 "musicbrainz_artistid": "22222222-2222-4222-8222-222222222222",
                 "musicbrainz_trackid": f"44444444-4444-4444-8444-{number:012d}",
             }.items():
@@ -5292,6 +5293,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             "albumartist": "10,000 Maniacs",
             "album": "Reference Album",
             "musicbrainz_albumid": target_release_id,
+            "musicbrainz_albumartistid": "6c8b9855-ba8b-48f9-ac1d-42167f7f7b18",
             "musicbrainz_artistid": "6c8b9855-ba8b-48f9-ac1d-42167f7f7b18",
             "musicbrainz_trackid": "11111111-1111-4111-8111-111111111111",
         }.items():
@@ -5309,6 +5311,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             "albumartist": "Other Performer",
             "album": "Other Reference",
             "musicbrainz_albumid": other_release_id,
+            "musicbrainz_albumartistid": "77777777-7777-4777-8777-777777777777",
             "musicbrainz_artistid": "77777777-7777-4777-8777-777777777777",
             "musicbrainz_trackid": "88888888-8888-4888-8888-888888888888",
         }.items():

@@ -470,7 +470,7 @@ class Catalog:
         grouping = json.dumps(
             {
                 "generation": generation,
-                "credit_evidence": 4,
+                "credit_evidence": 5,
                 "separator": self.artist_separator_regex,
                 "categories": sorted(self.category_overrides.items()),
             },
@@ -1269,7 +1269,7 @@ class Catalog:
         by_mbid: dict[str, int] = {}
         for identity, index in by_name.items():
             mbids = ids_by_name.get(identity, set())
-            if len(mbids) == 1:
+            if len(mbids) == 1 and not synthetic_album_artist(identity):
                 mbid = next(iter(mbids))
                 union(index, by_mbid.setdefault(mbid, index))
 
@@ -1342,7 +1342,7 @@ class Catalog:
             )
             candidates.append(((
                 False,
-                bool(mbid),
+                bool(mbid) and not artist_key.startswith("credit:"),
                 owned_count,
                 artist_search_literal(artist_key),
                 normalized_artist_identity(label),
@@ -1607,7 +1607,24 @@ class Catalog:
                     and not (mbids if value_index == 0 else ()) and anchored
                     else configured
                 )
-                paired = value_index == 0 and len(configured) == len(mbids)
+                owner_anchored_feature = False
+                if value_index == 0 and len(credits) == 1:
+                    feature = re.search(r"(?i) (?:feat\.?|ft\.?|featuring) ", value)
+                    features = (
+                        (value[:feature.start()], value[feature.end():])
+                        if feature and _artist_credit_pattern(self.artist_separator_regex).fullmatch(feature.group())
+                        else ()
+                    )
+                    owner_anchored_feature = (
+                        len(features) == 2 and all(part.strip() for part in features)
+                        and artist_search_literal(features[0]) == artist_search_literal(row["album_artist"])
+                    )
+                    if owner_anchored_feature:
+                        credits = tuple(part.strip() for part in features)
+                paired = (
+                    value_index == 0 and not owner_anchored_feature
+                    and len(configured) == len(mbids)
+                )
                 for position, credit in enumerate(credits):
                     if not synthetic_album_artist(credit):
                         result.append((credit, mbids[position] if paired else ""))
@@ -1655,8 +1672,6 @@ class Catalog:
             recorded = set()
             for credit, paired_mbid in row_credits:
                 identity = normalized_artist_identity(credit)
-                if identity not in eligible_identities:
-                    continue
                 projection = result.setdefault(identity, {
                     "artist_key": projected_artist_id(credit),
                     "artist_name": credit,
@@ -1792,7 +1807,7 @@ class Catalog:
         candidates = [*candidates, *(
             self._virtual_artist_row(value)
             for identity, value in projected.items()
-            if identity not in existing_identities and value.get("artist_album_keys")
+            if identity not in existing_identities
         )]
         if selected is None:
             selected = next(
@@ -1812,6 +1827,10 @@ class Catalog:
             group for group in self._artist_groups(candidates, projected)
             if any(str(row["artist_key"]) == str(selected["artist_key"]) for row in group)
         )
+        if str(selected["artist_key"]).startswith("credit:"):
+            appearance = self._artist_group_projection(projected, aliases)
+            if not appearance.get("artist_album_keys") and not self._owned_artist_album_keys(db, aliases):
+                raise KeyError("Artist not found")
         canonical = self._canonical_artist_row(aliases)
         display_name = self._artist_display_name(
             aliases,
@@ -2420,7 +2439,6 @@ class Catalog:
             self._virtual_artist_row(value)
             for identity, value in projected.items()
             if identity not in existing_identities
-            and value.get("artist_album_keys")
         )]
         statuses_by_artist: dict[str, list] = {}
         album_evidence_by_key: dict[str, dict[str, object]] = {}
@@ -2473,6 +2491,13 @@ class Catalog:
                 for row in group
                 for key in owned_album_keys.get(str(row["artist_key"]), set())
             } | set(appearance.get("album_keys", set()))
+            qualifying_owner = any(
+                owned_album_keys.get(str(row["artist_key"]))
+                or legacy_owner_album_keys.get(str(row["artist_key"]))
+                for row in group
+            )
+            if projected_statuses and not qualifying_owner and not appearance.get("artist_album_keys"):
+                continue
             effective_album_count = len(album_keys)
             if not effective_album_count and not self.path_album_grouping_enabled():
                 legacy_keys = {
@@ -2582,7 +2607,11 @@ class Catalog:
                     "owners.artist_name FROM albums "
                     "JOIN artists owners ON owners.artist_key=albums.artist_key"
                 ).fetchall()
-                if self.artist_album_allowed(row)
+                if self.artist_album_allowed(row) or (
+                    not self.path_album_grouping_enabled()
+                    and str(row["album_key"]) not in self.category_overrides
+                    and not row["compilation"]
+                )
             }
         existing_identities = {
             normalized_artist_identity(row["artist_name"]) for row in rows
@@ -2602,15 +2631,7 @@ class Catalog:
             has_owner_album = any(
                 str(row["artist_key"]) in eligible_owner_ids for row in group
             )
-            if self.path_album_grouping_enabled():
-                visible = has_owner_album or bool(
-                    appearance.get("artist_album_keys")
-                )
-            else:
-                visible = bool(
-                    sum(int(row["album_count"] or 0) for row in group)
-                    or appearance.get("album_keys")
-                )
+            visible = has_owner_album or bool(appearance.get("artist_album_keys"))
             if not visible:
                 continue
             portrait_path = None
