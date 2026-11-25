@@ -358,14 +358,16 @@ def _track_identity_tags(
         "musicbrainz_artistid",
         "musicbrainz artist id",
     )
+    artist = reader.values("artist")
     return {
         "title": reader.value("title"),
         # TPE1/ARTIST is explicitly multi-value. Keeping only its first value
         # hides Featured performers from the Artist catalog even though tools
         # such as Mp3tag and Navidrome correctly expose every credit.
         "artist": normalize_artist_credit_text(
-            reader.values("artist"), artist_separator_regex, artist_mbids
+            artist, artist_separator_regex, artist_mbids
         ),
+        "original_artist": artist,
         "recording_mbid": recording_mbid,
         "artist_mbid": artist_mbids,
     }
@@ -374,9 +376,25 @@ def _track_identity_tags(
 def read_track_identity_tags(
     audio_path: Path,
     artist_separator_regex: str = DEFAULT_ARTIST_SEPARATOR_REGEX,
+    *,
+    capture_original_artist_credit: bool = False,
 ) -> dict[str, str]:
     """Read only the local fields needed for authoritative track matching."""
-    return _track_identity_tags(_TagReader(audio_path), artist_separator_regex)
+    reader = _TagReader(audio_path)
+    track = _track_identity_tags(reader, artist_separator_regex)
+    if capture_original_artist_credit:
+        _capture_album_credit_evidence(reader, track)
+    return track
+
+
+def _capture_album_credit_evidence(reader: _TagReader, track: dict[str, str]) -> None:
+    track.update(
+        original_album_artist=reader.value("albumartist", "album artist"),
+        original_album_mbid=reader.value(
+            "musicbrainz_albumid", "musicbrainz album id", "musicbrainz release id",
+        ),
+        original_compilation=reader.value("compilation", "itunescompilation"),
+    )
 
 
 def read_album_and_track_identity_tags(
@@ -385,7 +403,9 @@ def read_album_and_track_identity_tags(
 ) -> tuple[dict[str, Any], dict[str, str]]:
     """Read representative Album and track identity from one opened tag view."""
     reader = _TagReader(audio_path)
-    return _album_tags(reader), _track_identity_tags(reader, artist_separator_regex)
+    track = _track_identity_tags(reader, artist_separator_regex)
+    _capture_album_credit_evidence(reader, track)
+    return _album_tags(reader), track
 
 
 def inspect_album_tracks(
@@ -395,6 +415,7 @@ def inspect_album_tracks(
     *,
     force_read: bool = False,
     preserve_artist_positions: bool = False,
+    capture_original_artist_credit: bool = False,
     artist_separator_regex: str = DEFAULT_ARTIST_SEPARATOR_REGEX,
     executor: Any = None,
     preloaded: Mapping[str, Mapping[str, Any]] | None = None,
@@ -443,6 +464,10 @@ def inspect_album_tracks(
 
     def read(raw_path: Path) -> dict[str, Any]:
         try:
+            if capture_original_artist_credit:
+                return read_track_identity_tags(
+                    raw_path, artist_separator_regex, capture_original_artist_credit=True,
+                )
             return read_track_identity_tags(raw_path, artist_separator_regex)
         except Exception:
             return {
@@ -516,6 +541,18 @@ def inspect_album_tracks(
                 "updated_at": now,
             }
         )
+        if capture_original_artist_credit and "original_artist" in tags:
+            rows[-1]["original_artist_credit"] = {
+                "artist": tags["original_artist"].replace("\0", ARTIST_CREDIT_SEPARATOR),
+                "mbids": tags["artist_mbid"].replace("\0", ARTIST_CREDIT_SEPARATOR),
+                "title": tags["title"].replace("\0", ARTIST_CREDIT_SEPARATOR),
+                **{
+                    key: tags.get("original_" + key, "").replace("\0", ARTIST_CREDIT_SEPARATOR) or None
+                    for key in ("album_artist", "album_mbid", "compilation")
+                },
+                "file_size": size,
+                "file_mtime_ns": modified,
+            }
     return rows, reads, reuses
 
 

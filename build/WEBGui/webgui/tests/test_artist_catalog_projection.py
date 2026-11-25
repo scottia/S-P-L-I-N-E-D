@@ -6,6 +6,7 @@ from contextlib import closing
 from io import BytesIO
 import json
 from pathlib import Path
+import re
 import sqlite3
 from sqlite3 import connect
 from tempfile import TemporaryDirectory
@@ -19,6 +20,7 @@ from webgui.catalog import (
     artist_credit_position,
     artist_display_sort_key,
     artist_search_matches,
+    catalog_credit_slots,
     embedded_album_artwork_summary,
     normalized_artist_identity,
     potential_collaboration_credits,
@@ -38,6 +40,14 @@ CONFORMANCE = json.loads(
 
 
 class ArtistCatalogProjectionTests(unittest.TestCase):
+    def test_shared_art004_positioned_local_credits(self):
+        for case in CONFORMANCE["positioned_credit_cases"]:
+            with self.subTest(case=case["id"]):
+                self.assertEqual([list(credit) for credit in catalog_credit_slots(
+                    case["value"], case["artist_mbids"], case["title"], case["filename"],
+                    case["owner"], re.compile(case["separator_regex"]),
+                )], case["expected"])
+
     def test_shared_art004_credit_and_search_conformance(self):
         self.assertEqual(CONFORMANCE["policy_id"], "ART-004")
         for case in CONFORMANCE["credit_cases"]:

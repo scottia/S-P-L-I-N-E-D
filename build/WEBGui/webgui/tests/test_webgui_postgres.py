@@ -166,6 +166,18 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             row = db.execute("SELECT artist_name,musicbrainz_artistid FROM tracks WHERE album_key=?", (album_key,)).fetchone()
             self.assertEqual(row["artist_name"].split("\x1f"), case["track_artists"])
             self.assertEqual(row["musicbrainz_artistid"].split(","), case["track_artist_mbids"])
+            original_credit = db.execute(
+                "SELECT payload_json FROM cache_entries WHERE album_key=? AND cache_type='art004-track'",
+                (album_key,),
+            ).fetchone()
+            self.assertEqual(json.loads(original_credit["payload_json"])["artist"].split("\x1f"),
+                             case["track_artists"])
+            projected = self.services.catalog._projected_track_artists(db)
+            credits = [credit
+                       for identity in ("aaprocky", "localowner")
+                       for track_slots in projected[identity]["track_credits"][album_key].values()
+                       for credit in track_slots]
+            self.assertEqual(credits, case["positioned_credits"])
         listed = [item for item in self.services.catalog.artists("")
                   if item["name"] in case["expected_artist_names"]]
         self.assertEqual([item["name"] for item in listed], case["expected_artist_names"])
@@ -4172,7 +4184,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 ).fetchone()
             self.assertEqual(
                 json.loads(marker["details_json"])["managed_track_credit_refresh"],
-                3,
+                4,
             )
 
             repeated = reconciler.compare(

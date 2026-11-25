@@ -8,7 +8,8 @@ use crate::config::{Config, Mode, configured_samples_dir, resolve_sources};
 use crate::inspect::inspect_image;
 use crate::media_database::{
     IndexedArtistAppearances, MediaAlbumSnapshot, MediaSnapshot, MediaTrackSnapshot,
-    artist_display_sort_key, artist_key, artist_projection_identity, artist_search_matches,
+    PositionedArtistTracks, artist_display_sort_key, artist_key, artist_projection_identity,
+    artist_search_matches, catalog_ordered_mbids,
     indexed_artist_catalog_projection,
     load_album_category_overrides,
 };
@@ -350,6 +351,11 @@ pub struct LibraryState {
     artist_credit_ids: BTreeMap<String, BTreeSet<String>>,
     artist_credit_labels: BTreeMap<String, BTreeSet<String>>,
     artist_paired_label_ids: BTreeMap<String, BTreeSet<String>>,
+    artist_explicit_credit_albums: BTreeMap<String, BTreeSet<String>>,
+    artist_owner_keys: BTreeMap<String, String>,
+    artist_positioned_tracks: PositionedArtistTracks,
+    artist_separator_regex: String,
+    artist_catalog_categories: BTreeMap<String, AlbumLibraryGroup>,
     /// Artist membership is catalog-generation evidence. Cache the completed
     /// projection so filtering, status counts, and Slint publication do not
     /// repeatedly rebuild thousands of track-credit associations.
@@ -374,23 +380,23 @@ impl LibraryState {
         snapshot: MediaSnapshot,
         artist_separator_regex: &str,
     ) -> Result<Self, String> {
+        let mut state = Self::from_snapshot_evidence(snapshot, artist_separator_regex)?;
+        state.resolve_artist_catalog();
+        Ok(state)
+    }
+
+    fn from_snapshot_evidence(
+        snapshot: MediaSnapshot,
+        artist_separator_regex: &str,
+    ) -> Result<Self, String> {
         if snapshot.schema_version != crate::media_database::SCHEMA_VERSION {
             return Err(format!(
                 "SPLINED media database schema {} is not supported by this application.",
                 snapshot.schema_version
             ));
         }
-        let projection =
-            indexed_artist_catalog_projection(&snapshot.database_path, artist_separator_regex)
-                .unwrap_or_default();
         let category_overrides =
             load_album_category_overrides(&snapshot.database_path).unwrap_or_default();
-        let artist_appearance_album_keys = projection.album_keys;
-        let artist_appearance_musicbrainz_ids = projection
-            .musicbrainz_ids
-            .into_iter()
-            .map(|(artist, mbid)| (artist.trim().to_ascii_lowercase(), mbid))
-            .collect();
         let mut albums = snapshot
             .albums
             .into_iter()
@@ -453,11 +459,16 @@ impl LibraryState {
             artist_navidrome_ids: HashMap::new(),
             artist_classification_statuses: HashMap::new(),
             artist_classification_signature: 0,
-            artist_appearance_album_keys,
-            artist_appearance_musicbrainz_ids,
-            artist_credit_ids: projection.credit_ids_by_identity,
-            artist_credit_labels: projection.credit_labels_by_identity,
-            artist_paired_label_ids: projection.paired_label_ids,
+            artist_appearance_album_keys: BTreeMap::new(),
+            artist_appearance_musicbrainz_ids: HashMap::new(),
+            artist_credit_ids: BTreeMap::new(),
+            artist_credit_labels: BTreeMap::new(),
+            artist_paired_label_ids: BTreeMap::new(),
+            artist_explicit_credit_albums: BTreeMap::new(),
+            artist_owner_keys: BTreeMap::new(),
+            artist_positioned_tracks: PositionedArtistTracks::new(),
+            artist_separator_regex: artist_separator_regex.to_string(),
+            artist_catalog_categories: BTreeMap::new(),
             artist_projection_cache: RefCell::new(None),
             fallback_track_identity_cache: RefCell::new(HashMap::new()),
             fallback_track_progress_cache: RefCell::new(HashMap::new()),
@@ -468,6 +479,41 @@ impl LibraryState {
             category_overrides,
             expanded_library_category: None,
         })
+    }
+
+    fn resolve_artist_catalog(&mut self) {
+        self.classify_artist_catalog_albums();
+        let projection = indexed_artist_catalog_projection(
+            &self.database_path, &self.artist_separator_regex,
+        ).unwrap_or_default();
+        self.artist_appearance_album_keys = projection.album_keys;
+        self.artist_appearance_musicbrainz_ids = projection.musicbrainz_ids.into_iter()
+            .map(|(name, mbid)| (name.trim().to_ascii_lowercase(), mbid)).collect();
+        self.artist_credit_ids = projection.credit_ids_by_identity;
+        self.artist_credit_labels = projection.credit_labels_by_identity;
+        self.artist_paired_label_ids = projection.paired_label_ids;
+        self.artist_explicit_credit_albums = projection.explicit_credit_albums;
+        self.artist_owner_keys = projection.owner_keys;
+        self.artist_positioned_tracks = projection.positioned_track_credits;
+        *self.artist_projection_cache.borrow_mut() = None;
+    }
+
+    fn classify_artist_catalog_albums(&mut self) {
+        self.artist_catalog_categories = self.albums.iter().map(|album| (
+            album.snapshot.album_key.clone(), self.catalog_album_category(album),
+        )).collect();
+        *self.artist_projection_cache.borrow_mut() = None;
+    }
+
+    fn catalog_album_category(&self, album: &AlbumEntry) -> AlbumLibraryGroup {
+        if !self.category_paths_configured && !self.category_overrides.contains_key(
+            &album.snapshot.album_key.to_ascii_lowercase()
+        ) {
+            // A library-only snapshot has no configured category roots.
+            AlbumLibraryGroup::Artist
+        } else {
+            self.album_library_group(album)
+        }
     }
 
     pub fn empty() -> Self {
@@ -500,6 +546,11 @@ impl LibraryState {
             artist_credit_ids: BTreeMap::new(),
             artist_credit_labels: BTreeMap::new(),
             artist_paired_label_ids: BTreeMap::new(),
+            artist_explicit_credit_albums: BTreeMap::new(),
+            artist_owner_keys: BTreeMap::new(),
+            artist_positioned_tracks: PositionedArtistTracks::new(),
+            artist_separator_regex: crate::config::DEFAULT_ARTIST_SEPARATOR_REGEX.to_string(),
+            artist_catalog_categories: BTreeMap::new(),
             artist_projection_cache: RefCell::new(None),
             fallback_track_identity_cache: RefCell::new(HashMap::new()),
             fallback_track_progress_cache: RefCell::new(HashMap::new()),
@@ -524,7 +575,7 @@ impl LibraryState {
         self.soundtracks_path = inherited(&config.library.soundtracks_path);
         self.curated_compilations_path = inherited(&config.library.curated_compilations_path);
         self.category_paths_configured = true;
-        *self.artist_projection_cache.borrow_mut() = None;
+        self.classify_artist_catalog_albums();
         self.artist_classification_signature = 0;
     }
 
@@ -533,7 +584,7 @@ impl LibraryState {
             .trim()
             .split(['/', '\\'])
             .filter(|part| !part.is_empty() && *part != ".")
-            .map(str::to_ascii_lowercase)
+            .map(|part| unicode_casefold::UnicodeCaseFold::case_fold(part).collect())
             .collect()
     }
 
@@ -651,7 +702,7 @@ impl LibraryState {
         if category.is_empty() {
             self.category_overrides
                 .remove(&album_key.to_ascii_lowercase());
-            *self.artist_projection_cache.borrow_mut() = None;
+            self.classify_artist_catalog_albums();
             self.artist_classification_signature = 0;
             return Ok("Automatic (use configured roots)".to_string());
         }
@@ -661,7 +712,7 @@ impl LibraryState {
             album_key.to_ascii_lowercase(),
             group.category_key().to_string(),
         );
-        *self.artist_projection_cache.borrow_mut() = None;
+        self.classify_artist_catalog_albums();
         self.artist_classification_signature = 0;
         Ok(group.category_label().to_string())
     }
@@ -805,34 +856,6 @@ impl LibraryState {
         }
     }
 
-    fn potential_collaboration_credits(value: &str) -> Vec<String> {
-        let normalized = value.replace(['\0', '\x1f'], "\x1f");
-        let mut seen = HashSet::new();
-        let explicit = normalized.contains('\x1f');
-        let parts = normalized
-            .split('\x1f')
-            .flat_map(|credit| {
-                if explicit {
-                    vec![credit]
-                } else {
-                    credit
-                        .split(" & ")
-                        .flat_map(|part| part.split(", "))
-                        .collect::<Vec<_>>()
-                }
-            })
-            .map(str::trim)
-            .filter(|part| !part.is_empty())
-            .filter(|part| seen.insert(artist_projection_identity(part)))
-            .map(str::to_string)
-            .collect::<Vec<_>>();
-        if parts.is_empty() {
-            vec![value.trim().to_string()]
-        } else {
-            parts
-        }
-    }
-
     /// Build non-destructive presentation aliases from durable local MBIDs.
     /// Album ownership, SQLite keys and per-track credits remain unchanged;
     /// only the visible Artist presentation consumes this connected mapping.
@@ -843,12 +866,11 @@ impl LibraryState {
         }
         for album in &self.albums {
             let identity = artist_projection_identity(&album.snapshot.artist);
-            let mbid = album.snapshot.artist_mbid.trim().to_ascii_lowercase();
             if !identity.is_empty()
-                && !mbid.is_empty()
                 && !Self::is_synthetic_album_artist(&album.snapshot.artist)
             {
-                ids_by_name.entry(identity).or_default().insert(mbid);
+                ids_by_name.entry(identity).or_default()
+                    .extend(catalog_ordered_mbids(&album.snapshot.artist_mbid));
             }
         }
         for artist in self.artist_appearance_album_keys.keys() {
@@ -859,7 +881,7 @@ impl LibraryState {
                 .map(|value| value.trim().to_ascii_lowercase())
                 .unwrap_or_default();
             if !identity.is_empty() && !mbid.is_empty() {
-                ids_by_name.entry(identity).or_default().insert(mbid);
+                ids_by_name.entry(identity).or_default().extend(catalog_ordered_mbids(&mbid));
             }
         }
 
@@ -984,271 +1006,105 @@ impl LibraryState {
         if let Some(cached) = self.artist_projection_cache.borrow().as_ref() {
             return cached.clone();
         }
-        let album_indices = self
-            .albums
-            .iter()
-            .enumerate()
-            .map(|(index, album)| (album.snapshot.album_key.to_ascii_lowercase(), index))
-            .collect::<HashMap<_, _>>();
+        let album_indices = self.albums.iter().enumerate().map(|(index, album)| {
+            (album.snapshot.album_key.to_ascii_lowercase(), index)
+        }).collect::<HashMap<_, _>>();
+        let categories = self.albums.iter().map(|album| {
+            self.artist_catalog_categories.get(&album.snapshot.album_key).copied()
+                .unwrap_or_else(|| self.catalog_album_category(album))
+        }).collect::<Vec<_>>();
 
-        let artist_group = |album: &AlbumEntry| {
-            if let Some(group) = self
-                .category_overrides
-                .get(&album.snapshot.album_key.to_ascii_lowercase())
-                .and_then(|value| AlbumLibraryGroup::from_category_key(value))
-            {
-                return group == AlbumLibraryGroup::Artist;
-            }
-            !self.category_paths_configured
-                || self.album_library_group(album) == AlbumLibraryGroup::Artist
-        };
         let aliases = self.artist_presentation_aliases();
+        let owner_evidence = self.albums.iter().enumerate().filter_map(|(index, album)| {
+            let owner = &album.snapshot.artist;
+            if Self::is_synthetic_album_artist(owner) {
+                return None;
+            }
+            let durable_key = self.artist_owner_keys.get(&album.snapshot.album_key)
+                .cloned()
+                .unwrap_or_else(|| artist_key(owner, &album.snapshot.artist_mbid));
+            Some((index, Self::presentation_identity(&aliases, owner), durable_key))
+        }).collect::<Vec<_>>();
 
-        // Artist membership is an indexed catalog decision. Navidrome may
-        // supply artwork and IDs later, but asynchronous provider hydration
-        // must never add, remove, or regroup file-list rows. A joined credit
-        // is expanded only when SQLite already contains independent evidence
-        // for one of its component Artists.
-        let indexed_identities = self
-            .albums
-            .iter()
-            .filter(|album| !Self::is_synthetic_album_artist(&album.snapshot.artist))
-            .map(|album| Self::presentation_identity(&aliases, &album.snapshot.artist))
-            .chain(
-                self.artist_appearance_album_keys
-                    .keys()
-                    .filter(|artist| !Self::is_synthetic_album_artist(artist))
-                    .map(|artist| Self::presentation_identity(&aliases, artist)),
-            )
-            .collect::<HashSet<_>>();
-
-        let mut owner_projections = HashMap::<usize, Vec<String>>::new();
-        let mut eligible_identities = HashSet::new();
-        for (index, album) in self
-            .albums
-            .iter()
-            .enumerate()
-            .filter(|(_, album)| artist_group(album))
-        {
-            if Self::is_synthetic_album_artist(&album.snapshot.artist) {
-                continue;
-            }
-            let owner = album.snapshot.artist.clone();
-            let parts = Self::potential_collaboration_credits(&owner);
-            let authoritative = owner.contains(['\0', '\x1f']);
-            let independently_known = parts.iter().any(|part| {
-                let identity = Self::presentation_identity(&aliases, part);
-                indexed_identities.contains(&identity)
-            });
-            let projection = if parts.len() > 1 && (authoritative || independently_known) {
-                parts
-            } else {
-                vec![owner]
-            };
-            for artist in &projection {
-                eligible_identities.insert(Self::presentation_identity(&aliases, artist));
-            }
-            owner_projections.insert(index, projection);
-        }
-
-        // A track credit may establish a Rob-style Artist only when it occurs
-        // on a real Artist release. V/A, OST, and curated-only credits enrich
-        // Artists established elsewhere but never manufacture new rows.
-        for (appearance_artist, album_keys) in &self.artist_appearance_album_keys {
-            if Self::is_synthetic_album_artist(appearance_artist) {
-                continue;
-            }
-            let has_artist_album = album_keys.iter().any(|album_key| {
-                album_indices
-                    .get(&album_key.to_ascii_lowercase())
-                    .is_some_and(|index| artist_group(&self.albums[*index]))
-            });
-            if !has_artist_album {
-                continue;
-            }
-            let parts = Self::potential_collaboration_credits(appearance_artist);
-            let authoritative = appearance_artist.contains(['\0', '\x1f']);
-            let appearance_has_single_mbid = self
-                .artist_appearance_musicbrainz_ids
-                .get(&appearance_artist.trim().to_ascii_lowercase())
-                .is_some_and(|value| !value.trim().is_empty());
-            let anchored = parts.iter().any(|part| {
-                let identity = Self::presentation_identity(&aliases, part);
-                indexed_identities.contains(&identity) || eligible_identities.contains(&identity)
-            });
-            let projection = if parts.len() > 1
-                && (authoritative || (!appearance_has_single_mbid && anchored))
-            {
-                parts
-            } else {
-                vec![appearance_artist.clone()]
-            };
-            for artist in projection {
-                eligible_identities.insert(Self::presentation_identity(&aliases, &artist));
+        let mut eligible_owned_albums = HashMap::<&str, BTreeSet<usize>>::new();
+        let mut eligible_by_label = HashMap::<String, BTreeSet<usize>>::new();
+        for (index, _, key) in &owner_evidence {
+            if categories[*index] == AlbumLibraryGroup::Artist {
+                eligible_owned_albums.entry(key.as_str()).or_default().insert(*index);
+                let label = &self.albums[*index].snapshot.artist;
+                eligible_by_label.entry(crate::media_database::artist_search_literal(label))
+                    .or_default().insert(*index);
             }
         }
 
-        // Track-credit projection owns the presentation name.  Album owners
-        // remain the durable SQLite authority for owned releases, but a
-        // punctuation-safe folder alias such as AC-DC must render as the
-        // authoritative tagged/MBID-backed AC/DC credit just as WebGUI does.
-        let mut owner_counts = HashMap::<(String, String), HashSet<usize>>::new();
-        for (index, projection) in &owner_projections {
-            for artist in projection {
-                owner_counts
-                    .entry((
-                        Self::presentation_identity(&aliases, artist),
-                        artist.to_lowercase(),
-                    ))
-                    .or_default()
-                    .insert(*index);
-            }
-        }
-        let mut display_names =
-            HashMap::new();
-        for (index, projection) in &owner_projections {
-            let mbid = self.albums[*index].snapshot.artist_mbid.trim();
-            for artist in projection {
-                let identity = Self::presentation_identity(&aliases, artist);
-                let owned_artist_albums = owner_counts
-                    .get(&(identity.clone(), artist.to_lowercase()))
-                    .map_or(0, HashSet::len);
-                Self::record_artist_display(
-                    &mut display_names,
-                    identity,
-                    artist,
-                    false,
-                    !mbid.is_empty(),
-                    owned_artist_albums,
-                    artist_key(artist, mbid),
-                );
-            }
-        }
-        for appearance_artist in self.artist_appearance_album_keys.keys() {
-            let parts = Self::potential_collaboration_credits(appearance_artist);
-            let authoritative = appearance_artist.contains(['\0', '\x1f']);
-            let appearance_has_single_mbid = self
-                .artist_appearance_musicbrainz_ids
-                .get(&appearance_artist.trim().to_ascii_lowercase())
-                .is_some_and(|value| !value.trim().is_empty());
-            let expanded = parts.len() > 1
-                && (authoritative
-                    || (!appearance_has_single_mbid
-                        && parts.iter().any(|part| {
-                            eligible_identities
-                                .contains(&Self::presentation_identity(&aliases, part))
-                        })));
-            for display in if expanded {
-                parts
-            } else {
-                vec![appearance_artist.clone()]
-            } {
-                let identity = Self::presentation_identity(&aliases, &display);
-                if !eligible_identities.contains(&identity) {
-                    continue;
-                }
-                let has_mbid = !expanded
-                    && self
-                        .artist_appearance_musicbrainz_ids
-                        .contains_key(&appearance_artist.trim().to_ascii_lowercase());
-                let mbid = self
-                    .artist_appearance_musicbrainz_ids
-                    .get(&appearance_artist.trim().to_ascii_lowercase())
-                    .map(String::as_str)
-                    .unwrap_or_default();
-                let owned_artist_albums = owner_counts
-                    .get(&(identity.clone(), display.to_lowercase()))
-                    .map_or(0, HashSet::len);
-                Self::record_artist_display(
-                    &mut display_names,
-                    identity,
-                    &display,
-                    has_mbid,
-                    false,
-                    owned_artist_albums,
-                    artist_key(&display, mbid),
-                );
-            }
-        }
-
-        for (label, ids) in &self.artist_paired_label_ids {
-            let identity = Self::presentation_identity(&aliases, label);
-            if ids.len() != 1 || !eligible_identities.contains(&identity) {
-                continue;
-            }
-            let owned_artist_albums = owner_counts
-                .get(&(identity.clone(), label.to_lowercase()))
-                .map_or(0, HashSet::len);
-            let mbid = ids.first().expect("one validated ID");
+        let mut displays = HashMap::new();
+        for (index, identity, key) in &owner_evidence {
+            let album = &self.albums[*index].snapshot;
             Self::record_artist_display(
-                &mut display_names,
-                identity,
-                label,
-                true,
-                false,
-                owned_artist_albums,
-                artist_key(label, mbid),
+                &mut displays, identity.clone(), &album.artist, false,
+                !album.artist_mbid.trim().is_empty(),
+                eligible_owned_albums.get(key.as_str()).map_or(0, BTreeSet::len),
+                key.clone(),
             );
         }
-
-        let mut values = BTreeMap::<String, Vec<usize>>::new();
-        for index in 0..self.albums.len() {
-            if let Some(parts) = owner_projections.get(&index) {
-                for part in parts {
-                    let identity = Self::presentation_identity(&aliases, part);
-                    let display = display_names
-                        .get(&identity)
-                        .map(|(_, display)| display.clone())
-                        .unwrap_or_else(|| part.clone());
-                    let indices = values.entry(display).or_default();
-                    if !indices.contains(&index) {
-                        indices.push(index);
-                    }
-                }
-                continue;
+        for (identity, labels) in &self.artist_credit_labels {
+            let group = aliases.get(identity).unwrap_or(identity);
+            for label in labels {
+                let paired = self.artist_paired_label_ids.get(label)
+                    .filter(|ids| ids.len() == 1).and_then(BTreeSet::first);
+                let literal = crate::media_database::artist_search_literal(label);
+                Self::record_artist_display(
+                    &mut displays, group.clone(), label, paired.is_some(), false,
+                    eligible_by_label.get(&literal).map_or(0, BTreeSet::len),
+                    paired.map_or_else(String::new, |id| artist_key(label, id)),
+                );
             }
         }
-        for (appearance_artist, album_keys) in &self.artist_appearance_album_keys {
-            if Self::is_synthetic_album_artist(appearance_artist) {
+        // The projection is already resolved. Association consumers must
+        // never reinterpret a joined label as another set of track credits.
+        let mut eligible = HashSet::new();
+        let mut associations = BTreeMap::<String, BTreeSet<usize>>::new();
+        for (index, identity, _) in owner_evidence {
+            if categories[index] == AlbumLibraryGroup::Artist {
+                eligible.insert(identity.clone());
+                associations.entry(identity).or_default().insert(index);
+            }
+        }
+        for (name, album_keys) in &self.artist_appearance_album_keys {
+            if Self::is_synthetic_album_artist(name) {
                 continue;
             }
-            let parts = Self::potential_collaboration_credits(appearance_artist);
-            let authoritative = appearance_artist.contains(['\0', '\x1f']);
-            let appearance_has_single_mbid = self
-                .artist_appearance_musicbrainz_ids
-                .get(&appearance_artist.trim().to_ascii_lowercase())
-                .is_some_and(|value| !value.trim().is_empty());
-            let expanded = parts.len() > 1
-                && (authoritative
-                    || (!appearance_has_single_mbid
-                        && parts.iter().any(|part| {
-                            eligible_identities
-                                .contains(&Self::presentation_identity(&aliases, part))
-                        })));
-            for display in if expanded {
-                parts
-            } else {
-                vec![appearance_artist.clone()]
-            } {
-                let appearance_identity = Self::presentation_identity(&aliases, &display);
-                if !eligible_identities.contains(&appearance_identity) {
+            let identity = artist_projection_identity(name);
+            let group = Self::presentation_identity(&aliases, name);
+            let explicit = self.artist_explicit_credit_albums.get(&identity);
+            let indexed = self.artist_credit_labels.contains_key(&identity);
+            for key in album_keys {
+                let Some(&index) = album_indices.get(&key.to_ascii_lowercase()) else {
                     continue;
+                };
+                if categories[index] == AlbumLibraryGroup::Artist
+                    && (explicit.is_some_and(|keys| keys.contains(key)) || !indexed)
+                {
+                    eligible.insert(group.clone());
                 }
-                let display = display_names
-                    .get(&appearance_identity)
-                    .map(|(_, display)| display.clone())
-                    .unwrap_or(display);
-                let indices = values.entry(display).or_default();
-                let mut known_indices = indices.iter().copied().collect::<HashSet<_>>();
-                for album_key in album_keys {
-                    if let Some(index) = album_indices.get(&album_key.to_ascii_lowercase())
-                        && known_indices.insert(*index)
-                    {
-                        indices.push(*index);
-                    }
-                }
+                associations.entry(group.clone()).or_default().insert(index);
+            }
+            if !indexed {
+                let paired = self.artist_appearance_musicbrainz_ids
+                    .get(&name.trim().to_ascii_lowercase());
+                Self::record_artist_display(
+                    &mut displays, group.clone(), name, paired.is_some(), false,
+                    eligible_by_label.get(&crate::media_database::artist_search_literal(name))
+                        .map_or(0, BTreeSet::len),
+                    paired.map_or_else(String::new, |id| artist_key(name, id)),
+                );
             }
         }
+        let values = associations.into_iter()
+            .filter(|(identity, _)| eligible.contains(identity))
+            .filter_map(|(identity, indices)| displays.remove(&identity)
+                .map(|(_, display)| (display, indices.into_iter().collect())))
+            .collect::<BTreeMap<_, _>>();
         *self.artist_projection_cache.borrow_mut() = Some(values.clone());
         values
     }
@@ -1293,6 +1149,12 @@ impl LibraryState {
                 continue;
             }
             result.album_keys.insert(entry.album_key.clone());
+            if let Some(tracks) = self.artist_positioned_tracks.get(&entry.album_key) {
+                let paths = tracks.iter().filter(|(_, credits)| credits.iter().any(|credit| {
+                    Self::presentation_identity(&aliases, &credit.name) == identity
+                })).map(|(path, _)| path.clone()).collect();
+                result.track_paths.insert(entry.album_key.clone(), paths);
+            }
             if !Self::is_synthetic_album_artist(&entry.artist)
                 && Self::presentation_identity(&aliases, &entry.artist) != identity
             {
@@ -1338,14 +1200,7 @@ impl LibraryState {
     }
 
     fn is_synthetic_album_artist(artist: &str) -> bool {
-        matches!(
-            artist
-                .trim()
-                .trim_matches(['[', ']'])
-                .to_ascii_lowercase()
-                .as_str(),
-            "soundtrack" | "soundtracks" | "various artist" | "various artists"
-        )
+        crate::media_database::synthetic_album_artist(artist)
     }
 
     fn artist_album_indices(&self, indices: &[usize]) -> Vec<usize> {
@@ -3416,7 +3271,12 @@ impl LibraryState {
         let soundtracks_path = self.soundtracks_path.clone();
         let curated_compilations_path = self.curated_compilations_path.clone();
         let expanded_library_category = self.expanded_library_category.clone();
-        let mut refreshed = Self::from_snapshot(snapshot)?;
+        let mut refreshed = Self::from_snapshot_evidence(snapshot, &self.artist_separator_regex)?;
+        refreshed.category_paths_configured = category_paths_configured;
+        refreshed.various_artist_path = various_artist_path;
+        refreshed.soundtracks_path = soundtracks_path;
+        refreshed.curated_compilations_path = curated_compilations_path;
+        refreshed.resolve_artist_catalog();
         refreshed.view = view;
         refreshed.status_filter = status_filter;
         refreshed.status_filters = status_filters;
@@ -3450,10 +3310,6 @@ impl LibraryState {
         refreshed.artist_artwork_paths = artist_artwork_paths;
         refreshed.album_artwork_paths = album_artwork_paths;
         refreshed.artist_navidrome_ids = artist_navidrome_ids;
-        refreshed.category_paths_configured = category_paths_configured;
-        refreshed.various_artist_path = various_artist_path;
-        refreshed.soundtracks_path = soundtracks_path;
-        refreshed.curated_compilations_path = curated_compilations_path;
         refreshed.expanded_library_category = expanded_library_category;
         if let (Some(old), Some(new)) = (focused_artist, refreshed_artist)
             && !old.eq_ignore_ascii_case(&new)
@@ -4062,11 +3918,12 @@ impl ApplicationState {
             Mode::Read => LaunchMode::Read,
             Mode::Write => LaunchMode::LiveWrite,
         };
-        let mut library = LibraryState::from_snapshot_with_separator(
+        let mut library = LibraryState::from_snapshot_evidence(
             snapshot,
             &config.scan.artist_separator_regex,
         )?;
         library.configure_library_categories(&config);
+        library.resolve_artist_catalog();
         let sources = candidate_source_card_names(&config)
             .into_iter()
             .map(|name| {

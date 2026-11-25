@@ -92,7 +92,7 @@ def _web_image_signing_key(access_token: str | None = None) -> bytes | None:
 # lexical sort and decodes ID3v2.3 slash-packed multi-value TPE1 frames using
 # their ordered MBID cardinality. Both corrections preserve the Windows
 # projection instead of manufacturing combined Featured Artist identities.
-MANAGED_TRACK_CREDIT_REFRESH_VERSION = 3
+MANAGED_TRACK_CREDIT_REFRESH_VERSION = 4
 
 
 def _prioritized_album_inventory(albums, large_album_track_threshold: int):
@@ -1046,6 +1046,18 @@ class Services:
             key=lambda p: p.name.casefold(),
         )
 
+    @staticmethod
+    def _publish_original_artist_credit(db, track, original):
+        if original is None:
+            return
+        now = tags.utc_now()
+        db.execute(
+            "INSERT INTO cache_entries(cache_key,cache_type,album_key,payload_json,created_at,updated_at) "
+            "VALUES(?,'art004-track',?,?,?,?) ON CONFLICT(cache_key) DO UPDATE SET "
+            "album_key=excluded.album_key,payload_json=excluded.payload_json,updated_at=excluded.updated_at",
+            ("art004:track:" + str(track["track_key"]), track["album_key"], json.dumps(original), now, now),
+        )
+
     def _upsert(self, db, table, row, key):
         columns = list(row)
         managed = windows_managed(db.raw, table, row.get(key))
@@ -1681,6 +1693,7 @@ class Services:
                             old_tracks,
                             force_read=True,
                             preserve_artist_positions=True,
+                            capture_original_artist_credit=True,
                             artist_separator_regex=separator_regex,
                             executor=metadata_executor,
                             progress=large_album_progress,
@@ -1759,6 +1772,7 @@ class Services:
                             old_tracks,
                             force_read=force_track_credit_read,
                             preserve_artist_positions=True,
+                            capture_original_artist_credit=True,
                             artist_separator_regex=separator_regex,
                             executor=metadata_executor,
                             preloaded=preloaded,
@@ -2021,7 +2035,10 @@ class Services:
                             raise ValueError(
                                 f"Track references the wrong Album: {track.get('path', '')}"
                             )
-                        self._upsert(db, "tracks", dict(track), "track_key")
+                        track = dict(track)
+                        original = track.pop("original_artist_credit", None)
+                        self._upsert(db, "tracks", track, "track_key")
+                        self._publish_original_artist_credit(db, track, original)
                     review = staged["review_payload"]
                     db.execute(
                         "DELETE FROM album_refresh_review_queue WHERE album_key=?",
@@ -2070,7 +2087,7 @@ class Services:
                     # Windows-owned identity and membership are immutable here;
                     # a Full Refresh may only refresh file-derived tag fields.
                     for track in staged["tracks_payload"]:
-                        db.raw.execute(
+                        updated = db.raw.execute(
                             "UPDATE tracks SET title=%s,artist_name=%s,"
                             "musicbrainz_recordingid=NULLIF(%s,''),"
                             "musicbrainz_artistid=NULLIF(%s,''),file_size=%s,"
@@ -2092,6 +2109,8 @@ class Services:
                                 album_key,
                             ),
                         )
+                        if updated.rowcount:
+                            self._publish_original_artist_credit(db, track, track.get("original_artist_credit"))
 
             removed = list(
                 db.raw.execute(
@@ -2127,6 +2146,10 @@ class Services:
                         stale["path"],
                     ),
                 )
+            db.execute(
+                "DELETE FROM cache_entries WHERE cache_type='art004-track' AND NOT EXISTS ("
+                "SELECT 1 FROM tracks WHERE tracks.track_key=substr(cache_entries.cache_key,14))"
+            )
             db.raw.execute(
                 "DELETE FROM artists WHERE NOT EXISTS "
                 "(SELECT 1 FROM albums WHERE albums.artist_key=artists.artist_key) "

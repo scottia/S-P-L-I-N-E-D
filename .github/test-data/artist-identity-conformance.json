@@ -14,8 +14,45 @@
     ],
     "expected_owner_key": "tag:local owner",
     "expected_artist_names": ["A$AP Rocky", "Local Owner"],
-    "literal_artist_query": "$"
+    "literal_artist_query": "$",
+    "positioned_credits": [
+      ["A$AP Rocky", 0, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", true],
+      ["A$AP Rocky", 1, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", true],
+      ["Local Owner", 2, "cccccccc-cccc-4ccc-8ccc-cccccccccccc", true]
+    ]
   },
+  "positioned_credit_cases": [
+    {
+      "id": "raw-owner-name-anchors-ampersand",
+      "value": "Earth & Sky",
+      "artist_mbids": "",
+      "owner": "Earth & Sky",
+      "separator_regex": "(?i) & ",
+      "title": "Title",
+      "filename": "01 - Independent Guest - Title",
+      "expected": [["Earth & Sky", 0, null, true], ["Independent Guest", null, null, false]]
+    },
+    {
+      "id": "mismatched-native-values-preserve-order-without-paired-ids",
+      "value": "Owner\u001fGuest\u001fOwner",
+      "artist_mbids": "55555555-5555-4555-8555-555555555555; 66666666-6666-4666-8666-666666666666",
+      "owner": "Owner",
+      "separator_regex": "(?i) & ",
+      "title": "Title",
+      "filename": "01 - Another Guest - Title",
+      "expected": [["Owner", 0, null, true], ["Guest", 1, null, true], ["Owner", 2, null, true]]
+    },
+    {
+      "id": "mismatched-tagged-featured-credits-have-no-positions",
+      "value": "Owner feat. Guest feat. Second Guest",
+      "artist_mbids": "55555555-5555-4555-8555-555555555555",
+      "owner": "Owner",
+      "separator_regex": "(?i) feat\\. ",
+      "title": "Title",
+      "filename": "01",
+      "expected": [["Owner", null, null, true], ["Guest feat. Second Guest", null, null, true]]
+    }
+  ],
   "credit_cases": [
     {
       "id": "explicit-trio",
@@ -78,6 +115,12 @@
       "presentation_identity": "acdc",
       "matches": ["/", "AC/DC", "AC-DC", "ACDC"],
       "rejects": ["$", "Beyoncé"]
+    },
+    {
+      "name": "אְב",
+      "presentation_identity": "אב",
+      "matches": ["אב"],
+      "rejects": ["$"]
     }
   ],
   "presentation_cases": [
