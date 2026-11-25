@@ -742,6 +742,7 @@ impl ScanController {
                 .clone();
             let reset = reset_media_database(&config)?;
             let empty = MediaSnapshot {
+                artist_catalog: None,
                 schema_version: SCHEMA_VERSION,
                 database_path: reset.database_path.to_string_lossy().into_owned(),
                 canonical_root: config.library.music_library.clone(),
@@ -1004,6 +1005,7 @@ mod tests {
 
     fn state_without_selection() -> ApplicationState {
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: crate::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),

@@ -92,7 +92,7 @@ def _web_image_signing_key(access_token: str | None = None) -> bytes | None:
 # lexical sort and decodes ID3v2.3 slash-packed multi-value TPE1 frames using
 # their ordered MBID cardinality. Both corrections preserve the Windows
 # projection instead of manufacturing combined Featured Artist identities.
-MANAGED_TRACK_CREDIT_REFRESH_VERSION = 4
+MANAGED_TRACK_CREDIT_REFRESH_VERSION = 5
 
 
 def _prioritized_album_inventory(albums, large_album_track_threshold: int):
@@ -2956,20 +2956,19 @@ class Services:
     def write_artist(self, payload):
         self.runtime.require_write()
         artist_id = str(payload.get("artist_id", ""))
-        artist = self.catalog.artist(artist_id)
-        with closing(self.runtime.database.connect()) as db:
-            _canonical, aliases = self.catalog._artist_identity_rows(db, artist_id)
-            alias_ids = [str(row["artist_key"]) for row in aliases]
-            placeholders = ",".join("?" for _ in alias_ids)
-            rows = list(
-                db.execute(
-                    "SELECT albums.path,albums.musicbrainz_albumid,artists.artist_name,"
-                    "artists.musicbrainz_artistid FROM albums JOIN artists ON "
-                    "artists.artist_key=albums.artist_key WHERE albums.artist_key "
-                    f"IN ({placeholders})",
-                    tuple(alias_ids),
-                )
+        artist = self.catalog.artist(artist_id, require_eligible=True)
+        with closing(self.catalog._connect_artist_catalog()) as db:
+            owner_inputs = self.catalog._artist_owner_inputs(db)
+            _canonical, aliases = self.catalog._artist_identity_rows(
+                db, artist_id, require_eligible=True, album_inputs=owner_inputs,
             )
+            physical_owners = {
+                row["art004_album_key"]: row for row in aliases if "art004_album_key" in row
+            }
+            rows = [
+                {**row, "musicbrainz_artistid": physical_owners[row["album_key"]]["musicbrainz_artistid"]}
+                for row in owner_inputs if row["album_key"] in physical_owners
+            ]
         targets = artist_targets(
             [
                 ArtistAlbum(

@@ -157,6 +157,28 @@ test("Artist search renders an existing list and accepts a server-resolved alias
   assert.equal(getElement("artistCount").textContent, "1 shown");
 });
 
+test("Artist search waits for a complete inventory before replacing existing rows", async () => {
+  const state = {
+    libraryMode: "artists", artistQuery: "", listRequest: 0,
+    libraryReady: true, artists: [{id: "old"}], artist: {id: "selected"},
+    artistProjectionRetry: 0,
+  };
+  const responses = [{projection_pending: true}, [{id: "current"}]];
+  let retry;
+  const sources = between(appSource, "function scheduleArtistProjectionRefresh", "async function hydrateArtistThumbnails");
+  const context = load(sources, {
+    state, api: async () => responses.shift(),
+    renderLibrary() {}, chooseArtist: async () => {}, setStatus() {},
+    window: {setTimeout(callback) { retry = callback; return 1; }},
+  });
+  await context.loadLibrary("current");
+  assert.equal(state.artists[0].id, "old");
+  assert.equal(state.libraryLoading, false);
+  await retry();
+  assert.equal(state.artists[0].id, "current");
+  assert.equal(state.artistProjectionRetry, 0);
+});
+
 function between(source, start, end) {
   const first = source.indexOf(start);
   const last = source.indexOf(end, first + start.length);

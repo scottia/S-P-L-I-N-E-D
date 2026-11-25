@@ -90,6 +90,17 @@ class Connection:
         statement, params = policy_sql(statement, params)
         return Cursor(self.raw.execute(statement, params or None))
 
+    @staticmethod
+    def comp_album_artist_evidence() -> str:
+        """Supply legacy local COMP evidence without using it as Album identity."""
+        first_id = "lower(substr(trim(representative.musicbrainz_artistid),1,36))"
+        return (
+            "COALESCE(NULLIF(trim(ar.musicbrainz_artistid),''),"
+            f"(SELECT min({first_id}) FROM tracks representative "
+            "WHERE representative.album_key=al.album_key AND representative.path=al.representative_file "
+            f"HAVING count(DISTINCT {first_id})=1))"
+        )
+
     def executemany(self, statement: str, rows):
         rows = list(rows)
         if not rows:

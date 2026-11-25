@@ -5,3 +5,4 @@ requests==2.34.2
 Pillow==13.0.0
 mutagen==1.48.1
 tomlkit==0.15.2
+unicodedata2==18.0.0

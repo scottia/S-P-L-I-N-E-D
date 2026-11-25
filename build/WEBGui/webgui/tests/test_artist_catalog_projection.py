@@ -755,6 +755,7 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                 db.commit()
 
             app = PreviewApp(root, database, root, credentials, cache=root / "cache")
+            app.category_overrides["billboard"] = "fallback"
             listed = app.artists("")[0]
             self.assertEqual(listed["albums"], 1)
             # The fallback Album remains excluded from the Album count, but
@@ -915,6 +916,7 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                 db.commit()
 
             app = PreviewApp(root, database, root, credentials, cache=root / "cache")
+            app.category_overrides["hidden"] = "fallback"
             self.assertEqual(app.artists("")[0]["albums"], 2)
             artist = app.artist("aaron")
             self.assertEqual(
@@ -1357,6 +1359,11 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                 return {"searchResult3": {"song": songs}}
 
             app._navidrome_call = navidrome
+            app.category_overrides.update({
+                "comp": "fallback",
+                "soundtrack": "soundtracks",
+                "various": "various-artists",
+            })
 
             listed = [item for item in app.artists("") if item["name"].casefold().endswith("nsync")]
             self.assertEqual(len(listed), 1)
@@ -1475,6 +1482,7 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                 db.commit()
 
             app = PreviewApp(root, database, root, credentials, cache=root / "cache")
+            app.category_overrides["comp"] = "fallback"
             target_list_row = next(
                 item for item in app.artists("") if item["name"] == "Target Artist"
             )

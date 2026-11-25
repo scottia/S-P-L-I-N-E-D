@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 import splined as core
-from webgui.catalog import ASSETS
+from webgui.catalog import ASSETS, ArtistProjectionPending
 from webgui.database import Database
 from webgui.runtime import Runtime
 from webgui.services import Services, _web_image_signing_key
@@ -1031,9 +1031,10 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
     @app.get("/api/artists")
     def artists(q: str = ""):
         runtime = context.require()
-        return runtime.catalog.artists(
-            q, nonblocking_projection=context.start_worker
-        )
+        try:
+            return runtime.catalog.artists(q, nonblocking_projection=context.start_worker)
+        except ArtistProjectionPending:
+            return JSONResponse({"projection_pending": True}, status_code=202)
 
     @app.get("/api/artists/thumbnails")
     def artist_thumbnails():
@@ -1074,12 +1075,12 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
 
     @app.get("/api/artist")
     def artist(id: str):
-        return context.require().catalog.artist(id)
+        return context.require().catalog.artist(id, require_eligible=True)
 
     @app.get("/api/artist/overview")
     def artist_overview(id: str):
         catalog = context.require().catalog
-        artist = catalog.artist(id)
+        artist = catalog.artist(id, require_eligible=True)
         artist_id = str(artist["id"])
         return {
             "artist": artist,

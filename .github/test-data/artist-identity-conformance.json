@@ -19,7 +19,17 @@
       ["A$AP Rocky", 0, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", true],
       ["A$AP Rocky", 1, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", true],
       ["Local Owner", 2, "cccccccc-cccc-4ccc-8ccc-cccccccccccc", true]
-    ]
+    ],
+    "owner_label_evidence": {
+      "artist_mbid": "d0000000-0000-4000-8000-000000000001",
+      "expected_display": "Stage Owner",
+      "literal_alias": "Alias?",
+      "albums": [
+        ["Alpha Record", "Stage Owner", ""],
+        ["Beta Record", "Stage Owner", "d0000000-0000-4000-8000-000000000002"],
+        ["Gamma Record", "Alias? Long Name", "d0000000-0000-4000-8000-000000000003"]
+      ]
+    }
   },
   "positioned_credit_cases": [
     {
@@ -121,6 +131,12 @@
       "presentation_identity": "אב",
       "matches": ["אב"],
       "rejects": ["$"]
+    },
+    {
+      "name": "Ა",
+      "presentation_identity": "ა",
+      "matches": ["ა", "Ა"],
+      "rejects": ["a"]
     }
   ],
   "presentation_cases": [

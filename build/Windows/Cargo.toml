@@ -39,7 +39,7 @@ slint = { version = "=1.18.1", default-features = false, features = ["std", "bac
 tempfile = "3.27.0"
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 toml = "1.1.5"
-unicode-normalization = "0.1.25"
+unicode-normalization = "=0.1.26"
 unicode-casefold = "0.2.0"
 sqlx = { version = "0.8.6", default-features = false, features = ["postgres", "runtime-tokio-rustls"] }
 url = "2.5.8"

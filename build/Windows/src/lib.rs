@@ -1,4 +1,5 @@
 pub mod application;
+mod artist_unicode;
 pub mod artwork_integrity;
 pub mod backup;
 pub mod candidate;

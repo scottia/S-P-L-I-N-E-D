@@ -8,7 +8,7 @@ use crate::config::{Config, Mode, configured_samples_dir, resolve_sources};
 use crate::inspect::inspect_image;
 use crate::media_database::{
     IndexedArtistAppearances, MediaAlbumSnapshot, MediaSnapshot, MediaTrackSnapshot,
-    PositionedArtistTracks, artist_display_sort_key, artist_key, artist_projection_identity,
+    ArtistCatalogInventory, ArtistOwnerLabel, PositionedArtistTracks, artist_display_sort_key, artist_key, artist_projection_identity,
     artist_search_matches, catalog_ordered_mbids,
     indexed_artist_catalog_projection,
     load_album_category_overrides,
@@ -327,6 +327,7 @@ pub struct LibraryState {
     /// A running COMP batch uses this to stop even if the newly selected
     /// track also happened to be in its original queue.
     pub selection_epoch: u64,
+    pub artist_inventory_revision: u64,
     /// Read-only artwork projected from Navidrome into the Windows UI. These
     /// paths always point at SPLINED's local thumbnail cache; the music
     /// library and Navidrome storage are never modified.
@@ -353,6 +354,8 @@ pub struct LibraryState {
     artist_paired_label_ids: BTreeMap<String, BTreeSet<String>>,
     artist_explicit_credit_albums: BTreeMap<String, BTreeSet<String>>,
     artist_owner_keys: BTreeMap<String, String>,
+    artist_owner_labels: BTreeMap<String, ArtistOwnerLabel>,
+    pending_artist_inventory: Option<ArtistCatalogInventory>,
     artist_positioned_tracks: PositionedArtistTracks,
     artist_separator_regex: String,
     artist_catalog_categories: BTreeMap<String, AlbumLibraryGroup>,
@@ -395,8 +398,10 @@ impl LibraryState {
                 snapshot.schema_version
             ));
         }
-        let category_overrides =
-            load_album_category_overrides(&snapshot.database_path).unwrap_or_default();
+        let mut pending_artist_inventory = snapshot.artist_catalog;
+        let category_overrides = pending_artist_inventory.as_mut()
+            .map(|inventory| std::mem::take(&mut inventory.overrides))
+            .unwrap_or_else(|| load_album_category_overrides(&snapshot.database_path).unwrap_or_default());
         let mut albums = snapshot
             .albums
             .into_iter()
@@ -454,6 +459,7 @@ impl LibraryState {
             selected_compilation_track_paths: BTreeSet::new(),
             artist_run_scope_active: false,
             selection_epoch: 0,
+            artist_inventory_revision: 0,
             artist_artwork_paths: HashMap::new(),
             album_artwork_paths,
             artist_navidrome_ids: HashMap::new(),
@@ -466,6 +472,8 @@ impl LibraryState {
             artist_paired_label_ids: BTreeMap::new(),
             artist_explicit_credit_albums: BTreeMap::new(),
             artist_owner_keys: BTreeMap::new(),
+            artist_owner_labels: BTreeMap::new(),
+            pending_artist_inventory,
             artist_positioned_tracks: PositionedArtistTracks::new(),
             artist_separator_regex: artist_separator_regex.to_string(),
             artist_catalog_categories: BTreeMap::new(),
@@ -483,8 +491,9 @@ impl LibraryState {
 
     fn resolve_artist_catalog(&mut self) {
         self.classify_artist_catalog_albums();
-        let projection = indexed_artist_catalog_projection(
-            &self.database_path, &self.artist_separator_regex,
+        let projection = self.pending_artist_inventory.take().map_or_else(
+            || indexed_artist_catalog_projection(&self.database_path, &self.artist_separator_regex),
+            |inventory| inventory.project(&self.artist_separator_regex),
         ).unwrap_or_default();
         self.artist_appearance_album_keys = projection.album_keys;
         self.artist_appearance_musicbrainz_ids = projection.musicbrainz_ids.into_iter()
@@ -494,6 +503,7 @@ impl LibraryState {
         self.artist_paired_label_ids = projection.paired_label_ids;
         self.artist_explicit_credit_albums = projection.explicit_credit_albums;
         self.artist_owner_keys = projection.owner_keys;
+        self.artist_owner_labels = projection.owner_labels;
         self.artist_positioned_tracks = projection.positioned_track_credits;
         *self.artist_projection_cache.borrow_mut() = None;
     }
@@ -536,6 +546,7 @@ impl LibraryState {
             selected_compilation_track_paths: BTreeSet::new(),
             artist_run_scope_active: false,
             selection_epoch: 0,
+            artist_inventory_revision: 0,
             artist_artwork_paths: HashMap::new(),
             album_artwork_paths: HashMap::new(),
             artist_navidrome_ids: HashMap::new(),
@@ -548,6 +559,8 @@ impl LibraryState {
             artist_paired_label_ids: BTreeMap::new(),
             artist_explicit_credit_albums: BTreeMap::new(),
             artist_owner_keys: BTreeMap::new(),
+            artist_owner_labels: BTreeMap::new(),
+            pending_artist_inventory: None,
             artist_positioned_tracks: PositionedArtistTracks::new(),
             artist_separator_regex: crate::config::DEFAULT_ARTIST_SEPARATOR_REGEX.to_string(),
             artist_catalog_categories: BTreeMap::new(),
@@ -584,7 +597,7 @@ impl LibraryState {
             .trim()
             .split(['/', '\\'])
             .filter(|part| !part.is_empty() && *part != ".")
-            .map(|part| unicode_casefold::UnicodeCaseFold::case_fold(part).collect())
+            .map(crate::artist_unicode::casefold)
             .collect()
     }
 
@@ -703,6 +716,7 @@ impl LibraryState {
             self.category_overrides
                 .remove(&album_key.to_ascii_lowercase());
             self.classify_artist_catalog_albums();
+            self.artist_inventory_revision = self.artist_inventory_revision.wrapping_add(1);
             self.artist_classification_signature = 0;
             return Ok("Automatic (use configured roots)".to_string());
         }
@@ -713,6 +727,7 @@ impl LibraryState {
             group.category_key().to_string(),
         );
         self.classify_artist_catalog_albums();
+        self.artist_inventory_revision = self.artist_inventory_revision.wrapping_add(1);
         self.artist_classification_signature = 0;
         Ok(group.category_label().to_string())
     }
@@ -865,12 +880,11 @@ impl LibraryState {
             ids_by_name.entry(identity.clone()).or_default().extend(ids.iter().cloned());
         }
         for album in &self.albums {
-            let identity = artist_projection_identity(&album.snapshot.artist);
-            if !identity.is_empty()
-                && !Self::is_synthetic_album_artist(&album.snapshot.artist)
-            {
+            let (label, mbids) = self.artist_owner_label(album);
+            let identity = artist_projection_identity(label);
+            if !label.is_empty() && !Self::is_synthetic_album_artist(label) {
                 ids_by_name.entry(identity).or_default()
-                    .extend(catalog_ordered_mbids(&album.snapshot.artist_mbid));
+                    .extend(catalog_ordered_mbids(mbids));
             }
         }
         for artist in self.artist_appearance_album_keys.keys() {
@@ -880,7 +894,7 @@ impl LibraryState {
                 .get(&artist.trim().to_ascii_lowercase())
                 .map(|value| value.trim().to_ascii_lowercase())
                 .unwrap_or_default();
-            if !identity.is_empty() && !mbid.is_empty() {
+            if !artist.is_empty() && !mbid.is_empty() {
                 ids_by_name.entry(identity).or_default().extend(catalog_ordered_mbids(&mbid));
             }
         }
@@ -950,6 +964,13 @@ impl LibraryState {
         aliases.get(&identity).cloned().unwrap_or(identity)
     }
 
+    fn artist_owner_label<'a>(&'a self, album: &'a AlbumEntry) -> (&'a str, &'a str) {
+        self.artist_owner_labels.get(&album.snapshot.album_key)
+            .map_or((&album.snapshot.artist, &album.snapshot.artist_mbid), |evidence| {
+                (&evidence.name, &evidence.mbid)
+            })
+    }
+
     fn record_artist_display(
         displays: &mut HashMap<String, ((bool, bool, usize, String, String, String, String), String)>,
         identity: String,
@@ -988,7 +1009,7 @@ impl LibraryState {
         for name in self
             .albums
             .iter()
-            .map(|album| album.snapshot.artist.as_str())
+            .map(|album| self.artist_owner_label(album).0)
             .chain(self.artist_appearance_album_keys.keys().map(String::as_str))
         {
             if Self::is_synthetic_album_artist(name) {
@@ -1016,34 +1037,37 @@ impl LibraryState {
 
         let aliases = self.artist_presentation_aliases();
         let owner_evidence = self.albums.iter().enumerate().filter_map(|(index, album)| {
-            let owner = &album.snapshot.artist;
+            let (owner, ids) = self.artist_owner_label(album);
             if Self::is_synthetic_album_artist(owner) {
                 return None;
             }
             let durable_key = self.artist_owner_keys.get(&album.snapshot.album_key)
                 .cloned()
-                .unwrap_or_else(|| artist_key(owner, &album.snapshot.artist_mbid));
+                .unwrap_or_else(|| artist_key(owner, ids));
             Some((index, Self::presentation_identity(&aliases, owner), durable_key))
         }).collect::<Vec<_>>();
 
-        let mut eligible_owned_albums = HashMap::<&str, BTreeSet<usize>>::new();
+        let mut eligible_owned_albums = HashMap::<(&str, String), BTreeSet<usize>>::new();
         let mut eligible_by_label = HashMap::<String, BTreeSet<usize>>::new();
         for (index, _, key) in &owner_evidence {
             if categories[*index] == AlbumLibraryGroup::Artist {
-                eligible_owned_albums.entry(key.as_str()).or_default().insert(*index);
-                let label = &self.albums[*index].snapshot.artist;
-                eligible_by_label.entry(crate::media_database::artist_search_literal(label))
+                let label = crate::media_database::artist_search_literal(
+                    self.artist_owner_label(&self.albums[*index]).0
+                );
+                eligible_owned_albums.entry((key.as_str(), label.clone())).or_default().insert(*index);
+                eligible_by_label.entry(label)
                     .or_default().insert(*index);
             }
         }
 
         let mut displays = HashMap::new();
         for (index, identity, key) in &owner_evidence {
-            let album = &self.albums[*index].snapshot;
+            let (label, ids) = self.artist_owner_label(&self.albums[*index]);
+            let literal = crate::media_database::artist_search_literal(label);
             Self::record_artist_display(
-                &mut displays, identity.clone(), &album.artist, false,
-                !album.artist_mbid.trim().is_empty(),
-                eligible_owned_albums.get(key.as_str()).map_or(0, BTreeSet::len),
+                &mut displays, identity.clone(), label, false,
+                !catalog_ordered_mbids(ids).is_empty(),
+                eligible_owned_albums.get(&(key.as_str(), literal)).map_or(0, BTreeSet::len),
                 key.clone(),
             );
         }
@@ -1145,7 +1169,7 @@ impl LibraryState {
         let mut result = IndexedArtistAppearances::default();
         for album in &self.albums {
             let entry = &album.snapshot;
-            if entry.album_mbid.is_empty() || !album_keys.contains(entry.album_key.as_str()) {
+            if !album_keys.contains(entry.album_key.as_str()) {
                 continue;
             }
             result.album_keys.insert(entry.album_key.clone());
@@ -1155,8 +1179,9 @@ impl LibraryState {
                 })).map(|(path, _)| path.clone()).collect();
                 result.track_paths.insert(entry.album_key.clone(), paths);
             }
-            if !Self::is_synthetic_album_artist(&entry.artist)
-                && Self::presentation_identity(&aliases, &entry.artist) != identity
+            let owner = self.artist_owner_label(album).0;
+            if !Self::is_synthetic_album_artist(owner)
+                && Self::presentation_identity(&aliases, owner) != identity
             {
                 result.featured_album_keys.insert(entry.album_key.clone());
             }
@@ -1207,7 +1232,7 @@ impl LibraryState {
         indices
             .iter()
             .copied()
-            .filter(|index| !self.is_curated_fallback(&self.albums[*index]))
+            .filter(|index| self.catalog_album_category(&self.albums[*index]) != AlbumLibraryGroup::Fallback)
             .collect()
     }
 
@@ -1871,7 +1896,7 @@ impl LibraryState {
                     rows.push(LibraryRow {
                         key: artist.clone(),
                         primary: artist.clone(),
-                        secondary: format!("( {} Albums )", visible.len()),
+                        secondary: format!("( {} Albums )", artist_album_indices.len()),
                         status: state.label().to_string(),
                         artwork_path: self
                             .artist_artwork_paths
@@ -1887,7 +1912,7 @@ impl LibraryState {
                         eligible: artist_album_indices
                             .iter()
                             .any(|index| self.albums[*index].eligible_by_default()),
-                        album_count: visible.len(),
+                        album_count: artist_album_indices.len(),
                     });
                     if expanded {
                         rows.extend(visible.into_iter().map(|index| {
@@ -2544,17 +2569,19 @@ impl LibraryState {
     }
 
     pub fn focus_artist(&mut self, artist: &str) -> bool {
+        let aliases = self.artist_presentation_aliases();
+        let identity = Self::presentation_identity(&aliases, artist);
         let canonical = self
             .artists()
             .into_keys()
-            .find(|name| name.eq_ignore_ascii_case(artist));
+            .find(|name| Self::presentation_identity(&aliases, name) == identity);
         let Some(canonical) = canonical else {
             return false;
         };
         if self
             .focused_artist
             .as_deref()
-            .is_some_and(|focused| !focused.eq_ignore_ascii_case(artist))
+            .is_some_and(|focused| focused != canonical)
         {
             self.selection_epoch = self.selection_epoch.wrapping_add(1);
         }
@@ -3263,6 +3290,7 @@ impl LibraryState {
         let selected_compilation_track_paths = self.selected_compilation_track_paths.clone();
         let artist_run_scope_active = self.artist_run_scope_active;
         let selection_epoch = self.selection_epoch;
+        let artist_inventory_revision = self.artist_inventory_revision;
         let artist_artwork_paths = self.artist_artwork_paths.clone();
         let album_artwork_paths = self.album_artwork_paths.clone();
         let artist_navidrome_ids = self.artist_navidrome_ids.clone();
@@ -3287,26 +3315,28 @@ impl LibraryState {
         let refreshed_artist = focused_artist
             .as_deref()
             .and_then(|artist| {
-                refreshed
-                    .artists()
-                    .into_keys()
-                    .find(|candidate| candidate.eq_ignore_ascii_case(artist))
-            })
-            .or_else(|| {
-                focused_artist_anchor.as_deref().and_then(|key| {
-                    refreshed
-                        .albums
-                        .iter()
-                        .find(|album| album.snapshot.album_key.eq_ignore_ascii_case(key))
-                        .map(|album| album.snapshot.artist.clone())
+                let refreshed_groups = refreshed.artists();
+                let refreshed_aliases = refreshed.artist_presentation_aliases();
+                let presentation = Self::presentation_identity(&refreshed_aliases, artist);
+                refreshed_groups.keys().find(|candidate| {
+                    Self::presentation_identity(&refreshed_aliases, candidate) == presentation
+                }).cloned()
+                .or_else(|| {
+                    let key = focused_artist_anchor.as_deref()?;
+                    let index = refreshed.albums.iter().position(|album| {
+                        album.snapshot.album_key.eq_ignore_ascii_case(key)
+                    })?;
+                    refreshed_groups.iter().find(|(_, indices)| indices.contains(&index))
+                        .map(|(name, _)| name.clone())
                 })
             });
-        refreshed.focused_artist = refreshed_artist.clone().or(focused_artist.clone());
+        refreshed.focused_artist = refreshed_artist.clone();
         refreshed.focused_album_key = focused_album_key;
         refreshed.completed_fallback_return_key = completed_fallback_return_key;
         refreshed.selected_compilation_track_paths = selected_compilation_track_paths;
         refreshed.artist_run_scope_active = artist_run_scope_active;
         refreshed.selection_epoch = selection_epoch;
+        refreshed.artist_inventory_revision = artist_inventory_revision.wrapping_add(1);
         refreshed.artist_artwork_paths = artist_artwork_paths;
         refreshed.album_artwork_paths = album_artwork_paths;
         refreshed.artist_navidrome_ids = artist_navidrome_ids;
@@ -6321,6 +6351,7 @@ mod tests {
 
     fn library() -> LibraryState {
         LibraryState::from_snapshot(MediaSnapshot {
+            artist_catalog: None,
             schema_version: crate::media_database::SCHEMA_VERSION,
             database_path: "splined.db".to_string(),
             canonical_root: "/music".to_string(),
@@ -6352,6 +6383,7 @@ mod tests {
         let mut fallback = album("fallback", "Alpha", "Compilation", "processed");
         fallback.cover_path = r"C:\Music\Alpha\Compilation\cover.jpg".to_string();
         let state = LibraryState::from_snapshot(MediaSnapshot {
+            artist_catalog: None,
             schema_version: crate::media_database::SCHEMA_VERSION,
             database_path: "splined.db".to_string(),
             canonical_root: "/music".to_string(),
@@ -6387,6 +6419,7 @@ mod tests {
         let mut ordinary = album("artist", "Alpha", "Release", "unprocessed");
         ordinary.album_mbid = "release-artist".to_string();
         let mut state = LibraryState::from_snapshot(MediaSnapshot {
+            artist_catalog: None,
             schema_version: crate::media_database::SCHEMA_VERSION,
             database_path: "splined.db".to_string(),
             canonical_root: "/music".to_string(),
@@ -6468,6 +6501,7 @@ mod tests {
         ApplicationState::new(
             Config::default(),
             MediaSnapshot {
+                artist_catalog: None,
                 schema_version: crate::media_database::SCHEMA_VERSION,
                 database_path: "splined.db".to_string(),
                 canonical_root: "/music".to_string(),
@@ -6510,6 +6544,7 @@ mod tests {
         knowles.album_mbid = "release-knowles".to_string();
         knowles.artist_mbid = beyonce.artist_mbid.clone();
         let mut state = LibraryState::from_snapshot(MediaSnapshot {
+            artist_catalog: None,
             schema_version: crate::media_database::SCHEMA_VERSION,
             database_path: "splined.db".to_string(),
             canonical_root: "/music".to_string(),
@@ -6546,6 +6581,7 @@ mod tests {
         second.album_mbid = "release-two".to_string();
         second.artist_mbid = "artist-two".to_string();
         let state = LibraryState::from_snapshot(MediaSnapshot {
+            artist_catalog: None,
             schema_version: crate::media_database::SCHEMA_VERSION,
             database_path: "splined.db".to_string(),
             canonical_root: "/music".to_string(),
@@ -6579,6 +6615,7 @@ mod tests {
                 }
             }
             let mut state = LibraryState::from_snapshot(MediaSnapshot {
+                artist_catalog: None,
                 schema_version: crate::media_database::SCHEMA_VERSION,
                 database_path: "splined.db".to_string(),
                 canonical_root: "/music".to_string(),
@@ -6676,6 +6713,7 @@ mod tests {
             })
             .collect();
         let state = LibraryState::from_snapshot(MediaSnapshot {
+            artist_catalog: None,
             schema_version: crate::media_database::SCHEMA_VERSION,
             database_path: "splined.db".to_string(),
             canonical_root: "/music".to_string(),
@@ -6713,6 +6751,7 @@ mod tests {
         release.album_mbid = "release-id".to_string();
         let fallback = album("fallback", "Various Artists", "Compilation", "unprocessed");
         let mut state = LibraryState::from_snapshot(MediaSnapshot {
+            artist_catalog: None,
             schema_version: crate::media_database::SCHEMA_VERSION,
             database_path: "splined.db".to_string(),
             canonical_root: "/music".to_string(),
@@ -6876,6 +6915,7 @@ mod tests {
         albums[0].compilation_tracks[0].embedded_artwork_recorded = false;
         state
             .replace_snapshot(MediaSnapshot {
+                artist_catalog: None,
                 schema_version: crate::media_database::SCHEMA_VERSION,
                 database_path: "splined.db".to_string(),
                 canonical_root: "/music".to_string(),
@@ -6914,6 +6954,7 @@ mod tests {
         }];
         state
             .replace_snapshot(MediaSnapshot {
+                artist_catalog: None,
                 schema_version: crate::media_database::SCHEMA_VERSION,
                 database_path: "splined.db".to_string(),
                 canonical_root: "/music".to_string(),
@@ -7070,7 +7111,8 @@ mod tests {
             .into_iter()
             .find(|row| row.primary == "Alpha")
             .unwrap();
-        assert_eq!(artist.secondary, "( 1 Albums )");
+        assert_eq!(artist.secondary, "( 2 Albums )");
+        assert_eq!(artist.album_count, 2);
 
         state.set_status_filter(StatusFilter::All);
         state.set_view(LibraryView::Albums);
@@ -7122,6 +7164,7 @@ mod tests {
         let mut aaliyah = album("aaliyah", "Aaliyah", "Aaliyah", "unprocessed");
         aaliyah.album_mbid = "release-aaliyah".into();
         let state = LibraryState::from_snapshot(MediaSnapshot {
+            artist_catalog: None,
             schema_version: crate::media_database::SCHEMA_VERSION,
             database_path: "splined.db".into(),
             canonical_root: "/music".into(),
@@ -7196,6 +7239,7 @@ mod tests {
         fallback.album_mbid = "release-fallback".into();
 
         let mut state = LibraryState::from_snapshot(MediaSnapshot {
+            artist_catalog: None,
             schema_version: crate::media_database::SCHEMA_VERSION,
             database_path: "splined.db".into(),
             canonical_root: "/music".into(),
@@ -7253,6 +7297,7 @@ mod tests {
         let mut collaboration = album("duet", "Alpha & Beta", "Duet", "unprocessed");
         collaboration.album_mbid = "release-duet".into();
         let mut state = LibraryState::from_snapshot(MediaSnapshot {
+            artist_catalog: None,
             schema_version: crate::media_database::SCHEMA_VERSION,
             database_path: "splined.db".into(),
             canonical_root: "/music".into(),
@@ -7286,6 +7331,7 @@ mod tests {
         release.album_mbid = "release-acdc".into();
         release.path = r"C:\Music\AC-DC\Back in Black".into();
         let mut state = LibraryState::from_snapshot(MediaSnapshot {
+            artist_catalog: None,
             schema_version: crate::media_database::SCHEMA_VERSION,
             database_path: "splined.db".into(),
             canonical_root: "/music".into(),
@@ -7329,6 +7375,7 @@ mod tests {
         curated.path = "/music/[Various Artists]/Billboard/Volume 1".into();
         curated.album_mbid = "release-curated".into();
         let mut state = LibraryState::from_snapshot(MediaSnapshot {
+            artist_catalog: None,
             schema_version: crate::media_database::SCHEMA_VERSION,
             database_path: "splined.db".into(),
             canonical_root: "/music".into(),
@@ -7361,6 +7408,9 @@ mod tests {
     #[test]
     fn artist_sidebar_excludes_comp_fallback_albums_but_keeps_artist_albums() {
         let mut state = library();
+        for key in ["b", "c", "d", "e"] {
+            state.apply_album_category_override(key, "fallback").unwrap();
+        }
         state
             .albums
             .iter_mut()
@@ -7423,6 +7473,7 @@ mod tests {
         let mut owned = album("owned", "3 Doors Down", "Away from the Sun", "unprocessed");
         owned.album_mbid = "owned-release".into();
         let mut state = LibraryState::from_snapshot(MediaSnapshot {
+            artist_catalog: None,
             schema_version: crate::media_database::SCHEMA_VERSION,
             database_path: "splined.db".into(),
             canonical_root: "/music".into(),
@@ -7653,6 +7704,7 @@ mod tests {
             embedded_artwork_recorded: false,
         }];
         let mut state = LibraryState::from_snapshot(MediaSnapshot {
+            artist_catalog: None,
             schema_version: crate::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: "/music".to_string(),
@@ -8166,6 +8218,7 @@ mod tests {
     #[test]
     fn saved_fallback_track_turns_green_immediately_but_read_only_does_not() {
         let mut snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: crate::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -8222,6 +8275,7 @@ mod tests {
     #[test]
     fn existing_embedded_candidate_is_a_green_explicit_write_choice() {
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: crate::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -8351,6 +8405,7 @@ mod tests {
         let mut state = ApplicationState::new(
             Config::default(),
             MediaSnapshot {
+                artist_catalog: None,
                 schema_version: crate::media_database::SCHEMA_VERSION,
                 database_path: "splined.db".to_string(),
                 canonical_root: "/music".to_string(),
@@ -8403,6 +8458,7 @@ mod tests {
         let mut state = ApplicationState::new(
             Config::default(),
             MediaSnapshot {
+                artist_catalog: None,
                 schema_version: crate::media_database::SCHEMA_VERSION,
                 database_path: "splined.db".to_string(),
                 canonical_root: "/music".to_string(),
@@ -8788,6 +8844,7 @@ mod tests {
         let mut state = ApplicationState::new(
             Config::default(),
             MediaSnapshot {
+                artist_catalog: None,
                 schema_version: crate::media_database::SCHEMA_VERSION,
                 database_path: "splined.db".to_string(),
                 canonical_root: "/music".to_string(),
@@ -8893,6 +8950,7 @@ mod tests {
         let mut state = ApplicationState::new(
             Config::default(),
             MediaSnapshot {
+                artist_catalog: None,
                 schema_version: crate::media_database::SCHEMA_VERSION,
                 database_path: "splined.db".to_string(),
                 canonical_root: "/music".to_string(),
@@ -9331,6 +9389,7 @@ mod tests {
         config.sources.cover_sources = vec!["local".to_string(), "musicbrainz".to_string()];
         config.sources.cover_sources.remove(0);
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: crate::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -9376,6 +9435,7 @@ mod tests {
     #[test]
     fn compilation_musicbrainz_event_replaces_stale_album_search_identity() {
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: crate::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -9414,6 +9474,7 @@ mod tests {
     #[test]
     fn decision_pauses_keep_preview_and_review_controls_interactive() {
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: crate::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -9598,6 +9659,7 @@ mod tests {
         let mut config = Config::default();
         config.sources.cover_sources = vec!["itunes".to_string(), "discogs".to_string()];
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: crate::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -9694,6 +9756,7 @@ mod tests {
     #[test]
     fn runtime_samples_and_webp_stills_share_selectable_source_authority() {
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: crate::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -9739,6 +9802,7 @@ mod tests {
         };
         config.sources.cover_sources = vec!["itunes".to_string()];
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: crate::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -9794,6 +9858,7 @@ mod tests {
     #[test]
     fn adjustments_project_preview_and_apply_modes_into_real_decisions() {
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: crate::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -9877,6 +9942,7 @@ mod tests {
     #[test]
     fn candidate_tri_state_comparison_hover_and_fallback_are_rust_owned() {
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: crate::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -9936,6 +10002,7 @@ mod tests {
         config.samples.sample_write = true;
         config.samples.sample_dir = samples.to_string_lossy().into_owned();
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: crate::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -9963,6 +10030,7 @@ mod tests {
     #[test]
     fn musicbrainz_filters_order_and_authority_editing_match_the_mature_contract() {
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: crate::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -10051,6 +10119,7 @@ mod tests {
     #[test]
     fn a_new_musicbrainz_result_set_clears_filters_that_would_hide_its_rows() {
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: crate::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -10079,6 +10148,7 @@ mod tests {
     #[test]
     fn all_adjustments_can_be_activated_toggled_and_reordered() {
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: crate::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),

@@ -44,11 +44,12 @@ pub struct AlbumIndexTags {
 
 impl AlbumIndexTags {
     pub fn owner_name(&self) -> &str {
-        if self.album_artist.trim().is_empty() {
-            &self.track_artist
-        } else {
-            &self.album_artist
-        }
+        [self.album_artist.as_str(), self.track_artist.as_str()]
+            .into_iter()
+            .flat_map(|value| value.split(['\0', '\x1f']))
+            .map(str::trim)
+            .find(|value| !value.is_empty())
+            .unwrap_or_default()
     }
 }
 
@@ -80,7 +81,7 @@ pub fn read_album_index_tags_and_track_evidence(
         && let Some(fields) = read_id3v2_fields(path)?
     {
         let album = album_index_from_id3(fields.clone());
-        let mut evidence = evidence_from_id3(path, fields).ok();
+        let mut evidence = evidence_from_id3(path, fields, true).ok();
         if let Some(value) = evidence.as_mut()
             && (value.musicbrainz_track_id.is_none() || value.musicbrainz_artist_id.is_none())
             && let Ok(tagged_file) = read_tags_only(path)
@@ -104,7 +105,7 @@ pub fn read_album_index_tags_and_track_evidence(
         )
     })?;
     let album = album_index_from_tagged_file(&tagged_file);
-    let evidence = evidence_from_tagged_file_with(path, &tagged_file, read_catalog_values).ok();
+    let evidence = evidence_from_tagged_file_with(path, &tagged_file, read_catalog_values, true).ok();
     Ok((album, evidence))
 }
 
@@ -211,22 +212,23 @@ where
 }
 
 pub fn read_local_track_evidence(path: &Path) -> Result<LocalTrackEvidence, String> {
-    read_track_evidence_with(path, read_all, read_optional)
+    read_track_evidence_with(path, read_all, read_optional, false)
 }
 
 pub(crate) fn read_catalog_track_evidence(path: &Path) -> Result<LocalTrackEvidence, String> {
-    read_track_evidence_with(path, read_catalog_values, read_catalog_values)
+    read_track_evidence_with(path, read_catalog_values, read_catalog_values, true)
 }
 
 fn read_track_evidence_with(
     path: &Path,
     artist_values: fn(&TaggedFile, &ItemKey) -> Option<String>,
     fallback_artist_ids: fn(&TaggedFile, &ItemKey) -> Option<String>,
+    catalog: bool,
 ) -> Result<LocalTrackEvidence, String> {
     if is_mpeg_path(path)
         && let Some(fields) = read_id3v2_fields(path)?
     {
-        let mut evidence = evidence_from_id3(path, fields)?;
+        let mut evidence = evidence_from_id3(path, fields, catalog)?;
         // Some taggers store MusicBrainz IDs in another tag layer. The fast
         // leading-ID3 parser is authoritative when populated, but a missing
         // ID should not mask a valid value that the full reader can see.
@@ -250,7 +252,7 @@ fn read_track_evidence_with(
         )
     })?;
 
-    evidence_from_tagged_file_with(path, &tagged_file, artist_values)
+    evidence_from_tagged_file_with(path, &tagged_file, artist_values, catalog)
 }
 
 /// Album identity needs tags only. Lofty's default path reader also reads
@@ -269,21 +271,27 @@ fn read_tags_only(path: &Path) -> Result<TaggedFile, lofty::error::FileParseErro
 
 #[cfg(test)]
 fn evidence_from_tagged_file(path: &Path, tagged_file: &TaggedFile) -> Result<LocalTrackEvidence, String> {
-    evidence_from_tagged_file_with(path, tagged_file, read_all)
+    evidence_from_tagged_file_with(path, tagged_file, read_all, false)
 }
 
 fn evidence_from_tagged_file_with(
     path: &Path,
     tagged_file: &TaggedFile,
     artist_values: fn(&TaggedFile, &ItemKey) -> Option<String>,
+    catalog: bool,
 ) -> Result<LocalTrackEvidence, String> {
-    let title = read_required(tagged_file, &ItemKey::TrackTitle, "TITLE", path)?;
-    let artist = artist_values(tagged_file, &ItemKey::TrackArtist).ok_or_else(|| {
-        format!(
-            "SPLINED scan requires ARTIST in actual file tags: {}",
-            path.display()
+    let (title, artist) = if catalog {
+        (
+            read_optional(tagged_file, &ItemKey::TrackTitle).unwrap_or_default(),
+            artist_values(tagged_file, &ItemKey::TrackArtist).unwrap_or_default(),
         )
-    })?;
+    } else {
+        let title = read_required(tagged_file, &ItemKey::TrackTitle, "TITLE", path)?;
+        let artist = artist_values(tagged_file, &ItemKey::TrackArtist).ok_or_else(|| {
+            format!("SPLINED scan requires ARTIST in actual file tags: {}", path.display())
+        })?;
+        (title, artist)
+    };
     let musicbrainz_album_id = read_optional(tagged_file, &ItemKey::MusicBrainzReleaseId);
 
     Ok(LocalTrackEvidence {
@@ -295,6 +303,13 @@ fn evidence_from_tagged_file_with(
         musicbrainz_album_id,
         musicbrainz_track_id: read_optional(tagged_file, &ItemKey::MusicBrainzRecordingId),
         musicbrainz_artist_id: artist_values(tagged_file, &ItemKey::MusicBrainzArtistId),
+        album_artist_mbids: catalog.then(|| {
+            read_catalog_values(tagged_file, &ItemKey::MusicBrainzReleaseArtistId).unwrap_or_default()
+        }),
+        release_group_mbid: catalog.then(|| {
+            read_optional(tagged_file, &ItemKey::MusicBrainzReleaseGroupId).unwrap_or_default()
+        }),
+        tag_source: "native-tags",
         compilation: read_optional(tagged_file, &ItemKey::FlagCompilation),
     })
 }
@@ -334,9 +349,13 @@ fn album_index_from_id3(fields: Id3v2Fields) -> AlbumIndexTags {
     }
 }
 
-fn evidence_from_id3(path: &Path, fields: Id3v2Fields) -> Result<LocalTrackEvidence, String> {
-    let title = required_id3_value(fields.title, "TITLE", path)?;
-    let artist = required_id3_value(fields.artist, "ARTIST", path)?;
+fn evidence_from_id3(path: &Path, fields: Id3v2Fields, catalog: bool) -> Result<LocalTrackEvidence, String> {
+    let (title, artist) = if catalog {
+        (fields.title.unwrap_or_default(), fields.artist.unwrap_or_default())
+    } else {
+        (required_id3_value(fields.title, "TITLE", path)?,
+         required_id3_value(fields.artist, "ARTIST", path)?)
+    };
     Ok(LocalTrackEvidence {
         path: path.to_path_buf(),
         title,
@@ -346,6 +365,9 @@ fn evidence_from_id3(path: &Path, fields: Id3v2Fields) -> Result<LocalTrackEvide
         musicbrainz_album_id: fields.musicbrainz_album_id,
         musicbrainz_track_id: fields.musicbrainz_track_id,
         musicbrainz_artist_id: fields.musicbrainz_artist_id,
+        album_artist_mbids: catalog.then(|| fields.musicbrainz_album_artist_id.unwrap_or_default()),
+        release_group_mbid: catalog.then(|| fields.musicbrainz_release_group_id.unwrap_or_default()),
+        tag_source: "id3v2",
         compilation: fields.compilation,
     })
 }

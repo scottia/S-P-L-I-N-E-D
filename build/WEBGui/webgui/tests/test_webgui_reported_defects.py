@@ -56,7 +56,7 @@ class ReportedDefectTests(unittest.TestCase):
         catalog.metadata_cache = {}
         catalog.metadata_locks = {}
         catalog.appearance_cache = {}
-        catalog.artist = lambda artist_id: {"id": artist_id, "name": "Selected"}
+        catalog.artist = lambda artist_id, **_options: {"id": artist_id, "name": "Selected"}
         catalog.artist_comp_albums = lambda _artist_id: []
         started = Event()
         release = Event()
@@ -151,7 +151,7 @@ class ReportedDefectTests(unittest.TestCase):
             catalog.metadata_cache = {}
             catalog.appearance_cache = {}
             catalog.lock = Lock()
-            catalog.artist = lambda _artist_id: {"id": "selected", "name": "Selected Artist", "mbid": "", "top_tracks": []}
+            catalog.artist = lambda _artist_id, **_options: {"id": "selected", "name": "Selected Artist", "mbid": "", "top_tracks": []}
             catalog.artist_comp_albums = lambda _artist_id: []
             catalog.refresh_artist_appearances = lambda _artist_id: {}
             catalog._stored_artist_profile = lambda _artist_id: None
@@ -230,7 +230,7 @@ class ReportedDefectTests(unittest.TestCase):
             catalog.metadata_cache = {}
             catalog.appearance_cache = {}
             catalog.lock = Lock()
-            catalog.artist = lambda _artist_id: {"id": "selected", "name": "Selected Artist", "mbid": "", "top_tracks": [], "genres": []}
+            catalog.artist = lambda _artist_id, **_options: {"id": "selected", "name": "Selected Artist", "mbid": "", "top_tracks": [], "genres": []}
             catalog.artist_comp_albums = lambda _artist_id: []
             catalog.refresh_artist_appearances = lambda _artist_id: self.fail(
                 "biography loading must not launch the song appearance traversal"

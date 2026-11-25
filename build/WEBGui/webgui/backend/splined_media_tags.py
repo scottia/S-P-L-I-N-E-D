@@ -389,11 +389,19 @@ def read_track_identity_tags(
 
 def _capture_album_credit_evidence(reader: _TagReader, track: dict[str, str]) -> None:
     track.update(
+        original_album=reader.value("album"),
         original_album_artist=reader.value("albumartist", "album artist"),
+        original_album_artist_mbids=reader.values(
+            "musicbrainz_albumartistid", "musicbrainz album artist id", "musicbrainz release artist id",
+        ),
         original_album_mbid=reader.value(
             "musicbrainz_albumid", "musicbrainz album id", "musicbrainz release id",
         ),
+        original_release_group_mbid=reader.value(
+            "musicbrainz_releasegroupid", "musicbrainz release group id",
+        ),
         original_compilation=reader.value("compilation", "itunescompilation"),
+        original_tag_source="id3v2" if reader.audio_path.suffix.lower() == ".mp3" else "native-tags",
     )
 
 
@@ -546,9 +554,14 @@ def inspect_album_tracks(
                 "artist": tags["original_artist"].replace("\0", ARTIST_CREDIT_SEPARATOR),
                 "mbids": tags["artist_mbid"].replace("\0", ARTIST_CREDIT_SEPARATOR),
                 "title": tags["title"].replace("\0", ARTIST_CREDIT_SEPARATOR),
+                "recording_mbid": tags["recording_mbid"].replace("\0", ARTIST_CREDIT_SEPARATOR) or None,
+                "album_artist_mbids": tags.get("original_album_artist_mbids", "").replace("\0", ARTIST_CREDIT_SEPARATOR),
                 **{
                     key: tags.get("original_" + key, "").replace("\0", ARTIST_CREDIT_SEPARATOR) or None
-                    for key in ("album_artist", "album_mbid", "compilation")
+                    for key in (
+                        "album", "album_artist", "album_mbid", "release_group_mbid",
+                        "compilation", "tag_source",
+                    )
                 },
                 "file_size": size,
                 "file_mtime_ns": modified,
@@ -556,9 +569,23 @@ def inspect_album_tracks(
     return rows, reads, reuses
 
 
+def first_artist_value(value: str) -> str:
+    native_values = value.replace("\0", ARTIST_CREDIT_SEPARATOR)
+    return next((name.strip() for name in native_values.split(ARTIST_CREDIT_SEPARATOR) if name.strip()), "")
+
+
 def artist_key(artist_name: str, artist_mbid: str) -> str:
-    mbid = artist_mbid.strip().casefold()
-    return f"mbid:{mbid}" if mbid else f"tag:{normalize(artist_name) or 'unknown artist'}"
+    import splined_artist_unicode as artist_unicode
+
+    mbid = first_artist_value(artist_mbid).lower()
+    if mbid:
+        return f"mbid:{mbid}"
+    folded = artist_unicode.normalized_fold(artist_name)
+    normalized = " ".join("".join(
+        character if artist_unicode.alphanumeric(character) else " "
+        for character in folded
+    ).split())
+    return f"tag:{normalized or 'unknown artist'}"
 
 
 def album_base_key(
@@ -831,7 +858,7 @@ def inspect_album(
         else:
             tags = read_album_tags(representative)
         artist_name = str(
-            tags["album_artist"] or tags.get("track_artist") or artist_folder.name
+            first_artist_value(tags["album_artist"]) or first_artist_value(tags.get("track_artist", "")) or artist_folder.name
             or "Unknown Artist"
         )
         album_name = str(tags["album"] or Path(album.path).name or "Unknown Album")

@@ -2815,8 +2815,15 @@ function scheduleArtistProjectionRefresh(query, request) {
     try {
       const refreshed = await api("/api/artists?q=" + encodeURIComponent(query));
       if (request !== state.listRequest || state.libraryMode !== "artists" || state.artistQuery !== String(query || "")) return;
+      if (refreshed.projection_pending === true) {
+        scheduleArtistProjectionRefresh(query, request);
+        return;
+      }
       state.artists = refreshed;
+      state.libraryLoading = false;
+      state.libraryReady = true;
       renderLibrary();
+      if (!state.artist && refreshed.length) await chooseArtist(refreshed[0].id, false);
       if (refreshed.some(item => item.projection_pending === true)) scheduleArtistProjectionRefresh(query, request);
       else state.artistProjectionRetry = 0;
     } catch {
@@ -2882,6 +2889,11 @@ async function loadLibrary(query = "") {
       ? await coalescedLibraryApi("/api/artists?q=" + encodeURIComponent(query))
       : await coalescedLibraryApi("/api/albums?view=" + mode + "&q=" + encodeURIComponent(query));
     if (!isCurrent()) return;
+    if (mode === "artists" && results.projection_pending === true) {
+      state.artistProjectionRetry = 0;
+      scheduleArtistProjectionRefresh(query, request);
+      return;
+    }
     if (mode === "artists") state.artists = results;
     else state.albumsIndex = results;
     state.libraryLoading = false;
