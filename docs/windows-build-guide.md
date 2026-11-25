@@ -30,39 +30,44 @@ The release executable is:
 build\Windows\target\x86_64-pc-windows-msvc\release\splined.exe
 ```
 
-### Workflow 10 unified source build
+### Workflows 20–24
 
-[Workflow 10](../.github/workflows/10-unified-build.yml) runs its approved
-definition from `main`, compares `main` with `dev`, then checks out and builds
-the exact current `origin/dev` commit. It never creates a PR, stamps source, or
-writes to either branch. Its numeric tag points directly at that selected dev
-source commit.
+[Workflow 20](../.github/workflows/20-quick-portable-windows.yml) is the rapid
+Windows evaluation path. It builds the exact current `origin/dev` source with
+locked optimized Rust/Slint settings, reuses compatible Cargo intermediates,
+and validates executable commit, version, AMD64 PE architecture, native smoke,
+size and SHA-256. Its standalone executable is explicitly QA-only and cannot
+be consumed by release publication.
 
-Choose **ALL**, **WINDOWS**, or **WEBGUI**. Workflow 10 compares the committed
-versions on `main` and `dev`: a match automatically selects cache-assisted
-**PARTIAL UPDATE**, while a different dev version selects clean **FULL SOURCE**.
-Both Windows modes emit and audit the complete optimized executable, portable
-ZIP and MSIX; partial does not create a delta package. **BUILD ONLY, REPORT**
-records the comparison, policy validation and Store-credential readiness, then
-stops without compiling or packaging. **BUILD ONLY** runs that report first,
-then retains complete Actions build artifacts without publication. **COMPLETE
-RELEASE** creates a new release or builds only a missing target for the current
-release without overwriting an existing asset.
+[Workflow 21](../.github/workflows/21-release-preparation.yml) records the
+exact current `origin/main` and `origin/dev` hashes, validates their safe tree
+relationship, resolves the synchronized version, and optionally retains an
+approved immutable candidate. It does not compile either application.
 
-Windows builds always create the downloadable
-`splined-windows-store-submission` review ZIP. **LOCAL REVIEW ONLY** never
-authenticates to or writes Partner Center, so an existing Store draft is
-untouched. The explicit **AUTO SUBMIT** choice is available only for a confirmed
-Windows/ALL release; it validates the existing credentials, retains a separate
-submission audit artifact and submits the validated package for certification.
+[Workflow 22](../.github/workflows/22-windows-build-store.yml) consumes that
+candidate. **PARTIAL UPDATE** restores compatible dependencies and optimized
+intermediates; **FULL SOURCE** performs a clean target-specific release build.
+Both modes produce and audit the complete portable executable, ZIP, unsigned
+MSIX, isolated development-package smoke, and offline local Store review
+bundle. Partial mode is never a delta package.
 
-Workflow 10 relies on required source-PR Audio Integrity results for the exact
-commit and does not rerun the Windows or WebGUI real-writer suites. It verifies
-the compiled executable identity, x64 PE, first-run native smoke, portable ZIP
-and Store package. ALL validates WebGUI packaging and PostgreSQL health in
-parallel. Measure at least two equivalent PARTIAL UPDATE runs: the first may
-populate Cargo/BuildKit caches, while later runs report cache reuse and Windows
-compile seconds. Evaluate total wall time, not only compiler time.
+**BUILD ONLY, REPORT** audits the candidate and proposed cache/package plan
+without compiling or packaging. **SUBMIT EXISTING MSIX** instead consumes a
+previous successful Workflow 22 run after release publication and submits the
+exact validated MSIX without invoking Cargo or rebuilding the package.
+
+[Workflow 24](../.github/workflows/24-complete-release.yml) publishes only
+previously validated artifacts. It verifies build manifests and checksums,
+generates release notes, requires publication approval, and creates or
+completes the selected release without overwriting assets. Microsoft Store
+submission remains a separate Workflow 22 operation.
+
+These workflows rely on required source-PR Audio Integrity results for the
+exact candidate and do not repeat the Windows or WebGUI real-writer suites
+solely for packaging. Measure cold, equivalent warm-repeat, and warm
+source-change runs; summaries distinguish expected reuse from measured cache
+hits and report compilation, validation, packaging, artifact size, and total
+elapsed time.
 
 ### Production-equivalent local PC test build
 
@@ -95,17 +100,18 @@ required because the real 3,884-album library makes an unoptimized Windows UI
 too slow for valid testing. This local executable is not a release candidate.
 
 After the local build is approved, open a reviewed topic Draft PR against
-`main`; the owner separately authorizes each merge and any release. Pull requests do not automatically execute strict Windows Rust/Slint
+`dev`; the owner separately authorizes each merge and any release. Pull requests do not automatically execute strict Windows Rust/Slint
 validation. The retained **Windows Rust/Slint — advisory** compatibility check
 runs on Ubuntu and reports **Not run — permanent PR policy exception** without
 provisioning Rust or a Windows runner. This applies to Windows, Slint,
 shared-schema, dependency, workflow, and promotion changes. Targeted local
 Windows compilation and regression testing remains appropriate in the isolated
-E: acceptance environment. Workflow 01 retains strict optional Extended
-Windows validation and always performs a fresh optimized production build from
-versioned `main` source, using that same executable for portable and Store
-packaging. Workflow 01 checks the accepted canonical source policies, Config v5 and in-memory SQLite DDL **before** version stamping. Owner policy requires Extended Windows validation before a Microsoft
-Store submission; submitting a Store update without that setting is blocked by the release preflight.
+E: acceptance environment. Workflow 21 audits canonical source policies and
+the exact reviewed candidate. Workflow 22 performs the native optimized build,
+identity, portable smoke, MSIX contract and isolated development-package
+validation, using the same executable for portable and Store packaging. Store
+submission accepts only that exact validated build after release publication
+and explicit approval.
 
 `build/Windows/build.rs` compiles `build/Windows/ui/app.slint` and embeds build identity.
 The executable links directly to the Rust library modules in `build/Windows/src`.
@@ -204,7 +210,7 @@ splined.exe --write-build-info build-info.json
 ## Validation
 
 The historic root-crate architecture tests are outside the current source layout.
-Workflow 01's portable allowlist and native smoke checks remain active. Reestablish
+Workflow 22's portable allowlist and native smoke checks remain active. Reestablish
 current-layout architecture coverage before treating past test claims as current.
 Controller and library unit tests cover real state transitions without placing
 business authority in Slint callbacks.

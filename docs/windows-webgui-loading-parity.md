@@ -252,18 +252,18 @@ not Windows implementation instructions.
 
 | Shared requirement | Windows evidence and gap | WebGUI comparison evidence and gap |
 | --- | --- | --- |
-| `LIFE-001` current selection identity | Selection is explicit, but broad refresh and synchronous row work can delay publication after a newer selection. A later implementation must prove stale workers cannot repaint a replaced Artist/Album. | Selection generations and stale-response checks are the comparison boundary; PR #314 retains demonstrated navigation/input races. |
-| `LIFE-002` nonblocking progressive hydration | SQLite/model construction is bounded, but repeated pre-event-loop synchronization and synchronous `row_data()` image work violate the desired shell-first, memory-only presentation boundary. | The shell paints before the Artist request and near-viewport thumbnails are bounded; direct selection and initial projection latency remain open in PR #314. |
-| `LIFE-003` bounded background work | Scan/index generation is bounded, while presentation image work and full refresh fan-out are not yet narrowly scheduled or measured. | Thumbnail work is bounded to three; COMP coordination, filter fan-out and index-probe polling remain open in PR #314. |
-| `LIFE-004` durable queue authority | Existing scan/COMP queues and cancellation must be preserved; this audit authorizes no replacement queue or nonce model. | Existing durable job/nonces remain authoritative; stale decision and staged-batch defects stay in PR #314. |
-| `LIFE-005` truthful current status | Global-lock/full-sync latency can delay local status publication; later work must publish narrow progress before remote or artwork work. | PR #314 retains stale embedding completion/status ownership evidence. |
-| `LIFE-006` canonical current presentation | Existing media-state policy, Album rows, frames, banners and dots remain unchanged; any row-level publication must retain current evidence. | PR #314 contains the focused complete-Artist GREEN→RED correction and its higher-priority Red/Yellow/Purple controls. |
-| `LIFE-007` coherent interaction stages | Selected Artist/Album detail should be scoped and asynchronous, but this audit changes no interaction or COMP stage. | PR #314 retains search, COMP discovery, preferred-size and post-selection stage defects under the existing COMP policy. |
+| `LIFE-001` current selection identity | Selection is explicit, but broad refresh and synchronous row work can delay publication after a newer selection. A later implementation must prove stale workers cannot repaint a replaced Artist/Album. | Selection generations and stale-response checks remain the comparison boundary for demonstrated navigation/input races. |
+| `LIFE-002` nonblocking progressive hydration | SQLite/model construction is bounded, but repeated pre-event-loop synchronization and synchronous `row_data()` image work violate the desired shell-first, memory-only presentation boundary. | The shell paints before the Artist request and near-viewport thumbnails are bounded; direct selection and initial projection latency remain open. |
+| `LIFE-003` bounded background work | Scan/index generation is bounded, while presentation image work and full refresh fan-out are not yet narrowly scheduled or measured. | Thumbnail work is bounded to three; COMP coordination, filter fan-out and index-probe polling remain open. |
+| `LIFE-004` durable queue authority | Existing scan/COMP queues and cancellation must be preserved; this audit authorizes no replacement queue or nonce model. | Existing durable job/nonces remain authoritative; stale decision and staged-batch defects remain tracked lifecycle work. |
+| `LIFE-005` truthful current status | Global-lock/full-sync latency can delay local status publication; later work must publish narrow progress before remote or artwork work. | Stale embedding completion and status-ownership evidence remains tracked lifecycle work. |
+| `LIFE-006` canonical current presentation | Existing media-state policy, Album rows, frames, banners and dots remain unchanged; any row-level publication must retain current evidence. | Focused complete-Artist GREEN→RED behavior and its higher-priority Red/Yellow/Purple controls remain the regression boundary. |
+| `LIFE-007` coherent interaction stages | Selected Artist/Album detail should be scoped and asynchronous, but this audit changes no interaction or COMP stage. | Search, COMP discovery, preferred-size and post-selection stage defects remain tracked under the existing COMP policy. |
 | `LIFE-008` database lifecycle authority | Windows SQLite remains synchronized-field authority. No proposed loading correction may merge/rewrite database identities or fields. | The transferred earlier-version reminder requires separate PostgreSQL-owned revalidation evidence; protected Windows fields must not be rewritten. |
-| `LIFE-009` focused regression evidence | Source diagnostics identify the hot path, but native build and installed timing acceptance remain required for a later behavior PR. | Existing focused browser evidence is comparative only; PR #314 remains independently Draft and unmerged. |
+| `LIFE-009` focused regression evidence | Source diagnostics identify the hot path, but native build and installed timing acceptance remain required for a later behavior change. | Existing focused browser evidence is comparative only; implementation and owner acceptance remain separate. |
 
 This mapping records parity evidence and gaps only. Native lifecycle-policy
-loader/protection activation is reviewed separately in Draft PR #320; its
+loader/protection activation is reviewed separately; its
 presence or eventual acceptance does not make the open behaviors pass.
 
 ## Approval-gated Windows recommendation
@@ -348,7 +348,7 @@ implementation boundary only.
 
 ## Transferred WebGUI issue: persistent earlier-version reminder
 
-PR #314 item 16 reported that WebGUI continues to display the earlier-major
+The tracked WebGUI lifecycle evidence reports that WebGUI continues to display the earlier-major
 catalog reminder after a successful Full Refresh. This issue is transferred to
 this parity review because the reminder is derived from synchronized catalog
 ownership, not from WebGUI presentation alone.
@@ -400,5 +400,5 @@ Any later implementation must demonstrate that:
 - a successful refresh clears only rows actually validated by that generation;
 - failed, cancelled and incomplete refreshes leave the reminder intact;
 - subsequent major-version changes require revalidation again; and
-- Windows SQLite authority, protected policy JSON and Workflow 10 governance
-  remain unchanged.
+- Windows SQLite authority, protected policy JSON, required source validation,
+  and Workflows 20–24 release boundaries remain unchanged.

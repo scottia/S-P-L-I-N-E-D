@@ -166,7 +166,7 @@ Album rankings, and reference only names present in `colors`. Light-theme
 values belong in `light_colors`. `ui_status_colors` maps the shared state keys
 to named colors used by both interfaces.
 
-The existing Windows and WebGUI policy loaders validate the owner-approved source ordering. Workflow 01 and the independent PR policy-review gate check canonical source contracts; they do not automatically change saved PostgreSQL policy revisions or Windows credential-directory mirrors.
+The existing Windows and WebGUI policy loaders validate the owner-approved source ordering. Workflow 21 and the independent pull-request policy-review gate check canonical source contracts; they do not automatically change saved PostgreSQL policy revisions or Windows credential-directory mirrors.
 
 The order of each `ranked_*` array is behavior: the first matching condition
 wins. Album `status_dots` are not mutually exclusive and their array order is
