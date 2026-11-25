@@ -36,6 +36,11 @@ on:
         default: false
         type: boolean
 
+      complete_existing_release:
+        description: "RECOVERY ONLY: complete missing outputs of the latest published release. Leave unchecked for all normal builds and new releases."
+        default: false
+        type: boolean
+
 permissions:
   contents: read
 
@@ -69,6 +74,7 @@ jobs:
       build_windows: ${{ steps.plan.outputs.build_windows }}
       build_webgui: ${{ steps.plan.outputs.build_webgui }}
       existing_release: ${{ steps.plan.outputs.existing_release }}
+      recovery_commit: ${{ steps.plan.outputs.recovery_commit }}
       source_sha: ${{ steps.plan.outputs.source_sha }}
       main_sha: ${{ steps.plan.outputs.main_sha }}
       source_relation: ${{ steps.plan.outputs.source_relation }}
@@ -90,6 +96,7 @@ jobs:
           COMPLETION_REPORT_ONLY: ${{ inputs.completion_report_only }}
           STORE_LOCAL_REVIEW: ${{ inputs.store_local_review }}
           STORE_AUTO_SUBMIT: ${{ inputs.store_auto_submit }}
+          COMPLETE_EXISTING_RELEASE: ${{ inputs.complete_existing_release }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -123,6 +130,10 @@ jobs:
             "COMPLETE RELEASE" "$COMPLETION_RELEASE" \
             "BUILD ONLY" "$COMPLETION_BUILD_ONLY" \
             "BUILD ONLY, REPORT" "$COMPLETION_REPORT_ONLY")
+          if [ "$COMPLETE_EXISTING_RELEASE" = true ] && [ "$OUTCOME" = "BUILD ONLY" ]; then
+            echo "::error title=Recovery selection not valid for BUILD ONLY::Uncheck existing-release recovery to build the approved dev source."
+            exit 1
+          fi
           if [ "$OUTCOME" = "COMPLETE RELEASE" ] && [ "$TARGET_SELECTION" != "WEBGUI" ]; then
             STORE_ACTION=$(select_exactly_one "MS STORE" \
               "LOCAL REVIEW ONLY" "$STORE_LOCAL_REVIEW" \
@@ -189,7 +200,7 @@ jobs:
           PY
           )
           LATEST_PRODUCT_MATCH=false
-          if [ -n "$LATEST_TAG" ]; then
+          if [ "$COMPLETE_EXISTING_RELEASE" = true ] && [ -n "$LATEST_TAG" ]; then
             tagged_root=$(mktemp -d)
             git archive "$LATEST_TAG" build/Windows build/WEBGui schema | tar -x -C "$tagged_root"
             current_digest=$(python3 .github/scripts/source_version.py product-digest)
@@ -222,6 +233,7 @@ jobs:
               versions,
               tags,
               os.environ["LATEST_PRODUCT_MATCH"] == "true",
+              complete_existing_release=os.environ["COMPLETE_EXISTING_RELEASE"] == "true",
           )
           print(version, str(stamp).lower())
           PY
@@ -293,6 +305,14 @@ jobs:
               fi
             fi
           fi
+          if [ "$existing_release" != "$COMPLETE_EXISTING_RELEASE" ]; then
+            echo "::error title=Release selection changed::Recovery requires a published release; normal builds require an unpublished version. Rerun the plan."
+            exit 1
+          fi
+          RECOVERY_COMMIT=""
+          if [ "$COMPLETE_EXISTING_RELEASE" = true ]; then
+            RECOVERY_COMMIT=$(git rev-parse --verify "refs/tags/$release_version^{commit}")
+          fi
           store_draft=$build_windows
           publish_ghcr=$build_webgui
           if [ "$build_windows" != true ]; then
@@ -316,6 +336,7 @@ jobs:
             echo "build_windows=$build_windows"
             echo "build_webgui=$build_webgui"
             echo "existing_release=$existing_release"
+            echo "recovery_commit=$RECOVERY_COMMIT"
             echo "source_sha=$DEV_SHA"
             echo "main_sha=$MAIN_SHA"
             echo "source_relation=$source_relation"
@@ -335,6 +356,7 @@ jobs:
             echo "- Build Windows now: \`$build_windows\`"
             echo "- Build WebGUI now: \`$build_webgui\`"
             echo "- Existing release completion: \`$existing_release\`"
+            echo "- Existing tag source (recovery only): \`${RECOVERY_COMMIT:-not selected}\`"
             echo "- Windows Store action: \`$STORE_ACTION\`; submit after release: \`$store_submit\`"
             echo "- Publish GHCR when WebGUI is built: \`$publish_ghcr\`"
             echo "- Outcome: \`$OUTCOME\`"
@@ -506,6 +528,8 @@ jobs:
           COMMITTED_SOURCE_VERSION: ${{ needs.resolve-plan.outputs.source_version }}
           RELEASE_MODE: ${{ needs.resolve-plan.outputs.release_confirmation }}
           EXPECTED_DEV_SHA: ${{ needs.resolve-plan.outputs.source_sha }}
+          EXPECTED_EXISTING_RELEASE: ${{ needs.resolve-plan.outputs.existing_release }}
+          RECOVERY_COMMIT: ${{ needs.resolve-plan.outputs.recovery_commit }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -526,13 +550,16 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           test "$(python3 .github/scripts/source_version.py current)" = "$COMMITTED_SOURCE_VERSION"
           EXISTING_RELEASE=false
-          if git show-ref --verify --quiet "refs/tags/$RELEASE_VERSION"; then
+          if [ "$EXPECTED_EXISTING_RELEASE" = true ]; then
+            test -n "$RECOVERY_COMMIT"
+            git show-ref --verify --quiet "refs/tags/$RELEASE_VERSION"
             if ! gh release view "$RELEASE_VERSION" >/dev/null 2>&1; then
               echo "::error title=Tag without release::Tag $RELEASE_VERSION exists but has no published GitHub Release. Use the recovery workflow."
               exit 1
             fi
             EXISTING_RELEASE=true
-            RELEASE_COMMIT=$(git rev-list -n 1 "$RELEASE_VERSION")
+            RELEASE_COMMIT=$(git rev-parse --verify "refs/tags/$RELEASE_VERSION^{commit}")
+            test "$RELEASE_COMMIT" = "$RECOVERY_COMMIT"
             tagged_root=$(mktemp -d)
             git archive "$RELEASE_COMMIT" build/Windows build/WEBGui schema | tar -x -C "$tagged_root"
             current_digest=$(python3 .github/scripts/source_version.py product-digest)
@@ -544,6 +571,11 @@ jobs:
             fi
             git checkout --detach "$RELEASE_COMMIT"
             echo "Completing missing outputs for existing release $RELEASE_VERSION from exact tagged source $RELEASE_COMMIT."
+          elif git show-ref --verify --quiet "refs/tags/$RELEASE_VERSION" ||
+               git show-ref --verify --quiet "refs/tags/v$RELEASE_VERSION" ||
+               gh release view "$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error title=Release version became occupied::The approved new version is no longer available. Rerun the release plan; tagged source will not be substituted."
+            exit 1
           else
             git fetch --force origin dev:refs/remotes/origin/dev
             if [ "$(git rev-parse origin/dev)" != "$SOURCE_SHA" ]; then
@@ -1152,7 +1184,8 @@ jobs:
             echo "ERROR: dev changed while selected builds were running; no tag was created. Run Workflow 10 again to use the new source."
             exit 1
           fi
-          if git show-ref --verify --quiet "refs/tags/$RELEASE_VERSION"; then
+          if git show-ref --verify --quiet "refs/tags/$RELEASE_VERSION" ||
+             git show-ref --verify --quiet "refs/tags/v$RELEASE_VERSION"; then
             echo "ERROR: Release tag already exists: $RELEASE_VERSION"
             exit 1
           fi

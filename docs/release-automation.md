@@ -45,11 +45,19 @@ The release-candidate manifest records the exact `main` hash, exact selected
 `dev` hash, relationship result, synchronized source version, release version,
 target, recommended compile mode, originating run, and source-bundle SHA-256.
 
-If the committed version is unused, the candidate points directly at the
-selected source. If approved product source changed after that version was
-published, Workflow 21 may create a temporary candidate commit whose parent is
-the selected `dev` commit and whose only changes are the synchronized version
-fields. No protected branch is written.
+If the committed version is unused and newer than all numeric release tags,
+the candidate points directly at the selected source. Otherwise a new release
+allocates the next unused patch version and creates a temporary candidate
+commit whose parent is the selected `dev` commit and whose only changes are
+synchronized version fields. Product-digest equality with a published tag
+never substitutes historical tagged source for a normal build or new release.
+No protected branch is written.
+
+The optional **RECOVERY ONLY** checkbox explicitly selects the latest
+published release for missing outputs, provided the product digest matches.
+The plan pins the existing tag's exact commit, and preparation fails if the
+version becomes occupied or the pinned tag changes. Leave this checkbox off
+for normal preparation, report-only planning, and new release builds.
 
 Workflow 21 **BUILD ONLY, REPORT** performs the same source, policy, version,
 target, cache-plan, and credential-readiness audit but does not request

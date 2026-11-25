@@ -24,6 +24,11 @@ on:
         default: false
         type: boolean
 
+      complete_existing_release:
+        description: "RECOVERY ONLY: prepare the latest published tag for missing outputs. Leave unchecked for a new candidate."
+        default: false
+        type: boolean
+
 permissions:
   actions: read
   contents: read
@@ -47,6 +52,7 @@ jobs:
       auto_stamp: ${{ steps.plan.outputs.auto_stamp }}
       compile_mode: ${{ steps.plan.outputs.compile_mode }}
       existing_release: ${{ steps.plan.outputs.existing_release }}
+      recovery_commit: ${{ steps.plan.outputs.recovery_commit }}
       started_epoch: ${{ steps.plan.outputs.started_epoch }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -63,6 +69,7 @@ jobs:
           TARGET_WEBGUI: ${{ inputs.target_webgui }}
           REPORT_ONLY: ${{ inputs.completion_report_only }}
           PREPARE_CANDIDATE: ${{ inputs.completion_prepare_candidate }}
+          COMPLETE_EXISTING_RELEASE: ${{ inputs.complete_existing_release }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -123,7 +130,7 @@ jobs:
           PY
           )
           LATEST_PRODUCT_MATCH=false
-          if [ -n "$LATEST_TAG" ]; then
+          if [ "$COMPLETE_EXISTING_RELEASE" = true ] && [ -n "$LATEST_TAG" ]; then
             tagged_root=$(mktemp -d)
             git archive "$LATEST_TAG" build/Windows build/WEBGui schema | tar -x -C "$tagged_root"
             current_digest=$(python3 .github/scripts/source_version.py product-digest)
@@ -156,6 +163,7 @@ jobs:
               versions,
               tags,
               os.environ["LATEST_PRODUCT_MATCH"] == "true",
+              complete_existing_release=os.environ["COMPLETE_EXISTING_RELEASE"] == "true",
           )
           print(version, str(stamp).lower())
           PY
@@ -170,6 +178,14 @@ jobs:
           if gh release view "$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             EXISTING_RELEASE=true
           fi
+          if [ "$EXISTING_RELEASE" != "$COMPLETE_EXISTING_RELEASE" ]; then
+            echo "::error title=Release selection changed::Recovery requires a published release; normal builds require an unpublished version. Rerun the plan."
+            exit 1
+          fi
+          RECOVERY_COMMIT=""
+          if [ "$COMPLETE_EXISTING_RELEASE" = true ]; then
+            RECOVERY_COMMIT=$(git rev-parse --verify "refs/tags/$RELEASE_VERSION^{commit}")
+          fi
 
           {
             echo "target=$TARGET"
@@ -182,6 +198,7 @@ jobs:
             echo "auto_stamp=$AUTO_STAMP"
             echo "compile_mode=$COMPILE_MODE"
             echo "existing_release=$EXISTING_RELEASE"
+            echo "recovery_commit=$RECOVERY_COMMIT"
             echo "started_epoch=$STARTED_EPOCH"
           } >> "$GITHUB_OUTPUT"
 
@@ -197,6 +214,7 @@ jobs:
             echo "- Temporary version stamp: \`$AUTO_STAMP\`"
             echo "- Recommended compilation mode: \`$COMPILE_MODE\`"
             echo "- Existing GitHub Release: \`$EXISTING_RELEASE\`"
+            echo "- Existing tag source (recovery only): \`${RECOVERY_COMMIT:-not selected}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
   audit:
@@ -348,6 +366,7 @@ jobs:
           COMPILE_MODE: ${{ needs.resolve-plan.outputs.compile_mode }}
           AUTO_STAMP: ${{ needs.resolve-plan.outputs.auto_stamp }}
           EXISTING_RELEASE: ${{ needs.resolve-plan.outputs.existing_release }}
+          RECOVERY_COMMIT: ${{ needs.resolve-plan.outputs.recovery_commit }}
           VALIDATION_RUN_ID: ${{ needs.audit.outputs.validation_run_id }}
           VALIDATION_COMMIT: ${{ needs.audit.outputs.validation_commit }}
           GH_TOKEN: ${{ github.token }}
@@ -364,9 +383,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           CANDIDATE_COMMIT="$SOURCE_SHA"
-          if git show-ref --verify --quiet "refs/tags/$RELEASE_VERSION"; then
-            CANDIDATE_COMMIT=$(git rev-list -n 1 "$RELEASE_VERSION")
-            git checkout --detach "$CANDIDATE_COMMIT"
+          if [ "$EXISTING_RELEASE" = true ]; then
+            test -n "$RECOVERY_COMMIT"
+            gh release view "$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null
+            CANDIDATE_COMMIT=$(git rev-parse --verify "refs/tags/$RELEASE_VERSION^{commit}")
+            test "$CANDIDATE_COMMIT" = "$RECOVERY_COMMIT"
             tagged_root=$(mktemp -d)
             git archive "$CANDIDATE_COMMIT" build/Windows build/WEBGui schema | tar -x -C "$tagged_root"
             source_root=$(mktemp -d)
@@ -375,6 +396,11 @@ jobs:
             tagged_digest=$(python3 .github/scripts/source_version.py --root "$tagged_root" product-digest)
             test "$source_digest" = "$tagged_digest"
             rm -rf "$tagged_root" "$source_root"
+          elif git show-ref --verify --quiet "refs/tags/$RELEASE_VERSION" ||
+               git show-ref --verify --quiet "refs/tags/v$RELEASE_VERSION" ||
+               gh release view "$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error title=Release version became occupied::The approved new version is no longer available. Rerun the release plan; tagged source will not be substituted."
+            exit 1
           elif [ "$AUTO_STAMP" = true ]; then
             python3 .github/scripts/source_version.py stamp-release "$RELEASE_VERSION"
             git add \
