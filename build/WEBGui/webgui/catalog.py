@@ -32,7 +32,7 @@ import requests
 
 from splined_artist_art import ArtistAlbum, ArtistArtTarget, artist_targets, local_candidates, saved_package
 from splined_compilation_authority_policy import replace_embedded_artwork
-from splined_media_tags import normalize_artist_credit_text
+from splined_media_tags import normalize_artist_credit_text, ordered_artist_mbids
 from interaction.artist_search import discover_artist_images, discover_artist_profile
 from webgui.database import Database
 from webgui import imaging
@@ -167,12 +167,8 @@ def indexed_track_credit_values(
 
 def normalized_artist_identity(value: str) -> str:
     """Return the display identity without rewriting stored Artist/Album IDs."""
-    normalized = unicodedata.normalize("NFKC", str(value or ""))
-    visible = "".join(
-        character for character in normalized
-        if unicodedata.category(character) != "Cf"
-    )
-    return "".join(character.casefold() for character in visible if character.isalnum())
+    normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return "".join(character for character in normalized if character.isalnum())
 
 
 def artist_search_literal(value: object) -> str:
@@ -474,6 +470,7 @@ class Catalog:
         grouping = json.dumps(
             {
                 "generation": generation,
+                "credit_evidence": 4,
                 "separator": self.artist_separator_regex,
                 "categories": sorted(self.category_overrides.items()),
             },
@@ -714,12 +711,6 @@ class Catalog:
 
     def artist_album_allowed(self, row) -> bool:
         """Artist cards contain only Artist releases and their track credits."""
-        if not self.path_album_grouping_enabled():
-            keys = set(row.keys()) if hasattr(row, "keys") else set(row)
-            return not (
-                "musicbrainz_albumid" in keys
-                and not str(row["musicbrainz_albumid"] or "").strip()
-            )
         return self.album_library_group(row) == "artist"
 
     def path_album_grouping_enabled(self) -> bool:
@@ -1225,7 +1216,7 @@ class Catalog:
         )
 
     @staticmethod
-    def _artist_groups(rows):
+    def _artist_groups(rows, projected=None):
         """Build non-destructive presentation groups from local identity evidence.
 
         PostgreSQL may retain several owner rows for Albums carrying different,
@@ -1252,7 +1243,7 @@ class Catalog:
                 parents[right_root] = left_root
 
         by_name: dict[str, int] = {}
-        by_mbid: dict[str, int] = {}
+        ids_by_name: dict[str, set[str]] = {}
         for index, row in enumerate(rows):
             identity = normalized_artist_identity(row["artist_name"])
             if identity in by_name:
@@ -1266,12 +1257,21 @@ class Catalog:
                 else "musicbrainz_artistid"
             )
             mbid = str(row[mbid_field] or "").strip().casefold()
-            if not mbid:
-                continue
-            if mbid in by_mbid:
-                union(index, by_mbid[mbid])
-            else:
-                by_mbid[mbid] = index
+            if mbid:
+                ids_by_name.setdefault(identity, set()).add(mbid)
+            if projected:
+                ids_by_name.setdefault(identity, set()).update(
+                    projected.get(identity, {}).get("paired_artist_ids", ())
+                )
+
+        # Equal names always group for presentation. A name tied to conflicting
+        # IDs cannot bridge a different name into that presentation.
+        by_mbid: dict[str, int] = {}
+        for identity, index in by_name.items():
+            mbids = ids_by_name.get(identity, set())
+            if len(mbids) == 1:
+                mbid = next(iter(mbids))
+                union(index, by_mbid.setdefault(mbid, index))
 
         groups: dict[int, list] = {}
         for index, row in enumerate(rows):
@@ -1321,6 +1321,7 @@ class Catalog:
     ) -> str:
         """Apply ART-004's identical local display-label precedence."""
         candidates: list[tuple[tuple, str]] = []
+        ownership_by_label: dict[str, set[str]] = {}
         group_identities = tuple(dict.fromkeys(
             normalized_artist_identity(row["artist_name"]) for row in group
         ))
@@ -1330,6 +1331,10 @@ class Catalog:
                 continue
             artist_key = str(row["artist_key"] or "")
             mbid = str(row["musicbrainz_artistid"] or "").strip().casefold()
+            if owned_album_keys:
+                ownership_by_label.setdefault(artist_search_literal(label), set()).update(
+                    owned_album_keys.get(artist_key, ())
+                )
             owned_count = (
                 len((owned_album_keys or {}).get(artist_key, set()))
                 if owned_album_keys is not None
@@ -1339,9 +1344,10 @@ class Catalog:
                 False,
                 bool(mbid),
                 owned_count,
-                artist_key.casefold(),
+                artist_search_literal(artist_key),
                 normalized_artist_identity(label),
-                label.casefold(),
+                artist_search_literal(label),
+                label,
             ), label))
         for identity in group_identities:
             value = projected.get(identity)
@@ -1355,10 +1361,11 @@ class Catalog:
                 candidates.append(((
                     True,
                     False,
-                    len(value.get("artist_album_keys", set())),
+                    len(ownership_by_label.get(artist_search_literal(label), ())),
                     ("mbid:" + mbid).casefold(),
                     normalized_artist_identity(label),
-                    label.casefold(),
+                    artist_search_literal(label),
+                    label,
                 ), label))
         if not candidates:
             return str(Catalog._canonical_artist_row(group)["artist_name"])
@@ -1497,7 +1504,7 @@ class Catalog:
             completed_paths = set()
 
         base = (
-            "SELECT albums.album_key,albums.status,albums.path AS album_path,"
+            "SELECT albums.album_key,albums.artist_key,albums.status,albums.path AS album_path,"
             "albums.compilation,albums.musicbrainz_albumid,"
             "owners.artist_name AS album_artist,tracks.artist_name,"
             "{artist_mbid} AS musicbrainz_artistid,tracks.title,tracks.path "
@@ -1528,7 +1535,9 @@ class Catalog:
         def library_group(row) -> str:
             album_key = str(row["album_key"])
             if album_key not in album_groups:
-                album_groups[album_key] = self.album_library_group(row)
+                album_groups[album_key] = self.album_library_group({
+                    **row, "path": row["album_path"],
+                })
             return album_groups[album_key]
 
         credit_value_cache: dict[tuple[str, str, str], tuple[str, ...]] = {}
@@ -1569,14 +1578,9 @@ class Catalog:
                     if not synthetic_album_artist(credit)
                 )
 
-        def projected_credits(row, eligible: set[str]) -> tuple[str, ...]:
-            mbids = re.findall(
-                r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
-                r"[0-9a-f]{4}-[0-9a-f]{12}\b",
-                str(row["musicbrainz_artistid"] or ""),
-            )
-            result: list[str] = []
-            seen: set[str] = set()
+        def projected_credits(row, eligible: set[str]) -> tuple[tuple[str, str], ...]:
+            mbids = ordered_artist_mbids(row["musicbrainz_artistid"])
+            result: list[tuple[str, str]] = []
             for value_index, value in enumerate(credit_values(row)):
                 positional_mbids = (
                     str(row["musicbrainz_artistid"] or "")
@@ -1591,9 +1595,6 @@ class Catalog:
                     if part.strip()
                 )
                 potential = potential_collaboration_credits(value)
-                authoritative = ARTIST_CREDIT_SEPARATOR in str(value).replace(
-                    "\0", ARTIST_CREDIT_SEPARATOR
-                ) or len(configured) > 1
                 anchored = any(
                     (identity := normalized_artist_identity(credit))
                     in indexed_identities
@@ -1602,19 +1603,14 @@ class Catalog:
                 )
                 credits = (
                     potential
-                    if len(potential) > 1
-                    and (authoritative or (not mbids and anchored))
+                    if len(configured) == 1 and len(potential) > 1
+                    and not (mbids if value_index == 0 else ()) and anchored
                     else configured
                 )
-                for credit in credits:
-                    identity = normalized_artist_identity(credit)
-                    if (
-                        identity
-                        and identity not in seen
-                        and not synthetic_album_artist(credit)
-                    ):
-                        seen.add(identity)
-                        result.append(credit)
+                paired = value_index == 0 and len(configured) == len(mbids)
+                for position, credit in enumerate(credits):
+                    if not synthetic_album_artist(credit):
+                        result.append((credit, mbids[position] if paired else ""))
             return tuple(result)
 
         # Artist Albums establish selectable Artist identities. Categorized
@@ -1649,19 +1645,15 @@ class Catalog:
                 continue
             eligible_identities.update(
                 normalized_artist_identity(credit)
-                for credit in projected_credits(row, eligible_identities)
+                for credit, _ in projected_credits(row, eligible_identities)
             )
 
         result: dict[str, dict[str, object]] = {}
         for row in rows:
             group = library_group(row)
             row_credits = projected_credits(row, eligible_identities)
-            mbids = re.findall(
-                r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
-                r"[0-9a-f]{4}-[0-9a-f]{12}\b",
-                str(row["musicbrainz_artistid"] or ""),
-            )
-            for index, credit in enumerate(row_credits):
+            recorded = set()
+            for credit, paired_mbid in row_credits:
                 identity = normalized_artist_identity(credit)
                 if identity not in eligible_identities:
                     continue
@@ -1671,23 +1663,34 @@ class Catalog:
                     "musicbrainz_artistid": "",
                     "musicbrainz_artistids": set(),
                     "paired_label_ids": {},
+                    "credit_labels": set(),
+                    "track_paths": {},
+                    "album_owners": {},
                     "primary_path": "",
                     "album_keys": set(),
                     "artist_album_keys": set(),
                     "statuses": {},
                     "comp_track_states": {},
                 })
-                if len(mbids) == len(row_credits):
-                    paired_mbid = mbids[index].casefold()
+                projection["credit_labels"].add(credit)
+                if paired_mbid:
                     projection["musicbrainz_artistids"].add(paired_mbid)
                     projection["paired_label_ids"].setdefault(credit, set()).add(
                         paired_mbid
                     )
                 album_key = str(row["album_key"])
+                projection["album_owners"][album_key] = [
+                    str(row["artist_key"]), str(row["album_artist"]),
+                ]
+                projection["track_paths"].setdefault(album_key, set()).add(
+                    str(row["path"] or "").replace("\\", "/").strip("/")
+                )
                 if group == "fallback":
-                    projection["comp_track_states"].setdefault(album_key, []).append(
-                        bool(row["comp_complete"])
-                    )
+                    if identity not in recorded:
+                        projection["comp_track_states"].setdefault(album_key, []).append(
+                            bool(row["comp_complete"])
+                        )
+                        recorded.add(identity)
                     continue
                 projection["album_keys"].add(album_key)
                 if group == "artist":
@@ -1697,6 +1700,11 @@ class Catalog:
                 )
         for projection in result.values():
             paired_ids = projection.pop("musicbrainz_artistids", set())
+            projection["paired_artist_ids"] = sorted(paired_ids)
+            projection["credit_labels"] = sorted(projection["credit_labels"])
+            projection["track_paths"] = {
+                key: sorted(paths) for key, paths in projection["track_paths"].items()
+            }
             projection["musicbrainz_artistid"] = (
                 next(iter(paired_ids)) if len(paired_ids) == 1 else ""
             )
@@ -1801,7 +1809,7 @@ class Catalog:
             # rule as a persisted owner. Provider-only and ambiguous credits
             # have no MBID here and therefore remain name-scoped.
         aliases = next(
-            group for group in self._artist_groups(candidates)
+            group for group in self._artist_groups(candidates, projected)
             if any(str(row["artist_key"]) == str(selected["artist_key"]) for row in group)
         )
         canonical = self._canonical_artist_row(aliases)
@@ -2148,71 +2156,20 @@ class Catalog:
         return result
 
     def _indexed_artist_appearances(self, db, artist, aliases) -> dict[str, object]:
-        """Project Featured releases from indexed PostgreSQL track credits.
-
-        The candidate SQL is deliberately bounded by the selected display names;
-        Windows' exact multi-credit parser remains the final authority. Category
-        ownership never suppresses the Rob-rule Artist Album card projection.
-        """
+        """Use the list's published local credit edges for the Overview."""
         alias_ids = {str(row["artist_key"]) for row in aliases}
-        names = list(dict.fromkeys(
-            str(row["artist_name"] or "").strip() for row in aliases
-            if str(row["artist_name"] or "").strip()
-        ))
-        matches = []
-        try:
-            for name in names:
-                escaped = name.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-                matches.extend(db.execute(
-                    "SELECT albums.album_key,albums.artist_key,owner.artist_name AS album_artist_name,"
-                    "albums.path AS album_path,albums.compilation,"
-                    "tracks.path,tracks.title,tracks.artist_name FROM tracks "
-                    "JOIN albums ON albums.album_key=tracks.album_key "
-                    "JOIN artists owner ON owner.artist_key=albums.artist_key "
-                    "WHERE (tracks.artist_name LIKE ? ESCAPE '\\' "
-                    "OR tracks.title LIKE ? ESCAPE '\\' "
-                    "OR tracks.path LIKE ? ESCAPE '\\')",
-                    (("%" + escaped + "%",) * 3),
-                ).fetchall())
-        except sqlite3.OperationalError:
-            return {"album_keys": set(), "featured_album_keys": set(), "song_paths": {}}
-        album_keys: set[str] = set()
+        projected = self._projected_track_artists(db)
         featured: set[str] = set()
         paths: dict[str, set[str]] = {}
-        normalized_names = {normalized_artist_identity(name) for name in names}
-        for row in matches:
-            if not any(
-                artist_credit_position(
-                    credit, name, self.artist_separator_regex
-                ) is not None
-                for name in names
-                for credit in indexed_track_credit_values(
-                    str(row["artist_name"] or ""),
-                    str(row["title"] or ""),
-                    str(row["path"] or ""),
-                    self.artist_separator_regex,
-                )
-            ):
-                continue
-            if (
-                str(row["artist_key"]) not in alias_ids
-                and normalized_artist_identity(str(row["album_artist_name"] or ""))
-                in normalized_names
-            ):
-                # A same-name catalog identity with a different MBID/path is
-                # not a Featured appearance; the text credit cannot identify
-                # which homonymous Artist it represents.
-                continue
-            key = str(row["album_key"])
-            album_keys.add(key)
-            paths.setdefault(key, set()).add(str(row["path"] or "").replace("\\", "/").strip("/"))
-            if (
-                str(row["artist_key"]) not in alias_ids
-                and not synthetic_album_artist(row["album_artist_name"])
-            ):
-                featured.add(key)
+        for identity in {normalized_artist_identity(row["artist_name"]) for row in aliases}:
+            evidence = projected.get(identity, {})
+            for key, track_paths in evidence.get("track_paths", {}).items():
+                paths.setdefault(key, set()).update(track_paths)
+                owner_key, owner_name = evidence["album_owners"][key]
+                if owner_key not in alias_ids and not synthetic_album_artist(owner_name):
+                    featured.add(key)
         return {
-            "album_keys": album_keys,
+            "album_keys": set(paths),
             "featured_album_keys": featured,
             "song_paths": {key: sorted(values) for key, values in paths.items()},
         }
@@ -2444,17 +2401,16 @@ class Catalog:
                 status_rows = db.execute(
                     "SELECT albums.*,owners.artist_name FROM albums "
                     "JOIN artists owners ON owners.artist_key=albums.artist_key "
-                    "WHERE COALESCE(compilation,0)=0 "
-                    "OR TRIM(COALESCE(musicbrainz_albumid,''))<>''"
                 ).fetchall()
-                status_rows = [
+                eligible_status_rows = [
                     row for row in status_rows if self.artist_album_allowed(row)
                 ]
-                coordination = self._album_write_coordination(db, status_rows)
+                coordination = self._album_write_coordination(db, eligible_status_rows)
                 projected_statuses = True
             except sqlite3.OperationalError:
                 # Reduced read-only fixtures can predate Album status fields.
                 status_rows = []
+                eligible_status_rows = []
                 coordination = {}
                 projected_statuses = False
         existing_identities = {
@@ -2469,7 +2425,13 @@ class Catalog:
         statuses_by_artist: dict[str, list] = {}
         album_evidence_by_key: dict[str, dict[str, object]] = {}
         owned_album_keys: dict[str, set[str]] = {}
-        for row in status_rows:
+        legacy_owner_album_keys: dict[str, set[str]] = {}
+        if not self.path_album_grouping_enabled():
+            for row in status_rows:
+                album_key = str(row["album_key"])
+                if album_key not in self.category_overrides and not row["compilation"]:
+                    legacy_owner_album_keys.setdefault(str(row["artist_key"]), set()).add(album_key)
+        for row in eligible_status_rows:
             album_key = str(row["album_key"])
             effective_status = self._effective_album_status(
                 row, coordination.get(album_key, {})
@@ -2487,13 +2449,16 @@ class Catalog:
             )
             owned_album_keys.setdefault(str(row["artist_key"]), set()).add(album_key)
         result = []
-        for group in self._artist_groups(rows):
+        for group in self._artist_groups(rows, projected):
             canonical = self._canonical_artist_row(group)
             if synthetic_album_artist(canonical["artist_name"]):
                 continue
             alias_names = {
                 str(row["artist_name"] or "") for row in group
             }
+            for row in group:
+                evidence = projected.get(normalized_artist_identity(row["artist_name"]), {})
+                alias_names.update(evidence.get("credit_labels", ()))
             if query and not any(
                 artist_search_matches(query, alias) for alias in alias_names
             ):
@@ -2508,11 +2473,13 @@ class Catalog:
                 for row in group
                 for key in owned_album_keys.get(str(row["artist_key"]), set())
             } | set(appearance.get("album_keys", set()))
-            effective_album_count = (
-                len(album_keys)
-                if self.path_album_grouping_enabled()
-                else len(album_keys) if album_keys else stored_album_count
-            )
+            effective_album_count = len(album_keys)
+            if not effective_album_count and not self.path_album_grouping_enabled():
+                legacy_keys = {
+                    key for row in group
+                    for key in legacy_owner_album_keys.get(str(row["artist_key"]), ())
+                }
+                effective_album_count = len(legacy_keys) if projected_statuses else stored_album_count
             if effective_album_count == 0:
                 continue
             status_group = [
@@ -2603,8 +2570,6 @@ class Catalog:
                 "SELECT artists.artist_key, artists.artist_name, artists.musicbrainz_artistid, "
                 "artists.primary_path, COUNT(albums.album_key) AS album_count, artists.status "
                 "FROM artists LEFT JOIN albums ON albums.artist_key=artists.artist_key "
-                "AND (COALESCE(albums.compilation,0)=0 "
-                "OR TRIM(COALESCE(albums.musicbrainz_albumid,''))<>'') "
                 "GROUP BY artists.artist_key "
                 "ORDER BY artists.artist_name COLLATE NOCASE"
             ).fetchall()
@@ -2612,7 +2577,8 @@ class Catalog:
             eligible_owner_ids = {
                 str(row["artist_key"])
                 for row in db.execute(
-                    "SELECT albums.artist_key,albums.path,albums.compilation,"
+                    "SELECT albums.album_key,albums.artist_key,albums.path,albums.compilation,"
+                    "albums.musicbrainz_albumid,"
                     "owners.artist_name FROM albums "
                     "JOIN artists owners ON owners.artist_key=albums.artist_key"
                 ).fetchall()
@@ -2628,7 +2594,7 @@ class Catalog:
         )]
         remote_artists = {} if maintenance_active else self._navidrome_artists_by_name()
         result = []
-        for group in self._artist_groups(rows):
+        for group in self._artist_groups(rows, projected):
             canonical = self._canonical_artist_row(group)
             if synthetic_album_artist(canonical["artist_name"]):
                 continue

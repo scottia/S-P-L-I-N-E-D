@@ -2,6 +2,20 @@
   "policy_id": "ART-004",
   "version": 1,
   "presentation_normalization": "NFKC + Unicode casefold + alphanumeric",
+  "local_inventory_case": {
+    "album": "Credits and Ownership",
+    "album_artist": "Local Owner",
+    "album_mbid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "track_artists": ["A$AP Rocky", "A$AP Rocky", "Local Owner"],
+    "track_artist_mbids": [
+      "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    ],
+    "expected_owner_key": "tag:local owner",
+    "expected_artist_names": ["A$AP Rocky", "Local Owner"],
+    "literal_artist_query": "$"
+  },
   "credit_cases": [
     {
       "id": "explicit-trio",

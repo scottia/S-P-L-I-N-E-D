@@ -138,6 +138,43 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             "adjustments": {"Brightness": 40},
         }
 
+    def test_art004_original_inventory_preserves_owner_and_credit_slots(self):
+        case = json.loads((Path(__file__).parents[4] / ".github/test-data/artist-identity-conformance.json")
+                          .read_text(encoding="utf-8"))["local_inventory_case"]
+        folder = self.runtime.music / "Unrelated physical folder" / case["album"]
+        folder.mkdir(parents=True)
+        track = folder / "01.flac"
+        sf.write(track, np.zeros((4410, 2)), 44100)
+        audio = FLAC(track)
+        for key, value in {
+            "title": "Fixture track",
+            "album": case["album"],
+            "albumartist": case["album_artist"],
+            "musicbrainz_albumid": case["album_mbid"],
+            "artist": case["track_artists"],
+            "musicbrainz_artistid": case["track_artist_mbids"],
+        }.items():
+            audio[key] = value
+        audio.save()
+        original = track.read_bytes()
+        self.services.refresh_index(mode="full")
+        album_key = "mbid:" + case["album_mbid"]
+        with closing(self.db.connect()) as db:
+            row = db.execute("SELECT artist_key FROM albums WHERE album_key=?", (album_key,)).fetchone()
+            self.assertEqual(row["artist_key"], case["expected_owner_key"])
+            row = db.execute("SELECT artist_name,musicbrainz_artistid FROM tracks WHERE album_key=?", (album_key,)).fetchone()
+            self.assertEqual(row["artist_name"].split("\x1f"), case["track_artists"])
+            self.assertEqual(row["musicbrainz_artistid"].split(","), case["track_artist_mbids"])
+        listed = [item for item in self.services.catalog.artists("")
+                  if item["name"] in case["expected_artist_names"]]
+        self.assertEqual([item["name"] for item in listed], case["expected_artist_names"])
+        self.assertEqual([item["albums"] for item in listed], [1, 1])
+        searched = self.services.catalog.artists(case["literal_artist_query"])
+        self.assertEqual([item["id"] for item in searched], [listed[0]["id"]])
+        overview = self.services.catalog.artist(listed[0]["id"])
+        self.assertEqual([(item["id"], item["featured"]) for item in overview["albums"]], [(album_key, True)])
+        self.assertEqual(track.read_bytes(), original)
+
     def test_database_pool_bounds_concurrent_connections_without_eager_startup(self):
         database = Database(self.url, pool_max_size=2, pool_timeout=1.0)
         self.assertEqual(

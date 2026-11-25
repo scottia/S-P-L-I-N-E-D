@@ -32,6 +32,7 @@ struct Id3v2Fields {
 pub struct AlbumIndexTags {
     pub album: String,
     pub album_artist: String,
+    pub track_artist: String,
     pub artist_sort: String,
     pub album_sort: String,
     pub musicbrainz_album_id: String,
@@ -39,6 +40,16 @@ pub struct AlbumIndexTags {
     pub musicbrainz_album_artist_id: String,
     pub year: String,
     pub compilation: bool,
+}
+
+impl AlbumIndexTags {
+    pub fn owner_name(&self) -> &str {
+        if self.album_artist.trim().is_empty() {
+            &self.track_artist
+        } else {
+            &self.album_artist
+        }
+    }
 }
 
 /// Read only the representative-track fields that define the media index.
@@ -81,7 +92,7 @@ pub fn read_album_index_tags_and_track_evidence(
             value.musicbrainz_artist_id = value
                 .musicbrainz_artist_id
                 .take()
-                .or_else(|| read_optional(&tagged_file, &ItemKey::MusicBrainzArtistId));
+                .or_else(|| read_catalog_values(&tagged_file, &ItemKey::MusicBrainzArtistId));
         }
         return Ok((album, evidence));
     }
@@ -93,15 +104,12 @@ pub fn read_album_index_tags_and_track_evidence(
         )
     })?;
     let album = album_index_from_tagged_file(&tagged_file);
-    let evidence = evidence_from_tagged_file(path, &tagged_file).ok();
+    let evidence = evidence_from_tagged_file_with(path, &tagged_file, read_catalog_values).ok();
     Ok((album, evidence))
 }
 
 fn album_index_from_tagged_file(tagged_file: &TaggedFile) -> AlbumIndexTags {
     let album = read_optional(tagged_file, &ItemKey::AlbumTitle).unwrap_or_default();
-    let album_artist = read_optional(tagged_file, &ItemKey::AlbumArtist)
-        .or_else(|| read_optional(tagged_file, &ItemKey::TrackArtist))
-        .unwrap_or_default();
     let date = read_optional(tagged_file, &ItemKey::RecordingDate)
         .or_else(|| read_optional(tagged_file, &ItemKey::OriginalReleaseDate))
         .unwrap_or_default();
@@ -122,7 +130,8 @@ fn album_index_from_tagged_file(tagged_file: &TaggedFile) -> AlbumIndexTags {
 
     AlbumIndexTags {
         album,
-        album_artist,
+        album_artist: read_optional(tagged_file, &ItemKey::AlbumArtist).unwrap_or_default(),
+        track_artist: read_catalog_values(tagged_file, &ItemKey::TrackArtist).unwrap_or_default(),
         artist_sort: read_optional(tagged_file, &ItemKey::AlbumArtistSortOrder)
             .or_else(|| read_optional(tagged_file, &ItemKey::TrackArtistSortOrder))
             .unwrap_or_default(),
@@ -137,7 +146,6 @@ fn album_index_from_tagged_file(tagged_file: &TaggedFile) -> AlbumIndexTags {
             tagged_file,
             &ItemKey::MusicBrainzReleaseArtistId,
         )
-        .or_else(|| read_optional(tagged_file, &ItemKey::MusicBrainzArtistId))
         .unwrap_or_default(),
         year,
         compilation,
@@ -182,7 +190,7 @@ where
             scope.spawn(move || {
                 let start = chunk_index * chunk_size;
                 for (offset, path) in chunk.iter().enumerate() {
-                    let _ = sender.send((start + offset, read_local_track_evidence(path).ok()));
+                    let _ = sender.send((start + offset, read_catalog_track_evidence(path).ok()));
                 }
             });
         }
@@ -203,6 +211,18 @@ where
 }
 
 pub fn read_local_track_evidence(path: &Path) -> Result<LocalTrackEvidence, String> {
+    read_track_evidence_with(path, read_all, read_optional)
+}
+
+pub(crate) fn read_catalog_track_evidence(path: &Path) -> Result<LocalTrackEvidence, String> {
+    read_track_evidence_with(path, read_catalog_values, read_catalog_values)
+}
+
+fn read_track_evidence_with(
+    path: &Path,
+    artist_values: fn(&TaggedFile, &ItemKey) -> Option<String>,
+    fallback_artist_ids: fn(&TaggedFile, &ItemKey) -> Option<String>,
+) -> Result<LocalTrackEvidence, String> {
     if is_mpeg_path(path)
         && let Some(fields) = read_id3v2_fields(path)?
     {
@@ -218,7 +238,7 @@ pub fn read_local_track_evidence(path: &Path) -> Result<LocalTrackEvidence, Stri
                 .or_else(|| read_optional(&tagged_file, &ItemKey::MusicBrainzRecordingId));
             evidence.musicbrainz_artist_id = evidence
                 .musicbrainz_artist_id
-                .or_else(|| read_optional(&tagged_file, &ItemKey::MusicBrainzArtistId));
+                .or_else(|| fallback_artist_ids(&tagged_file, &ItemKey::MusicBrainzArtistId));
         }
         return Ok(evidence);
     }
@@ -230,7 +250,7 @@ pub fn read_local_track_evidence(path: &Path) -> Result<LocalTrackEvidence, Stri
         )
     })?;
 
-    evidence_from_tagged_file(path, &tagged_file)
+    evidence_from_tagged_file_with(path, &tagged_file, artist_values)
 }
 
 /// Album identity needs tags only. Lofty's default path reader also reads
@@ -247,12 +267,18 @@ fn read_tags_only(path: &Path) -> Result<TaggedFile, lofty::error::FileParseErro
         .read()
 }
 
-fn evidence_from_tagged_file(
+#[cfg(test)]
+fn evidence_from_tagged_file(path: &Path, tagged_file: &TaggedFile) -> Result<LocalTrackEvidence, String> {
+    evidence_from_tagged_file_with(path, tagged_file, read_all)
+}
+
+fn evidence_from_tagged_file_with(
     path: &Path,
     tagged_file: &TaggedFile,
+    artist_values: fn(&TaggedFile, &ItemKey) -> Option<String>,
 ) -> Result<LocalTrackEvidence, String> {
     let title = read_required(tagged_file, &ItemKey::TrackTitle, "TITLE", path)?;
-    let artist = read_all(tagged_file, &ItemKey::TrackArtist).ok_or_else(|| {
+    let artist = artist_values(tagged_file, &ItemKey::TrackArtist).ok_or_else(|| {
         format!(
             "SPLINED scan requires ARTIST in actual file tags: {}",
             path.display()
@@ -268,7 +294,7 @@ fn evidence_from_tagged_file(
         album_artist: read_optional(tagged_file, &ItemKey::AlbumArtist),
         musicbrainz_album_id,
         musicbrainz_track_id: read_optional(tagged_file, &ItemKey::MusicBrainzRecordingId),
-        musicbrainz_artist_id: read_all(tagged_file, &ItemKey::MusicBrainzArtistId),
+        musicbrainz_artist_id: artist_values(tagged_file, &ItemKey::MusicBrainzArtistId),
         compilation: read_optional(tagged_file, &ItemKey::FlagCompilation),
     })
 }
@@ -296,7 +322,8 @@ fn album_index_from_id3(fields: Id3v2Fields) -> AlbumIndexTags {
 
     AlbumIndexTags {
         album: fields.album.unwrap_or_default(),
-        album_artist: fields.album_artist.or(fields.artist).unwrap_or_default(),
+        album_artist: fields.album_artist.unwrap_or_default(),
+        track_artist: fields.artist.unwrap_or_default(),
         artist_sort: fields.artist_sort.unwrap_or_default(),
         album_sort: fields.album_sort.unwrap_or_default(),
         musicbrainz_album_id: fields.musicbrainz_album_id.unwrap_or_default(),
@@ -581,6 +608,15 @@ fn read_all(tagged_file: &TaggedFile, key: &ItemKey) -> Option<String> {
         }
     }
     (!values.is_empty()).then(|| values.join("\0"))
+}
+
+fn read_catalog_values(tagged_file: &TaggedFile, key: &ItemKey) -> Option<String> {
+    tagged_file.primary_tag().into_iter().chain(tagged_file.tags()).find_map(|tag| {
+        let values = tag.get_strings(*key)
+            .filter_map(|value| clean_value(Some(value)))
+            .collect::<Vec<_>>();
+        (!values.is_empty()).then(|| values.join("\0"))
+    })
 }
 
 fn clean_value(value: Option<&str>) -> Option<String> {

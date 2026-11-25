@@ -1680,6 +1680,7 @@ class Services:
                             str(prior_at_path["album_key"]),
                             old_tracks,
                             force_read=True,
+                            preserve_artist_positions=True,
                             artist_separator_regex=separator_regex,
                             executor=metadata_executor,
                             progress=large_album_progress,
@@ -1757,6 +1758,7 @@ class Services:
                             str(row["album_key"]),
                             old_tracks,
                             force_read=force_track_credit_read,
+                            preserve_artist_positions=True,
                             artist_separator_regex=separator_regex,
                             executor=metadata_executor,
                             preloaded=preloaded,
@@ -2277,6 +2279,7 @@ class Services:
             album_id,
             old,
             force_read=force_tag_read,
+            preserve_artist_positions=True,
             artist_separator_regex=self.catalog.artist_separator_regex,
         )
         with closing(self.runtime.database.connect()) as db, db:
@@ -2380,6 +2383,7 @@ class Services:
             core.AlbumDir(Path(row["path"]), files),
             album_id,
             old,
+            preserve_artist_positions=True,
             artist_separator_regex=self.catalog.artist_separator_regex,
         )
         with closing(self.runtime.database.connect()) as db, db:

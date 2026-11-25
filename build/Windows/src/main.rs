@@ -58,7 +58,7 @@ use splined_core::media_database::{
     MediaAlbumSnapshot, MediaIndexChanges, MediaSnapshot, MediaTrackSnapshot,
     RuntimeArtworkMaterial, artist_projection_identity, backfill_windows_comp_track_coordination,
     clear_album_bypass_from_runtime, database_path, detect_media_index_changes,
-    fallback_tracks_from_folder, indexed_artist_appearances, load_artist_art_profile,
+    fallback_tracks_from_folder, load_artist_art_profile,
     media_snapshot, media_snapshot_for_setup_with_progress, pending_database_schema_upgrade,
     persist_opposing_album_artwork, persist_opposing_compilation_artwork, record_album_outcome,
     record_album_outcome_from_runtime, save_album_category_override, save_artist_art_identity,
@@ -1829,7 +1829,7 @@ fn refresh_navidrome_thumbnails(
     {
         ui.invoke_load_artist_top_songs();
     }
-    let Some((config, albums, needs_refresh, lookup_override, indexed_artist_mbid)) =
+    let Some((config, albums, needs_refresh, lookup_override, indexed_artist_mbid, indexed_appearances)) =
         state.lock().ok().map(|mut app| {
             let lookup_override = requested_artist
                 .as_ref()
@@ -1875,12 +1875,16 @@ fn refresh_navidrome_thumbnails(
                 })
                 .cloned()
                 .unwrap_or_default();
+            let indexed_appearances = focused_artist.as_deref()
+                .map(|artist| app.library.catalog_artist_appearances(artist))
+                .unwrap_or_default();
             (
                 app.config.clone(),
                 albums,
                 needs_refresh,
                 lookup_override,
                 indexed_artist_mbid,
+                indexed_appearances,
             )
         })
     else {
@@ -2051,20 +2055,6 @@ fn refresh_navidrome_thumbnails(
             )
             .unwrap_or_else(|_| source.to_path_buf())
         });
-        let indexed_appearances = requested_artist
-            .as_deref()
-            .map(|artist| match indexed_artist_appearances(&config, artist) {
-                Ok(appearances) => appearances,
-                Err(error) => {
-                    if let Some(log) = UI_DEBUG_LOG_HANDLE.get() {
-                        log.record(format!(
-                            "artist-appearance-sqlite-read-failed artist={artist} error={error}"
-                        ));
-                    }
-                    Default::default()
-                }
-            })
-            .unwrap_or_default();
         if let Some(artist) = requested_artist.as_ref() {
             if let Some(path) = saved_package
                 .portrait
