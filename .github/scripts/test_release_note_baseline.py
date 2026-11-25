@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / ".github" / "scripts"))
 
 from release_note_baseline import resolve_release_note_baseline
-from source_version import stamp_release_version
+from source_version import _stamp_version_fields, stamp_release_version
 
 
 VERSION_FILES = (
@@ -36,6 +36,9 @@ class ReleaseNoteBaselineTests(unittest.TestCase):
             destination = self.repository / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / relative, destination)
+        # Seed only the disposable fixture with its own fixed starting version.
+        # The checked-out source may already have advanced beyond this baseline.
+        _stamp_version_fields(self.repository, "3.0.27")
         sentinel = self.repository / "schema/sentinel.json"
         sentinel.parent.mkdir(parents=True, exist_ok=True)
         sentinel.write_text('{"revision": 0}\n', encoding="utf-8")
