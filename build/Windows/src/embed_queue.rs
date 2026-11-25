@@ -2,7 +2,7 @@
 //! The library SQLite database is deliberately not used for long-running jobs.
 
 use rusqlite::{Connection, OptionalExtension, params};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -185,17 +185,25 @@ pub fn list(path: &Path) -> Result<Vec<EmbedJob>, String> {
         .map_err(|error| format!("Unable to decode embed jobs: {error}"))
 }
 
-pub fn active_album_paths(path: &Path) -> Result<HashSet<String>, String> {
+pub fn active_album_states(path: &Path) -> Result<HashMap<String, String>, String> {
     let connection = open(path)?;
     let mut statement = connection
-        .prepare("SELECT album_path FROM embed_jobs WHERE state IN ('staged','queued','running','paused')")
+        .prepare("SELECT album_path,state FROM embed_jobs WHERE state IN ('staged','queued','running','paused')")
         .map_err(|error| format!("Unable to inspect active embed albums: {error}"))?;
     statement
-        .query_map([], |row| row.get::<_, String>(0))
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?.to_lowercase(),
+                row.get::<_, String>(1)?,
+            ))
+        })
         .map_err(|error| format!("Unable to read active embed albums: {error}"))?
-        .map(|path| path.map(|path| path.to_lowercase()))
-        .collect::<Result<HashSet<_>, _>>()
+        .collect::<Result<HashMap<_, _>, _>>()
         .map_err(|error| format!("Unable to decode active embed albums: {error}"))
+}
+
+pub fn active_album_paths(path: &Path) -> Result<HashSet<String>, String> {
+    Ok(active_album_states(path)?.into_keys().collect())
 }
 
 pub fn start_staged(path: &Path) -> Result<usize, String> {
@@ -365,6 +373,13 @@ mod tests {
         );
         assert_eq!(list(&database).unwrap().len(), 1);
         assert_eq!(list(&database).unwrap()[0].state, "staged");
+        assert_eq!(
+            active_album_states(&database)
+                .unwrap()
+                .get(&album.to_string_lossy().to_lowercase())
+                .map(String::as_str),
+            Some("staged")
+        );
         assert!(
             active_album_paths(&database)
                 .unwrap()
@@ -372,7 +387,21 @@ mod tests {
         );
         assert!(claim_next(&database).unwrap().is_none());
         assert_eq!(start_staged(&database).unwrap(), 1);
+        assert_eq!(
+            active_album_states(&database)
+                .unwrap()
+                .get(&album.to_string_lossy().to_lowercase())
+                .map(String::as_str),
+            Some("queued")
+        );
         let claimed = claim_next(&database).unwrap().unwrap();
+        assert_eq!(
+            active_album_states(&database)
+                .unwrap()
+                .get(&album.to_string_lossy().to_lowercase())
+                .map(String::as_str),
+            Some("running")
+        );
         assert_eq!(claimed.id, first);
         assert_eq!(claimed.thumbnail, b"thumbnail");
         assert_eq!((claimed.cover_width, claimed.cover_height), (1600, 1600));
@@ -380,6 +409,13 @@ mod tests {
         progress(&database, first, 1, 2).unwrap();
         pause_running(&database, first, 1, 2).unwrap();
         assert_eq!(list(&database).unwrap()[0].state, "paused");
+        assert_eq!(
+            active_album_states(&database)
+                .unwrap()
+                .get(&album.to_string_lossy().to_lowercase())
+                .map(String::as_str),
+            Some("paused")
+        );
         assert_eq!(list(&database).unwrap()[0].completed, 1);
         assert_eq!(resume_paused(&database).unwrap(), 1);
         assert_eq!(claim_next(&database).unwrap().unwrap().completed, 1);

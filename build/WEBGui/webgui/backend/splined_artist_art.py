@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import tempfile
 from typing import Iterable
+import unicodedata
 from uuid import UUID
 
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageOps, ImageStat
@@ -135,6 +136,17 @@ def _artist_key(value: str) -> str:
     return compact.removeprefix("the")
 
 
+def _presentation_identity(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", str(value or ""))
+    visible = "".join(
+        character for character in normalized
+        if unicodedata.category(character) != "Cf"
+    )
+    return "".join(
+        character.casefold() for character in visible if character.isalnum()
+    )
+
+
 def _valid_mbid(value: str) -> str:
     try:
         return str(UUID(value.strip()))
@@ -149,9 +161,10 @@ def artist_targets(
     """Return Artist folder targets, then one managed shared-folder target."""
     if not artist.strip():
         return []
+    selected_identity = _presentation_identity(artist)
     eligible = [
         album for album in albums
-        if album.artist.strip().casefold() == artist.strip().casefold()
+        if _presentation_identity(album.artist) == selected_identity
         and album.album_mbid.strip()
     ]
     if not eligible and not allow_managed_without_owned_album:

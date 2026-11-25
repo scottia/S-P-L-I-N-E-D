@@ -397,7 +397,7 @@ class Catalog:
     artist_projection_generation: str = ""
     artist_projection_pending: bool = False
     artist_projection_build_lock: Lock = field(default_factory=Lock, repr=False)
-    portrait_cache: dict[str, Path] = field(default_factory=dict)
+    portrait_cache: dict[str, tuple[str, Path]] = field(default_factory=dict)
     portrait_retry_at: dict[str, float] = field(default_factory=dict)
     portrait_failures: dict[str, int] = field(default_factory=dict)
     navidrome_artist_directory: dict[str, dict[str, object]] = field(default_factory=dict)
@@ -1623,11 +1623,25 @@ class Catalog:
             for item in artists
         )
 
+    @staticmethod
+    def _artist_portrait_identity(artist) -> str:
+        return (
+            str(artist["artist_key"])
+            + "\0"
+            + normalized_artist_identity(artist["artist_name"])
+        )
+
     def _navidrome_thumbnail_path(self, artist, variant: str = "web-v1") -> Path | None:
         directory = self.cache / "navidrome-thumbnails" if self.cache is not None else None
         if directory is None:
             return None
-        identity = sha256(str(artist["artist_key"]).encode("utf-8")).hexdigest()[:32]
+        # Bind persistent provider pixels to both the durable row and visible
+        # Artist identity. A catalog refresh may legitimately reuse a
+        # transport key; an old Bette Midler cache entry must never become an
+        # A. R. Rahman portrait merely because that key was reused.
+        identity = sha256(
+            self._artist_portrait_identity(artist).encode("utf-8")
+        ).hexdigest()[:32]
         path = directory / "artists" / (variant + "-" + identity + ".png")
         return path if path.is_file() else None
 
@@ -1665,7 +1679,9 @@ class Catalog:
                 opened.verify()
             directory = directory / "artists"
             directory.mkdir(parents=True, exist_ok=True)
-            identity = sha256(str(artist["artist_key"]).encode("utf-8")).hexdigest()[:32]
+            identity = sha256(
+                self._artist_portrait_identity(artist).encode("utf-8")
+            ).hexdigest()[:32]
             path = directory / (variant + "-" + identity + ".png")
             descriptor, temporary = tempfile.mkstemp(prefix=".navidrome-", suffix=".png", dir=directory)
             try:
@@ -2398,6 +2414,7 @@ class Catalog:
 
     def artist_thumbnail_path(self, artist) -> Path | None:
         artist_id = str(artist["artist_key"])
+        portrait_identity = self._artist_portrait_identity(artist)
         raw_id = str(artist["musicbrainz_artistid"] or "").strip()
         name_identity = (
             "name-"
@@ -2428,8 +2445,12 @@ class Catalog:
         # Re-resolve local Artist Art before consulting the session cache. A
         # Windows write or external artist.* creation must replace an older
         # provider portrait without requiring a WebGUI restart.
-        if portrait is None and artist_id in self.portrait_cache:
-            cached = self.portrait_cache[artist_id]
+        cached_entry = self.portrait_cache.get(artist_id)
+        if cached_entry is not None and cached_entry[0] != portrait_identity:
+            self.portrait_cache.pop(artist_id, None)
+            cached_entry = None
+        if portrait is None and cached_entry is not None:
+            cached = cached_entry[1]
             portrait = cached if cached.is_file() else None
         if portrait is None:
             portrait = self._navidrome_thumbnail_path(artist)
@@ -2441,7 +2462,7 @@ class Catalog:
         # Art may be written by this WebGUI or the Windows application while
         # the server remains open.
         if portrait is not None:
-            self.portrait_cache[artist_id] = portrait
+            self.portrait_cache[artist_id] = (portrait_identity, portrait)
         else:
             self.portrait_cache.pop(artist_id, None)
         return portrait
@@ -2475,7 +2496,9 @@ class Catalog:
                     portrait = None
                 with self.lock:
                     if portrait is not None:
-                        self.portrait_cache[artist_key] = portrait
+                        self.portrait_cache[artist_key] = (
+                            self._artist_portrait_identity(artist), portrait
+                        )
                         self.portrait_retry_at.pop(artist_key, None)
                         self.portrait_failures.pop(artist_key, None)
                     else:
@@ -3300,7 +3323,6 @@ class Catalog:
                 return {
                     **cached,
                     "artist": self.artist(artist_id),
-                    "comp_albums": self.artist_comp_albums(artist_id),
                 }
             return self._load_artist_metadata(artist_id)
 
@@ -3339,7 +3361,14 @@ class Catalog:
                 matches = search.get("searchResult3", {}).get("artist", [])
                 if isinstance(matches, dict):
                     matches = [matches]
-                match = next((item for item in matches if str(item.get("name", "")).casefold() == str(artist["name"]).casefold()), None)
+                match = next(
+                    (
+                        item for item in matches
+                        if normalized_artist_identity(item.get("name", ""))
+                        == normalized_artist_identity(artist["name"])
+                    ),
+                    None,
+                )
                 if match:
                     info = call("getArtistInfo2", {"id": str(match["id"])}).get("artistInfo2", {})
                     biography = re.sub(r"<[^>]+>", " ", str(info.get("biography") or ""))
@@ -3434,27 +3463,18 @@ class Catalog:
                 result.update(profile)
                 result.pop("reason", None)
                 self._save_artist_profile(artist_id, profile)
-        # Navidrome's lightweight getArtist response does not consistently
-        # include the per-track genres exposed by search3.  Match the native
-        # Windows Artist Overview contract by resolving the selected Artist's
-        # bounded appearance catalog once on a metadata-cache miss.  This also
-        # keeps Featured roles tied to the exact selected Artist identity; the
-        # cached result prevents repeat traversal during ordinary rerenders.
-        if not result.get("genres") and credential_path.is_file():
-            try:
-                appearance = self.refresh_artist_appearances(artist_id)
-                result["genres"] = list(appearance.get("genres", []))
-            except (OSError, ValueError, KeyError, TypeError, requests.RequestException):
-                pass
+        # Biography presentation must not wait behind the optional provider
+        # song/appearance traversal. Indexed/stored appearances already feed
+        # the Overview; a deliberate appearance refresh remains independent
+        # instead of holding this response for as many as twenty song pages.
         with self.lock:
             self.metadata_cache[artist_id] = result
-        projected_artist = self.artist(artist_id)
+        projected_artist = artist
         if result.get("genres"):
             projected_artist["genres"] = sorted(set(projected_artist.get("genres", [])) | set(result["genres"]))
         return {
             **result,
             "artist": projected_artist,
-            "comp_albums": self.artist_comp_albums(artist_id),
         }
 
     def search_artist(self, artist_id: str) -> dict[str, object]:

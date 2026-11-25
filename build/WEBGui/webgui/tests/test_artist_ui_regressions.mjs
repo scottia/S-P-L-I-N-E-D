@@ -595,6 +595,11 @@ const renderQueueFunction = between(
   "function renderQueue",
   "async function refreshCompletedAlbum",
 );
+const refreshCompletedAlbumFunction = between(
+  operationsSource,
+  "async function refreshCompletedAlbum",
+  "async function refreshOpposingAlbumThumbnails",
+);
 const pollJobsFunction = between(
   operationsSource,
   "let jobsPolling",
@@ -746,6 +751,59 @@ const repairFallbackFunction = between(
   "async function repairFallback",
   "const quickPreview",
 );
+
+test("Artist Overview primes COMP Report without a second library request", async () => {
+  let apiCalls = 0;
+  const state = {
+    selectionRequest: 7,
+    artist: {id: "artist-1"},
+    compAlbums: [{id: "comp-1", name: "Compilation", tracks: [{key: "track-1", status: "blue"}]}],
+    compGroups: [],
+  };
+  const context = load(artistCompReportFunction, {
+    state,
+    api: async () => { apiCalls += 1; throw new Error("duplicate library request"); },
+    syncSelectedArtistStatus() {}, refreshLibraryArtistRow() {}, renderCompReportButtonState() {},
+  });
+
+  await context.precompileArtistCompReport("artist-1", 7);
+  const groups = await context.requestArtistCompReport("artist-1");
+
+  assert.equal(apiCalls, 0);
+  assert.equal(state.compGroups[0].id, "comp-1");
+  assert.deepEqual(JSON.parse(JSON.stringify(groups)), JSON.parse(JSON.stringify(state.compGroups)));
+  assert.notEqual(state.compGroups[0].tracks[0], state.compAlbums[0].tracks[0]);
+});
+
+test("completed projected Album refreshes the visible Artist state", async () => {
+  const calls = [];
+  let synced = 0;
+  const state = {
+    artist: {id: "visible-artist", status: "partial", albums: [{id: "shared-album"}]},
+    album: {id: "shared-album"}, compAlbums: [],
+  };
+  const context = load(refreshCompletedAlbumFunction, {
+    state,
+    albumInCurrentArtistContext: id => id === "shared-album",
+    api: async path => {
+      calls.push(path);
+      if (path.startsWith("/api/album"))
+        return {id: "shared-album", artist_id: "physical-owner", status: "processed"};
+      if (path.startsWith("/api/artist/overview"))
+        return {artist: {id: "visible-artist", status: "processed", albums: [{id: "shared-album"}]}, comp_albums: []};
+      throw new Error(path);
+    },
+    syncSelectedArtistStatus: () => { synced += 1; },
+    renderLibrary() {}, renderHero() {}, renderPanes() {}, renderReview() {},
+  });
+
+  await context.refreshCompletedAlbum("shared-album");
+
+  assert.equal(state.artist.id, "visible-artist");
+  assert.equal(state.artist.status, "processed");
+  assert.equal(synced, 1);
+  assert.equal(calls[1], "/api/artist/overview?id=visible-artist");
+});
 
 test("COMP artwork source labels map to the Windows source counters", () => {
   const context = load(sourceKeyFunction, {SOURCES: [

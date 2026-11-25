@@ -48,30 +48,17 @@ class WindowsAdvisoryTests(unittest.TestCase):
         self.assertNotIn("setup-python", advisory)
         self.assertNotIn("needs.scope.outputs.windows_advisory", advisory)
 
-    def test_release_workflow_retains_optional_strict_validation_and_clean_build(self):
-        workflow = (REPOSITORY / ".github/workflows/01-full-release.yml").read_text(
+    def test_windows_build_workflow_retains_full_source_clean_build(self):
+        workflow = (REPOSITORY / ".github/workflows/22-windows-build-store.yml").read_text(
             encoding="utf-8"
         )
-        self.assertIn("extended_windows_validation:", workflow)
-        self.assertIn(
-            "if: ${{ inputs.extended_windows_validation == true }}", workflow
-        )
-        self.assertIn("cargo fmt --manifest-path build/Windows/Cargo.toml -- --check", workflow)
-        self.assertIn("cargo clippy", workflow)
-        self.assertIn("-D warnings", workflow)
-        self.assertIn(
-            "cargo test --locked --manifest-path build/Windows/Cargo.toml --lib",
-            workflow,
-        )
-        clean_build = workflow.split("- name: Build clean x64 Rust/Slint executable", 1)[1]
-        self.assertNotIn(
-            "inputs.extended_windows_validation",
-            clean_build.split("- name:", 1)[0],
-        )
+        self.assertIn('compile_mode="FULL SOURCE"', workflow)
+        self.assertIn("cargo clean --manifest-path build/Windows/Cargo.toml --release", workflow)
         self.assertIn(
             "cargo build --locked --release --manifest-path build/Windows/Cargo.toml",
-            clean_build,
+            workflow,
         )
+        self.assertIn("Test-DevelopmentPackage.ps1", workflow)
 
 
 if __name__ == "__main__":

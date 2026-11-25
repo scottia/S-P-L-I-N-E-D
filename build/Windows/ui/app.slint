@@ -2,7 +2,7 @@ import { Button, ComboBox, LineEdit, ListView, Palette, ScrollView, TextEdit } f
 
 export struct UiLibraryRow { key: string, primary: string, secondary: string, status: string, icon: string, artwork: image, has-artwork: bool, status-color: color, kind: string, depth: int, expanded: bool, selected: bool, eligible: bool, queue-locked: bool }
 export struct UiAlbumStatusBullet { color: color, tip: string }
-export struct UiArtistAlbumRow { key: string, title: string, display-title: string, year: string, artwork: image, has-artwork: bool, status-color: color, state-key: string, selected: bool, bullets: [UiAlbumStatusBullet], check-embedded: bool, validating: bool, comp-loading: bool, processed: bool, fully-complete: bool, fallback: bool, fallback-complete: bool, featured: bool, soundtrack: bool, various-artists: bool, separator-before: bool, banner-display: string, banner-background: color, banner-frame: color, banner-letters: color, complete-frame: color, pending-frame: color, attention-frame: color, queue-locked: bool, overridden: bool }
+export struct UiArtistAlbumRow { key: string, title: string, display-title: string, year: string, artwork: image, has-artwork: bool, status-color: color, state-key: string, selected: bool, bullets: [UiAlbumStatusBullet], check-embedded: bool, validating: bool, comp-loading: bool, processed: bool, fully-complete: bool, fallback: bool, fallback-complete: bool, featured: bool, soundtrack: bool, various-artists: bool, separator-before: bool, banner-display: string, banner-background: color, banner-frame: color, banner-letters: color, complete-frame: color, pending-frame: color, attention-frame: color, queue-locked: bool, queue-state: string, overridden: bool }
 export struct UiAdjustmentPresetRow { index: int, name: string, summary: string, saved: bool }
 export struct UiBannerThemeRow { key: string, name: string, background: color, frame: color, letters: color, at-baseline: bool }
 export struct UiAlbumFrameThemeRow { key: string, name: string, color: color, at-baseline: bool }
@@ -453,12 +453,13 @@ component ArtistAlbumCard inherits Rectangle {
         Rectangle {
             property <bool> mixed-embedded-outline: !root.item.overridden && !root.item.fully-complete && root.item.check-embedded && (root.item.processed || (root.item.fallback && root.item.fallback-complete));
             property <bool> green-purple-outline: root.item.fallback && root.item.fallback-complete && self.mixed-embedded-outline;
+            property <bool> staged-outline: !root.item.overridden && root.item.queue-state == "staged";
             clip: true;
             border-radius: (7px * AppTheme.ui-scale);
-            border-width: self.mixed-embedded-outline ? (0px * AppTheme.ui-scale) : (2px * AppTheme.ui-scale);
+            border-width: self.mixed-embedded-outline || self.staged-outline ? (0px * AppTheme.ui-scale) : (2px * AppTheme.ui-scale);
     border-color: root.item.overridden ? root.item.status-color : (root.item.state-key == "Bypassed" ? AppTheme.yellow : (root.item.comp-loading || root.item.validating ? AppTheme.cyan : (root.item.fully-complete ? root.item.complete-frame : (root.item.check-embedded ? root.item.attention-frame : (root.item.processed ? root.item.pending-frame : root.item.status-color)))));
-            background: self.mixed-embedded-outline ? (self.green-purple-outline ? @linear-gradient(135deg, root.item.complete-frame, root.item.attention-frame, root.item.complete-frame) : @linear-gradient(135deg, root.item.attention-frame, root.item.pending-frame, root.item.attention-frame)) : (album-touch.has-hover ? AppTheme.card-hover : AppTheme.card);
-            if self.mixed-embedded-outline: Rectangle {
+            background: self.staged-outline ? @linear-gradient(135deg, root.item.pending-frame, root.item.attention-frame, root.item.pending-frame) : (self.mixed-embedded-outline ? (self.green-purple-outline ? @linear-gradient(135deg, root.item.complete-frame, root.item.attention-frame, root.item.complete-frame) : @linear-gradient(135deg, root.item.attention-frame, root.item.pending-frame, root.item.attention-frame)) : (album-touch.has-hover ? AppTheme.card-hover : AppTheme.card));
+            if self.mixed-embedded-outline || self.staged-outline: Rectangle {
                 x: (2px * AppTheme.ui-scale); y: (2px * AppTheme.ui-scale); width: parent.width - (4px * AppTheme.ui-scale); height: parent.height - (4px * AppTheme.ui-scale);
                 border-radius: (5px * AppTheme.ui-scale); background: album-touch.has-hover ? AppTheme.card-hover : AppTheme.card;
             }
@@ -485,6 +486,12 @@ component ArtistAlbumCard inherits Rectangle {
                                     background: AppTheme.card; border-color: AppTheme.cyan; border-width: (1px * AppTheme.ui-scale); border-radius: (4px * AppTheme.ui-scale);
                                     Text { text: "MATCHING COMP…"; color: AppTheme.cyan; font-size: (10px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; }
                                 }
+                                if root.item.queue-state != "": Rectangle {
+                                    x: (1px * AppTheme.ui-scale); y: (1px * AppTheme.ui-scale); width: parent.width - (2px * AppTheme.ui-scale); height: (22px * AppTheme.ui-scale);
+                                    background: AppTheme.card; border-width: (1px * AppTheme.ui-scale); border-radius: (4px * AppTheme.ui-scale);
+                                    border-color: root.item.queue-state == "staged" ? root.item.attention-frame : (root.item.queue-state == "queued" ? root.item.pending-frame : (root.item.queue-state == "running" ? AppTheme.cyan : root.item.attention-frame));
+                                    Text { text: root.item.queue-state == "staged" ? "STAGED" : (root.item.queue-state == "queued" ? "QUEUED" : (root.item.queue-state == "running" ? "RUNNING" : (root.item.queue-state == "paused" ? "PAUSED" : "WAITING"))); color: parent.border-color; font-size: (10px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; }
+                                }
                             }
                         }
                         Rectangle { vertical-stretch: 1; background: transparent; clip: true;
@@ -504,7 +511,7 @@ component ArtistAlbumCard inherits Rectangle {
             }
             if root.item.queue-locked: Rectangle {
                 x: (2px * AppTheme.ui-scale); y: (4px * AppTheme.ui-scale); width: (20px * AppTheme.ui-scale); height: (20px * AppTheme.ui-scale); background: transparent;
-                Text { text: "●"; color: root.queue-blink ? #ff4b36 : #ffad32; font-size: (20px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 900; horizontal-alignment: center; vertical-alignment: center; }
+                Text { text: "●"; color: root.item.queue-state == "staged" ? (root.queue-blink ? root.item.attention-frame : root.item.pending-frame) : (root.item.queue-state == "queued" ? root.item.pending-frame : (root.item.queue-state == "running" ? (root.queue-blink ? #ff4b36 : AppTheme.cyan) : root.item.attention-frame)); font-size: (20px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 900; horizontal-alignment: center; vertical-alignment: center; }
             }
         }
     }
