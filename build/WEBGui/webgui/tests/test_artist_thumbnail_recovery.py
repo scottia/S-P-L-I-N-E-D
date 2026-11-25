@@ -109,6 +109,32 @@ class ArtistThumbnailRecoveryTests(unittest.TestCase):
         self.assertEqual(self.catalog.artist_thumbnail("artist-1"), portrait)
         self.assertEqual(self.catalog.portrait_cache["artist-1"], portrait)
 
+    def test_persistent_provider_thumbnail_is_bound_to_visible_artist_identity(self) -> None:
+        reused_key = "artist-1"
+        bette = {
+            "artist_key": reused_key,
+            "artist_name": "Bette Midler",
+        }
+        rahman = {
+            "artist_key": reused_key,
+            "artist_name": "A. R. Rahman",
+        }
+        bette_identity = sha256(
+            (reused_key + "\0" + "bettemidler").encode("utf-8")
+        ).hexdigest()[:32]
+        stale = (
+            self.root
+            / "cache"
+            / "navidrome-thumbnails"
+            / "artists"
+            / ("web-v1-" + bette_identity + ".png")
+        )
+        stale.parent.mkdir(parents=True)
+        stale.write_bytes(_png())
+
+        self.assertEqual(self.catalog._navidrome_thumbnail_path(bette), stale)
+        self.assertIsNone(self.catalog._navidrome_thumbnail_path(rahman))
+
     def test_projected_artist_mbid_still_finds_name_scoped_shared_art(self) -> None:
         artist_name = "Rob Wasserman"
         identity = sha256(artist_name.casefold().encode("utf-8")).digest()[:16].hex()

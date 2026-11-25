@@ -1419,36 +1419,12 @@ class Catalog:
                         result.append(credit)
             return tuple(result)
 
-        # Artist Albums establish selectable Artist identities. Categorized
-        # V/A and OST credits can enrich those identities, but cannot create a
-        # new top-level Artist by themselves.
+        # Every real indexed track credit establishes the same selectable
+        # Artist presentation that Windows projects. Album ownership remains
+        # unchanged: V/A, soundtrack, and fallback rows contribute only their
+        # existing Album/track keys and never manufacture a catalog owner.
         eligible_identities: set[str] = set()
         for row in rows:
-            if library_group(row) != "artist":
-                continue
-            owner = str(row["album_artist"] or "").strip()
-            if owner and not synthetic_album_artist(owner):
-                owner_parts = potential_collaboration_credits(owner)
-                independently_known = any(
-                    normalized_artist_identity(part) in indexed_identities
-                    for part in owner_parts
-                )
-                projection = (
-                    owner_parts
-                    if len(owner_parts) > 1
-                    and (
-                        ARTIST_CREDIT_SEPARATOR
-                        in owner.replace("\0", ARTIST_CREDIT_SEPARATOR)
-                        or independently_known
-                    )
-                    else (owner,)
-                )
-                eligible_identities.update(
-                    normalized_artist_identity(part) for part in projection
-                )
-        for row in rows:
-            if library_group(row) != "artist":
-                continue
             eligible_identities.update(
                 normalized_artist_identity(credit)
                 for credit in projected_credits(row, eligible_identities)
@@ -1500,12 +1476,15 @@ class Catalog:
 
     @staticmethod
     def _virtual_artist_row(projection: dict[str, object]) -> dict[str, object]:
+        album_keys = set(projection.get("album_keys", set())) | set(
+            projection.get("comp_statuses", {})
+        )
         return {
             "artist_key": projection["artist_key"],
             "artist_name": projection["artist_name"],
             "musicbrainz_artistid": projection["musicbrainz_artistid"],
             "primary_path": "",
-            "album_count": len(projection["album_keys"]),
+            "album_count": len(album_keys),
             "status": "unprocessed",
         }
 
@@ -1549,7 +1528,7 @@ class Catalog:
                 (
                     value for value in self._projected_track_artists(db).values()
                     if str(value["artist_key"]) == str(artist_id)
-                    and value.get("artist_album_keys")
+                    and (value.get("album_keys") or value.get("comp_statuses"))
                 ),
                 None,
             )
@@ -1627,7 +1606,17 @@ class Catalog:
         directory = self.cache / "navidrome-thumbnails" if self.cache is not None else None
         if directory is None:
             return None
-        identity = sha256(str(artist["artist_key"]).encode("utf-8")).hexdigest()[:32]
+        # Bind persistent provider pixels to both the durable row and visible
+        # Artist identity. A catalog refresh may legitimately reuse a
+        # transport key; an old Bette Midler cache entry must never become an
+        # A. R. Rahman portrait merely because that key was reused.
+        identity = sha256(
+            (
+                str(artist["artist_key"])
+                + "\0"
+                + normalized_artist_identity(artist["artist_name"])
+            ).encode("utf-8")
+        ).hexdigest()[:32]
         path = directory / "artists" / (variant + "-" + identity + ".png")
         return path if path.is_file() else None
 
@@ -1665,7 +1654,13 @@ class Catalog:
                 opened.verify()
             directory = directory / "artists"
             directory.mkdir(parents=True, exist_ok=True)
-            identity = sha256(str(artist["artist_key"]).encode("utf-8")).hexdigest()[:32]
+            identity = sha256(
+                (
+                    str(artist["artist_key"])
+                    + "\0"
+                    + normalized_artist_identity(artist["artist_name"])
+                ).encode("utf-8")
+            ).hexdigest()[:32]
             path = directory / (variant + "-" + identity + ".png")
             descriptor, temporary = tempfile.mkstemp(prefix=".navidrome-", suffix=".png", dir=directory)
             try:
@@ -2205,7 +2200,7 @@ class Catalog:
             self._virtual_artist_row(value)
             for identity, value in projected.items()
             if identity not in existing_identities
-            and value.get("artist_album_keys")
+            and (value.get("album_keys") or value.get("comp_statuses"))
         )]
         statuses_by_artist: dict[str, list] = {}
         album_evidence_by_key: dict[str, dict[str, object]] = {}
@@ -2241,7 +2236,9 @@ class Catalog:
                 key
                 for row in group
                 for key in owned_album_keys.get(str(row["artist_key"]), set())
-            } | set(appearance.get("album_keys", set()))
+            } | set(appearance.get("album_keys", set())) | set(
+                appearance.get("comp_statuses", {})
+            )
             effective_album_count = (
                 len(album_keys)
                 if self.path_album_grouping_enabled()
@@ -2372,7 +2369,8 @@ class Catalog:
             )
             if self.path_album_grouping_enabled():
                 visible = has_owner_album or bool(
-                    projected.get(identity, {}).get("artist_album_keys")
+                    projected.get(identity, {}).get("album_keys")
+                    or projected.get(identity, {}).get("comp_statuses")
                 )
             else:
                 visible = bool(
@@ -3300,7 +3298,6 @@ class Catalog:
                 return {
                     **cached,
                     "artist": self.artist(artist_id),
-                    "comp_albums": self.artist_comp_albums(artist_id),
                 }
             return self._load_artist_metadata(artist_id)
 
@@ -3339,7 +3336,14 @@ class Catalog:
                 matches = search.get("searchResult3", {}).get("artist", [])
                 if isinstance(matches, dict):
                     matches = [matches]
-                match = next((item for item in matches if str(item.get("name", "")).casefold() == str(artist["name"]).casefold()), None)
+                match = next(
+                    (
+                        item for item in matches
+                        if normalized_artist_identity(item.get("name", ""))
+                        == normalized_artist_identity(artist["name"])
+                    ),
+                    None,
+                )
                 if match:
                     info = call("getArtistInfo2", {"id": str(match["id"])}).get("artistInfo2", {})
                     biography = re.sub(r"<[^>]+>", " ", str(info.get("biography") or ""))
@@ -3434,27 +3438,18 @@ class Catalog:
                 result.update(profile)
                 result.pop("reason", None)
                 self._save_artist_profile(artist_id, profile)
-        # Navidrome's lightweight getArtist response does not consistently
-        # include the per-track genres exposed by search3.  Match the native
-        # Windows Artist Overview contract by resolving the selected Artist's
-        # bounded appearance catalog once on a metadata-cache miss.  This also
-        # keeps Featured roles tied to the exact selected Artist identity; the
-        # cached result prevents repeat traversal during ordinary rerenders.
-        if not result.get("genres") and credential_path.is_file():
-            try:
-                appearance = self.refresh_artist_appearances(artist_id)
-                result["genres"] = list(appearance.get("genres", []))
-            except (OSError, ValueError, KeyError, TypeError, requests.RequestException):
-                pass
+        # Biography presentation must not wait behind the optional provider
+        # song/appearance traversal. Indexed/stored appearances already feed
+        # the Overview; a deliberate appearance refresh remains independent
+        # instead of holding this response for as many as twenty song pages.
         with self.lock:
             self.metadata_cache[artist_id] = result
-        projected_artist = self.artist(artist_id)
+        projected_artist = artist
         if result.get("genres"):
             projected_artist["genres"] = sorted(set(projected_artist.get("genres", [])) | set(result["genres"]))
         return {
             **result,
             "artist": projected_artist,
-            "comp_albums": self.artist_comp_albums(artist_id),
         }
 
     def search_artist(self, artist_id: str) -> dict[str, object]:

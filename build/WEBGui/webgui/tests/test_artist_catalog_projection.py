@@ -873,11 +873,21 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             )
             artists = {item["name"]: item for item in app.artists("")}
             self.assertEqual(
-                set(artists), {"Aaron Neville", "Linda Ronstadt", "Rob Wasserman"}
+                set(artists),
+                {
+                    "Aaron Neville",
+                    "Linda Ronstadt",
+                    "Rob Wasserman",
+                    "V/A Only Performer",
+                },
             )
             self.assertNotIn("Rob Wasserman & Aaron Neville", artists)
             self.assertNotIn("Linda Ronstadt & Aaron Neville", artists)
-            self.assertNotIn("V/A Only Performer", artists)
+            self.assertEqual(artists["V/A Only Performer"]["albums"], 1)
+            va_only = app.artist(artists["V/A Only Performer"]["id"])
+            self.assertEqual(
+                {item["id"] for item in va_only["albums"]}, {"collection"}
+            )
             # Rob qualifies through Gold, then keeps the non-Fallback V/A and
             # soundtrack appearances in his expanded Artist file list.
             self.assertEqual(artists["Rob Wasserman"]["albums"], 3)
