@@ -47,23 +47,29 @@ def choose_workflow10_release_version(
     active_versions: Iterable[tuple[int, int, int]],
     all_tags: Iterable[str],
     latest_product_matches: bool,
+    *,
+    complete_existing_release: bool = False,
 ) -> tuple[str, bool]:
     """Return Workflow 10's version and whether a temporary stamp is required.
 
-    A matching latest product tree completes that existing version. Otherwise
-    an untagged committed next version is used, or the next patch after the
-    latest numeric tag is stamped into a temporary release-only commit.
+    Normal builds and new releases retain the approved source lineage, even
+    when the latest tagged product digest matches. Only an explicit recovery
+    request may select an existing release; it must match the latest product.
+    Otherwise use an untagged committed version or allocate the next patch.
     """
     source = _numeric(source_version)
     active = list(active_versions)
     occupied = set(all_tags)
+    if complete_existing_release:
+        if not active or not latest_product_matches:
+            raise ValueError("Existing-release recovery requires matching latest tagged product source")
+        return ".".join(map(str, max(active))), False
     if not active:
+        if source_version in occupied or f"v{source_version}" in occupied:
+            raise ValueError(f"Release tag already exists: {source_version}")
         return source_version, False
 
     latest = max(active)
-    latest_text = ".".join(map(str, latest))
-    if latest_product_matches:
-        return latest_text, False
 
     if source > latest and source_version not in occupied and f"v{source_version}" not in occupied:
         return source_version, False
