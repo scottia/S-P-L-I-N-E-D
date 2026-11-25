@@ -3480,6 +3480,13 @@ test("fresh Albums view selection establishes Artist context and remains respons
     state,
     api: async path => {
       paths.push(path);
+      if (path === "/api/album?id=unlisted-album") {
+        return {id: "unlisted-album", artist_id: "unlisted", artist_name: "Various Artists",
+          library_group: "artist", candidates: [], tracks: 1};
+      }
+      if (path === "/api/artist/overview?id=unlisted") {
+        throw Object.assign(new Error("Artist not found"), {httpStatus: 404});
+      }
       if (path.startsWith("/api/album")) return {id: "album-1", artist_id: "artist-1", artist_name: "Artist", album_mbid: "release-1", candidates: [], tracks: 1};
       return {artist: {id: "artist-1", albums: [{id: "album-1"}], local_candidates: []}, comp_albums: []};
     },
@@ -3491,6 +3498,10 @@ test("fresh Albums view selection establishes Artist context and remains respons
   assert.deepEqual(paths.map(path => path.split("?")[0]), ["/api/album", "/api/artist/overview"]);
   assert.equal(state.artist.id, "artist-1");
   assert.equal(state.album.id, "album-1");
+  assert.equal(state.editorMode, "album");
+  await context.chooseAlbum("unlisted-album");
+  assert.equal(state.artist, null);
+  assert.equal(state.album.id, "unlisted-album");
   assert.equal(state.editorMode, "album");
 });
 

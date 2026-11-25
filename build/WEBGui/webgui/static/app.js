@@ -211,6 +211,7 @@ async function api(path, options) {
     auditEvent("api-client-error", path, {severity: "error", trace_id: trace, error: payload.error || "Request failed", request_status: "failed"});
     const error = new Error(payload.error || "Request failed");
     error.endpoint = path;
+    error.httpStatus = response.status;
     error.traceId = trace;
     error.statusRevision = statusRevision;
     throw error;
@@ -3065,11 +3066,16 @@ async function chooseAlbum(id) {
     // owned by another catalog artist.  Keep that artist context on click.
     if (!fallback && (!album.library_group || album.library_group === "artist")
         && !albumInCurrentArtistContext(id) && state.artist?.id !== album.artist_id) {
-      const overview = await api("/api/artist/overview?id=" + encodeURIComponent(album.artist_id));
+      const overview = await api("/api/artist/overview?id=" + encodeURIComponent(album.artist_id))
+        .catch(error => {
+          if (error.httpStatus !== 404) throw error;
+          return null;
+        });
       if (request !== state.selectionRequest) return;
-      state.artist = overview.artist; state.artistMetadata = overview.metadata || null;
-      state.compAlbums = overview.comp_albums || [];
-      loadArtistMetadata(overview.artist.id);
+      state.artist = overview?.artist || null;
+      state.artistMetadata = overview?.metadata || null;
+      state.compAlbums = overview?.comp_albums || [];
+      if (overview) loadArtistMetadata(overview.artist.id);
     }
     const tracks = fallback ? await api("/api/fallback/tracks?id=" + encodeURIComponent(id)) : [];
     if (request !== state.selectionRequest) return;
