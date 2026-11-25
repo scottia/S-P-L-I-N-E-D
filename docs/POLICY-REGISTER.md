@@ -24,6 +24,7 @@ identity or MusicBrainz data.
 | `ART-001` | In the Artist listing, duplicate normalized Artist names collapse to one visible Artist presentation. Different, duplicate, missing, or conflicting MusicBrainz Artist IDs on associated Albums do not create additional visible Artist rows. |
 | `ART-002` | Artist display grouping is not an Artist-MBID rewrite rule. Preserve distinct Album associations, per-Album identities and legitimate credits; display each distinct Album card once and never coalesce unrelated Albums. |
 | `ART-003` | Discover saved `artist.*` and `banner.*` through the established bounded inventory/refresh path across every owned folder and managed package in the grouped presentation. A canonical row's missing Art, release MBID or Artist MBID cannot hide valid physical Artist Art stored under another grouped row. |
+| `ART-004` | **Shared Artist identity and credit resolution.** Windows and WebGUI shall derive equivalent Artist catalog presentations and Artist-to-media associations from the same ordered local evidence while retaining native storage. Preserve original Album Artist, Track Artist multi-values and MusicBrainz identifiers with provenance. Assign one durable physical Album owner from the Album Artist identity, using its MusicBrainz Artist ID when present and a normalized local-name key otherwise; presentation grouping must never rewrite that owner, Artist/Album keys or identifiers. Apply an explicit Album-category override before configured folder classification. Resolve explicit multi-value credits and positionally paired MusicBrainz Artist IDs before any configured collaboration-separator or strictly bounded filename inference. Build separate owned-Album, Album-appearance and positioned track-credit associations, then apply one shared catalog presentation normalization, alias rule and Artist-membership boundary. Equal normalized Artist names form one visible presentation even when underlying MBIDs differ, while every distinct durable identity, conflict and Album/track association remains preserved. Secondary providers may enrich or corroborate an existing locally eligible identity and locally mapped association but cannot independently create catalog membership, aliases or physical ownership. Typed Artist search and inventory reporting shall use the same eligible presentation and alias resolution; numerical equality alone is not acceptance evidence. |
 | `UI-001` | Windows and WebGUI Header, Embedding Center, status bar and equivalent progress surfaces publish the newest locally committed state promptly. Remote coordination polling must not block unrelated rendering; opposing-client reconciliation remains asynchronous. |
 | `SAFE-001` | Multiple MBIDs or duplicate visible rows are diagnostic evidence, not permission to rewrite identities or merge database rows. Preserve legitimate unrelated Artists and Album associations and report ambiguous mappings. |
 
@@ -31,6 +32,12 @@ identity or MusicBrainz data.
 the independent underlying PostgreSQL/SQLite rows and Album keys. This allows
 one Beyoncé-style visible Artist entry to retain all distinct Albums and saved
 Art without turning name equality into a destructive catalog operation.
+`ART-004` orders the evidence used to form that presentation: local metadata
+and durable ownership first, category overrides before folder classification,
+explicit/positionally paired credits before collaboration separators, then
+distinct association edges, shared presentation aliases, membership, bounded
+provider enrichment, typed search and unique inventory reporting. Its catalog
+identity rules do not amend the independent COMP matching policy.
 
 ## Owner-confirmed exact classification priorities (November 20, 2026)
 

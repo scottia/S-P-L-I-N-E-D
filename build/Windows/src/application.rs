@@ -822,6 +822,108 @@ impl LibraryState {
         }
     }
 
+    /// Build non-destructive presentation aliases from durable local MBIDs.
+    /// Album ownership, SQLite keys and per-track credits remain unchanged;
+    /// only the visible Artist presentation consumes this connected mapping.
+    fn artist_presentation_aliases(&self) -> HashMap<String, String> {
+        let mut by_mbid = HashMap::<String, Vec<String>>::new();
+        for album in &self.albums {
+            let identity = artist_projection_identity(&album.snapshot.artist);
+            let mbid = album.snapshot.artist_mbid.trim().to_ascii_lowercase();
+            if !identity.is_empty()
+                && !mbid.is_empty()
+                && !Self::is_synthetic_album_artist(&album.snapshot.artist)
+            {
+                by_mbid.entry(mbid).or_default().push(identity);
+            }
+        }
+        for artist in self.artist_appearance_album_keys.keys() {
+            let identity = artist_projection_identity(artist);
+            let mbid = self
+                .artist_appearance_musicbrainz_ids
+                .get(&artist.trim().to_ascii_lowercase())
+                .map(|value| value.trim().to_ascii_lowercase())
+                .unwrap_or_default();
+            if !identity.is_empty() && !mbid.is_empty() {
+                by_mbid.entry(mbid).or_default().push(identity);
+            }
+        }
+
+        let mut adjacent = HashMap::<String, HashSet<String>>::new();
+        for identities in by_mbid.values_mut() {
+            identities.sort();
+            identities.dedup();
+            for identity in identities.iter() {
+                adjacent.entry(identity.clone()).or_default();
+            }
+            if let Some(first) = identities.first() {
+                for identity in identities.iter().skip(1) {
+                    adjacent
+                        .entry(first.clone())
+                        .or_default()
+                        .insert(identity.clone());
+                    adjacent
+                        .entry(identity.clone())
+                        .or_default()
+                        .insert(first.clone());
+                }
+            }
+        }
+
+        let mut aliases = HashMap::new();
+        let mut visited = HashSet::new();
+        for start in adjacent.keys() {
+            if visited.contains(start) {
+                continue;
+            }
+            let mut pending = vec![start.clone()];
+            let mut component = Vec::new();
+            while let Some(identity) = pending.pop() {
+                if !visited.insert(identity.clone()) {
+                    continue;
+                }
+                component.push(identity.clone());
+                pending.extend(
+                    adjacent
+                        .get(&identity)
+                        .into_iter()
+                        .flatten()
+                        .filter(|candidate| !visited.contains(*candidate))
+                        .cloned(),
+                );
+            }
+            component.sort();
+            if let Some(canonical) = component.first().cloned() {
+                for identity in component {
+                    aliases.insert(identity, canonical.clone());
+                }
+            }
+        }
+        aliases
+    }
+
+    fn presentation_identity(aliases: &HashMap<String, String>, artist: &str) -> String {
+        let identity = artist_projection_identity(artist);
+        aliases.get(&identity).cloned().unwrap_or(identity)
+    }
+
+    fn record_artist_display(
+        displays: &mut HashMap<String, (u8, String)>,
+        identity: String,
+        candidate: &str,
+        rank: u8,
+    ) {
+        let replace = displays
+            .get(&identity)
+            .is_none_or(|(current_rank, current)| {
+                rank > *current_rank
+                    || rank == *current_rank && candidate.to_lowercase() < current.to_lowercase()
+            });
+        if replace {
+            displays.insert(identity, (rank, candidate.to_string()));
+        }
+    }
+
     fn artists(&self) -> BTreeMap<String, Vec<usize>> {
         if let Some(cached) = self.artist_projection_cache.borrow().as_ref() {
             return cached.clone();
@@ -837,6 +939,7 @@ impl LibraryState {
             !self.category_paths_configured
                 || self.album_library_group(album) == AlbumLibraryGroup::Artist
         };
+        let aliases = self.artist_presentation_aliases();
 
         // Artist membership is an indexed catalog decision. Navidrome may
         // supply artwork and IDs later, but asynchronous provider hydration
@@ -847,12 +950,12 @@ impl LibraryState {
             .albums
             .iter()
             .filter(|album| !Self::is_synthetic_album_artist(&album.snapshot.artist))
-            .map(|album| artist_projection_identity(&album.snapshot.artist))
+            .map(|album| Self::presentation_identity(&aliases, &album.snapshot.artist))
             .chain(
                 self.artist_appearance_album_keys
                     .keys()
                     .filter(|artist| !Self::is_synthetic_album_artist(artist))
-                    .map(|artist| artist_projection_identity(artist)),
+                    .map(|artist| Self::presentation_identity(&aliases, artist)),
             )
             .collect::<HashSet<_>>();
 
@@ -871,7 +974,7 @@ impl LibraryState {
             let parts = Self::potential_collaboration_credits(&owner);
             let authoritative = owner.contains(['\0', '\x1f']);
             let independently_known = parts.iter().any(|part| {
-                let identity = artist_projection_identity(part);
+                let identity = Self::presentation_identity(&aliases, part);
                 indexed_identities.contains(&identity)
             });
             let projection = if parts.len() > 1 && (authoritative || independently_known) {
@@ -880,7 +983,7 @@ impl LibraryState {
                 vec![owner]
             };
             for artist in &projection {
-                eligible_identities.insert(artist_projection_identity(artist));
+                eligible_identities.insert(Self::presentation_identity(&aliases, artist));
             }
             owner_projections.insert(index, projection);
         }
@@ -911,7 +1014,7 @@ impl LibraryState {
                 .get(&appearance_artist.trim().to_ascii_lowercase())
                 .is_some_and(|value| !value.trim().is_empty());
             let anchored = parts.iter().any(|part| {
-                let identity = artist_projection_identity(part);
+                let identity = Self::presentation_identity(&aliases, part);
                 indexed_identities.contains(&identity) || eligible_identities.contains(&identity)
             });
             let projection = if parts.len() > 1
@@ -922,7 +1025,7 @@ impl LibraryState {
                 vec![appearance_artist.clone()]
             };
             for artist in projection {
-                eligible_identities.insert(artist_projection_identity(&artist));
+                eligible_identities.insert(Self::presentation_identity(&aliases, &artist));
             }
         }
 
@@ -930,12 +1033,20 @@ impl LibraryState {
         // remain the durable SQLite authority for owned releases, but a
         // punctuation-safe folder alias such as AC-DC must render as the
         // authoritative tagged/MBID-backed AC/DC credit just as WebGUI does.
-        let mut display_names = HashMap::<String, String>::new();
-        for projection in owner_projections.values() {
+        let mut display_names = HashMap::<String, (u8, String)>::new();
+        for (index, projection) in &owner_projections {
+            let rank = if self.albums[*index].snapshot.artist_mbid.trim().is_empty() {
+                1
+            } else {
+                2
+            };
             for artist in projection {
-                display_names
-                    .entry(artist_projection_identity(artist))
-                    .or_insert_with(|| artist.clone());
+                Self::record_artist_display(
+                    &mut display_names,
+                    Self::presentation_identity(&aliases, artist),
+                    artist,
+                    rank,
+                );
             }
         }
         for appearance_artist in self.artist_appearance_album_keys.keys() {
@@ -949,14 +1060,15 @@ impl LibraryState {
                 && (authoritative
                     || (!appearance_has_single_mbid
                         && parts.iter().any(|part| {
-                            eligible_identities.contains(&artist_projection_identity(part))
+                            eligible_identities
+                                .contains(&Self::presentation_identity(&aliases, part))
                         })));
             for display in if expanded {
                 parts
             } else {
                 vec![appearance_artist.clone()]
             } {
-                let identity = artist_projection_identity(&display);
+                let identity = Self::presentation_identity(&aliases, &display);
                 if !eligible_identities.contains(&identity) {
                     continue;
                 }
@@ -964,11 +1076,12 @@ impl LibraryState {
                     && self
                         .artist_appearance_musicbrainz_ids
                         .contains_key(&appearance_artist.trim().to_ascii_lowercase());
-                if has_mbid {
-                    display_names.insert(identity, display);
-                } else {
-                    display_names.entry(identity).or_insert(display);
-                }
+                Self::record_artist_display(
+                    &mut display_names,
+                    identity,
+                    &display,
+                    if has_mbid { 3 } else { 1 },
+                );
             }
         }
 
@@ -976,11 +1089,11 @@ impl LibraryState {
         for index in 0..self.albums.len() {
             if let Some(parts) = owner_projections.get(&index) {
                 for part in parts {
-                    let identity = artist_projection_identity(part);
+                    let identity = Self::presentation_identity(&aliases, part);
                     let display = display_names
-                        .entry(identity)
-                        .or_insert_with(|| part.clone())
-                        .clone();
+                        .get(&identity)
+                        .map(|(_, display)| display.clone())
+                        .unwrap_or_else(|| part.clone());
                     values.entry(display).or_default().push(index);
                 }
                 continue;
@@ -1000,24 +1113,22 @@ impl LibraryState {
                 && (authoritative
                     || (!appearance_has_single_mbid
                         && parts.iter().any(|part| {
-                            eligible_identities.contains(&artist_projection_identity(part))
+                            eligible_identities
+                                .contains(&Self::presentation_identity(&aliases, part))
                         })));
             for display in if expanded {
                 parts
             } else {
                 vec![appearance_artist.clone()]
             } {
-                let appearance_identity = artist_projection_identity(&display);
+                let appearance_identity = Self::presentation_identity(&aliases, &display);
                 if !eligible_identities.contains(&appearance_identity) {
                     continue;
                 }
                 let display = display_names
                     .get(&appearance_identity)
-                    .cloned()
+                    .map(|(_, display)| display.clone())
                     .unwrap_or(display);
-                display_names
-                    .entry(appearance_identity)
-                    .or_insert_with(|| display.clone());
                 let indices = values.entry(display).or_default();
                 let mut known_indices = indices.iter().copied().collect::<HashSet<_>>();
                 for album_key in album_keys {
@@ -1034,10 +1145,11 @@ impl LibraryState {
     }
 
     fn artist_indices(&self, artist: &str) -> Vec<usize> {
-        let identity = artist_projection_identity(artist);
+        let aliases = self.artist_presentation_aliases();
+        let identity = Self::presentation_identity(&aliases, artist);
         self.artists()
             .into_iter()
-            .find(|(name, _)| artist_projection_identity(name) == identity)
+            .find(|(name, _)| Self::presentation_identity(&aliases, name) == identity)
             .map(|(_, indices)| indices)
             .unwrap_or_default()
     }
@@ -1065,10 +1177,12 @@ impl LibraryState {
             || album.snapshot.artist.to_ascii_lowercase().contains(&needle)
             || album.snapshot.title.to_ascii_lowercase().contains(&needle)
             || album.snapshot.path.to_ascii_lowercase().contains(&needle);
-        let artist_filter = self.artist_filter.trim().to_ascii_lowercase();
+        let artist_filter = artist_projection_identity(self.artist_filter.trim());
         let album_title = self.album_filter.trim().to_ascii_lowercase();
         global_matches
-            && (artist_filter.is_empty() || artist.to_ascii_lowercase().contains(&artist_filter))
+            && (artist_filter.is_empty()
+                || artist_projection_identity(artist).contains(&artist_filter)
+                || artist_projection_identity(&album.snapshot.artist).contains(&artist_filter))
             && (album_title.is_empty()
                 || album
                     .snapshot
@@ -1942,20 +2056,26 @@ impl LibraryState {
         let Some(artist) = self.focused_artist.as_deref() else {
             return Vec::new();
         };
-        let artist_identity = artist_projection_identity(artist);
+        let aliases = self.artist_presentation_aliases();
+        let artist_identity = Self::presentation_identity(&aliases, artist);
         let projected_appearance_keys = self
             .artist_appearance_album_keys
             .iter()
-            .find(|(name, _)| artist_projection_identity(name) == artist_identity)
-            .map(|(_, keys)| keys);
+            .filter(|(name, _)| Self::presentation_identity(&aliases, name) == artist_identity)
+            .flat_map(|(_, keys)| keys.iter().cloned())
+            .collect::<BTreeSet<_>>();
+        let projected_indices = self
+            .artist_indices(artist)
+            .into_iter()
+            .collect::<HashSet<_>>();
         let mut result = self
             .albums
             .iter()
             .enumerate()
-            .filter(|(_, album)| {
+            .filter(|(index, album)| {
                 let album_key = album.snapshot.album_key.to_ascii_lowercase();
                 let appearance = appearance_keys.contains(&album_key)
-                    || projected_appearance_keys.is_some_and(|keys| keys.contains(&album_key));
+                    || projected_appearance_keys.contains(&album_key);
                 let matching_fallback_track = self.is_curated_fallback(album)
                     && album
                         .snapshot
@@ -1964,10 +2084,8 @@ impl LibraryState {
                         .any(|track| Self::track_matches_artist_in_album(album, track, artist));
                 let fallback_appearance =
                     self.is_curated_fallback(album) && (appearance || matching_fallback_track);
-                let in_artist_scope = artist_projection_identity(&album.snapshot.artist)
-                    == artist_identity
-                    || appearance
-                    || matching_fallback_track;
+                let in_artist_scope =
+                    projected_indices.contains(index) || appearance || matching_fallback_track;
 
                 in_artist_scope
                     && (fallback_appearance || show_all || self.album_matches_active_filter(album))
@@ -6358,6 +6476,65 @@ mod tests {
             LibraryState::artist_state(artists["Gamma"].iter().map(|index| &state.albums[*index])),
             ArtistState::ContainsBypass
         );
+    }
+
+    #[test]
+    fn local_mbid_aliases_share_one_presentation_and_preserve_both_albums() {
+        let mut beyonce = album("beyonce", "Beyoncé", "4", "processed");
+        beyonce.album_mbid = "release-beyonce".to_string();
+        beyonce.artist_mbid = "859d0860-d480-4efd-970c-c05d5f1776b8".to_string();
+        let mut knowles = album(
+            "knowles",
+            "Beyonce Knowles",
+            "Dangerously in Love",
+            "processed",
+        );
+        knowles.album_mbid = "release-knowles".to_string();
+        knowles.artist_mbid = beyonce.artist_mbid.clone();
+        let mut state = LibraryState::from_snapshot(MediaSnapshot {
+            schema_version: crate::media_database::SCHEMA_VERSION,
+            database_path: "splined.db".to_string(),
+            canonical_root: "/music".to_string(),
+            local_root: r"C:\Music".to_string(),
+            albums: vec![beyonce, knowles],
+        })
+        .unwrap();
+
+        let artists = state.artists();
+        assert_eq!(artists.len(), 1);
+        assert_eq!(artists.values().next().unwrap().len(), 2);
+        assert_eq!(state.artist_indices("Beyoncé").len(), 2);
+
+        state.focused_artist = Some("Beyoncé".to_string());
+        let overview = state
+            .artist_overview_album_indices(&BTreeSet::new(), true)
+            .into_iter()
+            .map(|index| state.albums[index].snapshot.album_key.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(overview, BTreeSet::from(["beyonce", "knowles"]));
+
+        state.set_artist_filter("BEYONCÉ");
+        assert_eq!(state.rows().len(), 1);
+    }
+
+    #[test]
+    fn different_local_mbids_do_not_alias_different_artist_names() {
+        let mut first = album("one", "First Artist", "One", "processed");
+        first.album_mbid = "release-one".to_string();
+        first.artist_mbid = "artist-one".to_string();
+        let mut second = album("two", "Second Artist", "Two", "processed");
+        second.album_mbid = "release-two".to_string();
+        second.artist_mbid = "artist-two".to_string();
+        let state = LibraryState::from_snapshot(MediaSnapshot {
+            schema_version: crate::media_database::SCHEMA_VERSION,
+            database_path: "splined.db".to_string(),
+            canonical_root: "/music".to_string(),
+            local_root: r"C:\Music".to_string(),
+            albums: vec![first, second],
+        })
+        .unwrap();
+
+        assert_eq!(state.artists().len(), 2);
     }
 
     #[test]

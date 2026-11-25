@@ -111,6 +111,16 @@ implementation drift independently against the exact policy.
   owned Artist folders and managed Artist-Art packages for every row in the
   presentation group. The canonical row's MBID or path cannot hide valid
   `artist.*` or `banner.*` saved under another grouped row.
+- **ART-004 — Shared Artist identity and credit resolution:** derive equivalent
+  Artist presentations and media associations from the same ordered local
+  Album Artist, Track Artist multi-value, MusicBrainz-ID, category and alias
+  evidence. Preserve physical Album ownership and distinct owned-Album,
+  Album-appearance and positioned track-credit associations. Apply explicit
+  multi-values and positionally paired MBIDs before collaboration separators;
+  group equal normalized names without merging durable identities; permit
+  providers to enrich only an existing locally eligible presentation; and use
+  the same eligible presentation/alias resolution for typed Artist search and
+  inventory reporting. The independent COMP matcher remains unchanged.
 - **UI-001 — Publish local progress immediately:** Header, Embedding Center,
   status bar and equivalent progress surfaces must update from newly committed
   local state without waiting for remote coordination polling. Reconcile an

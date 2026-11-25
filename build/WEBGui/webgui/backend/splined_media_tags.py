@@ -305,12 +305,22 @@ def normalize_artist_credit_text(
     )
     if len(slash_parts) > 1 and len(_mbids(artist_mbids)) == len(slash_parts):
         return ARTIST_CREDIT_SEPARATOR.join(dict.fromkeys(slash_parts))
+    mbids = _mbids(artist_mbids)
     try:
         parts = re.split(separator_regex, explicit[0])
     except re.error as exc:
         raise ValueError(f"Artist separator Regex is invalid: {exc}") from exc
+    parts = tuple(part.strip() for part in parts if part.strip())
+    # A configured display separator can occur inside one real Artist name.
+    # One ordered MusicBrainz Artist ID is decisive local evidence that a
+    # joined value such as ``Ike & Tina Turner`` is one identity. Conversely,
+    # several IDs authorize a split only when every position can be paired.
+    if len(parts) > 1 and (
+        len(mbids) == 1 or bool(mbids) and len(mbids) != len(parts)
+    ):
+        return explicit[0]
     return ARTIST_CREDIT_SEPARATOR.join(
-        dict.fromkeys(part.strip() for part in parts if part.strip())
+        dict.fromkeys(parts)
     )
 
 

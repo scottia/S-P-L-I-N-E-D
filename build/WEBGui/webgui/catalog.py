@@ -1202,17 +1202,89 @@ class Catalog:
 
     @staticmethod
     def _artist_groups(rows):
-        """Build one visible group per normalized Artist display name.
+        """Build non-destructive presentation groups from local identity evidence.
 
         PostgreSQL may retain several owner rows for Albums carrying different,
         missing, or conflicting MusicBrainz Artist IDs.  Those database rows and
         their Album associations remain independent; MBID variation must not
-        manufacture duplicate rows in the visible Artist list.
+        manufacture duplicate rows in the visible Artist list. Equal normalized
+        names always share a presentation. A non-empty local MBID may also join
+        differently named persisted owner rows; projected ``credit:`` rows are
+        deliberately excluded from that rule because they have no durable owner.
         """
-        by_name: dict[str, list] = {}
-        for row in rows:
-            by_name.setdefault(normalized_artist_identity(row["artist_name"]), []).append(row)
-        return list(by_name.values())
+        rows = list(rows)
+        parents = list(range(len(rows)))
+
+        def find(index: int) -> int:
+            while parents[index] != index:
+                parents[index] = parents[parents[index]]
+                index = parents[index]
+            return index
+
+        def union(left: int, right: int) -> None:
+            left_root = find(left)
+            right_root = find(right)
+            if left_root != right_root:
+                parents[right_root] = left_root
+
+        by_name: dict[str, int] = {}
+        by_mbid: dict[str, int] = {}
+        for index, row in enumerate(rows):
+            identity = normalized_artist_identity(row["artist_name"])
+            if identity in by_name:
+                union(index, by_name[identity])
+            else:
+                by_name[identity] = index
+            artist_key = str(row["artist_key"] or "")
+            mbid = str(row["musicbrainz_artistid"] or "").strip().casefold()
+            if not mbid or artist_key.startswith("credit:"):
+                continue
+            if mbid in by_mbid:
+                union(index, by_mbid[mbid])
+            else:
+                by_mbid[mbid] = index
+
+        groups: dict[int, list] = {}
+        for index, row in enumerate(rows):
+            groups.setdefault(find(index), []).append(row)
+        return list(groups.values())
+
+    @staticmethod
+    def _artist_group_projection(projected, group) -> dict[str, object]:
+        """Merge presentation evidence without changing persisted identities."""
+        entries = [
+            projected[identity]
+            for identity in dict.fromkeys(
+                normalized_artist_identity(row["artist_name"]) for row in group
+            )
+            if identity in projected
+        ]
+        if not entries:
+            return {}
+        preferred = max(
+            entries,
+            key=lambda value: (
+                bool(str(value.get("musicbrainz_artistid") or "").strip()),
+                len(value.get("artist_album_keys", set())),
+                normalized_artist_identity(str(value.get("artist_name") or "")),
+            ),
+        )
+        merged = {
+            "artist_key": preferred["artist_key"],
+            "artist_name": preferred["artist_name"],
+            "musicbrainz_artistid": preferred.get("musicbrainz_artistid", ""),
+            "primary_path": preferred.get("primary_path", ""),
+            "album_keys": set(),
+            "artist_album_keys": set(),
+            "statuses": {},
+            "comp_statuses": {},
+        }
+        for value in entries:
+            merged["album_keys"].update(value.get("album_keys", set()))
+            merged["artist_album_keys"].update(value.get("artist_album_keys", set()))
+            merged["statuses"].update(value.get("statuses", {}))
+            merged["comp_statuses"].update(value.get("comp_statuses", {}))
+        return merged
 
     def _projected_track_artists(
         self, db, *, allow_build: bool = True
@@ -1561,16 +1633,23 @@ class Catalog:
             # metadata supplied a colliding MBID. Existing same-name Artists
             # are not projected by artists().
             return selected, [selected]
-        identity = normalized_artist_identity(selected["artist_name"])
-        selected_mbid = str(selected["musicbrainz_artistid"] or "").strip().casefold()
-        candidates = [
-            row for row in candidates
-            if normalized_artist_identity(row["artist_name"]) == identity
-            or bool(selected_mbid) and str(row["musicbrainz_artistid"] or "").strip().casefold()
-            == selected_mbid
-        ]
-        aliases = candidates
-        return self._canonical_artist_row(aliases), aliases
+        aliases = next(
+            group for group in self._artist_groups(candidates)
+            if any(str(row["artist_key"]) == str(selected["artist_key"]) for row in group)
+        )
+        canonical = self._canonical_artist_row(aliases)
+        presentation = self._artist_group_projection(
+            self._projected_track_artists(db), aliases
+        )
+        # A positionally paired local track credit is the strongest display
+        # label. The returned mapping overlays presentation text only; the
+        # canonical PostgreSQL key, MBID, paths and Album ownership stay intact.
+        if str(presentation.get("musicbrainz_artistid") or "").strip():
+            canonical = {
+                **dict(canonical),
+                "artist_name": str(presentation["artist_name"]),
+            }
+        return canonical, aliases
 
     @staticmethod
     def _navidrome_auth_query(credential: dict[str, object]) -> dict[str, str]:
@@ -2248,10 +2327,20 @@ class Catalog:
             canonical = self._canonical_artist_row(group)
             if synthetic_album_artist(canonical["artist_name"]):
                 continue
-            if query.casefold() not in str(canonical["artist_name"]).casefold():
+            query_identity = normalized_artist_identity(query)
+            alias_identities = {
+                normalized_artist_identity(row["artist_name"]) for row in group
+            }
+            if query_identity and not any(
+                query_identity in identity for identity in alias_identities
+            ):
                 continue
-            identity = normalized_artist_identity(canonical["artist_name"])
-            appearance = projected.get(identity, {})
+            appearance = self._artist_group_projection(projected, group)
+            display_name = (
+                str(appearance["artist_name"])
+                if str(appearance.get("musicbrainz_artistid") or "").strip()
+                else str(canonical["artist_name"])
+            )
             stored_album_count = sum(int(row["album_count"] or 0) for row in group)
             album_keys = {
                 key
@@ -2319,7 +2408,7 @@ class Catalog:
             )
             result.append({
                 "id": canonical["artist_key"],
-                "name": canonical["artist_name"],
+                "name": display_name,
                 "albums": effective_album_count,
                 "status": (
                     self._aggregate_album_status(status_group)
@@ -2382,18 +2471,18 @@ class Catalog:
             canonical = self._canonical_artist_row(group)
             if synthetic_album_artist(canonical["artist_name"]):
                 continue
-            identity = normalized_artist_identity(canonical["artist_name"])
+            appearance = self._artist_group_projection(projected, group)
             has_owner_album = any(
                 str(row["artist_key"]) in eligible_owner_ids for row in group
             )
             if self.path_album_grouping_enabled():
                 visible = has_owner_album or bool(
-                    projected.get(identity, {}).get("artist_album_keys")
+                    appearance.get("artist_album_keys")
                 )
             else:
                 visible = bool(
                     sum(int(row["album_count"] or 0) for row in group)
-                    or projected.get(identity, {}).get("album_keys")
+                    or appearance.get("album_keys")
                 )
             if not visible:
                 continue

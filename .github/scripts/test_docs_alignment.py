@@ -63,6 +63,19 @@ class MainDocumentationAlignmentTests(unittest.TestCase):
                     broken.append(f"{path.relative_to(ROOT)} -> {raw}")
         self.assertFalse(broken, "\n".join(broken))
 
+    def test_shared_artist_identity_policy_is_registered_without_json_rewrite(self) -> None:
+        for path in (
+            ROOT / "AGENTS.md",
+            DOCS / "POLICY-REGISTER.md",
+            DOCS / "POLICY-INDEX.md",
+        ):
+            with self.subTest(path=path.relative_to(ROOT)):
+                self.assertIn("ART-004", path.read_text(encoding="utf-8"))
+        self.assertNotIn(
+            "ART-004",
+            (ROOT / "schema" / "lifecycle-policy.json").read_text(encoding="utf-8"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

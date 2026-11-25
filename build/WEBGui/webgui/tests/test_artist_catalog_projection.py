@@ -1068,12 +1068,75 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             listed = [item for item in app.artists("") if item["name"] == "Beyoncé"]
             self.assertEqual(len(listed), 1)
             self.assertEqual(listed[0]["albums"], 2)
+            self.assertEqual(
+                [item["id"] for item in app.artists("BEYONCÉ")],
+                [listed[0]["id"]],
+            )
             selected = app.artist(str(listed[0]["id"]))
             self.assertEqual(
                 {item["id"] for item in selected["albums"]},
                 {"album-one", "album-two"},
             )
             self.assertEqual(app.artist_thumbnail(str(listed[0]["id"])), portrait)
+
+    def test_same_mbid_aliases_share_presentation_search_and_album_associations(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "index.sqlite"
+            credentials = root / "credentials"
+            credentials.mkdir()
+            mbid = "859d0860-d480-4efd-970c-c05d5f1776b8"
+            albums = [
+                ("beyonce", "artist-beyonce", "Beyoncé", "4"),
+                ("knowles", "artist-knowles", "Beyonce Knowles", "Dangerously in Love"),
+            ]
+            with closing(connect(database)) as db:
+                db.execute(
+                    "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,"
+                    "musicbrainz_artistid TEXT,primary_path TEXT,album_count INTEGER,status TEXT)"
+                )
+                db.execute(
+                    "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,album_name TEXT,"
+                    "path TEXT,cover_path TEXT,track_count INTEGER,status TEXT,compilation INTEGER,"
+                    "musicbrainz_albumid TEXT,release_year TEXT,embedded_tracks INTEGER,webp_found INTEGER)"
+                )
+                db.execute(
+                    "CREATE TABLE tracks (track_key TEXT PRIMARY KEY,album_key TEXT,path TEXT,"
+                    "title TEXT,artist_name TEXT,musicbrainz_artistid TEXT)"
+                )
+                for album_key, artist_key, name, title in albums:
+                    folder = root / name / title
+                    folder.mkdir(parents=True)
+                    db.execute(
+                        "INSERT INTO artists VALUES (?,?,?,?,1,'processed')",
+                        (artist_key, name, mbid, str(folder.parent)),
+                    )
+                    db.execute(
+                        "INSERT INTO albums VALUES (?,?,?,?,NULL,1,'processed',0,?,'2026',1,0)",
+                        (album_key, artist_key, title, str(folder), "release-" + album_key),
+                    )
+                    db.execute(
+                        "INSERT INTO tracks VALUES (?,?,?,?,?,?)",
+                        (
+                            "track-" + album_key,
+                            album_key,
+                            str(folder / "song.flac"),
+                            title + " Song",
+                            name,
+                            mbid,
+                        ),
+                    )
+                db.commit()
+
+            app = PreviewApp(root, database, root, credentials, cache=root / "cache")
+            listed = app.artists("Knowles")
+            self.assertEqual(len(listed), 1)
+            self.assertEqual(listed[0]["albums"], 2)
+            selected = app.artist(str(listed[0]["id"]))
+            self.assertEqual(
+                {album["id"] for album in selected["albums"]},
+                {"beyonce", "knowles"},
+            )
 
     def test_first_load_merges_duplicate_identity_and_projects_every_album_class(self):
         with TemporaryDirectory() as directory:
