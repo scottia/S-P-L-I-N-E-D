@@ -153,6 +153,39 @@ commit and does not repeat either platform's real-writer suite merely because
 a distributable was selected. Canonical policy JSON review remains independent
 of build and publication automation.
 
+## Cache and performance acceptance
+
+Benchmark Windows and WebGUI independently on the same runner image with three
+scenarios: a cold full-source build with no compatible cache, a warm repeat of
+the exact source and inputs, and a warm partial update after changing an
+application input while retaining compatible dependencies. Run each scenario
+three times and compare medians. Record cache or layer reuse, compilation,
+validation, packaging, compression, artifact-transfer and total elapsed time,
+plus the retained artifact sizes and checksums. Cache lookup-only reporting is
+not a measured cache hit and must be labelled anticipated.
+
+The acceptance objectives are:
+
+- the warm-repeat compilation median is no more than 25 percent of the cold
+  compilation median;
+- the warm-with-source-change compilation median is no more than 75 percent of
+  the cold compilation median;
+- cache restore and save overhead together remain lower than the compilation
+  time they avoid;
+- standard Windows builds create and validate the portable files, MSIX and
+  local Store review bundle once, with no repeated compilation or packaging in
+  Store submission or publication;
+- report-only selections invoke no compiler, container build, packager,
+  release mutation or external Store mutation; and
+- a cache miss changes performance, not artifact contents, validation scope or
+  provenance requirements.
+
+Accept the split only after the cold, warm-repeat and warm-with-source-change
+matrix completes without artifact, checksum, validation or source-identity
+regression. Retain the originating run IDs and job summaries as the benchmark
+record so future runner, dependency or cache-key changes can be compared on the
+same basis.
+
 The existing Store and GHCR recovery workflows remain available for their
 separately documented recovery scopes. Release notes and Store Highlights use
 the pinned shared [`release/cliff.toml`](../release/cliff.toml) configuration
