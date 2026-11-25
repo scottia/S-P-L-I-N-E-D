@@ -1476,15 +1476,12 @@ class Catalog:
 
     @staticmethod
     def _virtual_artist_row(projection: dict[str, object]) -> dict[str, object]:
-        album_keys = set(projection.get("album_keys", set())) | set(
-            projection.get("comp_statuses", {})
-        )
         return {
             "artist_key": projection["artist_key"],
             "artist_name": projection["artist_name"],
             "musicbrainz_artistid": projection["musicbrainz_artistid"],
             "primary_path": "",
-            "album_count": len(album_keys),
+            "album_count": len(projection.get("album_keys", set())),
             "status": "unprocessed",
         }
 
@@ -1528,7 +1525,7 @@ class Catalog:
                 (
                     value for value in self._projected_track_artists(db).values()
                     if str(value["artist_key"]) == str(artist_id)
-                    and (value.get("album_keys") or value.get("comp_statuses"))
+                    and value.get("album_keys")
                 ),
                 None,
             )
@@ -2200,7 +2197,7 @@ class Catalog:
             self._virtual_artist_row(value)
             for identity, value in projected.items()
             if identity not in existing_identities
-            and (value.get("album_keys") or value.get("comp_statuses"))
+            and value.get("album_keys")
         )]
         statuses_by_artist: dict[str, list] = {}
         album_evidence_by_key: dict[str, dict[str, object]] = {}
@@ -2236,9 +2233,7 @@ class Catalog:
                 key
                 for row in group
                 for key in owned_album_keys.get(str(row["artist_key"]), set())
-            } | set(appearance.get("album_keys", set())) | set(
-                appearance.get("comp_statuses", {})
-            )
+            } | set(appearance.get("album_keys", set()))
             effective_album_count = (
                 len(album_keys)
                 if self.path_album_grouping_enabled()
@@ -2370,7 +2365,6 @@ class Catalog:
             if self.path_album_grouping_enabled():
                 visible = has_owner_album or bool(
                     projected.get(identity, {}).get("album_keys")
-                    or projected.get(identity, {}).get("comp_statuses")
                 )
             else:
                 visible = bool(
