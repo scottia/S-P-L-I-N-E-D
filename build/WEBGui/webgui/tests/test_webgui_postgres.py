@@ -449,18 +449,29 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             )
             self.assertTrue(artist_result["written"])
 
-            # EMBED Batch is an explicit operation. Once its exact prepared
-            # artwork has been snapshotted, the candidate scan that supplied
-            # it is superseded and must release the single durable worker.
+            # EMBED Batch is a future explicit operation. Staging its exact
+            # prepared artwork must not cancel the active Artist review or
+            # discard its current nonce; the review can continue before the
+            # operator starts the staged queue.
             staged = self.services.stage_album(self.payload())
             self.assertTrue(staged["prepared_file"])
             album_job = self.queue.enqueue(
                 "embed-album", staged, staged=True
             )
-            cancelled_scan = self.wait_for_job(
-                queued["id"], lambda item: item["state"] == "cancelled"
+            retained_scan = self.wait_for_job(
+                queued["id"], lambda item: item["state"] == "waiting"
             )
-            self.assertEqual(cancelled_scan["state"], "cancelled")
+            self.assertEqual(retained_scan["state"], "waiting")
+            self.queue.action(
+                "decision",
+                queued["id"],
+                "k",
+                retained_scan["progress"]["prompt"]["nonce"],
+            )
+            completed_scan = self.wait_for_job(
+                queued["id"], lambda item: item["state"] == "done"
+            )
+            self.assertEqual(completed_scan["state"], "done")
             self.queue.action("start", kind="embed-album")
             completed = self.wait_for_job(
                 album_job["id"], lambda item: item["state"] in {"done", "failed"}

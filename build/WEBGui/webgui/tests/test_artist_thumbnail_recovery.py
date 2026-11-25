@@ -102,12 +102,52 @@ class ArtistThumbnailRecoveryTests(unittest.TestCase):
         provider = self.root / "cache" / "navidrome-thumbnails" / "artists" / "provider.png"
         provider.parent.mkdir(parents=True)
         provider.write_bytes(_png())
-        self.catalog.portrait_cache["artist-1"] = provider
+        identity = self.catalog._artist_portrait_identity(
+            {
+                "artist_key": "artist-1",
+                "artist_name": "Test Artist",
+            }
+        )
+        self.catalog.portrait_cache["artist-1"] = (identity, provider)
         portrait = self.artist_path / "artist.png"
         portrait.write_bytes(_png())
 
         self.assertEqual(self.catalog.artist_thumbnail("artist-1"), portrait)
-        self.assertEqual(self.catalog.portrait_cache["artist-1"], portrait)
+        self.assertEqual(self.catalog.portrait_cache["artist-1"][1], portrait)
+
+    def test_persistent_provider_thumbnail_is_bound_to_visible_artist_identity(self) -> None:
+        reused_key = "artist-1"
+        bette = {
+            "artist_key": reused_key,
+            "artist_name": "Bette Midler",
+        }
+        rahman = {
+            "artist_key": reused_key,
+            "artist_name": "A. R. Rahman",
+            "musicbrainz_artistid": "",
+            "primary_path": "",
+        }
+        bette.update({"musicbrainz_artistid": "", "primary_path": ""})
+        bette_identity = sha256(
+            (reused_key + "\0" + "bettemidler").encode("utf-8")
+        ).hexdigest()[:32]
+        stale = (
+            self.root
+            / "cache"
+            / "navidrome-thumbnails"
+            / "artists"
+            / ("web-v1-" + bette_identity + ".png")
+        )
+        stale.parent.mkdir(parents=True)
+        stale.write_bytes(_png())
+        self.catalog.portrait_cache[reused_key] = (
+            self.catalog._artist_portrait_identity(bette), stale
+        )
+
+        self.assertEqual(self.catalog._navidrome_thumbnail_path(bette), stale)
+        self.assertIsNone(self.catalog._navidrome_thumbnail_path(rahman))
+        self.assertIsNone(self.catalog.artist_thumbnail_path(rahman))
+        self.assertNotIn(reused_key, self.catalog.portrait_cache)
 
     def test_projected_artist_mbid_still_finds_name_scoped_shared_art(self) -> None:
         artist_name = "Rob Wasserman"
@@ -144,7 +184,7 @@ class ArtistThumbnailRecoveryTests(unittest.TestCase):
             self.assertEqual(self.catalog.artist_thumbnail("artist-1"), cached)
             self.assertEqual(self.catalog.artist_thumbnail("artist-1"), cached)
         self.assertEqual(download.call_count, 2)
-        self.assertEqual(self.catalog.portrait_cache["artist-1"], cached)
+        self.assertEqual(self.catalog.portrait_cache["artist-1"][1], cached)
 
     def test_active_index_defers_remote_thumbnail_then_reuses_persistent_cache(self) -> None:
         self._save_credentials()

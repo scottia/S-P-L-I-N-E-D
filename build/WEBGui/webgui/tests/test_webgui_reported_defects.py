@@ -190,7 +190,7 @@ class ReportedDefectTests(unittest.TestCase):
             )
             self.assertEqual(result["artist"]["genres"], ["Alternative", "Rock"])
 
-    def test_artist_metadata_uses_identity_bound_library_genres_when_artist_detail_has_none(self):
+    def test_artist_biography_does_not_wait_for_library_appearance_traversal(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             credentials = root / "credentials"
@@ -232,7 +232,9 @@ class ReportedDefectTests(unittest.TestCase):
             catalog.lock = Lock()
             catalog.artist = lambda _artist_id: {"id": "selected", "name": "Selected Artist", "mbid": "", "top_tracks": [], "genres": []}
             catalog.artist_comp_albums = lambda _artist_id: []
-            catalog.refresh_artist_appearances = lambda _artist_id: {"genres": ["Blues", "Soul"]}
+            catalog.refresh_artist_appearances = lambda _artist_id: self.fail(
+                "biography loading must not launch the song appearance traversal"
+            )
             catalog._stored_artist_profile = lambda _artist_id: None
             catalog._save_artist_profile = lambda *_args: None
             catalog.connect = lambda: sqlite3.connect(database)
@@ -250,7 +252,9 @@ class ReportedDefectTests(unittest.TestCase):
             with patch("webgui.catalog.requests.get", side_effect=response):
                 result = catalog.artist_metadata("selected")
 
-            self.assertEqual(result["artist"]["genres"], ["Blues", "Soul"])
+            self.assertEqual(result["biography"], "Provider biography")
+            self.assertEqual(result["artist"]["genres"], [])
+            self.assertNotIn("comp_albums", result)
 
     def test_neutral_banner_fit_preserves_the_complete_source(self):
         source = Image.new("RGBA", (600, 600), "red")

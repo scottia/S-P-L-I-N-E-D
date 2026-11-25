@@ -58,7 +58,7 @@ class AudioIntegritySourceContract(unittest.TestCase):
         guard = source("build/WEBGui/webgui/backend/splined_audio_integrity.py")
         self.assertIn("Non-artwork metadata, ID3 version, or audio stream changed", guard)
 
-    def test_required_pr_and_workflow_one_cannot_skip_integrity(self):
+    def test_required_pr_and_release_candidate_cannot_skip_integrity(self):
         pr = source(".github/workflows/validate.yml")
         for key in ("  audio-integrity-webgui:", "  audio-integrity-windows:"):
             self.assertIn(key, pr)
@@ -70,25 +70,12 @@ class AudioIntegritySourceContract(unittest.TestCase):
         self.assertIn('"local_artwork"', pr)
         self.assertIn("--no-run `", pr)
         self.assertIn("--message-format=json-render-diagnostics", pr)
-        release = source(".github/workflows/01-full-release.yml")
-        prepare_header = release.split("  prepare-release:\n", 1)[1].split(
-            "    steps:\n", 1
-        )[0]
-        self.assertIn("audio-integrity-webgui", prepare_header)
-        self.assertIn("audio-integrity-windows", prepare_header)
-        self.assertIn("needs.audio-integrity-webgui.result == 'success'", release)
-        self.assertIn("needs.audio-integrity-windows.result == 'success'", release)
-        self.assertIn("WEBGUI_INTEGRITY_RESULT:", release)
-        self.assertIn("WINDOWS_INTEGRITY_RESULT:", release)
-        self.assertIn("test_audio_integrity.py -v", release)
-        self.assertIn("test_cross_format_cover_overwrite.py -v", release)
-        self.assertIn("artwork_integrity::tests -- --nocapture", release)
-        self.assertIn("local_artwork -- --nocapture", release)
-        self.assertNotIn("  audio-integrity:\n", release)
-        self.assertIn(
-            "unconditional Windows and WebGUI audio-integrity gate",
-            release,
-        )
+        release = source(".github/workflows/21-release-preparation.yml")
+        self.assertIn("Resolve successful required-validation provenance", release)
+        self.assertIn('select(.name == "Validate supported runtimes"', release)
+        self.assertIn("Required validation run contains an unsuccessful job", release)
+        self.assertIn('"validation_run_id": int(os.environ["VALIDATION_RUN_ID"])', release)
+        self.assertIn("source-validation.json", release)
 
         optimized = source(".github/workflows/10-unified-build.yml")
         for marker in (

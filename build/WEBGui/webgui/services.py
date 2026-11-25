@@ -2931,10 +2931,16 @@ class Services:
         artist_id = str(payload.get("artist_id", ""))
         artist = self.catalog.artist(artist_id)
         with closing(self.runtime.database.connect()) as db:
+            _canonical, aliases = self.catalog._artist_identity_rows(db, artist_id)
+            alias_ids = [str(row["artist_key"]) for row in aliases]
+            placeholders = ",".join("?" for _ in alias_ids)
             rows = list(
                 db.execute(
-                    "SELECT albums.path,albums.musicbrainz_albumid,artists.artist_name,artists.musicbrainz_artistid FROM albums JOIN artists ON artists.artist_key=albums.artist_key WHERE albums.artist_key=?",
-                    (artist_id,),
+                    "SELECT albums.path,albums.musicbrainz_albumid,artists.artist_name,"
+                    "artists.musicbrainz_artistid FROM albums JOIN artists ON "
+                    "artists.artist_key=albums.artist_key WHERE albums.artist_key "
+                    f"IN ({placeholders})",
+                    tuple(alias_ids),
                 )
             )
         targets = artist_targets(
@@ -2977,8 +2983,9 @@ class Services:
             written.append(path.name)
         self.audit("write-artist-art", artist_id, {"files": written})
         with self.catalog.lock:
-            self.catalog.metadata_cache.pop(artist_id, None)
-            self.catalog.portrait_cache.pop(artist_id, None)
+            for alias_id in alias_ids:
+                self.catalog.metadata_cache.pop(alias_id, None)
+                self.catalog.portrait_cache.pop(alias_id, None)
         return {"written": written}
 
     def _persist_comp_track_authority(self, track, recording_mbid, artist_mbids):

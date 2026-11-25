@@ -1151,11 +1151,19 @@ function renderQueue() {
 };
 async function refreshCompletedAlbum(albumId) {
   if (!albumId) return;
+  const selectedArtistId = state.artist?.id || "";
+  const affectsSelectedArtist = !!selectedArtistId
+    && typeof albumInCurrentArtistContext === "function"
+    && albumInCurrentArtistContext(albumId);
   const album = await api("/api/album?id=" + encodeURIComponent(albumId));
   if (state.album?.id === albumId) state.album = album;
-  if (state.artist?.id === album.artist_id) {
-    const overview = await api("/api/artist/overview?id=" + encodeURIComponent(album.artist_id));
-    if (state.artist?.id === album.artist_id) {
+  // A Featured, soundtrack, V/A, or normalized-alias Album can contribute to
+  // the selected Artist while retaining another physical owner row. Refresh
+  // the visible presentation identity, not only album.artist_id.
+  if (affectsSelectedArtist || state.artist?.id === album.artist_id) {
+    const refreshArtistId = affectsSelectedArtist ? selectedArtistId : album.artist_id;
+    const overview = await api("/api/artist/overview?id=" + encodeURIComponent(refreshArtistId));
+    if (state.artist?.id === refreshArtistId) {
       state.artist = overview.artist;
       state.compAlbums = overview.comp_albums || [];
       if (typeof syncSelectedArtistStatus === "function") syncSelectedArtistStatus();

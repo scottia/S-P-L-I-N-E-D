@@ -66,6 +66,27 @@ class ArtistArtStorageTests(unittest.TestCase):
             self.assertEqual([target.stem for target in targets], ["artist", f"artist-mbid-{ARTIST_ID}"])
             self.assertEqual(targets[0].directory, artist_dir)
 
+    def test_normalized_alias_rows_resolve_the_same_physical_write_target(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artist_dir = root / "Music" / "AC-DC"
+            artist_dir.mkdir(parents=True)
+            targets = artist_targets(
+                [
+                    ArtistAlbum(
+                        "AC-DC",
+                        artist_dir / "Back in Black",
+                        ALBUM_ID,
+                        ARTIST_ID,
+                    )
+                ],
+                "AC/DC",
+                root / "artist-art",
+            )
+
+            self.assertEqual(targets[0].directory, artist_dir)
+            self.assertEqual(targets[0].stem, "artist")
+
     def test_prepared_portrait_is_square_and_banner_fit_tracks_position(self) -> None:
         portrait = prepare_portrait(image_bytes("purple"), 64)
         with Image.open(BytesIO(portrait)) as image:

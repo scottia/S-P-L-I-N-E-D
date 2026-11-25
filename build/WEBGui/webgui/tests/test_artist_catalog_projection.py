@@ -18,14 +18,144 @@ from webgui.catalog import (
     PreviewApp,
     artist_credit_position,
     artist_display_sort_key,
+    artist_search_matches,
     embedded_album_artwork_summary,
     normalized_artist_identity,
     potential_collaboration_credits,
 )
+from splined_media_tags import ARTIST_CREDIT_SEPARATOR, normalize_artist_credit_text
 from splined_media_database import aggregate_artist, update_artist_aggregate
 
 
+CONFORMANCE = json.loads(
+    (
+        Path(__file__).resolve().parents[4]
+        / ".github"
+        / "test-data"
+        / "artist-identity-conformance.json"
+    ).read_text(encoding="utf-8")
+)
+
+
 class ArtistCatalogProjectionTests(unittest.TestCase):
+    def test_shared_art004_credit_and_search_conformance(self):
+        self.assertEqual(CONFORMANCE["policy_id"], "ART-004")
+        for case in CONFORMANCE["credit_cases"]:
+            with self.subTest(case=case["id"]):
+                resolved = normalize_artist_credit_text(
+                    case["value"],
+                    case["separator_regex"],
+                    case["artist_mbids"],
+                ).replace("\0", ARTIST_CREDIT_SEPARATOR)
+                self.assertEqual(
+                    [
+                        part.strip()
+                        for part in resolved.split(ARTIST_CREDIT_SEPARATOR)
+                        if part.strip()
+                    ],
+                    case["expected_names"],
+                )
+        for case in CONFORMANCE["search_cases"]:
+            with self.subTest(name=case["name"]):
+                self.assertEqual(
+                    normalized_artist_identity(case["name"]),
+                    case["presentation_identity"],
+                )
+                self.assertTrue(all(
+                    artist_search_matches(query, case["name"])
+                    for query in case["matches"]
+                ))
+                self.assertTrue(all(
+                    not artist_search_matches(query, case["name"])
+                    for query in case["rejects"]
+                ))
+
+    def test_shared_art004_presentation_and_association_conformance(self):
+        for case in CONFORMANCE["presentation_cases"]:
+            with self.subTest(case=case["id"]), TemporaryDirectory() as directory:
+                root = Path(directory)
+                database = root / "index.sqlite"
+                credentials = root / "credentials"
+                credentials.mkdir()
+                credits = {
+                    album_key: credit
+                    for credit in case["credits"]
+                    for album_key in credit["album_keys"]
+                }
+                with closing(connect(database)) as db:
+                    db.execute(
+                        "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,"
+                        "musicbrainz_artistid TEXT,primary_path TEXT,album_count INTEGER,status TEXT)"
+                    )
+                    db.execute(
+                        "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,album_name TEXT,"
+                        "path TEXT,cover_path TEXT,track_count INTEGER,status TEXT,compilation INTEGER,"
+                        "musicbrainz_albumid TEXT,release_year TEXT,embedded_tracks INTEGER,webp_found INTEGER)"
+                    )
+                    db.execute(
+                        "CREATE TABLE tracks (track_key TEXT PRIMARY KEY,album_key TEXT,path TEXT,"
+                        "title TEXT,artist_name TEXT,musicbrainz_artistid TEXT)"
+                    )
+                    for owner in case["owners"]:
+                        owner_root = root / owner["artist_key"].replace(":", "-")
+                        db.execute(
+                            "INSERT INTO artists VALUES (?,?,?,?,?,'processed')",
+                            (
+                                owner["artist_key"],
+                                owner["name"],
+                                owner["artist_mbid"],
+                                str(owner_root),
+                                len(owner["album_keys"]),
+                            ),
+                        )
+                        for album_key in owner["album_keys"]:
+                            folder = owner_root / album_key
+                            folder.mkdir(parents=True)
+                            credit = credits.get(album_key, {
+                                "name": owner["name"],
+                                "artist_mbid": owner["artist_mbid"],
+                            })
+                            db.execute(
+                                "INSERT INTO albums VALUES (?,?,?,?,NULL,1,'processed',0,?,'2026',1,0)",
+                                (
+                                    album_key,
+                                    owner["artist_key"],
+                                    album_key,
+                                    str(folder),
+                                    "release-" + album_key,
+                                ),
+                            )
+                            db.execute(
+                                "INSERT INTO tracks VALUES (?,?,?,?,?,?)",
+                                (
+                                    "track-" + album_key,
+                                    album_key,
+                                    str(folder / "song.flac"),
+                                    album_key + " Song",
+                                    credit["name"],
+                                    credit["artist_mbid"],
+                                ),
+                            )
+                    db.commit()
+
+                app = PreviewApp(root, database, root, credentials, cache=root / "cache")
+                listed = app.artists("")
+                self.assertEqual(len(listed), 1)
+                self.assertEqual(listed[0]["name"], case["expected"]["label"])
+                self.assertEqual(listed[0]["albums"], len(case["expected"]["album_keys"]))
+                for alias in case["expected"]["aliases"]:
+                    self.assertEqual(
+                        [item["id"] for item in app.artists(alias)],
+                        [listed[0]["id"]],
+                    )
+                if "$" in case["expected"]["label"]:
+                    self.assertEqual(len(app.artists("$")), 1)
+                selected = app.artist(str(listed[0]["id"]))
+                self.assertEqual(
+                    sorted(album["id"] for album in selected["albums"]),
+                    case["expected"]["album_keys"],
+                )
+
     def test_artist_projection_is_linear_and_reused_per_published_generation(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1068,12 +1198,75 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             listed = [item for item in app.artists("") if item["name"] == "Beyoncé"]
             self.assertEqual(len(listed), 1)
             self.assertEqual(listed[0]["albums"], 2)
+            self.assertEqual(
+                [item["id"] for item in app.artists("BEYONCÉ")],
+                [listed[0]["id"]],
+            )
             selected = app.artist(str(listed[0]["id"]))
             self.assertEqual(
                 {item["id"] for item in selected["albums"]},
                 {"album-one", "album-two"},
             )
             self.assertEqual(app.artist_thumbnail(str(listed[0]["id"])), portrait)
+
+    def test_same_mbid_aliases_share_presentation_search_and_album_associations(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "index.sqlite"
+            credentials = root / "credentials"
+            credentials.mkdir()
+            mbid = "859d0860-d480-4efd-970c-c05d5f1776b8"
+            albums = [
+                ("beyonce", "artist-beyonce", "Beyoncé", "4"),
+                ("knowles", "artist-knowles", "Beyonce Knowles", "Dangerously in Love"),
+            ]
+            with closing(connect(database)) as db:
+                db.execute(
+                    "CREATE TABLE artists (artist_key TEXT PRIMARY KEY,artist_name TEXT,"
+                    "musicbrainz_artistid TEXT,primary_path TEXT,album_count INTEGER,status TEXT)"
+                )
+                db.execute(
+                    "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,album_name TEXT,"
+                    "path TEXT,cover_path TEXT,track_count INTEGER,status TEXT,compilation INTEGER,"
+                    "musicbrainz_albumid TEXT,release_year TEXT,embedded_tracks INTEGER,webp_found INTEGER)"
+                )
+                db.execute(
+                    "CREATE TABLE tracks (track_key TEXT PRIMARY KEY,album_key TEXT,path TEXT,"
+                    "title TEXT,artist_name TEXT,musicbrainz_artistid TEXT)"
+                )
+                for album_key, artist_key, name, title in albums:
+                    folder = root / name / title
+                    folder.mkdir(parents=True)
+                    db.execute(
+                        "INSERT INTO artists VALUES (?,?,?,?,1,'processed')",
+                        (artist_key, name, mbid, str(folder.parent)),
+                    )
+                    db.execute(
+                        "INSERT INTO albums VALUES (?,?,?,?,NULL,1,'processed',0,?,'2026',1,0)",
+                        (album_key, artist_key, title, str(folder), "release-" + album_key),
+                    )
+                    db.execute(
+                        "INSERT INTO tracks VALUES (?,?,?,?,?,?)",
+                        (
+                            "track-" + album_key,
+                            album_key,
+                            str(folder / "song.flac"),
+                            title + " Song",
+                            name,
+                            mbid,
+                        ),
+                    )
+                db.commit()
+
+            app = PreviewApp(root, database, root, credentials, cache=root / "cache")
+            listed = app.artists("Knowles")
+            self.assertEqual(len(listed), 1)
+            self.assertEqual(listed[0]["albums"], 2)
+            selected = app.artist(str(listed[0]["id"]))
+            self.assertEqual(
+                {album["id"] for album in selected["albums"]},
+                {"beyonce", "knowles"},
+            )
 
     def test_first_load_merges_duplicate_identity_and_projects_every_album_class(self):
         with TemporaryDirectory() as directory:

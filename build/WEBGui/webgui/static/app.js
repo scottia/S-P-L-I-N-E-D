@@ -1789,6 +1789,17 @@ function closeArtistCompReport() {
 }
 
 let artistCompReportCache = {artistId: "", groups: null, promise: null};
+function copyArtistCompGroups(groups) {
+  return (groups || []).map(group => ({
+    ...group,
+    tracks: (group.tracks || []).map(track => ({...track})),
+  })).sort(compareCompReportGroups);
+}
+function primeArtistCompReport(artistId, groups) {
+  const prepared = copyArtistCompGroups(groups);
+  artistCompReportCache = {artistId, groups: prepared, promise: null};
+  return prepared;
+}
 function requestArtistCompReport(artistId) {
   if (artistCompReportCache.artistId === artistId) {
     if (artistCompReportCache.groups) return Promise.resolve(artistCompReportCache.groups);
@@ -1810,15 +1821,15 @@ function requestArtistCompReport(artistId) {
   return entry.promise;
 }
 async function precompileArtistCompReport(artistId, selectionRequest) {
-  try {
-    const groups = await requestArtistCompReport(artistId);
-    if (selectionRequest === state.selectionRequest && artistId === state.artist?.id) {
-      state.compGroups = groups;
-      if (typeof syncSelectedArtistStatus === "function") syncSelectedArtistStatus();
-      refreshLibraryArtistRow(artistId);
-      renderCompReportButtonState();
-    }
-  } catch { /* COMP Report reports a focused error only when explicitly opened. */ }
+  if (selectionRequest !== state.selectionRequest || artistId !== state.artist?.id) return;
+  // Artist Overview already carries the indexed, track-scoped COMP projection.
+  // Prime the closed report from that response instead of querying the same
+  // library again during selection. Recorded thumbnails remain independently
+  // validated in bounded batches when the operator opens the report.
+  state.compGroups = primeArtistCompReport(artistId, state.compAlbums);
+  if (typeof syncSelectedArtistStatus === "function") syncSelectedArtistStatus();
+  refreshLibraryArtistRow(artistId);
+  renderCompReportButtonState();
 }
 
 async function openArtistCompReport(albumId = "") {
