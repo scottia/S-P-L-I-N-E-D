@@ -1,0 +1,505 @@
+name: 24. Complete Release & Publication
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_all:
+        description: "TARGET — ALL (default). Choose exactly one target."
+        default: true
+        type: boolean
+      target_windows:
+        description: "TARGET — WINDOWS."
+        default: false
+        type: boolean
+      target_webgui:
+        description: "TARGET — PYTHON/WEBGUI."
+        default: false
+        type: boolean
+      completion_release:
+        description: "COMPLETE RELEASE (default). Choose exactly one completion."
+        default: true
+        type: boolean
+      completion_report_only:
+        description: "COMPLETE RELEASE, REPORT: audit readiness without tagging or publishing."
+        default: false
+        type: boolean
+      windows_build_run_id:
+        description: "Workflow 22 run ID for Windows/ALL publication."
+        default: ""
+        type: string
+      webgui_build_run_id:
+        description: "Workflow 23 run ID for PYTHON/WEBGUI/ALL publication."
+        default: ""
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+  packages: read
+
+concurrency:
+  group: splined-complete-release
+  cancel-in-progress: false
+
+jobs:
+  resolve-plan:
+    name: Validate publication selections
+    runs-on: ubuntu-latest
+    outputs:
+      target: ${{ steps.plan.outputs.target }}
+      publish: ${{ steps.plan.outputs.publish }}
+      use_windows: ${{ steps.plan.outputs.use_windows }}
+      use_webgui: ${{ steps.plan.outputs.use_webgui }}
+      windows_run_id: ${{ steps.plan.outputs.windows_run_id }}
+      webgui_run_id: ${{ steps.plan.outputs.webgui_run_id }}
+      started_epoch: ${{ steps.plan.outputs.started_epoch }}
+    steps:
+      - name: Reject conflicting selections before artifact transfer
+        id: plan
+        shell: bash
+        env:
+          TARGET_ALL: ${{ inputs.target_all }}
+          TARGET_WINDOWS: ${{ inputs.target_windows }}
+          TARGET_WEBGUI: ${{ inputs.target_webgui }}
+          COMPLETE_RELEASE: ${{ inputs.completion_release }}
+          REPORT_ONLY: ${{ inputs.completion_report_only }}
+          WINDOWS_RUN_ID: ${{ inputs.windows_build_run_id }}
+          WEBGUI_RUN_ID: ${{ inputs.webgui_build_run_id }}
+        run: |
+          set -euo pipefail
+          STARTED_EPOCH=$(date +%s)
+          target_count=0
+          if [ "$TARGET_ALL" = true ]; then target_count=$((target_count + 1)); target=ALL; fi
+          if [ "$TARGET_WINDOWS" = true ]; then target_count=$((target_count + 1)); target=WINDOWS; fi
+          if [ "$TARGET_WEBGUI" = true ]; then target_count=$((target_count + 1)); target=WEBGUI; fi
+          if [ "$target_count" -ne 1 ]; then
+            echo "::error title=Select exactly one target::TARGET has $target_count checked options."
+            exit 1
+          fi
+          completion_count=0
+          if [ "$COMPLETE_RELEASE" = true ]; then completion_count=$((completion_count + 1)); publish=true; fi
+          if [ "$REPORT_ONLY" = true ]; then completion_count=$((completion_count + 1)); publish=false; fi
+          if [ "$completion_count" -ne 1 ]; then
+            echo "::error title=Select exactly one completion::COMPLETION has $completion_count checked options."
+            exit 1
+          fi
+          use_windows=false
+          use_webgui=false
+          if [ "$target" = ALL ] || [ "$target" = WINDOWS ]; then
+            use_windows=true
+            if ! [[ "$WINDOWS_RUN_ID" =~ ^[0-9]+$ ]]; then
+              echo "::error title=Windows build run required::Enter the validated Workflow 22 run ID."
+              exit 1
+            fi
+          fi
+          if [ "$target" = ALL ] || [ "$target" = WEBGUI ]; then
+            use_webgui=true
+            if ! [[ "$WEBGUI_RUN_ID" =~ ^[0-9]+$ ]]; then
+              echo "::error title=WebGUI build run required::Enter the validated Workflow 23 run ID."
+              exit 1
+            fi
+          fi
+          {
+            echo "target=$target"
+            echo "publish=$publish"
+            echo "use_windows=$use_windows"
+            echo "use_webgui=$use_webgui"
+            echo "windows_run_id=$WINDOWS_RUN_ID"
+            echo "webgui_run_id=$WEBGUI_RUN_ID"
+            echo "started_epoch=$STARTED_EPOCH"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "## Workflow 24 selected plan"
+            echo
+            echo "- Target: \`$target\`"
+            echo "- Completion: \`$([ "$publish" = true ] && echo 'COMPLETE RELEASE' || echo 'COMPLETE RELEASE, REPORT')\`"
+            echo "- Windows build run: \`${WINDOWS_RUN_ID:-not selected}\`"
+            echo "- WebGUI build run: \`${WEBGUI_RUN_ID:-not selected}\`"
+            echo "- Recompilation and redundant packaging: \`prohibited\`"
+            echo "- Microsoft Store submission: \`not part of Workflow 24\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  audit:
+    name: Audit exact artifacts and publication readiness
+    needs: resolve-plan
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.readiness.outputs.version }}
+      commit: ${{ steps.readiness.outputs.commit }}
+      existing_release: ${{ steps.readiness.outputs.existing_release }}
+      publish_windows: ${{ steps.readiness.outputs.publish_windows }}
+      publish_webgui: ${{ steps.readiness.outputs.publish_webgui }}
+      audit_seconds: ${{ steps.readiness.outputs.audit_seconds }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Download exact validated Windows artifacts
+        if: ${{ needs.resolve-plan.outputs.use_windows == 'true' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: splined-windows-release
+          path: windows-release
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.resolve-plan.outputs.windows_run_id }}
+
+      - name: Download exact validated WebGUI artifacts
+        if: ${{ needs.resolve-plan.outputs.use_webgui == 'true' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: splined-webgui-release
+          path: webgui-release
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.resolve-plan.outputs.webgui_run_id }}
+
+      - name: Verify build manifests and assemble publication inputs
+        id: artifacts
+        shell: bash
+        env:
+          USE_WINDOWS: ${{ needs.resolve-plan.outputs.use_windows }}
+          USE_WEBGUI: ${{ needs.resolve-plan.outputs.use_webgui }}
+        run: |
+          set -euo pipefail
+          mkdir -p publication-inputs/release-assets publication-inputs/candidate publication-inputs/audit
+          version=""
+          commit=""
+          if [ "$USE_WINDOWS" = true ]; then
+            python3 .github/scripts/release_artifact_contract.py verify-build --kind windows windows-release \
+              --expected-run-id "${{ needs.resolve-plan.outputs.windows_run_id }}"
+            version=$(python3 -c 'import json; print(json.load(open("windows-release/windows-build-manifest.json"))["release_version"])')
+            commit=$(python3 -c 'import json; print(json.load(open("windows-release/windows-build-manifest.json"))["candidate_commit"])')
+            test -s windows-release/release-assets/splined-windows-x86_64.zip
+            test -s windows-release/release-assets/windows-update.json
+            test -s windows-release/store-review/SPLINED-x64-store-unsigned.msix
+            cp windows-release/release-assets/splined-windows-x86_64.zip publication-inputs/release-assets/
+            cp windows-release/release-assets/windows-update.json publication-inputs/release-assets/
+            cp windows-release/windows-build-manifest.json publication-inputs/audit/
+            cp windows-release/SHA256SUMS-WINDOWS-BUILD.txt publication-inputs/audit/
+            cp windows-release/candidate/* publication-inputs/candidate/
+          fi
+          if [ "$USE_WEBGUI" = true ]; then
+            python3 .github/scripts/release_artifact_contract.py verify-build --kind webgui webgui-release \
+              --expected-run-id "${{ needs.resolve-plan.outputs.webgui_run_id }}"
+            release_version=$(python3 -c 'import json; print(json.load(open("webgui-release/webgui-build-manifest.json"))["release_version"])')
+            candidate_commit=$(python3 -c 'import json; print(json.load(open("webgui-release/webgui-build-manifest.json"))["candidate_commit"])')
+            if [ -n "$version" ]; then
+              test "$version" = "$release_version"
+              test "$commit" = "$candidate_commit"
+            else
+              version="$release_version"
+              commit="$candidate_commit"
+              cp webgui-release/candidate/* publication-inputs/candidate/
+            fi
+            test -s webgui-release/release-assets/splined-webgui-python.tar.gz
+            test -s webgui-release/release-assets/splined-webgui-container-image.tar.gz
+            cp webgui-release/release-assets/splined-webgui-python.tar.gz publication-inputs/release-assets/
+            cp webgui-release/release-assets/splined-webgui-container-image.tar.gz publication-inputs/
+            cp webgui-release/webgui-build-manifest.json publication-inputs/audit/
+            cp webgui-release/SHA256SUMS-WEBGUI-BUILD.txt publication-inputs/audit/
+          fi
+          python3 .github/scripts/release_artifact_contract.py verify-candidate publication-inputs/candidate
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      - name: Generate and validate incremental release notes
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.artifacts.outputs.version }}
+          RELEASE_COMMIT: ${{ steps.artifacts.outputs.commit }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          git fetch publication-inputs/candidate/release-source.bundle HEAD
+          if ((git rev-parse FETCH_HEAD) -ne $env:RELEASE_COMMIT) { throw "Candidate bundle commit mismatch." }
+          git checkout --detach FETCH_HEAD
+          git fetch --force --tags origin
+          $existingTag = (git tag --list -- $env:RELEASE_VERSION) -join "`n"
+          if (-not [String]::IsNullOrWhiteSpace($existingTag)) {
+            if ((git rev-list -n 1 $env:RELEASE_VERSION) -ne $env:RELEASE_COMMIT) { throw "Existing release tag points at a different commit." }
+          } else {
+            git tag $env:RELEASE_VERSION $env:RELEASE_COMMIT
+          }
+          & release/Install-GitCliff.ps1 -InstallDirectory (Join-Path $env:RUNNER_TEMP "git-cliff-2.14.2")
+          if (((git-cliff --version) -join "`n").Trim() -cne "git-cliff 2.14.2") { throw "Expected git-cliff 2.14.2." }
+          & release/Test-ReleaseNoteClassification.ps1
+          & release/Generate-ReleaseNotes.ps1 `
+            -Version $env:RELEASE_VERSION `
+            -RepositoryRoot . `
+            -ConfigPath release/cliff.toml `
+            -GitHubTemplatePath release/templates/github-release.tera `
+            -OutputDirectory publication-inputs/release-notes
+
+      - name: Determine missing release targets and reject overwrites
+        id: readiness
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.artifacts.outputs.version }}
+          COMMIT: ${{ steps.artifacts.outputs.commit }}
+          USE_WINDOWS: ${{ needs.resolve-plan.outputs.use_windows }}
+          USE_WEBGUI: ${{ needs.resolve-plan.outputs.use_webgui }}
+        run: |
+          set -euo pipefail
+          started=$(date +%s)
+          git fetch --force --tags origin
+          existing_release=false
+          publish_windows=$USE_WINDOWS
+          publish_webgui=$USE_WEBGUI
+          if git show-ref --verify --quiet "refs/tags/$VERSION"; then
+            test "$(git rev-list -n 1 "$VERSION")" = "$COMMIT"
+          fi
+          if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            existing_release=true
+            mapfile -t assets < <(gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+            if printf '%s\n' "${assets[@]}" | grep -qx splined-windows-x86_64.zip; then publish_windows=false; fi
+            if printf '%s\n' "${assets[@]}" | grep -qx splined-webgui-python.tar.gz; then publish_webgui=false; fi
+            if [ "$USE_WINDOWS" = true ] && [ "$publish_windows" = false ]; then
+              echo "::notice title=Windows target already published::The existing Windows release asset will not be overwritten."
+            fi
+            if [ "$USE_WEBGUI" = true ] && [ "$publish_webgui" = false ]; then
+              echo "::notice title=WebGUI target already published::The existing WebGUI release asset will not be overwritten."
+            fi
+          fi
+          if [ "$publish_windows" = false ] && [ "$publish_webgui" = false ]; then
+            echo "::notice title=Selected release assets already exist::Publication will only verify GHCR readiness for a selected WebGUI target."
+          fi
+          {
+            echo "version=$VERSION"
+            echo "commit=$COMMIT"
+            echo "existing_release=$existing_release"
+            echo "publish_windows=$publish_windows"
+            echo "publish_webgui=$publish_webgui"
+            echo "audit_seconds=$(($(date +%s) - started))"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "## Workflow 24 readiness audit"
+            echo
+            echo "- Version / candidate commit: \`$VERSION\` / \`$COMMIT\`"
+            echo "- Existing GitHub Release: \`$existing_release\`"
+            echo "- Windows asset missing and publishable: \`$publish_windows\`"
+            echo "- WebGUI asset missing and publishable: \`$publish_webgui\`"
+            echo "- Artifact manifests and SHA-256 checksums: \`passed\`"
+            echo "- Required validation provenance: \`present in originating build manifests\`"
+            echo "- Incremental release notes: \`generated and validated\`"
+            echo "- Microsoft Store MSIX readiness: \`${{ needs.resolve-plan.outputs.use_windows == 'true' && 'validated unsigned MSIX retained by Workflow 22' || 'not selected' }}\`"
+            echo "- Recompilation, repackaging and Store submission: \`not performed\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record publication input checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            cd publication-inputs
+            find . -type f ! -name SHA256SUMS-PUBLICATION-INPUTS.txt -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS-PUBLICATION-INPUTS.txt
+            sha256sum -c SHA256SUMS-PUBLICATION-INPUTS.txt
+          )
+
+      - name: Upload audited publication inputs
+        id: upload
+        if: ${{ needs.resolve-plan.outputs.publish == 'true' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: splined-publication-inputs
+          path: publication-inputs/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Report publication audit artifact
+        if: ${{ needs.resolve-plan.outputs.publish == 'true' }}
+        run: |
+          {
+            echo "- Publication audit artifact ID: \`${{ steps.upload.outputs.artifact-id }}\`"
+            echo "- Readiness audit duration: \`${{ steps.readiness.outputs.audit_seconds }} seconds\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  approve-publication:
+    name: Approve release publication
+    needs: [resolve-plan, audit]
+    if: ${{ needs.resolve-plan.outputs.publish == 'true' && needs.audit.result == 'success' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: workflow-24-publication-approval
+    steps:
+      - name: Record exact approved publication
+        run: |
+          {
+            echo "## Publication approved"
+            echo
+            echo "- Version: \`${{ needs.audit.outputs.version }}\`"
+            echo "- Commit: \`${{ needs.audit.outputs.commit }}\`"
+            echo "- Target: \`${{ needs.resolve-plan.outputs.target }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    name: Tag and publish exact validated artifacts
+    needs: [resolve-plan, audit, approve-publication]
+    if: ${{ needs.approve-publication.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+      packages: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      IMAGE_NAME: ghcr.io/scottia/splined
+      RELEASE_VERSION: ${{ needs.audit.outputs.version }}
+      RELEASE_COMMIT: ${{ needs.audit.outputs.commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Download audited publication inputs
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: splined-publication-inputs
+          path: publication-inputs
+      - name: Reverify immutable publication input checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd publication-inputs && sha256sum -c SHA256SUMS-PUBLICATION-INPUTS.txt)
+          python3 .github/scripts/release_artifact_contract.py verify-candidate publication-inputs/candidate
+          git fetch publication-inputs/candidate/release-source.bundle HEAD
+          test "$(git rev-parse FETCH_HEAD)" = "$RELEASE_COMMIT"
+      - name: Create or verify numeric release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --force --tags origin
+          if git show-ref --verify --quiet "refs/tags/$RELEASE_VERSION"; then
+            test "$(git rev-list -n 1 "$RELEASE_VERSION")" = "$RELEASE_COMMIT"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git fetch publication-inputs/candidate/release-source.bundle HEAD
+            git tag -a "$RELEASE_VERSION" "$RELEASE_COMMIT" -m "S:P:L:I:N:E:D ${RELEASE_VERSION}"
+            git push origin "refs/tags/${RELEASE_VERSION}:refs/tags/${RELEASE_VERSION}"
+          fi
+          test "$(git ls-remote origin "refs/tags/$RELEASE_VERSION^{}" | awk '{print $1}')" = "$RELEASE_COMMIT"
+      - name: Create release or add only missing selected assets
+        shell: bash
+        env:
+          EXISTING_RELEASE: ${{ needs.audit.outputs.existing_release }}
+          PUBLISH_WINDOWS: ${{ needs.audit.outputs.publish_windows }}
+          PUBLISH_WEBGUI: ${{ needs.audit.outputs.publish_webgui }}
+        run: |
+          set -euo pipefail
+          cd publication-inputs/release-assets
+          release_files=()
+          if [ "$PUBLISH_WINDOWS" = true ]; then
+            release_files+=(splined-windows-x86_64.zip windows-update.json)
+          fi
+          if [ "$PUBLISH_WEBGUI" = true ]; then
+            release_files+=(splined-webgui-python.tar.gz)
+          fi
+          if [ "$EXISTING_RELEASE" = true ]; then
+            if [ "${#release_files[@]}" -gt 0 ]; then
+              if [ "$PUBLISH_WINDOWS" = true ] && [ "$PUBLISH_WEBGUI" = false ]; then checksum=SHA256SUMS-WINDOWS.txt;
+              elif [ "$PUBLISH_WINDOWS" = false ] && [ "$PUBLISH_WEBGUI" = true ]; then checksum=SHA256SUMS-WEBGUI.txt;
+              else checksum=SHA256SUMS-COMPLETION.txt; fi
+              mapfile -t published < <(gh release view "$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+              for file in "${release_files[@]}" "$checksum"; do
+                if printf '%s\n' "${published[@]}" | grep -qx "$file"; then
+                  echo "::error title=Refusing release asset overwrite::$file already exists."
+                  exit 1
+                fi
+              done
+              sha256sum "${release_files[@]}" > "$checksum"
+              gh release upload "$RELEASE_VERSION" "${release_files[@]}" "$checksum" --repo "$GITHUB_REPOSITORY"
+            fi
+          else
+            if [ "${#release_files[@]}" -eq 0 ]; then
+              echo "::error title=No release assets selected::A new release requires at least one validated target."
+              exit 1
+            fi
+            sha256sum "${release_files[@]}" > SHA256SUMS.txt
+            gh release create "$RELEASE_VERSION" "${release_files[@]}" SHA256SUMS.txt \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "S:P:L:I:N:E:D $RELEASE_VERSION" \
+              --notes-file ../release-notes/GITHUB-RELEASE.md
+          fi
+      - name: Publish exact smoke-tested WebGUI image to GHCR
+        if: ${{ needs.resolve-plan.outputs.use_webgui == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gzip -dc publication-inputs/splined-webgui-container-image.tar.gz | docker load
+          test "$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.version" }}' splined-webgui:release-test)" = "$RELEASE_VERSION"
+          test "$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' splined-webgui:release-test)" = "$RELEASE_COMMIT"
+          docker tag splined-webgui:release-test "$IMAGE_NAME:v${RELEASE_VERSION}"
+          docker tag splined-webgui:release-test "$IMAGE_NAME:latest"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          if docker pull "$IMAGE_NAME:v${RELEASE_VERSION}" >/dev/null 2>&1; then
+            existing_revision=$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$IMAGE_NAME:v${RELEASE_VERSION}")
+            test "$existing_revision" = "$RELEASE_COMMIT"
+          else
+            docker push "$IMAGE_NAME:v${RELEASE_VERSION}"
+          fi
+          docker push "$IMAGE_NAME:latest"
+      - name: Report completed release
+        run: |
+          {
+            echo "## Workflow 24 publication complete"
+            echo
+            echo "- Version/tag: \`${{ needs.audit.outputs.version }}\`"
+            echo "- Exact candidate commit: \`${{ needs.audit.outputs.commit }}\`"
+            echo "- Target: \`${{ needs.resolve-plan.outputs.target }}\`"
+            echo "- Windows release asset published now: \`${{ needs.audit.outputs.publish_windows }}\`"
+            echo "- WebGUI release asset published now: \`${{ needs.audit.outputs.publish_webgui }}\`"
+            echo "- Exact smoke-tested WebGUI image published: \`${{ needs.resolve-plan.outputs.use_webgui }}\`"
+            echo "- Microsoft Store submission: \`not performed; use Workflow 22 with explicit authorization\`"
+            echo "- Recompilation and repackaging: \`not performed\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  summary:
+    name: Complete release summary
+    needs: [resolve-plan, audit, approve-publication, publish]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report stage results and recovery action
+        shell: bash
+        run: |
+          {
+            echo "## Workflow 24 stage results"
+            echo
+            echo "- Plan: \`${{ needs.resolve-plan.result }}\`"
+            echo "- Artifact/readiness audit: \`${{ needs.audit.result }}\`"
+            echo "- Publication approval: \`${{ needs.approve-publication.result }}\`"
+            echo "- Tag/Release/GHCR publication: \`${{ needs.publish.result }}\`"
+            echo "- Next action after audit failure: supply exact unexpired build run IDs or rebuild only the missing platform from the same candidate."
+            echo "- Next action after publication failure: rerun Workflow 24 with the same build runs; existing exact tags/assets are verified and never overwritten."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Enforce selected completion
+        shell: bash
+        env:
+          PLAN: ${{ needs.resolve-plan.result }}
+          AUDIT: ${{ needs.audit.result }}
+          PUBLISH_REQUESTED: ${{ needs.resolve-plan.outputs.publish }}
+          APPROVAL: ${{ needs.approve-publication.result }}
+          PUBLICATION: ${{ needs.publish.result }}
+        run: |
+          set -euo pipefail
+          test "$PLAN" = success
+          test "$AUDIT" = success
+          if [ "$PUBLISH_REQUESTED" = true ]; then
+            test "$APPROVAL" = success
+            test "$PUBLICATION" = success
+            result="Selected validated artifacts were published without recompilation."
+          else
+            test "$APPROVAL" = skipped
+            test "$PUBLICATION" = skipped
+            result="Publication-readiness report complete; no tag or publication was created."
+          fi
+          {
+            echo "## Workflow 24 complete"
+            echo
+            echo "$result"
+            echo "- Total elapsed time: \`$(($(date +%s) - ${{ needs.resolve-plan.outputs.started_epoch }})) seconds\`"
+            echo "Microsoft Store submission remains an independently authorized Workflow 22 operation."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -26,7 +26,7 @@ published history belongs in Git tags and GitHub Releases.
   failure boundaries.
 - `.github/scripts/release_note_baseline.py` resolves the immediately prior
   numeric release. It accepts either a direct ancestor tag or a validated
-  Workflow 10 temporary version stamp and fails closed on unrelated history.
+  temporary release-candidate version stamp and fails closed on unrelated history.
 - `tests/` contains intentionally historical, synthetic Microsoft Store JSON
   fixtures. Their old version numbers are regression inputs, not current
   product-version documentation.
@@ -34,10 +34,10 @@ published history belongs in Git tags and GitHub Releases.
 ## Current guidance
 
 - `README-WINDOWS.txt` ships with the supported Windows portable archive.
-- Workflow 01 separately builds and publishes the WebGUI/Python GHCR image
-  and can attach a WebGUI source archive. There is **no supported native Linux
+- Workflow 23 builds the WebGUI/Python source archive and exact smoke-tested
+  container image; Workflow 24 publishes those validated outputs. There is **no supported native Linux
   README or root-native Linux release target** in the two-target `/main` layout.
-- macOS is not a release target in the current `/main` Workflow 01 source.
+- macOS is not a release target in the current Workflows 20–24 architecture.
 
 Windows release notes are generated from [`cliff.toml`](cliff.toml) and
 `templates/github-release.tera`; a static migration-era release-note file is

@@ -1,0 +1,339 @@
+name: 20. Quick Portable — Windows
+
+on:
+  workflow_dispatch:
+    inputs:
+      quick_portable:
+        description: "QUICK PORTABLE (default): compile and validate a downloadable standalone splined.exe. Choose exactly one option."
+        default: true
+        type: boolean
+      report_only:
+        description: "BUILD ONLY, REPORT: audit source and expected cache availability without compilation or packaging."
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: splined-quick-portable-windows-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "1.99.0"
+  WINDOWS_TARGET: "x86_64-pc-windows-msvc"
+
+jobs:
+  resolve-source:
+    name: Resolve quick portable source
+    runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.source.outputs.source_sha }}
+      main_sha: ${{ steps.source.outputs.main_sha }}
+      source_version: ${{ steps.source.outputs.source_version }}
+      report_only: ${{ steps.source.outputs.report_only }}
+      started_epoch: ${{ steps.source.outputs.started_epoch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Select exact dev source
+        id: source
+        shell: bash
+        env:
+          QUICK_PORTABLE: ${{ inputs.quick_portable }}
+          REPORT_ONLY: ${{ inputs.report_only }}
+        run: |
+          set -euo pipefail
+          STARTED_EPOCH=$(date +%s)
+          count=0
+          if [ "$QUICK_PORTABLE" = true ]; then count=$((count + 1)); fi
+          if [ "$REPORT_ONLY" = true ]; then count=$((count + 1)); fi
+          if [ "$count" -ne 1 ]; then
+            echo "::error title=Select exactly one option::QUICK PORTABLE and BUILD ONLY, REPORT have $count checked options."
+            exit 1
+          fi
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error title=Main workflow required::Workflow 20 must be dispatched from main; received '$GITHUB_REF'."
+            exit 1
+          fi
+          git fetch --force origin \
+            main:refs/remotes/origin/main \
+            dev:refs/remotes/origin/dev
+          MAIN_SHA=$(git rev-parse origin/main)
+          SOURCE_SHA=$(git rev-parse origin/dev)
+          git checkout --detach "$SOURCE_SHA"
+          SOURCE_VERSION=$(python3 .github/scripts/source_version.py current)
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "main_sha=$MAIN_SHA" >> "$GITHUB_OUTPUT"
+          echo "source_version=$SOURCE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "report_only=$REPORT_ONLY" >> "$GITHUB_OUTPUT"
+          echo "started_epoch=$STARTED_EPOCH" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Workflow 20 source plan"
+            echo
+            echo "- Selected source: \`origin/dev\` at \`$SOURCE_SHA\`"
+            echo "- Current main baseline: \`$MAIN_SHA\`"
+            echo "- Source version: \`$SOURCE_VERSION\`"
+            echo "- Outcome: \`$([ "$REPORT_ONLY" = true ] && echo 'BUILD ONLY, REPORT' || echo 'QUICK PORTABLE')\`"
+            echo "- Release eligibility: \`false\`"
+            echo "- MSIX, Store, version advancement, notes, tags and publication: \`excluded\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  cache-report:
+    name: Audit Windows cache availability
+    needs: resolve-source
+    runs-on: windows-latest
+    outputs:
+      dependency_hit: ${{ steps.dependencies.outputs.cache-hit }}
+      compiled_hit: ${{ steps.compiled.outputs.cache-hit }}
+      dependency_hash: ${{ steps.cache-key.outputs.hash }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.resolve-source.outputs.source_sha }}
+          fetch-depth: 0
+
+      - name: Calculate compatible Windows cache identity
+        id: cache-key
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $lock = Get-Content -Raw -LiteralPath build/Windows/Cargo.lock
+          $pattern = '(?ms)(\[\[package\]\]\r?\nname = "splined-windows"\r?\n)version = "[^"]+"'
+          $normalized = [regex]::Replace($lock, $pattern, '${1}version = "<release>"')
+          if ($normalized -eq $lock) { throw "Unable to normalize the Windows package version." }
+          $bytes = [Text.Encoding]::UTF8.GetBytes($normalized)
+          $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+          "hash=$hash" | Add-Content $env:GITHUB_OUTPUT
+
+      - name: Look up Cargo dependency cache
+        id: dependencies
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-splined-windows-dependencies-v2-${{ env.RUST_TOOLCHAIN }}-${{ steps.cache-key.outputs.hash }}
+          restore-keys: |
+            ${{ runner.os }}-splined-windows-dependencies-v2-${{ env.RUST_TOOLCHAIN }}-
+          lookup-only: true
+
+      - name: Look up compatible optimized intermediates
+        id: compiled
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            build/Windows/target/x86_64-pc-windows-msvc/release/deps
+            build/Windows/target/x86_64-pc-windows-msvc/release/build
+            build/Windows/target/x86_64-pc-windows-msvc/release/.fingerprint
+            build/Windows/target/x86_64-pc-windows-msvc/release/incremental
+            build/Windows/target/release/deps
+            build/Windows/target/release/build
+            build/Windows/target/release/.fingerprint
+            build/Windows/target/release/incremental
+          key: ${{ runner.os }}-splined-optimized-compiled-v2-${{ env.RUST_TOOLCHAIN }}-${{ env.WINDOWS_TARGET }}-${{ steps.cache-key.outputs.hash }}-${{ needs.resolve-source.outputs.source_sha }}-${{ needs.resolve-source.outputs.source_version }}
+          restore-keys: |
+            ${{ runner.os }}-splined-optimized-compiled-v2-${{ env.RUST_TOOLCHAIN }}-${{ env.WINDOWS_TARGET }}-${{ steps.cache-key.outputs.hash }}-
+          lookup-only: true
+
+      - name: Report measured or lookup-only cache results
+        shell: pwsh
+        run: |
+          @"
+          ## Workflow 20 cache audit
+
+          - Cargo dependency cache exact hit: ``${{ steps.dependencies.outputs.cache-hit }}``
+          - Compatible optimized-intermediate exact hit: ``${{ steps.compiled.outputs.cache-hit }}``
+          - Cache identity: ``${{ steps.cache-key.outputs.hash }}``
+          - Result type: ``lookup only; no cache payload restored by this audit job``
+          "@ | Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+
+  build:
+    name: Compile and validate standalone splined.exe
+    needs: [resolve-source, cache-report]
+    if: ${{ needs.resolve-source.outputs.report_only != 'true' }}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.resolve-source.outputs.source_sha }}
+          fetch-depth: 0
+
+      - name: Install stable Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --no-self-update
+          rustup default "$RUST_TOOLCHAIN"
+          rustup target add "$WINDOWS_TARGET" --toolchain "$RUST_TOOLCHAIN"
+
+      - name: Restore Cargo dependency payload
+        id: dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-splined-windows-dependencies-v2-${{ env.RUST_TOOLCHAIN }}-${{ needs.cache-report.outputs.dependency_hash }}
+          restore-keys: |
+            ${{ runner.os }}-splined-windows-dependencies-v2-${{ env.RUST_TOOLCHAIN }}-
+
+      - name: Restore optimized intermediates
+        id: compiled
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            build/Windows/target/x86_64-pc-windows-msvc/release/deps
+            build/Windows/target/x86_64-pc-windows-msvc/release/build
+            build/Windows/target/x86_64-pc-windows-msvc/release/.fingerprint
+            build/Windows/target/x86_64-pc-windows-msvc/release/incremental
+            build/Windows/target/release/deps
+            build/Windows/target/release/build
+            build/Windows/target/release/.fingerprint
+            build/Windows/target/release/incremental
+          key: ${{ runner.os }}-splined-optimized-compiled-v2-${{ env.RUST_TOOLCHAIN }}-${{ env.WINDOWS_TARGET }}-${{ needs.cache-report.outputs.dependency_hash }}-${{ needs.resolve-source.outputs.source_sha }}-${{ needs.resolve-source.outputs.source_version }}
+          restore-keys: |
+            ${{ runner.os }}-splined-optimized-compiled-v2-${{ env.RUST_TOOLCHAIN }}-${{ env.WINDOWS_TARGET }}-${{ needs.cache-report.outputs.dependency_hash }}-
+
+      - name: Build optimized quick portable executable
+        id: compile
+        shell: pwsh
+        env:
+          SPLINED_BUILD_COMMIT: ${{ needs.resolve-source.outputs.source_sha }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $started = Get-Date
+          cargo build --locked --release --manifest-path build/Windows/Cargo.toml --target $env:WINDOWS_TARGET
+          "elapsed_seconds=$([Math]::Round(((Get-Date) - $started).TotalSeconds))" | Add-Content $env:GITHUB_OUTPUT
+
+      - name: Verify identity, architecture, native smoke and checksum
+        id: validate
+        shell: pwsh
+        env:
+          SOURCE_COMMIT: ${{ needs.resolve-source.outputs.source_sha }}
+          SOURCE_VERSION: ${{ needs.resolve-source.outputs.source_version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $started = Get-Date
+          $source = "build/Windows/target/$env:WINDOWS_TARGET/release/splined.exe"
+          New-Item -ItemType Directory -Force -Path quick-portable | Out-Null
+          Copy-Item -LiteralPath $source -Destination quick-portable/splined.exe
+
+          $bytes = [IO.File]::ReadAllBytes((Resolve-Path quick-portable/splined.exe).Path)
+          $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+          if ($bytes[$peOffset] -ne 0x50 -or $bytes[$peOffset + 1] -ne 0x45) { throw "Invalid PE signature." }
+          if ([BitConverter]::ToUInt16($bytes, $peOffset + 4) -ne 0x8664) { throw "Expected AMD64 PE architecture." }
+
+          $identityPath = Join-Path $env:RUNNER_TEMP "splined-build-info.json"
+          $identity = Start-Process -FilePath (Resolve-Path quick-portable/splined.exe) -ArgumentList @("--write-build-info", $identityPath) -Wait -PassThru
+          if ($identity.ExitCode -ne 0) { throw "Executable identity query failed." }
+          $buildInfo = Get-Content -Raw -LiteralPath $identityPath | ConvertFrom-Json
+          if ($buildInfo.version -ne $env:SOURCE_VERSION) { throw "Executable version mismatch." }
+          if ($buildInfo.commit -ne $env:SOURCE_COMMIT) { throw "Executable commit mismatch." }
+          if ($buildInfo.architecture -ne "rust-slint") { throw "Executable architecture identity mismatch." }
+
+          $stateRoot = Join-Path $env:RUNNER_TEMP "splined-quick-portable-state"
+          New-Item -ItemType Directory -Force -Path $stateRoot | Out-Null
+          $priorStateRoot = $env:SPLINED_INTERNAL_STATE_ROOT
+          $env:SPLINED_INTERNAL_STATE_ROOT = $stateRoot
+          try {
+            $smoke = Start-Process -FilePath (Resolve-Path quick-portable/splined.exe) -ArgumentList "--native-smoke" -WorkingDirectory $env:RUNNER_TEMP -Wait -PassThru
+          } finally {
+            $env:SPLINED_INTERNAL_STATE_ROOT = $priorStateRoot
+          }
+          if ($smoke.ExitCode -ne 0) { throw "Native smoke validation failed." }
+
+          $file = Get-Item -LiteralPath quick-portable/splined.exe
+          $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash.ToLowerInvariant()
+          $manifest = [ordered]@{
+            schema = "splined-quick-portable-v1"
+            source_commit = $env:SOURCE_COMMIT
+            main_commit = "${{ needs.resolve-source.outputs.main_sha }}"
+            source_version = $env:SOURCE_VERSION
+            architecture = "x86_64-pc-windows-msvc"
+            sha256 = $sha
+            size_bytes = $file.Length
+            workflow_run_id = [long]$env:GITHUB_RUN_ID
+            release_eligible = $false
+          }
+          $manifest | ConvertTo-Json | Set-Content -Encoding utf8 quick-portable/quick-portable-manifest.json
+          "$sha  splined.exe" | Set-Content -Encoding ascii quick-portable/SHA256SUMS.txt
+          "sha256=$sha" | Add-Content $env:GITHUB_OUTPUT
+          "size_bytes=$($file.Length)" | Add-Content $env:GITHUB_OUTPUT
+          "elapsed_seconds=$([Math]::Round(((Get-Date) - $started).TotalSeconds))" | Add-Content $env:GITHUB_OUTPUT
+
+      - name: Upload quick portable artifact
+        id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: splined-quick-portable-windows
+          path: quick-portable/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Report measured build results
+        shell: pwsh
+        run: |
+          @"
+          ## Workflow 20 quick portable complete
+
+          - Source commit/version: ``${{ needs.resolve-source.outputs.source_sha }}`` / ``${{ needs.resolve-source.outputs.source_version }}``
+          - Cargo dependency cache hit: ``${{ steps.dependencies.outputs.cache-hit }}``
+          - Compiled-intermediate exact hit: ``${{ steps.compiled.outputs.cache-hit }}``
+          - Compilation duration: ``${{ steps.compile.outputs.elapsed_seconds }} seconds``
+          - Validation duration: ``${{ steps.validate.outputs.elapsed_seconds }} seconds``
+          - Executable size: ``${{ steps.validate.outputs.size_bytes }} bytes``
+          - SHA-256: ``${{ steps.validate.outputs.sha256 }}``
+          - Artifact ID: ``${{ steps.upload.outputs.artifact-id }}``
+          - Native smoke: ``passed``
+          - Release eligibility: ``false``
+          "@ | Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+
+  summary:
+    name: Quick portable summary
+    needs: [resolve-source, cache-report, build]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report stage results and recovery action
+        shell: bash
+        run: |
+          {
+            echo "## Workflow 20 stage results"
+            echo
+            echo "- Source resolution: \`${{ needs.resolve-source.result }}\`"
+            echo "- Cache audit: \`${{ needs.cache-report.result }}\`"
+            echo "- Quick build: \`${{ needs.build.result }}\`"
+            echo "- Next action after failure: correct the reported source, cache, or build error and rerun Workflow 20; no release recovery is required."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Enforce selected outcome
+        shell: bash
+        env:
+          SOURCE_RESULT: ${{ needs.resolve-source.result }}
+          CACHE_RESULT: ${{ needs.cache-report.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          REPORT_ONLY: ${{ needs.resolve-source.outputs.report_only }}
+        run: |
+          set -euo pipefail
+          test "$SOURCE_RESULT" = success
+          test "$CACHE_RESULT" = success
+          if [ "$REPORT_ONLY" = true ]; then
+            test "$BUILD_RESULT" = skipped
+            result="Report-only audit complete; no compilation or packaging ran."
+          else
+            test "$BUILD_RESULT" = success
+            result="Standalone optimized splined.exe compiled and validated."
+          fi
+          {
+            echo "## Workflow 20 complete"
+            echo
+            echo "$result"
+            echo "- Total elapsed time: \`$(($(date +%s) - ${{ needs.resolve-source.outputs.started_epoch }})) seconds\`"
+            echo "MSIX, Store access, version advancement, release notes, tags and publication were not performed."
+          } >> "$GITHUB_STEP_SUMMARY"
