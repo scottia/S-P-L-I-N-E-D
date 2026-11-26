@@ -8044,6 +8044,14 @@ mod tests {
         let library = temp.path().join("music");
         let album = library.join("A Great Big World").join("Particles");
         fs::create_dir_all(&album).unwrap();
+        let other_album = library.join("A Great Big World").join("Is There Anybody Out There");
+        fs::create_dir_all(&other_album).unwrap();
+        write_index_test_frames(&other_album.join("01.mp3"), &[
+            id3_test_frame("TIT2", "Say Something"),
+            id3_test_frame("TALB", "Is There Anybody Out There?"),
+            id3_test_frame("TPE2", "A Great Big World"),
+            id3_test_frame("TPE1", "A Great Big World"),
+        ]);
         let file = album.join("01.mp3");
         let release = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
         write_index_test_frames(&file, &[
@@ -8074,6 +8082,19 @@ mod tests {
         let snapshot = media_snapshot(&config, false).unwrap();
         let album_key = format!("mbid:{release}");
         let connection = Connection::open(&snapshot.database_path).unwrap();
+        let assert_artist = |mut state: crate::application::LibraryState| {
+            state.set_artist_filter("a great");
+            let rows = state.rows();
+            assert_eq!(rows.iter().map(|row| (row.primary.as_str(), row.album_count))
+                .collect::<Vec<_>>(), [("A Great Big World", 2)]);
+            assert!(state.focus_artist("A Great Big World"));
+            let overview_titles = state.artist_state_album_indices("A Great Big World")
+                .into_iter().map(|index| state.albums[index].snapshot.title.as_str())
+                .collect::<BTreeSet<_>>();
+            assert_eq!(overview_titles, BTreeSet::from(["Is There Anybody Out There?", "Particles"]));
+            assert_eq!(state.catalog_artist_appearances("Christina Aguilera").featured_album_keys,
+                BTreeSet::from([album_key.clone()]));
+        };
         let read = || -> (OriginalArtistCredit, i64, i64) {
             connection.query_row(
                 "SELECT evidence.payload_json,tracks.file_size,tracks.file_mtime_ns
@@ -8085,9 +8106,7 @@ mod tests {
         };
         let (before, before_size, _) = read();
         assert_eq!(before.artist, r"A Great Big World\Christina Aguilera");
-        let before_state = crate::application::LibraryState::from_snapshot(snapshot).unwrap();
-        assert_eq!(before_state.rows().iter().map(|row| (row.primary.as_str(), row.album_count))
-            .collect::<Vec<_>>(), [("A Great Big World", 1), ("Christina Aguilera", 1)]);
+        assert_artist(crate::application::LibraryState::from_snapshot(snapshot).unwrap());
         let mut artwork = std::io::Cursor::new(Vec::new());
         image::DynamicImage::new_rgb8(4, 4).write_to(&mut artwork, image::ImageFormat::Png).unwrap();
         crate::embedded_artwork::replace_embedded_front(&file, artwork.get_ref()).unwrap();
@@ -8096,22 +8115,14 @@ mod tests {
         let (after, size, mtime) = read();
         assert_ne!(before_size, size);
         assert_eq!(after, OriginalArtistCredit { file_size: size, file_mtime_ns: mtime, ..before });
-        let mut state = crate::application::LibraryState::from_snapshot(
+        assert_artist(crate::application::LibraryState::from_snapshot(
             media_snapshot(&config, false).unwrap(),
-        ).unwrap();
-        assert_eq!(state.rows().iter().map(|row| (row.primary.as_str(), row.album_count))
-            .collect::<Vec<_>>(), [("A Great Big World", 1), ("Christina Aguilera", 1)]);
-        assert!(state.focus_artist("A Great Big World"));
-        assert_eq!(state.artist_state_album_indices("A Great Big World"), [0]);
-        assert_eq!(state.catalog_artist_appearances("Christina Aguilera").featured_album_keys,
-            BTreeSet::from([album_key.clone()]));
+        ).unwrap());
         connection.execute("DELETE FROM cache_entries WHERE album_key=?1 AND cache_type='art004-track'",
             [&album_key]).unwrap();
-        let historical = crate::application::LibraryState::from_snapshot(
+        assert_artist(crate::application::LibraryState::from_snapshot(
             media_snapshot(&config, false).unwrap(),
-        ).unwrap();
-        assert_eq!(historical.rows().iter().map(|row| (row.primary.as_str(), row.album_count))
-            .collect::<Vec<_>>(), [("A Great Big World", 1), ("Christina Aguilera", 1)]);
+        ).unwrap());
     }
 
     #[test]
