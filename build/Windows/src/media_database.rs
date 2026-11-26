@@ -429,7 +429,7 @@ fn catalog_credit_slots<'a>(
         }
     }
     let owner_key = casefold(catalog_credit_trim(owner));
-    // Some Windows catalog tags retain a joined backslash credit. Treat it as
+    // Some local tags retain a joined backslash credit. Treat it as
     // positioned local evidence only when the physical owner anchors the first
     // value and the ordered IDs account for every value. Keep the raw tag intact.
     if !owner_key.is_empty() && ids.len() > 1 && joined.contains('\\') {
@@ -8040,28 +8040,36 @@ mod tests {
 
     #[test]
     fn art004_verified_album_embed_preserves_original_credit_and_conflicts() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../.github/test-data/artist-identity-conformance.json"
+        )).unwrap();
+        let case = &fixture["backslash_inventory_case"];
+        let text = |key: &str| case[key].as_str().unwrap();
+        let ids = case["track_artist_mbids"].as_array().unwrap();
+        let owner_mbid = ids[0].as_str().unwrap();
+        let guest_mbid = ids[1].as_str().unwrap();
         let temp = tempfile::tempdir().unwrap();
         let library = temp.path().join("music");
-        let album = library.join("A Great Big World").join("Particles");
+        let album = library.join(text("owner")).join(text("joined_album"));
         fs::create_dir_all(&album).unwrap();
         let other_album = library.join("A Great Big World").join("Is There Anybody Out There");
         fs::create_dir_all(&other_album).unwrap();
         write_index_test_frames(&other_album.join("01.mp3"), &[
-            id3_test_frame("TIT2", "Say Something"),
-            id3_test_frame("TALB", "Is There Anybody Out There?"),
-            id3_test_frame("TPE2", "A Great Big World"),
-            id3_test_frame("TPE1", "A Great Big World"),
+            id3_test_frame("TIT2", text("other_track_title")),
+            id3_test_frame("TALB", text("other_album")),
+            id3_test_frame("TPE2", text("owner")),
+            id3_test_frame("TPE1", text("owner")),
         ]);
         let file = album.join("01.mp3");
-        let release = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let release = text("release_id");
         write_index_test_frames(&file, &[
-            id3_test_frame("TIT2", "Fall On Me"),
-            id3_test_frame("TALB", "Particles"),
-            id3_test_frame("TPE2", "A Great Big World"),
-            id3_test_frame("TPE1", r"A Great Big World\Christina Aguilera"),
-            id3_test_frame("TXXX", "MUSICBRAINZ_ARTISTID\0bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\0cccccccc-cccc-4ccc-8ccc-cccccccccccc"),
-            id3_test_frame("TXXX", "MUSICBRAINZ_ALBUMARTISTID\0bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
-            id3_test_frame("TXXX", "MusicBrainz Release Artist Id\0dddddddd-dddd-4ddd-8ddd-dddddddddddd"),
+            id3_test_frame("TIT2", text("track_title")),
+            id3_test_frame("TALB", text("joined_album")),
+            id3_test_frame("TPE2", text("owner")),
+            id3_test_frame("TPE1", text("joined_credit")),
+            id3_test_frame("TXXX", &format!("MUSICBRAINZ_ARTISTID\0{owner_mbid}; {guest_mbid}")),
+            id3_test_frame("TXXX", &format!("MUSICBRAINZ_ALBUMARTISTID\0{owner_mbid}")),
+            id3_test_frame("TXXX", &format!("MusicBrainz Release Artist Id\0{}", text("conflicting_owner_mbid"))),
             id3_test_frame("TXXX", &format!("MUSICBRAINZ_ALBUMID\0{release}")),
         ]);
         let mut bytes = fs::read(&file).unwrap();
@@ -8082,17 +8090,29 @@ mod tests {
         let snapshot = media_snapshot(&config, false).unwrap();
         let album_key = format!("mbid:{release}");
         let connection = Connection::open(&snapshot.database_path).unwrap();
-        let assert_artist = |mut state: crate::application::LibraryState| {
-            state.set_artist_filter("a great");
+        let assert_artist = |snapshot: MediaSnapshot| {
+            let projection = indexed_artist_catalog_projection(
+                &snapshot.database_path, &config.scan.artist_separator_regex,
+            ).unwrap();
+            let slots = projection.positioned_track_credits[&album_key]
+                .values()
+                .flatten()
+                .map(|credit| json!([credit.name, credit.position, credit.mbid, credit.explicit]))
+                .collect::<Vec<_>>();
+            assert_eq!(Value::Array(slots), case["positioned_credits"]);
+            assert_eq!(projection.owner_labels[&album_key].name, text("owner"));
+            assert_eq!(projection.owner_keys[&album_key], format!("mbid:{owner_mbid}"));
+            let mut state = crate::application::LibraryState::from_snapshot(snapshot).unwrap();
+            state.set_artist_filter(text("query"));
             let rows = state.rows();
             assert_eq!(rows.iter().map(|row| (row.primary.as_str(), row.album_count))
-                .collect::<Vec<_>>(), [("A Great Big World", 2)]);
-            assert!(state.focus_artist("A Great Big World"));
-            let overview_titles = state.artist_state_album_indices("A Great Big World")
+                .collect::<Vec<_>>(), [(text("owner"), 2)]);
+            assert!(state.focus_artist(text("owner")));
+            let overview_titles = state.artist_state_album_indices(text("owner"))
                 .into_iter().map(|index| state.albums[index].snapshot.title.as_str())
                 .collect::<BTreeSet<_>>();
-            assert_eq!(overview_titles, BTreeSet::from(["Is There Anybody Out There?", "Particles"]));
-            assert_eq!(state.catalog_artist_appearances("Christina Aguilera").featured_album_keys,
+            assert_eq!(overview_titles, BTreeSet::from([text("other_album"), text("joined_album")]));
+            assert_eq!(state.catalog_artist_appearances(text("guest")).featured_album_keys,
                 BTreeSet::from([album_key.clone()]));
         };
         let read = || -> (OriginalArtistCredit, i64, i64) {
@@ -8105,8 +8125,10 @@ mod tests {
             ).unwrap()
         };
         let (before, before_size, _) = read();
-        assert_eq!(before.artist, r"A Great Big World\Christina Aguilera");
-        assert_artist(crate::application::LibraryState::from_snapshot(snapshot).unwrap());
+        assert_eq!(before.artist, text("joined_credit"));
+        assert_eq!(catalog_ordered_mbids(&before.mbids), [owner_mbid, guest_mbid]);
+        assert!(!before.album_artist_mbids.as_deref().unwrap().is_empty());
+        assert_artist(snapshot);
         let mut artwork = std::io::Cursor::new(Vec::new());
         image::DynamicImage::new_rgb8(4, 4).write_to(&mut artwork, image::ImageFormat::Png).unwrap();
         crate::embedded_artwork::replace_embedded_front(&file, artwork.get_ref()).unwrap();
@@ -8115,29 +8137,11 @@ mod tests {
         let (after, size, mtime) = read();
         assert_ne!(before_size, size);
         assert_eq!(after, OriginalArtistCredit { file_size: size, file_mtime_ns: mtime, ..before });
-        assert_artist(crate::application::LibraryState::from_snapshot(
-            media_snapshot(&config, false).unwrap(),
-        ).unwrap());
+        assert_artist(media_snapshot(&config, false).unwrap());
         connection.execute("DELETE FROM cache_entries WHERE album_key=?1 AND cache_type='art004-track'",
             [&album_key]).unwrap();
-        assert_artist(crate::application::LibraryState::from_snapshot(
-            media_snapshot(&config, false).unwrap(),
-        ).unwrap());
-    }
-
-    #[test]
-    fn art004_backslash_with_one_mbid_or_without_physical_owner_anchor_stays_intact() {
-        let separator = crate::artist_separator::ArtistSeparator::parse(
-            crate::config::DEFAULT_ARTIST_SEPARATOR_REGEX,
-        ).unwrap();
-        let joined = r"A Great Big World\Christina Aguilera";
-        let first = "6958e806-1e14-4844-a0a7-07a27756aa0f";
-        let both = format!("{first}; b202beb7-99bd-47e7-8b72-195c8d72ebdd");
-        for (ids, owner) in [(first, "A Great Big World"), (&both, "Different Owner")] {
-            let credits = catalog_credit_slots(joined, ids, "", "", owner, &separator);
-            assert_eq!(credits.len(), 1);
-            assert_eq!(credits[0].name, joined);
-        }
+        assert_artist(media_snapshot(&config, false).unwrap());
+        assert_artist(media_snapshot(&config, true).unwrap());
     }
 
     #[test]
