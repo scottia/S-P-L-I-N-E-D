@@ -229,6 +229,24 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         overview = self.services.catalog.artist(listed[0]["id"])
         self.assertEqual([(item["id"], item["featured"]) for item in overview["albums"]], [(album_key, True)])
         self.assertEqual(track.read_bytes(), original)
+        staged = self.services.stage_album(
+            {"album_id": album_key, "image": self.services.catalog.image(self.cover)}
+        )
+        self.assertTrue(self.services.embed_album(staged)["verified"])
+        with closing(self.db.connect()) as db:
+            evidence = db.execute(
+                "SELECT cache_entries.payload_json,tracks.file_size,tracks.file_mtime_ns "
+                "FROM tracks JOIN cache_entries ON cache_entries.cache_key='art004:track:'||tracks.track_key "
+                "WHERE tracks.album_key=?", (album_key,),
+            ).fetchone()
+            after = json.loads(evidence["payload_json"])
+            self.assertNotEqual(evidence["file_size"], captured["file_size"])
+            self.assertEqual(after, dict(captured, file_size=evidence["file_size"],
+                                         file_mtime_ns=evidence["file_mtime_ns"]))
+        self.assertEqual(
+            [(item["id"], item["featured"]) for item in self.services.catalog.artist(listed[0]["id"])["albums"]],
+            [(album_key, True)],
+        )
 
     def test_art004_owner_labels_and_membership_use_the_same_published_albums(self):
         case = json.loads((Path(__file__).parents[4] / ".github/test-data/artist-identity-conformance.json")

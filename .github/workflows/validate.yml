@@ -144,6 +144,7 @@ jobs:
             --locked `
             --manifest-path build/Windows/Cargo.toml `
             --lib `
+            --bin splined `
             --target x86_64-pc-windows-msvc `
             --no-run `
             --message-format=json-render-diagnostics 2>&1 | Tee-Object -FilePath $messages
@@ -173,6 +174,22 @@ jobs:
           if ($testExecutables.Count -ne 1 -or -not (Test-Path -LiteralPath $testExecutables[0] -PathType Leaf)) {
             throw "Expected exactly one compiled splined_core test executable; found $($testExecutables.Count)."
           }
+          $applicationTests = @(
+            Get-Content -LiteralPath $messages | ForEach-Object {
+              try {
+                $message = $_ | ConvertFrom-Json -ErrorAction Stop
+              } catch {
+                $message = $null
+              }
+              if ($message.reason -eq "compiler-artifact" -and $message.profile.test -eq $true -and
+                  $message.target.name -eq "splined" -and $message.executable) {
+                [string]$message.executable
+              }
+            }
+          )
+          if ($applicationTests.Count -ne 1 -or -not (Test-Path -LiteralPath $applicationTests[0] -PathType Leaf)) {
+            throw "Expected exactly one compiled Windows application test executable."
+          }
 
           $testStarted = Get-Date
           $testExecutable = $testExecutables[0]
@@ -187,6 +204,15 @@ jobs:
               throw "Windows audio-integrity filter '$filter' failed with exit code $LASTEXITCODE."
             }
           }
+          $applicationTest = "tests::artist_overview_cards_group_by_album_type_then_newest_year_with_separators"
+          $availableTests = & $applicationTests[0] --list
+          if ($LASTEXITCODE -ne 0 -or $availableTests -notcontains "${applicationTest}: test") {
+            throw "Required Windows application regression is missing."
+          }
+          & $applicationTests[0] --exact $applicationTest --nocapture
+          if ($LASTEXITCODE -ne 0) {
+            throw "Required Windows application regression failed."
+          }
           $testSeconds = [math]::Round(((Get-Date) - $testStarted).TotalSeconds, 2)
           $totalSeconds = [math]::Round(((Get-Date) - $overallStarted).TotalSeconds, 2)
 
@@ -195,8 +221,9 @@ jobs:
 
           - Cargo dependency cache exact hit: $env:CARGO_DEPENDENCY_CACHE_HIT
           - Compiled-intermediate cache exact hit: $env:COMPILED_CACHE_HIT
-          - Test executable compilations: 1
-          - Mandatory filters executed: 3
+          - Cargo invocations: 1 (library and application test targets)
+          - Mandatory writer filters executed: 3
+          - Windows production card regression: passed
           - Compile seconds: $compileSeconds
           - Test seconds: $testSeconds
           - Total compile/test seconds: $totalSeconds

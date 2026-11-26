@@ -28154,7 +28154,7 @@ mod tests {
         // Stale/provider metadata may label a shared release as a secondary
         // credit. Its explicit release type must still own the visible banner.
         app.artist_overview_featured_album_keys
-            .extend(["va-old", "ost-old"].into_iter().map(str::to_string));
+            .extend(["va-old", "ost-old", "comp-new"].into_iter().map(str::to_string));
 
         let cards = artist_overview_ui_model(&app);
         let actual = (0..cards.row_count())
@@ -28185,6 +28185,10 @@ mod tests {
         );
         let counts = artist_overview_legend_counts(&cards, &[]);
         assert_eq!(counts.shown, 12);
+        assert_eq!(counts.comp_pending, 2);
+        let compiled = cards.row_data(10).unwrap();
+        assert!(compiled.featured, "retain the Featured association");
+        assert_eq!(compiled.banner_display.replace('\n', ""), "COMPILED");
         assert_eq!(counts.completed, 0);
         assert_eq!(counts.in_process, 12);
         assert_eq!(counts.validating, 0);
