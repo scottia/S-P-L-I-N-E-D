@@ -22,6 +22,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 import splined as core
+from splined_artist_separator import parse as parse_artist_separator, warning as separator_warning
 from webgui.catalog import ASSETS, ArtistProjectionPending
 from webgui.database import Database
 from webgui.runtime import Runtime
@@ -195,11 +196,17 @@ class Context:
             )
         cfg.setdefault("output", {}).setdefault("embedded_thumbnail_size", 1200)
         cfg.setdefault("database", {})["url"] = ""
+        saved_separator = str(cfg.get("scan", {}).get(
+            "artist_separator_regex", core.DEFAULT_ARTIST_SEPARATOR_REGEX,
+        ))
         return {
             "config": cfg,
             "database_configured": bool(self.runtime),
             "database_managed": bool(self.explicit_url),
             "error": self.error,
+            "artist_separator_warning": (
+                self.services.artist_separator_warning() if self.services else separator_warning(saved_separator)
+            ),
         }
 
     def configure(self, cfg):
@@ -232,6 +239,11 @@ class Context:
                 album_validator=self.services.validate_album_embedding,
             )
         else:
+            field = "artist_separator_regex"
+            selected = str(cfg.get("scan", {}).get(field, core.DEFAULT_ARTIST_SEPARATOR_REGEX))
+            previous = str(self.settings()["config"].get("scan", {}).get(field, core.DEFAULT_ARTIST_SEPARATOR_REGEX))
+            if selected != previous:
+                parse_artist_separator(selected)
             if self.jobs and any(
                 item["state"] not in {"done", "failed", "cancelled"}
                 for item in self.jobs.list()
@@ -699,6 +711,7 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
                         "configuration": True,
                     },
                     "error": context.error,
+                    "artist_separator_warning": context.services.artist_separator_warning() if context.services else "",
                 }
             )
         return result

@@ -139,6 +139,45 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             "adjustments": {"Brightness": 40},
         }
 
+    def test_art004_incompatible_saved_separator_preserves_published_catalog(self):
+        profile = r"(?<=feat\.)\s+"
+        persisted = tomllib.loads(self.config.read_text(encoding="utf-8"))
+        persisted["scan"]["artist_separator_regex"] = profile
+        self.config.write_text(tomlkit.dumps(persisted), encoding="utf-8")
+        runtime = Runtime(self.config, self.db)
+        self.addCleanup(runtime.close)
+        services = Services(runtime)
+        self.assertIn("Incompatible Artist separator", services.artist_separator_warning())
+
+        def generation():
+            with closing(self.db.connect()) as db:
+                return db.execute(
+                    "SELECT active_generation_id,maintenance_generation_id FROM "
+                    "catalog_index_state WHERE singleton=TRUE"
+                ).fetchone()
+
+        before = generation()
+        usable = services.catalog.artists("")
+        self.assertTrue(usable)
+        cfg = runtime.settings()
+        cfg["webgui_ui"] = {"animate_webp_preview": True}
+        runtime.save_settings(cfg)
+        services.reload_settings()
+        with self.assertRaisesRegex(ValueError, "Incompatible Artist separator"):
+            services.refresh_index(mode="full")
+        self.assertEqual(generation(), before)
+        self.assertEqual(services.catalog.artists(""), usable)
+        saved = tomllib.loads(self.config.read_text(encoding="utf-8"))
+        self.assertEqual(saved["scan"]["artist_separator_regex"], profile)
+
+        cfg["scan"]["artist_separator_regex"] = r"\s+feat\.?\s+"
+        runtime.save_settings(cfg)
+        services.reload_settings()
+        self.assertEqual(services.artist_separator_warning(), "")
+        with self.assertRaisesRegex(ValueError, "Artist separator settings changed"):
+            services.refresh_index(mode="full")
+        self.assertEqual(generation(), before)
+
     def test_art004_original_inventory_preserves_owner_and_credit_slots(self):
         case = json.loads((Path(__file__).parents[4] / ".github/test-data/artist-identity-conformance.json")
                           .read_text(encoding="utf-8"))["local_inventory_case"]

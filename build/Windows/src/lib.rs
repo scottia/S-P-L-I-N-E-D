@@ -1,4 +1,5 @@
 pub mod application;
+pub mod artist_separator;
 mod artist_unicode;
 pub mod artwork_integrity;
 pub mod backup;

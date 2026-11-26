@@ -2,6 +2,48 @@
   "policy_id": "ART-004",
   "version": 1,
   "presentation_normalization": "NFKC + Unicode casefold + alphanumeric",
+  "portable_separator_cases": [
+    {
+      "profile": "(?i)(?: / | feat\\. | feat | ft\\. | ft |; )",
+      "value": "Å / B FEAT. C ft D; E",
+      "parts": ["Å", "B", "C", "D", "E"],
+      "whole": "; "
+    },
+    {
+      "profile": "(?i)(?:\\s+(feat|ft)\\.?\\s+|[|+])",
+      "value": "Å\u00a0FEAT.\u2003B|C+D",
+      "parts": ["Å", "B", "C", "D"],
+      "whole": "\u00a0FEAT.\u2003"
+    },
+    {
+      "profile": "(?: × | \\+ )",
+      "value": "Å × B + C",
+      "parts": ["Å", "B", "C"],
+      "whole": " × "
+    },
+    {
+      "profile": "ft|ft\\.",
+      "value": "ft.A",
+      "parts": ["", ".A"],
+      "whole": "ft."
+    },
+    {
+      "profile": "[A-C\\-]",
+      "value": "aA-bC",
+      "parts": ["a", "", "b", ""],
+      "whole": "-"
+    },
+    {"profile": "(?<=feat)\\s+"},
+    {"profile": "\\p{L}+"},
+    {"profile": "(feat)\\1"},
+    {"profile": "(?:|&)"},
+    {"profile": "(?i)é"},
+    {"profile": "\\s*"},
+    {"profile": "[^&]"},
+    {"profile": "[a&&b]"},
+    {"profile": "[a--b]"},
+    {"profile": "a++"}
+  ],
   "conflicting_owner_artist_ids": [
     "ff000000-0000-4000-8000-000000000001",
     "ff000000-0000-4000-8000-000000000002"

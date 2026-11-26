@@ -29,6 +29,7 @@ import splined_media_database as media
 import splined_media_tags as tags
 import splined_compilation_authority_policy as compilation
 from splined_artist_art import ArtistAlbum, artist_targets, write_image
+from splined_artist_separator import parse as parse_artist_separator, warning as separator_warning
 
 from webgui.catalog import (
     Catalog,
@@ -290,6 +291,7 @@ class Services:
             temporary_cache=runtime.temporary_cache,
             preview_cache=runtime.temporary_files.session_workspace("web-images"),
             artist_separator_regex=active_artist_separator,
+            artist_separator_blocked=bool(separator_warning(configured_artist_separator)),
             **({"image_key": image_key} if image_key is not None else {}),
         )
         self.catalog.cache = runtime.cache
@@ -624,6 +626,16 @@ class Services:
         value = str(library.get(name, "") or "").strip() or str(library.get("music_library", ""))
         return core.resolve_path(self.runtime.config_file, value).resolve()
 
+    def _saved_artist_separator(self) -> str:
+        return str(self.runtime.cfg.get("scan", {}).get(
+            "artist_separator_regex", core.DEFAULT_ARTIST_SEPARATOR_REGEX,
+        ))
+
+    def artist_separator_warning(self) -> str:
+        return separator_warning(self._saved_artist_separator()) or separator_warning(
+            self.catalog.artist_separator_regex
+        )
+
     def reload_settings(self):
         app = self.catalog
         r = self.runtime
@@ -631,6 +643,7 @@ class Services:
         app.various_artist_path = self._category_path("various_artist_path")
         app.soundtracks_path = self._category_path("soundtracks_path")
         app.curated_compilations_path = self._category_path("curated_compilations_path")
+        app.artist_separator_blocked = bool(separator_warning(self._saved_artist_separator()))
         app.artist_art = r.artist_art
         app.credentials = r.credentials
         app.cache = r.cache
@@ -1286,11 +1299,8 @@ class Services:
             raise ValueError("Set an existing music library in Settings")
         if mode not in {"full", "incremental"}:
             raise ValueError("Library index mode must be full or incremental")
-        separator_regex = str(
-            r.cfg.get("scan", {}).get(
-                "artist_separator_regex", core.DEFAULT_ARTIST_SEPARATOR_REGEX
-            )
-        ).strip()
+        separator_regex = self._saved_artist_separator()
+        parse_artist_separator(separator_regex)
         separator_profile = (
             str(
                 r.cfg.get("scan", {}).get(
@@ -1320,7 +1330,7 @@ class Services:
                 )
                 indexed_separator = str(
                     separator_details.get("artist_separator_regex", "")
-                ).strip()
+                )
             except (TypeError, ValueError):
                 indexed_separator = ""
                 separator_details = {}
@@ -1336,20 +1346,24 @@ class Services:
             and managed_credit_refresh < MANAGED_TRACK_CREDIT_REFRESH_VERSION
         )
         if indexed_separator and indexed_separator != separator_regex:
-            raise ValueError(
+            message = (
                 "Artist separator settings changed. Reset the PostgreSQL Database, "
                 "then use Full Refresh Library Index so every Artist identity is "
                 "rebuilt with one rule."
             )
+            indexer.finish(r.database, lease, "failed", message)
+            raise ValueError(message)
         if (
             not indexed_separator
             and old_count
             and separator_regex != core.DEFAULT_ARTIST_SEPARATOR_REGEX
         ):
-            raise ValueError(
+            message = (
                 "This PostgreSQL catalog predates the selected Artist separator. "
                 "Reset the PostgreSQL Database, then use Full Refresh Library Index."
             )
+            indexer.finish(r.database, lease, "failed", message)
+            raise ValueError(message)
         windows_authority_configured = bool(managed_artists or managed_albums)
         lookup_db = r.database.connect()
         # A single autocommit lookup connection avoids opening hundreds of

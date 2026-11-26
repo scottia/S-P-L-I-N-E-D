@@ -15,6 +15,7 @@ import tomllib
 import tomlkit
 
 import splined as core
+from splined_artist_separator import parse as parse_artist_separator
 import splined_scan as scan
 import splined_compilation_authority_policy as compilation
 import splined_ranking_policy as ranking
@@ -78,7 +79,7 @@ class Runtime:
 
     @staticmethod
     def validate(cfg):
-        core.validate_config_v5(cfg)
+        core.validate_config_v5(cfg, allow_incompatible_artist_separator=True)
         side = cfg.get("output", {}).get("embedded_thumbnail_size", 1200)
         if (
             isinstance(side, bool)
@@ -151,6 +152,11 @@ class Runtime:
         previous_temporary_cache = self.temporary_cache
         previous_persistent_cache = self.cache
         self.validate(cfg)
+        field = "artist_separator_regex"
+        selected = str(cfg.get("scan", {}).get(field, core.DEFAULT_ARTIST_SEPARATOR_REGEX))
+        previous = str(self.cfg.get("scan", {}).get(field, core.DEFAULT_ARTIST_SEPARATOR_REGEX))
+        if selected != previous:
+            parse_artist_separator(selected)
         name = str(cfg.get("output", {}).get("file_name", "cover"))
         core.validate_filename(name)
         library = core.resolve_path(

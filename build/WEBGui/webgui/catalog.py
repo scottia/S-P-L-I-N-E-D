@@ -32,6 +32,7 @@ import requests
 
 from splined_artist_art import ArtistAlbum, ArtistArtTarget, artist_targets, local_candidates, saved_package
 import splined_artist_unicode as artist_unicode
+from splined_artist_separator import ArtistSeparator, parse as parse_artist_separator
 from splined_compilation_authority_policy import replace_embedded_artwork
 from splined_media_tags import first_artist_value
 from interaction.artist_search import discover_artist_images, discover_artist_profile
@@ -170,8 +171,8 @@ def indexed_track_credit_values(
     return tuple(dict.fromkeys(value for value in values if value))
 
 
-_CATALOG_OWNER_SEPARATOR = re.compile(r"(?i) (?:feat\.?|ft\.?|featuring|&) ")
-_CATALOG_OWNER_FEATURE = re.compile(r"(?i) (?:feat\.?|ft\.?|featuring) ")
+_CATALOG_OWNER_SEPARATOR = re.compile(r" (?:feat\.?|ft\.?|featuring|&) ", re.IGNORECASE | re.ASCII)
+_CATALOG_OWNER_FEATURE = re.compile(r" (?:feat\.?|ft\.?|featuring) ", re.IGNORECASE | re.ASCII)
 _CATALOG_MBID = re.compile(
     r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
     re.IGNORECASE | re.ASCII,
@@ -192,7 +193,7 @@ def _numbered_catalog_credit(value: str) -> str | None:
 
 def catalog_credit_slots(
     track_artist: str, artist_mbids: str, title: str, filename: str,
-    owner: str, separator: re.Pattern[str],
+    owner: str, separator: ArtistSeparator,
 ) -> list[tuple[str, int | None, str | None, bool]]:
     """Return name, tagged position, paired ID and explicit-evidence flag."""
     def clean(parts):
@@ -215,16 +216,8 @@ def catalog_credit_slots(
         names = clean(joined.split(delimiter))
         if len(names) > 1 and len(names) == len(ids):
             return bind(names, True, True)
-    # Use match boundaries rather than re.split, whose captured groups would
-    # include the separators themselves as Artist candidates.
     def configured_names(value: str) -> list[str]:
-        names = []
-        end = 0
-        for match in separator.finditer(value):
-            names.append(value[end:match.start()])
-            end = match.end()
-        names.append(value[end:])
-        return clean(names)
+        return clean(separator.split(value))
 
     configured = configured_names(joined)
     if len(configured) > 1 and len(configured) == len(ids):
@@ -240,7 +233,7 @@ def catalog_credit_slots(
             if not lead or not guest:
                 continue
             ampersand = match.group() == " & "
-            if not ampersand and not separator.fullmatch(match.group()):
+            if not ampersand and not separator.full_match(match.group()):
                 continue
             if artist_unicode.casefold(lead) == owner_key or (
                 ampersand and artist_unicode.casefold(guest) == owner_key
@@ -501,6 +494,7 @@ class Catalog:
     temporary_cache: Path | None = None
     preview_cache: Path | None = None
     artist_separator_regex: str = DEFAULT_ARTIST_SEPARATOR_REGEX
+    artist_separator_blocked: bool = False
     artist_sources: tuple[str, ...] = (
         "fanarttv", "deezer", "lastfm", "discogs", "itunes", "navidrome"
     )
@@ -584,8 +578,9 @@ class Catalog:
         grouping = json.dumps(
             {
                 "generation": generation,
-                "credit_evidence": 10,
+                "credit_evidence": 11,
                 "separator": self.artist_separator_regex,
+                "separator_blocked": self.artist_separator_blocked,
                 "categories": sorted(categories),
                 "roots": [
                     str(path) if path is not None else None
@@ -1773,7 +1768,14 @@ class Catalog:
             owner_inputs = {}
         group_by_album = {}
 
-        separator = _artist_credit_pattern(self.artist_separator_regex)
+        separator = ArtistSeparator()
+        if not self.artist_separator_blocked:
+            try:
+                separator = parse_artist_separator(self.artist_separator_regex)
+            except ValueError:
+                # An older publication can retain its incompatible profile.
+                # Settings explains why new configured splits are paused.
+                pass
 
         track_edges = []
         for row in rows:

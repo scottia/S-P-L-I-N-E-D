@@ -9049,6 +9049,13 @@ fn load_application_state() -> (ApplicationState, bool, Option<String>) {
     for diagnostic in diagnostics {
         state.push_log(diagnostic);
     }
+    if let Some(warning) = splined_core::artist_separator::ArtistSeparator::warning(
+        &state.config.scan.artist_separator_regex,
+    ) {
+        state.operation_status = warning.to_string();
+        state.operation_tone = "orange".to_string();
+        state.push_log(warning.to_string());
+    }
     for cache_cleanup in cache_cleanups {
         match cache_cleanup {
             Ok((count, bytes)) if count > 0 => state.push_log(format!(
@@ -17937,6 +17944,10 @@ fn set_settings_ui(ui: &AppWindow, config: &Config) {
     );
     ui.set_settings_artist_separator_regex(config.scan.artist_separator_regex.clone().into());
     ui.set_settings_artist_separator_profile(config.scan.artist_separator_profile.clone().into());
+    ui.set_settings_artist_separator_warning(
+        splined_core::artist_separator::ArtistSeparator::warning(&config.scan.artist_separator_regex)
+            .unwrap_or_default().into(),
+    );
     ui.set_settings_database_dir(
         splined_core::portable::display_path(Path::new(&config.scan.cache_dir)).into(),
     );
@@ -18144,10 +18155,7 @@ fn apply_settings_ui(ui: &AppWindow, config: &mut Config) -> Result<(), String> 
         .trim()
         .to_string();
     config.scan.scan_library_dir = ui.get_settings_scan_library().trim().to_string();
-    config.scan.artist_separator_regex =
-        ui.get_settings_artist_separator_regex().trim().to_string();
-    regex::Regex::new(&config.scan.artist_separator_regex)
-        .map_err(|error| format!("Artist separator Regex is invalid: {error}"))?;
+    update_artist_separator_setting(ui, config)?;
     config.scan.artist_separator_profile = artist_separator_profile_label(
         &config.scan.artist_separator_regex,
         ui.get_settings_artist_separator_profile().as_str(),
@@ -18269,10 +18277,7 @@ fn apply_settings_section_ui(
                 .trim()
                 .to_string();
             config.scan.scan_library_dir = ui.get_settings_scan_library().trim().to_string();
-            config.scan.artist_separator_regex =
-                ui.get_settings_artist_separator_regex().trim().to_string();
-            regex::Regex::new(&config.scan.artist_separator_regex)
-                .map_err(|error| format!("Artist separator Regex is invalid: {error}"))?;
+            update_artist_separator_setting(ui, config)?;
             config.scan.artist_separator_profile = artist_separator_profile_label(
                 &config.scan.artist_separator_regex,
                 ui.get_settings_artist_separator_profile().as_str(),
@@ -25360,6 +25365,15 @@ fn artist_separator_profile_label(pattern: &str, imported: &str) -> String {
     }
 }
 
+fn update_artist_separator_setting(ui: &AppWindow, config: &mut Config) -> Result<(), String> {
+    let pattern = ui.get_settings_artist_separator_regex().to_string();
+    if pattern != config.scan.artist_separator_regex {
+        splined_core::artist_separator::ArtistSeparator::parse(&pattern).map_err(str::to_string)?;
+        config.scan.artist_separator_regex = pattern;
+    }
+    Ok(())
+}
+
 fn artist_separator_profile_from_json(path: &str) -> Result<(String, String), String> {
     let body = fs::read_to_string(path)
         .map_err(|error| format!("Unable to read Artist separator JSON: {error}"))?;
@@ -25374,7 +25388,6 @@ fn artist_separator_profile_from_json(path: &str) -> Result<(String, String), St
         .or_else(|| root.get("separator_regex"))
         .and_then(serde_json::Value::as_str)
         .unwrap_or("")
-        .trim()
         .to_string();
     if pattern.is_empty() {
         let separators = root
@@ -25396,8 +25409,7 @@ fn artist_separator_profile_from_json(path: &str) -> Result<(String, String), St
         }
         pattern = format!("(?:{})", escaped.join("|"));
     }
-    regex::Regex::new(&pattern)
-        .map_err(|error| format!("Artist separator Regex is invalid: {error}"))?;
+    splined_core::artist_separator::ArtistSeparator::parse(&pattern).map_err(str::to_string)?;
     let imported = root
         .get("artist_separator_profile")
         .or_else(|| root.get("profile"))

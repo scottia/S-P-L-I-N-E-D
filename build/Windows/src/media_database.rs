@@ -285,25 +285,7 @@ pub(crate) fn synthetic_album_artist(artist: &str) -> bool {
     )
 }
 
-fn artist_credit_position(track_artist: &str, artist: &str, separator: &Regex) -> Option<usize> {
-    let selected = artist.trim().to_lowercase();
-    if selected.is_empty() {
-        return None;
-    }
-    let explicit = artist_credit_values(track_artist, separator);
-    if let Some(position) = explicit
-        .iter()
-        .position(|credit| credit.to_lowercase() == selected)
-    {
-        return Some(position);
-    }
-    None
-}
-
-/// Canonicalize one Artist string for durable indexing. Real multi-value tags
-/// arrive with the SQLite NUL boundary or WebGUI/PostgreSQL's durable Unit
-/// Separator boundary and are never guessed apart; the configured Regex is
-/// applied only to one joined Artist/TPE1 or filename credit.
+#[cfg(test)]
 fn artist_credit_values(track_artist: &str, separator: &Regex) -> Vec<String> {
     artist_credit_values_with_mbids(track_artist, "", separator)
 }
@@ -376,11 +358,16 @@ fn canonical_artist_credit_text(
     artist_credit_values_with_mbids(track_artist, artist_mbids, separator).join("\0")
 }
 
+fn catalog_credit_trim(value: &str) -> &str {
+    // Match Python's text trim, including its four information separators.
+    value.trim_matches(|ch: char| ch.is_whitespace() || matches!(ch, '\u{001c}'..='\u{001f}'))
+}
+
 fn numbered_track_artist_credit(value: &str) -> Option<&str> {
     let mut fields = value.split(" - ");
-    let number = fields.next()?.trim();
-    let artist = fields.next()?.trim();
-    let title = fields.next()?.trim();
+    let number = catalog_credit_trim(fields.next()?);
+    let artist = catalog_credit_trim(fields.next()?);
+    let title = catalog_credit_trim(fields.next()?);
     let numbered = !number.is_empty()
         && number.split('-').all(|part| {
             !part.is_empty() && part.chars().all(|character| character.is_ascii_digit())
@@ -412,11 +399,11 @@ fn catalog_credit_slots<'a>(
     title: &'a str,
     filename: &'a str,
     owner: &str,
-    separator: &Regex,
+    separator: &crate::artist_separator::ArtistSeparator,
 ) -> Vec<CatalogCredit> {
     use crate::artist_unicode::casefold;
     let clean = |name: &'a str| {
-        let name = name.trim();
+        let name = catalog_credit_trim(name);
         (!name.is_empty()).then_some(name)
     };
     let tagged: Vec<_> = track_artist.split(['\0', '\x1f']).filter_map(clean).collect();
@@ -441,21 +428,21 @@ fn catalog_credit_slots<'a>(
             return bind(names, true, true);
         }
     }
-    let configured: Vec<_> = separator.split(joined).filter_map(clean).collect();
+    let configured: Vec<_> = separator.split(joined).into_iter().filter_map(clean).collect();
     if configured.len() > 1 && configured.len() == ids.len() {
         return bind(configured, true, true);
     }
-    let owner_key = casefold(owner.trim());
+    let owner_key = casefold(catalog_credit_trim(owner));
     let anchored = |value: &'a str, allow_ampersand: bool| -> Option<Vec<&'a str>> {
         let pattern = if allow_ampersand {
-            r"(?i) (?:feat\.?|ft\.?|featuring|&) "
+            r"(?i-u: (?:feat\.?|ft\.?|featuring|&) )"
         } else {
-            r"(?i) (?:feat\.?|ft\.?|featuring) "
+            r"(?i-u: (?:feat\.?|ft\.?|featuring) )"
         };
         static ANCHOR: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
         static FEATURE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
         let compiled = if allow_ampersand { &ANCHOR } else { &FEATURE };
-        if owner_key.is_empty() || casefold(value.trim()) == owner_key {
+        if owner_key.is_empty() || casefold(catalog_credit_trim(value)) == owner_key {
             return None;
         }
         compiled.get_or_init(|| Regex::new(pattern).unwrap()).find_iter(value)
@@ -463,8 +450,7 @@ fn catalog_credit_slots<'a>(
                 let lead = clean(&value[..split.start()])?;
                 let guest = clean(&value[split.end()..])?;
                 let ampersand = split.as_str() == " & ";
-                if !ampersand && !separator.find(split.as_str())
-                    .is_some_and(|m| m.as_str() == split.as_str()) {
+                if !ampersand && !separator.full_match(split.as_str()) {
                     return None;
                 }
                 (casefold(lead) == owner_key || ampersand && casefold(guest) == owner_key)
@@ -484,7 +470,7 @@ fn catalog_credit_slots<'a>(
         if credits.iter().any(|credit| casefold(&credit.name) == casefold(value)) {
             continue;
         }
-        let configured: Vec<_> = separator.split(value).filter_map(clean).collect();
+        let configured: Vec<_> = separator.split(value).into_iter().filter_map(clean).collect();
         let names = anchored(value, true).unwrap_or_else(|| {
             if value.contains(" & ") && configured.len() < 2 {
                 Vec::new()
@@ -503,7 +489,7 @@ fn indexed_track_artist_credits(
     title: &str,
     filename: &str,
     owner: &str,
-    separator: &Regex,
+    separator: &crate::artist_separator::ArtistSeparator,
 ) -> Vec<String> {
     catalog_credit_slots(track_artist, track_artist_mbids, title, filename, owner, separator)
         .into_iter().map(|credit| credit.name).collect()
@@ -535,8 +521,8 @@ pub fn indexed_artist_appearances(
     if current != SCHEMA_VERSION {
         return Err(incompatible_schema(current));
     }
-    let separator = Regex::new(&config.scan.artist_separator_regex)
-        .map_err(|error| format!("Artist separator Regex is invalid: {error}"))?;
+    let separator = crate::artist_separator::ArtistSeparator::parse(&config.scan.artist_separator_regex)
+        .unwrap_or_default();
     let escaped = artist_name
         .replace('\\', "\\\\")
         .replace('%', "\\%")
@@ -582,7 +568,7 @@ pub fn indexed_artist_appearances(
             &separator,
         )
         .into_iter()
-        .any(|credit| artist_credit_position(&credit, artist_name, &separator).is_some());
+        .any(|credit| crate::artist_unicode::casefold(&credit) == crate::artist_unicode::casefold(artist_name));
         if !matched {
             continue;
         }
@@ -667,8 +653,8 @@ impl ArtistCatalogInventory {
         mut self,
         artist_separator_regex: &str,
     ) -> Result<IndexedArtistCatalogProjection, String> {
-        let separator = Regex::new(artist_separator_regex)
-            .map_err(|error| format!("Artist separator Regex is invalid: {error}"))?;
+        let separator = crate::artist_separator::ArtistSeparator::parse(artist_separator_regex)
+            .unwrap_or_default();
         for track in &self.tracks {
             let Some(owner) = self.owners.get_mut(&track.album_key) else {
                 continue;
@@ -2259,6 +2245,10 @@ fn media_snapshot_inner(
     publish_missing_shared_inventory: bool,
     progress: Option<&mut dyn FnMut(CatalogIndexStatus) -> bool>,
 ) -> Result<MediaSnapshot, String> {
+    let separator_warning = crate::artist_separator::ArtistSeparator::warning(&config.scan.artist_separator_regex);
+    if refresh && let Some(warning) = separator_warning {
+        return Err(warning.to_string());
+    }
     let local_root = config.library.music_library.trim();
     if local_root.is_empty() {
         return Err(
@@ -2282,7 +2272,7 @@ fn media_snapshot_inner(
         let (connection, current) = open_database_read_only(database_access.path())?;
         if current == SCHEMA_VERSION {
             let saved_signature = read_signature(&connection)?;
-            validate_signature(config, saved_signature.as_ref())?;
+            validate_signature_fields(config, saved_signature.as_ref(), separator_warning.is_none())?;
             let usable = saved_signature.is_some()
                 && connection
                     .query_row("SELECT count(*) FROM albums", [], |row| {
@@ -2306,6 +2296,9 @@ fn media_snapshot_inner(
         }
     }
 
+    if let Some(warning) = separator_warning {
+        return Err(warning.to_string());
+    }
     if config.scan.sqlite_shared && !refresh && !publish_missing_shared_inventory {
         return Err(
             "The shared SPLINED database has no usable inventory. Use Refresh DB to build it from this client's library view."
@@ -4823,6 +4816,10 @@ fn expected_signature(config: &Config, canonical_root: &str) -> Value {
 }
 
 fn validate_signature(config: &Config, saved: Option<&Value>) -> Result<(), String> {
+    validate_signature_fields(config, saved, true)
+}
+
+fn validate_signature_fields(config: &Config, saved: Option<&Value>, check_separator: bool) -> Result<(), String> {
     let Some(saved) = saved else {
         return Ok(());
     };
@@ -4845,6 +4842,9 @@ fn validate_signature(config: &Config, saved: Option<&Value>) -> Result<(), Stri
         ]
     };
     for field in fields {
+        if *field == "artist_separator_regex" && !check_separator {
+            continue;
+        }
         let values_match = if *field == "schema_version" {
             saved
                 .get(field)
@@ -7822,7 +7822,7 @@ mod tests {
             let field = |key: &str| case[key].as_str().unwrap();
             let credits = catalog_credit_slots(
                 field("value"), field("artist_mbids"), field("title"), field("filename"),
-                field("owner"), &Regex::new(field("separator_regex")).unwrap(),
+                field("owner"), &crate::artist_separator::ArtistSeparator::parse(field("separator_regex")).unwrap(),
             );
             let actual = credits.iter().map(|credit| {
                 json!([credit.name, credit.position, credit.mbid, credit.explicit])
@@ -7910,6 +7910,23 @@ mod tests {
                 json!([credit.name, credit.position, credit.mbid, credit.explicit])
             }).collect::<Vec<_>>();
         assert_eq!(Value::Array(credits), case["positioned_credits"]);
+        let original_database = fs::read(&snapshot.database_path).unwrap();
+        let incompatible = r"\p{White_Space}+";
+        config.scan.artist_separator_regex = incompatible.to_owned();
+        let native = Regex::new(incompatible).unwrap();
+        assert_eq!(canonical_artist_credit_text("Artist Guest", "", &native), "Artist\0Guest");
+        let retained = media_snapshot(&config, false).unwrap();
+        let retained_projection = indexed_artist_catalog_projection(
+            &retained.database_path, &config.scan.artist_separator_regex,
+        ).unwrap();
+        assert_eq!(projected.positioned_track_credits, retained_projection.positioned_track_credits);
+        assert_eq!(
+            media_snapshot(&config, true).err().as_deref(),
+            Some(crate::artist_separator::REMEDIATION),
+        );
+        assert_eq!(config.scan.artist_separator_regex, incompatible);
+        assert_eq!(fs::read(&snapshot.database_path).unwrap(), original_database);
+        config.scan.artist_separator_regex = crate::config::DEFAULT_ARTIST_SEPARATOR_REGEX.to_owned();
         // An inventory publication after this snapshot belongs to the next
         // load, including the Artist credits and category decisions.
         connection.execute(
@@ -8858,7 +8875,8 @@ mod tests {
             ["Ike", "Tina Turner"]
         );
 
-        let default_separator = Regex::new(crate::config::DEFAULT_ARTIST_SEPARATOR_REGEX).unwrap();
+        let default_separator =
+            crate::artist_separator::ArtistSeparator::parse(crate::config::DEFAULT_ARTIST_SEPARATOR_REGEX).unwrap();
         assert_eq!(
             indexed_track_artist_credits(
                 "Ike & Tina Turner",

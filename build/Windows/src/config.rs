@@ -792,12 +792,8 @@ pub fn parse_config(text: &str) -> Result<Config, String> {
             "SPLINED index_large_album_track_threshold must be between 0 and 10000.".to_string(),
         );
     }
-    config.scan.artist_separator_regex = config.scan.artist_separator_regex.trim().to_string();
-    if config.scan.artist_separator_regex.is_empty() {
-        return Err("Artist separator Regex cannot be empty.".to_string());
-    }
-    regex::Regex::new(&config.scan.artist_separator_regex)
-        .map_err(|error| format!("Artist separator Regex is invalid: {error}"))?;
+    // Saved profiles remain editable even when their syntax predates the
+    // portable catalog grammar. The catalog controls use and remediation.
     config.scan.artist_separator_profile = config.scan.artist_separator_profile.trim().to_string();
     if config.scan.artist_separator_profile.is_empty() {
         config.scan.artist_separator_profile =
@@ -1180,6 +1176,19 @@ pub fn load_config_text_at_root(text: &str, root: &Path) -> Result<Config, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_artist_separator_profiles_round_trip_for_remediation() {
+        for profile in [" & ", r"\p{White_Space}+"] {
+            let mut config = Config::default();
+            config.scan.artist_separator_regex = profile.to_owned();
+            config.scan.artist_separator_profile = "Local credit profile".to_owned();
+            let saved = toml::to_string_pretty(&config).unwrap();
+            let parsed = parse_config(&saved).unwrap();
+            assert_eq!(parsed.scan.artist_separator_regex, profile);
+            assert_eq!(parsed.scan.artist_separator_profile, "Local credit profile");
+        }
+    }
 
     #[test]
     fn default_config_is_neutral_portable_and_v5() {

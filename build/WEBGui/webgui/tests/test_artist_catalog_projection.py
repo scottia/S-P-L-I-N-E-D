@@ -6,7 +6,6 @@ from contextlib import closing
 from io import BytesIO
 import json
 from pathlib import Path
-import re
 import sqlite3
 from sqlite3 import connect
 from tempfile import TemporaryDirectory
@@ -28,6 +27,7 @@ from webgui.catalog import (
 from splined_media_tags import (
     ARTIST_CREDIT_SEPARATOR, normalize_artist_credit_text, read_album_and_track_identity_tags,
 )
+from splined_artist_separator import parse as parse_artist_separator
 from mutagen.id3 import ID3, TPE2, TXXX
 from splined_media_database import aggregate_artist, update_artist_aggregate
 
@@ -43,6 +43,26 @@ CONFORMANCE = json.loads(
 
 
 class ArtistCatalogProjectionTests(unittest.TestCase):
+    def test_art004_portability_does_not_change_independent_credit_normalization(self):
+        profile = r"(?<=feat\.)\s+"
+        with self.assertRaisesRegex(ValueError, "Incompatible Artist separator"):
+            parse_artist_separator(profile)
+        self.assertEqual(
+            normalize_artist_credit_text("Artist feat. Guest", profile),
+            ARTIST_CREDIT_SEPARATOR.join(("Artist feat.", "Guest")),
+        )
+
+    def test_art004_portable_separator_matches_shared_cases(self):
+        for case in CONFORMANCE["portable_separator_cases"]:
+            with self.subTest(profile=case["profile"]):
+                if "parts" not in case:
+                    with self.assertRaisesRegex(ValueError, "Incompatible Artist separator"):
+                        parse_artist_separator(case["profile"])
+                    continue
+                separator = parse_artist_separator(case["profile"])
+                self.assertEqual(separator.split(case["value"]), case["parts"])
+                self.assertTrue(separator.full_match(case["whole"]))
+
     def test_original_album_artist_id_alias_conflicts_are_captured_without_reparenting(self):
         first, second = CONFORMANCE["conflicting_owner_artist_ids"]
         with TemporaryDirectory() as directory:
@@ -63,7 +83,7 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             with self.subTest(case=case["id"]):
                 self.assertEqual([list(credit) for credit in catalog_credit_slots(
                     case["value"], case["artist_mbids"], case["title"], case["filename"],
-                    case["owner"], re.compile(case["separator_regex"]),
+                    case["owner"], parse_artist_separator(case["separator_regex"]),
                 )], case["expected"])
 
     def test_shared_art004_credit_and_search_conformance(self):
