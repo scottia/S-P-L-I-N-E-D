@@ -18156,10 +18156,6 @@ fn apply_settings_ui(ui: &AppWindow, config: &mut Config) -> Result<(), String> 
         .to_string();
     config.scan.scan_library_dir = ui.get_settings_scan_library().trim().to_string();
     update_artist_separator_setting(ui, config)?;
-    config.scan.artist_separator_profile = artist_separator_profile_label(
-        &config.scan.artist_separator_regex,
-        ui.get_settings_artist_separator_profile().as_str(),
-    );
     config.scan.cache_dir = ui.get_settings_database_dir().trim().to_string();
     config.scan.shared_artist_art_dir = ui.get_settings_shared_artist_art_dir().trim().to_string();
     if config.scan.shared_artist_art_dir.is_empty() {
@@ -18278,10 +18274,6 @@ fn apply_settings_section_ui(
                 .to_string();
             config.scan.scan_library_dir = ui.get_settings_scan_library().trim().to_string();
             update_artist_separator_setting(ui, config)?;
-            config.scan.artist_separator_profile = artist_separator_profile_label(
-                &config.scan.artist_separator_regex,
-                ui.get_settings_artist_separator_profile().as_str(),
-            );
             config.scan.scan_mode = ui.get_settings_scan_mode();
             config.scan.cache_dir = ui.get_settings_database_dir().trim().to_string();
             config.scan.shared_artist_art_dir =
@@ -25367,9 +25359,15 @@ fn artist_separator_profile_label(pattern: &str, imported: &str) -> String {
 
 fn update_artist_separator_setting(ui: &AppWindow, config: &mut Config) -> Result<(), String> {
     let pattern = ui.get_settings_artist_separator_regex().to_string();
-    if pattern != config.scan.artist_separator_regex {
+    let profile = ui.get_settings_artist_separator_profile();
+    let pattern_changed = pattern != config.scan.artist_separator_regex;
+    if pattern_changed {
         splined_core::artist_separator::ArtistSeparator::parse(&pattern).map_err(str::to_string)?;
         config.scan.artist_separator_regex = pattern;
+    }
+    if pattern_changed || profile.as_str() != config.scan.artist_separator_profile {
+        config.scan.artist_separator_profile =
+            artist_separator_profile_label(&config.scan.artist_separator_regex, profile.as_str());
     }
     Ok(())
 }

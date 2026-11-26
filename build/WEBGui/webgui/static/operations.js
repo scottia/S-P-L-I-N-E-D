@@ -2362,8 +2362,12 @@ async function openSettings() {
     applySettingsInputs(draft, bindings);
     if (section.id === "library") {
       const separator = String(settingValue(draft, "scan.artist_separator_regex", DEFAULT_ARTIST_SEPARATOR_REGEX));
-      const importedProfile = String(settingValue(draft, "scan.artist_separator_profile", "")).trim();
-      setSettingValue(draft, "scan.artist_separator_profile", separator === DEFAULT_ARTIST_SEPARATOR_REGEX ? "Navidrome default" : (importedProfile && importedProfile !== "Navidrome default" ? importedProfile : "Custom Regex"));
+      const profile = String(settingValue(draft, "scan.artist_separator_profile", "Navidrome default"));
+      if (separator !== settingValue(saved.config, "scan.artist_separator_regex", DEFAULT_ARTIST_SEPARATOR_REGEX)
+          || profile !== settingValue(saved.config, "scan.artist_separator_profile", "Navidrome default")) {
+        const importedProfile = profile.trim();
+        setSettingValue(draft, "scan.artist_separator_profile", separator === DEFAULT_ARTIST_SEPARATOR_REGEX ? "Navidrome default" : (importedProfile && importedProfile !== "Navidrome default" ? importedProfile : "Custom Regex"));
+      }
     }
     saved = await post("/api/settings", {config: draft}); await sessionStatus();
     applyGraphicalEnhancement(saved.config.webgui_ui?.enhancement);
