@@ -2287,15 +2287,10 @@ impl LibraryState {
 
     pub fn set_status_filters(&mut self, values: impl IntoIterator<Item = StatusFilter>) {
         self.completed_fallback_return_key = None;
-        let selected = values
-            .into_iter()
-            .filter(|value| *value != StatusFilter::All)
-            .collect::<BTreeSet<_>>();
-        self.status_filters = if selected.is_empty() {
-            all_status_filters()
-        } else {
-            selected
-        };
+        self.status_filters = values.into_iter().collect();
+        if self.status_filters.remove(&StatusFilter::All) && self.status_filters.is_empty() {
+            self.status_filters = all_status_filters();
+        }
         self.status_filter = StatusFilter::All;
     }
 
@@ -2303,8 +2298,14 @@ impl LibraryState {
         self.completed_fallback_return_key = None;
         if value == StatusFilter::All {
             self.status_filters = all_status_filters();
-        } else if !self.status_filters.remove(&value) {
-            self.status_filters.insert(value);
+        } else if self.status_filters.remove(&value) {
+            if self.status_filters.len() == 1 {
+                // Unprocessed is a heading count, so it cannot stand in for a
+                // selected status when every visible filter is switched off.
+                self.status_filters.remove(&StatusFilter::Unprocessed);
+            }
+        } else {
+            self.status_filters.extend([value, StatusFilter::Unprocessed]);
         }
         self.status_filter = StatusFilter::All;
     }
@@ -6376,6 +6377,29 @@ mod tests {
             album.snapshot.album_mbid = format!("release-{}", album.snapshot.album_key);
         }
         state
+    }
+
+    #[test]
+    fn art004_artist_state_filters_can_hide_every_row_without_changing_inventory() {
+        let mut state = artist_library();
+        let total = state.artist_inventory_count();
+        assert!(total > 0);
+        assert!(!state.rows().is_empty());
+
+        for filter in all_status_filters() {
+            if filter != StatusFilter::Unprocessed {
+                state.toggle_status_filter(filter);
+            }
+        }
+        assert!(state.status_filters.is_empty());
+        assert!(state.rows().is_empty());
+        assert_eq!(state.artist_inventory_count(), total);
+
+        state.set_status_filters([]);
+        assert!(state.rows().is_empty());
+        state.toggle_status_filter(StatusFilter::Incomplete);
+        assert!(!state.rows().is_empty());
+        assert_eq!(state.artist_inventory_count(), total);
     }
 
     #[test]

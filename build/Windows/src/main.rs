@@ -5858,25 +5858,27 @@ fn apply_ui_preferences(state: &mut ApplicationState, preferences: &UiPreference
             "albums" => LibraryView::Albums,
             _ => LibraryView::Artists,
         });
-    // `status_filter = "all"` is the durable user intent. Prefer it over
-    // the serialized member list so an upgrade that introduces a new state
-    // (for example Overridden) cannot silently hide that state. Custom
-    // lists keep Unprocessed enabled because it is now a heading count, not
-    // a separately clickable Artist State row.
+    // "all" opts into new visible statuses. An empty custom list keeps
+    // every filter off, including an older list containing only the heading.
     if preferences.status_filter.eq_ignore_ascii_case("all") {
         state.library.set_status_filter(StatusFilter::All);
-    } else if preferences.status_filters.is_empty() {
+    } else if preferences.status_filters.is_empty()
+        && !preferences.status_filter.eq_ignore_ascii_case("custom")
+    {
         state
             .library
             .set_status_filter(parse_status_filter(&preferences.status_filter));
     } else {
-        state.library.set_status_filters(
-            preferences
-                .status_filters
-                .iter()
-                .map(|value| parse_status_filter(value))
-                .chain(std::iter::once(StatusFilter::Unprocessed)),
-        );
+        let mut selected = preferences
+            .status_filters
+            .iter()
+            .map(|value| parse_status_filter(value))
+            .filter(|filter| !matches!(filter, StatusFilter::All | StatusFilter::Unprocessed))
+            .collect::<Vec<_>>();
+        if !selected.is_empty() {
+            selected.push(StatusFilter::Unprocessed);
+        }
+        state.library.set_status_filters(selected);
     }
     state
         .library
