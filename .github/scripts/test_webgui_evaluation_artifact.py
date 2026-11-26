@@ -58,6 +58,17 @@ class WebguiEvaluationArtifactTests(unittest.TestCase):
         with self.assertRaises((ValueError, FileNotFoundError)):
             verify_build(self.root, "webgui", 100)
 
+    def test_retained_committed_source_validation_provenance(self):
+        env = dict(ENV, SOURCE_VALIDATION_RUN_ID="99",
+                   SOURCE_VALIDATION_RUN_ATTEMPT="2", SOURCE_VALIDATION_BASE_SHA="d" * 40)
+        manifest = create_manifest(self.root, env)
+        self.assertEqual(manifest["source_validation"], {
+            "kind": "reused-committed-source-pr-validation",
+            "run_id": 99, "run_attempt": 2, "source_commit": ENV["SOURCE_COMMIT"],
+            "base_commit": "d" * 40, "runner_stamp_verified": True,
+        })
+        self.assertFalse(manifest["release_eligible"])
+
     def test_missing_asset_rejected(self):
         (self.root / IMAGE).unlink()
         with self.assertRaises(ValueError):
