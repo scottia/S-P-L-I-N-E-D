@@ -2556,6 +2556,13 @@ class Catalog:
     def artists(
         self, query: str, *, nonblocking_projection: bool = False
     ) -> list[dict[str, object]]:
+        rows, _ = self.artist_list(query, nonblocking_projection=nonblocking_projection)
+        return rows
+
+    def artist_list(
+        self, query: str, *, nonblocking_projection: bool = False
+    ) -> tuple[list[dict[str, object]], int]:
+        """Return the searched rows and unfiltered eligible total from one snapshot."""
         with closing(self._connect_artist_catalog()) as db:
             rows = db.execute(
                 "SELECT artists.artist_key, artists.artist_name, artists.musicbrainz_artistid, "
@@ -2612,6 +2619,7 @@ class Catalog:
             )
             owned_album_keys.setdefault(str(row["artist_key"]), set()).add(album_key)
         result = []
+        artist_total = 0
         for selection_id, canonical, group in self._artist_selection_groups(rows, projected):
             if synthetic_album_artist(canonical["artist_name"]):
                 continue
@@ -2640,6 +2648,7 @@ class Catalog:
                 effective_album_count = sum(int(row["album_count"] or 0) for row in group)
             if effective_album_count == 0:
                 continue
+            artist_total += 1
             alias_names = {str(row["artist_name"] or "") for row in group}
             for row in group:
                 evidence = projected.get(normalized_artist_identity(row["artist_name"]), {})
@@ -2710,14 +2719,14 @@ class Catalog:
                 "has_incomplete_error": has_incomplete_error,
                 "projection_pending": False,
             })
-        return sorted(
-            result,
+        result.sort(
             key=lambda item: (
                 artist_display_sort_key(item["name"]),
                 normalized_artist_identity(item["name"]),
                 str(item["id"]).casefold(),
             ),
         )
+        return result, artist_total
 
     def artist_thumbnails(self) -> list[dict[str, object]]:
         """Resolve visible Artist Art without delaying the initial list projection.

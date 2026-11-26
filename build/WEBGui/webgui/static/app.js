@@ -55,7 +55,7 @@ function normalizeGraphicalEnhancement(value = {}) {
   return result;
 }
 const state = {
-  artists: [], albumsIndex: [], artist: null, artistMetadata: null, album: null,
+  artists: [], artistTotal: null, albumsIndex: [], artist: null, artistMetadata: null, album: null,
   biographyArtistId: null, biographyExpanded: false, biographyText: "",
   libraryMode: "artists", libraryCategory: "", editorMode: "artist", workspace: "find",
   candidates: [], selectedPortrait: null, selectedBanner: null, selectedCover: null, reviewCleared: false,
@@ -699,12 +699,14 @@ function renderLibraryContents() {
   $("artistsTab").classList.toggle("active", state.libraryMode === "artists");
   $("albumsTab").classList.toggle("active", state.libraryMode === "albums");
   $("fallbackTab").classList.toggle("active", state.libraryMode === "fallback");
-  const albumQuery = state.libraryMode === "artists" ? $("albumSearch").value.trim() : "";
+  const isArtistView = state.libraryMode === "artists";
+  const albumQuery = isArtistView ? $("albumSearch").value.trim() : "";
   $("libraryListTitle").textContent = state.libraryMode === "fallback" ? "Curated Compilations"
-    : state.libraryMode === "albums" ? "V/A OST" : albumQuery ? "Album Search" : "Artists";
+    : state.libraryMode === "albums" ? "V/A OST" : albumQuery ? "Album Search" : "";
+  $("artistCount").hidden = !isArtistView;
+  $("artistCount").textContent = isArtistView ? "Artists: " + (state.artistTotal ?? "…") : "";
   const list = $("artistList"); resetLibraryThumbnailLoading(); clear(list);
   if (state.libraryLoading) {
-    $("artistCount").textContent = "loading";
     list.append(node("p", "empty-copy", state.libraryMode === "artists" ? "Loading artists…" : "Loading albums…"));
     renderMediaStatusChips();
     return;
@@ -715,7 +717,6 @@ function renderLibraryContents() {
         .filter(artistFileListAlbum)
         .filter(mediaMatches)
         .sort(compareAlbumTitles);
-      $("artistCount").textContent = state.albumLibraryLoading ? "searching" : albums.length + " Albums shown";
       for (const album of albums) {
         const button = node("button", "library-row album-search-result"); button.type = "button";
         button.dataset.albumId = String(album.id);
@@ -736,7 +737,6 @@ function renderLibraryContents() {
     // The catalog matches the complete local alias vocabulary. Keep its last
     // published results visible while a new typed query is pending.
     const visibleArtists = state.artists.filter(mediaMatches);
-    $("artistCount").textContent = visibleArtists.length + " shown";
     for (const artist of visibleArtists) {
       const button = node("button", "library-row"); button.type = "button";
       button.dataset.artistId = String(artist.id);
@@ -757,7 +757,6 @@ function renderLibraryContents() {
       }
     }
   } else {
-    $("artistCount").textContent = state.albumsIndex.filter(mediaMatches).length + " shown";
     const visibleAlbums = state.albumsIndex.filter(mediaMatches).sort(compareAlbumTitles);
     if (state.libraryMode === "albums") {
       const categoryRows = [
@@ -953,9 +952,19 @@ async function saveAlbumCategory(album, category, saveButton) {
     if (state.album?.id === album.id) Object.assign(state.album, result);
     $("workspaceDialog").close();
     const query = state.libraryMode === "artists" ? $("artistSearch").value : $("albumSearch").value;
+    // Reads already in flight may still hold the inventory before the move.
+    libraryListRequests.clear();
     await loadLibrary(query);
-    if (state.libraryMode === "artists" && state.artist?.id) {
-      state.artist = await api("/api/artist?id=" + encodeURIComponent(state.artist.id));
+    const focusedId = state.artist?.id;
+    if (state.libraryMode === "artists" && focusedId) {
+      const refreshed = await api("/api/artist?id=" + encodeURIComponent(focusedId)).catch(error => {
+        if (error.httpStatus !== 404) throw error;
+        return null;
+      });
+      if (state.libraryMode === "artists" && state.artist?.id === focusedId) {
+        state.artist = refreshed;
+        if (!refreshed) state.artistMetadata = null;
+      }
       renderAll();
     }
     setStatus(category
@@ -2814,18 +2823,19 @@ function scheduleArtistProjectionRefresh(query, request) {
   window.setTimeout(async () => {
     if (request !== state.listRequest || state.libraryMode !== "artists" || state.artistQuery !== String(query || "")) return;
     try {
-      const refreshed = await api("/api/artists?q=" + encodeURIComponent(query));
+      const refreshed = await coalescedLibraryApi(artistLibraryPath(query));
       if (request !== state.listRequest || state.libraryMode !== "artists" || state.artistQuery !== String(query || "")) return;
       if (refreshed.projection_pending === true) {
         scheduleArtistProjectionRefresh(query, request);
         return;
       }
-      state.artists = refreshed;
+      state.artists = refreshed.artists;
+      state.artistTotal = refreshed.artist_total;
       state.libraryLoading = false;
       state.libraryReady = true;
       renderLibrary();
-      if (!state.artist && refreshed.length) await chooseArtist(refreshed[0].id, false);
-      if (refreshed.some(item => item.projection_pending === true)) scheduleArtistProjectionRefresh(query, request);
+      if (!state.artist && state.artists.length) await chooseArtist(state.artists[0].id, false);
+      if (state.artists.some(item => item.projection_pending === true)) scheduleArtistProjectionRefresh(query, request);
       else state.artistProjectionRetry = 0;
     } catch {
       if (request === state.listRequest && state.libraryMode === "artists") scheduleArtistProjectionRefresh(query, request);
@@ -2835,6 +2845,9 @@ function scheduleArtistProjectionRefresh(query, request) {
 const LIBRARY_SEARCH_DEBOUNCE_MS = 250;
 const libraryListRequests = new Map();
 let artistSearchTimer = null, albumSearchTimer = null;
+function artistLibraryPath(query) {
+  return "/api/artists?include_total=true&q=" + encodeURIComponent(query);
+}
 function coalescedLibraryApi(path) {
   let request = libraryListRequests.get(path);
   if (!request) {
@@ -2887,7 +2900,7 @@ async function loadLibrary(query = "") {
   state.libraryLoading = !(state.libraryReady && usableRows.length);
   try {
     const results = mode === "artists"
-      ? await coalescedLibraryApi("/api/artists?q=" + encodeURIComponent(query))
+      ? await coalescedLibraryApi(artistLibraryPath(query))
       : await coalescedLibraryApi("/api/albums?view=" + mode + "&q=" + encodeURIComponent(query));
     if (!isCurrent()) return;
     if (mode === "artists" && results.projection_pending === true) {
@@ -2895,8 +2908,10 @@ async function loadLibrary(query = "") {
       scheduleArtistProjectionRefresh(query, request);
       return;
     }
-    if (mode === "artists") state.artists = results;
-    else state.albumsIndex = results;
+    if (mode === "artists") {
+      state.artists = results.artists;
+      state.artistTotal = results.artist_total;
+    } else state.albumsIndex = results;
     state.libraryLoading = false;
     state.libraryReady = true;
     renderLibrary();

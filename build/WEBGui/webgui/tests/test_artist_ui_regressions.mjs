@@ -73,7 +73,7 @@ test("Artist search debounces input and coalesces an identical request", async (
   callback();
   const first = context.loadLibrary("abba");
   assert.equal(calls, 1, "the debounced and explicit identical reads share one request");
-  release([]);
+  release({artists: [], artist_total: 200});
   await first;
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(state.artistQuery, "abba");
@@ -95,17 +95,18 @@ test("a superseded library response cannot commit stale rows", async () => {
 
   const older = context.loadLibrary("old");
   const newer = context.loadLibrary("new");
-  releases.get("/api/artists?q=new")([{id: "new"}]);
+  releases.get("/api/artists?include_total=true&q=new")({artists: [{id: "new"}], artist_total: 2429});
   await newer;
-  releases.get("/api/artists?q=old")([{id: "old"}]);
+  releases.get("/api/artists?include_total=true&q=old")({artists: [{id: "old"}], artist_total: 2430});
   await older;
   assert.deepEqual(JSON.parse(JSON.stringify(state.artists)), [{id: "new"}]);
 
   const pending = context.loadLibrary("intermediate");
   context.scheduleLibrarySearch("artist", "next");
-  releases.get("/api/artists?q=intermediate")([{id: "intermediate"}]);
+  releases.get("/api/artists?include_total=true&q=intermediate")({artists: [{id: "intermediate"}], artist_total: 0});
   await pending;
   assert.equal(state.artists[0].id, "new", "new input supersedes requests during debounce");
+  assert.equal(state.artistTotal, 2429, "a stale response cannot replace the inventory count");
 });
 
 test("Artist search renders an existing list and accepts a server-resolved alias", async () => {
@@ -113,7 +114,7 @@ test("Artist search renders an existing list and accepts a server-resolved alias
   const response = new Promise(resolve => { release = resolve; });
   const state = {
     libraryMode: "artists", artistQuery: "", listRequest: 0, libraryLoading: false,
-    libraryReady: true, artists: [{id: "abba", name: "ABBA"}], albumsIndex: [],
+    libraryReady: true, artists: [{id: "abba", name: "ABBA"}], artistTotal: 2429, albumsIndex: [],
     artist: {id: "selected"}, artistProjectionRetry: 0,
     albumLibraryRequest: 0, albumLibraryMatches: [], albumLibraryLoading: false,
   };
@@ -133,13 +134,14 @@ test("Artist search renders an existing list and accepts a server-resolved alias
   const renderContents = between(appSource, "function renderLibraryContents", "function refreshLibraryArtistRow");
   const context = load(librarySearchFunctions + renderContents, {
     state, api: async path => {
-      assert.equal(path, "/api/artists?q=artist%24alias");
+      assert.equal(path, "/api/artists?include_total=true&q=artist%24alias");
       return response;
     },
     $: getElement, node: () => element(),
     clear: target => { target.children.length = 0; },
     resetLibraryThumbnailLoading() {}, renderMediaStatusChips() {},
-    mediaMatches: () => true, mediaStatusKey: () => "", selectedMedia: () => false,
+    mediaMatches: item => item.status !== "hidden", mediaStatusKey: () => "", selectedMedia: () => false,
+    artistFileListAlbum: () => true, compareAlbumTitles: () => 0,
     applyStatusPalette() {},
     renderLibrary() { context.renderLibraryContents(); },
     chooseArtist: async () => {}, setStatus() {},
@@ -150,20 +152,31 @@ test("Artist search renders an existing list and accepts a server-resolved alias
   const pending = context.loadLibrary("artist$alias");
   context.renderLibraryContents();
   assert.deepEqual(visible(), ["abba"]);
+  assert.equal(getElement("artistCount").textContent, "Artists: 2429");
 
-  release([{id: "canonical", name: "Canonical Artist", albums: 1}]);
+  release({artists: [{id: "canonical", name: "Canonical Artist", albums: 1}], artist_total: 2429});
   await pending;
   assert.deepEqual(visible(), ["canonical"]);
-  assert.equal(getElement("artistCount").textContent, "1 shown");
+  state.artists[0].status = "hidden";
+  context.renderLibraryContents();
+  assert.equal(getElement("artistCount").textContent, "Artists: 2429");
+  getElement("albumSearch").value = "Album title";
+  state.albumLibraryMatches = [{id: "1", name: "Album title"}];
+  context.renderLibraryContents();
+  assert.equal(getElement("libraryListTitle").textContent, "Album Search");
+  assert.equal(getElement("artistCount").textContent, "Artists: 2429");
+  state.libraryMode = "fallback";
+  context.renderLibraryContents();
+  assert.equal(getElement("artistCount").hidden, true);
 });
 
 test("Artist search waits for a complete inventory before replacing existing rows", async () => {
   const state = {
     libraryMode: "artists", artistQuery: "", listRequest: 0,
-    libraryReady: true, artists: [{id: "old"}], artist: {id: "selected"},
+    libraryReady: true, artists: [{id: "old"}], artistTotal: 2429, artist: {id: "selected"},
     artistProjectionRetry: 0,
   };
-  const responses = [{projection_pending: true}, [{id: "current"}]];
+  const responses = [{projection_pending: true}, {artists: [{id: "current"}], artist_total: 2428}];
   let retry;
   const sources = between(appSource, "function scheduleArtistProjectionRefresh", "async function hydrateArtistThumbnails");
   const context = load(sources, {
@@ -174,8 +187,10 @@ test("Artist search waits for a complete inventory before replacing existing row
   await context.loadLibrary("current");
   assert.equal(state.artists[0].id, "old");
   assert.equal(state.libraryLoading, false);
+  assert.equal(state.artistTotal, 2429);
   await retry();
   assert.equal(state.artists[0].id, "current");
+  assert.equal(state.artistTotal, 2428);
   assert.equal(state.artistProjectionRetry, 0);
 });
 

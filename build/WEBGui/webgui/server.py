@@ -1042,10 +1042,11 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
         )
 
     @app.get("/api/artists")
-    def artists(q: str = ""):
+    def artists(q: str = "", include_total: bool = False):
         runtime = context.require()
         try:
-            return runtime.catalog.artists(q, nonblocking_projection=context.start_worker)
+            rows, total = runtime.catalog.artist_list(q, nonblocking_projection=context.start_worker)
+            return {"artists": rows, "artist_total": total} if include_total else rows
         except ArtistProjectionPending:
             return JSONResponse({"projection_pending": True}, status_code=202)
 

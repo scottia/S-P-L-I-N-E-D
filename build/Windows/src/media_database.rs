@@ -8175,6 +8175,7 @@ mod tests {
         config.scan.cache_dir = temporary.path().join("cache").to_string_lossy().into_owned();
         let snapshot = media_snapshot(&config, false).unwrap();
         let mut state = crate::application::LibraryState::from_snapshot(snapshot).unwrap();
+        assert_eq!(state.artist_inventory_count(), 1);
         state.set_artist_filter(case["literal_alias"].as_str().unwrap());
         let expected = case["expected_display"].as_str().unwrap();
         let rows = state.rows();
@@ -8182,6 +8183,18 @@ mod tests {
         assert_eq!((rows[0].primary.as_str(), rows[0].album_count), (expected, 3));
         assert!(state.focus_artist("Alias? Long Name"));
         assert_eq!(state.focused_artist.as_deref(), Some(expected));
+        state.set_album_filter("no matching Album");
+        state.set_status_filter(crate::application::StatusFilter::Processed);
+        assert!(state.rows().is_empty());
+        assert_eq!(state.artist_inventory_count(), 1);
+        let album_keys = state.albums.iter().map(|row| row.snapshot.album_key.clone()).collect::<Vec<_>>();
+        state.apply_album_category_override(&album_keys[0], "various-artists").unwrap();
+        state.apply_album_category_override(&album_keys[1], "fallback").unwrap();
+        assert_eq!(state.artist_inventory_count(), 1);
+        state.apply_album_category_override(&album_keys[2], "soundtracks").unwrap();
+        assert_eq!(state.artist_inventory_count(), 0);
+        state.apply_album_category_override(&album_keys[2], "artist").unwrap();
+        assert_eq!(state.artist_inventory_count(), 1);
     }
 
     // Change detection is intentionally a background write in production;

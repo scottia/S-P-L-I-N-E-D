@@ -386,17 +386,26 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.services.refresh_index(mode="full")
         catalog = self.services.catalog
         catalog.various_artist_path = catalog.soundtracks_path = catalog.curated_compilations_path = None
-        [listed] = catalog.artists(case["literal_alias"])
+        rows, artist_total = catalog.artist_list(case["literal_alias"])
+        [listed] = rows
+        self.assertEqual(len(catalog.artists("")), artist_total)
+        self.assertEqual(catalog.artist_list("no matching Artist"), ([], artist_total))
         self.assertEqual((listed["name"], listed["albums"]), (case["expected_display"], 3))
         overview = catalog.artist(listed["id"], require_eligible=True)
         self.assertEqual({album["name"] for album in overview["albums"]}, {
             row[0] for row in case["albums"]
         })
-        for album in overview["albums"]:
-            catalog.set_album_category(album["id"], "various-artists")
+        first, second, last = overview["albums"]
+        catalog.set_album_category(first["id"], "various-artists")
+        catalog.set_album_category(second["id"], "fallback")
+        self.assertEqual(catalog.artist_list("no matching Artist"), ([], artist_total))
+        catalog.set_album_category(last["id"], "soundtracks")
+        self.assertEqual(catalog.artist_list("no matching Artist"), ([], artist_total - 1))
         self.assertEqual(catalog.artists(case["literal_alias"]), [])
         with self.assertRaises(KeyError):
             catalog.artist(listed["id"], require_eligible=True)
+        catalog.set_album_category(last["id"], "artist")
+        self.assertEqual(catalog.artist_list("no matching Artist"), ([], artist_total))
 
     def test_database_pool_bounds_concurrent_connections_without_eager_startup(self):
         database = Database(self.url, pool_max_size=2, pool_timeout=1.0)
@@ -2160,6 +2169,8 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertFalse(client.get("/api/status").json()["admin_setup_required"])
             artists = client.get("/api/artists").json()
             self.assertEqual(artists[0]["name"], "Test Artist")
+            inventory = client.get("/api/artists", params={"q": "no match", "include_total": True})
+            self.assertEqual(inventory.json(), {"artists": [], "artist_total": len(artists)})
             self.assertEqual(
                 artists[0]["portrait"],
                 "/api/artist/thumbnail?id=" + quote(artists[0]["id"], safe=""),

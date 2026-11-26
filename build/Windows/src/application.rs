@@ -2077,13 +2077,11 @@ impl LibraryState {
         }
     }
 
-    pub fn visible_album_count(&self) -> usize {
-        let artists = self.artists();
-        self.albums
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| self.album_visible(*index, &artists))
-            .count()
+    pub fn artist_inventory_count(&self) -> usize {
+        if let Some(count) = self.artist_projection_cache.borrow().as_ref().map(BTreeMap::len) {
+            return count;
+        }
+        self.artists().len()
     }
 
     /// Albums presented inside Artist Overview. `appearance_keys` adds albums
@@ -6464,7 +6462,13 @@ mod tests {
         assert_eq!(state.fallback_album_rows()[0].key, "billboard");
 
         state.set_top_level_view(LibraryView::Albums);
-        assert_eq!(state.visible_album_count(), 2);
+        let artists = state.artists();
+        assert_eq!(
+            (0..state.albums.len())
+                .filter(|index| state.album_visible(*index, &artists))
+                .count(),
+            2
+        );
         assert!(state.toggle_library_category("category:various-artists"));
         let keys = state
             .rows()

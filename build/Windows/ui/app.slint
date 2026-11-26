@@ -602,7 +602,7 @@ component MediaLibraryPane inherits NeonPanel {
     in property <bool> expanded: true;
     in-out property <float> pane-width: 350;
     in property <[UiLibraryRow]> library-rows;
-    in property <int> library-shown-count;
+    in property <int> artist-inventory-count;
     in-out property <length> list-scroll-y: (0px * AppTheme.ui-scale);
     in property <[UiCompilationTrackRow]> compilation-track-rows;
     in property <[UiStatusFilterRow]> status-filter-rows;
@@ -781,9 +781,9 @@ component MediaLibraryPane inherits NeonPanel {
                 source-action(name, action) => root.candidate-source-action(name, action);
                 clear => root.clear-candidate-filters();
             }
-            HorizontalLayout { height: (20px * AppTheme.ui-scale);
+            if root.library-view-label == "Artists" && !root.show-tracks: HorizontalLayout { height: (20px * AppTheme.ui-scale);
                 Rectangle { horizontal-stretch: 1; background: transparent; }
-                Text { text: root.library-shown-count + " shown"; color: AppTheme.secondary-foreground; font-size: (12px * AppTheme.ui-scale) * AppTheme.font-scale; horizontal-alignment: right; vertical-alignment: center; }
+                Text { text: "Artists: " + root.artist-inventory-count; color: AppTheme.secondary-foreground; font-size: (12px * AppTheme.ui-scale) * AppTheme.font-scale; horizontal-alignment: right; vertical-alignment: center; }
             }
             if !root.show-tracks: artist-library-list := ListView {
                 content-y <=> root.list-scroll-y;
@@ -1551,7 +1551,7 @@ export component AppWindow inherits Window {
     // does not rewrite the user's saved UI Scale preference.
     out property <float> responsive-font-factor: root.width / 1px <= 1050 ? 0.82 : (root.width / 1px <= 1280 ? 0.90 : 1.0);
     in property <[UiLibraryRow]> library-rows;
-    in property <int> library-shown-count;
+    in property <int> artist-inventory-count;
     in-out property <bool> album-category-dialog-visible: false;
     in-out property <string> album-category-album-key;
     in-out property <string> album-category-album-name;
@@ -2362,7 +2362,7 @@ export component AppWindow inherits Window {
                     expanded: root.media-selector-expanded;
                     pane-width <=> root.media-pane-width;
                     library-rows: root.library-rows;
-                    library-shown-count: root.library-shown-count;
+                    artist-inventory-count: root.artist-inventory-count;
                     list-scroll-y <=> root.library-scroll-y;
                     compilation-track-rows: root.compilation-track-rows;
                     status-filter-rows: root.status-filter-rows;

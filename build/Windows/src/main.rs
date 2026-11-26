@@ -20692,12 +20692,7 @@ fn sync_media_filter_ui(ui: &AppWindow, state: &ApplicationState) {
         && state.library.view == LibraryView::Albums
         && library_rows.iter().all(|row| row.kind == "album-category");
     let reset_short_scroll = library_rows.len() < 8;
-    let shown_count = if !state.library.show_tracks && state.library.view == LibraryView::Albums {
-        state.library.visible_album_count()
-    } else {
-        library_rows.iter().filter(|row| row.depth == 0).count()
-    };
-    ui.set_library_shown_count(shown_count as i32);
+    ui.set_artist_inventory_count(state.library.artist_inventory_count() as i32);
     let model_signature = library_model_signature(state, &library_rows);
     if ui.get_library_model_signature().as_str() != model_signature {
         ui.set_library_rows(if state.media_selector_expanded {
