@@ -28211,10 +28211,19 @@ mod tests {
         // A processed artist's three physical albums and one completed COMP
         // appearance must not acquire red dots merely because the COMP folder
         // has no Release ID/usable folder cover or remains globally incomplete.
-        app.library.albums.retain(|album| {
+        let selected_inventory = app.library.albums.iter().filter(|album| {
             ["artist-new", "artist-old", "new-new", "comp-new"]
                 .contains(&album.snapshot.album_key.as_str())
-        });
+        }).map(|album| album.snapshot.clone()).collect();
+        app.library.replace_snapshot(MediaSnapshot {
+            artist_catalog: None,
+            schema_version: splined_core::media_database::SCHEMA_VERSION,
+            database_path: String::new(),
+            canonical_root: String::new(),
+            local_root: String::new(),
+            albums: selected_inventory,
+        }).unwrap();
+        app.library.apply_album_category_override("comp-new", "fallback").unwrap();
         app.library.artist_artwork_paths.insert(
             "mariah carey".into(),
             "C:/Music/Mariah Carey/artist.jpg".into(),
