@@ -2,13 +2,18 @@
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
+from unittest.mock import patch
+
+from source_version import current_source_version, stamp_release_version
 
 from workflow20_reuse import (
     IMAGE, SOURCE, VALIDATE, WEB_JOBS, WEB_MANIFEST, WEB_SUMS, WEB_VALIDATIONS,
-    WF20, WIN_MANIFEST, WIN_SUMS, artifact_run_candidates, eligible_run,
-    exact_stamp, matching_pr_run, verify_bundle, web_jobs_passed, workflow_contract,
+    WF20, WIN_MANIFEST, WIN_SUMS, STAMP_FILES, artifact_run_candidates, eligible_run,
+    matching_pr_run, verify_bundle, verify_runner_stamp, web_jobs_passed,
+    workflow_contract, reuse_artifact, reuse_validation,
 )
 
 ENV = {
@@ -122,12 +127,90 @@ class ReuseTests(unittest.TestCase):
         jobs[-1]["steps"][-1]["conclusion"] = "skipped"
         self.assertFalse(web_jobs_passed(jobs, ENV["SOURCE_COMMIT"]))
 
-    def test_version_stamp_cannot_hide_webgui_code_changes(self):
-        before = b'VERSION = "3.0.28"\nfunctionality = True\n'
-        after = b'VERSION = "3.0.34"\nfunctionality = True\n'
-        self.assertTrue(exact_stamp(before, after, "3.0.34"))
-        self.assertFalse(exact_stamp(before, after.replace(b"True", b"False"), "3.0.34"))
-        self.assertFalse(exact_stamp(before, before, "3.0.34"))
+    def test_exact_six_file_stamp_includes_user_agent_and_rejects_code_changes(self):
+        repo_root = Path(__file__).resolve().parents[2]
+        original, stamped = {}, {}
+        for relative in STAMP_FILES:
+            data = (repo_root / relative).read_bytes()
+            original[relative] = data
+            path = self.root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        major, minor, patch_number = map(int, current_source_version(self.root).split("."))
+        version = f"{major}.{minor}.{patch_number + 1}"
+        stamp_release_version(self.root, version)
+        for relative in STAMP_FILES:
+            stamped[relative] = (self.root / relative).read_bytes()
+        source, candidate = ENV["SOURCE_COMMIT"], "c" * 40
+        def show(commit, relative):
+            return (original if commit == source else stamped)[relative]
+        with patch("workflow20_reuse.git_show", side_effect=show), patch(
+            "workflow20_reuse.subprocess.check_output",
+            side_effect=lambda args, **kw: source + "\n" if args[1] == "rev-parse" else "\n".join(STAMP_FILES),
+        ):
+            self.assertTrue(verify_runner_stamp(source, candidate, version))
+            # User-agent and VERSION both legitimately changed. Any other
+            # byte, even in a Windows version file, invalidates evidence.
+            for relative in STAMP_FILES:
+                prior = stamped[relative]
+                stamped[relative] += b"\nnot an authorized version change"
+                self.assertFalse(verify_runner_stamp(source, candidate, version))
+                stamped[relative] = prior
+
+    def test_exact_retained_windows_artifact_download_and_stale_fallback(self):
+        package = self.root
+        self.windows()
+        target = package / "new-evaluation"
+        env = dict(ENV, RUNNER_TEMP=self.tmp.name)
+        run = self.run_metadata()
+        def download(args, **kw):
+            destination = Path(args[args.index("--dir") + 1])
+            destination.mkdir()
+            for name in ("splined.exe", WIN_MANIFEST, WIN_SUMS):
+                shutil.copyfile(package / name, destination / name)
+        with patch("workflow20_reuse.api", side_effect=[
+            {"workflow_runs": [run]},
+            {"artifacts": [{"name": "splined-quick-portable-windows", "expired": False}]},
+        ]), patch("workflow20_reuse.subprocess.run", side_effect=download):
+            result = reuse_artifact("windows", target, env)
+        self.assertEqual(result, {"reused": "true", "run_id": "200"})
+        self.assertTrue((target / "splined.exe").is_file())
+        shutil.rmtree(target)
+        with patch("workflow20_reuse.api", side_effect=[
+            {"workflow_runs": [run]},
+            {"artifacts": [{"name": "splined-quick-portable-windows", "expired": False}]},
+        ]), patch("workflow20_reuse.subprocess.run", side_effect=download):
+            with self.assertRaises(ValueError):
+                reuse_artifact("windows", target, dict(env, SOURCE_COMMIT="d" * 40))
+        self.assertFalse(target.exists())
+
+    def test_reuse_validation_rejects_newer_failure_and_missing_step(self):
+        source, base = ENV["SOURCE_COMMIT"], "d" * 40
+        env = dict(ENV, CANDIDATE_COMMIT="c" * 40)
+        repo = {"full_name": ENV["GITHUB_REPOSITORY"]}
+        pull = {"state": "open", "head": {"sha": source, "repo": repo},
+                "base": {"ref": "dev", "sha": base, "repo": repo}}
+        run = dict(self.run_metadata(), path=VALIDATE, event="pull_request", head_sha=source,
+                   created_at="2026-01-01T00:00:00Z",
+                   pull_requests=[{"number": 356, "head": {"sha": source},
+                                   "base": {"sha": base, "ref": "dev"}}])
+        jobs = [
+            {"name": name, "head_sha": source, "status": "completed",
+             "conclusion": "success",
+             "steps": [{"name": step, "conclusion": "success"} for step in steps]}
+            for name, steps in WEB_JOBS.items()
+        ]
+        def resolve(runs, steps):
+            with patch("workflow20_reuse.api", side_effect=[
+                pull, {"workflow_runs": runs}, {"total_count": len(steps), "jobs": steps},
+            ]), patch("workflow20_reuse.git_show", return_value=b"trusted"), patch(
+                "workflow20_reuse.workflow_contract", return_value=("trusted",)
+            ), patch("workflow20_reuse.verify_runner_stamp", return_value=True):
+                return reuse_validation(env)
+        self.assertEqual(resolve([run], jobs)["run_id"], "200")
+        self.assertEqual(resolve([run], jobs[1:]), {"reused": "false"})
+        newer = dict(run, id=201, conclusion="failure", created_at="2026-01-02T00:00:00Z")
+        self.assertEqual(resolve([newer, run], jobs), {"reused": "false"})
 
     def test_workflow_contract_preserves_relevant_validation(self):
         workflow = (Path(__file__).resolve().parents[1] / "workflows/validate.yml").read_bytes()

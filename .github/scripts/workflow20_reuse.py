@@ -42,6 +42,14 @@ WEB_JOBS = {
         "Build and start browser container",
     ),
 }
+STAMP_FILES = (
+    "build/Windows/Cargo.toml",
+    "build/Windows/Cargo.lock",
+    "build/Windows/gui/app.manifest",
+    "build/Windows/package/Package.appxmanifest",
+    "build/Windows/package/SPLINED.appinstaller.template",
+    "build/WEBGui/webgui/backend/splined.py",
+)
 SHA = re.compile(r"[a-f0-9]{40}")
 VERSION = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)")
 
@@ -240,10 +248,35 @@ def workflow_contract(contents: bytes) -> tuple[str, ...]:
     )))
 
 
-def exact_stamp(before: bytes, after: bytes, version: str) -> bool:
-    pattern = rb'(?m)^VERSION = "[0-9]+\.[0-9]+\.[0-9]+"(?=\r?$)'
-    stamped, count = re.subn(pattern, f'VERSION = "{version}"'.encode(), before)
-    return count == 1 and stamped == after
+def verify_runner_stamp(source: str, candidate: str, version: str) -> bool:
+    # Import the trusted stamper copied from the workflow definition, never
+    # from the selected product PR. Reuse its exact eight version-field
+    # transformations, including WebGUI USER_AGENT and all Windows manifests.
+    from source_version import stamp_release_version
+
+    if not SHA.fullmatch(source) or not SHA.fullmatch(candidate):
+        return False
+    parent = subprocess.check_output(
+        ["git", "rev-parse", f"{candidate}^"], text=True
+    ).strip()
+    if parent != source:
+        return False
+    changed = subprocess.check_output(
+        ["git", "diff", "--name-only", source, candidate], text=True
+    ).splitlines()
+    if len(changed) != len(STAMP_FILES) or set(changed) != set(STAMP_FILES):
+        return False
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        for relative in STAMP_FILES:
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(git_show(source, relative))
+        stamp_release_version(root, version)
+        return all(
+            (root / relative).read_bytes() == git_show(candidate, relative)
+            for relative in STAMP_FILES
+        )
 
 
 def matching_pr_run(run: dict, env: dict[str, str], base: str) -> bool:
@@ -296,16 +329,7 @@ def reuse_validation(env: dict[str, str]) -> dict[str, str]:
     trusted = workflow_contract(git_show(env["GITHUB_SHA"], VALIDATE))
     if any(workflow_contract(git_show(commit, VALIDATE)) != trusted for commit in (source, base)):
         return {"reused": "false"}
-    # Independently prove the WebGUI portion of the verified six-file
-    # runner stamp changes only VERSION, not tested product behavior.
-    candidate = env["CANDIDATE_COMMIT"]
-    if not SHA.fullmatch(candidate):
-        return {"reused": "false"}
-    changed = subprocess.check_output(
-        ["git", "diff", "--name-only", source, candidate, "--", "build/WEBGui"], text=True
-    ).splitlines()
-    backend = "build/WEBGui/webgui/backend/splined.py"
-    if changed != [backend] or not exact_stamp(git_show(source, backend), git_show(candidate, backend), version):
+    if not verify_runner_stamp(source, env["CANDIDATE_COMMIT"], version):
         return {"reused": "false"}
     runs = api(
         f"repos/{repo}/actions/workflows/validate.yml/runs"

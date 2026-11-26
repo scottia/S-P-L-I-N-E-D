@@ -85,6 +85,7 @@ jobs:
           PR_EVALUATION: ${{ inputs.pr_evaluation }}
           EVALUATION_PR_NUMBER: ${{ inputs.evaluation_pr_number }}
           EVALUATION_VERSION: ${{ inputs.evaluation_version }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -185,6 +186,11 @@ jobs:
             echo "- Current main baseline: \`$MAIN_SHA\`"
             echo "- Expected test build version: $SOURCE_VERSION"
             echo "- Outcome: $OUTCOME"
+            if [ "$FORCE_REBUILD" = true ]; then
+              echo "- Reuse policy: fresh test build; compatible compiler caches only"
+            else
+              echo "- Reuse policy: exact retained artifacts and verified committed-source evidence only"
+            fi
             echo "- Release eligibility: false (evaluation only)"
             echo "- MSIX, Store, committed version advancement, notes, tags and publication: \`excluded\`"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -510,6 +516,7 @@ jobs:
         run: |
           cp .github/scripts/webgui_evaluation_artifact.py "$RUNNER_TEMP/webgui_evaluation_artifact.py"
           cp .github/scripts/workflow20_reuse.py "$RUNNER_TEMP/workflow20_reuse.py"
+          cp .github/scripts/source_version.py "$RUNNER_TEMP/source_version.py"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.resolve-source.outputs.source_sha }}
@@ -747,7 +754,7 @@ jobs:
           {
             echo "## Workflow 20 stage results"
             echo "- Source resolution: $SOURCE_RESULT"
-            echo "- Windows cache audit: $CACHE_RESULT"
+            echo "- Windows cache audit: $CACHE_RESULT (separate lookup-only runner is report-only)"
             echo "- Windows build: $BUILD_RESULT"
             echo "- WebGUI build: $WEBGUI_RESULT"
             echo "- Release eligibility: false"
