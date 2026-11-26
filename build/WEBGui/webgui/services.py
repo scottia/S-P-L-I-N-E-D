@@ -2603,6 +2603,37 @@ class Services:
         )
         return report
 
+    def _retain_embedded_original_credit(self, db, album_id, path, current_stat):
+        stamp = (current_stat.st_size, current_stat.st_mtime_ns)
+        indexed = db.execute(
+            "SELECT tracks.track_key,tracks.file_size,tracks.file_mtime_ns,cache_entries.payload_json "
+            "FROM tracks JOIN cache_entries ON cache_entries.cache_key='art004:track:'||tracks.track_key "
+            "AND cache_entries.album_key=tracks.album_key AND cache_entries.cache_type='art004-track' "
+            "WHERE tracks.album_key=? AND tracks.path=? AND (tracks.file_size<>? OR tracks.file_mtime_ns<>?)",
+            (album_id, str(path), *stamp),
+        ).fetchone()
+        if indexed is None:
+            return
+        evidence = self.catalog._matching_file_evidence(
+            indexed["payload_json"], indexed["file_size"], indexed["file_mtime_ns"],
+        )
+        if evidence is None:
+            return
+        # Also covers verified tracks written before a partial attempt was retried.
+        # Keep the stored credit only when the physical credit and stamp agree.
+        try:
+            current = tags.read_track_identity_tags(path, capture_original_artist_credit=True)
+            after_read = path.stat()
+        except (OSError, ValueError):
+            return
+        evidence.update(file_size=stamp[0], file_mtime_ns=stamp[1])
+        if (after_read.st_size, after_read.st_mtime_ns) == stamp and evidence == (
+            tags.original_artist_credit_payload(current, *stamp)
+        ):
+            self._publish_original_artist_credit(
+                db, {"track_key": indexed["track_key"], "album_key": album_id}, evidence,
+            )
+
     def refresh_album(self, album_id, *, source=None):
         row = self.album_row(album_id)
         folder = Path(row["path"])
@@ -2661,6 +2692,8 @@ class Services:
             )
             for path in files:
                 stat = path.stat()
+                if source == "webgui-embed":
+                    self._retain_embedded_original_credit(db, album_id, path, stat)
                 db.execute(
                     "UPDATE tracks SET file_size=?,file_mtime_ns=?,updated_at=? "
                     "WHERE album_key=? AND path=?",

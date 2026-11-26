@@ -2850,6 +2850,8 @@ fn record_album_outcome_inner(
             &album_key,
             album,
             fallback_album,
+            outcome.eq_ignore_ascii_case("installed")
+                && selected_source.is_some_and(|source| source.eq_ignore_ascii_case("embed-queue")),
             &now,
         )?;
     }
@@ -2906,6 +2908,7 @@ fn refresh_owned_album_inventory_baseline(
     album_key: &str,
     album: &AlbumDirectory,
     _fallback_album: bool,
+    embedded: bool,
     now: &str,
 ) -> Result<(), String> {
     let representative = album.audio_files.first().ok_or_else(|| {
@@ -3005,13 +3008,20 @@ fn refresh_owned_album_inventory_baseline(
                 track.display()
             )
         })?;
+        let file_size = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
+        let file_mtime_ns = modified_ns(&metadata);
+        if embedded {
+            retain_embedded_original_credit(
+                transaction, album_key, &canonical_track, track, file_size, file_mtime_ns, now,
+            )?;
+        }
         transaction
             .execute(
                 "UPDATE tracks SET file_size=?, file_mtime_ns=?, updated_at=?, splined_version=? \
                  WHERE album_key=? COLLATE NOCASE AND path=? COLLATE NOCASE",
                 params![
-                    i64::try_from(metadata.len()).unwrap_or(i64::MAX),
-                    modified_ns(&metadata),
+                    file_size,
+                    file_mtime_ns,
                     now,
                     env!("CARGO_PKG_VERSION"),
                     album_key,
@@ -3019,6 +3029,52 @@ fn refresh_owned_album_inventory_baseline(
                 ],
             )
             .map_err(db_error("refresh SPLINED-owned track inventory baseline"))?;
+    }
+    Ok(())
+}
+
+fn retain_embedded_original_credit(
+    transaction: &Transaction<'_>,
+    album_key: &str,
+    canonical_track: &str,
+    path: &Path,
+    size: i64,
+    mtime: i64,
+    now: &str,
+) -> Result<(), String> {
+    let indexed: Option<(String, String, i64, i64)> = transaction.query_row(
+        "SELECT evidence.cache_key,evidence.payload_json,tracks.file_size,tracks.file_mtime_ns
+         FROM tracks JOIN cache_entries evidence ON evidence.cache_key='art004:track:'||tracks.track_key
+           AND evidence.album_key=tracks.album_key AND evidence.cache_type='art004-track'
+         WHERE tracks.album_key=?1 COLLATE NOCASE AND tracks.path=?2 COLLATE NOCASE
+           AND (tracks.file_size<>?3 OR tracks.file_mtime_ns<>?4)",
+        params![album_key, canonical_track, size, mtime],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    ).optional().map_err(db_error("read embedded Track's original credit baseline"))?;
+    let Some((cache_key, payload, old_size, old_mtime)) = indexed else {
+        return Ok(());
+    };
+    let Some(mut saved) = serde_json::from_str::<OriginalArtistCredit>(&payload).ok()
+        .filter(|saved| saved.file_size == old_size && saved.file_mtime_ns == old_mtime) else {
+        return Ok(());
+    };
+    // Resume can finish a Track written by a prior queue invocation. Compare
+    // original tag evidence from that physical Track before advancing its stamp.
+    let Ok(tags) = crate::scan_tags::read_catalog_track_evidence(path) else {
+        return Ok(());
+    };
+    saved.file_size = size;
+    saved.file_mtime_ns = mtime;
+    if saved == OriginalArtistCredit::capture(&tags, size, mtime)
+        && fs::metadata(path).is_ok_and(|current| {
+            i64::try_from(current.len()).unwrap_or(i64::MAX) == size && modified_ns(&current) == mtime
+        })
+    {
+        transaction.execute(
+            "UPDATE cache_entries SET payload_json=json_set(payload_json,
+                '$.file_size',?1,'$.file_mtime_ns',?2),updated_at=?3 WHERE cache_key=?4",
+            params![size, mtime, now, cache_key],
+        ).map_err(db_error("retain verified Track's original credit evidence"))?;
     }
     Ok(())
 }
@@ -6760,6 +6816,84 @@ fn insert_album(transaction: &Transaction<'_>, row: &AlbumRow, now: &str) -> Res
     Ok(())
 }
 
+/// Join verified COMP records by exact indexed Track path and physical Album
+/// ancestors. The legacy LIKE join compared each record to every COMP Album.
+fn load_compilation_track_snapshots(
+    connection: &Connection,
+    mapper: &PathMapper,
+) -> Result<HashMap<String, Vec<MediaTrackSnapshot>>, String> {
+    let mut verified = connection.prepare(
+        "SELECT track_path FROM compilation_track_artwork
+         WHERE outcome IN ('embedded-replaced','embedded-existing') ORDER BY track_path",
+    ).map_err(db_error("prepare verified COMP paths"))?;
+    let verified = verified.query_map([], |row| row.get::<_, String>(0))
+        .map_err(db_error("query verified COMP paths"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db_error("read verified COMP paths"))?;
+    let verified_paths = verified.iter().map(|value| value.to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+
+    let mut folders = HashMap::<String, Vec<String>>::new();
+    let mut albums = connection.prepare(
+        "SELECT album_key,path FROM albums WHERE trim(COALESCE(musicbrainz_albumid,''))=''",
+    ).map_err(db_error("prepare COMP Album paths"))?;
+    for row in albums.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+        .map_err(db_error("query COMP Album paths"))?
+    {
+        let (key, path) = row.map_err(db_error("read COMP Album path"))?;
+        folders.entry(path.trim_end_matches(['/', '\']).to_ascii_lowercase())
+            .or_default().push(key.to_ascii_lowercase());
+    }
+
+    let mut tracks = connection.prepare(
+        "SELECT tracks.album_key,tracks.path,tracks.title,tracks.artist_name
+         FROM tracks JOIN albums ON tracks.album_key=albums.album_key
+         WHERE trim(COALESCE(albums.musicbrainz_albumid,''))=''
+         ORDER BY tracks.path COLLATE NOCASE,tracks.path",
+    ).map_err(db_error("prepare cached compilation tracks"))?;
+    let mut projected = HashMap::<String, BTreeMap<String, MediaTrackSnapshot>>::new();
+    for row in tracks.query_map([], |row| Ok((
+        row.get::<_, String>(0)?, row.get::<_, String>(1)?,
+        row.get::<_, String>(2)?, row.get::<_, String>(3)?,
+    ))).map_err(db_error("query cached compilation tracks"))?
+    {
+        let (key, path, title, artist) = row.map_err(db_error("read cached compilation track"))?;
+        let local = mapper.to_local(&path)?;
+        let track = projected.entry(key.to_ascii_lowercase()).or_default()
+            .entry(local.to_ascii_lowercase())
+            .or_insert_with(|| MediaTrackSnapshot {
+                path: local, title: String::new(), artist: String::new(),
+                embedded_artwork_recorded: false,
+            });
+        if track.title.trim().is_empty() {
+            track.title = title;
+        }
+        if track.artist.trim().is_empty() {
+            track.artist = artist;
+        }
+        track.embedded_artwork_recorded |= verified_paths.contains(&path.to_ascii_lowercase());
+    }
+    for path in verified {
+        let mut remaining = path.as_str();
+        while let Some((parent, _)) = remaining.rsplit_once(['/', '\']) {
+            if let Some(keys) = folders.get(&parent.to_ascii_lowercase()) {
+                let local = mapper.to_local(&path)?;
+                let identity = local.to_ascii_lowercase();
+                for key in keys {
+                    projected.entry(key.clone()).or_default().entry(identity.clone())
+                        .and_modify(|track| track.embedded_artwork_recorded = true)
+                        .or_insert_with(|| MediaTrackSnapshot {
+                            path: local.clone(), title: String::new(), artist: String::new(),
+                            embedded_artwork_recorded: true,
+                        });
+                }
+            }
+            remaining = parent;
+        }
+    }
+    Ok(projected.into_iter().map(|(key, tracks)| (key, tracks.into_values().collect())).collect())
+}
+
 fn load_snapshot(
     connection: &Connection,
     db_path: &Path,
@@ -6768,64 +6902,7 @@ fn load_snapshot(
     let transaction = connection.unchecked_transaction()
         .map_err(db_error("pin Select Media inventory"))?;
     let connection = &transaction;
-    // Windows refresh owns the complete SQLite track inventory. Project only
-    // fallback/compilation tracks into the snapshot so the Embedded Art view
-    // never walks the network library merely to populate its tree.
-    let mut track_statement = connection
-        .prepare(
-            "SELECT tracks.album_key, tracks.path, tracks.title, tracks.artist_name, \
-             CASE WHEN compilation_track_artwork.track_path IS NULL THEN 0 ELSE 1 END \
-             FROM tracks JOIN albums ON albums.album_key=tracks.album_key \
-             LEFT JOIN compilation_track_artwork ON lower(compilation_track_artwork.track_path)=lower(tracks.path) \
-             AND compilation_track_artwork.outcome IN ('embedded-replaced','embedded-existing') \
-             WHERE trim(COALESCE(albums.musicbrainz_albumid,''))='' \
-             UNION \
-             SELECT albums.album_key, compilation_track_artwork.track_path, '', '', 1 \
-             FROM albums JOIN compilation_track_artwork \
-             ON lower(compilation_track_artwork.track_path) LIKE lower(rtrim(albums.path, '/\\') || '/%') \
-             OR lower(compilation_track_artwork.track_path) LIKE lower(rtrim(albums.path, '/\\') || '\\%') \
-             WHERE trim(COALESCE(albums.musicbrainz_albumid,''))='' AND compilation_track_artwork.outcome IN ('embedded-replaced','embedded-existing') \
-             ORDER BY 2 COLLATE NOCASE",
-        )
-        .map_err(db_error("prepare cached compilation tracks"))?;
-    let mut compilation_tracks = HashMap::<String, Vec<MediaTrackSnapshot>>::new();
-    for row in track_statement
-        .query_map([], |row| {
-            let canonical_path: String = row.get(1)?;
-            Ok((
-                row.get::<_, String>(0)?,
-                MediaTrackSnapshot {
-                    path: mapper
-                        .to_local(&canonical_path)
-                        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()))?,
-                    title: row.get(2)?,
-                    artist: row.get(3)?,
-                    embedded_artwork_recorded: row.get::<_, i64>(4)? != 0,
-                },
-            ))
-        })
-        .map_err(db_error("query cached compilation tracks"))?
-    {
-        let (album_key, track) = row.map_err(db_error("read cached compilation track"))?;
-        let values = compilation_tracks
-            .entry(album_key.to_ascii_lowercase())
-            .or_default();
-        if let Some(existing) = values
-            .iter_mut()
-            .find(|value| value.path.eq_ignore_ascii_case(&track.path))
-        {
-            existing.embedded_artwork_recorded |= track.embedded_artwork_recorded;
-            if existing.title.trim().is_empty() {
-                existing.title = track.title;
-            }
-            if existing.artist.trim().is_empty() {
-                existing.artist = track.artist;
-            }
-        } else {
-            values.push(track);
-        }
-    }
-    drop(track_statement);
+    let compilation_tracks = load_compilation_track_snapshots(connection, mapper)?;
 
     let mut statement = connection.prepare(
         "SELECT albums.album_key, artists.artist_name, albums.album_name, albums.path, albums.representative_file, albums.status, albums.compilation, albums.track_count, COALESCE(albums.release_year,''), albums.cover_found, albums.local_art_json, COALESCE(albums.cover_path,''), COALESCE(albums.cover_name,''), COALESCE(albums.cover_format,''), COALESCE(albums.cover_width,0), COALESCE(albums.cover_height,0), COALESCE(albums.root_files,0), COALESCE(albums.cover_files,0), albums.processed_at, albums.timeout_until, albums.selected_source, COALESCE(albums.musicbrainz_albumid,''), COALESCE(albums.musicbrainz_releasegroupid,''), COALESCE(artists.musicbrainz_artistid,'') \
@@ -7948,6 +8025,73 @@ mod tests {
         assert_eq!(state.catalog_artist_appearances(expected_names[0]).featured_album_keys,
                    BTreeSet::from([album_key]));
         assert_eq!(fs::read(file).unwrap(), original);
+    }
+
+    #[test]
+    fn art004_verified_album_embed_preserves_original_credit_and_conflicts() {
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("music");
+        let album = library.join("A Great Big World").join("Is There Anybody Out There?");
+        // Use a valid Windows folder name while retaining the exact local Album title.
+        let album = album.with_file_name("Is There Anybody Out There");
+        fs::create_dir_all(&album).unwrap();
+        let file = album.join("01.mp3");
+        let release = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        write_index_test_frames(&file, &[
+            id3_test_frame("TIT2", "Say Something"),
+            id3_test_frame("TALB", "Is There Anybody Out There?"),
+            id3_test_frame("TPE2", "A Great Big World"),
+            id3_test_frame("TPE1", "A Great Big World\0Christina Aguilera"),
+            id3_test_frame("TXXX", "MUSICBRAINZ_ARTISTID\0bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\0cccccccc-cccc-4ccc-8ccc-cccccccccccc"),
+            id3_test_frame("TXXX", "MUSICBRAINZ_ALBUMARTISTID\0bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+            id3_test_frame("TXXX", "MusicBrainz Release Artist Id\0dddddddd-dddd-4ddd-8ddd-dddddddddddd"),
+            id3_test_frame("TXXX", &format!("MUSICBRAINZ_ALBUMID\0{release}")),
+        ]);
+        let mut bytes = fs::read(&file).unwrap();
+        bytes.truncate(bytes.len() - 4);
+        let audio_start = bytes.len();
+        bytes.resize(audio_start + 417 * 8, 0);
+        for frame in bytes[audio_start..].chunks_exact_mut(417) {
+            frame[..4].copy_from_slice(&[0xff, 0xfb, 0x90, 0x64]);
+        }
+        fs::write(&file, bytes).unwrap();
+        let original = temp.path().join("untouched.mp3");
+        fs::copy(&file, &original).unwrap();
+        let mut config = Config::default();
+        config.mode = crate::config::Mode::Write;
+        config.scan.scan_mode_timeout = crate::config::ScanTimeout(0.0);
+        config.library.music_library = library.to_string_lossy().into_owned();
+        config.scan.cache_dir = temp.path().join("cache").to_string_lossy().into_owned();
+        let snapshot = media_snapshot(&config, false).unwrap();
+        let album_key = format!("mbid:{release}");
+        let connection = Connection::open(&snapshot.database_path).unwrap();
+        let read = || -> (OriginalArtistCredit, i64, i64) {
+            connection.query_row(
+                "SELECT evidence.payload_json,tracks.file_size,tracks.file_mtime_ns
+                 FROM tracks JOIN cache_entries evidence ON evidence.cache_key='art004:track:'||tracks.track_key
+                 WHERE tracks.album_key=?1",
+                [&album_key],
+                |row| Ok((serde_json::from_str(&row.get::<_, String>(0)?).unwrap(), row.get(1)?, row.get(2)?)),
+            ).unwrap()
+        };
+        let (before, before_size, _) = read();
+        let mut artwork = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(4, 4).write_to(&mut artwork, image::ImageFormat::Png).unwrap();
+        crate::embedded_artwork::replace_embedded_front(&file, artwork.get_ref()).unwrap();
+        crate::artwork_integrity::verify_only_front_artwork(&original, &file).unwrap();
+        record_album_outcome(&config, &album, "installed", Some("embed-queue")).unwrap();
+        let (after, size, mtime) = read();
+        assert_ne!(before_size, size);
+        assert_eq!(after, OriginalArtistCredit { file_size: size, file_mtime_ns: mtime, ..before });
+        let mut state = crate::application::LibraryState::from_snapshot(
+            media_snapshot(&config, false).unwrap(),
+        ).unwrap();
+        assert_eq!(state.rows().iter().map(|row| (row.primary.as_str(), row.album_count))
+            .collect::<Vec<_>>(), [("A Great Big World", 1), ("Christina Aguilera", 1)]);
+        assert!(state.focus_artist("A Great Big World"));
+        assert_eq!(state.artist_state_album_indices("A Great Big World"), [0]);
+        assert_eq!(state.catalog_artist_appearances("Christina Aguilera").featured_album_keys,
+            BTreeSet::from([album_key]));
     }
 
     #[test]

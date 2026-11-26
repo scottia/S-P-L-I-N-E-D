@@ -9,7 +9,7 @@ use slint::{
     Color, ComponentHandle, Model, ModelRc, ModelTracker, SharedString, Timer, TimerMode, VecModel,
 };
 use splined_core::application::{
-    AdjustmentState, AlbumEntry, AlbumState, ApplicationState, ArtistOverviewCacheEntry,
+    AdjustmentState, AlbumEntry, AlbumLibraryGroup, AlbumState, ApplicationState, ArtistOverviewCacheEntry,
     CandidateState, LaunchMode, LibraryRow, LibraryState, LibraryView, MusicBrainzResult, RunPhase,
     ScanScope, SelectionResult, StatusFilter, musicbrainz_artist_album_preferred,
     musicbrainz_match_section,
@@ -22831,6 +22831,7 @@ fn theme_preview_album_row(state: &ApplicationState, target: &str) -> UiArtistAl
         soundtrack: banner_key == "soundtrack",
         various_artists: banner_key == "various",
         separator_before: false,
+        banner_key: banner_key.into(),
         banner_display: banner_display.into(),
         banner_background: banner_color("background", "#006B3C", true),
         banner_frame: banner_color("frame", "#D9AD43", false),
@@ -23258,16 +23259,8 @@ fn artist_overview_ui_model_with_show_all(
             let (soundtrack, various_artists) = artist_overview_release_banners(snapshot);
             let banner_key = if overridden {
                 "override"
-            } else if fallback {
-                if featured { "featuring" } else { "compiled" }
-            } else if soundtrack {
-                "soundtrack"
-            } else if various_artists {
-                "various"
-            } else if featured {
-                "featuring"
             } else {
-                "artist"
+                ["artist", "featuring", "soundtrack", "various", "compiled"][usize::from(group)]
             };
             let banner_style = state
                 .banner_theme_styles
@@ -23515,6 +23508,7 @@ fn artist_overview_ui_model_with_show_all(
                 soundtrack,
                 various_artists,
                 separator_before,
+                banner_key: banner_key.into(),
                 banner_display: banner_display.into(),
                 banner_background,
                 banner_frame,
@@ -23579,31 +23573,14 @@ fn artist_overview_legend_counts(
                 _ => {}
             }
         }
-        // Mirror the visible banner's priority. Shared identified releases
-        // remain SOUNDTRACK/VARIOUS even though the selected Artist is not the
-        // synthetic folder owner; only a real Album owner's guest credit is
-        // presented as FEATURED.
-        if album.overridden {
-            // The OVERRIDE banner replaces the category banner while the
-            // opposing application owns the latest successful write.
-        } else if album.fallback {
-            if album.featured {
-                counts.feat += 1;
-            } else {
-                if album.fallback_complete {
-                    counts.comp_complete += 1;
-                } else {
-                    counts.comp_pending += 1;
-                }
-            }
-        } else if album.soundtrack {
-            counts.ost += 1;
-        } else if album.various_artists {
-            counts.various += 1;
-        } else if album.featured {
-            counts.feat += 1;
-        } else {
-            counts.artist += 1;
+        match album.banner_key.as_str() {
+            "compiled" if album.fallback_complete => counts.comp_complete += 1,
+            "compiled" => counts.comp_pending += 1,
+            "soundtrack" => counts.ost += 1,
+            "various" => counts.various += 1,
+            "featuring" => counts.feat += 1,
+            "artist" => counts.artist += 1,
+            _ => {}
         }
     }
     counts.in_process = counts.shown - counts.completed - counts.overridden - counts.validating;
@@ -23622,17 +23599,16 @@ fn artist_overview_legend_counts(
 // Card order is presentation-only: do not change the library's selection or
 // LAUNCH order when grouping the Artist Overview by album type.
 fn artist_overview_sort_group(state: &ApplicationState, album: &AlbumEntry) -> u8 {
-    if state.library.is_curated_fallback(album) {
-        return if artist_overview_is_featured(state, album) {
-            1 // Preserve the established COMP appearance presentation.
-        } else {
-            4 // COMP fallback is always the final Album-card group.
-        };
+    let category = state.library.catalog_album_category(album);
+    if matches!(category, AlbumLibraryGroup::Fallback | AlbumLibraryGroup::MiscCurated)
+        || album.snapshot.album_mbid.trim().is_empty()
+    {
+        return 4;
     }
     let (soundtrack, various_artists) = artist_overview_release_banners(&album.snapshot);
-    if soundtrack {
+    if soundtrack || category == AlbumLibraryGroup::Soundtracks {
         2
-    } else if various_artists {
+    } else if various_artists || category == AlbumLibraryGroup::VariousArtists {
         3
     } else if artist_overview_is_featured(state, album) {
         1 // A real Album owner's guest appearance follows owned Artist Albums.

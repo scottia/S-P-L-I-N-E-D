@@ -196,7 +196,9 @@ jobs:
           $filters = @(
             "artwork_integrity::tests",
             "embedded_artwork",
-            "local_artwork"
+            "local_artwork",
+            "art004",
+            "snapshot_projects_cached_compilation_tracks_and_embedded_artwork_state"
           )
           foreach ($filter in $filters) {
             & $testExecutable $filter --nocapture
@@ -222,7 +224,7 @@ jobs:
           - Cargo dependency cache exact hit: $env:CARGO_DEPENDENCY_CACHE_HIT
           - Compiled-intermediate cache exact hit: $env:COMPILED_CACHE_HIT
           - Cargo invocations: 1 (library and application test targets)
-          - Mandatory writer filters executed: 3
+          - Mandatory writer and catalog filters executed: 5
           - Windows production card regression: passed
           - Compile seconds: $compileSeconds
           - Test seconds: $testSeconds
