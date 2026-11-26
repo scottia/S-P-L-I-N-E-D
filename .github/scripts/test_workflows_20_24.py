@@ -1,7 +1,10 @@
 """Structural regression checks for independently dispatchable Workflows 20–24."""
 
 from pathlib import Path
+import os
 import re
+import shutil
+import subprocess
 import unittest
 
 
@@ -44,6 +47,38 @@ class Workflows20To24Tests(unittest.TestCase):
             "Publish-StoreUpdate.ps1",
         ):
             self.assertNotIn(forbidden, source)
+
+    def test_workflow20_reports_selected_targets_and_completion(self) -> None:
+        source = self.sources[20]
+        self.assertIn("TEST BUILD (default): KEEP CHECKED", source)
+        self.assertIn("PR EVALUATION not checked::Check PR EVALUATION", source)
+        self.assertIn('echo "- Outcome: $OUTCOME"', source)
+        self.assertNotIn("echo 'QUICK PORTABLE')", source)
+        start = source.index('          case "$TARGET_WINDOWS:$TARGET_WEBGUI" in')
+        end = source.index('          {\n            echo "## Workflow 20 source plan"', start)
+        shell = source[start:end] + '\nprintf "%s" "$OUTCOME"\n'
+        cases = (
+            ("true", "false", "WINDOWS"),
+            ("false", "true", "WEBGUI"),
+            ("true", "true", "WINDOWS + WEBGUI"),
+        )
+        bash = shutil.which("bash")
+        if bash is None:
+            self.skipTest("Bash is required to exercise Workflow 20 source-plan labels")
+        for windows, webgui, target in cases:
+            for report in ("true", "false"):
+                with self.subTest(target=target, report=report):
+                    env = dict(os.environ, TARGET_WINDOWS=windows,
+                               TARGET_WEBGUI=webgui, REPORT_ONLY=report)
+                    result = subprocess.run(
+                        [bash, "-eu", "-c", shell], env=env,
+                        check=True, capture_output=True, text=True,
+                    )
+                    expected = (
+                        f"{target} — REPORT ONLY (NO BUILD)"
+                        if report == "true" else f"{target} TEST BUILD"
+                    )
+                    self.assertEqual(result.stdout, expected)
 
     def test_release_preparation_records_main_and_dev_without_compiling(self) -> None:
         source = self.sources[21]

@@ -4,32 +4,32 @@ on:
   workflow_dispatch:
     inputs:
       quick_portable:
-        description: "TEST BUILD (default): build and validate selected Windows / WebGUI artifacts. Choose exactly one completion."
+        description: "TEST BUILD (default): KEEP CHECKED for any Windows or WebGUI test build. Uncheck only for BUILD ONLY, REPORT."
         default: true
         type: boolean
       report_only:
-        description: "BUILD ONLY, REPORT: audit source and selected target plan without compilation or packaging."
+        description: "BUILD ONLY, REPORT: report the selected plan without building either client. Check this instead of TEST BUILD."
         default: false
         type: boolean
 
       target_windows:
-        description: "TARGET — WINDOWS (default). Download optimized portable splined.exe."
+        description: "TARGET — WINDOWS (default): optimized portable splined.exe. UNCHECK for WebGUI-only testing."
         default: true
         type: boolean
       target_webgui:
-        description: "TARGET — WEBGUI. Download WebGUI package for splined-dev. Select both targets to build both."
+        description: "TARGET — WEBGUI: downloadable WebGUI package for splined-dev. Check both targets to build both clients."
         default: false
         type: boolean
       pr_evaluation:
-        description: "PR EVALUATION: build the exact HEAD of the selected open PR targeting dev, without merging it."
+        description: "PR EVALUATION: CHECK when entering a PR number and evaluation version below. Leave unchecked to build current origin/dev."
         default: false
         type: boolean
       evaluation_pr_number:
-        description: "PR number (digits only, required for PR EVALUATION; leave blank for normal builds)."
+        description: "PR EVALUATION — PR number: digits only. Required if PR EVALUATION is checked; otherwise leave blank."
         default: ""
         type: string
       evaluation_version:
-        description: "PR EVALUATION version (numeric X.Y.Z; leave blank for normal builds). Stamped only in the runner."
+        description: "PR EVALUATION — build version: numeric X.Y.Z. Required if PR EVALUATION is checked; otherwise leave blank. Runner-only stamp."
         default: ""
         type: string
 
@@ -48,7 +48,7 @@ env:
 
 jobs:
   resolve-source:
-    name: Resolve quick portable source
+    name: Resolve pre-release testing source
     runs-on: ubuntu-latest
     outputs:
       source_sha: ${{ steps.source.outputs.source_sha }}
@@ -86,11 +86,11 @@ jobs:
           if [ "$QUICK_PORTABLE" = true ]; then count=$((count + 1)); fi
           if [ "$REPORT_ONLY" = true ]; then count=$((count + 1)); fi
           if [ "$count" -ne 1 ]; then
-            echo "::error title=Select exactly one option::QUICK PORTABLE and BUILD ONLY, REPORT have $count checked options."
+            echo "::error title=Choose a completion::Check TEST BUILD for either client, or BUILD ONLY, REPORT for an audit. Exactly one must be checked; found $count."
             exit 1
           fi
           if [ "$TARGET_WINDOWS" != true ] && [ "$TARGET_WEBGUI" != true ]; then
-            echo "::error title=Select a target::Enable Windows, WebGUI, or both."
+            echo "::error title=Choose a target::Check TARGET — WINDOWS, TARGET — WEBGUI, or both. For WebGUI-only, uncheck Windows and keep TEST BUILD checked."
             exit 1
           fi
           if [ "$PR_EVALUATION" = true ]; then
@@ -99,11 +99,15 @@ jobs:
               exit 1
             fi
             if ! [[ "$EVALUATION_PR_NUMBER" =~ ^[1-9][0-9]*$ && "$EVALUATION_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              echo "::error title=PR number and version required::Enter a PR number and numeric X.Y.Z evaluation version."
+              echo "::error title=PR evaluation inputs required::With PR EVALUATION checked, enter both the open PR number and the numeric X.Y.Z build version."
               exit 1
             fi
           elif [ "$GITHUB_REF" != refs/heads/main ] || [ -n "$EVALUATION_PR_NUMBER" ] || [ -n "$EVALUATION_VERSION" ]; then
-            echo "::error title=Main workflow required::Normal Workflow 20 builds must be dispatched from main with evaluation inputs blank."
+            if [ -n "$EVALUATION_PR_NUMBER" ] || [ -n "$EVALUATION_VERSION" ]; then
+              echo "::error title=PR EVALUATION not checked::Check PR EVALUATION to build the entered PR and version, or clear both fields to build current origin/dev."
+            else
+              echo "::error title=Main workflow required::Dispatch normal origin/dev testing from main."
+            fi
             exit 1
           fi
           git fetch --force origin \
@@ -149,20 +153,32 @@ jobs:
           echo "target_windows=$TARGET_WINDOWS" >> "$GITHUB_OUTPUT"
           echo "target_webgui=$TARGET_WEBGUI" >> "$GITHUB_OUTPUT"
           echo "started_epoch=$STARTED_EPOCH" >> "$GITHUB_OUTPUT"
+          # Target-specific outcome wording only; the validated job selectors are unchanged.
+          case "$TARGET_WINDOWS:$TARGET_WEBGUI" in
+            true:true) TARGET_LABEL="WINDOWS + WEBGUI" ;;
+            true:false) TARGET_LABEL="WINDOWS" ;;
+            false:true) TARGET_LABEL="WEBGUI" ;;
+          esac
+          if [ "$REPORT_ONLY" = true ]; then
+            OUTCOME="$TARGET_LABEL — REPORT ONLY (NO BUILD)"
+          else
+            OUTCOME="$TARGET_LABEL TEST BUILD"
+          fi
           {
             echo "## Workflow 20 source plan"
             echo
             echo "- Selected source: $SOURCE_REF at $SOURCE_SHA"
             echo "- Source mode: $SOURCE_MODE"
+            echo "- Selected targets: $TARGET_LABEL"
             echo "- Windows target: $TARGET_WINDOWS"
             echo "- WebGUI target: $TARGET_WEBGUI"
             echo "- Workflow definition: $GITHUB_REF at $GITHUB_SHA"
             echo "- Evaluation PR: ${EVALUATION_PR:-not applicable}"
-            echo "- Committed source version: $COMMITTED_SOURCE_VERSION"
+            echo "- Committed product version (before runner stamp): $COMMITTED_SOURCE_VERSION"
             echo "- Current main baseline: \`$MAIN_SHA\`"
-            echo "- Source version: \`$SOURCE_VERSION\`"
-            echo "- Outcome: \`$([ "$REPORT_ONLY" = true ] && echo 'BUILD ONLY, REPORT' || echo 'QUICK PORTABLE')\`"
-            echo "- Release eligibility: \`false\`"
+            echo "- Expected test build version: $SOURCE_VERSION"
+            echo "- Outcome: $OUTCOME"
+            echo "- Release eligibility: false (evaluation only)"
             echo "- MSIX, Store, committed version advancement, notes, tags and publication: \`excluded\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -652,7 +668,8 @@ jobs:
             if [ "$REPORT_ONLY" = true ]; then
               echo "Report-only audit complete; no compilation or packaging ran."
             else
-              echo "Selected pre-release builds validated and retained."
+              if [ "$WINDOWS" = true ]; then echo "Windows test build: validated and retained as splined-quick-portable-windows."; fi
+            if [ "$WEBGUI" = true ]; then echo "WebGUI test build: validated and retained as splined-webgui-release."; fi
             fi
             echo "- Total elapsed time: $(($(date +%s) - STARTED_EPOCH)) seconds"
             echo "MSIX, Store, committed version advancement, notes, tags and publication were not performed."
