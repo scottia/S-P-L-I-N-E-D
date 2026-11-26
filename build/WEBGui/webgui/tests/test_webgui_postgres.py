@@ -357,6 +357,12 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertNotEqual(json.loads(replaced["payload_json"])["token"], stale_token)
 
         self.services.refresh_index(mode="full")
+        assert_catalog(original_available=False)
+
+        # A changed file stamp makes the real refresh path inspect its original tags.
+        stamp = track.stat()
+        os.utime(track, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 2_000_000_000))
+        self.services.refresh_index(mode="full")
         assert_catalog(original_available=True)
         self.assertEqual(track.read_bytes(), original_bytes)
 
