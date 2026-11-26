@@ -1,0 +1,1 @@
+Owner-approved scope: clarify Workflow 20 dispatch instructions, validation errors and target-specific build outcome summaries. Preserve existing behavior and running evaluations. Remove this temporary intent before review.
