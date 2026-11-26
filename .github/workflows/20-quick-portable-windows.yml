@@ -1,17 +1,25 @@
-name: 20. Quick Portable — Windows
+name: 20. /dev Pre-release Testing
 
 on:
   workflow_dispatch:
     inputs:
       quick_portable:
-        description: "QUICK PORTABLE (default): compile and validate a downloadable standalone splined.exe. Choose exactly one option."
+        description: "TEST BUILD (default): build and validate selected Windows / WebGUI artifacts. Choose exactly one completion."
         default: true
         type: boolean
       report_only:
-        description: "BUILD ONLY, REPORT: audit source and expected cache availability without compilation or packaging."
+        description: "BUILD ONLY, REPORT: audit source and selected target plan without compilation or packaging."
         default: false
         type: boolean
 
+      target_windows:
+        description: "TARGET — WINDOWS (default). Download optimized portable splined.exe."
+        default: true
+        type: boolean
+      target_webgui:
+        description: "TARGET — WEBGUI. Download WebGUI package for splined-dev. Select both targets to build both."
+        default: false
+        type: boolean
       pr_evaluation:
         description: "PR EVALUATION: build the exact HEAD of the selected open PR targeting dev, without merging it."
         default: false
@@ -50,6 +58,8 @@ jobs:
       source_mode: ${{ steps.source.outputs.source_mode }}
       evaluation_pr: ${{ steps.source.outputs.evaluation_pr }}
       report_only: ${{ steps.source.outputs.report_only }}
+      target_windows: ${{ steps.source.outputs.target_windows }}
+      target_webgui: ${{ steps.source.outputs.target_webgui }}
       started_epoch: ${{ steps.source.outputs.started_epoch }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -63,6 +73,8 @@ jobs:
         env:
           QUICK_PORTABLE: ${{ inputs.quick_portable }}
           REPORT_ONLY: ${{ inputs.report_only }}
+          TARGET_WINDOWS: ${{ inputs.target_windows }}
+          TARGET_WEBGUI: ${{ inputs.target_webgui }}
           PR_EVALUATION: ${{ inputs.pr_evaluation }}
           EVALUATION_PR_NUMBER: ${{ inputs.evaluation_pr_number }}
           EVALUATION_VERSION: ${{ inputs.evaluation_version }}
@@ -75,6 +87,10 @@ jobs:
           if [ "$REPORT_ONLY" = true ]; then count=$((count + 1)); fi
           if [ "$count" -ne 1 ]; then
             echo "::error title=Select exactly one option::QUICK PORTABLE and BUILD ONLY, REPORT have $count checked options."
+            exit 1
+          fi
+          if [ "$TARGET_WINDOWS" != true ] && [ "$TARGET_WEBGUI" != true ]; then
+            echo "::error title=Select a target::Enable Windows, WebGUI, or both."
             exit 1
           fi
           if [ "$PR_EVALUATION" = true ]; then
@@ -130,12 +146,16 @@ jobs:
           echo "main_sha=$MAIN_SHA" >> "$GITHUB_OUTPUT"
           echo "source_version=$SOURCE_VERSION" >> "$GITHUB_OUTPUT"
           echo "report_only=$REPORT_ONLY" >> "$GITHUB_OUTPUT"
+          echo "target_windows=$TARGET_WINDOWS" >> "$GITHUB_OUTPUT"
+          echo "target_webgui=$TARGET_WEBGUI" >> "$GITHUB_OUTPUT"
           echo "started_epoch=$STARTED_EPOCH" >> "$GITHUB_OUTPUT"
           {
             echo "## Workflow 20 source plan"
             echo
             echo "- Selected source: $SOURCE_REF at $SOURCE_SHA"
             echo "- Source mode: $SOURCE_MODE"
+            echo "- Windows target: $TARGET_WINDOWS"
+            echo "- WebGUI target: $TARGET_WEBGUI"
             echo "- Workflow definition: $GITHUB_REF at $GITHUB_SHA"
             echo "- Evaluation PR: ${EVALUATION_PR:-not applicable}"
             echo "- Committed source version: $COMMITTED_SOURCE_VERSION"
@@ -149,6 +169,7 @@ jobs:
   cache-report:
     name: Audit Windows cache availability
     needs: resolve-source
+    if: ${{ needs.resolve-source.outputs.target_windows == 'true' }}
     runs-on: windows-latest
     outputs:
       dependency_hit: ${{ steps.dependencies.outputs.cache-hit }}
@@ -218,7 +239,7 @@ jobs:
   build:
     name: Compile and validate standalone splined.exe
     needs: [resolve-source, cache-report]
-    if: ${{ needs.resolve-source.outputs.report_only != 'true' }}
+    if: ${{ needs.resolve-source.outputs.report_only != 'true' && needs.resolve-source.outputs.target_windows == 'true' }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -387,45 +408,252 @@ jobs:
           - Release eligibility: ``false``
           "@ | Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY
 
+  build-webgui:
+    name: Validate and package WebGUI pre-release source
+    needs: resolve-source
+    if: ${{ needs.resolve-source.outputs.report_only != 'true' && needs.resolve-source.outputs.target_webgui == 'true' }}
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: splined_test
+          POSTGRES_PASSWORD: splined_ci_only
+          POSTGRES_DB: splined_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U splined_test -d splined_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      SPLINED_TEST_DATABASE_URL: postgresql://splined_test:splined_ci_only@127.0.0.1:5432/splined_test
+      PYTHONPATH: .:build/WEBGui:build/WEBGui/webgui/backend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Retain evaluation packager from workflow definition
+        shell: bash
+        run: cp .github/scripts/webgui_evaluation_artifact.py "$RUNNER_TEMP/webgui_evaluation_artifact.py"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.resolve-source.outputs.source_sha }}
+          fetch-depth: 0
+      - name: Verify exact source and apply isolated evaluation stamp
+        id: evaluation-source
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ needs.resolve-source.outputs.source_sha }}
+          SOURCE_MODE: ${{ needs.resolve-source.outputs.source_mode }}
+          SOURCE_VERSION: ${{ needs.resolve-source.outputs.source_version }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          if [ "$SOURCE_MODE" = pr-evaluation ]; then
+            python3 .github/scripts/source_version.py stamp-release "$SOURCE_VERSION"
+            allowed=(
+              build/Windows/Cargo.toml
+              build/Windows/Cargo.lock
+              build/Windows/gui/app.manifest
+              build/Windows/package/Package.appxmanifest
+              build/Windows/package/SPLINED.appinstaller.template
+              build/WEBGui/webgui/backend/splined.py
+            )
+            diff -u <(printf '%s\n' "${allowed[@]}" | sort) <(git diff --name-only | sort)
+            git add -- "${allowed[@]}"
+            git -c user.name="SPLINED evaluation" -c user.email="evaluation@users.noreply.github.com" commit -m "Temporary evaluation version $SOURCE_VERSION"
+            test "$(git rev-parse HEAD^)" = "$SOURCE_COMMIT"
+          fi
+          test "$(python3 .github/scripts/source_version.py current)" = "$SOURCE_VERSION"
+          echo "candidate_commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Set up Node.js 22
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - name: Install WebGUI test dependencies
+        run: pip install -r build/WEBGui/webgui/requirements-test.txt
+      - name: Validate Python, PostgreSQL and browser JavaScript
+        id: tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          started=$(date +%s)
+          for test_path in build/WEBGui/webgui/tests/test_*.py; do
+            test_name="$(basename "$test_path")"
+            case "$test_name" in
+              test_splined_compilation_authority_policy.py|test_audio_integrity.py|test_comp_job_scope.py|test_cross_format_cover_overwrite.py)
+                continue
+                ;;
+            esac
+            python -m unittest "$test_path" -v
+          done
+          node --check build/WEBGui/webgui/static/app.js
+          node --check build/WEBGui/webgui/static/operations.js
+          echo "seconds=$(($(date +%s) - started))" >> "$GITHUB_OUTPUT"
+      - name: Build and smoke-test exact WebGUI image
+        id: container
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.resolve-source.outputs.source_version }}
+          RELEASE_COMMIT: ${{ steps.evaluation-source.outputs.candidate_commit }}
+        run: |
+          set -euo pipefail
+          started=$(date +%s)
+          builder="splined-workflow20-${GITHUB_RUN_ID}"
+          docker buildx create --driver docker-container --name "$builder" --use
+          cache_args=(--cache-to type=gha,mode=max,scope=splined-workflow20-webgui
+                      --cache-from type=gha,scope=splined-workflow20-webgui
+                      --cache-from type=gha,scope=splined-workflow23-webgui)
+          set +e
+          docker buildx build --progress=plain "${cache_args[@]}" --load \
+            --build-arg SPLINED_BUILD_CHANNEL=dev \
+            --label "org.opencontainers.image.source=https://github.com/scottia/S-P-L-I-N-E-D" \
+            --label "org.opencontainers.image.version=$RELEASE_VERSION" \
+            --label "org.opencontainers.image.revision=$RELEASE_COMMIT" \
+            --file build/WEBGui/Dockerfile --tag splined-webgui:evaluation-test . 2>&1 | tee /tmp/splined-buildkit.log
+          status=${PIPESTATUS[0]}
+          set -e
+          test "$status" -eq 0
+          cached_steps=$(grep -c ' CACHED$' /tmp/splined-buildkit.log || true)
+          docker run -d --name splined-webgui-evaluation-test --network host \
+            -e PGHOST=127.0.0.1 -e PGUSER=splined_test -e PGPASSWORD=splined_ci_only \
+            -e PGDATABASE=splined_test -e SPLINED_WEB_TOKEN=ci-browser-only \
+            splined-webgui:evaluation-test
+          ready=false
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8080/api/status > /tmp/splined-status.json; then ready=true; break; fi
+            sleep 1
+          done
+          if [ "$ready" != true ]; then docker logs splined-webgui-evaluation-test; exit 1; fi
+          python - <<'PY'
+          import json
+          status = json.load(open('/tmp/splined-status.json', encoding='utf-8'))
+          assert status['database'] == 'PostgreSQL'
+          assert status['database_ready'] is True
+          assert status['auth_required'] is True
+          PY
+          docker exec splined-webgui-evaluation-test grep -Fxq -- "VERSION = \"$RELEASE_VERSION\"" /app/webgui/backend/splined.py
+          mkdir -p webgui-evaluation/release-assets
+          docker save splined-webgui:evaluation-test | gzip -9 > webgui-evaluation/release-assets/splined-webgui-container-image.tar.gz
+          image_id=$(docker image inspect -f '{{.Id}}' splined-webgui:evaluation-test)
+          image_size=$(docker image inspect -f '{{.Size}}' splined-webgui:evaluation-test)
+          archive_size=$(stat -c %s webgui-evaluation/release-assets/splined-webgui-container-image.tar.gz)
+          {
+            echo "seconds=$(($(date +%s) - started))"
+            echo "cached_steps=$cached_steps"
+            echo "image_id=$image_id"
+            echo "image_size=$image_size"
+            echo "archive_size=$archive_size"
+          } >> "$GITHUB_OUTPUT"
+      - name: Report container logs
+        if: always()
+        run: docker logs splined-webgui-evaluation-test || true
+      - name: Package Python / WebGUI evaluation source
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          started=$(date +%s)
+          mkdir -p webgui-evaluation/release-package/build webgui-evaluation/release-assets
+          cp -R build/WEBGui webgui-evaluation/release-package/build/
+          cp -R schema docs webgui-evaluation/release-package/
+          cp .dockerignore webgui-evaluation/release-package/
+          cp README.md LICENSE PRIVACY.md SECURITY.md SUPPORT.md webgui-evaluation/release-package/
+          tar -czf webgui-evaluation/release-assets/splined-webgui-python.tar.gz -C webgui-evaluation/release-package .
+          echo "seconds=$(($(date +%s) - started))" >> "$GITHUB_OUTPUT"
+          echo "source_size=$(stat -c %s webgui-evaluation/release-assets/splined-webgui-python.tar.gz)" >> "$GITHUB_OUTPUT"
+          rm -rf webgui-evaluation/release-package
+      - name: Create non-publishable WebGUI evaluation provenance
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ needs.resolve-source.outputs.source_sha }}
+          CANDIDATE_COMMIT: ${{ steps.evaluation-source.outputs.candidate_commit }}
+          SOURCE_VERSION: ${{ needs.resolve-source.outputs.source_version }}
+          SOURCE_MODE: ${{ needs.resolve-source.outputs.source_mode }}
+          EVALUATION_PR: ${{ needs.resolve-source.outputs.evaluation_pr }}
+        run: |
+          set -euo pipefail
+          python3 "$RUNNER_TEMP/webgui_evaluation_artifact.py" --root webgui-evaluation
+      - name: Upload compatible WebGUI evaluation artifact
+        id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: splined-webgui-release
+          path: webgui-evaluation/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Report measured WebGUI evaluation results
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ needs.resolve-source.outputs.source_sha }}
+          SOURCE_VERSION: ${{ needs.resolve-source.outputs.source_version }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          TEST_SECONDS: ${{ steps.tests.outputs.seconds }}
+          CONTAINER_SECONDS: ${{ steps.container.outputs.seconds }}
+        run: |
+          {
+            echo "## Workflow 20 WebGUI pre-release build"
+            echo "- Source commit/version: $SOURCE_COMMIT / $SOURCE_VERSION"
+            echo "- Python/PostgreSQL/Node validation: $TEST_SECONDS seconds"
+            echo "- Docker build and health smoke: $CONTAINER_SECONDS seconds"
+            echo "- Artifact ID: $ARTIFACT_ID"
+            echo "- Release eligibility: false"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   summary:
-    name: Quick portable summary
-    needs: [resolve-source, cache-report, build]
+    name: Pre-release testing summary
+    needs: [resolve-source, cache-report, build, build-webgui]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
-      - name: Report stage results and recovery action
-        shell: bash
-        run: |
-          {
-            echo "## Workflow 20 stage results"
-            echo
-            echo "- Source resolution: \`${{ needs.resolve-source.result }}\`"
-            echo "- Cache audit: \`${{ needs.cache-report.result }}\`"
-            echo "- Quick build: \`${{ needs.build.result }}\`"
-            echo "- Next action after failure: correct the reported source, cache, or build error and rerun Workflow 20; no release recovery is required."
-          } >> "$GITHUB_STEP_SUMMARY"
-      - name: Enforce selected outcome
+      - name: Report stage results and enforce selected outcome
         shell: bash
         env:
           SOURCE_RESULT: ${{ needs.resolve-source.result }}
           CACHE_RESULT: ${{ needs.cache-report.result }}
           BUILD_RESULT: ${{ needs.build.result }}
+          WEBGUI_RESULT: ${{ needs.build-webgui.result }}
           REPORT_ONLY: ${{ needs.resolve-source.outputs.report_only }}
+          WINDOWS: ${{ needs.resolve-source.outputs.target_windows }}
+          WEBGUI: ${{ needs.resolve-source.outputs.target_webgui }}
+          STARTED_EPOCH: ${{ needs.resolve-source.outputs.started_epoch }}
         run: |
           set -euo pipefail
+          {
+            echo "## Workflow 20 stage results"
+            echo "- Source resolution: $SOURCE_RESULT"
+            echo "- Windows cache audit: $CACHE_RESULT"
+            echo "- Windows build: $BUILD_RESULT"
+            echo "- WebGUI build: $WEBGUI_RESULT"
+            echo "- Release eligibility: false"
+          } >> "$GITHUB_STEP_SUMMARY"
           test "$SOURCE_RESULT" = success
-          test "$CACHE_RESULT" = success
-          if [ "$REPORT_ONLY" = true ]; then
-            test "$BUILD_RESULT" = skipped
-            result="Report-only audit complete; no compilation or packaging ran."
+          if [ "$WINDOWS" = true ]; then
+            test "$CACHE_RESULT" = success
           else
+            test "$CACHE_RESULT" = skipped
+          fi
+          if [ "$WINDOWS" = true ] && [ "$REPORT_ONLY" != true ]; then
             test "$BUILD_RESULT" = success
-            result="Standalone optimized splined.exe compiled and validated."
+          else
+            test "$BUILD_RESULT" = skipped
+          fi
+          if [ "$WEBGUI" = true ] && [ "$REPORT_ONLY" != true ]; then
+            test "$WEBGUI_RESULT" = success
+          else
+            test "$WEBGUI_RESULT" = skipped
           fi
           {
             echo "## Workflow 20 complete"
-            echo
-            echo "$result"
-            echo "- Total elapsed time: \`$(($(date +%s) - ${{ needs.resolve-source.outputs.started_epoch }})) seconds\`"
-            echo "MSIX, Store access, committed version advancement, release notes, tags and publication were not performed."
+            if [ "$REPORT_ONLY" = true ]; then
+              echo "Report-only audit complete; no compilation or packaging ran."
+            else
+              echo "Selected pre-release builds validated and retained."
+            fi
+            echo "- Total elapsed time: $(($(date +%s) - STARTED_EPOCH)) seconds"
+            echo "MSIX, Store, committed version advancement, notes, tags and publication were not performed."
           } >> "$GITHUB_STEP_SUMMARY"
