@@ -1,4 +1,5 @@
 name: 20. /dev Pre-release Testing
+run-name: ${{ inputs.pr_evaluation && format('WF20 PR {0} v{1}', inputs.evaluation_pr_number, inputs.evaluation_version) || 'WF20 origin/dev' }}
 
 on:
   workflow_dispatch:
@@ -33,7 +34,13 @@ on:
         default: ""
         type: string
 
+      force_rebuild:
+        description: "FRESH TEST BUILD: ignore reusable evaluation artifacts and prior WebGUI validation. Compatible compiler caches remain enabled."
+        default: false
+        type: boolean
+
 permissions:
+  actions: read
   contents: read
   pull-requests: read
 
@@ -185,7 +192,7 @@ jobs:
   cache-report:
     name: Audit Windows cache availability
     needs: resolve-source
-    if: ${{ needs.resolve-source.outputs.target_windows == 'true' }}
+    if: ${{ needs.resolve-source.outputs.target_windows == 'true' && needs.resolve-source.outputs.report_only == 'true' }}
     runs-on: windows-latest
     outputs:
       dependency_hit: ${{ steps.dependencies.outputs.cache-hit }}
@@ -235,8 +242,9 @@ jobs:
             build/Windows/target/release/build
             build/Windows/target/release/.fingerprint
             build/Windows/target/release/incremental
-          key: ${{ runner.os }}-splined-optimized-compiled-v2-${{ env.RUST_TOOLCHAIN }}-${{ env.WINDOWS_TARGET }}-${{ steps.cache-key.outputs.hash }}-${{ needs.resolve-source.outputs.source_sha }}-${{ needs.resolve-source.outputs.source_version }}
+          key: ${{ runner.os }}-splined-wf20-incremental-compiled-v3-${{ env.RUST_TOOLCHAIN }}-${{ env.WINDOWS_TARGET }}-${{ steps.cache-key.outputs.hash }}-${{ needs.resolve-source.outputs.source_sha }}-${{ needs.resolve-source.outputs.source_version }}
           restore-keys: |
+            ${{ runner.os }}-splined-wf20-incremental-compiled-v3-${{ env.RUST_TOOLCHAIN }}-${{ env.WINDOWS_TARGET }}-${{ steps.cache-key.outputs.hash }}-
             ${{ runner.os }}-splined-optimized-compiled-v2-${{ env.RUST_TOOLCHAIN }}-${{ env.WINDOWS_TARGET }}-${{ steps.cache-key.outputs.hash }}-
           lookup-only: true
 
@@ -254,10 +262,18 @@ jobs:
 
   build:
     name: Compile and validate standalone splined.exe
-    needs: [resolve-source, cache-report]
+    needs: resolve-source
     if: ${{ needs.resolve-source.outputs.report_only != 'true' && needs.resolve-source.outputs.target_windows == 'true' }}
     runs-on: windows-latest
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Retain reuse verifier from workflow definition
+        shell: pwsh
+        run: Copy-Item .github/scripts/workflow20_reuse.py "$env:RUNNER_TEMP/workflow20_reuse.py"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.resolve-source.outputs.source_sha }}
@@ -288,7 +304,34 @@ jobs:
             throw "Evaluation stamp changed unexpected source files."
           }
 
+      - name: Find and verify reusable Windows evaluation artifact
+        id: reuse
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_COMMIT: ${{ needs.resolve-source.outputs.source_sha }}
+          SOURCE_VERSION: ${{ needs.resolve-source.outputs.source_version }}
+          SOURCE_MODE: ${{ needs.resolve-source.outputs.source_mode }}
+          EVALUATION_PR: ${{ needs.resolve-source.outputs.evaluation_pr }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild }}
+        run: python "$env:RUNNER_TEMP/workflow20_reuse.py" artifact --kind windows --root quick-portable
+
+      - name: Calculate compatible Windows cache identity
+        id: cache-key
+        if: ${{ steps.reuse.outputs.reused != 'true' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $lock = Get-Content -Raw -LiteralPath build/Windows/Cargo.lock
+          $pattern = '(?ms)(\[\[package\]\]\r?\nname = "splined-windows"\r?\n)version = "[^"]+"'
+          $normalized = [regex]::Replace($lock, $pattern, '${1}version = "<release>"')
+          if ($normalized -eq $lock) { throw "Unable to normalize the Windows package version." }
+          $bytes = [Text.Encoding]::UTF8.GetBytes($normalized)
+          $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+          "hash=$hash" | Add-Content $env:GITHUB_OUTPUT
+
       - name: Install stable Rust
+        if: ${{ steps.reuse.outputs.reused != 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -297,17 +340,19 @@ jobs:
           rustup target add "$WINDOWS_TARGET" --toolchain "$RUST_TOOLCHAIN"
 
       - name: Restore Cargo dependency payload
+        if: ${{ steps.reuse.outputs.reused != 'true' }}
         id: dependencies
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ runner.os }}-splined-windows-dependencies-v2-${{ env.RUST_TOOLCHAIN }}-${{ needs.cache-report.outputs.dependency_hash }}
+          key: ${{ runner.os }}-splined-windows-dependencies-v2-${{ env.RUST_TOOLCHAIN }}-${{ steps.cache-key.outputs.hash }}
           restore-keys: |
             ${{ runner.os }}-splined-windows-dependencies-v2-${{ env.RUST_TOOLCHAIN }}-
 
       - name: Restore optimized intermediates
+        if: ${{ steps.reuse.outputs.reused != 'true' }}
         id: compiled
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -320,15 +365,19 @@ jobs:
             build/Windows/target/release/build
             build/Windows/target/release/.fingerprint
             build/Windows/target/release/incremental
-          key: ${{ runner.os }}-splined-optimized-compiled-v2-${{ env.RUST_TOOLCHAIN }}-${{ env.WINDOWS_TARGET }}-${{ needs.cache-report.outputs.dependency_hash }}-${{ needs.resolve-source.outputs.source_sha }}-${{ needs.resolve-source.outputs.source_version }}
+          key: ${{ runner.os }}-splined-wf20-incremental-compiled-v3-${{ env.RUST_TOOLCHAIN }}-${{ env.WINDOWS_TARGET }}-${{ steps.cache-key.outputs.hash }}-${{ needs.resolve-source.outputs.source_sha }}-${{ needs.resolve-source.outputs.source_version }}
           restore-keys: |
-            ${{ runner.os }}-splined-optimized-compiled-v2-${{ env.RUST_TOOLCHAIN }}-${{ env.WINDOWS_TARGET }}-${{ needs.cache-report.outputs.dependency_hash }}-
+            ${{ runner.os }}-splined-wf20-incremental-compiled-v3-${{ env.RUST_TOOLCHAIN }}-${{ env.WINDOWS_TARGET }}-${{ steps.cache-key.outputs.hash }}-
+            ${{ runner.os }}-splined-optimized-compiled-v2-${{ env.RUST_TOOLCHAIN }}-${{ env.WINDOWS_TARGET }}-${{ steps.cache-key.outputs.hash }}-
 
       - name: Build optimized quick portable executable
+        if: ${{ steps.reuse.outputs.reused != 'true' }}
         id: compile
         shell: pwsh
         env:
           SPLINED_BUILD_COMMIT: ${{ needs.resolve-source.outputs.source_sha }}
+          CARGO_PROFILE_RELEASE_INCREMENTAL: "true"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
@@ -342,13 +391,17 @@ jobs:
         env:
           SOURCE_COMMIT: ${{ needs.resolve-source.outputs.source_sha }}
           SOURCE_VERSION: ${{ needs.resolve-source.outputs.source_version }}
+          REUSED_RUN_ID: ${{ steps.reuse.outputs.run_id }}
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
           $started = Get-Date
           $source = "build/Windows/target/$env:WINDOWS_TARGET/release/splined.exe"
           New-Item -ItemType Directory -Force -Path quick-portable | Out-Null
-          Copy-Item -LiteralPath $source -Destination quick-portable/splined.exe
+          if (-not $env:REUSED_RUN_ID) {
+            Copy-Item -LiteralPath $source -Destination quick-portable/splined.exe
+          }
+          if (-not (Test-Path -LiteralPath quick-portable/splined.exe -PathType Leaf)) { throw "Evaluation executable is missing." }
 
           $bytes = [IO.File]::ReadAllBytes((Resolve-Path quick-portable/splined.exe).Path)
           $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
@@ -386,6 +439,9 @@ jobs:
             evaluation_pr = "${{ needs.resolve-source.outputs.evaluation_pr }}"
             workflow_definition_commit = $env:GITHUB_SHA
             architecture = "x86_64-pc-windows-msvc"
+            rust_toolchain = $env:RUST_TOOLCHAIN
+            build_profile = "release-optimized-incremental-v1"
+            reused_from_run_id = $(if ($env:REUSED_RUN_ID) { [long]$env:REUSED_RUN_ID } else { $null })
             sha256 = $sha
             size_bytes = $file.Length
             workflow_run_id = [long]$env:GITHUB_RUN_ID
@@ -415,7 +471,8 @@ jobs:
           - Source commit/version: ``${{ needs.resolve-source.outputs.source_sha }}`` / ``${{ needs.resolve-source.outputs.source_version }}``
           - Cargo dependency cache hit: ``${{ steps.dependencies.outputs.cache-hit }}``
           - Compiled-intermediate exact hit: ``${{ steps.compiled.outputs.cache-hit }}``
-          - Compilation duration: ``${{ steps.compile.outputs.elapsed_seconds }} seconds``
+          - Artifact reused from run: ${{ steps.reuse.outputs.run_id || 'not reused' }}
+          - Compilation duration (seconds): ${{ steps.compile.outputs.elapsed_seconds || '0 (retained exact executable)' }}
           - Validation duration: ``${{ steps.validate.outputs.elapsed_seconds }} seconds``
           - Executable size: ``${{ steps.validate.outputs.size_bytes }} bytes``
           - SHA-256: ``${{ steps.validate.outputs.sha256 }}``
@@ -450,7 +507,9 @@ jobs:
           fetch-depth: 0
       - name: Retain evaluation packager from workflow definition
         shell: bash
-        run: cp .github/scripts/webgui_evaluation_artifact.py "$RUNNER_TEMP/webgui_evaluation_artifact.py"
+        run: |
+          cp .github/scripts/webgui_evaluation_artifact.py "$RUNNER_TEMP/webgui_evaluation_artifact.py"
+          cp .github/scripts/workflow20_reuse.py "$RUNNER_TEMP/workflow20_reuse.py"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.resolve-source.outputs.source_sha }}
@@ -482,17 +541,45 @@ jobs:
           fi
           test "$(python3 .github/scripts/source_version.py current)" = "$SOURCE_VERSION"
           echo "candidate_commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Find and verify reusable WebGUI evaluation artifact
+        id: reuse
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_COMMIT: ${{ needs.resolve-source.outputs.source_sha }}
+          SOURCE_VERSION: ${{ needs.resolve-source.outputs.source_version }}
+          SOURCE_MODE: ${{ needs.resolve-source.outputs.source_mode }}
+          EVALUATION_PR: ${{ needs.resolve-source.outputs.evaluation_pr }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild }}
+        run: python3 "$RUNNER_TEMP/workflow20_reuse.py" artifact --kind webgui --root webgui-evaluation
+      - name: Resolve exact committed-source WebGUI validation evidence
+        id: prior-validation
+        if: ${{ steps.reuse.outputs.reused != 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_COMMIT: ${{ needs.resolve-source.outputs.source_sha }}
+          SOURCE_VERSION: ${{ needs.resolve-source.outputs.source_version }}
+          SOURCE_MODE: ${{ needs.resolve-source.outputs.source_mode }}
+          EVALUATION_PR: ${{ needs.resolve-source.outputs.evaluation_pr }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild }}
+          CANDIDATE_COMMIT: ${{ steps.evaluation-source.outputs.candidate_commit }}
+        run: python3 "$RUNNER_TEMP/workflow20_reuse.py" validation
       - name: Set up Python 3.12
+        if: ${{ steps.reuse.outputs.reused != 'true' && steps.prior-validation.outputs.reused != 'true' }}
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - name: Set up Node.js 22
+        if: ${{ steps.reuse.outputs.reused != 'true' && steps.prior-validation.outputs.reused != 'true' }}
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
       - name: Install WebGUI test dependencies
+        if: ${{ steps.reuse.outputs.reused != 'true' && steps.prior-validation.outputs.reused != 'true' }}
         run: pip install -r build/WEBGui/webgui/requirements-test.txt
       - name: Validate Python, PostgreSQL and browser JavaScript
+        if: ${{ steps.reuse.outputs.reused != 'true' && steps.prior-validation.outputs.reused != 'true' }}
         id: tests
         shell: bash
         run: |
@@ -511,6 +598,7 @@ jobs:
           node --check build/WEBGui/webgui/static/operations.js
           echo "seconds=$(($(date +%s) - started))" >> "$GITHUB_OUTPUT"
       - name: Build and smoke-test exact WebGUI image
+        if: ${{ steps.reuse.outputs.reused != 'true' }}
         id: container
         shell: bash
         env:
@@ -566,9 +654,10 @@ jobs:
             echo "archive_size=$archive_size"
           } >> "$GITHUB_OUTPUT"
       - name: Report container logs
-        if: always()
+        if: ${{ always() && steps.reuse.outputs.reused != 'true' }}
         run: docker logs splined-webgui-evaluation-test || true
       - name: Package Python / WebGUI evaluation source
+        if: ${{ steps.reuse.outputs.reused != 'true' }}
         id: package
         shell: bash
         run: |
@@ -584,6 +673,7 @@ jobs:
           echo "source_size=$(stat -c %s webgui-evaluation/release-assets/splined-webgui-python.tar.gz)" >> "$GITHUB_OUTPUT"
           rm -rf webgui-evaluation/release-package
       - name: Create non-publishable WebGUI evaluation provenance
+        if: ${{ steps.reuse.outputs.reused != 'true' }}
         shell: bash
         env:
           SOURCE_COMMIT: ${{ needs.resolve-source.outputs.source_sha }}
@@ -591,6 +681,9 @@ jobs:
           SOURCE_VERSION: ${{ needs.resolve-source.outputs.source_version }}
           SOURCE_MODE: ${{ needs.resolve-source.outputs.source_mode }}
           EVALUATION_PR: ${{ needs.resolve-source.outputs.evaluation_pr }}
+          SOURCE_VALIDATION_RUN_ID: ${{ steps.prior-validation.outputs.run_id }}
+          SOURCE_VALIDATION_RUN_ATTEMPT: ${{ steps.prior-validation.outputs.run_attempt }}
+          SOURCE_VALIDATION_BASE_SHA: ${{ steps.prior-validation.outputs.base_sha }}
         run: |
           set -euo pipefail
           python3 "$RUNNER_TEMP/webgui_evaluation_artifact.py" --root webgui-evaluation
@@ -609,13 +702,25 @@ jobs:
           SOURCE_VERSION: ${{ needs.resolve-source.outputs.source_version }}
           ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
           TEST_SECONDS: ${{ steps.tests.outputs.seconds }}
+          REUSED_ARTIFACT_RUN: ${{ steps.reuse.outputs.run_id }}
+          REUSED_VALIDATION_RUN: ${{ steps.prior-validation.outputs.run_id }}
           CONTAINER_SECONDS: ${{ steps.container.outputs.seconds }}
         run: |
           {
             echo "## Workflow 20 WebGUI pre-release build"
             echo "- Source commit/version: $SOURCE_COMMIT / $SOURCE_VERSION"
-            echo "- Python/PostgreSQL/Node validation: $TEST_SECONDS seconds"
-            echo "- Docker build and health smoke: $CONTAINER_SECONDS seconds"
+            if [ -n "$REUSED_ARTIFACT_RUN" ]; then
+              echo "- Exact package and original smoke evidence reused from run: $REUSED_ARTIFACT_RUN"
+              echo "- No repeated WebGUI test or Docker build."
+            else
+              if [ -n "$REUSED_VALIDATION_RUN" ]; then
+                echo "- Committed-source Python/PostgreSQL/Node validation reused from run: $REUSED_VALIDATION_RUN"
+                echo "- Runner-only version stamp verified separately."
+              else
+                echo "- Python/PostgreSQL/Node validation: $TEST_SECONDS seconds"
+              fi
+              echo "- Docker build and health smoke: $CONTAINER_SECONDS seconds"
+            fi
             echo "- Artifact ID: $ARTIFACT_ID"
             echo "- Release eligibility: false"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -648,7 +753,7 @@ jobs:
             echo "- Release eligibility: false"
           } >> "$GITHUB_STEP_SUMMARY"
           test "$SOURCE_RESULT" = success
-          if [ "$WINDOWS" = true ]; then
+          if [ "$WINDOWS" = true ] && [ "$REPORT_ONLY" = true ]; then
             test "$CACHE_RESULT" = success
           else
             test "$CACHE_RESULT" = skipped

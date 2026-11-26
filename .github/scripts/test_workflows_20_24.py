@@ -80,6 +80,23 @@ class Workflows20To24Tests(unittest.TestCase):
                     )
                     self.assertEqual(result.stdout, expected)
 
+    def test_workflow20_uses_exact_reuse_and_keeps_native_smoke(self) -> None:
+        source = self.sources[20]
+        self.assertIn("FRESH TEST BUILD", source)
+        self.assertIn("CARGO_PROFILE_RELEASE_INCREMENTAL", source)
+        self.assertIn("splined-wf20-incremental-compiled-v3-", source)
+        self.assertIn("artifact --kind windows --root quick-portable", source)
+        self.assertIn("artifact --kind webgui --root webgui-evaluation", source)
+        self.assertIn("steps.prior-validation.outputs.reused != 'true'", source)
+        self.assertIn("Verify identity, architecture, native smoke and checksum", source)
+        self.assertIn("Build and smoke-test exact WebGUI image", source)
+        self.assertIn("SOURCE_VALIDATION_RUN_ID", source)
+        self.assertNotIn("needs.cache-report.outputs.dependency_hash", source)
+        build = source.split("  build:\n", 1)[1].split("  build-webgui:\n", 1)[0]
+        self.assertIn("needs: resolve-source", build)
+        self.assertIn("cargo build --locked --release", build)
+        self.assertIn("release_eligible = $false", build)
+
     def test_release_preparation_records_main_and_dev_without_compiling(self) -> None:
         source = self.sources[21]
         self.assertIn("main:refs/remotes/origin/main", source)

@@ -83,6 +83,17 @@ def create_manifest(root: Path, env: dict[str, str]) -> dict:
         "evaluation_only": True,
         "candidate_kind": "workflow20-evaluation",
     }
+    if env.get("SOURCE_VALIDATION_RUN_ID"):
+        manifest["source_validation"] = {
+            "kind": "reused-committed-source-pr-validation",
+            "run_id": int(env["SOURCE_VALIDATION_RUN_ID"]),
+            "run_attempt": int(env["SOURCE_VALIDATION_RUN_ATTEMPT"]),
+            "source_commit": source,
+            "base_commit": env["SOURCE_VALIDATION_BASE_SHA"],
+            "runner_stamp_verified": True,
+        }
+    else:
+        manifest["source_validation"] = {"kind": "executed-in-evaluation", "run_id": run}
     (root / MANIFEST).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (root / CHECKSUMS).write_text(
         "".join(f"{value}  {name}\n" for name, value in sorted(files.items())),
