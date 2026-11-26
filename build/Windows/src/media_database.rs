@@ -6841,7 +6841,7 @@ fn load_compilation_track_snapshots(
         .map_err(db_error("query COMP Album paths"))?
     {
         let (key, path) = row.map_err(db_error("read COMP Album path"))?;
-        folders.entry(path.trim_end_matches(['/', '\']).to_ascii_lowercase())
+        folders.entry(path.trim_end_matches(['/', '\\']).to_ascii_lowercase())
             .or_default().push(key.to_ascii_lowercase());
     }
 
@@ -6875,7 +6875,7 @@ fn load_compilation_track_snapshots(
     }
     for path in verified {
         let mut remaining = path.as_str();
-        while let Some((parent, _)) = remaining.rsplit_once(['/', '\']) {
+        while let Some((parent, _)) = remaining.rsplit_once(['/', '\\']) {
             if let Some(keys) = folders.get(&parent.to_ascii_lowercase()) {
                 let local = mapper.to_local(&path)?;
                 let identity = local.to_ascii_lowercase();
