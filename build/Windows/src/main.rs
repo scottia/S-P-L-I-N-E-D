@@ -23128,12 +23128,13 @@ fn artist_album_card_artwork_path(
 }
 
 fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRow> {
-    artist_overview_ui_model_with_show_all(state, state.artist_overview_show_all)
+    artist_overview_ui_model_with_show_all(state, state.artist_overview_show_all, true)
 }
 
 fn artist_overview_ui_model_with_show_all(
     state: &ApplicationState,
     show_all: bool,
+    include_artwork: bool,
 ) -> ModelRc<UiArtistAlbumRow> {
     let artist_mode = !state.library.show_tracks
         && state.library.view == LibraryView::Artists
@@ -23474,15 +23475,16 @@ fn artist_overview_ui_model_with_show_all(
                 .get(&snapshot.path.to_lowercase())
                 .cloned()
                 .unwrap_or_default();
-            let artwork_path = artist_album_card_artwork_path(state, snapshot);
-            let artwork = load_album_card_image(
-                &artwork_path,
-                192,
-                overridden
-                    && media_state_policy()
-                        .override_presentation
-                        .grayscale_thumbnail,
-            );
+            let artwork = if include_artwork {
+                let artwork_path = artist_album_card_artwork_path(state, snapshot);
+                load_album_card_image(
+                    &artwork_path,
+                    192,
+                    overridden && media_state_policy().override_presentation.grayscale_thumbnail,
+                )
+            } else {
+                slint::Image::default()
+            };
             UiArtistAlbumRow {
                 key: SharedString::from(snapshot.album_key.clone()),
                 title: SharedString::from(snapshot.title.clone()),
@@ -23778,7 +23780,9 @@ fn artist_state_overview_model(state: &ApplicationState) -> Option<ModelRc<UiArt
         && !state.library.show_tracks
         && state.library.focused_artist.is_some();
     if focused_artist {
-        Some(artist_overview_ui_model_with_show_all(state, true))
+        // MEDIA FILTER uses these rows for state counts only. Album-card
+        // images are resolved once by the visible overview presentation.
+        Some(artist_overview_ui_model_with_show_all(state, true, false))
     } else {
         None
     }
@@ -28165,6 +28169,14 @@ mod tests {
         let compiled = cards.row_data(10).unwrap();
         assert!(compiled.featured, "retain the Featured association");
         assert_eq!(compiled.banner_display.replace('\n', ""), "COMPILED");
+        let summary = super::artist_state_overview_model(&app).unwrap();
+        assert_eq!(summary.row_count(), cards.row_count());
+        for index in 0..cards.row_count() {
+            let card = cards.row_data(index).unwrap();
+            let state = summary.row_data(index).unwrap();
+            assert_eq!((state.key, state.state_key), (card.key, card.state_key));
+            assert!(!state.has_artwork);
+        }
         assert_eq!(counts.completed, 0);
         assert_eq!(counts.in_process, 12);
         assert_eq!(counts.validating, 0);
