@@ -12,18 +12,8 @@ on:
         default: false
         type: boolean
 
-      pr_evaluation:
-        description: "PR EVALUATION: select the open PR topic branch in Use workflow from; build its exact HEAD without merging."
-        default: false
-        type: boolean
-      evaluation_version:
-        description: "PR EVALUATION version (numeric X.Y.Z; leave blank for normal builds). Stamped only in the runner."
-        default: ""
-        type: string
-
 permissions:
   contents: read
-  pull-requests: read
 
 concurrency:
   group: splined-quick-portable-windows-${{ github.ref }}
@@ -42,9 +32,6 @@ jobs:
       source_sha: ${{ steps.source.outputs.source_sha }}
       main_sha: ${{ steps.source.outputs.main_sha }}
       source_version: ${{ steps.source.outputs.source_version }}
-      committed_source_version: ${{ steps.source.outputs.committed_source_version }}
-      source_mode: ${{ steps.source.outputs.source_mode }}
-      evaluation_pr: ${{ steps.source.outputs.evaluation_pr }}
       report_only: ${{ steps.source.outputs.report_only }}
       started_epoch: ${{ steps.source.outputs.started_epoch }}
     steps:
@@ -53,15 +40,12 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
 
-      - name: Select exact dev or PR evaluation source
+      - name: Select exact dev source
         id: source
         shell: bash
         env:
           QUICK_PORTABLE: ${{ inputs.quick_portable }}
           REPORT_ONLY: ${{ inputs.report_only }}
-          PR_EVALUATION: ${{ inputs.pr_evaluation }}
-          EVALUATION_VERSION: ${{ inputs.evaluation_version }}
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           STARTED_EPOCH=$(date +%s)
@@ -72,48 +56,17 @@ jobs:
             echo "::error title=Select exactly one option::QUICK PORTABLE and BUILD ONLY, REPORT have $count checked options."
             exit 1
           fi
-          if [ "$PR_EVALUATION" = true ]; then
-            if [[ "$GITHUB_REF" != refs/heads/* || "$GITHUB_REF" == refs/heads/main || "$GITHUB_REF" == refs/heads/dev ]]; then
-              echo "::error title=PR branch required::Select the open PR topic branch, not main or dev."
-              exit 1
-            fi
-            if ! [[ "$EVALUATION_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              echo "::error title=Evaluation version required::Enter a numeric X.Y.Z evaluation version."
-              exit 1
-            fi
-          elif [ "$GITHUB_REF" != refs/heads/main ] || [ -n "$EVALUATION_VERSION" ]; then
-            echo "::error title=Main workflow required::Normal Workflow 20 builds must be dispatched from main with evaluation version blank."
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error title=Main workflow required::Workflow 20 must be dispatched from main; received '$GITHUB_REF'."
             exit 1
           fi
           git fetch --force origin \
             main:refs/remotes/origin/main \
             dev:refs/remotes/origin/dev
           MAIN_SHA=$(git rev-parse origin/main)
-          EVALUATION_PR=""
-          SOURCE_MODE="dev"
-          SOURCE_REF="origin/dev"
           SOURCE_SHA=$(git rev-parse origin/dev)
-          if [ "$PR_EVALUATION" = true ]; then
-            SOURCE_MODE="pr-evaluation"
-            SOURCE_REF="$GITHUB_REF_NAME"
-            SOURCE_SHA="$GITHUB_SHA"
-            git checkout --detach "$SOURCE_SHA"
-            test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
-            git fetch --force --tags origin
-            EVALUATION_PR=$(gh api -X GET "repos/$GITHUB_REPOSITORY/pulls" \
-              -f state=open -f base=dev -f head="$GITHUB_REPOSITORY_OWNER:$GITHUB_REF_NAME" -f per_page=100 | \
-              python3 .github/scripts/quick_portable_evaluation.py \
-                --repository "$GITHUB_REPOSITORY" --branch "$GITHUB_REF_NAME" \
-                --sha "$SOURCE_SHA" --version "$EVALUATION_VERSION")
-          else
-            git checkout --detach "$SOURCE_SHA"
-          fi
-          COMMITTED_SOURCE_VERSION=$(python3 .github/scripts/source_version.py current)
-          SOURCE_VERSION="$COMMITTED_SOURCE_VERSION"
-          if [ "$PR_EVALUATION" = true ]; then SOURCE_VERSION="$EVALUATION_VERSION"; fi
-          echo "committed_source_version=$COMMITTED_SOURCE_VERSION" >> "$GITHUB_OUTPUT"
-          echo "source_mode=$SOURCE_MODE" >> "$GITHUB_OUTPUT"
-          echo "evaluation_pr=$EVALUATION_PR" >> "$GITHUB_OUTPUT"
+          git checkout --detach "$SOURCE_SHA"
+          SOURCE_VERSION=$(python3 .github/scripts/source_version.py current)
           echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
           echo "main_sha=$MAIN_SHA" >> "$GITHUB_OUTPUT"
           echo "source_version=$SOURCE_VERSION" >> "$GITHUB_OUTPUT"
@@ -122,15 +75,12 @@ jobs:
           {
             echo "## Workflow 20 source plan"
             echo
-            echo "- Selected source: $SOURCE_REF at $SOURCE_SHA"
-            echo "- Source mode: $SOURCE_MODE"
-            echo "- Evaluation PR: ${EVALUATION_PR:-not applicable}"
-            echo "- Committed source version: $COMMITTED_SOURCE_VERSION"
+            echo "- Selected source: \`origin/dev\` at \`$SOURCE_SHA\`"
             echo "- Current main baseline: \`$MAIN_SHA\`"
             echo "- Source version: \`$SOURCE_VERSION\`"
             echo "- Outcome: \`$([ "$REPORT_ONLY" = true ] && echo 'BUILD ONLY, REPORT' || echo 'QUICK PORTABLE')\`"
             echo "- Release eligibility: \`false\`"
-            echo "- MSIX, Store, committed version advancement, notes, tags and publication: \`excluded\`"
+            echo "- MSIX, Store, version advancement, notes, tags and publication: \`excluded\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
   cache-report:
@@ -212,31 +162,6 @@ jobs:
         with:
           ref: ${{ needs.resolve-source.outputs.source_sha }}
           fetch-depth: 0
-
-      - name: Stamp isolated PR evaluation source
-        if: ${{ needs.resolve-source.outputs.source_mode == 'pr-evaluation' }}
-        shell: pwsh
-        env:
-          SOURCE_COMMIT: ${{ needs.resolve-source.outputs.source_sha }}
-          EVALUATION_VERSION: ${{ needs.resolve-source.outputs.source_version }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          $PSNativeCommandUseErrorActionPreference = $true
-          if ((git rev-parse HEAD) -ne $env:SOURCE_COMMIT) { throw "Evaluation checkout mismatch." }
-          python .github/scripts/source_version.py stamp-release $env:EVALUATION_VERSION
-          if ((python .github/scripts/source_version.py current) -ne $env:EVALUATION_VERSION) { throw "Evaluation version mismatch." }
-          $allowed = @(
-            "build/Windows/Cargo.toml",
-            "build/Windows/Cargo.lock",
-            "build/Windows/gui/app.manifest",
-            "build/Windows/package/Package.appxmanifest",
-            "build/Windows/package/SPLINED.appinstaller.template",
-            "build/WEBGui/webgui/backend/splined.py"
-          )
-          $changed = @(git diff --name-only)
-          if ($changed.Count -ne $allowed.Count -or @($changed | Where-Object { $_ -notin $allowed }).Count -ne 0) {
-            throw "Evaluation stamp changed unexpected source files."
-          }
 
       - name: Install stable Rust
         shell: bash
@@ -331,9 +256,6 @@ jobs:
             source_commit = $env:SOURCE_COMMIT
             main_commit = "${{ needs.resolve-source.outputs.main_sha }}"
             source_version = $env:SOURCE_VERSION
-            committed_source_version = "${{ needs.resolve-source.outputs.committed_source_version }}"
-            source_mode = "${{ needs.resolve-source.outputs.source_mode }}"
-            evaluation_pr = "${{ needs.resolve-source.outputs.evaluation_pr }}"
             architecture = "x86_64-pc-windows-msvc"
             sha256 = $sha
             size_bytes = $file.Length
@@ -413,5 +335,5 @@ jobs:
             echo
             echo "$result"
             echo "- Total elapsed time: \`$(($(date +%s) - ${{ needs.resolve-source.outputs.started_epoch }})) seconds\`"
-            echo "MSIX, Store access, committed version advancement, release notes, tags and publication were not performed."
+            echo "MSIX, Store access, version advancement, release notes, tags and publication were not performed."
           } >> "$GITHUB_STEP_SUMMARY"
