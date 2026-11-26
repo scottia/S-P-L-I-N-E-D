@@ -46,6 +46,13 @@ class ArtistThumbnailRecoveryTests(unittest.TestCase):
                 "INSERT INTO artists VALUES (?,?,?,?,?)",
                 ("artist-1", "Test Artist", "", str(self.artist_path), "unprocessed"),
             )
+            database.execute(
+                "CREATE TABLE albums (album_key TEXT PRIMARY KEY,artist_key TEXT,path TEXT)"
+            )
+            database.execute(
+                "INSERT INTO albums VALUES (?,?,?)",
+                ("album-1", "artist-1", str(self.artist_path / "Test Album")),
+            )
             database.commit()
         self.catalog = Catalog(
             self.music,

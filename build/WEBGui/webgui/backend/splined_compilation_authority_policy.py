@@ -247,6 +247,8 @@ def local_artwork_rows(
     try:
         connection = connect_sqlite(database, timeout=10.0)
         connection.row_factory = sqlite3.Row
+        evidence = getattr(connection, "comp_album_artist_evidence", None)
+        album_artist_id = evidence() if evidence else "ar.musicbrainz_artistid"
         release_clause = (
             "AND lower(al.musicbrainz_albumid)=? "
             if exact_release_mbid
@@ -265,7 +267,7 @@ def local_artwork_rows(
         )
         common_where = (
             "AND lower(t.musicbrainz_artistid)=? "
-            f"AND lower(ar.musicbrainz_artistid) IN ({artist_placeholders}) "
+            f"AND lower({album_artist_id}) IN ({artist_placeholders}) "
             "AND trim(al.musicbrainz_albumid)<>'' "
             f"{release_clause}"
             "AND al.cover_found=1 AND trim(al.cover_path)<>'' "
@@ -344,7 +346,7 @@ def local_artwork_rows(
                 "ar.artist_name AS album_artist "
                 "FROM albums al JOIN artists ar "
                 "ON ar.artist_key=al.artist_key "
-                f"WHERE lower(ar.musicbrainz_artistid) IN ({artist_placeholders}) "
+                f"WHERE lower({album_artist_id}) IN ({artist_placeholders}) "
                 "AND trim(al.musicbrainz_albumid)<>'' "
                 f"{release_clause}"
                 "AND al.cover_found=1 AND trim(al.cover_path)<>'' "

@@ -1892,6 +1892,7 @@ export component AppWindow inherits Window {
     in-out property <string> settings-scan-library;
     in-out property <string> settings-artist-separator-regex;
     in-out property <string> settings-artist-separator-profile: "Navidrome default";
+    in property <string> settings-artist-separator-warning;
     in-out property <string> settings-configuration-dir;
     in-out property <string> settings-database-dir;
     in-out property <string> settings-shared-artist-art-dir;
@@ -3619,10 +3620,11 @@ export component AppWindow inherits Window {
                                         Text { text: "Profile"; color: AppTheme.foreground; font-size: (14px * AppTheme.ui-scale) * AppTheme.font-scale; width: (208px * AppTheme.ui-scale); vertical-alignment: center; }
                                         Text { text: root.settings-artist-separator-profile; color: AppTheme.yellow; font-size: (14px * AppTheme.ui-scale) * AppTheme.font-scale; horizontal-stretch: 1; vertical-alignment: center; }
                                     }
-                                    SettingField { label: "Artist Filename / Tag Separator Regex"; value <=> root.settings-artist-separator-regex; hint: "Python/Rust-compatible regular expression"; }
+                                    SettingField { label: "Artist Filename / Tag Separator Regex"; value <=> root.settings-artist-separator-regex; hint: "Portable separator expression"; }
+                                    if root.settings-artist-separator-warning != "": Text { text: root.settings-artist-separator-warning; color: AppTheme.yellow; wrap: word-wrap; }
                                     NeonAction { width: (200px * AppTheme.ui-scale); height: (32px * AppTheme.ui-scale); label: "Browse / Import JSON…"; tone: "cyan"; clicked => root.browse-artist-separator-profile(); }
                                     Text { text: "Navidrome default · spaced slash, feat./feat, ft./ft, semicolon-space"; color: AppTheme.secondary-foreground; font-size: (12px * AppTheme.ui-scale) * AppTheme.font-scale; height: (22px * AppTheme.ui-scale); wrap: word-wrap; }
-                                    SettingsHelpTip { summary: "How is the Artist separator applied?"; detail: "Advanced: applied only to one joined Artist/TPE1 value and strict numbered filename credits. A real multi-value tag remains authoritative. JSON may contain artist_separator_regex (and optional artist_separator_profile) or a separators array. After changing and saving this setting, Reset SQLite Database before Refresh DB so one index never mixes identity rules."; }
+                                    SettingsHelpTip { summary: "How is the Artist separator applied?"; detail: "Use literal delimiters, positive ASCII classes, whitespace \\s, groups and alternatives. A leading (?i) folds ASCII case. Groups may be optional. Individual characters and classes support ?, * and +. The expression must consume characters. Import a JSON separators array for literal delimiters. After changing and saving this setting, Reset SQLite Database before Refresh DB."; }
                                 }
                                 PathSettingField { label: "Temporary Cache Directory *"; value <=> root.settings-temporary-cache-dir; hint: "Disposable run files"; browse => root.browse-setting-directory("temporary"); }
                                 PathSettingField { label: "Provider Credential Directory *"; value <=> root.settings-credential-dir; hint: "Provider and shared policy JSON files"; browse => root.browse-setting-directory("credentials"); }

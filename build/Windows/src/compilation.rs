@@ -1392,6 +1392,9 @@ mod tests {
     #[test]
     fn album_eligibility_uses_only_representative_track() {
         let mut track = LocalTrackEvidence {
+            album_artist_mbids: None,
+            release_group_mbid: None,
+            tag_source: "fixture",
             path: "fixture.mp3".into(),
             title: "Song".into(),
             artist: "Artist".into(),
@@ -1487,6 +1490,9 @@ mod tests {
     #[test]
     fn track_authority_accepts_only_valid_embedded_musicbrainz_ids() {
         let mut track = LocalTrackEvidence {
+            album_artist_mbids: None,
+            release_group_mbid: None,
+            tag_source: "fixture",
             path: "fixture.mp3".into(),
             title: "Best of My Love".into(),
             artist: "The Emotions".into(),

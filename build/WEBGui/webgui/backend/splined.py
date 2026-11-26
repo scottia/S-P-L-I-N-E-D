@@ -5399,7 +5399,7 @@ def aisplined_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def validate_config_v5(cfg: dict[str, Any]) -> None:
+def validate_config_v5(cfg: dict[str, Any], *, allow_incompatible_artist_separator: bool = False) -> None:
     logging_verbosity(cfg)
     mode = str(cfg.get("mode", "read")).strip().lower()
     if mode not in {"read", "write"}:
@@ -5413,14 +5413,15 @@ def validate_config_v5(cfg: dict[str, Any]) -> None:
     artist_separator_regex = str(
         scan.get("artist_separator_regex", DEFAULT_ARTIST_SEPARATOR_REGEX)
     ).strip()
-    if not artist_separator_regex:
-        raise SplinedError("[scan].artist_separator_regex cannot be empty.")
-    try:
-        re.compile(artist_separator_regex)
-    except re.error as exc:
-        raise SplinedError(
-            f"[scan].artist_separator_regex is invalid: {exc}"
-        ) from exc
+    if not allow_incompatible_artist_separator:
+        if not artist_separator_regex:
+            raise SplinedError("[scan].artist_separator_regex cannot be empty.")
+        try:
+            re.compile(artist_separator_regex)
+        except re.error as exc:
+            raise SplinedError(
+                f"[scan].artist_separator_regex is invalid: {exc}"
+            ) from exc
     artist_separator_profile = str(
         scan.get("artist_separator_profile", DEFAULT_ARTIST_SEPARATOR_PROFILE)
     ).strip()

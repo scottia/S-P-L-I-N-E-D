@@ -29,6 +29,7 @@ import splined_media_database as media
 import splined_media_tags as tags
 import splined_compilation_authority_policy as compilation
 from splined_artist_art import ArtistAlbum, artist_targets, write_image
+from splined_artist_separator import parse as parse_artist_separator, warning as separator_warning
 
 from webgui.catalog import (
     Catalog,
@@ -92,7 +93,7 @@ def _web_image_signing_key(access_token: str | None = None) -> bytes | None:
 # lexical sort and decodes ID3v2.3 slash-packed multi-value TPE1 frames using
 # their ordered MBID cardinality. Both corrections preserve the Windows
 # projection instead of manufacturing combined Featured Artist identities.
-MANAGED_TRACK_CREDIT_REFRESH_VERSION = 3
+MANAGED_TRACK_CREDIT_REFRESH_VERSION = 5
 
 
 def _prioritized_album_inventory(albums, large_album_track_threshold: int):
@@ -273,19 +274,14 @@ class Services:
         except (KeyError, TypeError, ValueError):
             active_artist_separator = configured_artist_separator
         image_key = image_signing_key or _web_image_signing_key()
-        library = runtime.cfg.get("library", {})
-        category_path = lambda name: core.resolve_path(
-            runtime.config_file,
-            str(library.get(name, "") or library.get("music_library", "")),
-        ).resolve()
         self.catalog = Catalog(
             runtime.music,
             runtime.database,
             runtime.artist_art,
             runtime.credentials,
-            various_artist_path=category_path("various_artist_path"),
-            soundtracks_path=category_path("soundtracks_path"),
-            curated_compilations_path=category_path("curated_compilations_path"),
+            various_artist_path=self._category_path("various_artist_path"),
+            soundtracks_path=self._category_path("soundtracks_path"),
+            curated_compilations_path=self._category_path("curated_compilations_path"),
             comp_thumbnail_side=int(
                 runtime.cfg.get("output", {}).get("embedded_thumbnail_size", 1200)
             ),
@@ -295,6 +291,7 @@ class Services:
             temporary_cache=runtime.temporary_cache,
             preview_cache=runtime.temporary_files.session_workspace("web-images"),
             artist_separator_regex=active_artist_separator,
+            artist_separator_blocked=bool(separator_warning(configured_artist_separator)),
             **({"image_key": image_key} if image_key is not None else {}),
         )
         self.catalog.cache = runtime.cache
@@ -624,10 +621,29 @@ class Services:
             request_status="started",
         )
 
+    def _category_path(self, name: str) -> Path:
+        library = self.runtime.cfg.get("library", {})
+        value = str(library.get(name, "") or "").strip() or str(library.get("music_library", ""))
+        return core.resolve_path(self.runtime.config_file, value).resolve()
+
+    def _saved_artist_separator(self) -> str:
+        return str(self.runtime.cfg.get("scan", {}).get(
+            "artist_separator_regex", core.DEFAULT_ARTIST_SEPARATOR_REGEX,
+        ))
+
+    def artist_separator_warning(self) -> str:
+        return separator_warning(self._saved_artist_separator()) or separator_warning(
+            self.catalog.artist_separator_regex
+        )
+
     def reload_settings(self):
         app = self.catalog
         r = self.runtime
         app.music = r.music
+        app.various_artist_path = self._category_path("various_artist_path")
+        app.soundtracks_path = self._category_path("soundtracks_path")
+        app.curated_compilations_path = self._category_path("curated_compilations_path")
+        app.artist_separator_blocked = bool(separator_warning(self._saved_artist_separator()))
         app.artist_art = r.artist_art
         app.credentials = r.credentials
         app.cache = r.cache
@@ -1046,6 +1062,18 @@ class Services:
             key=lambda p: p.name.casefold(),
         )
 
+    @staticmethod
+    def _publish_original_artist_credit(db, track, original):
+        if original is None:
+            return
+        now = tags.utc_now()
+        db.execute(
+            "INSERT INTO cache_entries(cache_key,cache_type,album_key,payload_json,created_at,updated_at) "
+            "VALUES(?,'art004-track',?,?,?,?) ON CONFLICT(cache_key) DO UPDATE SET "
+            "album_key=excluded.album_key,payload_json=excluded.payload_json,updated_at=excluded.updated_at",
+            ("art004:track:" + str(track["track_key"]), track["album_key"], json.dumps(original), now, now),
+        )
+
     def _upsert(self, db, table, row, key):
         columns = list(row)
         managed = windows_managed(db.raw, table, row.get(key))
@@ -1271,11 +1299,8 @@ class Services:
             raise ValueError("Set an existing music library in Settings")
         if mode not in {"full", "incremental"}:
             raise ValueError("Library index mode must be full or incremental")
-        separator_regex = str(
-            r.cfg.get("scan", {}).get(
-                "artist_separator_regex", core.DEFAULT_ARTIST_SEPARATOR_REGEX
-            )
-        ).strip()
+        separator_regex = self._saved_artist_separator()
+        parse_artist_separator(separator_regex)
         separator_profile = (
             str(
                 r.cfg.get("scan", {}).get(
@@ -1305,7 +1330,7 @@ class Services:
                 )
                 indexed_separator = str(
                     separator_details.get("artist_separator_regex", "")
-                ).strip()
+                )
             except (TypeError, ValueError):
                 indexed_separator = ""
                 separator_details = {}
@@ -1321,20 +1346,24 @@ class Services:
             and managed_credit_refresh < MANAGED_TRACK_CREDIT_REFRESH_VERSION
         )
         if indexed_separator and indexed_separator != separator_regex:
-            raise ValueError(
+            message = (
                 "Artist separator settings changed. Reset the PostgreSQL Database, "
                 "then use Full Refresh Library Index so every Artist identity is "
                 "rebuilt with one rule."
             )
+            indexer.finish(r.database, lease, "failed", message)
+            raise ValueError(message)
         if (
             not indexed_separator
             and old_count
             and separator_regex != core.DEFAULT_ARTIST_SEPARATOR_REGEX
         ):
-            raise ValueError(
+            message = (
                 "This PostgreSQL catalog predates the selected Artist separator. "
                 "Reset the PostgreSQL Database, then use Full Refresh Library Index."
             )
+            indexer.finish(r.database, lease, "failed", message)
+            raise ValueError(message)
         windows_authority_configured = bool(managed_artists or managed_albums)
         lookup_db = r.database.connect()
         # A single autocommit lookup connection avoids opening hundreds of
@@ -1680,6 +1709,8 @@ class Services:
                             str(prior_at_path["album_key"]),
                             old_tracks,
                             force_read=True,
+                            preserve_artist_positions=True,
+                            capture_original_artist_credit=True,
                             artist_separator_regex=separator_regex,
                             executor=metadata_executor,
                             progress=large_album_progress,
@@ -1757,6 +1788,8 @@ class Services:
                             str(row["album_key"]),
                             old_tracks,
                             force_read=force_track_credit_read,
+                            preserve_artist_positions=True,
+                            capture_original_artist_credit=True,
                             artist_separator_regex=separator_regex,
                             executor=metadata_executor,
                             preloaded=preloaded,
@@ -2019,7 +2052,10 @@ class Services:
                             raise ValueError(
                                 f"Track references the wrong Album: {track.get('path', '')}"
                             )
-                        self._upsert(db, "tracks", dict(track), "track_key")
+                        track = dict(track)
+                        original = track.pop("original_artist_credit", None)
+                        self._upsert(db, "tracks", track, "track_key")
+                        self._publish_original_artist_credit(db, track, original)
                     review = staged["review_payload"]
                     db.execute(
                         "DELETE FROM album_refresh_review_queue WHERE album_key=?",
@@ -2068,7 +2104,7 @@ class Services:
                     # Windows-owned identity and membership are immutable here;
                     # a Full Refresh may only refresh file-derived tag fields.
                     for track in staged["tracks_payload"]:
-                        db.raw.execute(
+                        updated = db.raw.execute(
                             "UPDATE tracks SET title=%s,artist_name=%s,"
                             "musicbrainz_recordingid=NULLIF(%s,''),"
                             "musicbrainz_artistid=NULLIF(%s,''),file_size=%s,"
@@ -2090,6 +2126,8 @@ class Services:
                                 album_key,
                             ),
                         )
+                        if updated.rowcount:
+                            self._publish_original_artist_credit(db, track, track.get("original_artist_credit"))
 
             removed = list(
                 db.raw.execute(
@@ -2125,6 +2163,10 @@ class Services:
                         stale["path"],
                     ),
                 )
+            db.execute(
+                "DELETE FROM cache_entries WHERE cache_type='art004-track' AND NOT EXISTS ("
+                "SELECT 1 FROM tracks WHERE tracks.track_key=substr(cache_entries.cache_key,14))"
+            )
             db.raw.execute(
                 "DELETE FROM artists WHERE NOT EXISTS "
                 "(SELECT 1 FROM albums WHERE albums.artist_key=artists.artist_key) "
@@ -2277,6 +2319,7 @@ class Services:
             album_id,
             old,
             force_read=force_tag_read,
+            preserve_artist_positions=True,
             artist_separator_regex=self.catalog.artist_separator_regex,
         )
         with closing(self.runtime.database.connect()) as db, db:
@@ -2380,6 +2423,7 @@ class Services:
             core.AlbumDir(Path(row["path"]), files),
             album_id,
             old,
+            preserve_artist_positions=True,
             artist_separator_regex=self.catalog.artist_separator_regex,
         )
         with closing(self.runtime.database.connect()) as db, db:
@@ -2929,20 +2973,20 @@ class Services:
     def write_artist(self, payload):
         self.runtime.require_write()
         artist_id = str(payload.get("artist_id", ""))
-        artist = self.catalog.artist(artist_id)
-        with closing(self.runtime.database.connect()) as db:
-            _canonical, aliases = self.catalog._artist_identity_rows(db, artist_id)
-            alias_ids = [str(row["artist_key"]) for row in aliases]
-            placeholders = ",".join("?" for _ in alias_ids)
-            rows = list(
-                db.execute(
-                    "SELECT albums.path,albums.musicbrainz_albumid,artists.artist_name,"
-                    "artists.musicbrainz_artistid FROM albums JOIN artists ON "
-                    "artists.artist_key=albums.artist_key WHERE albums.artist_key "
-                    f"IN ({placeholders})",
-                    tuple(alias_ids),
-                )
+        artist = self.catalog.artist(artist_id, require_eligible=True)
+        with closing(self.catalog._connect_artist_catalog()) as db:
+            owner_inputs = self.catalog._artist_owner_inputs(db)
+            _canonical, aliases = self.catalog._artist_identity_rows(
+                db, artist_id, require_eligible=True, album_inputs=owner_inputs,
             )
+            alias_ids = {artist_id, *(str(row["artist_key"]) for row in aliases)}
+            physical_owners = {
+                row["art004_album_key"]: row for row in aliases if "art004_album_key" in row
+            }
+            rows = [
+                {**row, "musicbrainz_artistid": physical_owners[row["album_key"]]["musicbrainz_artistid"]}
+                for row in owner_inputs if row["album_key"] in physical_owners
+            ]
         targets = artist_targets(
             [
                 ArtistAlbum(

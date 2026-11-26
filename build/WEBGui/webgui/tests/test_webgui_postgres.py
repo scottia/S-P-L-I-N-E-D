@@ -104,6 +104,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 "albumartist": "Test Artist",
                 "album": "Test Album",
                 "musicbrainz_albumid": "33333333-3333-4333-8333-333333333333",
+                "musicbrainz_albumartistid": "22222222-2222-4222-8222-222222222222",
                 "musicbrainz_artistid": "22222222-2222-4222-8222-222222222222",
                 "musicbrainz_trackid": f"44444444-4444-4444-8444-{number:012d}",
             }.items():
@@ -137,6 +138,129 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             "image": self.services.catalog.image(self.cover),
             "adjustments": {"Brightness": 40},
         }
+
+    def test_art004_incompatible_saved_separator_preserves_published_catalog(self):
+        profile = r"(?<=feat\.)\s+"
+        persisted = tomllib.loads(self.config.read_text(encoding="utf-8"))
+        persisted["scan"]["artist_separator_regex"] = profile
+        self.config.write_text(tomlkit.dumps(persisted), encoding="utf-8")
+        runtime = Runtime(self.config, self.db)
+        self.addCleanup(runtime.close)
+        services = Services(runtime)
+        self.assertIn("Incompatible Artist separator", services.artist_separator_warning())
+
+        def generation():
+            with closing(self.db.connect()) as db:
+                return db.execute(
+                    "SELECT active_generation_id,maintenance_generation_id FROM "
+                    "catalog_index_state WHERE singleton=TRUE"
+                ).fetchone()
+
+        before = generation()
+        usable = services.catalog.artists("")
+        self.assertTrue(usable)
+        cfg = runtime.settings()
+        cfg["webgui_ui"] = {"animate_webp_preview": True}
+        runtime.save_settings(cfg)
+        services.reload_settings()
+        with self.assertRaisesRegex(ValueError, "Incompatible Artist separator"):
+            services.refresh_index(mode="full")
+        self.assertEqual(generation(), before)
+        self.assertEqual(services.catalog.artists(""), usable)
+        saved = tomllib.loads(self.config.read_text(encoding="utf-8"))
+        self.assertEqual(saved["scan"]["artist_separator_regex"], profile)
+
+        cfg["scan"]["artist_separator_regex"] = r"\s+feat\.?\s+"
+        runtime.save_settings(cfg)
+        services.reload_settings()
+        self.assertEqual(services.artist_separator_warning(), "")
+        with self.assertRaisesRegex(ValueError, "Artist separator settings changed"):
+            services.refresh_index(mode="full")
+        self.assertEqual(generation(), before)
+
+    def test_art004_original_inventory_preserves_owner_and_credit_slots(self):
+        case = json.loads((Path(__file__).parents[4] / ".github/test-data/artist-identity-conformance.json")
+                          .read_text(encoding="utf-8"))["local_inventory_case"]
+        folder = self.runtime.music / "Unrelated physical folder" / case["album"]
+        folder.mkdir(parents=True)
+        track = folder / "01.flac"
+        sf.write(track, np.zeros((4410, 2)), 44100)
+        audio = FLAC(track)
+        for key, value in {
+            "title": "Fixture track",
+            "album": case["album"],
+            "albumartist": case["album_artist"],
+            "musicbrainz_albumid": case["album_mbid"],
+            "artist": case["track_artists"],
+            "musicbrainz_artistid": case["track_artist_mbids"],
+        }.items():
+            audio[key] = value
+        audio.save()
+        original = track.read_bytes()
+        self.services.refresh_index(mode="full")
+        album_key = "mbid:" + case["album_mbid"]
+        with closing(self.db.connect()) as db:
+            row = db.execute("SELECT artist_key FROM albums WHERE album_key=?", (album_key,)).fetchone()
+            self.assertEqual(row["artist_key"], case["expected_owner_key"])
+            row = db.execute("SELECT artist_name,musicbrainz_artistid FROM tracks WHERE album_key=?", (album_key,)).fetchone()
+            self.assertEqual(row["artist_name"].split("\x1f"), case["track_artists"])
+            self.assertEqual(row["musicbrainz_artistid"].split(","), case["track_artist_mbids"])
+            original_credit = db.execute(
+                "SELECT payload_json FROM cache_entries WHERE album_key=? AND cache_type='art004-track'",
+                (album_key,),
+            ).fetchone()
+            captured = json.loads(original_credit["payload_json"])
+            self.assertEqual(captured["artist"].split("\x1f"), case["track_artists"])
+            self.assertEqual(captured["album_artist"], case["album_artist"])
+            self.assertEqual(captured["album_artist_mbids"], "")
+            self.assertEqual(captured["tag_source"], "native-tags")
+            projected = self.services.catalog._projected_track_artists(db)
+            credits = [credit
+                       for identity in ("aaprocky", "localowner")
+                       for track_slots in projected[identity]["track_credits"][album_key].values()
+                       for credit in track_slots]
+            self.assertEqual(credits, case["positioned_credits"])
+        listed = [item for item in self.services.catalog.artists("")
+                  if item["name"] in case["expected_artist_names"]]
+        self.assertEqual([item["name"] for item in listed], case["expected_artist_names"])
+        self.assertEqual([item["albums"] for item in listed], [1, 1])
+        searched = self.services.catalog.artists(case["literal_artist_query"])
+        self.assertEqual([item["id"] for item in searched], [listed[0]["id"]])
+        overview = self.services.catalog.artist(listed[0]["id"])
+        self.assertEqual([(item["id"], item["featured"]) for item in overview["albums"]], [(album_key, True)])
+        self.assertEqual(track.read_bytes(), original)
+
+    def test_art004_owner_labels_and_membership_use_the_same_published_albums(self):
+        case = json.loads((Path(__file__).parents[4] / ".github/test-data/artist-identity-conformance.json")
+                          .read_text(encoding="utf-8"))["local_inventory_case"]["owner_label_evidence"]
+        for title, artist, release in case["albums"]:
+            folder = self.runtime.music / "Different Folder" / title
+            folder.mkdir(parents=True)
+            path = folder / "01.flac"
+            sf.write(path, np.zeros((4410, 2)), 44100)
+            audio = FLAC(path)
+            for field, value in {
+                "title": title, "album": title, "albumartist": artist,
+                "musicbrainz_albumartistid": case["artist_mbid"],
+                "musicbrainz_albumid": release,
+            }.items():
+                if value:
+                    audio[field] = value
+            audio.save()
+        self.services.refresh_index(mode="full")
+        catalog = self.services.catalog
+        catalog.various_artist_path = catalog.soundtracks_path = catalog.curated_compilations_path = None
+        [listed] = catalog.artists(case["literal_alias"])
+        self.assertEqual((listed["name"], listed["albums"]), (case["expected_display"], 3))
+        overview = catalog.artist(listed["id"], require_eligible=True)
+        self.assertEqual({album["name"] for album in overview["albums"]}, {
+            row[0] for row in case["albums"]
+        })
+        for album in overview["albums"]:
+            catalog.set_album_category(album["id"], "various-artists")
+        self.assertEqual(catalog.artists(case["literal_alias"]), [])
+        with self.assertRaises(KeyError):
+            catalog.artist(listed["id"], require_eligible=True)
 
     def test_database_pool_bounds_concurrent_connections_without_eager_startup(self):
         database = Database(self.url, pool_max_size=2, pool_timeout=1.0)
@@ -601,6 +725,41 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.assertEqual(rows[0]["album_name"], "Test Album")
         self.assertFalse(rows[0]["recording_match"])
         self.assertEqual(Path(rows[0]["cover_path"]), self.cover)
+
+    def test_comp_existing_title_uses_representative_evidence_without_an_owner_mbid(self):
+        for path in self.files:
+            audio = FLAC(path)
+            del audio["musicbrainz_albumartistid"]
+            audio.save()
+        self.services.refresh_index(mode="full")
+        with closing(self.db.connect()) as db:
+            owner = db.execute(
+                "SELECT artists.* FROM albums JOIN artists ON artists.artist_key=albums.artist_key "
+                "WHERE albums.album_key=?",
+                (self.row["album_key"],),
+            ).fetchone()
+            self.assertEqual(owner["artist_key"], "tag:test artist")
+            self.assertFalse(owner["musicbrainz_artistid"])
+        target = SimpleNamespace(
+            recording_mbid="55555555-5555-4555-8555-555555555555",
+            artist_mbid="22222222-2222-4222-8222-222222222222",
+            title="Track 1",
+        )
+        rows = core.compilation_local_artwork_rows(
+            self.config, self.cfg, target,
+            current_album_path=self.root / "music" / "Various Artists" / "Billboard",
+        )
+        self.assertEqual([row["album_name"] for row in rows], ["Test Album"])
+        self.assertFalse(rows[0]["recording_match"])
+        with closing(self.db.connect()) as db, db:
+            db.execute(
+                "UPDATE artists SET musicbrainz_artistid=? WHERE artist_key=?",
+                ("55555555-5555-4555-8555-555555555555", owner["artist_key"]),
+            )
+        self.assertEqual(core.compilation_local_artwork_rows(
+            self.config, self.cfg, target,
+            current_album_path=self.root / "music" / "Various Artists" / "Billboard",
+        ), [])
 
     def test_actual_cover_artist_and_album_embedding_preserve_audio(self):
         result = self.services.write_cover(self.payload())
@@ -4134,7 +4293,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
                 ).fetchone()
             self.assertEqual(
                 json.loads(marker["details_json"])["managed_track_credit_refresh"],
-                3,
+                5,
             )
 
             repeated = reconciler.compare(
@@ -5255,6 +5414,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             "albumartist": "10,000 Maniacs",
             "album": "Reference Album",
             "musicbrainz_albumid": target_release_id,
+            "musicbrainz_albumartistid": "6c8b9855-ba8b-48f9-ac1d-42167f7f7b18",
             "musicbrainz_artistid": "6c8b9855-ba8b-48f9-ac1d-42167f7f7b18",
             "musicbrainz_trackid": "11111111-1111-4111-8111-111111111111",
         }.items():
@@ -5272,6 +5432,7 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             "albumartist": "Other Performer",
             "album": "Other Reference",
             "musicbrainz_albumid": other_release_id,
+            "musicbrainz_albumartistid": "77777777-7777-4777-8777-777777777777",
             "musicbrainz_artistid": "77777777-7777-4777-8777-777777777777",
             "musicbrainz_trackid": "88888888-8888-4888-8888-888888888888",
         }.items():

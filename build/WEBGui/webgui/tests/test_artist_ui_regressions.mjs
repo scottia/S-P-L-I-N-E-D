@@ -100,34 +100,83 @@ test("a superseded library response cannot commit stale rows", async () => {
   releases.get("/api/artists?q=old")([{id: "old"}]);
   await older;
   assert.deepEqual(JSON.parse(JSON.stringify(state.artists)), [{id: "new"}]);
+
+  const pending = context.loadLibrary("intermediate");
+  context.scheduleLibrarySearch("artist", "next");
+  releases.get("/api/artists?q=intermediate")([{id: "intermediate"}]);
+  await pending;
+  assert.equal(state.artists[0].id, "new", "new input supersedes requests during debounce");
 });
 
-test("Artist search retains a usable list while its delayed request is pending", async () => {
+test("Artist search renders an existing list and accepts a server-resolved alias", async () => {
   let release;
   const response = new Promise(resolve => { release = resolve; });
-  const renders = [];
   const state = {
     libraryMode: "artists", artistQuery: "", listRequest: 0, libraryLoading: false,
     libraryReady: true, artists: [{id: "abba", name: "ABBA"}], albumsIndex: [],
     artist: {id: "selected"}, artistProjectionRetry: 0,
     albumLibraryRequest: 0, albumLibraryMatches: [], albumLibraryLoading: false,
   };
-  const context = load(librarySearchFunctions, {
-    state, api: async () => response,
-    renderLibrary: () => renders.push({loading: state.libraryLoading, artists: [...state.artists]}),
+  function element(value = "") {
+    return {
+      value, children: [], dataset: {}, classList: {toggle() {}},
+      append(...children) { this.children.push(...children); },
+      addEventListener() {},
+      get childElementCount() { return this.children.length; },
+    };
+  }
+  const elements = new Map();
+  const getElement = id => {
+    if (!elements.has(id)) elements.set(id, element());
+    return elements.get(id);
+  };
+  const renderContents = between(appSource, "function renderLibraryContents", "function refreshLibraryArtistRow");
+  const context = load(librarySearchFunctions + renderContents, {
+    state, api: async path => {
+      assert.equal(path, "/api/artists?q=artist%24alias");
+      return response;
+    },
+    $: getElement, node: () => element(),
+    clear: target => { target.children.length = 0; },
+    resetLibraryThumbnailLoading() {}, renderMediaStatusChips() {},
+    mediaMatches: () => true, mediaStatusKey: () => "", selectedMedia: () => false,
+    applyStatusPalette() {},
+    renderLibrary() { context.renderLibraryContents(); },
     chooseArtist: async () => {}, setStatus() {},
     window: {setTimeout() { return 1; }, clearTimeout() {}},
   });
+  const visible = () => getElement("artistList").children.map(row => row.dataset.artistId);
 
-  const pending = context.loadLibrary("abb");
-  assert.equal(state.libraryLoading, false, "a settled Artist list remains publishable during search");
-  context.renderLibrary();
-  assert.deepEqual(renders.at(-1), {loading: false, artists: [{id: "abba", name: "ABBA"}]});
+  const pending = context.loadLibrary("artist$alias");
+  context.renderLibraryContents();
+  assert.deepEqual(visible(), ["abba"]);
 
-  release([{id: "abba", name: "ABBA"}, {id: "abbath", name: "Abbath"}]);
+  release([{id: "canonical", name: "Canonical Artist", albums: 1}]);
   await pending;
+  assert.deepEqual(visible(), ["canonical"]);
+  assert.equal(getElement("artistCount").textContent, "1 shown");
+});
+
+test("Artist search waits for a complete inventory before replacing existing rows", async () => {
+  const state = {
+    libraryMode: "artists", artistQuery: "", listRequest: 0,
+    libraryReady: true, artists: [{id: "old"}], artist: {id: "selected"},
+    artistProjectionRetry: 0,
+  };
+  const responses = [{projection_pending: true}, [{id: "current"}]];
+  let retry;
+  const sources = between(appSource, "function scheduleArtistProjectionRefresh", "async function hydrateArtistThumbnails");
+  const context = load(sources, {
+    state, api: async () => responses.shift(),
+    renderLibrary() {}, chooseArtist: async () => {}, setStatus() {},
+    window: {setTimeout(callback) { retry = callback; return 1; }},
+  });
+  await context.loadLibrary("current");
+  assert.equal(state.artists[0].id, "old");
   assert.equal(state.libraryLoading, false);
-  assert.equal(state.artists.length, 2);
+  await retry();
+  assert.equal(state.artists[0].id, "current");
+  assert.equal(state.artistProjectionRetry, 0);
 });
 
 function between(source, start, end) {
@@ -3431,6 +3480,13 @@ test("fresh Albums view selection establishes Artist context and remains respons
     state,
     api: async path => {
       paths.push(path);
+      if (path === "/api/album?id=unlisted-album") {
+        return {id: "unlisted-album", artist_id: "unlisted", artist_name: "Various Artists",
+          library_group: "artist", candidates: [], tracks: 1};
+      }
+      if (path === "/api/artist/overview?id=unlisted") {
+        throw Object.assign(new Error("Artist not found"), {httpStatus: 404});
+      }
       if (path.startsWith("/api/album")) return {id: "album-1", artist_id: "artist-1", artist_name: "Artist", album_mbid: "release-1", candidates: [], tracks: 1};
       return {artist: {id: "artist-1", albums: [{id: "album-1"}], local_candidates: []}, comp_albums: []};
     },
@@ -3442,6 +3498,10 @@ test("fresh Albums view selection establishes Artist context and remains respons
   assert.deepEqual(paths.map(path => path.split("?")[0]), ["/api/album", "/api/artist/overview"]);
   assert.equal(state.artist.id, "artist-1");
   assert.equal(state.album.id, "album-1");
+  assert.equal(state.editorMode, "album");
+  await context.chooseAlbum("unlisted-album");
+  assert.equal(state.artist, null);
+  assert.equal(state.album.id, "unlisted-album");
   assert.equal(state.editorMode, "album");
 });
 
@@ -3690,8 +3750,6 @@ test("Artist filtering survives overview selection and rerender", () => {
   assert.match(appSource, /artistMetadataRequest: 0, artistQuery: ""/);
   assert.match(appSource, /scheduleLibrarySearch\("artist", event\.target\.value\)/);
   assert.match(appSource, /state\.artistQuery = value/);
-  assert.match(appSource, /String\(state\.artistQuery \|\| \$\("artistSearch"\)\.value \|\| ""\)/);
-  assert.match(appSource, /String\(artist\.name \|\| ""\)\.toLocaleLowerCase\(\)\.includes\(artistQuery\)/);
   const chooseArtistSource = between(appSource, "async function chooseArtist", "async function chooseAlbum");
   assert.doesNotMatch(chooseArtistSource, /artistSearch[^\n]*value\s*=\s*""/);
 });
