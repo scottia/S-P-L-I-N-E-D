@@ -428,11 +428,22 @@ fn catalog_credit_slots<'a>(
             return bind(names, true, true);
         }
     }
+    let owner_key = casefold(catalog_credit_trim(owner));
+    // Some Windows catalog tags retain a joined backslash credit. Treat it as
+    // positioned local evidence only when the physical owner anchors the first
+    // value and the ordered IDs account for every value. Keep the raw tag intact.
+    if !owner_key.is_empty() && ids.len() > 1 && joined.contains('\\') {
+        let names: Vec<_> = joined.split('\\').filter_map(clean).collect();
+        if names.len() == ids.len()
+            && names.first().is_some_and(|lead| casefold(lead) == owner_key)
+        {
+            return bind(names, true, true);
+        }
+    }
     let configured: Vec<_> = separator.split(joined).into_iter().filter_map(clean).collect();
     if configured.len() > 1 && configured.len() == ids.len() {
         return bind(configured, true, true);
     }
-    let owner_key = casefold(catalog_credit_trim(owner));
     let anchored = |value: &'a str, allow_ampersand: bool| -> Option<Vec<&'a str>> {
         let pattern = if allow_ampersand {
             r"(?i-u: (?:feat\.?|ft\.?|featuring|&) )"
@@ -8031,17 +8042,15 @@ mod tests {
     fn art004_verified_album_embed_preserves_original_credit_and_conflicts() {
         let temp = tempfile::tempdir().unwrap();
         let library = temp.path().join("music");
-        let album = library.join("A Great Big World").join("Is There Anybody Out There?");
-        // Use a valid Windows folder name while retaining the exact local Album title.
-        let album = album.with_file_name("Is There Anybody Out There");
+        let album = library.join("A Great Big World").join("Particles");
         fs::create_dir_all(&album).unwrap();
         let file = album.join("01.mp3");
         let release = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
         write_index_test_frames(&file, &[
-            id3_test_frame("TIT2", "Say Something"),
-            id3_test_frame("TALB", "Is There Anybody Out There?"),
+            id3_test_frame("TIT2", "Fall On Me"),
+            id3_test_frame("TALB", "Particles"),
             id3_test_frame("TPE2", "A Great Big World"),
-            id3_test_frame("TPE1", "A Great Big World\0Christina Aguilera"),
+            id3_test_frame("TPE1", r"A Great Big World\Christina Aguilera"),
             id3_test_frame("TXXX", "MUSICBRAINZ_ARTISTID\0bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\0cccccccc-cccc-4ccc-8ccc-cccccccccccc"),
             id3_test_frame("TXXX", "MUSICBRAINZ_ALBUMARTISTID\0bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
             id3_test_frame("TXXX", "MusicBrainz Release Artist Id\0dddddddd-dddd-4ddd-8ddd-dddddddddddd"),
@@ -8075,6 +8084,10 @@ mod tests {
             ).unwrap()
         };
         let (before, before_size, _) = read();
+        assert_eq!(before.artist, r"A Great Big World\Christina Aguilera");
+        let before_state = crate::application::LibraryState::from_snapshot(snapshot).unwrap();
+        assert_eq!(before_state.rows().iter().map(|row| (row.primary.as_str(), row.album_count))
+            .collect::<Vec<_>>(), [("A Great Big World", 1), ("Christina Aguilera", 1)]);
         let mut artwork = std::io::Cursor::new(Vec::new());
         image::DynamicImage::new_rgb8(4, 4).write_to(&mut artwork, image::ImageFormat::Png).unwrap();
         crate::embedded_artwork::replace_embedded_front(&file, artwork.get_ref()).unwrap();
@@ -8091,7 +8104,29 @@ mod tests {
         assert!(state.focus_artist("A Great Big World"));
         assert_eq!(state.artist_state_album_indices("A Great Big World"), [0]);
         assert_eq!(state.catalog_artist_appearances("Christina Aguilera").featured_album_keys,
-            BTreeSet::from([album_key]));
+            BTreeSet::from([album_key.clone()]));
+        connection.execute("DELETE FROM cache_entries WHERE album_key=?1 AND cache_type='art004-track'",
+            [&album_key]).unwrap();
+        let historical = crate::application::LibraryState::from_snapshot(
+            media_snapshot(&config, false).unwrap(),
+        ).unwrap();
+        assert_eq!(historical.rows().iter().map(|row| (row.primary.as_str(), row.album_count))
+            .collect::<Vec<_>>(), [("A Great Big World", 1), ("Christina Aguilera", 1)]);
+    }
+
+    #[test]
+    fn art004_backslash_with_one_mbid_or_without_physical_owner_anchor_stays_intact() {
+        let separator = crate::artist_separator::ArtistSeparator::parse(
+            crate::config::DEFAULT_ARTIST_SEPARATOR_REGEX,
+        ).unwrap();
+        let joined = r"A Great Big World\Christina Aguilera";
+        let first = "6958e806-1e14-4844-a0a7-07a27756aa0f";
+        let both = format!("{first}; b202beb7-99bd-47e7-8b72-195c8d72ebdd");
+        for (ids, owner) in [(first, "A Great Big World"), (&both, "Different Owner")] {
+            let credits = catalog_credit_slots(joined, ids, "", "", owner, &separator);
+            assert_eq!(credits.len(), 1);
+            assert_eq!(credits[0].name, joined);
+        }
     }
 
     #[test]
