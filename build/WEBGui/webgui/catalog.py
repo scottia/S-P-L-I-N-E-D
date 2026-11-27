@@ -2960,13 +2960,29 @@ class Catalog:
         the presentation group.
         """
         album_rows = list(album_rows)
+
+        def artist_mbids(row) -> tuple[str, ...]:
+            values = []
+            for field in (
+                "musicbrainz_artistid",
+                "alias_musicbrainz_artistid",
+                "art004_owner_ids",
+            ):
+                if field in row:
+                    values.extend(ordered_artist_mbids(row.get(field)))
+            return tuple(dict.fromkeys(values))
+
+        def unambiguous_artist_mbid(row) -> str:
+            values = artist_mbids(row)
+            return values[0] if len(values) == 1 else ""
+
         base = artist_targets(
             [
                 ArtistAlbum(
                     str(artist["artist_name"]),
                     Path(row["path"]),
                     str(row.get("musicbrainz_albumid") or ""),
-                    str(row.get("musicbrainz_artistid") or ""),
+                    unambiguous_artist_mbid(row),
                 )
                 for row in album_rows
                 if inside(Path(row["path"]), self.music)
@@ -2993,8 +3009,9 @@ class Catalog:
 
         identity_rows = [artist, *(row for row in aliases if row is not artist)]
         raw_mbids = [
-            str(row.get("musicbrainz_artistid") or "").strip()
+            mbid
             for row in [*identity_rows, *album_rows]
+            for mbid in artist_mbids(row)
         ]
         for raw_mbid in raw_mbids:
             try:
@@ -3166,13 +3183,14 @@ class Catalog:
                 tuple(requested),
             ).fetchall()
             coordination = self._album_write_coordination(db, rows)
-            artist_rows = [dict(candidate) for candidate in db.execute(
-                    "SELECT artists.artist_key,artists.artist_name,"
-                    "artists.musicbrainz_artistid,artists.primary_path,"
-                    "albums.musicbrainz_artistid AS alias_musicbrainz_artistid "
-                    "FROM artists LEFT JOIN albums "
-                    "ON albums.artist_key=artists.artist_key"
-                ).fetchall()]
+            base_artist_rows = db.execute(
+                "SELECT artist_key,artist_name,musicbrainz_artistid,primary_path "
+                "FROM artists"
+            ).fetchall()
+            owner_inputs = self._artist_owner_inputs(db)
+            artist_rows = self._artist_owner_candidates(
+                base_artist_rows, owner_inputs
+            )
             presentation_groups = self._artist_groups(artist_rows)
             group_by_artist_key = {
                 str(candidate["artist_key"]): group
@@ -3186,15 +3204,10 @@ class Catalog:
                 if group_key:
                     requested_groups[group_key] = group
             artist_keys = sorted({key for group in requested_groups for key in group})
-            owned_rows = []
-            if artist_keys:
-                owner_placeholders = ",".join("?" for _ in artist_keys)
-                owned_rows = [dict(item) for item in db.execute(
-                    "SELECT albums.*, artists.artist_name FROM albums "
-                    "JOIN artists ON artists.artist_key=albums.artist_key "
-                    f"WHERE albums.artist_key IN ({owner_placeholders})",
-                    tuple(artist_keys),
-                ).fetchall()]
+            owned_rows = [
+                dict(item) for item in owner_inputs
+                if str(item["artist_key"]) in artist_keys
+            ]
         by_id = {str(row["album_key"]): row for row in rows}
         group_key_by_artist = {
             key: group_key
