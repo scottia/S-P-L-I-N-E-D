@@ -452,9 +452,19 @@ async function writeArtwork() {
     if (state.radioBanner && (state.selectedBanner?.image || state.artist.banner)) components.push(componentPayload("banner", state.selectedBanner?.image || state.artist.banner));
   }
   if (!components.length) throw new Error("Choose the artist image or banner radio before writing");
+  const artistId = state.artist.id;
+  const artistName = state.artist.name;
   setStatus("Writing selected Artist Art…", "busy");
-  const result = await post("/api/artwork/artist", {artist_id: state.artist.id, components});
-  state.artist = await api("/api/artist?id=" + encodeURIComponent(state.artist.id));
+  const result = await post("/api/artwork/artist", {artist_id: artistId, components});
+  const savedArtist = await api("/api/artist?id=" + encodeURIComponent(artistId));
+  // A completed write belongs to the Artist captured when WRITE was pressed.
+  // Navigation may continue while network storage flushes the package; never
+  // apply that response to a different visible Artist.
+  if (state.artist?.id !== artistId) {
+    setStatus("Written for " + artistName + ": " + result.written.join(", "));
+    return;
+  }
+  state.artist = savedArtist;
   if (typeof syncSelectedArtistStatus === "function") syncSelectedArtistStatus();
   const listedArtist = state.artists.find(artist => artist.id === state.artist.id);
   if (listedArtist) {
@@ -2623,9 +2633,11 @@ $("bypassButton").addEventListener("click", () => runAction(async () => {
   state.album.status = result.bypassed ? "bypassed" : "unprocessed"; renderHero(); setStatus(result.bypassed ? "Album bypassed" : "Album bypass removed");
 }));
 async function stageAllArtistAlbums() {
-  if (!state.artist) return;
+  const albumOverview = singleAlbumOverviewActive();
+  if (!state.artist && !albumOverview) return;
   let staged = 0, existing = 0, failed = 0;
-  const albums = state.artist.albums.filter(item => albumEmbeddingEligible(item) && item.cover);
+  const albums = (albumOverview ? [state.album] : state.artist.albums)
+    .filter(item => albumEmbeddingEligible(item) && item.cover);
   for (const album of albums) {
     try {
       const result = await post("/api/jobs", {kind: "embed-album", payload: {album_id: album.id, image: album.cover}});

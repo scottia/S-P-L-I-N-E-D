@@ -21,7 +21,8 @@ test("safe settings and shared contract exports include the media-state policy",
 });
 
 test("WebGUI biography uses bright copy and a complete five-line collapsed guard", () => {
-  assert.match(cssSource, /html:not\(\[data-theme=light\]\) \.hero-copy \.artist-biography\{color:#fff;font-weight:600\}/);
+  assert.match(cssSource, /\.hero-copy \.artist-biography\{[^}]*color:#fff!important[^}]*font-weight:700/);
+  assert.match(cssSource, /html:not\(\[data-theme=light\]\) \.hero-copy \.artist-biography\{color:#fff;font-weight:700\}/);
   assert.match(cssSource, /\.hero-copy \.artist-biography\.collapsed\{max-height:7\.1em;overflow:hidden\}/);
   assert.match(appSource, /biography\.scrollHeight > maximumHeight/);
   assert.match(appSource, /biography\.classList\.add\("collapsed"\)/);
@@ -30,7 +31,8 @@ test("WebGUI biography uses bright copy and a complete five-line collapsed guard
 test("Artist Overview renders the saved banner without a tint layer", () => {
   assert.doesNotMatch(indexSource, /hero-shade/);
   assert.doesNotMatch(cssSource, /\.hero-shade/);
-  assert.match(appSource, /\$\("hero"\)\.style\.backgroundImage = artist\?\.banner/);
+  assert.match(appSource, /const heroArtwork = albumOverview \? state\.album\?\.static_cover : artist\?\.banner \|\| artist\?\.portrait/);
+  assert.match(appSource, /\$\("hero"\)\.style\.backgroundImage = heroArtwork/);
 });
 
 test("cold Artist projection hydrates in one bounded background sequence", () => {
@@ -2660,6 +2662,7 @@ test("EMBED All Albums stages only identified Artist Albums with saved covers", 
   ]}};
   const context = load(albumEligibilityFunctions + stageAllAlbumsFunction, {
     state,
+    singleAlbumOverviewActive: () => false,
     post: async (_path, body) => {
       calls.push(body.payload.album_id);
       return {id: body.payload.album_id, already_queued: body.payload.album_id === "featured"};
@@ -3222,6 +3225,15 @@ test("Album cards keep unknown validation separate from confirmed missing thumbn
   assert.equal(unprocessedWithStaticCover.stateKey, "incomplete",
     "an existing static cover does not manufacture Processed status");
   assert.equal(unprocessedWithStaticCover.dots.some(([color]) => color === "#efa54e"), false);
+
+  state.libraryMode = "albums"; state.editorMode = "album"; state.album = {id: "va-ost"};
+  const vaOstAlbum = context.albumCardState({
+    id: "va-ost", album_mbid: "release-va", status: "processed",
+    static_cover_found: true, cover: "cover.jpg", tracks: 2, embedded: 0,
+    embedded_validation: "unknown",
+  }, null);
+  assert.equal(vaOstAlbum.missingArt, false,
+    "V/A OST Album Overview does not require the removed Artist profile art");
 });
 
 test("selected Artist status includes its track-scoped COMP report", () => {
@@ -3678,7 +3690,9 @@ test("Album search and Album overview use the global single-Album contract", () 
   assert.match(appSource, /button\.addEventListener\("click", \(\) => chooseAlbum\(album\.id\)\)/);
   assert.doesNotMatch(appSource, /const matchesByArtist = new Map\(\)/);
   assert.match(appSource, /const presentedAlbums = honorSingleAlbum && singleAlbumOverviewActive\(\)/);
-  assert.match(appSource, /const albums = artistOverviewAlbums\(artist\)/);
+  assert.match(appSource, /const albums = albumOverview && state\.album[\s\S]*?cover: state\.album\.static_cover \|\| null/);
+  assert.match(appSource, /albumOverview \? state\.album\?\.static_cover/);
+  assert.match(appSource, /const albumOverview = state\.libraryMode === "albums"[\s\S]*?const missingArtist = !albumOverview/);
   assert.match(appSource, /allAlbums\.find\(album => album\.id === state\.album\.id\)/);
 });
 
@@ -3730,7 +3744,7 @@ test("Artist file-list membership and center-card presentation stay separate", (
 test("WebGUI renders native-parity overview sections and artwork footer", () => {
   assert.match(indexSource, /id="topGenres"/);
   assert.match(indexSource, /id="topSongs"/);
-  assert.match(appSource, /Artist & Featured Artist Top Genres/);
+  assert.match(appSource, /Artist & Featured Artists Top Genres/);
   assert.match(appSource, /node\("strong", "top-songs-heading", "Top Songs"\)/);
   assert.match(appSource, /Embedded Art \(now\):/);
   assert.match(appSource, /Track\(s\) \(" \+ trackCount \+ "\)"/);

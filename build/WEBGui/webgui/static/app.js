@@ -1172,7 +1172,9 @@ function albumCardState(album, artist) {
     || (album.static_cover_found == null && Boolean(album.cover_found || album.cover)
       && !/\.webp(?:$|[?#])/i.test(String(album.cover_path || album.cover || "")));
   const missingCover = !fallback && !overridden && !staticCover;
-  const missingArtist = !artist?.portrait && !artist?.banner;
+  const albumOverview = state.libraryMode === "albums"
+    && state.editorMode === "album" && !!state.album;
+  const missingArtist = !albumOverview && !artist?.portrait && !artist?.banner;
   const missingArt = missingCover || missingArtist;
   const bypassed = status === "bypassed" || status === "artistBypass";
   // Missing cover art is yellow evidence. An unprocessed label alone
@@ -1460,17 +1462,30 @@ function renderCompReportButtonState() {
 function renderHeroContents() {
   renderCompReportButtonState();
   if (state.editorMode === "fallback") { renderFallbackOverview(); return; }
+  const albumOverview = singleAlbumOverviewActive();
   $("hero").classList.remove("fallback-overview");
+  $("hero").classList.toggle("album-overview", albumOverview);
   $("fallbackHelp").hidden = true;
-  $("overviewHeading").textContent = "Artist Overview & Album Selection";
+  $("overviewHeading").textContent = albumOverview
+    ? "V/A OST Album Overview"
+    : "Artist Overview & Album Selection";
   $("albumStatusHelp").hidden = false;
   $("fallbackReport").hidden = true;
   document.querySelector(".overview-actions").hidden = false;
-  document.querySelector(".meta-heading").textContent = "Albums";
-  const artist = state.artist;
-  const metadata = state.artistMetadata;
+  document.querySelector(".meta-heading").textContent = albumOverview ? "Album" : "Albums";
+  $("showAllAlbums").hidden = albumOverview;
+  $("refreshArtistInfo").hidden = albumOverview;
+  $("musicbrainzArtistButton").hidden = albumOverview;
+  $("compReportButton").hidden = albumOverview;
+  $("embedAllAlbums").textContent = albumOverview ? "EMBED Album" : "EMBED All Albums";
+  const artist = albumOverview ? null : state.artist;
+  const metadata = albumOverview ? null : state.artistMetadata;
+  const artistGenres = metadata?.artist?.genres?.length ? metadata.artist.genres
+    : metadata?.genres?.length ? metadata.genres : artist?.genres || [];
   $("artistName").textContent = artist?.name || "Select an artist";
-  $("overviewArtist").textContent = artist?.name || "";
+  $("overviewArtist").textContent = albumOverview && state.album
+    ? [state.album.artist_name, state.album.name].filter(Boolean).join(" > ")
+    : artist?.name || "";
   $("artistInfoArtist").textContent = artist?.name || "Choose an Artist";
   $("artistInfoAlbums").textContent = artist ? String(artist.albums.length) : "—";
   $("artistInfoStatus").textContent = artist?.status || "Choose an Artist";
@@ -1479,7 +1494,7 @@ function renderHeroContents() {
   artistMbidLink.textContent = artistMbid || "Not indexed";
   if (artistMbid) artistMbidLink.href = "https://musicbrainz.org/artist/" + encodeURIComponent(artistMbid);
   else artistMbidLink.removeAttribute("href");
-  $("artistInfoGenres").textContent = artist?.genres?.join(", ") || "Not available";
+  $("artistInfoGenres").textContent = artistGenres.join(", ") || "Not available";
   $("artistInfoRoles").textContent = artist?.roles?.join(", ") || "Primary Artist";
   renderArtistInfoVisibility(artist);
   $("refreshArtistInfo").disabled = !artist;
@@ -1510,8 +1525,8 @@ function renderHeroContents() {
   const genres = $("topGenres"); clear(genres);
   if (artist) {
     genres.append(
-      node("strong", "top-genres-heading", "🎵 Artist & Featured Artist Top Genres"),
-      node("span", "top-genres-copy", artist.genres?.length ? artist.genres.join(" · ") : "Genres not tagged"),
+      node("strong", "top-genres-heading", "🎵 Artist & Featured Artists Top Genres"),
+      node("span", "top-genres-copy", artistGenres.length ? artistGenres.join(" · ") : "Genres not tagged"),
     );
   }
   const facts = $("albumOverviewFacts"); clear(facts);
@@ -1529,7 +1544,8 @@ function renderHeroContents() {
         : "No top songs reported by the indexed library"),
     );
   }
-  $("hero").style.backgroundImage = artist?.banner ? `url("${artist.banner}")` : artist?.portrait ? `url("${artist.portrait}")` : "none";
+  const heroArtwork = albumOverview ? state.album?.static_cover : artist?.banner || artist?.portrait;
+  $("hero").style.backgroundImage = heroArtwork ? `url("${heroArtwork}")` : "none";
   renderHeroPortrait(artist);
   $("artistArtEntry").disabled = !artist;
   $("artistArtEntry").title = "Open Artist Art Enhancements";
@@ -1537,10 +1553,17 @@ function renderHeroContents() {
   $("artistArtEntry").classList.toggle("active", !!artist && state.editorMode === "artist");
   const grid = $("albumGrid"); clear(grid);
   const compIds = new Set(state.compAlbums.map(group => group.id));
-  const albums = artistOverviewAlbums(artist);
+  const albums = albumOverview && state.album
+    ? [{...state.album, cover: state.album.static_cover || null}]
+    : artistOverviewAlbums(artist);
   renderAlbumCountSummary(albums, artist);
   renderAlbumStatusKey(albums, artist);
-  if (!albums.length) { grid.append(node("p", "empty-copy", "Choose an artist to view albums.")); renderArtistCompReport(); return; }
+  if (!albums.length) {
+    grid.append(node("p", "empty-copy", albumOverview
+      ? "Choose a V/A OST album to view its static cover."
+      : "Choose an artist to view albums."));
+    renderArtistCompReport(); return;
+  }
   for (const album of albums) {
     const button = node("button", "album-card windows-card"); button.type = "button";
     button.dataset.compAlbum = compIds.has(album.id) ? "true" : "false";
@@ -1592,7 +1615,9 @@ function renderFallbackOverview() {
   const complete = state.fallbackTracks.filter(item => item.completed).length;
   const pending = blue;
   const reprocessable = state.fallbackTracks.filter(compTrackIsReprocessable).length;
-  const hero = $("hero"); hero.classList.add("fallback-overview");
+  const hero = $("hero");
+  hero.classList.remove("album-overview");
+  hero.classList.add("fallback-overview");
   hero.style.backgroundImage = "none";
   $("overviewHeading").textContent = "COMPILATION Fallback Track Embedding";
   $("overviewArtist").textContent = album ? `COMP · ${total} tracks below ↓  ${album.artist_name} > ${album.name}` : "";

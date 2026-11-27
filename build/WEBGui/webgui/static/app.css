@@ -353,11 +353,20 @@ body.authenticated .auth-screen{display:none}body.auth-pending>.app-header,body.
 
 /* Artist copy follows the Windows overview: readable, justified, and capped
    by the existing inline five-line …more/less control. */
-.hero-copy .artist-biography{max-width:none;font-size:15px;line-height:1.42;text-align:justify;text-justify:inter-word;hyphens:auto}
-html:not([data-theme=light]) .hero-copy .artist-biography{color:#fff;font-weight:600}
+.hero-copy .artist-biography{max-width:none;color:#fff!important;font-size:15px;font-weight:700;line-height:1.42;text-align:justify;text-justify:inter-word;hyphens:auto}
+html:not([data-theme=light]) .hero-copy .artist-biography{color:#fff;font-weight:700}
 .hero-copy .artist-biography.collapsed{max-height:7.1em;overflow:hidden}
 .artist-biography-block{max-width:100%}
 .similar-unavailable.loading{border-left-color:var(--cyan);color:var(--cyan)}
+
+/* Artwork is the background, so every Artist Overview label and value uses a
+   strong weight. The V/A OST surface intentionally contains only Album facts
+   and its single selected Album card; it never reuses Artist biography UI. */
+.hero:not(.fallback-overview) .hero-main,.hero:not(.fallback-overview) .hero-details,.hero:not(.fallback-overview) .hero-lower{font-weight:700}
+.hero:not(.fallback-overview) .similar-heading span,.hero:not(.fallback-overview) .similar-name,.hero:not(.fallback-overview) .top-genres-copy,.hero:not(.fallback-overview) .top-songs-copy,.hero:not(.fallback-overview) .album-card-foot{font-weight:700}
+.hero.album-overview .hero-main,.hero.album-overview .similar-heading,.hero.album-overview .similar-artists,.hero.album-overview .top-genres,.hero.album-overview .top-songs{display:none}
+.hero.album-overview .hero-details{margin-top:12px}
+.hero.album-overview .hero-lower{margin-top:4px}
 
 /* Each Selected Artwork value is anchored directly under its heading. */
 .art-metadata:not(.comparison){grid-template-columns:minmax(0,.85fr) minmax(0,1fr) minmax(0,1.15fr) minmax(0,.9fr);gap:0;margin:6px 0 4px}
