@@ -3118,20 +3118,26 @@ class Catalog:
         aliases = list(aliases or [artist])
         album_rows = list(album_rows or [dict(row)])
         try:
-            targets = self._artist_art_targets_for_identity(
-                artist,
-                aliases,
-                album_rows,
-                allow_managed_without_owned_album=True,
-            )
+            candidates = [artist, *(item for item in aliases if item is not artist)]
+            targets = []
+            seen_targets = set()
+            for candidate in candidates:
+                for target in self._artist_art_targets_for_identity(
+                    candidate,
+                    aliases,
+                    album_rows,
+                    allow_managed_without_owned_album=True,
+                ):
+                    identity = (str(target.directory).casefold(), target.stem.casefold())
+                    if identity not in seen_targets:
+                        seen_targets.add(identity)
+                        targets.append(target)
             package = saved_package(targets)
             present = package.portrait is not None or package.banner is not None
             if not present:
                 present = any(
                     self.artist_thumbnail_path(candidate) is not None
-                    for candidate in [
-                        artist, *(item for item in aliases if item is not artist)
-                    ]
+                    for candidate in candidates
                 )
         except (OSError, ValueError):
             # A temporarily unavailable shared Artist Art directory must not
@@ -3160,20 +3166,26 @@ class Catalog:
                 tuple(requested),
             ).fetchall()
             coordination = self._album_write_coordination(db, rows)
-            target_identities = {
-                normalized_artist_identity(row["artist_name"])
-                for row in rows
-                if not synthetic_album_artist(str(row["artist_name"] or ""))
+            artist_rows = [dict(candidate) for candidate in db.execute(
+                    "SELECT artists.artist_key,artists.artist_name,"
+                    "artists.musicbrainz_artistid,artists.primary_path,"
+                    "albums.musicbrainz_artistid AS alias_musicbrainz_artistid "
+                    "FROM artists LEFT JOIN albums "
+                    "ON albums.artist_key=artists.artist_key"
+                ).fetchall()]
+            presentation_groups = self._artist_groups(artist_rows)
+            group_by_artist_key = {
+                str(candidate["artist_key"]): group
+                for group in presentation_groups
+                for candidate in group
             }
-            artist_rows = [
-                dict(candidate) for candidate in db.execute(
-                    "SELECT artist_key,artist_name,musicbrainz_artistid,primary_path "
-                    "FROM artists"
-                ).fetchall()
-                if normalized_artist_identity(candidate["artist_name"])
-                in target_identities
-            ]
-            artist_keys = [str(candidate["artist_key"]) for candidate in artist_rows]
+            requested_groups = {}
+            for row in rows:
+                group = group_by_artist_key.get(str(row["artist_key"]), [])
+                group_key = tuple(sorted(str(item["artist_key"]) for item in group))
+                if group_key:
+                    requested_groups[group_key] = group
+            artist_keys = sorted({key for group in requested_groups for key in group})
             owned_rows = []
             if artist_keys:
                 owner_placeholders = ",".join("?" for _ in artist_keys)
@@ -3184,32 +3196,31 @@ class Catalog:
                     tuple(artist_keys),
                 ).fetchall()]
         by_id = {str(row["album_key"]): row for row in rows}
-        aliases_by_identity: dict[str, list[dict[str, object]]] = {}
-        identity_by_artist_key = {}
-        for candidate in artist_rows:
-            identity = normalized_artist_identity(candidate["artist_name"])
-            aliases_by_identity.setdefault(identity, []).append(candidate)
-            identity_by_artist_key[str(candidate["artist_key"])] = identity
-        albums_by_identity: dict[str, list[dict[str, object]]] = {}
+        group_key_by_artist = {
+            key: group_key
+            for group_key in requested_groups
+            for key in group_key
+        }
+        albums_by_group: dict[tuple[str, ...], list[dict[str, object]]] = {}
         for owned in owned_rows:
-            identity = identity_by_artist_key.get(str(owned["artist_key"]))
-            if identity is not None:
-                albums_by_identity.setdefault(identity, []).append(owned)
-        evidence_by_artist: dict[str, dict[str, object]] = {}
+            group_key = group_key_by_artist.get(str(owned["artist_key"]))
+            if group_key is not None:
+                albums_by_group.setdefault(group_key, []).append(owned)
+        evidence_by_group: dict[tuple[str, ...], dict[str, object]] = {}
         result = []
         for album_id in requested:
             row = by_id.get(album_id)
             if row is None:
                 continue
-            identity = normalized_artist_identity(row["artist_name"])
-            evidence = evidence_by_artist.get(identity)
+            group_key = group_key_by_artist.get(str(row["artist_key"]), ())
+            evidence = evidence_by_group.get(group_key)
             if evidence is None:
                 evidence = self._album_artist_art_evidence(
                     row,
-                    aliases_by_identity.get(identity),
-                    albums_by_identity.get(identity),
+                    requested_groups.get(group_key),
+                    albums_by_group.get(group_key),
                 )
-                evidence_by_artist[identity] = evidence
+                evidence_by_group[group_key] = evidence
             missing = bool(evidence["missing_artist_art"])
             result.append({
                 "id": album_id,
@@ -3278,16 +3289,23 @@ class Catalog:
                 ),
                 "webp_found": bool(row["webp_found"])
                     if "webp_found" in row_keys else False,
-                # Artist Art is deliberately hydrated after first paint. Until
-                # its bounded evidence arrives, an applicable real Artist must
-                # not be optimistically painted Green.
+                # Artist Art is deliberately hydrated after first paint. An
+                # unknown transient is not missing-art evidence: retain the
+                # indexed Album classification until the bounded resolver
+                # establishes current Artist Art state.
                 "applicable_artist_art": artist_art_applicable,
-                "missing_artist_art": artist_art_applicable,
+                "missing_artist_art": False,
                 "artist_art_pending": artist_art_applicable,
-                "list_status_key": self._album_list_status_key(
+                "indexed_list_status_key": self._album_list_status_key(
+                    row, album_coordination
+                ),
+                "missing_artist_art_list_status_key": self._album_list_status_key(
                     row,
                     album_coordination,
                     missing_artist_art=artist_art_applicable,
+                ),
+                "list_status_key": self._album_list_status_key(
+                    row, album_coordination
                 ),
                 "album_mbid": row["musicbrainz_albumid"] or "",
                 "library_group": group,

@@ -2930,6 +2930,24 @@ function scheduleLibrarySearch(kind, query) {
     else void loadLibrary(value);
   }, LIBRARY_SEARCH_DEBOUNCE_MS);
 }
+function preserveAlbumArtistArtEvidence(rows, previousRows) {
+  const previous = new Map((previousRows || []).map(album => [String(album.id), album]));
+  return (rows || []).map(album => {
+    if (album?.artist_art_pending !== true) return album;
+    const prior = previous.get(String(album.id));
+    if (!prior || prior.artist_art_pending !== false
+      || String(prior.artist_id || "") !== String(album.artist_id || "")) return album;
+    const missing = prior.missing_artist_art === true;
+    return {
+      ...album,
+      applicable_artist_art: prior.applicable_artist_art === true,
+      missing_artist_art: missing,
+      list_status_key: missing
+        ? album.missing_artist_art_list_status_key || album.list_status_key
+        : album.indexed_list_status_key || album.list_status_key,
+    };
+  });
+}
 async function loadLibrary(query = "") {
   const request = ++state.listRequest;
   const mode = state.libraryMode;
@@ -2954,11 +2972,12 @@ async function loadLibrary(query = "") {
     if (mode === "artists") {
       state.artists = results.artists;
       state.artistTotal = results.artist_total;
-    } else state.albumsIndex = results;
+    } else state.albumsIndex = preserveAlbumArtistArtEvidence(results, state.albumsIndex);
     state.libraryLoading = false;
     state.libraryReady = true;
     renderLibrary();
-    if (["albums", "fallback"].includes(mode)) void hydrateAlbumArtistArt(request, results);
+    if (["albums", "fallback"].includes(mode))
+      void hydrateAlbumArtistArt(request, state.albumsIndex);
     if (mode === "artists" && state.artists.some(item => item.projection_pending === true)) {
       state.artistProjectionRetry = 0;
       scheduleArtistProjectionRefresh(query, request);
@@ -3017,10 +3036,12 @@ async function loadAlbumLibraryMatches(query) {
   try {
     const matches = await coalescedLibraryApi("/api/albums?view=search&q=" + encodeURIComponent(value));
     if (request !== state.albumLibraryRequest || state.libraryMode !== "artists") return;
-    state.albumLibraryMatches = matches;
+    state.albumLibraryMatches = preserveAlbumArtistArtEvidence(
+      matches, state.albumLibraryMatches,
+    );
     state.albumLibraryLoading = false;
     renderLibrary();
-    void hydrateAlbumArtistArt(request, matches, "search");
+    void hydrateAlbumArtistArt(request, state.albumLibraryMatches, "search");
   } catch (error) {
     if (request !== state.albumLibraryRequest || state.libraryMode !== "artists") return;
     state.albumLibraryMatches = [];

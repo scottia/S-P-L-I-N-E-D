@@ -213,6 +213,53 @@ class ArtistThumbnailRecoveryTests(unittest.TestCase):
         self.assertEqual(targets[0].stem, f"artist-mbid-{rahman_id}")
         self.assertEqual(saved_package(targets).portrait, managed)
 
+    def test_album_status_finds_differently_named_mbid_alias_folder_art(self) -> None:
+        artist_id = "e0bba708-bdd3-478d-84ea-c706413bedab"
+        primary_folder = self.music / "Primary Name"
+        alias_folder = self.music / "Local Alias"
+        primary_album = primary_folder / "Primary Album"
+        alias_album = alias_folder / "Alias Album"
+        primary_album.mkdir(parents=True)
+        alias_album.mkdir(parents=True)
+        portrait = alias_folder / "artist.png"
+        portrait.write_bytes(_png())
+        primary = {
+            "artist_key": "primary",
+            "artist_name": "Primary Name",
+            "musicbrainz_artistid": artist_id,
+            "primary_path": str(primary_folder),
+        }
+        alias = {
+            "artist_key": "alias",
+            "artist_name": "Local Alias",
+            "musicbrainz_artistid": artist_id,
+            "primary_path": str(alias_folder),
+        }
+        rows = [
+            {
+                "artist_key": "primary", "artist_name": "Primary Name",
+                "path": str(primary_album), "musicbrainz_albumid": "release-primary",
+                "musicbrainz_artistid": artist_id,
+            },
+            {
+                "artist_key": "alias", "artist_name": "Local Alias",
+                "path": str(alias_album), "musicbrainz_albumid": "release-alias",
+                "musicbrainz_artistid": artist_id,
+            },
+        ]
+        request_row = {
+            **rows[0],
+            "art_list_artist_mbid": artist_id,
+            "art_list_artist_primary_path": str(primary_folder),
+        }
+
+        self.assertEqual(len(Catalog._artist_groups([primary, alias])), 1)
+        evidence = self.catalog._album_artist_art_evidence(
+            request_row, [primary, alias], rows
+        )
+        self.assertTrue(evidence["applicable_artist_art"])
+        self.assertFalse(evidence["missing_artist_art"])
+
     def test_direct_artist_folder_still_owns_its_unqualified_package(self) -> None:
         portrait = self.artist_path / "artist.png"
         portrait.write_bytes(_png())

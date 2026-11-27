@@ -113,7 +113,12 @@ test("a superseded library response cannot commit stale rows", async () => {
 
 test("Album lists and search hydrate applicable Artist Art after the database-first rows paint", async () => {
   const albums = [
-    {id: "album-1", artist_art_pending: true, list_status_key: "bypassed"},
+    {
+      id: "album-1", artist_id: "artist-1", artist_art_pending: true,
+      indexed_list_status_key: "albumsComplete",
+      missing_artist_art_list_status_key: "bypassed",
+      missing_artist_art: false, list_status_key: "albumsComplete",
+    },
     {id: "album-2", artist_art_pending: false, list_status_key: "albumsComplete"},
   ];
   const calls = [];
@@ -162,6 +167,22 @@ test("Album lists and search hydrate applicable Artist Art after the database-fi
   assert.equal(state.albumLibraryMatches[0].artist_art_pending, false);
   assert.equal(state.albumLibraryMatches[0].list_status_key, "albumsComplete");
   assert.equal(calls.filter(path => path.startsWith("/api/albums/artist-art-status?")).length, 3);
+
+  const preserved = context.preserveAlbumArtistArtEvidence(albums, [{
+    id: "album-1", artist_id: "artist-1", artist_art_pending: false,
+    applicable_artist_art: true, missing_artist_art: false,
+    list_status_key: "albumsComplete",
+  }]);
+  assert.equal(preserved[0].artist_art_pending, true);
+  assert.equal(preserved[0].missing_artist_art, false);
+  assert.equal(preserved[0].list_status_key, "albumsComplete");
+  const preservedMissing = context.preserveAlbumArtistArtEvidence(albums, [{
+    id: "album-1", artist_id: "artist-1", artist_art_pending: false,
+    applicable_artist_art: true, missing_artist_art: true,
+    list_status_key: "bypassed",
+  }]);
+  assert.equal(preservedMissing[0].missing_artist_art, true);
+  assert.equal(preservedMissing[0].list_status_key, "bypassed");
 });
 
 test("Artist search renders an existing list and accepts a server-resolved alias", async () => {
