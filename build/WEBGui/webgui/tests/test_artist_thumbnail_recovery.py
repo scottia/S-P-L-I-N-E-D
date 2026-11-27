@@ -156,6 +156,41 @@ class ArtistThumbnailRecoveryTests(unittest.TestCase):
         self.assertIsNone(self.catalog.artist_thumbnail_path(rahman))
         self.assertNotIn(reused_key, self.catalog.portrait_cache)
 
+    def test_shared_soundtrack_root_artist_art_cannot_cross_artist_identity(self) -> None:
+        soundtrack_root = self.music / "[Soundtracks]"
+        soundtrack_root.mkdir(parents=True)
+        bette = soundtrack_root / "artist.png"
+        bette.write_bytes(_png())
+        rahman_id = "e0bba708-bdd3-478d-84ea-c706413bedab"
+        rahman = {
+            "artist_key": "mbid:" + rahman_id,
+            "artist_name": "A. R. Rahman",
+            "musicbrainz_artistid": rahman_id,
+            "primary_path": str(soundtrack_root),
+        }
+
+        self.assertIsNone(
+            self.catalog.artist_thumbnail_path(rahman),
+            "[Soundtracks]/artist.* belongs to no individual projected Artist",
+        )
+
+        managed = self.root / "artist-art" / f"artist-mbid-{rahman_id}.png"
+        managed.parent.mkdir(parents=True)
+        managed.write_bytes(_png())
+        self.assertEqual(self.catalog.artist_thumbnail_path(rahman), managed)
+
+    def test_direct_artist_folder_still_owns_its_unqualified_package(self) -> None:
+        portrait = self.artist_path / "artist.png"
+        portrait.write_bytes(_png())
+        artist = {
+            "artist_key": "artist-1",
+            "artist_name": "Test Artist",
+            "musicbrainz_artistid": "",
+            "primary_path": str(self.artist_path),
+        }
+
+        self.assertEqual(self.catalog.artist_thumbnail_path(artist), portrait)
+
     def test_projected_artist_mbid_still_finds_name_scoped_shared_art(self) -> None:
         artist_name = "Rob Wasserman"
         identity = sha256(artist_name.casefold().encode("utf-8")).digest()[:16].hex()

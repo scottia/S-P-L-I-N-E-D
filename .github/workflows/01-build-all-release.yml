@@ -10,6 +10,7 @@ on:
         type: string
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -40,6 +41,7 @@ jobs:
       source_sha: ${{ steps.plan.outputs.source_sha }}
       main_sha: ${{ steps.plan.outputs.main_sha }}
       dev_cache_sha: ${{ steps.plan.outputs.dev_cache_sha }}
+      dev_candidate_references: ${{ steps.plan.outputs.dev_candidate_references }}
       source_relation: ${{ steps.plan.outputs.source_relation }}
       candidate_id: ${{ steps.plan.outputs.candidate_id }}
     steps:
@@ -103,6 +105,18 @@ jobs:
           store_draft=$build_windows
           publish_ghcr=$build_webgui
           candidate_id="${GITHUB_RUN_ID}-${REQUESTED_TARGET}-${release_version}"
+          reference_args=()
+          if [ "$build_windows" = true ]; then reference_args+=(--target windows); fi
+          if [ "$build_webgui" = true ]; then reference_args+=(--target webgui); fi
+          reference_file="$RUNNER_TEMP/dev-candidate-references.json"
+          python3 .github/scripts/workflow20_candidate.py resolve \
+            --release-version "$release_version" \
+            --main-sha "$MAIN_SHA" \
+            "${reference_args[@]}" \
+            --output "$reference_file"
+          DEV_CANDIDATE_REFERENCES=$(python3 -c \
+            'import json,sys; print(json.dumps(json.load(open(sys.argv[1], encoding="utf-8")), separators=(",", ":"), sort_keys=True))' \
+            "$reference_file")
           {
             echo "platform=$platform"
             echo "target_label=$target_label"
@@ -118,6 +132,7 @@ jobs:
             echo "source_sha=$MAIN_SHA"
             echo "main_sha=$MAIN_SHA"
             echo "dev_cache_sha=$DEV_CACHE_SHA"
+            echo "dev_candidate_references=$DEV_CANDIDATE_REFERENCES"
             echo "source_relation=exact-main"
             echo "candidate_id=$candidate_id"
           } >> "$GITHUB_OUTPUT"
@@ -128,6 +143,8 @@ jobs:
             echo "- Committed version: $SOURCE_VERSION"
             echo "- Next available release tag: $release_version"
             echo "- Candidate ID: $candidate_id"
+            echo "- Workflow 20 /dev candidate references (metadata only):"
+            cat "$reference_file"
             echo "- Compilation: FULL SOURCE"
             echo "- Compatible build-cache source: current dev head $DEV_CACHE_SHA"
             echo "- Windows MSIX candidate stage: disabled"
@@ -162,10 +179,12 @@ jobs:
           SOURCE_SHA: ${{ needs.resolve-plan.outputs.source_sha }}
           SOURCE_VERSION: ${{ needs.resolve-plan.outputs.source_version }}
           RELEASE_VERSION: ${{ needs.resolve-plan.outputs.release_version }}
+          DEV_CANDIDATE_REFERENCES: ${{ needs.resolve-plan.outputs.dev_candidate_references }}
         run: |
           python3 - <<'PY'
           import json
           import os
+          references = json.loads(os.environ["DEV_CANDIDATE_REFERENCES"])
           report = {
               "schema": "splined-official-candidate-report-v1",
               "candidate_id": os.environ["CANDIDATE_ID"],
@@ -177,6 +196,15 @@ jobs:
               "release_version": os.environ["RELEASE_VERSION"],
               "target": os.environ["TARGET_LABEL"],
               "candidate_validation": "trusted-dev-promotion",
+              "dev_source_version_references": {
+                  target: (value.get("evaluation_version") if value else None)
+                  for target, value in (
+                      ("windows", references.get("windows")),
+                      ("webgui", references.get("webgui")),
+                  )
+              },
+              "workflow20_candidate_references": references,
+              "workflow20_reference_only": True,
               "msix_created": False,
               "workflow20_artifact_reused": False,
           }

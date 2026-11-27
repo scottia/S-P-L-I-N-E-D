@@ -15,7 +15,7 @@ from unittest.mock import patch
 import unittest
 
 from webgui.services import Services, _web_image_signing_key
-from webgui.catalog import Catalog
+from webgui.catalog import Catalog, provider_artist_genres
 from webgui.imaging import framed
 from PIL import Image
 
@@ -31,6 +31,21 @@ class _SqliteDatabase:
 
 
 class ReportedDefectTests(unittest.TestCase):
+    def test_artist_genres_include_nested_opensubsonic_album_genres(self):
+        self.assertEqual(
+            provider_artist_genres(
+                {
+                    "genre": "Film Score",
+                    "genres": [{"name": "World"}],
+                    "album": [
+                        {"genre": "Soundtrack"},
+                        {"genres": [{"name": "Indian Classical"}, "World"]},
+                    ],
+                }
+            ),
+            ["Film Score", "Indian Classical", "Soundtrack", "World"],
+        )
+
     def test_signed_library_image_survives_webgui_restart(self):
         with TemporaryDirectory() as directory, patch.dict(
             os.environ, {"SPLINED_WEB_TOKEN": "restart-stable-fixture-token"}

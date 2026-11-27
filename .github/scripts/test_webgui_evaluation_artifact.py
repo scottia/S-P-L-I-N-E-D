@@ -19,6 +19,8 @@ ENV = {
     "SOURCE_COMMIT": "b" * 40,
     "CANDIDATE_COMMIT": "c" * 40,
     "SOURCE_VERSION": "3.0.32",
+    "CANDIDATE_ID": "3.0.31-rc.8",
+    "OFFICIAL_RELEASE_VERSION": "3.0.31",
     "SOURCE_MODE": "pr-evaluation",
     "EVALUATION_PR": "356",
 }
@@ -40,6 +42,8 @@ class WebguiEvaluationArtifactTests(unittest.TestCase):
         self.assertEqual(manifest["kind"], "webgui")
         self.assertEqual(manifest["release_version"], "3.0.32")
         self.assertEqual(manifest["candidate_run_id"], manifest["workflow_run_id"])
+        self.assertEqual(manifest["candidate_id"], "3.0.31-rc.8")
+        self.assertEqual(manifest["official_release_version_reference"], "3.0.31")
         self.assertEqual(manifest["source_commit"], ENV["SOURCE_COMMIT"])
         self.assertEqual(manifest["candidate_commit"], ENV["CANDIDATE_COMMIT"])
         self.assertEqual(manifest["validations"], VALIDATIONS)
@@ -91,6 +95,8 @@ class WebguiEvaluationArtifactTests(unittest.TestCase):
             {"CANDIDATE_COMMIT": ENV["SOURCE_COMMIT"]},
             {"EVALUATION_PR": ""},
             {"SOURCE_VERSION": "3.0.32-dev"},
+            {"CANDIDATE_ID": "3.0.31"},
+            {"OFFICIAL_RELEASE_VERSION": "3.0.31-rc.8"},
             {"SOURCE_MODE": "release"},
         ):
             with self.subTest(updates=updates), self.assertRaises(ValueError):

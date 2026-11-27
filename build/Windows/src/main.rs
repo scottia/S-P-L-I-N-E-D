@@ -440,8 +440,11 @@ static NAVIDROME_ARTIST_CATALOG: OnceLock<Mutex<HashMap<String, NavidromeArtistC
 static NAVIDROME_ALBUM_CATALOG: OnceLock<Mutex<HashMap<String, NavidromeAlbumCatalogCell>>> =
     OnceLock::new();
 const PREVIEW_CACHE_DIMENSION: u32 = 1600;
-const LARGE_RAW_IMAGE_CACHE_LIMIT: usize = 6;
-const LARGE_RENDERED_IMAGE_CACHE_LIMIT: usize = 4;
+// Artist Art can keep a current portrait/banner, two adjusted previews, a
+// selected candidate and the Overview background live at the same time. The
+// former 6/4 split guaranteed eviction/redecode churn during ordinary clicks.
+const LARGE_RAW_IMAGE_CACHE_LIMIT: usize = 10;
+const LARGE_RENDERED_IMAGE_CACHE_LIMIT: usize = 10;
 const MEDIUM_IMAGE_CACHE_LIMIT: usize = 16;
 const SMALL_IMAGE_CACHE_LIMIT: usize = 256;
 const COMPILATION_GATHERING_STATUS: &str =
@@ -3263,7 +3266,16 @@ fn local_album_art_file(album: &ThumbnailAlbumTarget, configured_stem: &str) -> 
     let directory = Path::new(&album.path);
     let mut newest = newest_local_artwork_file(directory, &["cover", configured_stem], false);
     let indexed = Path::new(&album.cover_path);
-    if indexed.is_file() && inspect_image(indexed).is_ok() {
+    let indexed_is_static = indexed
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "jpg" | "jpeg" | "png"
+            )
+        });
+    if indexed_is_static && indexed.is_file() && inspect_image(indexed).is_ok() {
         let indexed_mtime = fs::metadata(indexed)
             .and_then(|metadata| metadata.modified())
             .unwrap_or(UNIX_EPOCH);
@@ -3773,12 +3785,15 @@ fn artist_portrait_for_overview(
 
 fn artist_banner_for_overview(
     source: &Path,
-    cache_directory: &Path,
-    artist_id: &str,
+    _cache_directory: &Path,
+    _artist_id: &str,
 ) -> Result<PathBuf, String> {
-    // Cropping belongs to the view's image-fit operation; this cache copies
-    // the approved bytes exactly and changes only the source path generation.
-    cached_artist_overview_source(source, cache_directory, artist_id, "banner")
+    // Cropping belongs to the view's image-fit operation. The scaled-image
+    // cache validates length/mtime on every file-backed hit, so copying the
+    // approved banner to a second path only adds network/disk work and can
+    // leave the Overview pointing at a stale generation.
+    inspect_image(source)?;
+    Ok(source.to_path_buf())
 }
 
 fn compose_artist_banner_with_position(
@@ -20963,7 +20978,14 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
             state.artist_overview_musicbrainz_id.clone()
         },
     ));
-    let overview_banner_path = if state.artist_overview_banner_path.trim().is_empty() {
+    let album_overview_artwork_path = if overview_mode == "Album" {
+        album_overview_static_artwork_path(&state)
+    } else {
+        String::new()
+    };
+    let overview_banner_path = if overview_mode == "Album" {
+        album_overview_artwork_path.as_str()
+    } else if state.artist_overview_banner_path.trim().is_empty() {
         artist_artwork_path.as_str()
     } else {
         state.artist_overview_banner_path.as_str()
@@ -23124,6 +23146,30 @@ fn artist_album_card_artwork_path(
         .unwrap_or_default()
 }
 
+/// Resolve the selected V/A OST Album's static Overview background.
+/// `cover.webp` remains available to the animation workflow, but the Album
+/// Overview intentionally presents only a readable JPEG/PNG `cover.*`.
+fn album_overview_static_artwork_path(state: &ApplicationState) -> String {
+    let Some(focused_key) = state.library.focused_album_key.as_deref() else {
+        return String::new();
+    };
+    let Some(album) = state
+        .library
+        .albums
+        .iter()
+        .find(|album| album.snapshot.album_key.eq_ignore_ascii_case(focused_key))
+    else {
+        return String::new();
+    };
+    newest_local_artwork_file(
+        Path::new(&album.snapshot.path),
+        &["cover", state.config.output.file_name.trim()],
+        false,
+    )
+    .map(|path| path.to_string_lossy().into_owned())
+    .unwrap_or_default()
+}
+
 fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRow> {
     artist_overview_ui_model_with_show_all(state, state.artist_overview_show_all, true)
 }
@@ -23151,14 +23197,15 @@ fn artist_overview_ui_model_with_show_all(
                 .map(|album| album.snapshot.artist.as_str())
         })
     });
-    let has_artist_art = overview_artist
-        .and_then(|artist| {
-            state
-                .library
-                .artist_artwork_paths
-                .get(&artist.trim().to_ascii_lowercase())
-        })
-        .is_some_and(|path| !path.trim().is_empty());
+    let has_artist_art = !artist_mode
+        || overview_artist
+            .and_then(|artist| {
+                state
+                    .library
+                    .artist_artwork_paths
+                    .get(&artist.trim().to_ascii_lowercase())
+            })
+            .is_some_and(|path| !path.trim().is_empty());
     let mut indices = if single_album_mode && !artist_mode {
         state
             .library
@@ -23473,7 +23520,11 @@ fn artist_overview_ui_model_with_show_all(
                 .cloned()
                 .unwrap_or_default();
             let artwork = if include_artwork {
-                let artwork_path = artist_album_card_artwork_path(state, snapshot);
+                let artwork_path = if single_album_mode && !artist_mode {
+                    album_overview_static_artwork_path(state)
+                } else {
+                    artist_album_card_artwork_path(state, snapshot)
+                };
                 load_album_card_image(
                     &artwork_path,
                     192,
@@ -28771,6 +28822,21 @@ mod tests {
     }
 
     #[test]
+    fn va_ost_album_overview_keeps_artist_profile_out_of_album_mode() {
+        let source = include_str!("../ui/app.slint");
+        assert!(
+            source.contains("root.overview-mode == \"Album\" ? \"V/A OST Album Overview\"")
+        );
+        assert!(source.contains("if root.overview-mode == \"Artist\": artist-header"));
+        assert!(source.contains("if root.overview-mode == \"Artist\": VerticalLayout"));
+        assert!(source.contains("if root.overview-mode != \"Album\": NeonAction"));
+        assert!(source.contains("root.overview-mode == \"Album\" ? \"EMBED Album\""));
+        assert!(source.contains("🎵 Artist & Featured Artists Top Genres"));
+        assert!(source.contains("color: #ffffff;"));
+        assert!(source.contains("font-weight: 800;"));
+    }
+
+    #[test]
     fn collaboration_biography_falls_back_only_to_the_first_credited_mbid() {
         let duo_id = "8063db1a-2126-45c2-9fae-b50c628ed102";
         let tina_id = "54d991d8-045a-4078-9fc5-4f6d150ec4a9";
@@ -29336,7 +29402,16 @@ mod tests {
             release_year: String::new(),
             cover_path: old_cover.to_string_lossy().into_owned(),
         };
-        assert_eq!(local_album_art_file(&album, "cover"), Some(new_cover));
+        assert_eq!(
+            local_album_art_file(&album, "cover"),
+            Some(new_cover.clone())
+        );
+        album.cover_path = webp_source.to_string_lossy().into_owned();
+        assert_eq!(
+            local_album_art_file(&album, "cover"),
+            Some(new_cover.clone()),
+            "an indexed cover.webp must not replace the static Album Overview cover",
+        );
         album.album_mbid.clear();
         assert_eq!(
             local_album_art_file(&album, "cover"),
