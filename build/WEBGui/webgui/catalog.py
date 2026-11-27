@@ -276,6 +276,42 @@ def normalized_artist_identity(value: str) -> str:
     return "".join(character for character in normalized if artist_unicode.alphanumeric(character))
 
 
+def artist_directory_identity(value: object) -> str:
+    """Return the identity used to reject synthetic direct ``artist.*`` roots.
+
+    Synthetic roots such as ``[Soundtracks]`` and ``[Various Artists]`` can
+    contain an unqualified ``artist.*`` for an entirely different performer.
+    Artist folders may carry stable disambiguation suffixes (for example
+    ``Beyonce-One``), so ordinary non-synthetic directories stay eligible.
+    """
+    return normalized_artist_identity(str(value or "").replace("&", "and")).removeprefix("the")
+
+
+def provider_artist_genres(detail: object) -> list[str]:
+    """Collect Artist and Album genres from one bounded OpenSubsonic result."""
+    if not isinstance(detail, dict):
+        return []
+    albums = detail.get("album") or []
+    if isinstance(albums, dict):
+        albums = [albums]
+    values = [detail, *(item for item in albums if isinstance(item, dict))]
+    genres: set[str] = set()
+    for item in values:
+        genre = str(item.get("genre") or "").strip()
+        if genre:
+            genres.add(genre)
+        listed = item.get("genres") or []
+        if isinstance(listed, (str, dict)):
+            listed = [listed]
+        for value in listed:
+            if isinstance(value, dict):
+                value = value.get("name")
+            value = str(value or "").strip()
+            if value:
+                genres.add(value)
+    return sorted(genres, key=str.casefold)
+
+
 def artist_search_literal(value: object) -> str:
     """Unicode search text that retains literal punctuation."""
     return artist_unicode.search_literal(str(value or ""))
@@ -2814,7 +2850,24 @@ class Catalog:
             self.artist_art, "artist-" + name_identity, True
         )
         primary_path = str(artist["primary_path"] or "").strip()
-        targets = [ArtistArtTarget(Path(primary_path), "artist")] if primary_path else []
+        direct_artist_path = Path(primary_path) if primary_path else None
+        direct_identity = artist_directory_identity(
+            direct_artist_path.name if direct_artist_path is not None else ""
+        )
+        direct_owned = bool(
+            direct_artist_path is not None
+            and direct_identity not in {
+                "soundtrack", "soundtracks", "variousartist", "variousartists",
+                "compilation", "compilations", "curatedcompilation",
+                "curatedcompilations",
+            }
+        )
+        # Never let a shared synthetic root's unqualified artist.* leak across
+        # identities. In the production catalog Bette Midler, A. R. Rahman,
+        # and an Electric Light Orchestra projection can all legitimately
+        # publish ``[Soundtracks]`` as primary_path; their managed MBID/name
+        # packages remain independent.
+        targets = [ArtistArtTarget(direct_artist_path, "artist")] if direct_owned else []
         targets.append(managed)
         if managed_name != managed:
             targets.append(managed_name)
@@ -3138,6 +3191,9 @@ class Catalog:
                 except (OSError, ValueError):
                     pass
         cover = self.album_cover_path(row)
+        static_cover = (
+            cover if cover is not None and cover.suffix.casefold() != ".webp" else None
+        )
         embedded_paths = [
             Path(item["path"])
             for item in track_rows
@@ -3158,7 +3214,12 @@ class Catalog:
             "cover_found": cover is not None,
             "static_cover_found": cover is not None and cover.suffix.casefold() != ".webp",
             "webp_found": bool(row["webp_found"]),
-            "cover": self.image(cover), "cover_meta": image_metadata(cover) if cover else None,
+            "cover": self.image(cover),
+            # V/A OST Album Overview backgrounds are intentionally static.
+            # Keep cover.webp available to the animation workflow without
+            # presenting it as this Album's requested cover.* background.
+            "static_cover": self.image(static_cover),
+            "cover_meta": image_metadata(cover) if cover else None,
             "embedded_meta": embedded_album_artwork_summary(
                 embedded_paths, self.comp_thumbnail_side
             ),
@@ -3719,18 +3780,11 @@ class Catalog:
                         artist_detail = call("getArtist", {"id": str(match["id"])}).get("artist", {})
                     except (OSError, ValueError, KeyError, TypeError, requests.RequestException):
                         artist_detail = {}
-                    genres: set[str] = set()
-                    if isinstance(artist_detail, dict):
-                        genre = str(artist_detail.get("genre") or "").strip()
-                        if genre:
-                            genres.add(genre)
-                        for value in artist_detail.get("genres") or []:
-                            if isinstance(value, dict):
-                                value = value.get("name")
-                            value = str(value or "").strip()
-                            if value:
-                                genres.add(value)
-                    result["genres"] = sorted(genres)
+                    # OpenSubsonic ArtistWithAlbumsID3 commonly publishes
+                    # genres on its nested AlbumID3 rows rather than on the
+                    # Artist object. Read both shapes from the same bounded
+                    # request so the Overview does not need a song-page walk.
+                    result["genres"] = provider_artist_genres(artist_detail)
                     similar = info.get("similarArtist", [])
                     if isinstance(similar, dict):
                         similar = [similar]
