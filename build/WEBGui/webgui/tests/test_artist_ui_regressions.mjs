@@ -111,7 +111,7 @@ test("a superseded library response cannot commit stale rows", async () => {
   assert.equal(state.artistTotal, 2429, "a stale response cannot replace the inventory count");
 });
 
-test("V/A OST and Fallback hydrate applicable Artist Art after the database-first list paints", async () => {
+test("Album lists and search hydrate applicable Artist Art after the database-first rows paint", async () => {
   const albums = [
     {id: "album-1", artist_art_pending: true, list_status_key: "bypassed"},
     {id: "album-2", artist_art_pending: false, list_status_key: "albumsComplete"},
@@ -120,7 +120,8 @@ test("V/A OST and Fallback hydrate applicable Artist Art after the database-firs
   const state = {
     libraryMode: "albums", listRequest: 0, libraryLoading: false,
     libraryReady: false, albumsIndex: [], artists: [], artist: null,
-    artistProjectionRetry: 0,
+    artistProjectionRetry: 0, albumLibraryRequest: 0,
+    albumLibraryMatches: [], albumLibraryLoading: false,
   };
   const context = load(librarySearchFunctions, {
     state,
@@ -154,6 +155,13 @@ test("V/A OST and Fallback hydrate applicable Artist Art after the database-firs
   assert.equal(hydrationCalls.length, 2);
   assert.equal(state.albumsIndex[0].artist_art_pending, false);
   assert.equal(state.albumsIndex[0].list_status_key, "albumsComplete");
+
+  state.libraryMode = "artists";
+  await context.loadAlbumLibraryMatches("Album");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(state.albumLibraryMatches[0].artist_art_pending, false);
+  assert.equal(state.albumLibraryMatches[0].list_status_key, "albumsComplete");
+  assert.equal(calls.filter(path => path.startsWith("/api/albums/artist-art-status?")).length, 3);
 });
 
 test("Artist search renders an existing list and accepts a server-resolved alias", async () => {
@@ -486,6 +494,9 @@ test("opposing Album overrides use their own dark-grey filter and never inflate 
 
   assert.equal(context.rawMediaStatusKey(album), "partial");
   assert.equal(context.mediaStatusKey(album), "overridden");
+  assert.equal(context.mediaStatusKey({
+    ...album, missing_artist_art: true, list_status_key: "incomplete",
+  }), "incomplete");
   assert.equal(context.mediaStatusColor("override"), "#6b737b");
   assert.match(appSource, /applyStatusPalette\(button, overridden \? "override" : album\.list_status_key \|\| albumCardState\(album, state\.artist\)\.stateKey\)/);
   assert.match(appSource, /item\.has_incomplete_error === true/);

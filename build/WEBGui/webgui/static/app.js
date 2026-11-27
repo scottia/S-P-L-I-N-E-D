@@ -474,6 +474,7 @@ function opposingAlbumOverride(item) {
   return !fallback && albumOverride(item)?.writer === "windows";
 }
 function mediaStatusKey(item) {
+  if (item?.list_status_key) return String(item.list_status_key);
   if (item?.missing_artist_art === true) {
     // Red from independent error evidence outranks missing Artist Art Yellow;
     // an unmatched/default Red is not itself error evidence.
@@ -2975,18 +2976,22 @@ async function loadLibrary(query = "") {
     }
   }
 }
-async function hydrateAlbumArtistArt(request, albums) {
+async function hydrateAlbumArtistArt(request, albums, target = "library") {
   const pending = (albums || []).filter(album => album?.artist_art_pending === true);
+  const isCurrent = () => target === "search"
+    ? request === state.albumLibraryRequest && state.libraryMode === "artists"
+    : request === state.listRequest && ["albums", "fallback"].includes(state.libraryMode);
   for (let offset = 0; offset < pending.length; offset += 25) {
     const batch = pending.slice(offset, offset + 25);
     const query = new URLSearchParams();
     for (const album of batch) query.append("id", album.id);
     try {
       const statuses = await api("/api/albums/artist-art-status?" + query.toString());
-      if (request !== state.listRequest || !["albums", "fallback"].includes(state.libraryMode)) return;
+      if (!isCurrent()) return;
+      const collection = target === "search" ? state.albumLibraryMatches : state.albumsIndex;
       let changed = false;
       for (const status of statuses) {
-        const album = state.albumsIndex.find(item => item.id === status.id);
+        const album = collection.find(item => item.id === status.id);
         if (!album) continue;
         Object.assign(album, status, {artist_art_pending: false});
         changed = true;
@@ -3015,6 +3020,7 @@ async function loadAlbumLibraryMatches(query) {
     state.albumLibraryMatches = matches;
     state.albumLibraryLoading = false;
     renderLibrary();
+    void hydrateAlbumArtistArt(request, matches, "search");
   } catch (error) {
     if (request !== state.albumLibraryRequest || state.libraryMode !== "artists") return;
     state.albumLibraryMatches = [];
