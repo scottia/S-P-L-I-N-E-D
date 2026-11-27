@@ -41,10 +41,16 @@ than repeating those suites. Release runs still build the selected production
 assets, verify package identity, perform native/container smoke checks, and
 require a valid final Build Report before tagging or publication.
 
-WebGUI releases may warm Docker layers from a compatible Workflow 20 `/dev`
-cache and publish an updated official-release cache. This accelerates the build
-without accepting a Workflow 20 artifact: Buildx still evaluates the exact
-`main` source, invalidates changed layers, and produces a new release image.
+Windows and WebGUI releases first identify the current `/dev` head and restore
+only compatible compiler/Docker state keyed to that SHA when available. This
+accelerates the build without accepting a Workflow 20 artifact: Cargo and
+Buildx still evaluate the exact `main` release source, invalidate changed
+outputs/layers, and produce newly validated release assets.
+
+Workflows 01–03 do not run a Rust/Slint strict-validation suite. A Windows
+selection performs the production release `cargo build`, followed only by the
+asset identity, portable/native smoke, MSIX and isolated package validations
+required for its Build Report.
 
 Release and Store notes share
 [`release/cliff.toml`](../release/cliff.toml) and the checked-in templates.

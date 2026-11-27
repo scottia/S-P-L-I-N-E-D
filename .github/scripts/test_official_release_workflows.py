@@ -59,7 +59,9 @@ class OfficialReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("main:refs/remotes/origin/main", self.all)
         self.assertIn('test "$MAIN_SHA" = "$GITHUB_SHA"', self.all)
         self.assertIn('source_relation=exact-main', self.all)
-        self.assertNotIn("origin/dev", self.all)
+        self.assertIn("dev:refs/remotes/origin/dev", self.all)
+        self.assertIn("DEV_CACHE_SHA=$(git rev-parse origin/dev)", self.all)
+        self.assertIn("dev_cache_sha=$DEV_CACHE_SHA", self.all)
         self.assertNotIn("splined-quick-portable", self.all)
         self.assertIn('"workflow20_artifact_reused": False', self.all)
 
@@ -87,15 +89,26 @@ class OfficialReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("Build and smoke-test WebGUI container", self.all)
         self.assertIn("--native-smoke", self.all)
 
-    def test_selected_targets_build_clean_and_publish_expected_outputs(self) -> None:
+    def test_windows_release_does_not_run_rust_slint_strict_validation(self) -> None:
+        for command in ("cargo test", "cargo check", "cargo fmt", "cargo clippy"):
+            self.assertNotIn(command, self.all)
+        self.assertIn(
+            "cargo build --locked --release --manifest-path build/Windows/Cargo.toml",
+            self.all,
+        )
+
+    def test_selected_targets_build_from_exact_source_with_current_dev_cache(self) -> None:
         self.assertIn("compile_mode=FULL SOURCE", self.all)
-        self.assertIn("cargo clean --manifest-path build/Windows/Cargo.toml --release", self.all)
+        self.assertNotIn("cargo clean --manifest-path build/Windows/Cargo.toml --release", self.all)
+        self.assertIn("CARGO_PROFILE_RELEASE_INCREMENTAL: \"true\"", self.all)
+        self.assertIn("splined-wf20-incremental-compiled-v3", self.all)
+        self.assertIn("needs.resolve-plan.outputs.dev_cache_sha", self.all)
         self.assertIn("cargo build --locked --release --manifest-path build/Windows/Cargo.toml", self.all)
         self.assertIn("Build-StorePackage.ps1", self.all)
         self.assertIn("Test-DevelopmentPackage.ps1", self.all)
         self.assertIn("docker save splined-webgui:release-test", self.all)
         self.assertIn("crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124", self.all)
-        self.assertIn("--cache-from type=gha,scope=splined-workflow20-webgui", self.all)
+        self.assertIn("--cache-from type=gha,scope=splined-workflow20-webgui-${DEV_CACHE_SHA}", self.all)
         self.assertIn("--cache-to type=gha,mode=max,scope=splined-official-release-webgui", self.all)
         self.assertIn('docker buildx build --progress=plain "${cache_args[@]}" --load', self.all)
         self.assertIn("docker push", self.all)

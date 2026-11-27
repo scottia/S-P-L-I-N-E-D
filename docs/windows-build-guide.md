@@ -55,8 +55,11 @@ bundle. Partner Center submission is not performed.
 No candidate or build run ID is copied between workflows. Source tests are not
 repeated after the validated dev-to-main promotion, and Workflow 20 artifacts
 cannot substitute for an official main build.
-Compatible WebGUI Docker layers may be warmed from Workflow 20, but the exact
-`main` source is always rebuilt and smoke-tested as a new release image.
+Compatible Windows compiler state and WebGUI Docker layers may be warmed from
+Workflow 20 using the current `dev` head as the cache identity, but the exact
+`main` source is always built, packaged and smoke-tested as new release assets.
+Workflows 01 and 02 do not repeat Rust/Slint strict tests, checks, formatting or
+linting; their only Cargo command is the production release build.
 
 ### Production-equivalent local PC test build
 

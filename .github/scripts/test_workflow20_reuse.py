@@ -224,7 +224,8 @@ class ReuseTests(unittest.TestCase):
             "crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124",
             workflow,
         )
-        self.assertIn("--cache-to type=gha,mode=max,scope=splined-workflow20-webgui", workflow)
+        self.assertIn("--cache-to type=gha,mode=max,scope=splined-workflow20-webgui-${CACHE_SOURCE_SHA}", workflow)
+        self.assertIn("--cache-from type=gha,scope=splined-workflow20-webgui-${CACHE_SOURCE_SHA}", workflow)
         self.assertIn("--cache-from type=gha,scope=splined-official-release-webgui", workflow)
 
 

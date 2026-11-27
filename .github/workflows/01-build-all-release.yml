@@ -29,7 +29,6 @@ jobs:
       platform: ${{ steps.plan.outputs.platform }}
       target_label: ${{ steps.plan.outputs.target_label }}
       compile_mode: ${{ steps.plan.outputs.compile_mode }}
-      clean: ${{ steps.plan.outputs.clean }}
       store_draft: ${{ steps.plan.outputs.store_draft }}
       publish_ghcr: ${{ steps.plan.outputs.publish_ghcr }}
       release_version: ${{ steps.plan.outputs.release_version }}
@@ -40,6 +39,7 @@ jobs:
       build_webgui: ${{ steps.plan.outputs.build_webgui }}
       source_sha: ${{ steps.plan.outputs.source_sha }}
       main_sha: ${{ steps.plan.outputs.main_sha }}
+      dev_cache_sha: ${{ steps.plan.outputs.dev_cache_sha }}
       source_relation: ${{ steps.plan.outputs.source_relation }}
       candidate_id: ${{ steps.plan.outputs.candidate_id }}
     steps:
@@ -65,9 +65,12 @@ jobs:
             WEBGUI) platform="WebGUI / Python"; target_label="WebGUI"; build_windows=false; build_webgui=true ;;
             *) echo "::error title=Invalid official release target::$REQUESTED_TARGET"; exit 1 ;;
           esac
-          git fetch --force origin main:refs/remotes/origin/main
+          git fetch --force origin \
+            main:refs/remotes/origin/main \
+            dev:refs/remotes/origin/dev
           git fetch --force --tags origin
           MAIN_SHA=$(git rev-parse origin/main)
+          DEV_CACHE_SHA=$(git rev-parse origin/dev)
           test "$MAIN_SHA" = "$GITHUB_SHA"
           git checkout --detach "$MAIN_SHA"
           SOURCE_VERSION=$(python3 .github/scripts/source_version.py current)
@@ -104,7 +107,6 @@ jobs:
             echo "platform=$platform"
             echo "target_label=$target_label"
             echo "compile_mode=FULL SOURCE"
-            echo "clean=true"
             echo "store_draft=$store_draft"
             echo "publish_ghcr=$publish_ghcr"
             echo "release_version=$release_version"
@@ -115,6 +117,7 @@ jobs:
             echo "build_webgui=$build_webgui"
             echo "source_sha=$MAIN_SHA"
             echo "main_sha=$MAIN_SHA"
+            echo "dev_cache_sha=$DEV_CACHE_SHA"
             echo "source_relation=exact-main"
             echo "candidate_id=$candidate_id"
           } >> "$GITHUB_OUTPUT"
@@ -126,6 +129,7 @@ jobs:
             echo "- Next available release tag: $release_version"
             echo "- Candidate ID: $candidate_id"
             echo "- Compilation: FULL SOURCE"
+            echo "- Compatible build-cache source: current dev head $DEV_CACHE_SHA"
             echo "- Windows MSIX candidate stage: disabled"
             echo "- Windows Store result after publication: local draft only"
             echo "- WebGUI GHCR publication: $publish_ghcr"
@@ -256,9 +260,9 @@ jobs:
     if: ${{ needs.resolve-plan.outputs.build_windows == 'true' }}
     runs-on: windows-latest
     env:
-      # FULL SOURCE is clean; PARTIAL UPDATE reuses compiler state while still
-      # emitting and auditing the complete Windows distributable.
-      CARGO_INCREMENTAL: ${{ needs.resolve-plan.outputs.clean == 'true' && '0' || '1' }}
+      CARGO_INCREMENTAL: "1"
+      CARGO_PROFILE_RELEASE_INCREMENTAL: "true"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
 
     steps:
       - name: Checkout release base
@@ -318,8 +322,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-splined-windows-dependencies-v2-${{ env.RUST_TOOLCHAIN }}-
 
-      - name: Restore cached compiled Windows intermediates (fast mode only)
-        if: ${{ needs.resolve-plan.outputs.clean != 'true' }}
+      - name: Restore current-dev compatible Windows intermediates
         id: compiled-cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -332,27 +335,13 @@ jobs:
             build/Windows/target/release/build
             build/Windows/target/release/.fingerprint
             build/Windows/target/release/incremental
-          # A new source SHA/version saves updated compiler state under a new
-          # immutable key; fallback restores the latest compatible build state.
-          key: ${{ runner.os }}-splined-optimized-compiled-v2-${{ env.RUST_TOOLCHAIN }}-${{ env.WINDOWS_TARGET }}-${{ steps.windows-dependency-cache-key.outputs.hash }}-${{ github.sha }}-${{ needs.prepare-release.outputs.version }}
+          key: ${{ runner.os }}-splined-official-incremental-compiled-v3-${{ env.RUST_TOOLCHAIN }}-${{ env.WINDOWS_TARGET }}-${{ steps.windows-dependency-cache-key.outputs.hash }}-${{ needs.prepare-release.outputs.commit }}-${{ needs.prepare-release.outputs.version }}
           restore-keys: |
+            ${{ runner.os }}-splined-wf20-incremental-compiled-v3-${{ env.RUST_TOOLCHAIN }}-${{ env.WINDOWS_TARGET }}-${{ steps.windows-dependency-cache-key.outputs.hash }}-${{ needs.resolve-plan.outputs.dev_cache_sha }}-
+            ${{ runner.os }}-splined-official-incremental-compiled-v3-${{ env.RUST_TOOLCHAIN }}-${{ env.WINDOWS_TARGET }}-${{ steps.windows-dependency-cache-key.outputs.hash }}-
             ${{ runner.os }}-splined-optimized-compiled-v2-${{ env.RUST_TOOLCHAIN }}-${{ env.WINDOWS_TARGET }}-${{ steps.windows-dependency-cache-key.outputs.hash }}-
 
-      - name: Restore previous compiled dependencies (v1 cache migration)
-        if: ${{ needs.resolve-plan.outputs.clean != 'true' && steps.compiled-cache.outputs.cache-hit == '' }}
-        id: legacy-compiled-cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            build/Windows/target/x86_64-pc-windows-msvc/release/deps
-            build/Windows/target/x86_64-pc-windows-msvc/release/build
-            build/Windows/target/x86_64-pc-windows-msvc/release/.fingerprint
-            build/Windows/target/release/deps
-            build/Windows/target/release/build
-            build/Windows/target/release/.fingerprint
-          key: ${{ runner.os }}-splined-optimized-compiled-v1-${{ env.RUST_TOOLCHAIN }}-${{ env.WINDOWS_TARGET }}-${{ steps.windows-dependency-cache-key.outputs.hash }}
-
-      - name: Build optimized x64 Rust/Slint executable (incremental or clean)
+      - name: Build optimized x64 Rust/Slint executable from exact release source
         id: windows-build
         shell: pwsh
         env:
@@ -361,14 +350,8 @@ jobs:
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
           $started = Get-Date
-          if ($env:CARGO_INCREMENTAL -eq "0") {
-            # Strict mode: no compiled release cache; rebuild all release crates.
-            cargo clean --manifest-path build/Windows/Cargo.toml --release --target $env:WINDOWS_TARGET
-          } else {
-            # Fast mode: Cargo fingerprints plus the version/commit inputs
-            # invalidate changed application outputs; never reuse a stale EXE.
-            Write-Host "Fast mode: reusing Cargo-validated release intermediates."
-          }
+          Write-Host "Using compatible intermediates from dev head ${{ needs.resolve-plan.outputs.dev_cache_sha }} when available."
+          Write-Host "Cargo fingerprints and SPLINED_BUILD_COMMIT invalidate changed release outputs."
           cargo build --locked --release --manifest-path build/Windows/Cargo.toml --target $env:WINDOWS_TARGET
           "elapsed_seconds=$([Math]::Round(((Get-Date) - $started).TotalSeconds))" | Add-Content $env:GITHUB_OUTPUT
 
@@ -521,9 +504,9 @@ jobs:
           ## Windows release build
 
           - Downloaded Cargo cache hit: ``${{ steps.rust-cache.outputs.cache-hit }}``
-          - Windows build mode: ``${{ needs.resolve-plan.outputs.clean == 'true' && 'FULL SOURCE - clean' || 'PARTIAL UPDATE - incremental' }}``
+          - Windows build mode: ``FULL SOURCE - current-dev cache accelerated``
+          - Current dev cache source: ``${{ needs.resolve-plan.outputs.dev_cache_sha }}``
           - Compiled cache exact-key hit: ``${{ steps.compiled-cache.outputs.cache-hit }}`` (a prefix match can also restore cache)
-          - Legacy v1 cache fallback hit: ``${{ steps.legacy-compiled-cache.outputs.cache-hit }}``
           - Rust toolchain: ``${{ env.RUST_TOOLCHAIN }}``
           - Rust incremental flag: ``$env:CARGO_INCREMENTAL``
           - Release build duration: ``${{ steps.windows-build.outputs.elapsed_seconds }} seconds``
@@ -584,10 +567,12 @@ jobs:
         env:
           RELEASE_VERSION: ${{ needs.prepare-release.outputs.version }}
           RELEASE_COMMIT: ${{ needs.prepare-release.outputs.commit }}
+          DEV_CACHE_SHA: ${{ needs.resolve-plan.outputs.dev_cache_sha }}
         run: |
           set -euo pipefail
           docker buildx create --driver docker-container --name splined-official-release --use
           cache_args=(
+            --cache-from type=gha,scope=splined-workflow20-webgui-${DEV_CACHE_SHA}
             --cache-from type=gha,scope=splined-workflow20-webgui
             --cache-from type=gha,scope=splined-official-release-webgui
             --cache-to type=gha,mode=max,scope=splined-official-release-webgui
