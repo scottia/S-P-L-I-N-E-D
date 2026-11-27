@@ -9,7 +9,7 @@ use slint::{
     Color, ComponentHandle, Model, ModelRc, ModelTracker, SharedString, Timer, TimerMode, VecModel,
 };
 use splined_core::application::{
-    AdjustmentState, AlbumEntry, AlbumState, ApplicationState, ArtistOverviewCacheEntry,
+    AdjustmentState, AlbumEntry, AlbumLibraryGroup, AlbumState, ApplicationState, ArtistOverviewCacheEntry,
     CandidateState, LaunchMode, LibraryRow, LibraryState, LibraryView, MusicBrainzResult, RunPhase,
     ScanScope, SelectionResult, StatusFilter, musicbrainz_artist_album_preferred,
     musicbrainz_match_section,
@@ -58,7 +58,7 @@ use splined_core::media_database::{
     MediaAlbumSnapshot, MediaIndexChanges, MediaSnapshot, MediaTrackSnapshot,
     RuntimeArtworkMaterial, artist_projection_identity, backfill_windows_comp_track_coordination,
     clear_album_bypass_from_runtime, database_path, detect_media_index_changes,
-    fallback_tracks_from_folder, indexed_artist_appearances, load_artist_art_profile,
+    fallback_tracks_from_folder, load_artist_art_profile,
     media_snapshot, media_snapshot_for_setup_with_progress, pending_database_schema_upgrade,
     persist_opposing_album_artwork, persist_opposing_compilation_artwork, record_album_outcome,
     record_album_outcome_from_runtime, save_album_category_override, save_artist_art_identity,
@@ -1297,6 +1297,7 @@ fn schedule_artist_overview_biography(
     state: &Arc<Mutex<ApplicationState>>,
     weak: &slint::Weak<AppWindow>,
     request_revision: u64,
+    inventory_revision: u64,
     artist: &str,
     biography: String,
     external_url: String,
@@ -1318,6 +1319,9 @@ fn schedule_artist_overview_biography(
         let changed = state
             .lock()
             .map(|mut app| {
+                if app.library.artist_inventory_revision != inventory_revision {
+                    return false;
+                }
                 apply_artist_overview_biography(
                     &mut app,
                     &artist,
@@ -1829,8 +1833,11 @@ fn refresh_navidrome_thumbnails(
     {
         ui.invoke_load_artist_top_songs();
     }
-    let Some((config, albums, needs_refresh, lookup_override, indexed_artist_mbid)) =
+    let Some((config, albums, local_artists, needs_refresh, lookup_override, indexed_artist_mbid, indexed_appearances, inventory_revision)) =
         state.lock().ok().map(|mut app| {
+            let local_artists = app.library.artist_state_album_index_map().into_keys()
+                .map(|name| (artist_projection_identity(&name), name))
+                .collect::<HashMap<_, _>>();
             let lookup_override = requested_artist
                 .as_ref()
                 .and_then(|artist| app.artist_lookup_overrides.get(artist).cloned());
@@ -1875,12 +1882,18 @@ fn refresh_navidrome_thumbnails(
                 })
                 .cloned()
                 .unwrap_or_default();
+            let indexed_appearances = focused_artist.as_deref()
+                .map(|artist| app.library.catalog_artist_appearances(artist))
+                .unwrap_or_default();
             (
                 app.config.clone(),
                 albums,
+                local_artists,
                 needs_refresh,
                 lookup_override,
                 indexed_artist_mbid,
+                indexed_appearances,
+                app.library.artist_inventory_revision,
             )
         })
     else {
@@ -1981,6 +1994,7 @@ fn refresh_navidrome_thumbnails(
                 &state,
                 &weak,
                 request_revision,
+                inventory_revision,
                 artist,
                 profile.biography.clone(),
                 profile.external_url.clone(),
@@ -2051,20 +2065,6 @@ fn refresh_navidrome_thumbnails(
             )
             .unwrap_or_else(|_| source.to_path_buf())
         });
-        let indexed_appearances = requested_artist
-            .as_deref()
-            .map(|artist| match indexed_artist_appearances(&config, artist) {
-                Ok(appearances) => appearances,
-                Err(error) => {
-                    if let Some(log) = UI_DEBUG_LOG_HANDLE.get() {
-                        log.record(format!(
-                            "artist-appearance-sqlite-read-failed artist={artist} error={error}"
-                        ));
-                    }
-                    Default::default()
-                }
-            })
-            .unwrap_or_default();
         if let Some(artist) = requested_artist.as_ref() {
             if let Some(path) = saved_package
                 .portrait
@@ -2099,6 +2099,7 @@ fn refresh_navidrome_thumbnails(
                     return;
                 }
                 if let Ok(mut app) = state_local.lock()
+                    && app.library.artist_inventory_revision == inventory_revision
                     && overview_artist_name(&app).is_some_and(|current| {
                         artist_projection_identity(&current) == artist_projection_identity(&artist)
                     })
@@ -2146,10 +2147,6 @@ fn refresh_navidrome_thumbnails(
             let biography_weak = weak.clone();
             runtime.block_on(async move {
                 let remote_artists = navidrome_artist_catalog(&companion, &server_key).await?;
-                let local_artists = albums
-                    .iter()
-                    .map(|album| album.artist.trim().to_ascii_lowercase())
-                    .collect::<BTreeSet<_>>();
                 let artists_to_hydrate = if let Some(requested) = requested_artist.as_ref() {
                     let directory_match = navidrome_artist_for_lookup(
                         &remote_artists,
@@ -2176,19 +2173,21 @@ fn refresh_navidrome_thumbnails(
                     remote_artists
                         .iter()
                         .filter(|artist| {
-                            local_artists.contains(&artist.name.trim().to_ascii_lowercase())
+                            local_artists.contains_key(&artist_projection_identity(&artist.name))
                         })
                         .cloned()
                         .collect::<Vec<_>>()
                 };
                 let mut artist_paths = Vec::new();
-                // The complete Navidrome catalog is the same real-Artist
-                // authority WebGUI starts from. Artwork remains lazy, but
-                // identity must not be limited to the subset being hydrated.
+                // Provider IDs annotate eligible local presentations. They
+                // never create a local Artist or supply a catalog alias.
                 let mut artist_ids = if requested_artist.is_none() {
-                    remote_artists
+                    artists_to_hydrate
                         .iter()
-                        .map(|artist| (artist.name.clone(), artist.id.clone()))
+                        .filter_map(|artist| {
+                            local_artists.get(&artist_projection_identity(&artist.name))
+                                .map(|local| (local.clone(), artist.id.clone()))
+                        })
                         .collect::<Vec<_>>()
                 } else {
                     Vec::new()
@@ -2217,6 +2216,7 @@ fn refresh_navidrome_thumbnails(
                         &biography_state,
                         &biography_weak,
                         request_revision,
+                        inventory_revision,
                         local_artist,
                         info.biography.clone(),
                         info.external_url.clone(),
@@ -2234,7 +2234,10 @@ fn refresh_navidrome_thumbnails(
                     &indexed_appearances.album_keys,
                 );
                 for artist in &artists_to_hydrate {
-                    let local_artist = requested_artist.as_deref().unwrap_or(artist.name.as_str());
+                    let local_artist = requested_artist.as_deref().unwrap_or_else(|| {
+                        local_artists.get(&artist_projection_identity(&artist.name))
+                            .map_or(artist.name.as_str(), String::as_str)
+                    });
                     artist_ids.push((local_artist.to_string(), artist.id.clone()));
                     let current_artist_art = companion
                         .cache_artist_art(artist, &artist_cache, 192)
@@ -2653,6 +2656,11 @@ fn refresh_navidrome_thumbnails(
             if !full_refresh
                 && FOCUSED_THUMBNAIL_REFRESH_REVISION.load(Ordering::SeqCst) != request_revision
             {
+                return;
+            }
+            if state.lock().map_or(true, |app| {
+                app.library.artist_inventory_revision != inventory_revision
+            }) {
                 return;
             }
             if !full_refresh && let Ok(mut app) = state.lock() {
@@ -5850,25 +5858,27 @@ fn apply_ui_preferences(state: &mut ApplicationState, preferences: &UiPreference
             "albums" => LibraryView::Albums,
             _ => LibraryView::Artists,
         });
-    // `status_filter = "all"` is the durable user intent. Prefer it over
-    // the serialized member list so an upgrade that introduces a new state
-    // (for example Overridden) cannot silently hide that state. Custom
-    // lists keep Unprocessed enabled because it is now a heading count, not
-    // a separately clickable Artist State row.
+    // "all" opts into new visible statuses. An empty custom list keeps
+    // every filter off, including an older list containing only the heading.
     if preferences.status_filter.eq_ignore_ascii_case("all") {
         state.library.set_status_filter(StatusFilter::All);
-    } else if preferences.status_filters.is_empty() {
+    } else if preferences.status_filters.is_empty()
+        && !preferences.status_filter.eq_ignore_ascii_case("custom")
+    {
         state
             .library
             .set_status_filter(parse_status_filter(&preferences.status_filter));
     } else {
-        state.library.set_status_filters(
-            preferences
-                .status_filters
-                .iter()
-                .map(|value| parse_status_filter(value))
-                .chain(std::iter::once(StatusFilter::Unprocessed)),
-        );
+        let mut selected = preferences
+            .status_filters
+            .iter()
+            .map(|value| parse_status_filter(value))
+            .filter(|filter| !matches!(filter, StatusFilter::All | StatusFilter::Unprocessed))
+            .collect::<Vec<_>>();
+        if !selected.is_empty() {
+            selected.push(StatusFilter::Unprocessed);
+        }
+        state.library.set_status_filters(selected);
     }
     state
         .library
@@ -9041,6 +9051,13 @@ fn load_application_state() -> (ApplicationState, bool, Option<String>) {
     for diagnostic in diagnostics {
         state.push_log(diagnostic);
     }
+    if let Some(warning) = splined_core::artist_separator::ArtistSeparator::warning(
+        &state.config.scan.artist_separator_regex,
+    ) {
+        state.operation_status = warning.to_string();
+        state.operation_tone = "orange".to_string();
+        state.push_log(warning.to_string());
+    }
     for cache_cleanup in cache_cleanups {
         match cache_cleanup {
             Ok((count, bytes)) if count > 0 => state.push_log(format!(
@@ -9056,6 +9073,7 @@ fn load_application_state() -> (ApplicationState, bool, Option<String>) {
 
 fn empty_snapshot(config: &Config) -> MediaSnapshot {
     MediaSnapshot {
+        artist_catalog: None,
         schema_version: splined_core::media_database::SCHEMA_VERSION,
         database_path: String::new(),
         canonical_root: config.library.music_library.clone(),
@@ -17928,6 +17946,10 @@ fn set_settings_ui(ui: &AppWindow, config: &Config) {
     );
     ui.set_settings_artist_separator_regex(config.scan.artist_separator_regex.clone().into());
     ui.set_settings_artist_separator_profile(config.scan.artist_separator_profile.clone().into());
+    ui.set_settings_artist_separator_warning(
+        splined_core::artist_separator::ArtistSeparator::warning(&config.scan.artist_separator_regex)
+            .unwrap_or_default().into(),
+    );
     ui.set_settings_database_dir(
         splined_core::portable::display_path(Path::new(&config.scan.cache_dir)).into(),
     );
@@ -18135,14 +18157,7 @@ fn apply_settings_ui(ui: &AppWindow, config: &mut Config) -> Result<(), String> 
         .trim()
         .to_string();
     config.scan.scan_library_dir = ui.get_settings_scan_library().trim().to_string();
-    config.scan.artist_separator_regex =
-        ui.get_settings_artist_separator_regex().trim().to_string();
-    regex::Regex::new(&config.scan.artist_separator_regex)
-        .map_err(|error| format!("Artist separator Regex is invalid: {error}"))?;
-    config.scan.artist_separator_profile = artist_separator_profile_label(
-        &config.scan.artist_separator_regex,
-        ui.get_settings_artist_separator_profile().as_str(),
-    );
+    update_artist_separator_setting(ui, config)?;
     config.scan.cache_dir = ui.get_settings_database_dir().trim().to_string();
     config.scan.shared_artist_art_dir = ui.get_settings_shared_artist_art_dir().trim().to_string();
     if config.scan.shared_artist_art_dir.is_empty() {
@@ -18260,14 +18275,7 @@ fn apply_settings_section_ui(
                 .trim()
                 .to_string();
             config.scan.scan_library_dir = ui.get_settings_scan_library().trim().to_string();
-            config.scan.artist_separator_regex =
-                ui.get_settings_artist_separator_regex().trim().to_string();
-            regex::Regex::new(&config.scan.artist_separator_regex)
-                .map_err(|error| format!("Artist separator Regex is invalid: {error}"))?;
-            config.scan.artist_separator_profile = artist_separator_profile_label(
-                &config.scan.artist_separator_regex,
-                ui.get_settings_artist_separator_profile().as_str(),
-            );
+            update_artist_separator_setting(ui, config)?;
             config.scan.scan_mode = ui.get_settings_scan_mode();
             config.scan.cache_dir = ui.get_settings_database_dir().trim().to_string();
             config.scan.shared_artist_art_dir =
@@ -20686,12 +20694,7 @@ fn sync_media_filter_ui(ui: &AppWindow, state: &ApplicationState) {
         && state.library.view == LibraryView::Albums
         && library_rows.iter().all(|row| row.kind == "album-category");
     let reset_short_scroll = library_rows.len() < 8;
-    let shown_count = if !state.library.show_tracks && state.library.view == LibraryView::Albums {
-        state.library.visible_album_count()
-    } else {
-        library_rows.iter().filter(|row| row.depth == 0).count()
-    };
-    ui.set_library_shown_count(shown_count as i32);
+    ui.set_artist_inventory_count(state.library.artist_inventory_count() as i32);
     let model_signature = library_model_signature(state, &library_rows);
     if ui.get_library_model_signature().as_str() != model_signature {
         ui.set_library_rows(if state.media_selector_expanded {
@@ -22825,6 +22828,7 @@ fn theme_preview_album_row(state: &ApplicationState, target: &str) -> UiArtistAl
         soundtrack: banner_key == "soundtrack",
         various_artists: banner_key == "various",
         separator_before: false,
+        banner_key: banner_key.into(),
         banner_display: banner_display.into(),
         banner_background: banner_color("background", "#006B3C", true),
         banner_frame: banner_color("frame", "#D9AD43", false),
@@ -23121,12 +23125,13 @@ fn artist_album_card_artwork_path(
 }
 
 fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRow> {
-    artist_overview_ui_model_with_show_all(state, state.artist_overview_show_all)
+    artist_overview_ui_model_with_show_all(state, state.artist_overview_show_all, true)
 }
 
 fn artist_overview_ui_model_with_show_all(
     state: &ApplicationState,
     show_all: bool,
+    include_artwork: bool,
 ) -> ModelRc<UiArtistAlbumRow> {
     let artist_mode = !state.library.show_tracks
         && state.library.view == LibraryView::Artists
@@ -23252,16 +23257,8 @@ fn artist_overview_ui_model_with_show_all(
             let (soundtrack, various_artists) = artist_overview_release_banners(snapshot);
             let banner_key = if overridden {
                 "override"
-            } else if fallback {
-                if featured { "featuring" } else { "compiled" }
-            } else if soundtrack {
-                "soundtrack"
-            } else if various_artists {
-                "various"
-            } else if featured {
-                "featuring"
             } else {
-                "artist"
+                ["artist", "featuring", "soundtrack", "various", "compiled"][usize::from(group)]
             };
             let banner_style = state
                 .banner_theme_styles
@@ -23475,15 +23472,16 @@ fn artist_overview_ui_model_with_show_all(
                 .get(&snapshot.path.to_lowercase())
                 .cloned()
                 .unwrap_or_default();
-            let artwork_path = artist_album_card_artwork_path(state, snapshot);
-            let artwork = load_album_card_image(
-                &artwork_path,
-                192,
-                overridden
-                    && media_state_policy()
-                        .override_presentation
-                        .grayscale_thumbnail,
-            );
+            let artwork = if include_artwork {
+                let artwork_path = artist_album_card_artwork_path(state, snapshot);
+                load_album_card_image(
+                    &artwork_path,
+                    192,
+                    overridden && media_state_policy().override_presentation.grayscale_thumbnail,
+                )
+            } else {
+                slint::Image::default()
+            };
             UiArtistAlbumRow {
                 key: SharedString::from(snapshot.album_key.clone()),
                 title: SharedString::from(snapshot.title.clone()),
@@ -23509,6 +23507,7 @@ fn artist_overview_ui_model_with_show_all(
                 soundtrack,
                 various_artists,
                 separator_before,
+                banner_key: banner_key.into(),
                 banner_display: banner_display.into(),
                 banner_background,
                 banner_frame,
@@ -23573,31 +23572,14 @@ fn artist_overview_legend_counts(
                 _ => {}
             }
         }
-        // Mirror the visible banner's priority. Shared identified releases
-        // remain SOUNDTRACK/VARIOUS even though the selected Artist is not the
-        // synthetic folder owner; only a real Album owner's guest credit is
-        // presented as FEATURED.
-        if album.overridden {
-            // The OVERRIDE banner replaces the category banner while the
-            // opposing application owns the latest successful write.
-        } else if album.fallback {
-            if album.featured {
-                counts.feat += 1;
-            } else {
-                if album.fallback_complete {
-                    counts.comp_complete += 1;
-                } else {
-                    counts.comp_pending += 1;
-                }
-            }
-        } else if album.soundtrack {
-            counts.ost += 1;
-        } else if album.various_artists {
-            counts.various += 1;
-        } else if album.featured {
-            counts.feat += 1;
-        } else {
-            counts.artist += 1;
+        match album.banner_key.as_str() {
+            "compiled" if album.fallback_complete => counts.comp_complete += 1,
+            "compiled" => counts.comp_pending += 1,
+            "soundtrack" => counts.ost += 1,
+            "various" => counts.various += 1,
+            "featuring" => counts.feat += 1,
+            "artist" => counts.artist += 1,
+            _ => {}
         }
     }
     counts.in_process = counts.shown - counts.completed - counts.overridden - counts.validating;
@@ -23616,17 +23598,16 @@ fn artist_overview_legend_counts(
 // Card order is presentation-only: do not change the library's selection or
 // LAUNCH order when grouping the Artist Overview by album type.
 fn artist_overview_sort_group(state: &ApplicationState, album: &AlbumEntry) -> u8 {
-    if state.library.is_curated_fallback(album) {
-        return if artist_overview_is_featured(state, album) {
-            1 // Preserve the established COMP appearance presentation.
-        } else {
-            4 // COMP fallback is always the final Album-card group.
-        };
+    let category = state.library.catalog_album_category(album);
+    if matches!(category, AlbumLibraryGroup::Fallback | AlbumLibraryGroup::MiscCurated)
+        || album.snapshot.album_mbid.trim().is_empty()
+    {
+        return 4;
     }
     let (soundtrack, various_artists) = artist_overview_release_banners(&album.snapshot);
-    if soundtrack {
+    if soundtrack || category == AlbumLibraryGroup::Soundtracks {
         2
-    } else if various_artists {
+    } else if various_artists || category == AlbumLibraryGroup::VariousArtists {
         3
     } else if artist_overview_is_featured(state, album) {
         1 // A real Album owner's guest appearance follows owned Artist Albums.
@@ -23796,7 +23777,9 @@ fn artist_state_overview_model(state: &ApplicationState) -> Option<ModelRc<UiArt
         && !state.library.show_tracks
         && state.library.focused_artist.is_some();
     if focused_artist {
-        Some(artist_overview_ui_model_with_show_all(state, true))
+        // MEDIA FILTER uses these rows for state counts only. Album-card
+        // images are resolved once by the visible overview presentation.
+        Some(artist_overview_ui_model_with_show_all(state, true, false))
     } else {
         None
     }
@@ -25351,6 +25334,21 @@ fn artist_separator_profile_label(pattern: &str, imported: &str) -> String {
     }
 }
 
+fn update_artist_separator_setting(ui: &AppWindow, config: &mut Config) -> Result<(), String> {
+    let pattern = ui.get_settings_artist_separator_regex().to_string();
+    let profile = ui.get_settings_artist_separator_profile();
+    let pattern_changed = pattern != config.scan.artist_separator_regex;
+    if pattern_changed {
+        splined_core::artist_separator::ArtistSeparator::parse(&pattern).map_err(str::to_string)?;
+        config.scan.artist_separator_regex = pattern;
+    }
+    if pattern_changed || profile.as_str() != config.scan.artist_separator_profile {
+        config.scan.artist_separator_profile =
+            artist_separator_profile_label(&config.scan.artist_separator_regex, profile.as_str());
+    }
+    Ok(())
+}
+
 fn artist_separator_profile_from_json(path: &str) -> Result<(String, String), String> {
     let body = fs::read_to_string(path)
         .map_err(|error| format!("Unable to read Artist separator JSON: {error}"))?;
@@ -25365,7 +25363,6 @@ fn artist_separator_profile_from_json(path: &str) -> Result<(String, String), St
         .or_else(|| root.get("separator_regex"))
         .and_then(serde_json::Value::as_str)
         .unwrap_or("")
-        .trim()
         .to_string();
     if pattern.is_empty() {
         let separators = root
@@ -25387,8 +25384,7 @@ fn artist_separator_profile_from_json(path: &str) -> Result<(String, String), St
         }
         pattern = format!("(?:{})", escaped.join("|"));
     }
-    regex::Regex::new(&pattern)
-        .map_err(|error| format!("Artist separator Regex is invalid: {error}"))?;
+    splined_core::artist_separator::ArtistSeparator::parse(&pattern).map_err(str::to_string)?;
     let imported = root
         .get("artist_separator_profile")
         .or_else(|| root.get("profile"))
@@ -26364,6 +26360,7 @@ mod tests {
     #[test]
     fn uploaded_artist_art_defaults_to_blue_and_supports_both_roles() {
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -26435,6 +26432,7 @@ mod tests {
         config.output.upscale_contrast_percent = 15;
         config.output.upscale_hue_degrees = -20;
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -26457,6 +26455,7 @@ mod tests {
         let mut config = Config::default();
         config.output.upscale_gamma_percent = -6;
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -26558,6 +26557,7 @@ mod tests {
             .save(&portrait)
             .unwrap();
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -26587,6 +26587,7 @@ mod tests {
             .save_with_format(&cover, image::ImageFormat::Png)
             .unwrap();
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -26639,6 +26640,7 @@ mod tests {
     #[test]
     fn artist_portrait_and_banner_adjustments_survive_pane_switches() {
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -26665,6 +26667,7 @@ mod tests {
     #[test]
     fn artist_radios_select_individual_or_package_without_manual_package_button() {
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -26696,6 +26699,7 @@ mod tests {
     #[test]
     fn existing_musicbrainz_release_is_hidden_only_below_best_match() {
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -26961,6 +26965,7 @@ mod tests {
     #[test]
     fn cover_write_keeps_upscaled_preview_without_implicit_album_embedding() {
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -26996,6 +27001,7 @@ mod tests {
             .save_with_format(&candidate, image::ImageFormat::Png)
             .unwrap();
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -27023,6 +27029,7 @@ mod tests {
     #[test]
     fn comp_write_uses_upscaled_preview_without_requiring_thumb_preview() {
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -27143,6 +27150,7 @@ mod tests {
         let mut app = ApplicationState::new(
             Config::default(),
             MediaSnapshot {
+                artist_catalog: None,
                 schema_version: splined_core::media_database::SCHEMA_VERSION,
                 database_path: String::new(),
                 canonical_root: String::new(),
@@ -27364,6 +27372,7 @@ mod tests {
         let mut app = ApplicationState::new(
             Config::default(),
             MediaSnapshot {
+                artist_catalog: None,
                 schema_version: splined_core::media_database::SCHEMA_VERSION,
                 database_path: String::new(),
                 canonical_root: String::new(),
@@ -27735,6 +27744,7 @@ mod tests {
     #[test]
     fn opposing_write_replaces_incomplete_new_state_without_a_stale_red_dot() {
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: "splined.db".to_string(),
             canonical_root: "/music".to_string(),
@@ -27888,6 +27898,7 @@ mod tests {
         config.library.curated_compilations_path =
             r"C:\Music\Various Artists\Billboard".to_string();
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: "splined.db".to_string(),
             canonical_root: "/music".to_string(),
@@ -28089,6 +28100,7 @@ mod tests {
         let mut app = ApplicationState::new(
             Config::default(),
             MediaSnapshot {
+                artist_catalog: None,
                 schema_version: splined_core::media_database::SCHEMA_VERSION,
                 database_path: String::new(),
                 canonical_root: String::new(),
@@ -28119,7 +28131,7 @@ mod tests {
         // Stale/provider metadata may label a shared release as a secondary
         // credit. Its explicit release type must still own the visible banner.
         app.artist_overview_featured_album_keys
-            .extend(["va-old", "ost-old"].into_iter().map(str::to_string));
+            .extend(["va-old", "ost-old", "comp-new"].into_iter().map(str::to_string));
 
         let cards = artist_overview_ui_model(&app);
         let actual = (0..cards.row_count())
@@ -28150,6 +28162,18 @@ mod tests {
         );
         let counts = artist_overview_legend_counts(&cards, &[]);
         assert_eq!(counts.shown, 12);
+        assert_eq!(counts.comp_pending, 2);
+        let compiled = cards.row_data(10).unwrap();
+        assert!(compiled.featured, "retain the Featured association");
+        assert_eq!(compiled.banner_display.replace('\n', ""), "COMPILED");
+        let summary = super::artist_state_overview_model(&app).unwrap();
+        assert_eq!(summary.row_count(), cards.row_count());
+        for index in 0..cards.row_count() {
+            let card = cards.row_data(index).unwrap();
+            let state = summary.row_data(index).unwrap();
+            assert_eq!((state.key, state.state_key), (card.key, card.state_key));
+            assert!(!state.has_artwork);
+        }
         assert_eq!(counts.completed, 0);
         assert_eq!(counts.in_process, 12);
         assert_eq!(counts.validating, 0);
@@ -28196,10 +28220,19 @@ mod tests {
         // A processed artist's three physical albums and one completed COMP
         // appearance must not acquire red dots merely because the COMP folder
         // has no Release ID/usable folder cover or remains globally incomplete.
-        app.library.albums.retain(|album| {
+        let selected_inventory = app.library.albums.iter().filter(|album| {
             ["artist-new", "artist-old", "new-new", "comp-new"]
                 .contains(&album.snapshot.album_key.as_str())
-        });
+        }).map(|album| album.snapshot.clone()).collect();
+        app.library.replace_snapshot(MediaSnapshot {
+            artist_catalog: None,
+            schema_version: splined_core::media_database::SCHEMA_VERSION,
+            database_path: String::new(),
+            canonical_root: String::new(),
+            local_root: String::new(),
+            albums: selected_inventory,
+        }).unwrap();
+        app.library.apply_album_category_override("comp-new", "fallback").unwrap();
         app.library.artist_artwork_paths.insert(
             "mariah carey".into(),
             "C:/Music/Mariah Carey/artist.jpg".into(),
@@ -28381,6 +28414,7 @@ mod tests {
         let mut app = ApplicationState::new(
             Config::default(),
             MediaSnapshot {
+                artist_catalog: None,
                 schema_version: splined_core::media_database::SCHEMA_VERSION,
                 database_path: String::new(),
                 canonical_root: String::new(),
@@ -28572,6 +28606,7 @@ mod tests {
         let mut app = ApplicationState::new(
             Config::default(),
             MediaSnapshot {
+                artist_catalog: None,
                 schema_version: splined_core::media_database::SCHEMA_VERSION,
                 database_path: String::new(),
                 canonical_root: String::new(),
@@ -28607,6 +28642,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let album_path = directory.path().join("Alpha").join("Complete");
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: directory.path().to_string_lossy().into_owned(),
@@ -29323,6 +29359,7 @@ mod tests {
             .save_with_format(&current, image::ImageFormat::Png)
             .unwrap();
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: "splined.db".to_string(),
             canonical_root: directory.path().to_string_lossy().into_owned(),
@@ -29420,6 +29457,7 @@ mod tests {
         let root = PathBuf::from(r"C:\Music");
         let track_path = root.join("Various Artists").join("COMP").join("01.flac");
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: "splined.db".to_string(),
             canonical_root: root.to_string_lossy().into_owned(),
@@ -29500,6 +29538,7 @@ mod tests {
     #[test]
     fn repeated_artist_thumbnail_publication_is_a_no_op() {
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -29528,6 +29567,7 @@ mod tests {
     #[test]
     fn artist_overview_year_hydration_only_fills_blank_album_years() {
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -29610,6 +29650,7 @@ mod tests {
         let mut app = ApplicationState::new(
             Config::default(),
             MediaSnapshot {
+                artist_catalog: None,
                 schema_version: splined_core::media_database::SCHEMA_VERSION,
                 database_path: "splined.db".to_string(),
                 canonical_root: "/music".to_string(),
@@ -29853,6 +29894,7 @@ mod tests {
     #[test]
     fn musicbrainz_preview_requests_are_single_flight_and_page_cached() {
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -29911,6 +29953,7 @@ mod tests {
             .save_with_format(&cover, image::ImageFormat::Png)
             .unwrap();
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -29944,6 +29987,7 @@ mod tests {
             .unwrap();
         let original = fs::read(&cover).unwrap();
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -29999,6 +30043,7 @@ mod tests {
         .save_with_format(&cover, image::ImageFormat::Png)
         .unwrap();
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -30077,6 +30122,7 @@ mod tests {
             .save_with_format(&cover, image::ImageFormat::Png)
             .unwrap();
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -30114,6 +30160,7 @@ mod tests {
             .save_with_format(&embedded, image::ImageFormat::Png)
             .unwrap();
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -30156,6 +30203,7 @@ mod tests {
         fs::write(&first, []).unwrap();
         fs::write(&second, []).unwrap();
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -30185,6 +30233,7 @@ mod tests {
     #[test]
     fn comp_report_preview_preloads_only_the_saved_thumb() {
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -30211,6 +30260,7 @@ mod tests {
     #[test]
     fn compilation_track_never_falls_back_to_album_folder_cover() {
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -30274,6 +30324,7 @@ mod tests {
     #[test]
     fn selected_compilation_track_cannot_edit_album_cover() {
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -30300,6 +30351,7 @@ mod tests {
     #[test]
     fn musicbrainz_existing_art_is_default_preview_until_a_release_is_selected() {
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -30399,6 +30451,7 @@ mod tests {
     #[test]
     fn themed_artist_package_keeps_both_preview_images_during_refresh() {
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -30750,6 +30803,7 @@ mod tests {
     #[test]
     fn settings_rebuild_keeps_locked_filter_authority() {
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -30945,6 +30999,7 @@ mod tests {
     #[test]
     fn enhancement_filter_intensity_is_separate_for_album_portrait_and_banner() {
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -31450,6 +31505,7 @@ mod tests {
     #[test]
     fn mb_failed_opens_validated_focused_artist_or_focused_name_search() {
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -31490,6 +31546,7 @@ mod tests {
     #[test]
     fn config_mode_remains_authoritative_over_legacy_ui_preferences() {
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -31521,6 +31578,7 @@ mod tests {
     #[test]
     fn restored_interface_rehydrates_locked_filters_palette_and_pane_sizes() {
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),
@@ -31587,6 +31645,7 @@ mod tests {
     #[test]
     fn legacy_all_status_preference_includes_states_added_after_it_was_saved() {
         let snapshot = MediaSnapshot {
+            artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
             database_path: String::new(),
             canonical_root: String::new(),

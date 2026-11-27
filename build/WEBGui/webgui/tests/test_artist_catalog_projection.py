@@ -19,11 +19,16 @@ from webgui.catalog import (
     artist_credit_position,
     artist_display_sort_key,
     artist_search_matches,
+    catalog_credit_slots,
     embedded_album_artwork_summary,
     normalized_artist_identity,
     potential_collaboration_credits,
 )
-from splined_media_tags import ARTIST_CREDIT_SEPARATOR, normalize_artist_credit_text
+from splined_media_tags import (
+    ARTIST_CREDIT_SEPARATOR, normalize_artist_credit_text, read_album_and_track_identity_tags,
+)
+from splined_artist_separator import parse as parse_artist_separator
+from mutagen.id3 import ID3, TPE2, TXXX
 from splined_media_database import aggregate_artist, update_artist_aggregate
 
 
@@ -38,6 +43,49 @@ CONFORMANCE = json.loads(
 
 
 class ArtistCatalogProjectionTests(unittest.TestCase):
+    def test_art004_portability_does_not_change_independent_credit_normalization(self):
+        profile = r"(?<=feat\.)\s+"
+        with self.assertRaisesRegex(ValueError, "Incompatible Artist separator"):
+            parse_artist_separator(profile)
+        self.assertEqual(
+            normalize_artist_credit_text("Artist feat. Guest", profile),
+            ARTIST_CREDIT_SEPARATOR.join(("Artist feat.", "Guest")),
+        )
+
+    def test_art004_portable_separator_matches_shared_cases(self):
+        for case in CONFORMANCE["portable_separator_cases"]:
+            with self.subTest(profile=case["profile"]):
+                if "parts" not in case:
+                    with self.assertRaisesRegex(ValueError, "Incompatible Artist separator"):
+                        parse_artist_separator(case["profile"])
+                    continue
+                separator = parse_artist_separator(case["profile"])
+                self.assertEqual(separator.split(case["value"]), case["parts"])
+                self.assertTrue(separator.full_match(case["whole"]))
+
+    def test_original_album_artist_id_alias_conflicts_are_captured_without_reparenting(self):
+        first, second = CONFORMANCE["conflicting_owner_artist_ids"]
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "01.mp3"
+            path.write_bytes((b"\xff\xfb\x90\x64" + bytes(413)) * 5)
+            tags = ID3()
+            tags.add(TPE2(encoding=3, text=["Stage Owner"]))
+            tags.add(TXXX(encoding=3, desc="MUSICBRAINZ_ALBUMARTISTID", text=[first]))
+            tags.add(TXXX(encoding=3, desc="MUSICBRAINZ_RELEASEARTISTID", text=[second]))
+            tags.save(path)
+            album, evidence = read_album_and_track_identity_tags(path)
+        self.assertEqual(album["artist_mbid"], first)
+        self.assertEqual(evidence["original_album_artist_mbids"].split(ARTIST_CREDIT_SEPARATOR),
+                         [first, second])
+
+    def test_shared_art004_positioned_local_credits(self):
+        for case in CONFORMANCE["positioned_credit_cases"]:
+            with self.subTest(case=case["id"]):
+                self.assertEqual([list(credit) for credit in catalog_credit_slots(
+                    case["value"], case["artist_mbids"], case["title"], case["filename"],
+                    case["owner"], parse_artist_separator(case["separator_regex"]),
+                )], case["expected"])
+
     def test_shared_art004_credit_and_search_conformance(self):
         self.assertEqual(CONFORMANCE["policy_id"], "ART-004")
         for case in CONFORMANCE["credit_cases"]:
@@ -745,6 +793,7 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                 db.commit()
 
             app = PreviewApp(root, database, root, credentials, cache=root / "cache")
+            app.category_overrides["billboard"] = "fallback"
             listed = app.artists("")[0]
             self.assertEqual(listed["albums"], 1)
             # The fallback Album remains excluded from the Album count, but
@@ -905,6 +954,7 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                 db.commit()
 
             app = PreviewApp(root, database, root, credentials, cache=root / "cache")
+            app.category_overrides["hidden"] = "fallback"
             self.assertEqual(app.artists("")[0]["albums"], 2)
             artist = app.artist("aaron")
             self.assertEqual(
@@ -1347,6 +1397,11 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                 return {"searchResult3": {"song": songs}}
 
             app._navidrome_call = navidrome
+            app.category_overrides.update({
+                "comp": "fallback",
+                "soundtrack": "soundtracks",
+                "various": "various-artists",
+            })
 
             listed = [item for item in app.artists("") if item["name"].casefold().endswith("nsync")]
             self.assertEqual(len(listed), 1)
@@ -1465,6 +1520,7 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
                 db.commit()
 
             app = PreviewApp(root, database, root, credentials, cache=root / "cache")
+            app.category_overrides["comp"] = "fallback"
             target_list_row = next(
                 item for item in app.artists("") if item["name"] == "Target Artist"
             )

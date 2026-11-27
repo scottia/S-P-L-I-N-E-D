@@ -126,6 +126,7 @@ async function initialize() {
     const pruned = Number(migration.cleanup?.pre_v3_audit || 0);
     setStatus(`PostgreSQL ${migration.application_version || ""} · schema automatically upgraded to v${migration.current} · applied ${migration.applied.join(", ")}${pruned ? ` · removed ${pruned} pre-v3 diagnostic records` : ""}`);
   }
+  if (settings.artist_separator_warning) setStatus(settings.artist_separator_warning, "error");
   // Discover physical library changes after the workspace is usable. This
   // remains a read-only check; the operator explicitly chooses whether to run
   // the incremental PostgreSQL refresh from the header notice. Do not start a
@@ -1763,7 +1764,7 @@ const DEFAULT_ARTIST_SEPARATOR_REGEX = "(?i)(?: / | feat\\. | feat | ft\\. | ft 
 function importedArtistSeparator(value) {
   const root = value?.scan && typeof value.scan === "object" ? value.scan : value;
   if (!root || typeof root !== "object" || Array.isArray(root)) throw new Error("The selected JSON must contain an Artist separator object");
-  let regex = String(root.artist_separator_regex ?? root.separator_regex ?? "").trim();
+  let regex = String(root.artist_separator_regex ?? root.separator_regex ?? "");
   const separators = root.artist_separators ?? root.separators;
   if (!regex && Array.isArray(separators)) {
     const values = separators.map(value => String(value)).filter(Boolean);
@@ -1794,7 +1795,7 @@ function renderArtistSeparatorImport(host, draft, rerender) {
     rerender();
   }));
   panel.append(file, browse);
-  settingsHelp(panel, "How is the Artist separator applied?", "Advanced: SPLINED applies this Python-compatible Regex only to one joined Artist/TPE1 value and strict numbered filename credits. A real multi-value tag is never split again. JSON may contain artist_separator_regex (optionally artist_separator_profile) or a separators array. Changing the saved rule requires Reset PostgreSQL Catalog before Full Refresh so one index never mixes identity rules.");
+  settingsHelp(panel, "How is the Artist separator applied?", "Use literal delimiters, positive ASCII classes, whitespace \\s, groups and alternatives. A leading (?i) folds ASCII case. Groups may be optional. Individual characters and classes support ?, * and +. The expression must consume characters. Import a JSON separators array for literal delimiters. After changing and saving this setting, Reset PostgreSQL Catalog before Full Refresh.");
   host.append(panel);
 }
 function enhancementValues(draft) {
@@ -2360,9 +2361,13 @@ async function openSettings() {
     const ignoredBefore = JSON.stringify(settingValue(saved.config, "library.ignored_subs", []));
     applySettingsInputs(draft, bindings);
     if (section.id === "library") {
-      const separator = String(settingValue(draft, "scan.artist_separator_regex", DEFAULT_ARTIST_SEPARATOR_REGEX)).trim();
-      const importedProfile = String(settingValue(draft, "scan.artist_separator_profile", "")).trim();
-      setSettingValue(draft, "scan.artist_separator_profile", separator === DEFAULT_ARTIST_SEPARATOR_REGEX ? "Navidrome default" : (importedProfile && importedProfile !== "Navidrome default" ? importedProfile : "Custom Regex"));
+      const separator = String(settingValue(draft, "scan.artist_separator_regex", DEFAULT_ARTIST_SEPARATOR_REGEX));
+      const profile = String(settingValue(draft, "scan.artist_separator_profile", "Navidrome default"));
+      if (separator !== settingValue(saved.config, "scan.artist_separator_regex", DEFAULT_ARTIST_SEPARATOR_REGEX)
+          || profile !== settingValue(saved.config, "scan.artist_separator_profile", "Navidrome default")) {
+        const importedProfile = profile.trim();
+        setSettingValue(draft, "scan.artist_separator_profile", separator === DEFAULT_ARTIST_SEPARATOR_REGEX ? "Navidrome default" : (importedProfile && importedProfile !== "Navidrome default" ? importedProfile : "Custom Regex"));
+      }
     }
     saved = await post("/api/settings", {config: draft}); await sessionStatus();
     applyGraphicalEnhancement(saved.config.webgui_ui?.enhancement);
@@ -2422,6 +2427,11 @@ async function openSettings() {
         }
       }
       if (section.id === "library") {
+        if (saved.artist_separator_warning) {
+          const warning = node("p", "settings-subcopy", saved.artist_separator_warning);
+          warning.setAttribute("role", "alert");
+          fields.append(warning);
+        }
         const scanToggle = bindings.find(item => item.path === "scan.scan_mode")?.input;
         const scanDirectory = bindings.find(item => item.path === "scan.scan_library_dir")?.input;
         if (scanToggle && scanDirectory) {

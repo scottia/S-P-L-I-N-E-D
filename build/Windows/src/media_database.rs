@@ -23,9 +23,10 @@ use crate::scan::{
     AlbumDirectory, inventory_album_directories, walk_album_directories,
     walk_album_directories_prioritized,
 };
+use crate::scan_musicbrainz::LocalTrackEvidence;
 use crate::scan_tags::{
     AlbumIndexTags, read_album_index_tags, read_album_index_tags_and_track_evidence,
-    read_local_track_evidence, read_local_track_evidence_bounded,
+    read_catalog_track_evidence, read_local_track_evidence, read_local_track_evidence_bounded,
     read_local_track_evidence_bounded_with_progress,
 };
 use image::ImageFormat;
@@ -63,7 +64,7 @@ pub const SCHEMA_VERSION: i64 = 3;
 const LEGACY_SCHEMA_VERSION: i64 = 2;
 const INVENTORY_KEY: &str = "splined-media-library";
 const TRACK_INVENTORY_PREFIX: &str = "tracks-v1:";
-const TRACK_CREDIT_INDEX_VERSION: i64 = 1;
+const TRACK_CREDIT_INDEX_VERSION: i64 = 3;
 const CATALOG_INDEX_CANCELLED: &str = "Catalog index refresh cancelled by the operator.";
 const INDEX_DATABASE_WRITERS: usize = 1;
 const INDEX_REMOTE_PROVIDER_REQUESTS: usize = 0;
@@ -204,6 +205,8 @@ pub struct MediaSnapshot {
     pub canonical_root: String,
     pub local_root: String,
     pub albums: Vec<MediaAlbumSnapshot>,
+    #[serde(skip)]
+    pub artist_catalog: Option<ArtistCatalogInventory>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -229,9 +232,11 @@ pub struct ArtistArtProfile {
 pub struct IndexedArtistAppearances {
     pub album_keys: BTreeSet<String>,
     pub featured_album_keys: BTreeSet<String>,
+    pub(crate) track_paths: BTreeMap<String, BTreeSet<String>>,
 }
 
 pub type IndexedArtistCatalog = BTreeMap<String, BTreeSet<String>>;
+pub(crate) type PositionedArtistTracks = BTreeMap<String, BTreeMap<String, Vec<CatalogCredit>>>;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IndexedArtistCatalogProjection {
@@ -239,38 +244,48 @@ pub struct IndexedArtistCatalogProjection {
     /// Exact positionally paired Artist MBIDs keyed by projected display name.
     /// Ambiguous or conflicting identities are deliberately omitted.
     pub musicbrainz_ids: BTreeMap<String, String>,
+    pub credit_ids_by_identity: BTreeMap<String, BTreeSet<String>>,
+    pub credit_labels_by_identity: BTreeMap<String, BTreeSet<String>>,
+    pub paired_label_ids: BTreeMap<String, BTreeSet<String>>,
+    pub explicit_credit_albums: IndexedArtistCatalog,
+    pub owner_keys: BTreeMap<String, String>,
+    pub(crate) owner_labels: BTreeMap<String, ArtistOwnerLabel>,
+    pub(crate) positioned_track_credits: PositionedArtistTracks,
 }
 
-fn synthetic_album_artist(artist: &str) -> bool {
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ArtistCatalogInventory {
+    pub(crate) overrides: HashMap<String, String>,
+    owners: BTreeMap<String, ArtistOwnerLabel>,
+    tracks: Vec<ArtistTrackInput>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ArtistOwnerLabel {
+    pub(crate) key: String,
+    pub(crate) name: String,
+    pub(crate) mbid: String,
+    representative: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ArtistTrackInput {
+    album_key: String,
+    path: String,
+    artist: String,
+    mbids: String,
+    title: String,
+    original: Option<OriginalArtistCredit>,
+}
+
+pub(crate) fn synthetic_album_artist(artist: &str) -> bool {
     matches!(
-        artist
-            .trim()
-            .trim_matches(['[', ']'])
-            .to_ascii_lowercase()
-            .as_str(),
-        "soundtrack" | "soundtracks" | "various artist" | "various artists"
+        artist_projection_identity(artist).as_str(),
+        "soundtrack" | "soundtracks" | "variousartist" | "variousartists"
     )
 }
 
-fn artist_credit_position(track_artist: &str, artist: &str, separator: &Regex) -> Option<usize> {
-    let selected = artist.trim().to_lowercase();
-    if selected.is_empty() {
-        return None;
-    }
-    let explicit = artist_credit_values(track_artist, separator);
-    if let Some(position) = explicit
-        .iter()
-        .position(|credit| credit.to_lowercase() == selected)
-    {
-        return Some(position);
-    }
-    None
-}
-
-/// Canonicalize one Artist string for durable indexing. Real multi-value tags
-/// arrive with the SQLite NUL boundary or WebGUI/PostgreSQL's durable Unit
-/// Separator boundary and are never guessed apart; the configured Regex is
-/// applied only to one joined Artist/TPE1 or filename credit.
+#[cfg(test)]
 fn artist_credit_values(track_artist: &str, separator: &Regex) -> Vec<String> {
     artist_credit_values_with_mbids(track_artist, "", separator)
 }
@@ -303,13 +318,7 @@ fn artist_credit_values_with_mbids(
         .collect::<Vec<_>>();
     let mbids = extract_mbids(artist_mbids);
     if slash_parts.len() > 1 && mbids.len() == slash_parts.len() {
-        let mut values = Vec::with_capacity(slash_parts.len());
-        for credit in slash_parts {
-            if !values.contains(&credit) {
-                values.push(credit);
-            }
-        }
-        return values.into_iter().map(str::to_string).collect();
+        return slash_parts.into_iter().map(str::to_string).collect();
     }
     for delimiter in [" & ", ", "] {
         let parts = joined
@@ -349,11 +358,16 @@ fn canonical_artist_credit_text(
     artist_credit_values_with_mbids(track_artist, artist_mbids, separator).join("\0")
 }
 
+fn catalog_credit_trim(value: &str) -> &str {
+    // Match Python's text trim, including its four information separators.
+    value.trim_matches(|ch: char| ch.is_whitespace() || matches!(ch, '\u{001c}'..='\u{001f}'))
+}
+
 fn numbered_track_artist_credit(value: &str) -> Option<&str> {
     let mut fields = value.split(" - ");
-    let number = fields.next()?.trim();
-    let artist = fields.next()?.trim();
-    let title = fields.next()?.trim();
+    let number = catalog_credit_trim(fields.next()?);
+    let artist = catalog_credit_trim(fields.next()?);
+    let title = catalog_credit_trim(fields.next()?);
     let numbered = !number.is_empty()
         && number.split('-').all(|part| {
             !part.is_empty() && part.chars().all(|character| character.is_ascii_digit())
@@ -361,88 +375,135 @@ fn numbered_track_artist_credit(value: &str) -> Option<&str> {
     (numbered && !artist.is_empty() && !title.is_empty()).then_some(artist)
 }
 
-/// Split a strict numbered filename/title collaboration only at the indexed
-/// Album-owner boundary. The owner is kept intact even when its real name
-/// contains `&` (`Brooks & Dunn & Kacey Musgraves` becomes the owner plus the
-/// guest), while suffix ownership preserves the Rob Wasserman rule. An
-/// unanchored joined display value is not manufactured as a selectable Artist.
-fn owner_anchored_inferred_credits(value: &str, owner: &str) -> Vec<String> {
-    let value = value.trim();
-    let owner = owner.trim();
-    let owner_prefix = format!("{owner} & ");
-    if let Some(guest) = value.strip_prefix(&owner_prefix).map(str::trim)
-        && !guest.is_empty()
-    {
-        return vec![owner.to_string(), guest.to_string()];
-    }
-    let owner_suffix = format!(" & {owner}");
-    if let Some(guest) = value.strip_suffix(&owner_suffix).map(str::trim)
-        && !guest.is_empty()
-    {
-        return vec![guest.to_string(), owner.to_string()];
-    }
-    let owner_identity = artist_projection_identity(owner);
-    let parts = value
-        .split(" & ")
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>();
-    if parts.len() > 1
-        && parts
-            .iter()
-            .any(|part| artist_projection_identity(part) == owner_identity)
-    {
-        parts.into_iter().map(str::to_string).collect()
-    } else if parts.len() > 1 {
-        Vec::new()
-    } else {
-        vec![value.to_string()]
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CatalogCredit {
+    pub(crate) name: String,
+    pub(crate) position: Option<usize>,
+    pub(crate) mbid: Option<String>,
+    pub(crate) explicit: bool,
 }
 
-fn indexed_track_artist_credits<'a>(
+pub(crate) fn catalog_ordered_mbids(value: &str) -> Vec<String> {
+    static MBID: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    MBID.get_or_init(|| {
+        Regex::new(r"(?i-u:\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b)").unwrap()
+    })
+    .find_iter(value)
+    .map(|id| id.as_str().to_ascii_lowercase())
+    .collect()
+}
+
+fn catalog_credit_slots<'a>(
     track_artist: &'a str,
-    track_artist_mbids: &'a str,
+    track_artist_mbids: &str,
     title: &'a str,
     filename: &'a str,
-    owner: &'a str,
-    separator: &Regex,
-) -> Vec<String> {
-    let mut credits = artist_credit_values_with_mbids(track_artist, track_artist_mbids, separator);
-    // Explicit multi-value ARTIST/TPE1 tags are authoritative.  Adding the
-    // filename's joined display credit would manufacture a duplicate combined
-    // Artist (for example, "Rob Wasserman & Aaron Neville") beside the two
-    // correctly tagged performers.
-    if credits.len() > 1 {
-        return credits;
+    owner: &str,
+    separator: &crate::artist_separator::ArtistSeparator,
+) -> Vec<CatalogCredit> {
+    use crate::artist_unicode::casefold;
+    let clean = |name: &'a str| {
+        let name = catalog_credit_trim(name);
+        (!name.is_empty()).then_some(name)
+    };
+    let tagged: Vec<_> = track_artist.split(['\0', '\x1f']).filter_map(clean).collect();
+    let ids = catalog_ordered_mbids(track_artist_mbids);
+    let bind = |names: Vec<&str>, positional: bool, explicit: bool| {
+        let ids_match = positional && names.len() == ids.len();
+        names.into_iter().enumerate().map(|(index, name)| CatalogCredit {
+            name: name.to_string(),
+            position: positional.then_some(index),
+            mbid: ids_match.then(|| ids[index].clone()),
+            explicit,
+        }).collect::<Vec<_>>()
+    };
+    // Stage 04. Explicit boundaries always precede any separator heuristic.
+    if tagged.len() > 1 {
+        return bind(tagged, true, true);
     }
-    for joined in [
-        numbered_track_artist_credit(title),
-        numbered_track_artist_credit(filename),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        // A strict numbered filename commonly repeats the tagged credit. Do
-        // not reinterpret that same authoritative group as an owner/guest
-        // join (`Ike & Tina Turner` must not also manufacture `Ike`).
-        if credits.iter().any(|existing| {
-            artist_projection_identity(existing) == artist_projection_identity(joined)
-        }) {
+    let joined = tagged.first().copied().unwrap_or_default();
+    for delimiter in ["/", " & ", ", "] {
+        let names: Vec<_> = joined.split(delimiter).filter_map(clean).collect();
+        if names.len() > 1 && names.len() == ids.len() {
+            return bind(names, true, true);
+        }
+    }
+    let owner_key = casefold(catalog_credit_trim(owner));
+    // Some local tags retain a joined backslash credit. Treat it as
+    // positioned local evidence only when the physical owner anchors the first
+    // value and the ordered IDs account for every value. Keep the raw tag intact.
+    if !owner_key.is_empty() && ids.len() > 1 && joined.contains('\\') {
+        let names: Vec<_> = joined.split('\\').filter_map(clean).collect();
+        if names.len() == ids.len()
+            && names.first().is_some_and(|lead| casefold(lead) == owner_key)
+        {
+            return bind(names, true, true);
+        }
+    }
+    let configured: Vec<_> = separator.split(joined).into_iter().filter_map(clean).collect();
+    if configured.len() > 1 && configured.len() == ids.len() {
+        return bind(configured, true, true);
+    }
+    let anchored = |value: &'a str, allow_ampersand: bool| -> Option<Vec<&'a str>> {
+        let pattern = if allow_ampersand {
+            r"(?i-u: (?:feat\.?|ft\.?|featuring|&) )"
+        } else {
+            r"(?i-u: (?:feat\.?|ft\.?|featuring) )"
+        };
+        static ANCHOR: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+        static FEATURE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+        let compiled = if allow_ampersand { &ANCHOR } else { &FEATURE };
+        if owner_key.is_empty() || casefold(catalog_credit_trim(value)) == owner_key {
+            return None;
+        }
+        compiled.get_or_init(|| Regex::new(pattern).unwrap()).find_iter(value)
+            .find_map(|split| {
+                let lead = clean(&value[..split.start()])?;
+                let guest = clean(&value[split.end()..])?;
+                let ampersand = split.as_str() == " & ";
+                if !ampersand && !separator.full_match(split.as_str()) {
+                    return None;
+                }
+                (casefold(lead) == owner_key || ampersand && casefold(guest) == owner_key)
+                    .then_some(vec![lead, guest])
+            })
+    };
+    if let Some(names) = anchored(joined, ids.is_empty()) {
+        return bind(names, false, true);
+    }
+    if configured.len() > 1 && ids.is_empty() && casefold(joined) != owner_key {
+        return bind(configured, false, true);
+    }
+    let mut credits = bind(tagged, true, true);
+    // Delimited MBIDs can validate a single raw tag as a complete identity.
+    // A title or filename cannot lend positional evidence to that tag.
+    for value in [title, filename].into_iter().filter_map(numbered_track_artist_credit) {
+        if credits.iter().any(|credit| casefold(&credit.name) == casefold(value)) {
             continue;
         }
-        for inferred in artist_credit_values(joined, separator)
-            .into_iter()
-            .flat_map(|credit| owner_anchored_inferred_credits(&credit, owner))
-        {
-            if !credits.iter().any(|existing| {
-                artist_projection_identity(existing) == artist_projection_identity(&inferred)
-            }) {
-                credits.push(inferred);
+        let configured: Vec<_> = separator.split(value).into_iter().filter_map(clean).collect();
+        let names = anchored(value, true).unwrap_or_else(|| {
+            if value.contains(" & ") && configured.len() < 2 {
+                Vec::new()
+            } else {
+                configured
             }
-        }
+        });
+        credits.extend(bind(names, false, false));
     }
     credits
+}
+
+fn indexed_track_artist_credits(
+    track_artist: &str,
+    track_artist_mbids: &str,
+    title: &str,
+    filename: &str,
+    owner: &str,
+    separator: &crate::artist_separator::ArtistSeparator,
+) -> Vec<String> {
+    catalog_credit_slots(track_artist, track_artist_mbids, title, filename, owner, separator)
+        .into_iter().map(|credit| credit.name).collect()
 }
 
 /// Project MBID-backed shared and Featured releases from the indexed tracks.
@@ -471,8 +532,8 @@ pub fn indexed_artist_appearances(
     if current != SCHEMA_VERSION {
         return Err(incompatible_schema(current));
     }
-    let separator = Regex::new(&config.scan.artist_separator_regex)
-        .map_err(|error| format!("Artist separator Regex is invalid: {error}"))?;
+    let separator = crate::artist_separator::ArtistSeparator::parse(&config.scan.artist_separator_regex)
+        .unwrap_or_default();
     let escaped = artist_name
         .replace('\\', "\\\\")
         .replace('%', "\\%")
@@ -518,7 +579,7 @@ pub fn indexed_artist_appearances(
             &separator,
         )
         .into_iter()
-        .any(|credit| artist_credit_position(&credit, artist_name, &separator).is_some());
+        .any(|credit| crate::artist_unicode::casefold(&credit) == crate::artist_unicode::casefold(artist_name));
         if !matched {
             continue;
         }
@@ -548,101 +609,217 @@ pub fn indexed_artist_catalog_projection(
     if current != SCHEMA_VERSION {
         return Err(incompatible_schema(current));
     }
-    let separator = Regex::new(artist_separator_regex)
-        .map_err(|error| format!("Artist separator Regex is invalid: {error}"))?;
-    let mut statement = connection
+    let snapshot = connection.unchecked_transaction()
+        .map_err(db_error("pin Artist evidence generation"))?;
+    read_artist_catalog_inventory(&snapshot)?.project(artist_separator_regex)
+}
+
+fn read_artist_catalog_inventory(snapshot: &Connection) -> Result<ArtistCatalogInventory, String> {
+    let owners = snapshot.prepare(
+        "SELECT albums.album_key,albums.artist_key,artists.artist_name,\
+            COALESCE(artists.musicbrainz_artistid,''),albums.representative_file \
+         FROM albums JOIN artists ON artists.artist_key=albums.artist_key",
+    )
+        .map_err(db_error("prepare physical Album owners"))?
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, ArtistOwnerLabel {
+            key: row.get(1)?, name: row.get(2)?, mbid: row.get(3)?, representative: row.get(4)?,
+        })))
+        .map_err(db_error("query physical Album owners"))?
+        .collect::<Result<BTreeMap<_, _>, _>>()
+        .map_err(db_error("read physical Album owners"))?;
+    let mut statement = snapshot
         .prepare(
-            "SELECT albums.album_key,owners.artist_name,tracks.artist_name,tracks.title,tracks.path,COALESCE(tracks.musicbrainz_artistid,'') \
+            "SELECT albums.album_key,tracks.artist_name,tracks.title,tracks.path, \
+                    COALESCE(tracks.musicbrainz_artistid,''),tracks.file_size, \
+                    tracks.file_mtime_ns,evidence.payload_json \
              FROM tracks JOIN albums ON albums.album_key=tracks.album_key \
-             JOIN artists owners ON owners.artist_key=albums.artist_key \
+             LEFT JOIN cache_entries evidence ON evidence.cache_key='art004:track:'||tracks.track_key \
              ORDER BY albums.album_key,tracks.path COLLATE NOCASE",
         )
         .map_err(db_error("prepare indexed Artist catalog"))?;
-    let rows = statement
+    let tracks = statement
         .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, String>(5)?,
-            ))
+            let size: i64 = row.get(5)?;
+            let mtime: i64 = row.get(6)?;
+            let original = row.get::<_, Option<String>>(7)?.as_deref()
+                .and_then(|payload| serde_json::from_str::<OriginalArtistCredit>(payload).ok())
+                .filter(|tags| tags.file_size == size && tags.file_mtime_ns == mtime);
+            Ok(ArtistTrackInput {
+                album_key: row.get(0)?, artist: row.get(1)?, title: row.get(2)?,
+                path: row.get(3)?, mbids: row.get(4)?, original,
+            })
         })
-        .map_err(db_error("query indexed Artist catalog"))?;
-    let mut names = BTreeMap::<String, String>::new();
-    let mut album_keys = BTreeMap::<String, BTreeSet<String>>::new();
-    let mut musicbrainz_ids = BTreeMap::<String, String>::new();
-    let mut ambiguous_ids = BTreeSet::<String>::new();
-    for row in rows {
-        let (album_key, owner, track_artist, title, path, track_artist_mbids) =
-            row.map_err(db_error("read indexed Artist catalog"))?;
-        let filename = Path::new(&path)
-            .file_stem()
-            .and_then(|value| value.to_str())
+        .map_err(db_error("query indexed Artist catalog"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db_error("read indexed Artist catalog"))?;
+    Ok(ArtistCatalogInventory {
+        overrides: read_album_category_overrides(snapshot)?,
+        owners,
+        tracks,
+    })
+}
+
+impl ArtistCatalogInventory {
+    pub(crate) fn project(
+        mut self,
+        artist_separator_regex: &str,
+    ) -> Result<IndexedArtistCatalogProjection, String> {
+        let separator = crate::artist_separator::ArtistSeparator::parse(artist_separator_regex)
             .unwrap_or_default();
-        let credits = indexed_track_artist_credits(
-            &track_artist,
-            &track_artist_mbids,
-            &title,
-            filename,
-            &owner,
-            &separator,
-        );
-        let mbids = extract_mbids(&track_artist_mbids);
-        for (position, credit) in credits.iter().enumerate() {
-            if synthetic_album_artist(credit) {
+        for track in &self.tracks {
+            let Some(owner) = self.owners.get_mut(&track.album_key) else {
                 continue;
-            }
-            let identity = artist_projection_identity(credit);
-            // A positionally paired MusicBrainz Artist ID makes the track
-            // credit authoritative for presentation.  This mirrors WebGUI's
-            // canonical-row policy and lets a filesystem-safe owner such as
-            // `AC-DC` merge into the tagged `AC/DC` identity without changing
-            // any durable SQLite owner or Album key.
-            let authoritative_credit = mbids.len() == credits.len();
-            let display = if authoritative_credit {
-                credit.to_string()
-            } else if identity == artist_projection_identity(&owner) {
-                owner.clone()
-            } else {
-                credit.to_string()
             };
-            if authoritative_credit {
-                names.insert(identity.clone(), display);
-            } else {
-                names.entry(identity.clone()).or_insert(display);
-            }
-            album_keys
-                .entry(identity.clone())
-                .or_default()
-                .insert(album_key.clone());
-            if mbids.len() == credits.len() && !ambiguous_ids.contains(&identity) {
-                let candidate = mbids[position].to_ascii_lowercase();
-                if musicbrainz_ids
-                    .get(&identity)
-                    .is_some_and(|saved| !saved.eq_ignore_ascii_case(&candidate))
+            let Some(tags) = &track.original else {
+                continue;
+            };
+            if owner.representative == track.path {
+                if let Some(name) = [tags.album_artist.as_deref().unwrap_or_default(), &tags.artist]
+                    .into_iter()
+                    .flat_map(|value| value.split(['\0', '\x1f']))
+                    .map(str::trim)
+                    .find(|name| !name.is_empty())
                 {
-                    musicbrainz_ids.remove(&identity);
-                    ambiguous_ids.insert(identity.clone());
-                } else {
-                    musicbrainz_ids.insert(identity.clone(), candidate);
+                    owner.name = name.to_string();
+                }
+                if let Some(ids) = &tags.album_artist_mbids {
+                    owner.mbid.clone_from(ids);
                 }
             }
         }
+        // Resolve physical Track edges before deriving presentation identities.
+        let mut positioned_track_credits = PositionedArtistTracks::new();
+        for ArtistTrackInput {
+            album_key,
+            path,
+            artist,
+            mbids,
+            title,
+            original,
+        } in self.tracks
+        {
+            let Some(owner) = self.owners.get(&album_key).map(|owner| &owner.name) else {
+                continue;
+            };
+            let (track_artist, track_artist_mbids, title) = original
+                .map_or((artist, mbids, title), |tags| {
+                    (tags.artist, tags.mbids, tags.title)
+                });
+            let filename = Path::new(path.rsplit(['/', '\\']).next().unwrap_or(&path))
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default();
+            let credits = catalog_credit_slots(
+                &track_artist,
+                &track_artist_mbids,
+                &title,
+                filename,
+                owner,
+                &separator,
+            );
+            if !credits.is_empty() {
+                positioned_track_credits
+                    .entry(album_key)
+                    .or_default()
+                    .insert(path, credits);
+            }
+        }
+        let mut names = BTreeMap::<String, String>::new();
+        let mut album_keys = BTreeMap::<String, BTreeSet<String>>::new();
+        let mut musicbrainz_ids = BTreeMap::<String, String>::new();
+        let mut ambiguous_ids = BTreeSet::<String>::new();
+        let mut credit_ids_by_identity = BTreeMap::<String, BTreeSet<String>>::new();
+        let mut credit_labels_by_identity = BTreeMap::<String, BTreeSet<String>>::new();
+        let mut paired_label_ids = BTreeMap::<String, BTreeSet<String>>::new();
+        let mut explicit_credit_albums = IndexedArtistCatalog::new();
+        for (album_key, tracks) in &positioned_track_credits {
+            let owner = &self.owners[album_key].name;
+            for edge in tracks.values().flatten() {
+                let credit = &edge.name;
+                if synthetic_album_artist(credit) {
+                    continue;
+                }
+                let identity = artist_projection_identity(credit);
+                if edge.explicit {
+                    explicit_credit_albums
+                        .entry(identity.clone())
+                        .or_default()
+                        .insert(album_key.clone());
+                }
+                // A positionally paired MusicBrainz Artist ID makes the track
+                // credit authoritative for presentation.  This mirrors WebGUI's
+                // canonical-row policy and lets a filesystem-safe owner such as
+                // `AC-DC` merge into the tagged `AC/DC` identity without changing
+                // any durable SQLite owner or Album key.
+                let authoritative_credit = edge.mbid.is_some();
+                credit_labels_by_identity
+                    .entry(identity.clone())
+                    .or_default()
+                    .insert(credit.clone());
+                let display = if authoritative_credit {
+                    credit.to_string()
+                } else if identity == artist_projection_identity(&owner) {
+                    owner.to_string()
+                } else {
+                    credit.to_string()
+                };
+                if authoritative_credit {
+                    names.insert(identity.clone(), display);
+                } else {
+                    names.entry(identity.clone()).or_insert(display);
+                }
+                album_keys
+                    .entry(identity.clone())
+                    .or_default()
+                    .insert(album_key.clone());
+                if let Some(candidate) = &edge.mbid {
+                    credit_ids_by_identity
+                        .entry(identity.clone())
+                        .or_default()
+                        .insert(candidate.clone());
+                    paired_label_ids
+                        .entry(credit.clone())
+                        .or_default()
+                        .insert(candidate.clone());
+                    if ambiguous_ids.contains(&identity) {
+                        continue;
+                    }
+                    if musicbrainz_ids
+                        .get(&identity)
+                        .is_some_and(|saved| !saved.eq_ignore_ascii_case(&candidate))
+                    {
+                        musicbrainz_ids.remove(&identity);
+                        ambiguous_ids.insert(identity.clone());
+                    } else {
+                        musicbrainz_ids.insert(identity.clone(), candidate.clone());
+                    }
+                }
+            }
+        }
+        let album_keys = album_keys
+            .into_iter()
+            .filter_map(|(identity, keys)| names.get(&identity).cloned().map(|name| (name, keys)))
+            .collect::<IndexedArtistCatalog>();
+        let musicbrainz_ids = musicbrainz_ids
+            .into_iter()
+            .filter_map(|(identity, mbid)| names.get(&identity).cloned().map(|name| (name, mbid)))
+            .collect();
+        Ok(IndexedArtistCatalogProjection {
+            album_keys,
+            musicbrainz_ids,
+            credit_ids_by_identity,
+            credit_labels_by_identity,
+            paired_label_ids,
+            explicit_credit_albums,
+            owner_keys: self
+                .owners
+                .iter()
+                .map(|(album, owner)| (album.clone(), owner.key.clone()))
+                .collect(),
+            owner_labels: self.owners,
+            positioned_track_credits,
+        })
     }
-    let album_keys = album_keys
-        .into_iter()
-        .filter_map(|(identity, keys)| names.get(&identity).cloned().map(|name| (name, keys)))
-        .collect::<IndexedArtistCatalog>();
-    let musicbrainz_ids = musicbrainz_ids
-        .into_iter()
-        .filter_map(|(identity, mbid)| names.get(&identity).cloned().map(|name| (name, mbid)))
-        .collect();
-    Ok(IndexedArtistCatalogProjection {
-        album_keys,
-        musicbrainz_ids,
-    })
 }
 
 pub fn indexed_artist_catalog(database_path: &str) -> Result<IndexedArtistCatalog, String> {
@@ -1349,8 +1526,78 @@ struct TrackRow {
     artist_mbid: String,
     file_size: i64,
     file_mtime_ns: i64,
+    #[serde(default)]
+    original_artist_credit: Option<OriginalArtistCredit>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct OriginalArtistCredit {
+    artist: String,
+    mbids: String,
+    title: String,
+    #[serde(default)]
+    album_artist: Option<String>,
+    #[serde(default)]
+    album_artist_mbids: Option<String>,
+    #[serde(default)]
+    album: Option<String>,
+    #[serde(default)]
+    album_mbid: Option<String>,
+    #[serde(default)]
+    release_group_mbid: Option<String>,
+    #[serde(default)]
+    recording_mbid: Option<String>,
+    #[serde(default)]
+    compilation: Option<String>,
+    #[serde(default)]
+    tag_source: Option<String>,
+    file_size: i64,
+    file_mtime_ns: i64,
+}
+
+impl OriginalArtistCredit {
+    fn capture(evidence: &LocalTrackEvidence, file_size: i64, file_mtime_ns: i64) -> Self {
+        Self {
+            artist: evidence.artist.clone(),
+            mbids: evidence.musicbrainz_artist_id.clone().unwrap_or_default(),
+            title: evidence.title.clone(),
+            album_artist: evidence.album_artist.clone(),
+            album_artist_mbids: evidence.album_artist_mbids.clone(),
+            album: evidence.album.clone(),
+            album_mbid: evidence.musicbrainz_album_id.clone(),
+            release_group_mbid: evidence.release_group_mbid.clone(),
+            recording_mbid: evidence.musicbrainz_track_id.clone(),
+            compilation: evidence.compilation.clone(),
+            tag_source: Some(evidence.tag_source.to_string()),
+            file_size,
+            file_mtime_ns,
+        }
+    }
+}
+
+fn publish_original_artist_credit(connection: &Connection, track: &TrackRow, now: &str) -> Result<(), String> {
+    let Some(tags) = &track.original_artist_credit else {
+        return Ok(());
+    };
+    let payload = serde_json::to_string(tags)
+        .map_err(|error| format!("Serialize Artist tag evidence: {error}"))?;
+    connection.execute(
+        "INSERT INTO cache_entries(cache_key,cache_type,album_key,payload_json,created_at,updated_at) \
+         VALUES(?1,'art004-track',?2,?3,?4,?4) \
+         ON CONFLICT(cache_key) DO UPDATE SET album_key=excluded.album_key, \
+         payload_json=excluded.payload_json,updated_at=excluded.updated_at",
+        params![format!("art004:track:{}", short_hash(&track.path)), track.album_key, payload, now],
+    ).map_err(db_error("publish original Artist tag evidence"))?;
+    Ok(())
+}
+
+fn remove_orphaned_artist_credits(connection: &Connection) -> Result<(), String> {
+    connection.execute(
+        "DELETE FROM cache_entries WHERE cache_type='art004-track' AND NOT EXISTS( \
+         SELECT 1 FROM tracks WHERE tracks.track_key=substr(cache_entries.cache_key,14))", [],
+    ).map_err(db_error("remove stale Artist tag evidence"))?;
+    Ok(())
+}
 #[derive(Debug, Default)]
 struct CoverFacts {
     found: bool,
@@ -2009,6 +2256,10 @@ fn media_snapshot_inner(
     publish_missing_shared_inventory: bool,
     progress: Option<&mut dyn FnMut(CatalogIndexStatus) -> bool>,
 ) -> Result<MediaSnapshot, String> {
+    let separator_warning = crate::artist_separator::ArtistSeparator::warning(&config.scan.artist_separator_regex);
+    if refresh && let Some(warning) = separator_warning {
+        return Err(warning.to_string());
+    }
     let local_root = config.library.music_library.trim();
     if local_root.is_empty() {
         return Err(
@@ -2032,7 +2283,7 @@ fn media_snapshot_inner(
         let (connection, current) = open_database_read_only(database_access.path())?;
         if current == SCHEMA_VERSION {
             let saved_signature = read_signature(&connection)?;
-            validate_signature(config, saved_signature.as_ref())?;
+            validate_signature_fields(config, saved_signature.as_ref(), separator_warning.is_none())?;
             let usable = saved_signature.is_some()
                 && connection
                     .query_row("SELECT count(*) FROM albums", [], |row| {
@@ -2056,6 +2307,9 @@ fn media_snapshot_inner(
         }
     }
 
+    if let Some(warning) = separator_warning {
+        return Err(warning.to_string());
+    }
     if config.scan.sqlite_shared && !refresh && !publish_missing_shared_inventory {
         return Err(
             "The shared SPLINED database has no usable inventory. Use Refresh DB to build it from this client's library view."
@@ -2607,6 +2861,8 @@ fn record_album_outcome_inner(
             &album_key,
             album,
             fallback_album,
+            outcome.eq_ignore_ascii_case("installed")
+                && selected_source.is_some_and(|source| source.eq_ignore_ascii_case("embed-queue")),
             &now,
         )?;
     }
@@ -2663,6 +2919,7 @@ fn refresh_owned_album_inventory_baseline(
     album_key: &str,
     album: &AlbumDirectory,
     _fallback_album: bool,
+    embedded: bool,
     now: &str,
 ) -> Result<(), String> {
     let representative = album.audio_files.first().ok_or_else(|| {
@@ -2762,13 +3019,20 @@ fn refresh_owned_album_inventory_baseline(
                 track.display()
             )
         })?;
+        let file_size = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
+        let file_mtime_ns = modified_ns(&metadata);
+        if embedded {
+            retain_embedded_original_credit(
+                transaction, album_key, &canonical_track, track, file_size, file_mtime_ns, now,
+            )?;
+        }
         transaction
             .execute(
                 "UPDATE tracks SET file_size=?, file_mtime_ns=?, updated_at=?, splined_version=? \
                  WHERE album_key=? COLLATE NOCASE AND path=? COLLATE NOCASE",
                 params![
-                    i64::try_from(metadata.len()).unwrap_or(i64::MAX),
-                    modified_ns(&metadata),
+                    file_size,
+                    file_mtime_ns,
                     now,
                     env!("CARGO_PKG_VERSION"),
                     album_key,
@@ -2776,6 +3040,52 @@ fn refresh_owned_album_inventory_baseline(
                 ],
             )
             .map_err(db_error("refresh SPLINED-owned track inventory baseline"))?;
+    }
+    Ok(())
+}
+
+fn retain_embedded_original_credit(
+    transaction: &Transaction<'_>,
+    album_key: &str,
+    canonical_track: &str,
+    path: &Path,
+    size: i64,
+    mtime: i64,
+    now: &str,
+) -> Result<(), String> {
+    let indexed: Option<(String, String, i64, i64)> = transaction.query_row(
+        "SELECT evidence.cache_key,evidence.payload_json,tracks.file_size,tracks.file_mtime_ns
+         FROM tracks JOIN cache_entries evidence ON evidence.cache_key='art004:track:'||tracks.track_key
+           AND evidence.album_key=tracks.album_key AND evidence.cache_type='art004-track'
+         WHERE tracks.album_key=?1 COLLATE NOCASE AND tracks.path=?2 COLLATE NOCASE
+           AND (tracks.file_size<>?3 OR tracks.file_mtime_ns<>?4)",
+        params![album_key, canonical_track, size, mtime],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    ).optional().map_err(db_error("read embedded Track's original credit baseline"))?;
+    let Some((cache_key, payload, old_size, old_mtime)) = indexed else {
+        return Ok(());
+    };
+    let Some(mut saved) = serde_json::from_str::<OriginalArtistCredit>(&payload).ok()
+        .filter(|saved| saved.file_size == old_size && saved.file_mtime_ns == old_mtime) else {
+        return Ok(());
+    };
+    // Resume can finish a Track written by a prior queue invocation. Compare
+    // original tag evidence from that physical Track before advancing its stamp.
+    let Ok(tags) = crate::scan_tags::read_catalog_track_evidence(path) else {
+        return Ok(());
+    };
+    saved.file_size = size;
+    saved.file_mtime_ns = mtime;
+    if saved == OriginalArtistCredit::capture(&tags, size, mtime)
+        && fs::metadata(path).is_ok_and(|current| {
+            i64::try_from(current.len()).unwrap_or(i64::MAX) == size && modified_ns(&current) == mtime
+        })
+    {
+        transaction.execute(
+            "UPDATE cache_entries SET payload_json=json_set(payload_json,
+                '$.file_size',?1,'$.file_mtime_ns',?2),updated_at=?3 WHERE cache_key=?4",
+            params![size, mtime, now, cache_key],
+        ).map_err(db_error("retain verified Track's original credit evidence"))?;
     }
     Ok(())
 }
@@ -4162,7 +4472,14 @@ pub fn load_album_category_overrides(
         return Ok(HashMap::new());
     }
     let (connection, current) = open_database_read_only(path)?;
-    if current != SCHEMA_VERSION || !has_album_category_schema(&connection)? {
+    if current != SCHEMA_VERSION {
+        return Ok(HashMap::new());
+    }
+    read_album_category_overrides(&connection)
+}
+
+fn read_album_category_overrides(connection: &Connection) -> Result<HashMap<String, String>, String> {
+    if !has_album_category_schema(connection)? {
         return Ok(HashMap::new());
     }
     let mut statement = connection
@@ -4566,6 +4883,10 @@ fn expected_signature(config: &Config, canonical_root: &str) -> Value {
 }
 
 fn validate_signature(config: &Config, saved: Option<&Value>) -> Result<(), String> {
+    validate_signature_fields(config, saved, true)
+}
+
+fn validate_signature_fields(config: &Config, saved: Option<&Value>, check_separator: bool) -> Result<(), String> {
     let Some(saved) = saved else {
         return Ok(());
     };
@@ -4588,6 +4909,9 @@ fn validate_signature(config: &Config, saved: Option<&Value>) -> Result<(), Stri
         ]
     };
     for field in fields {
+        if *field == "artist_separator_regex" && !check_separator {
+            continue;
+        }
         let values_match = if *field == "schema_version" {
             saved
                 .get(field)
@@ -4905,6 +5229,7 @@ fn rebuild_index_generation(
                         AlbumIndexTags {
                             album: prior.album_name.clone(),
                             album_artist: prior.artist_name.clone(),
+                            track_artist: String::new(),
                             artist_sort: prior.artist_sort.clone(),
                             album_sort: prior.album_sort.clone(),
                             musicbrainz_album_id: prior.album_mbid.clone(),
@@ -4932,7 +5257,7 @@ fn rebuild_index_generation(
                     )
                 };
             let physical_artist = physical_artist_name(mapper.local_root(), &album.path);
-            let artist_name = nonempty(&tags.album_artist, &physical_artist);
+            let artist_name = nonempty(tags.owner_name(), &physical_artist);
             let album_name = nonempty(
                 &tags.album,
                 album
@@ -4941,7 +5266,9 @@ fn rebuild_index_generation(
                     .and_then(|value| value.to_str())
                     .unwrap_or("Unknown Album"),
             );
-            let artist_key = artist_key(&artist_name, &tags.musicbrainz_album_artist_id);
+            let artist_key = prior_status.as_ref().filter(|_| reuse)
+                .map_or_else(|| artist_key(&artist_name, &tags.musicbrainz_album_artist_id),
+                             |prior| prior.artist_key.clone());
             let base_key = album_key(&artist_key, &album_name, &tags);
             let mut logical_key = prior_key
                 .filter(|value| {
@@ -5090,6 +5417,7 @@ fn rebuild_index_generation(
                 let unchanged = prior_track.is_some_and(|value| {
                     value.file_size == file_size && value.file_mtime_ns == file_mtime_ns
                 });
+                let mut original_artist_credit = None;
                 let (title, track_artist, recording_mbid, track_artist_mbid) =
                     if let Some(prior_track) =
                         prior_track.filter(|_| unchanged && !refresh_track_credits)
@@ -5104,6 +5432,8 @@ fn rebuild_index_generation(
                     } else {
                         track_tag_reads += 1;
                         let evidence = track_evidence.remove(track_path).flatten();
+                        original_artist_credit = evidence.as_ref()
+                            .map(|tags| OriginalArtistCredit::capture(tags, file_size, file_mtime_ns));
                         let title = evidence
                             .as_ref()
                             .map(|value| value.title.trim())
@@ -5154,6 +5484,7 @@ fn rebuild_index_generation(
                     artist_mbid: track_artist_mbid,
                     file_size,
                     file_mtime_ns,
+                    original_artist_credit,
                 });
             }
             let row = AlbumRow {
@@ -5559,6 +5890,7 @@ fn publish_index_generation(
                         ],
                     )
                     .map_err(db_error("insert published track row"))?;
+                publish_original_artist_credit(&transaction, &track, &now)?;
             }
             if let Some(review_json) = review_json {
                 transaction
@@ -5592,6 +5924,7 @@ fn publish_index_generation(
         }
     }
 
+    remove_orphaned_artist_credits(&transaction)?;
     transaction
         .execute(
             "DELETE FROM artists WHERE NOT EXISTS(
@@ -5866,6 +6199,7 @@ fn rebuild_index_legacy(
                 AlbumIndexTags {
                     album: prior.album_name.clone(),
                     album_artist: prior.artist_name.clone(),
+                    track_artist: String::new(),
                     artist_sort: prior.artist_sort.clone(),
                     album_sort: prior.album_sort.clone(),
                     musicbrainz_album_id: prior.album_mbid.clone(),
@@ -5886,7 +6220,7 @@ fn rebuild_index_legacy(
             )
         };
         let physical_artist = physical_artist_name(mapper.local_root(), &album.path);
-        let artist_name = nonempty(&tags.album_artist, &physical_artist);
+        let artist_name = nonempty(tags.owner_name(), &physical_artist);
         let album_name = nonempty(
             &tags.album,
             album
@@ -5895,7 +6229,9 @@ fn rebuild_index_legacy(
                 .and_then(|value| value.to_str())
                 .unwrap_or("Unknown Album"),
         );
-        let artist_key = artist_key(&artist_name, &tags.musicbrainz_album_artist_id);
+        let artist_key = prior_status.as_ref().filter(|_| reuse)
+            .map_or_else(|| artist_key(&artist_name, &tags.musicbrainz_album_artist_id),
+                         |prior| prior.artist_key.clone());
         let base_key = album_key(&artist_key, &album_name, &tags);
         let mut logical_key = prior_key
             .filter(|value| value == &base_key || value.starts_with(&(base_key.clone() + ":copy:")))
@@ -5974,6 +6310,7 @@ fn rebuild_index_legacy(
             let unchanged = prior_track.is_some_and(|value| {
                 value.file_size == file_size && value.file_mtime_ns == file_mtime_ns
             });
+            let mut original_artist_credit = None;
             let (title, track_artist, recording_mbid, track_artist_mbid) =
                 if let Some(prior_track) =
                     prior_track.filter(|_| unchanged && !refresh_track_credits)
@@ -5987,7 +6324,9 @@ fn rebuild_index_legacy(
                     )
                 } else {
                     track_tag_reads += 1;
-                    let evidence = read_local_track_evidence(track_path).ok();
+                    let evidence = read_catalog_track_evidence(track_path).ok();
+                    original_artist_credit = evidence.as_ref()
+                        .map(|tags| OriginalArtistCredit::capture(tags, file_size, file_mtime_ns));
                     let title = evidence
                         .as_ref()
                         .map(|value| value.title.trim())
@@ -6038,6 +6377,7 @@ fn rebuild_index_legacy(
                 artist_mbid: track_artist_mbid,
                 file_size,
                 file_mtime_ns,
+                original_artist_credit,
             });
         }
         rows.push(AlbumRow {
@@ -6248,7 +6588,9 @@ fn promote_incremental_rows(
                 env!("CARGO_PKG_VERSION")
             ],
         ).map_err(db_error("insert incremental track row"))?;
+        publish_original_artist_credit(&transaction, &track, &now)?;
     }
+    remove_orphaned_artist_credits(&transaction)?;
 
     transaction
         .execute(
@@ -6425,7 +6767,9 @@ fn promote_rows(
                 env!("CARGO_PKG_VERSION")
             ],
         ).map_err(db_error("insert track index row"))?;
+        publish_original_artist_credit(&transaction, &track, &now)?;
     }
+    remove_orphaned_artist_credits(&transaction)?;
     let signature = expected_signature(config, mapper.canonical_root());
     let review_count = rows
         .iter()
@@ -6483,69 +6827,93 @@ fn insert_album(transaction: &Transaction<'_>, row: &AlbumRow, now: &str) -> Res
     Ok(())
 }
 
+/// Join verified COMP records by exact indexed Track path and physical Album
+/// ancestors. The legacy LIKE join compared each record to every COMP Album.
+fn load_compilation_track_snapshots(
+    connection: &Connection,
+    mapper: &PathMapper,
+) -> Result<HashMap<String, Vec<MediaTrackSnapshot>>, String> {
+    let mut verified = connection.prepare(
+        "SELECT track_path FROM compilation_track_artwork
+         WHERE outcome IN ('embedded-replaced','embedded-existing') ORDER BY track_path",
+    ).map_err(db_error("prepare verified COMP paths"))?;
+    let verified = verified.query_map([], |row| row.get::<_, String>(0))
+        .map_err(db_error("query verified COMP paths"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db_error("read verified COMP paths"))?;
+    let verified_paths = verified.iter().map(|value| value.to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+
+    let mut folders = HashMap::<String, Vec<String>>::new();
+    let mut albums = connection.prepare(
+        "SELECT album_key,path FROM albums WHERE trim(COALESCE(musicbrainz_albumid,''))=''",
+    ).map_err(db_error("prepare COMP Album paths"))?;
+    for row in albums.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+        .map_err(db_error("query COMP Album paths"))?
+    {
+        let (key, path) = row.map_err(db_error("read COMP Album path"))?;
+        folders.entry(path.trim_end_matches(['/', '\\']).to_ascii_lowercase())
+            .or_default().push(key.to_ascii_lowercase());
+    }
+
+    let mut tracks = connection.prepare(
+        "SELECT tracks.album_key,tracks.path,tracks.title,tracks.artist_name
+         FROM tracks JOIN albums ON tracks.album_key=albums.album_key
+         WHERE trim(COALESCE(albums.musicbrainz_albumid,''))=''
+         ORDER BY tracks.path COLLATE NOCASE,tracks.path",
+    ).map_err(db_error("prepare cached compilation tracks"))?;
+    let mut projected = HashMap::<String, BTreeMap<String, MediaTrackSnapshot>>::new();
+    for row in tracks.query_map([], |row| Ok((
+        row.get::<_, String>(0)?, row.get::<_, String>(1)?,
+        row.get::<_, String>(2)?, row.get::<_, String>(3)?,
+    ))).map_err(db_error("query cached compilation tracks"))?
+    {
+        let (key, path, title, artist) = row.map_err(db_error("read cached compilation track"))?;
+        let local = mapper.to_local(&path)?;
+        let track = projected.entry(key.to_ascii_lowercase()).or_default()
+            .entry(local.to_ascii_lowercase())
+            .or_insert_with(|| MediaTrackSnapshot {
+                path: local, title: String::new(), artist: String::new(),
+                embedded_artwork_recorded: false,
+            });
+        if track.title.trim().is_empty() {
+            track.title = title;
+        }
+        if track.artist.trim().is_empty() {
+            track.artist = artist;
+        }
+        track.embedded_artwork_recorded |= verified_paths.contains(&path.to_ascii_lowercase());
+    }
+    for path in verified {
+        let mut remaining = path.as_str();
+        while let Some((parent, _)) = remaining.rsplit_once(['/', '\\']) {
+            if let Some(keys) = folders.get(&parent.to_ascii_lowercase()) {
+                let local = mapper.to_local(&path)?;
+                let identity = local.to_ascii_lowercase();
+                for key in keys {
+                    projected.entry(key.clone()).or_default().entry(identity.clone())
+                        .and_modify(|track| track.embedded_artwork_recorded = true)
+                        .or_insert_with(|| MediaTrackSnapshot {
+                            path: local.clone(), title: String::new(), artist: String::new(),
+                            embedded_artwork_recorded: true,
+                        });
+                }
+            }
+            remaining = parent;
+        }
+    }
+    Ok(projected.into_iter().map(|(key, tracks)| (key, tracks.into_values().collect())).collect())
+}
+
 fn load_snapshot(
     connection: &Connection,
     db_path: &Path,
     mapper: &PathMapper,
 ) -> Result<MediaSnapshot, String> {
-    // Windows refresh owns the complete SQLite track inventory. Project only
-    // fallback/compilation tracks into the snapshot so the Embedded Art view
-    // never walks the network library merely to populate its tree.
-    let mut track_statement = connection
-        .prepare(
-            "SELECT tracks.album_key, tracks.path, tracks.title, tracks.artist_name, \
-             CASE WHEN compilation_track_artwork.track_path IS NULL THEN 0 ELSE 1 END \
-             FROM tracks JOIN albums ON albums.album_key=tracks.album_key \
-             LEFT JOIN compilation_track_artwork ON lower(compilation_track_artwork.track_path)=lower(tracks.path) \
-             AND compilation_track_artwork.outcome IN ('embedded-replaced','embedded-existing') \
-             WHERE trim(COALESCE(albums.musicbrainz_albumid,''))='' \
-             UNION \
-             SELECT albums.album_key, compilation_track_artwork.track_path, '', '', 1 \
-             FROM albums JOIN compilation_track_artwork \
-             ON lower(compilation_track_artwork.track_path) LIKE lower(rtrim(albums.path, '/\\') || '/%') \
-             OR lower(compilation_track_artwork.track_path) LIKE lower(rtrim(albums.path, '/\\') || '\\%') \
-             WHERE trim(COALESCE(albums.musicbrainz_albumid,''))='' AND compilation_track_artwork.outcome IN ('embedded-replaced','embedded-existing') \
-             ORDER BY 2 COLLATE NOCASE",
-        )
-        .map_err(db_error("prepare cached compilation tracks"))?;
-    let mut compilation_tracks = HashMap::<String, Vec<MediaTrackSnapshot>>::new();
-    for row in track_statement
-        .query_map([], |row| {
-            let canonical_path: String = row.get(1)?;
-            Ok((
-                row.get::<_, String>(0)?,
-                MediaTrackSnapshot {
-                    path: mapper
-                        .to_local(&canonical_path)
-                        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()))?,
-                    title: row.get(2)?,
-                    artist: row.get(3)?,
-                    embedded_artwork_recorded: row.get::<_, i64>(4)? != 0,
-                },
-            ))
-        })
-        .map_err(db_error("query cached compilation tracks"))?
-    {
-        let (album_key, track) = row.map_err(db_error("read cached compilation track"))?;
-        let values = compilation_tracks
-            .entry(album_key.to_ascii_lowercase())
-            .or_default();
-        if let Some(existing) = values
-            .iter_mut()
-            .find(|value| value.path.eq_ignore_ascii_case(&track.path))
-        {
-            existing.embedded_artwork_recorded |= track.embedded_artwork_recorded;
-            if existing.title.trim().is_empty() {
-                existing.title = track.title;
-            }
-            if existing.artist.trim().is_empty() {
-                existing.artist = track.artist;
-            }
-        } else {
-            values.push(track);
-        }
-    }
-    drop(track_statement);
+    let transaction = connection.unchecked_transaction()
+        .map_err(db_error("pin Select Media inventory"))?;
+    let connection = &transaction;
+    let compilation_tracks = load_compilation_track_snapshots(connection, mapper)?;
 
     let mut statement = connection.prepare(
         "SELECT albums.album_key, artists.artist_name, albums.album_name, albums.path, albums.representative_file, albums.status, albums.compilation, albums.track_count, COALESCE(albums.release_year,''), albums.cover_found, albums.local_art_json, COALESCE(albums.cover_path,''), COALESCE(albums.cover_name,''), COALESCE(albums.cover_format,''), COALESCE(albums.cover_width,0), COALESCE(albums.cover_height,0), COALESCE(albums.root_files,0), COALESCE(albums.cover_files,0), albums.processed_at, albums.timeout_until, albums.selected_source, COALESCE(albums.musicbrainz_albumid,''), COALESCE(albums.musicbrainz_releasegroupid,''), COALESCE(artists.musicbrainz_artistid,'') \
@@ -6670,6 +7038,7 @@ fn load_snapshot(
         canonical_root: mapper.canonical_root().to_string(),
         local_root: mapper.local_root().to_string(),
         albums,
+        artist_catalog: Some(read_artist_catalog_inventory(connection)?),
     })
 }
 
@@ -7239,7 +7608,13 @@ fn status_counts<'a>(statuses: impl Iterator<Item = &'a str>) -> (i64, i64, i64,
 
 pub(crate) fn artist_key(name: &str, mbid: &str) -> String {
     if mbid.trim().is_empty() {
-        let normalized = normalize(name);
+        let normalized = crate::artist_unicode::normalized_fold(name)
+            .chars()
+            .map(|character| if crate::artist_unicode::alphanumeric(character) { character } else { ' ' })
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
         format!(
             "tag:{}",
             if normalized.is_empty() {
@@ -7249,7 +7624,7 @@ pub(crate) fn artist_key(name: &str, mbid: &str) -> String {
             }
         )
     } else {
-        format!("mbid:{}", casefold(mbid.trim()))
+        format!("mbid:{}", mbid.split(['\0', '\x1f']).next().unwrap_or_default().trim().to_ascii_lowercase())
     }
 }
 
@@ -7275,7 +7650,7 @@ fn album_key(artist_key: &str, name: &str, tags: &AlbumIndexTags) -> String {
 
 fn tag_hash(tags: &AlbumIndexTags) -> String {
     let value = json!({
-        "album": tags.album, "album_artist": tags.album_artist, "artist_sort": tags.artist_sort,
+        "album": tags.album, "album_artist": tags.owner_name(), "artist_sort": tags.artist_sort,
         "album_sort": tags.album_sort, "album_mbid": tags.musicbrainz_album_id,
         "release_group_mbid": tags.musicbrainz_release_group_id, "artist_mbid": tags.musicbrainz_album_artist_id,
         "year": tags.year, "compilation": tags.compilation,
@@ -7310,20 +7685,18 @@ fn casefold(value: &str) -> String {
 /// such as `AC-DC` must not create a second selectable Artist beside the
 /// authoritative tagged owner `AC/DC`.
 pub fn artist_projection_identity(value: &str) -> String {
-    value
-        .nfkc()
-        .case_fold()
-        .filter(|character| character.is_alphanumeric())
+    crate::artist_unicode::normalized_fold(value)
+        .chars()
+        .filter(|&character| crate::artist_unicode::alphanumeric(character))
         .collect()
 }
 
 pub fn artist_search_literal(value: &str) -> String {
-    value
-        .nfkc()
-        .case_fold()
-        .collect::<String>()
-        .trim()
-        .to_string()
+    crate::artist_unicode::search_literal(value)
+}
+
+pub fn artist_display_sort_key(value: &str) -> String {
+    crate::artist_unicode::sort_key(value)
 }
 
 pub fn artist_search_matches(query: &str, candidate: &str) -> bool {
@@ -7510,6 +7883,10 @@ mod tests {
             id3_test_frame("TPE2", "Incremental Artist"),
             id3_test_frame("TXXX", &format!("MUSICBRAINZ_ALBUMID\0{album_mbid}")),
         ];
+        write_index_test_frames(path, &frames);
+    }
+
+    fn write_index_test_frames(path: &Path, frames: &[Vec<u8>]) {
         let body = frames.iter().flatten().copied().collect::<Vec<_>>();
         let size = body.len() as u32;
         let mut bytes = b"ID3\x04\x00\x00".to_vec();
@@ -7522,6 +7899,302 @@ mod tests {
         bytes.extend_from_slice(&body);
         bytes.extend_from_slice(&[0xff, 0xfb, 0x90, 0x64]);
         fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn art004_positioned_local_credits_match_shared_fixture() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../.github/test-data/artist-identity-conformance.json"
+        )).unwrap();
+        for case in fixture["positioned_credit_cases"].as_array().unwrap() {
+            let field = |key: &str| case[key].as_str().unwrap();
+            let credits = catalog_credit_slots(
+                field("value"), field("artist_mbids"), field("title"), field("filename"),
+                field("owner"), &crate::artist_separator::ArtistSeparator::parse(field("separator_regex")).unwrap(),
+            );
+            let actual = credits.iter().map(|credit| {
+                json!([credit.name, credit.position, credit.mbid, credit.explicit])
+            }).collect::<Vec<_>>();
+            assert_eq!(Value::Array(actual), case["expected"], "{}", field("id"));
+        }
+    }
+
+    #[test]
+    fn art004_owner_artist_id_alias_conflicts_remain_local_evidence() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../.github/test-data/artist-identity-conformance.json"
+        )).unwrap();
+        let ids = &fixture["conflicting_owner_artist_ids"];
+        let first = ids[0].as_str().unwrap();
+        let second = ids[1].as_str().unwrap();
+        let temporary = tempfile::TempDir::new().unwrap();
+        let path = temporary.path().join("01.mp3");
+        write_index_test_frames(&path, &[
+            id3_test_frame("TPE2", "Stage Owner"),
+            id3_test_frame("TXXX", &format!("MUSICBRAINZ_ALBUMARTISTID\0{first}")),
+            id3_test_frame("TXXX", &format!("MUSICBRAINZ_RELEASEARTISTID\0{second}")),
+        ]);
+        let (album, track) = read_album_index_tags_and_track_evidence(&path).unwrap();
+        assert_eq!(album.musicbrainz_album_artist_id, first);
+        assert_eq!(track.unwrap().album_artist_mbids, Some(format!("{first}\0{second}")));
+    }
+
+    #[test]
+    fn art004_original_inventory_preserves_owner_and_credit_slots() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../.github/test-data/artist-identity-conformance.json"
+        )).unwrap();
+        let case = &fixture["local_inventory_case"];
+        let album = case["album"].as_str().unwrap();
+        let owner = case["album_artist"].as_str().unwrap();
+        let album_mbid = case["album_mbid"].as_str().unwrap();
+        let join_slots = |key: &str| case[key].as_array().unwrap().iter()
+            .map(|value| value.as_str().unwrap()).collect::<Vec<_>>().join("\0");
+        let names = join_slots("track_artists");
+        let ids = join_slots("track_artist_mbids");
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("music");
+        let album_folder = library.join("Unrelated physical folder").join(album);
+        fs::create_dir_all(&album_folder).unwrap();
+        let file = album_folder.join("01.mp3");
+        write_index_test_frames(&file, &[
+            id3_test_frame("TIT2", "Fixture track"),
+            id3_test_frame("TPE1", &names),
+            id3_test_frame("TALB", album),
+            id3_test_frame("TPE2", owner),
+            id3_test_frame("TXXX", &format!("MUSICBRAINZ_ALBUMID\0{album_mbid}")),
+            id3_test_frame("TXXX", &format!("MUSICBRAINZ_ARTISTID\0{ids}")),
+        ]);
+        let original = fs::read(&file).unwrap();
+        let mut config = Config::default();
+        config.library.music_library = library.to_string_lossy().into_owned();
+        config.scan.cache_dir = temp.path().join("cache").to_string_lossy().into_owned();
+        let snapshot = media_snapshot(&config, false).unwrap();
+        let album_key = format!("mbid:{album_mbid}");
+        let connection = Connection::open(&snapshot.database_path).unwrap();
+        let owner_key: String = connection.query_row(
+            "SELECT artist_key FROM albums WHERE album_key=?", [&album_key], |row| row.get(0)
+        ).unwrap();
+        assert_eq!(owner_key, case["expected_owner_key"].as_str().unwrap());
+        let track: (String, String) = connection.query_row(
+            "SELECT artist_name,musicbrainz_artistid FROM tracks WHERE album_key=?", [&album_key],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(track, (names, ids));
+        let original_credit: String = connection.query_row(
+            "SELECT payload_json FROM cache_entries WHERE album_key=? AND cache_type='art004-track'",
+            [&album_key], |row| row.get(0),
+        ).unwrap();
+        let original_credit: OriginalArtistCredit = serde_json::from_str(&original_credit).unwrap();
+        assert_eq!(original_credit.artist, track.0);
+        assert_eq!(original_credit.album_artist.as_deref(), Some(owner));
+        assert_eq!(original_credit.album_artist_mbids.as_deref(), Some(""));
+        assert_eq!(original_credit.tag_source.as_deref(), Some("id3v2"));
+        let projected = indexed_artist_catalog_projection(
+            &snapshot.database_path, crate::config::DEFAULT_ARTIST_SEPARATOR_REGEX,
+        ).unwrap();
+        let credits = projected.positioned_track_credits[&album_key].values()
+            .flatten().map(|credit| {
+                json!([credit.name, credit.position, credit.mbid, credit.explicit])
+            }).collect::<Vec<_>>();
+        assert_eq!(Value::Array(credits), case["positioned_credits"]);
+        let original_database = fs::read(&snapshot.database_path).unwrap();
+        let incompatible = r"\p{White_Space}+";
+        config.scan.artist_separator_regex = incompatible.to_owned();
+        let native = Regex::new(incompatible).unwrap();
+        assert_eq!(canonical_artist_credit_text("Artist Guest", "", &native), "Artist\0Guest");
+        let retained = media_snapshot(&config, false).unwrap();
+        let retained_projection = indexed_artist_catalog_projection(
+            &retained.database_path, &config.scan.artist_separator_regex,
+        ).unwrap();
+        assert_eq!(projected.positioned_track_credits, retained_projection.positioned_track_credits);
+        assert_eq!(
+            media_snapshot(&config, true).err().as_deref(),
+            Some(crate::artist_separator::REMEDIATION),
+        );
+        assert_eq!(config.scan.artist_separator_regex, incompatible);
+        assert_eq!(fs::read(&snapshot.database_path).unwrap(), original_database);
+        config.scan.artist_separator_regex = crate::config::DEFAULT_ARTIST_SEPARATOR_REGEX.to_owned();
+        // An inventory publication after this snapshot belongs to the next
+        // load, including the Artist credits and category decisions.
+        connection.execute(
+            "UPDATE tracks SET artist_name='Replacement',musicbrainz_artistid=NULL WHERE album_key=?",
+            [&album_key],
+        ).unwrap();
+        connection.execute("DELETE FROM cache_entries WHERE album_key=?", [&album_key]).unwrap();
+        let mut state = crate::application::LibraryState::from_snapshot(snapshot).unwrap();
+        state.configure_library_categories(&config);
+        let expected_names = case["expected_artist_names"].as_array().unwrap().iter()
+            .map(|value| value.as_str().unwrap()).collect::<Vec<_>>();
+        let rows = state.rows();
+        assert_eq!(rows.iter().map(|row| row.primary.as_str()).collect::<Vec<_>>(), expected_names);
+        assert!(rows.iter().all(|row| row.album_count == 1));
+        state.set_artist_filter(case["literal_artist_query"].as_str().unwrap());
+        assert_eq!(state.rows()[0].primary, expected_names[0]);
+        assert_eq!(state.rows().len(), 1);
+        assert!(state.focus_artist(expected_names[0]));
+        assert_eq!(state.catalog_artist_appearances(expected_names[0]).featured_album_keys,
+                   BTreeSet::from([album_key]));
+        assert_eq!(fs::read(file).unwrap(), original);
+    }
+
+    #[test]
+    fn art004_verified_album_embed_preserves_original_credit_and_conflicts() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../.github/test-data/artist-identity-conformance.json"
+        )).unwrap();
+        let case = &fixture["backslash_inventory_case"];
+        let text = |key: &str| case[key].as_str().unwrap();
+        let ids = case["track_artist_mbids"].as_array().unwrap();
+        let owner_mbid = ids[0].as_str().unwrap();
+        let guest_mbid = ids[1].as_str().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let library = temp.path().join("music");
+        let album = library.join(text("owner")).join(text("joined_album"));
+        fs::create_dir_all(&album).unwrap();
+        let other_album = library.join("A Great Big World").join("Is There Anybody Out There");
+        fs::create_dir_all(&other_album).unwrap();
+        write_index_test_frames(&other_album.join("01.mp3"), &[
+            id3_test_frame("TIT2", text("other_track_title")),
+            id3_test_frame("TALB", text("other_album")),
+            id3_test_frame("TPE2", text("owner")),
+            id3_test_frame("TPE1", text("owner")),
+        ]);
+        let file = album.join("01.mp3");
+        let release = text("release_id");
+        write_index_test_frames(&file, &[
+            id3_test_frame("TIT2", text("track_title")),
+            id3_test_frame("TALB", text("joined_album")),
+            id3_test_frame("TPE2", text("owner")),
+            id3_test_frame("TPE1", text("joined_credit")),
+            id3_test_frame("TXXX", &format!("MUSICBRAINZ_ARTISTID\0{owner_mbid}; {guest_mbid}")),
+            id3_test_frame("TXXX", &format!("MUSICBRAINZ_ALBUMARTISTID\0{owner_mbid}")),
+            id3_test_frame("TXXX", &format!("MusicBrainz Release Artist Id\0{}", text("conflicting_owner_mbid"))),
+            id3_test_frame("TXXX", &format!("MUSICBRAINZ_ALBUMID\0{release}")),
+        ]);
+        let mut bytes = fs::read(&file).unwrap();
+        bytes.truncate(bytes.len() - 4);
+        let audio_start = bytes.len();
+        bytes.resize(audio_start + 417 * 8, 0);
+        for frame in bytes[audio_start..].chunks_exact_mut(417) {
+            frame[..4].copy_from_slice(&[0xff, 0xfb, 0x90, 0x64]);
+        }
+        fs::write(&file, bytes).unwrap();
+        let original = temp.path().join("untouched.mp3");
+        fs::copy(&file, &original).unwrap();
+        let mut config = Config::default();
+        config.mode = crate::config::Mode::Write;
+        config.scan.scan_mode_timeout = crate::config::ScanTimeout(0.0);
+        config.library.music_library = library.to_string_lossy().into_owned();
+        config.scan.cache_dir = temp.path().join("cache").to_string_lossy().into_owned();
+        let snapshot = media_snapshot(&config, false).unwrap();
+        let album_key = format!("mbid:{release}");
+        let connection = Connection::open(&snapshot.database_path).unwrap();
+        let assert_artist = |snapshot: MediaSnapshot| {
+            let projection = indexed_artist_catalog_projection(
+                &snapshot.database_path, &config.scan.artist_separator_regex,
+            ).unwrap();
+            let slots = projection.positioned_track_credits[&album_key]
+                .values()
+                .flatten()
+                .map(|credit| json!([credit.name, credit.position, credit.mbid, credit.explicit]))
+                .collect::<Vec<_>>();
+            assert_eq!(Value::Array(slots), case["positioned_credits"]);
+            assert_eq!(projection.owner_labels[&album_key].name, text("owner"));
+            assert_eq!(projection.owner_keys[&album_key], format!("mbid:{owner_mbid}"));
+            let mut state = crate::application::LibraryState::from_snapshot(snapshot).unwrap();
+            state.set_artist_filter(text("query"));
+            let rows = state.rows();
+            assert_eq!(rows.iter().map(|row| (row.primary.as_str(), row.album_count))
+                .collect::<Vec<_>>(), [(text("owner"), 2)]);
+            assert!(state.focus_artist(text("owner")));
+            let overview_titles = state.artist_state_album_indices(text("owner"))
+                .into_iter().map(|index| state.albums[index].snapshot.title.as_str())
+                .collect::<BTreeSet<_>>();
+            assert_eq!(overview_titles, BTreeSet::from([text("other_album"), text("joined_album")]));
+            assert_eq!(state.catalog_artist_appearances(text("guest")).featured_album_keys,
+                BTreeSet::from([album_key.clone()]));
+        };
+        let read = || -> (OriginalArtistCredit, i64, i64) {
+            connection.query_row(
+                "SELECT evidence.payload_json,tracks.file_size,tracks.file_mtime_ns
+                 FROM tracks JOIN cache_entries evidence ON evidence.cache_key='art004:track:'||tracks.track_key
+                 WHERE tracks.album_key=?1",
+                [&album_key],
+                |row| Ok((serde_json::from_str(&row.get::<_, String>(0)?).unwrap(), row.get(1)?, row.get(2)?)),
+            ).unwrap()
+        };
+        let (before, before_size, _) = read();
+        assert_eq!(before.artist, text("joined_credit"));
+        assert_eq!(catalog_ordered_mbids(&before.mbids), [owner_mbid, guest_mbid]);
+        assert!(!before.album_artist_mbids.as_deref().unwrap().is_empty());
+        assert_artist(snapshot);
+        let mut artwork = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(4, 4).write_to(&mut artwork, image::ImageFormat::Png).unwrap();
+        crate::embedded_artwork::replace_embedded_front(&file, artwork.get_ref()).unwrap();
+        crate::artwork_integrity::verify_only_front_artwork(&original, &file).unwrap();
+        record_album_outcome(&config, &album, "installed", Some("embed-queue")).unwrap();
+        let (after, size, mtime) = read();
+        assert_ne!(before_size, size);
+        assert_eq!(after, OriginalArtistCredit { file_size: size, file_mtime_ns: mtime, ..before });
+        assert_artist(media_snapshot(&config, false).unwrap());
+        connection.execute("DELETE FROM cache_entries WHERE album_key=?1 AND cache_type='art004-track'",
+            [&album_key]).unwrap();
+        assert_artist(media_snapshot(&config, false).unwrap());
+        assert_artist(media_snapshot(&config, true).unwrap());
+    }
+
+    #[test]
+    fn art004_authoritative_local_owner_labels_use_album_counts_without_category_roots() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../.github/test-data/artist-identity-conformance.json"
+        )).unwrap();
+        let case = &fixture["local_inventory_case"]["owner_label_evidence"];
+        let owner_id = case["artist_mbid"].as_str().unwrap();
+        let temporary = tempfile::tempdir().unwrap();
+        let library = temporary.path().join("music");
+        for album in case["albums"].as_array().unwrap() {
+            let title = album[0].as_str().unwrap();
+            let artist = album[1].as_str().unwrap();
+            let release = album[2].as_str().unwrap();
+            let folder = library.join("Different Folder").join(title);
+            fs::create_dir_all(&folder).unwrap();
+            let mut tags = vec![
+                id3_test_frame("TIT2", title),
+                id3_test_frame("TALB", title),
+                id3_test_frame("TPE2", artist),
+                id3_test_frame("TXXX", &format!("MUSICBRAINZ_ALBUMARTISTID\0{owner_id}")),
+            ];
+            if !release.is_empty() {
+                tags.push(id3_test_frame("TXXX", &format!("MUSICBRAINZ_ALBUMID\0{release}")));
+            }
+            write_index_test_frames(&folder.join("01.mp3"), &tags);
+        }
+        let mut config = Config::default();
+        config.library.music_library = library.to_string_lossy().into_owned();
+        config.scan.cache_dir = temporary.path().join("cache").to_string_lossy().into_owned();
+        let snapshot = media_snapshot(&config, false).unwrap();
+        let mut state = crate::application::LibraryState::from_snapshot(snapshot).unwrap();
+        assert_eq!(state.artist_inventory_count(), 1);
+        state.set_artist_filter(case["literal_alias"].as_str().unwrap());
+        let expected = case["expected_display"].as_str().unwrap();
+        let rows = state.rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!((rows[0].primary.as_str(), rows[0].album_count), (expected, 3));
+        assert!(state.focus_artist("Alias? Long Name"));
+        assert_eq!(state.focused_artist.as_deref(), Some(expected));
+        state.set_album_filter("no matching Album");
+        state.set_status_filter(crate::application::StatusFilter::Processed);
+        assert!(state.rows().is_empty());
+        assert_eq!(state.artist_inventory_count(), 1);
+        let album_keys = state.albums.iter().map(|row| row.snapshot.album_key.clone()).collect::<Vec<_>>();
+        state.apply_album_category_override(&album_keys[0], "various-artists").unwrap();
+        state.apply_album_category_override(&album_keys[1], "fallback").unwrap();
+        assert_eq!(state.artist_inventory_count(), 1);
+        state.apply_album_category_override(&album_keys[2], "soundtracks").unwrap();
+        assert_eq!(state.artist_inventory_count(), 0);
+        state.apply_album_category_override(&album_keys[2], "artist").unwrap();
+        assert_eq!(state.artist_inventory_count(), 1);
     }
 
     // Change detection is intentionally a background write in production;
@@ -8409,7 +9082,8 @@ mod tests {
             ["Ike", "Tina Turner"]
         );
 
-        let default_separator = Regex::new(crate::config::DEFAULT_ARTIST_SEPARATOR_REGEX).unwrap();
+        let default_separator =
+            crate::artist_separator::ArtistSeparator::parse(crate::config::DEFAULT_ARTIST_SEPARATOR_REGEX).unwrap();
         assert_eq!(
             indexed_track_artist_credits(
                 "Ike & Tina Turner",

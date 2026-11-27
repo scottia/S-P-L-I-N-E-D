@@ -2,6 +2,170 @@
   "policy_id": "ART-004",
   "version": 1,
   "presentation_normalization": "NFKC + Unicode casefold + alphanumeric",
+  "portable_separator_cases": [
+    {
+      "profile": "(?i)(?: / | feat\\. | feat | ft\\. | ft |; )",
+      "value": "Å / B FEAT. C ft D; E",
+      "parts": ["Å", "B", "C", "D", "E"],
+      "whole": "; "
+    },
+    {
+      "profile": "(?i)(?:\\s+(feat|ft)\\.?\\s+|[|+])",
+      "value": "Å\u00a0FEAT.\u2003B|C+D",
+      "parts": ["Å", "B", "C", "D"],
+      "whole": "\u00a0FEAT.\u2003"
+    },
+    {
+      "profile": "(?: × | \\+ )",
+      "value": "Å × B + C",
+      "parts": ["Å", "B", "C"],
+      "whole": " × "
+    },
+    {
+      "profile": "ft|ft\\.",
+      "value": "ft.A",
+      "parts": ["", ".A"],
+      "whole": "ft."
+    },
+    {
+      "profile": "[A-C\\-]",
+      "value": "aA-bC",
+      "parts": ["a", "", "b", ""],
+      "whole": "-"
+    },
+    {"profile": "(?<=feat)\\s+"},
+    {"profile": "\\p{L}+"},
+    {"profile": "(feat)\\1"},
+    {"profile": "(?:|&)"},
+    {"profile": "(?i)é"},
+    {"profile": "\\s*"},
+    {"profile": "[^&]"},
+    {"profile": "[a&&b]"},
+    {"profile": "[a--b]"},
+    {"profile": "a++"}
+  ],
+  "conflicting_owner_artist_ids": [
+    "ff000000-0000-4000-8000-000000000001",
+    "ff000000-0000-4000-8000-000000000002"
+  ],
+  "local_inventory_case": {
+    "album": "Credits and Ownership",
+    "album_artist": "Local Owner",
+    "album_mbid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "track_artists": ["A$AP Rocky", "A$AP Rocky", "Local Owner"],
+    "track_artist_mbids": [
+      "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    ],
+    "expected_owner_key": "tag:local owner",
+    "expected_artist_names": ["A$AP Rocky", "Local Owner"],
+    "literal_artist_query": "$",
+    "positioned_credits": [
+      ["A$AP Rocky", 0, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", true],
+      ["A$AP Rocky", 1, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", true],
+      ["Local Owner", 2, "cccccccc-cccc-4ccc-8ccc-cccccccccccc", true]
+    ],
+    "owner_label_evidence": {
+      "artist_mbid": "d0000000-0000-4000-8000-000000000001",
+      "expected_display": "Stage Owner",
+      "literal_alias": "Alias?",
+      "albums": [
+        ["Alpha Record", "Stage Owner", ""],
+        ["Beta Record", "Stage Owner", "d0000000-0000-4000-8000-000000000002"],
+        ["Gamma Record", "Alias? Long Name", "d0000000-0000-4000-8000-000000000003"]
+      ]
+    }
+  },
+  "backslash_inventory_case": {
+    "owner": "A Great Big World",
+    "guest": "Christina Aguilera",
+    "joined_credit": "A Great Big World\\Christina Aguilera",
+    "track_title": "Fall On Me",
+    "track_artist_mbids": ["6958e806-1e14-4844-a0a7-07a27756aa0f", "b202beb7-99bd-47e7-8b72-195c8d72ebdd"],
+    "conflicting_owner_mbid": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+    "release_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "joined_album": "Particles",
+    "other_album": "Is There Anybody Out There?",
+    "other_track_title": "Say Something",
+    "query": "a great",
+    "positioned_credits": [
+      ["A Great Big World", 0, "6958e806-1e14-4844-a0a7-07a27756aa0f", true],
+      ["Christina Aguilera", 1, "b202beb7-99bd-47e7-8b72-195c8d72ebdd", true]
+    ]
+  },
+  "positioned_credit_cases": [
+    {
+      "id": "backslash-exact-ordered-ids-and-physical-owner",
+      "value": "Owner\\Guest",
+      "artist_mbids": "55555555-5555-4555-8555-555555555555; 66666666-6666-4666-8666-666666666666",
+      "owner": "owner",
+      "separator_regex": "(?i) feat\\. ",
+      "title": "Title",
+      "filename": "01",
+      "expected": [["Owner", 0, "55555555-5555-4555-8555-555555555555", true], ["Guest", 1, "66666666-6666-4666-8666-666666666666", true]]
+    },
+    {
+      "id": "backslash-with-one-id-is-a-single-local-credit",
+      "value": "Owner\\Guest",
+      "artist_mbids": "55555555-5555-4555-8555-555555555555",
+      "owner": "Owner",
+      "separator_regex": "(?i) feat\\. ",
+      "title": "Title",
+      "filename": "01",
+      "expected": [["Owner\\Guest", 0, "55555555-5555-4555-8555-555555555555", true]]
+    },
+    {
+      "id": "backslash-without-owner-anchor-is-not-paired",
+      "value": "Owner\\Guest",
+      "artist_mbids": "55555555-5555-4555-8555-555555555555; 66666666-6666-4666-8666-666666666666",
+      "owner": "Other",
+      "separator_regex": "(?i) feat\\. ",
+      "title": "Title",
+      "filename": "01",
+      "expected": [["Owner\\Guest", 0, null, true]]
+    },
+    {
+      "id": "backslash-does-not-override-native-multi-values",
+      "value": "Owner\\Band\u001fGuest",
+      "artist_mbids": "55555555-5555-4555-8555-555555555555; 66666666-6666-4666-8666-666666666666",
+      "owner": "Owner",
+      "separator_regex": "(?i) feat\\. ",
+      "title": "Title",
+      "filename": "01",
+      "expected": [["Owner\\Band", 0, "55555555-5555-4555-8555-555555555555", true], ["Guest", 1, "66666666-6666-4666-8666-666666666666", true]]
+    },
+    {
+      "id": "raw-owner-name-anchors-ampersand",
+      "value": "Earth & Sky",
+      "artist_mbids": "",
+      "owner": "Earth & Sky",
+      "separator_regex": "(?i) & ",
+      "title": "Title",
+      "filename": "01 - Independent Guest - Title",
+      "expected": [["Earth & Sky", 0, null, true], ["Independent Guest", null, null, false]]
+    },
+    {
+      "id": "mismatched-native-values-preserve-order-without-paired-ids",
+      "value": "Owner\u001fGuest\u001fOwner",
+      "artist_mbids": "55555555-5555-4555-8555-555555555555; 66666666-6666-4666-8666-666666666666",
+      "owner": "Owner",
+      "separator_regex": "(?i) & ",
+      "title": "Title",
+      "filename": "01 - Another Guest - Title",
+      "expected": [["Owner", 0, null, true], ["Guest", 1, null, true], ["Owner", 2, null, true]]
+    },
+    {
+      "id": "mismatched-tagged-featured-credits-have-no-positions",
+      "value": "Owner feat. Guest feat. Second Guest",
+      "artist_mbids": "55555555-5555-4555-8555-555555555555",
+      "owner": "Owner",
+      "separator_regex": "(?i) feat\\. ",
+      "title": "Title",
+      "filename": "01",
+      "expected": [["Owner", null, null, true], ["Guest feat. Second Guest", null, null, true]]
+    }
+  ],
   "credit_cases": [
     {
       "id": "explicit-trio",
@@ -64,6 +228,18 @@
       "presentation_identity": "acdc",
       "matches": ["/", "AC/DC", "AC-DC", "ACDC"],
       "rejects": ["$", "Beyoncé"]
+    },
+    {
+      "name": "אְב",
+      "presentation_identity": "אב",
+      "matches": ["אב"],
+      "rejects": ["$"]
+    },
+    {
+      "name": "Ა",
+      "presentation_identity": "ა",
+      "matches": ["ა", "Ა"],
+      "rejects": ["a"]
     }
   ],
   "presentation_cases": [

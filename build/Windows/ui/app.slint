@@ -2,7 +2,7 @@ import { Button, ComboBox, LineEdit, ListView, Palette, ScrollView, TextEdit } f
 
 export struct UiLibraryRow { key: string, primary: string, secondary: string, status: string, icon: string, artwork: image, has-artwork: bool, status-color: color, kind: string, depth: int, expanded: bool, selected: bool, eligible: bool, queue-locked: bool }
 export struct UiAlbumStatusBullet { color: color, tip: string }
-export struct UiArtistAlbumRow { key: string, title: string, display-title: string, year: string, artwork: image, has-artwork: bool, status-color: color, state-key: string, selected: bool, bullets: [UiAlbumStatusBullet], check-embedded: bool, validating: bool, comp-loading: bool, processed: bool, fully-complete: bool, fallback: bool, fallback-complete: bool, featured: bool, soundtrack: bool, various-artists: bool, separator-before: bool, banner-display: string, banner-background: color, banner-frame: color, banner-letters: color, complete-frame: color, pending-frame: color, attention-frame: color, queue-locked: bool, queue-state: string, overridden: bool }
+export struct UiArtistAlbumRow { key: string, title: string, display-title: string, year: string, artwork: image, has-artwork: bool, status-color: color, state-key: string, selected: bool, bullets: [UiAlbumStatusBullet], check-embedded: bool, validating: bool, comp-loading: bool, processed: bool, fully-complete: bool, fallback: bool, fallback-complete: bool, featured: bool, soundtrack: bool, various-artists: bool, separator-before: bool, banner-key: string, banner-display: string, banner-background: color, banner-frame: color, banner-letters: color, complete-frame: color, pending-frame: color, attention-frame: color, queue-locked: bool, queue-state: string, overridden: bool }
 export struct UiAdjustmentPresetRow { index: int, name: string, summary: string, saved: bool }
 export struct UiBannerThemeRow { key: string, name: string, background: color, frame: color, letters: color, at-baseline: bool }
 export struct UiAlbumFrameThemeRow { key: string, name: string, color: color, at-baseline: bool }
@@ -602,7 +602,7 @@ component MediaLibraryPane inherits NeonPanel {
     in property <bool> expanded: true;
     in-out property <float> pane-width: 350;
     in property <[UiLibraryRow]> library-rows;
-    in property <int> library-shown-count;
+    in property <int> artist-inventory-count;
     in-out property <length> list-scroll-y: (0px * AppTheme.ui-scale);
     in property <[UiCompilationTrackRow]> compilation-track-rows;
     in property <[UiStatusFilterRow]> status-filter-rows;
@@ -781,9 +781,9 @@ component MediaLibraryPane inherits NeonPanel {
                 source-action(name, action) => root.candidate-source-action(name, action);
                 clear => root.clear-candidate-filters();
             }
-            HorizontalLayout { height: (20px * AppTheme.ui-scale);
+            if root.library-view-label == "Artists" && !root.show-tracks: HorizontalLayout { height: (20px * AppTheme.ui-scale);
                 Rectangle { horizontal-stretch: 1; background: transparent; }
-                Text { text: root.library-shown-count + " shown"; color: AppTheme.secondary-foreground; font-size: (12px * AppTheme.ui-scale) * AppTheme.font-scale; horizontal-alignment: right; vertical-alignment: center; }
+                Text { text: "Artists: " + root.artist-inventory-count; color: AppTheme.secondary-foreground; font-size: (12px * AppTheme.ui-scale) * AppTheme.font-scale; horizontal-alignment: right; vertical-alignment: center; }
             }
             if !root.show-tracks: artist-library-list := ListView {
                 content-y <=> root.list-scroll-y;
@@ -1551,7 +1551,7 @@ export component AppWindow inherits Window {
     // does not rewrite the user's saved UI Scale preference.
     out property <float> responsive-font-factor: root.width / 1px <= 1050 ? 0.82 : (root.width / 1px <= 1280 ? 0.90 : 1.0);
     in property <[UiLibraryRow]> library-rows;
-    in property <int> library-shown-count;
+    in property <int> artist-inventory-count;
     in-out property <bool> album-category-dialog-visible: false;
     in-out property <string> album-category-album-key;
     in-out property <string> album-category-album-name;
@@ -1892,6 +1892,7 @@ export component AppWindow inherits Window {
     in-out property <string> settings-scan-library;
     in-out property <string> settings-artist-separator-regex;
     in-out property <string> settings-artist-separator-profile: "Navidrome default";
+    in property <string> settings-artist-separator-warning;
     in-out property <string> settings-configuration-dir;
     in-out property <string> settings-database-dir;
     in-out property <string> settings-shared-artist-art-dir;
@@ -2361,7 +2362,7 @@ export component AppWindow inherits Window {
                     expanded: root.media-selector-expanded;
                     pane-width <=> root.media-pane-width;
                     library-rows: root.library-rows;
-                    library-shown-count: root.library-shown-count;
+                    artist-inventory-count: root.artist-inventory-count;
                     list-scroll-y <=> root.library-scroll-y;
                     compilation-track-rows: root.compilation-track-rows;
                     status-filter-rows: root.status-filter-rows;
@@ -3619,10 +3620,11 @@ export component AppWindow inherits Window {
                                         Text { text: "Profile"; color: AppTheme.foreground; font-size: (14px * AppTheme.ui-scale) * AppTheme.font-scale; width: (208px * AppTheme.ui-scale); vertical-alignment: center; }
                                         Text { text: root.settings-artist-separator-profile; color: AppTheme.yellow; font-size: (14px * AppTheme.ui-scale) * AppTheme.font-scale; horizontal-stretch: 1; vertical-alignment: center; }
                                     }
-                                    SettingField { label: "Artist Filename / Tag Separator Regex"; value <=> root.settings-artist-separator-regex; hint: "Python/Rust-compatible regular expression"; }
+                                    SettingField { label: "Artist Filename / Tag Separator Regex"; value <=> root.settings-artist-separator-regex; hint: "Portable separator expression"; }
+                                    if root.settings-artist-separator-warning != "": Text { text: root.settings-artist-separator-warning; color: AppTheme.yellow; wrap: word-wrap; }
                                     NeonAction { width: (200px * AppTheme.ui-scale); height: (32px * AppTheme.ui-scale); label: "Browse / Import JSON…"; tone: "cyan"; clicked => root.browse-artist-separator-profile(); }
                                     Text { text: "Navidrome default · spaced slash, feat./feat, ft./ft, semicolon-space"; color: AppTheme.secondary-foreground; font-size: (12px * AppTheme.ui-scale) * AppTheme.font-scale; height: (22px * AppTheme.ui-scale); wrap: word-wrap; }
-                                    SettingsHelpTip { summary: "How is the Artist separator applied?"; detail: "Advanced: applied only to one joined Artist/TPE1 value and strict numbered filename credits. A real multi-value tag remains authoritative. JSON may contain artist_separator_regex (and optional artist_separator_profile) or a separators array. After changing and saving this setting, Reset SQLite Database before Refresh DB so one index never mixes identity rules."; }
+                                    SettingsHelpTip { summary: "How is the Artist separator applied?"; detail: "Use literal delimiters, positive ASCII classes, whitespace \\s, groups and alternatives. A leading (?i) folds ASCII case. Groups may be optional. Individual characters and classes support ?, * and +. The expression must consume characters. Import a JSON separators array for literal delimiters. After changing and saving this setting, Reset SQLite Database before Refresh DB."; }
                                 }
                                 PathSettingField { label: "Temporary Cache Directory *"; value <=> root.settings-temporary-cache-dir; hint: "Disposable run files"; browse => root.browse-setting-directory("temporary"); }
                                 PathSettingField { label: "Provider Credential Directory *"; value <=> root.settings-credential-dir; hint: "Provider and shared policy JSON files"; browse => root.browse-setting-directory("credentials"); }

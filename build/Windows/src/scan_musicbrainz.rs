@@ -12,6 +12,9 @@ pub struct LocalTrackEvidence {
     pub musicbrainz_album_id: Option<String>,
     pub musicbrainz_track_id: Option<String>,
     pub musicbrainz_artist_id: Option<String>,
+    pub album_artist_mbids: Option<String>,
+    pub release_group_mbid: Option<String>,
+    pub tag_source: &'static str,
     pub compilation: Option<String>,
 }
 
@@ -231,6 +234,9 @@ mod tests {
 
     fn track(path: &str, album_id: Option<&str>) -> LocalTrackEvidence {
         LocalTrackEvidence {
+            album_artist_mbids: None,
+            release_group_mbid: None,
+            tag_source: "fixture",
             path: PathBuf::from(path),
             title: "Fixture Track".to_string(),
             artist: "Fixture Artist".to_string(),

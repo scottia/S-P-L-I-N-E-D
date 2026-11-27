@@ -4939,6 +4939,9 @@ mod tests {
             .unwrap();
         let track_path = album_path.join("01.mp3");
         let track = LocalTrackEvidence {
+            album_artist_mbids: None,
+            release_group_mbid: None,
+            tag_source: "fixture",
             path: track_path.clone(),
             title: "All I Want for Christmas Is You".to_string(),
             artist: "Mariah Carey".to_string(),
@@ -5557,6 +5560,9 @@ mod tests {
         let tracks = ["01.mp3", "02.mp3", "03.mp3", "04.mp3"]
             .into_iter()
             .map(|name| LocalTrackEvidence {
+                album_artist_mbids: None,
+                release_group_mbid: None,
+                tag_source: "fixture",
                 path: PathBuf::from("album").join(name),
                 title: String::new(),
                 artist: String::new(),
@@ -5588,6 +5594,9 @@ mod tests {
     fn compilation_resume_cursor_and_completion_ledger_advance_to_track_52() {
         let tracks = (1..=100)
             .map(|index| LocalTrackEvidence {
+                album_artist_mbids: None,
+                release_group_mbid: None,
+                tag_source: "fixture",
                 path: PathBuf::from("1961").join(format!("{index:02}.mp3")),
                 title: String::new(),
                 artist: String::new(),

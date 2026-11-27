@@ -125,45 +125,49 @@ def _raw_alias_value(parsed: Any, *aliases: str) -> str:
     tags = getattr(parsed, "tags", None)
     if not tags:
         return ""
-    wanted = {
+    wanted = tuple(dict.fromkeys(
         re.sub(r"[^a-z0-9]+", "", alias.casefold())
         for alias in aliases
-    }
+    ))
     try:
         items = tags.items()
     except Exception:
         return ""
-    for key, value in items:
-        key_text = re.sub(r"[^a-z0-9]+", "", str(key).casefold())
-        if not any(alias in key_text for alias in wanted):
-            continue
-        if isinstance(value, (list, tuple)):
-            for item in value:
-                text = _tag_text(item)
-                if text:
-                    return text
-        text = _tag_text(value)
-        if text:
-            return text
+    by_key = {_raw_alias_key(key, value): value for key, value in items}
+    for alias in wanted:
+        value = by_key.get(alias)
+        values = value if isinstance(value, (list, tuple)) else (value,)
+        for item in values:
+            text = _tag_text(item)
+            if text:
+                return text
     return ""
+
+
+def _raw_alias_key(key: object, value: Any) -> str:
+    # ID3 TXXX uses a description and MP4 free-form tags have a namespace.
+    # Exact field names prevent ARTIST from falling through to ALBUMARTIST,
+    # ARTISTS_SORT or another unrelated tag with a similar name.
+    name = getattr(value, "desc", None) or str(key).removeprefix("----:com.apple.iTunes:")
+    return re.sub(r"[^a-z0-9]+", "", name.casefold())
 
 
 def _raw_alias_values(parsed: Any, *aliases: str) -> str:
     tags = getattr(parsed, "tags", None)
     if not tags:
         return ""
-    wanted = {
+    wanted = tuple(dict.fromkeys(
         re.sub(r"[^a-z0-9]+", "", alias.casefold())
         for alias in aliases
-    }
+    ))
     try:
         items = tags.items()
     except Exception:
         return ""
-    for key, value in items:
-        key_text = re.sub(r"[^a-z0-9]+", "", str(key).casefold())
-        if any(alias in key_text for alias in wanted):
-            return _all_text_multivalue(value)
+    by_key = {_raw_alias_key(key, value): value for key, value in items}
+    for alias in wanted:
+        if value := _all_text_multivalue(by_key.get(alias)):
+            return value
     return ""
 
 
@@ -236,6 +240,19 @@ class _TagReader:
         raw = self.raw_file()
         return _raw_alias_values(raw, *keys) if raw else ""
 
+    def catalog_values(self, *keys: str) -> str:
+        """Capture the native slots, including conflicting alias fields."""
+        tags = getattr(self.raw_file(), "tags", None)
+        wanted = {_raw_alias_key(key, None) for key in keys}
+        if tags:
+            collected = [
+                _all_text_multivalue(value)
+                for key, value in tags.items() if _raw_alias_key(key, value) in wanted
+            ]
+            if any(collected):
+                return ARTIST_CREDIT_SEPARATOR.join(value for value in collected if value)
+        return self.values(*keys)
+
 
 def _album_tags(reader: _TagReader) -> dict[str, Any]:
     raw_year = reader.value("date", "originaldate", "original year", "year")
@@ -243,7 +260,8 @@ def _album_tags(reader: _TagReader) -> dict[str, Any]:
     compilation_text = reader.value("compilation", "itunescompilation")
     return {
         "album": reader.value("album"),
-        "album_artist": reader.value("albumartist", "album artist", "artist"),
+        "album_artist": reader.value("albumartist", "album artist"),
+        "track_artist": reader.values("artist"),
         "artist_sort": reader.value(
             "albumartistsort", "album artist sort", "artistsort"
         ),
@@ -260,7 +278,7 @@ def _album_tags(reader: _TagReader) -> dict[str, Any]:
         "artist_mbid": reader.value(
             "musicbrainz_albumartistid",
             "musicbrainz album artist id",
-            "musicbrainz artist id",
+            "musicbrainz release artist id",
         ),
         "year": year_match.group(1) if year_match else "",
         "compilation": compilation_text.strip().casefold()
@@ -291,7 +309,7 @@ def normalize_artist_credit_text(
         part.strip() for part in text.split(ARTIST_CREDIT_SEPARATOR) if part.strip()
     )
     if len(explicit) > 1:
-        return ARTIST_CREDIT_SEPARATOR.join(dict.fromkeys(explicit))
+        return ARTIST_CREDIT_SEPARATOR.join(explicit)
     if not explicit:
         return ""
     # ID3v2.3 stores a real multi-value TPE1 frame as one slash-delimited
@@ -300,12 +318,12 @@ def normalize_artist_credit_text(
     # IDs provide unambiguous cardinality: split only when the slash values
     # and IDs have the same count. Windows/Lofty already decodes this form as
     # a native multi-value sequence, so PostgreSQL now projects it identically.
-    mbids = _mbids(artist_mbids)
+    mbids = ordered_artist_mbids(artist_mbids)
     slash_parts = tuple(
         part.strip() for part in explicit[0].split("/") if part.strip()
     )
     if len(slash_parts) > 1 and len(mbids) == len(slash_parts):
-        return ARTIST_CREDIT_SEPARATOR.join(dict.fromkeys(slash_parts))
+        return ARTIST_CREDIT_SEPARATOR.join(slash_parts)
     # Ampersand and comma are meaningful inside real Artist names, but exact
     # ordered MBID cardinality is stronger local evidence than presentation
     # punctuation and therefore establishes positional credits first.
@@ -314,7 +332,7 @@ def normalize_artist_credit_text(
             part.strip() for part in explicit[0].split(delimiter) if part.strip()
         )
         if len(cardinal_parts) > 1 and len(mbids) == len(cardinal_parts):
-            return ARTIST_CREDIT_SEPARATOR.join(dict.fromkeys(cardinal_parts))
+            return ARTIST_CREDIT_SEPARATOR.join(cardinal_parts)
     try:
         parts = re.split(separator_regex, explicit[0])
     except re.error as exc:
@@ -328,9 +346,12 @@ def normalize_artist_credit_text(
         len(mbids) == 1 or bool(mbids) and len(mbids) != len(parts)
     ):
         return explicit[0]
-    return ARTIST_CREDIT_SEPARATOR.join(
-        dict.fromkeys(parts)
-    )
+    return ARTIST_CREDIT_SEPARATOR.join(parts)
+
+
+def ordered_artist_mbids(value: object) -> list[str]:
+    """Keep identifier slots in tag order, even when an ID is repeated."""
+    return [match.group(0).casefold() for match in _MBID_PATTERN.finditer(str(value or ""))]
 
 
 def _track_identity_tags(
@@ -350,14 +371,16 @@ def _track_identity_tags(
         "musicbrainz_artistid",
         "musicbrainz artist id",
     )
+    artist = reader.values("artist")
     return {
         "title": reader.value("title"),
         # TPE1/ARTIST is explicitly multi-value. Keeping only its first value
         # hides Featured performers from the Artist catalog even though tools
         # such as Mp3tag and Navidrome correctly expose every credit.
         "artist": normalize_artist_credit_text(
-            reader.values("artist"), artist_separator_regex, artist_mbids
+            artist, artist_separator_regex, artist_mbids
         ),
+        "original_artist": artist,
         "recording_mbid": recording_mbid,
         "artist_mbid": artist_mbids,
     }
@@ -366,9 +389,35 @@ def _track_identity_tags(
 def read_track_identity_tags(
     audio_path: Path,
     artist_separator_regex: str = DEFAULT_ARTIST_SEPARATOR_REGEX,
+    *,
+    capture_original_artist_credit: bool = False,
 ) -> dict[str, str]:
     """Read only the local fields needed for authoritative track matching."""
-    return _track_identity_tags(_TagReader(audio_path), artist_separator_regex)
+    reader = _TagReader(audio_path)
+    track = _track_identity_tags(reader, artist_separator_regex)
+    if capture_original_artist_credit:
+        _capture_album_credit_evidence(reader, track)
+    return track
+
+
+def _capture_album_credit_evidence(reader: _TagReader, track: dict[str, str]) -> None:
+    track.update(
+        original_artist=reader.catalog_values("artist", "TPE1", "TP1", "©ART"),
+        original_track_artist_mbids=reader.catalog_values("musicbrainz_artistid", "musicbrainz artist id"),
+        original_album=reader.value("album"),
+        original_album_artist=reader.catalog_values("albumartist", "album artist", "TPE2", "TP2", "aART"),
+        original_album_artist_mbids=reader.catalog_values(
+            "musicbrainz_albumartistid", "musicbrainz album artist id", "musicbrainz release artist id",
+        ),
+        original_album_mbid=reader.value(
+            "musicbrainz_albumid", "musicbrainz album id", "musicbrainz release id",
+        ),
+        original_release_group_mbid=reader.value(
+            "musicbrainz_releasegroupid", "musicbrainz release group id",
+        ),
+        original_compilation=reader.value("compilation", "itunescompilation"),
+        original_tag_source="id3v2" if reader.audio_path.suffix.lower() == ".mp3" else "native-tags",
+    )
 
 
 def read_album_and_track_identity_tags(
@@ -377,7 +426,12 @@ def read_album_and_track_identity_tags(
 ) -> tuple[dict[str, Any], dict[str, str]]:
     """Read representative Album and track identity from one opened tag view."""
     reader = _TagReader(audio_path)
-    return _album_tags(reader), _track_identity_tags(reader, artist_separator_regex)
+    track = _track_identity_tags(reader, artist_separator_regex)
+    _capture_album_credit_evidence(reader, track)
+    album = _album_tags(reader)
+    album["album_artist"] = first_artist_value(track["original_album_artist"])
+    album["artist_mbid"] = first_artist_value(track["original_album_artist_mbids"])
+    return album, track
 
 
 def inspect_album_tracks(
@@ -386,6 +440,8 @@ def inspect_album_tracks(
     existing_by_path: Mapping[str, Mapping[str, Any]],
     *,
     force_read: bool = False,
+    preserve_artist_positions: bool = False,
+    capture_original_artist_credit: bool = False,
     artist_separator_regex: str = DEFAULT_ARTIST_SEPARATOR_REGEX,
     executor: Any = None,
     preloaded: Mapping[str, Mapping[str, Any]] | None = None,
@@ -434,6 +490,10 @@ def inspect_album_tracks(
 
     def read(raw_path: Path) -> dict[str, Any]:
         try:
+            if capture_original_artist_credit:
+                return read_track_identity_tags(
+                    raw_path, artist_separator_regex, capture_original_artist_credit=True,
+                )
             return read_track_identity_tags(raw_path, artist_separator_regex)
         except Exception:
             return {
@@ -486,7 +546,10 @@ def inspect_album_tracks(
             reads += 1
 
         recording_ids = _mbids(tags["recording_mbid"])
-        artist_ids = _mbids(tags["artist_mbid"])
+        artist_ids = (
+            ordered_artist_mbids(tags["artist_mbid"])
+            if preserve_artist_positions else _mbids(tags["artist_mbid"])
+        )
         recording_mbid = recording_ids[0] if len(recording_ids) == 1 else ""
         artist_mbid = ",".join(artist_ids)
 
@@ -504,12 +567,47 @@ def inspect_album_tracks(
                 "updated_at": now,
             }
         )
+        if capture_original_artist_credit and "original_artist" in tags:
+            rows[-1]["original_artist_credit"] = original_artist_credit_payload(tags, size, modified)
     return rows, reads, reuses
 
 
+def original_artist_credit_payload(tags, size: int, modified: int) -> dict[str, str | int | None]:
+    return {
+        "artist": tags["original_artist"].replace("\0", ARTIST_CREDIT_SEPARATOR),
+        "mbids": tags.get("original_track_artist_mbids", tags["artist_mbid"]).replace("\0", ARTIST_CREDIT_SEPARATOR),
+        "title": tags["title"].replace("\0", ARTIST_CREDIT_SEPARATOR),
+        "recording_mbid": tags["recording_mbid"].replace("\0", ARTIST_CREDIT_SEPARATOR) or None,
+        "album_artist_mbids": tags.get("original_album_artist_mbids", "").replace("\0", ARTIST_CREDIT_SEPARATOR),
+        **{
+            key: tags.get("original_" + key, "").replace("\0", ARTIST_CREDIT_SEPARATOR) or None
+            for key in (
+                "album", "album_artist", "album_mbid", "release_group_mbid",
+                "compilation", "tag_source",
+            )
+        },
+        "file_size": size,
+        "file_mtime_ns": modified,
+    }
+
+
+def first_artist_value(value: str) -> str:
+    native_values = value.replace("\0", ARTIST_CREDIT_SEPARATOR)
+    return next((name.strip() for name in native_values.split(ARTIST_CREDIT_SEPARATOR) if name.strip()), "")
+
+
 def artist_key(artist_name: str, artist_mbid: str) -> str:
-    mbid = artist_mbid.strip().casefold()
-    return f"mbid:{mbid}" if mbid else f"tag:{normalize(artist_name) or 'unknown artist'}"
+    import splined_artist_unicode as artist_unicode
+
+    mbid = first_artist_value(artist_mbid).lower()
+    if mbid:
+        return f"mbid:{mbid}"
+    folded = artist_unicode.normalized_fold(artist_name)
+    normalized = " ".join("".join(
+        character if artist_unicode.alphanumeric(character) else " "
+        for character in folded
+    ).split())
+    return f"tag:{normalized or 'unknown artist'}"
 
 
 def album_base_key(
@@ -782,7 +880,8 @@ def inspect_album(
         else:
             tags = read_album_tags(representative)
         artist_name = str(
-            tags["album_artist"] or artist_folder.name or "Unknown Artist"
+            first_artist_value(tags["album_artist"]) or first_artist_value(tags.get("track_artist", "")) or artist_folder.name
+            or "Unknown Artist"
         )
         album_name = str(tags["album"] or Path(album.path).name or "Unknown Album")
         identity = artist_key(artist_name, str(tags["artist_mbid"]))

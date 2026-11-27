@@ -99,8 +99,9 @@ def settings_contract():
 
 
 @app.get("/api/artists")
-def artists(q: str = ""):
-    return [{"id": ARTIST["id"], "name": ARTIST["name"], "albums": 1, "status": "complete", "portrait": ARTIST["portrait"]}]
+def artists(q: str = "", include_total: bool = False):
+    rows = [{"id": ARTIST["id"], "name": ARTIST["name"], "albums": 1, "status": "complete", "portrait": ARTIST["portrait"]}]
+    return {"artists": rows, "artist_total": 1} if include_total else rows
 
 
 @app.get("/api/artists/thumbnails")
