@@ -55,11 +55,9 @@ presentation and validation acceptance. See [Policy Index](POLICY-INDEX.md)
 for source mapping and [AGENTS.md](../AGENTS.md) for the agent compliance boundary.
 
 **Current process:** required PR checks in `.github/workflows/validate.yml`
-retain applicable fail-closed writer tests. Workflow 10
-(`.github/workflows/10-unified-build.yml`) is the owner-designated unified
-build/release path for the exact already-approved commit, without rerunning
-either PR writer suite solely for packaging. Workflow 01 is still technically
-manually dispatchable and has not been disabled in this documentation PR.
+retain applicable fail-closed writer tests. The former Workflow 10 and split
+Workflows 21–24 are retired while replacement official release automation is
+reviewed independently. Workflow 20 remains evaluation-only.
 
 **Validation status:** documentation/source review only. This policy update
 changes no runtime, workflow file, protected schema JSON, migration, live

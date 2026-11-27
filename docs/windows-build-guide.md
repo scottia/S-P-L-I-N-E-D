@@ -39,12 +39,12 @@ and validates executable commit, version, AMD64 PE architecture, native smoke,
 size and SHA-256. Its standalone executable is explicitly QA-only and cannot
 be consumed by release publication.
 
-[Workflow 21](../.github/workflows/21-release-preparation.yml) records the
+The retired Workflow 21 recorded the
 exact current `origin/main` and `origin/dev` hashes, validates their safe tree
 relationship, resolves the synchronized version, and optionally retains an
 approved immutable candidate. It does not compile either application.
 
-[Workflow 22](../.github/workflows/22-windows-build-store.yml) consumes that
+The retired Workflow 22 consumed that
 candidate. **PARTIAL UPDATE** restores compatible dependencies and optimized
 intermediates; **FULL SOURCE** performs a clean target-specific release build.
 Both modes produce and audit the complete portable executable, ZIP, unsigned
@@ -56,7 +56,7 @@ without compiling or packaging. **SUBMIT EXISTING MSIX** instead consumes a
 previous successful Workflow 22 run after release publication and submits the
 exact validated MSIX without invoking Cargo or rebuilding the package.
 
-[Workflow 24](../.github/workflows/24-complete-release.yml) publishes only
+The retired Workflow 24 published only
 previously validated artifacts. It verifies build manifests and checksums,
 generates release notes, requires publication approval, and creates or
 completes the selected release without overwriting assets. Microsoft Store

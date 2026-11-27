@@ -58,7 +58,7 @@ class AudioIntegritySourceContract(unittest.TestCase):
         guard = source("build/WEBGui/webgui/backend/splined_audio_integrity.py")
         self.assertIn("Non-artwork metadata, ID3 version, or audio stream changed", guard)
 
-    def test_required_pr_and_release_candidate_cannot_skip_integrity(self):
+    def test_required_pr_validation_cannot_skip_integrity(self):
         pr = source(".github/workflows/validate.yml")
         for key in ("  audio-integrity-webgui:", "  audio-integrity-windows:"):
             self.assertIn(key, pr)
@@ -70,30 +70,6 @@ class AudioIntegritySourceContract(unittest.TestCase):
         self.assertIn('"local_artwork"', pr)
         self.assertIn("--no-run `", pr)
         self.assertIn("--message-format=json-render-diagnostics", pr)
-        release = source(".github/workflows/21-release-preparation.yml")
-        self.assertIn("Resolve successful required-validation provenance", release)
-        self.assertIn('select(.name == "Validate supported runtimes"', release)
-        self.assertIn("Required validation run contains an unsuccessful job", release)
-        self.assertIn('"validation_run_id": int(os.environ["VALIDATION_RUN_ID"])', release)
-        self.assertIn("source-validation.json", release)
-
-        optimized = source(".github/workflows/10-unified-build.yml")
-        for marker in (
-            "  audio-integrity-webgui:",
-            "  audio-integrity-windows:",
-            "needs.audio-integrity-webgui",
-            "needs.audio-integrity-windows",
-            "-p test_audio_integrity.py -v",
-            "-p test_cross_format_cover_overwrite.py -v",
-        ):
-            self.assertNotIn(marker, optimized)
-        for excluded in (
-            "test_splined_compilation_authority_policy.py",
-            "test_audio_integrity.py",
-            "test_comp_job_scope.py",
-            "test_cross_format_cover_overwrite.py",
-        ):
-            self.assertIn(excluded, optimized)
 
 
 if __name__ == "__main__":

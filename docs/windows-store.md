@@ -60,7 +60,7 @@ channel and does not require package identity.
 
 ## Store release and update package
 
-[Workflow 22 — Windows Build & Microsoft Store](../.github/workflows/22-windows-build-store.yml)
+The retired Workflow 22 — Windows Build & Microsoft Store
 owns Windows packaging and Store submission. Its standard **BUILD ONLY** path
 consumes an approved Workflow 21 candidate and always produces the portable
 ZIP, unsigned production MSIX, isolated development-package validation, and a
@@ -77,7 +77,7 @@ cannot block a normal Windows build.
 **BUILD ONLY, REPORT** validates the approved candidate and proposed build,
 cache, packaging, and Store-readiness plan without compiling or packaging.
 
-[Workflow 24 — Complete Release & Publication](../.github/workflows/24-complete-release.yml)
+The retired Workflow 24 — Complete Release & Publication
 later publishes the previously validated portable artifact and reports MSIX
 readiness. It never submits to Partner Center.
 
