@@ -633,7 +633,7 @@ jobs:
           started=$(date +%s)
           builder="splined-workflow20-${GITHUB_RUN_ID}"
           docker buildx create --driver docker-container --name "$builder" --use
-          cache_args=(--cache-to type=gha,mode=max,scope=splined-workflow20-webgui-${CACHE_SOURCE_SHA}
+          cache_args=(--cache-to type=gha,mode=max,ignore-error=true,scope=splined-workflow20-webgui-${CACHE_SOURCE_SHA}
                       --cache-from type=gha,scope=splined-workflow20-webgui-${CACHE_SOURCE_SHA}
                       --cache-from type=gha,scope=splined-workflow20-webgui
                       --cache-from type=gha,scope=splined-official-release-webgui)
