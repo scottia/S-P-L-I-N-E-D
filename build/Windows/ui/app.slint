@@ -1474,6 +1474,52 @@ export component EmbedQueueWindow inherits Window {
     }
 }
 
+export component StartupWindow inherits Window {
+    title: "S.P.L.I.N.E.D. — Opening Library";
+    icon: @image-url("../gui/splined-app-icon.png");
+    preferred-width: 760px;
+    preferred-height: 430px;
+    min-width: 620px;
+    min-height: 360px;
+    max-width: 760px;
+    max-height: 430px;
+    background: AppTheme.window-background;
+
+    Rectangle {
+        background: AppTheme.window-background;
+        border-color: AppTheme.cyan;
+        border-width: 1px;
+        VerticalLayout {
+            padding: 34px;
+            spacing: 22px;
+            alignment: center;
+            BrandMark { height: 92px; width: 470px; compact: false; }
+            Text {
+                text: "Opening your indexed music library…";
+                color: AppTheme.cyan;
+                font-size: 24px * AppTheme.font-scale;
+                font-weight: 800;
+                horizontal-alignment: center;
+            }
+            Text {
+                text: "Shared library storage can take a few seconds to respond. S.P.L.I.N.E.D. will open the artwork workspace as soon as the current catalog snapshot is ready.";
+                color: AppTheme.foreground;
+                font-size: 15px * AppTheme.font-scale;
+                font-weight: 700;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                wrap: word-wrap;
+                height: 82px;
+            }
+            Rectangle {
+                height: 6px;
+                border-radius: 3px;
+                background: @linear-gradient(90deg, AppTheme.cyan 0%, AppTheme.violet 35%, AppTheme.magenta 68%, AppTheme.green 100%);
+            }
+        }
+    }
+}
+
 export component DatabaseUpgradeWindow inherits Window {
     title: "S.P.L.I.N.E.D. — Database Upgrade";
     preferred-width: 820px;

@@ -1028,7 +1028,10 @@ function albumRow(album, child) {
   // A discovered cover.* is already processed material even when the stored
   // catalog label predates the file. Use the same material-aware state as the
   // Overview card instead of painting that Album white/unprocessed.
-  applyStatusPalette(button, overridden ? "override" : albumCardState(album, state.artist).stateKey);
+  // The global V/A OST list has no selected Artist context.  Use its
+  // database-first Album classification instead of manufacturing Yellow from
+  // a deliberately absent Artist overview.
+  applyStatusPalette(button, overridden ? "override" : album.list_status_key || albumCardState(album, state.artist).stateKey);
   button.classList.toggle("opposing-override", overridden);
   button.append(albumArtworkNode(album, "library-thumb", ""));
   const copy = node("span", "row-copy"); copy.append(node("strong", "", album.name), node("small", "", child ? album.tracks + " tracks" : album.artist_name)); button.append(copy);
@@ -1461,11 +1464,25 @@ function renderCompReportButtonState() {
 }
 function renderHeroContents() {
   renderCompReportButtonState();
+  $("hero").classList.remove("neutral-album-overview-active");
+  $("neutralAlbumOverview").hidden = true;
   if (state.editorMode === "fallback") { renderFallbackOverview(); return; }
   const albumOverview = singleAlbumOverviewActive();
+  const neutralAlbumOverview = state.libraryMode === "albums" && !state.album;
   $("hero").classList.remove("fallback-overview");
   $("hero").classList.toggle("album-overview", albumOverview);
+  $("hero").classList.toggle("neutral-album-overview-active", neutralAlbumOverview);
+  $("neutralAlbumOverview").hidden = !neutralAlbumOverview;
   $("fallbackHelp").hidden = true;
+  if (neutralAlbumOverview) {
+    $("overviewHeading").textContent = "V/A OST Album Selection";
+    $("overviewArtist").textContent = "";
+    $("hero").style.backgroundImage = "none";
+    $("albumStatusHelp").hidden = true;
+    $("fallbackReport").hidden = true;
+    document.querySelector(".overview-actions").hidden = true;
+    return;
+  }
   $("overviewHeading").textContent = albumOverview
     ? "V/A OST Album Overview"
     : "Artist Overview & Album Selection";

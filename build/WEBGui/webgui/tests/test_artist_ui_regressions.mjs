@@ -442,7 +442,7 @@ test("opposing Album overrides use their own dark-grey filter and never inflate 
   assert.equal(context.rawMediaStatusKey(album), "partial");
   assert.equal(context.mediaStatusKey(album), "overridden");
   assert.equal(context.mediaStatusColor("override"), "#6b737b");
-  assert.match(appSource, /applyStatusPalette\(button, overridden \? "override" : albumCardState\(album, state\.artist\)\.stateKey\)/);
+  assert.match(appSource, /applyStatusPalette\(button, overridden \? "override" : album\.list_status_key \|\| albumCardState\(album, state\.artist\)\.stateKey\)/);
   assert.match(appSource, /item\.has_incomplete_error === true/);
   assert.match(appSource, /classifyMediaState\("artist", evidence\)\.ui_status_key/);
   assert.match(appSource, /artist\.missing_artist_art = missing/);
@@ -2766,6 +2766,16 @@ test("single Album overview is limited to the global Albums library", () => {
     state: {libraryMode: "albums", editorMode: "album", album: {id: "album-1"}},
   });
   assert.equal(albumContext.singleAlbumOverviewActive(), true);
+});
+
+test("V/A OST opens on the neutral album landing before an Album is selected", () => {
+  assert.match(indexSource, /id="neutralAlbumOverview"[^>]*hidden/);
+  assert.match(indexSource, /Select an album to get started/);
+  assert.match(appSource, /const neutralAlbumOverview = state\.libraryMode === "albums" && !state\.album/);
+  assert.match(appSource, /classList\.remove\("neutral-album-overview-active"\)[\s\S]*if \(state\.editorMode === "fallback"\)/);
+  assert.match(appSource, /classList\.toggle\("neutral-album-overview-active", neutralAlbumOverview\)/);
+  assert.match(appSource, /if \(neutralAlbumOverview\) \{[\s\S]*style\.backgroundImage = "none"[\s\S]*return;/);
+  assert.match(cssSource, /\.hero\.neutral-album-overview-active \.hero-main/);
 });
 
 test("successful EMBED Batch invalidates stale handles and refreshes the Album before polling", async () => {

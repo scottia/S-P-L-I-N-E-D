@@ -4618,6 +4618,40 @@ fn run_database_upgrade_preparedness() -> Result<bool, slint::PlatformError> {
     Ok(completed.load(Ordering::SeqCst))
 }
 
+fn load_application_state_with_startup_feedback()
+-> Result<(ApplicationState, bool, Option<String>), slint::PlatformError> {
+    // The shared SQLite snapshot can legitimately take several seconds over a
+    // network path.  Put a rendered, branded window on screen before that I/O
+    // begins so Windows never presents an unresponsive white application
+    // frame while the catalog is loading.
+    let window = StartupWindow::new()?;
+    {
+        let weak = window.as_weak();
+        window.window().on_close_requested(move || {
+            if weak.upgrade().is_some() {
+                slint::CloseRequestResponse::KeepWindowShown
+            } else {
+                slint::CloseRequestResponse::HideWindow
+            }
+        });
+    }
+    let weak = window.as_weak();
+    let worker = std::thread::spawn(move || {
+        let state = load_application_state();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(window) = weak.upgrade() {
+                let _ = window.hide();
+            }
+            let _ = slint::quit_event_loop();
+        });
+        state
+    });
+    window.run()?;
+    Ok(worker
+        .join()
+        .expect("startup catalog loader must return an application state"))
+}
+
 fn main() -> Result<(), slint::PlatformError> {
     record_startup_timing("startup-process begin".to_string());
     // Local and bounded: fail before any database, provider, or catalog work
@@ -4673,7 +4707,8 @@ fn main() -> Result<(), slint::PlatformError> {
     let association_warning =
         splined_core::file_association::register_portable_backup_association().err();
     let state_load_started = Instant::now();
-    let (mut state, mut setup_required, mut startup_error) = load_application_state();
+    let (mut state, mut setup_required, mut startup_error) =
+        load_application_state_with_startup_feedback()?;
     if let Some(config) = staged_archive_config {
         let reason = automatic_settings_import
             .as_ref()

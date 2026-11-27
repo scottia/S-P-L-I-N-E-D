@@ -28,7 +28,7 @@ import splined_strict_source_policy as strict_policy
 import splined_media_database as media
 import splined_media_tags as tags
 import splined_compilation_authority_policy as compilation
-from splined_artist_art import ArtistAlbum, artist_targets, write_image
+from splined_artist_art import write_image
 from splined_artist_separator import parse as parse_artist_separator, warning as separator_warning
 
 from webgui.catalog import (
@@ -3009,7 +3009,7 @@ class Services:
         artist = self.catalog.artist(artist_id, require_eligible=True)
         with closing(self.catalog._connect_artist_catalog()) as db:
             owner_inputs = self.catalog._artist_owner_inputs(db)
-            _canonical, aliases = self.catalog._artist_identity_rows(
+            canonical, aliases = self.catalog._artist_identity_rows(
                 db, artist_id, require_eligible=True, album_inputs=owner_inputs,
             )
             alias_ids = {artist_id, *(str(row["artist_key"]) for row in aliases)}
@@ -3020,19 +3020,8 @@ class Services:
                 {**row, "musicbrainz_artistid": physical_owners[row["album_key"]]["musicbrainz_artistid"]}
                 for row in owner_inputs if row["album_key"] in physical_owners
             ]
-        targets = artist_targets(
-            [
-                ArtistAlbum(
-                    row["artist_name"],
-                    Path(row["path"]),
-                    row["musicbrainz_albumid"] or "",
-                    row["musicbrainz_artistid"] or "",
-                )
-                for row in rows
-                if inside(Path(row["path"]), self.runtime.music)
-            ],
-            str(artist["name"]),
-            self.runtime.artist_art,
+        targets = self.catalog._artist_art_targets_for_identity(
+            canonical, aliases, rows,
             allow_managed_without_owned_album=bool(artist.get("albums")),
         )
         if not targets:

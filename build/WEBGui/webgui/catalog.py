@@ -1355,6 +1355,45 @@ class Catalog:
         return status
 
     @staticmethod
+    def _album_list_status_key(
+        row, coordination: dict[str, object] | None = None
+    ) -> str:
+        """Classify an Album-list name from indexed Album evidence only."""
+        keys = set(row.keys())
+        raw_status = str(row["status"] or "unprocessed").casefold()
+        conditions: set[str] = set()
+        overridden = str((coordination or {}).get("writer", "")).casefold() == "windows"
+        if overridden or raw_status == "overridden":
+            conditions.add("opposing_override")
+        elif raw_status in {"incomplete", "timeout", "error"}:
+            conditions.add("incomplete_tracks")
+
+        cover_path = str(row["cover_path"] or "").strip() if "cover_path" in keys else ""
+        static_cover = bool(cover_path and Path(cover_path).suffix.casefold() != ".webp")
+        if "cover_found" in keys:
+            static_cover = static_cover and bool(row["cover_found"])
+        if not overridden and (not static_cover or raw_status == "bypassed"):
+            conditions.add("missing_art")
+
+        track_count = int(row["track_count"] or 0) if "track_count" in keys else 0
+        embedded = int(row["embedded_tracks"] or 0) if "embedded_tracks" in keys else 0
+        validation = (
+            str(row["embedded_validation_status"] or "unknown").casefold()
+            if "embedded_validation_status" in keys else "unknown"
+        )
+        complete = validation == "verified" and track_count > 0 and embedded >= track_count
+        attention = raw_status == "partial" or validation in {"retry", "error"} or (
+            validation == "verified" and track_count > 0 and embedded < track_count
+        )
+        if attention:
+            conditions.add("embedding_issues")
+        if complete:
+            conditions.add("tracks_complete")
+        elif Catalog._effective_album_status(row, coordination) == "processed":
+            conditions.add("processed")
+        return str(classify_media_state("album", conditions)["ui_status_key"])
+
+    @staticmethod
     def _aggregate_stored_artist_status(rows) -> str:
         """Compatibility fallback for reduced, pre-status Album fixtures."""
         statuses = {str(row["status"] or "unprocessed").casefold() for row in rows}
@@ -2897,15 +2936,104 @@ class Catalog:
             self.portrait_cache.pop(artist_id, None)
         return portrait
 
+    def _artist_art_targets_for_identity(
+        self,
+        artist,
+        aliases,
+        album_rows,
+        *,
+        allow_managed_without_owned_album: bool = False,
+    ) -> list[ArtistArtTarget]:
+        """Resolve one ordered Artist Art package for a presentation identity.
+
+        PostgreSQL can retain a name-only owner row beside an MBID-backed row
+        for the same visible Artist.  Reads previously used only the selected
+        row while writes used the physical owner rows, so a verified write
+        could land in ``artist-mbid-*`` while the overview kept reading the
+        older name-scoped package.  Direct, dedicated Artist folders still win;
+        managed MBID packages then outrank name fallbacks for every alias in
+        the presentation group.
+        """
+        album_rows = list(album_rows)
+        base = artist_targets(
+            [
+                ArtistAlbum(
+                    str(artist["artist_name"]),
+                    Path(row["path"]),
+                    str(row.get("musicbrainz_albumid") or ""),
+                    str(row.get("musicbrainz_artistid") or ""),
+                )
+                for row in album_rows
+                if inside(Path(row["path"]), self.music)
+            ],
+            str(artist["artist_name"]),
+            self.artist_art,
+            allow_managed_without_owned_album=allow_managed_without_owned_album,
+        )
+        if not base:
+            return []
+
+        ordered: list[ArtistArtTarget] = []
+        seen: set[tuple[str, str]] = set()
+
+        def append(target: ArtistArtTarget) -> None:
+            key = (str(target.directory).casefold(), target.stem.casefold())
+            if key not in seen:
+                seen.add(key)
+                ordered.append(target)
+
+        for target in base:
+            if not target.managed:
+                append(target)
+
+        identity_rows = [artist, *(row for row in aliases if row is not artist)]
+        raw_mbids = [
+            str(row.get("musicbrainz_artistid") or "").strip()
+            for row in [*identity_rows, *album_rows]
+        ]
+        for raw_mbid in raw_mbids:
+            try:
+                mbid = str(UUID(raw_mbid))
+            except ValueError:
+                continue
+            append(ArtistArtTarget(self.artist_art, "artist-mbid-" + mbid, True))
+
+        names = [str(row.get("artist_name") or "").strip() for row in identity_rows]
+        for name in names:
+            if not name:
+                continue
+            identity = sha256(name.casefold().encode("utf-8")).digest()[:16].hex()
+            append(ArtistArtTarget(self.artist_art, "artist-name-" + identity, True))
+
+        for target in base:
+            append(target)
+        return ordered
+
     def artist_thumbnail(self, artist_id: str) -> Path:
         """Resolve saved Artist Art without emitting speculative 404 requests."""
         with closing(self._connect_artist_catalog()) as db:
-            artist, aliases = self._artist_identity_rows(db, artist_id, require_eligible=True)
-        portrait = None
-        for candidate in [artist, *(row for row in aliases if row is not artist)]:
-            portrait = self.artist_thumbnail_path(candidate)
-            if portrait is not None:
-                break
+            album_inputs = self._artist_owner_inputs(db)
+            artist, aliases = self._artist_identity_rows(
+                db, artist_id, require_eligible=True, album_inputs=album_inputs,
+            )
+            primary_keys = {
+                str(row["art004_album_key"])
+                for row in aliases if "art004_album_key" in row
+            }
+            primary_rows = [
+                row for row in album_inputs
+                if str(row["album_key"]) in primary_keys and self.artist_album_allowed(row)
+            ]
+        targets = self._artist_art_targets_for_identity(
+            artist, aliases, primary_rows,
+            allow_managed_without_owned_album=True,
+        )
+        portrait = saved_package(targets).portrait
+        if portrait is None:
+            for candidate in [artist, *(row for row in aliases if row is not artist)]:
+                portrait = self.artist_thumbnail_path(candidate)
+                if portrait is not None:
+                    break
         if portrait is None:
             if self.index_maintenance_active():
                 raise KeyError("Artist thumbnail hydration is paused while indexing")
@@ -2960,9 +3088,7 @@ class Catalog:
         )
         with closing(self.connect()) as db:
             rows = db.execute(
-                "SELECT albums.album_key, albums.album_name, albums.artist_key, "
-                "artists.artist_name, albums.path, albums.cover_path, albums.track_count, "
-                "albums.status, albums.compilation, albums.musicbrainz_albumid FROM albums "
+                "SELECT albums.*, artists.artist_name FROM albums "
                 "JOIN artists ON artists.artist_key=albums.artist_key "
                 "WHERE (albums.album_name LIKE ? ESCAPE '\\' OR artists.artist_name LIKE ? ESCAPE '\\') "
                 "ORDER BY albums.album_name COLLATE NOCASE ",
@@ -2983,9 +3109,13 @@ class Catalog:
             }:
                 continue
             album_key = str(row["album_key"])
-            cover_url = self.album_thumbnail_url(album_key)
+            row_keys = set(row.keys())
+            indexed_cover = bool(row["cover_found"]) if "cover_found" in row_keys else bool(row["cover_path"])
+            cover_url = self.album_thumbnail_url(album_key) if indexed_cover else None
             if requested_view == "fallback":
                 cover_url = self.image(self.album_cover_path(row))
+            album_coordination = coordination.get(album_key, {})
+            cover_path = str(row["cover_path"] or "")
             items.append({
                 "id": row["album_key"], "name": row["album_name"],
                 "artist_id": row["artist_key"], "artist_name": row["artist_name"],
@@ -2996,6 +3126,18 @@ class Catalog:
                 "cover": cover_url,
                 "tracks": row["track_count"],
                 "status": row["status"], "compilation": bool(row["compilation"]),
+                "embedded": int(row["embedded_tracks"] or 0)
+                    if "embedded_tracks" in row_keys else 0,
+                "embedded_validation": str(row["embedded_validation_status"] or "unknown")
+                    if "embedded_validation_status" in row_keys else "unknown",
+                "cover_found": indexed_cover,
+                "cover_path": cover_path,
+                "static_cover_found": bool(
+                    indexed_cover and Path(cover_path).suffix.casefold() != ".webp"
+                ),
+                "webp_found": bool(row["webp_found"])
+                    if "webp_found" in row_keys else False,
+                "list_status_key": self._album_list_status_key(row, album_coordination),
                 "album_mbid": row["musicbrainz_albumid"] or "",
                 "library_group": group,
                 "category_override": self.category_overrides.get(album_key, ""),
@@ -3007,9 +3149,9 @@ class Catalog:
                     "fallback": "Curated Compilations",
                 }.get(group, "Artist"),
                 "fallback": group == "fallback",
-                "override_writer": coordination.get(album_key, {}).get("writer", ""),
-                "override_operation": coordination.get(album_key, {}).get("operation", ""),
-                "override_revision": int(coordination.get(album_key, {}).get("revision", 0) or 0),
+                "override_writer": album_coordination.get("writer", ""),
+                "override_operation": album_coordination.get("operation", ""),
+                "override_revision": int(album_coordination.get("revision", 0) or 0),
             })
         return items
 
@@ -3077,15 +3219,17 @@ class Catalog:
                 str(row["album_key"] or "").casefold(),
             )
         )
-        targets = artist_targets(
-            [ArtistAlbum(artist["artist_name"], Path(row["path"]),
-                         row["musicbrainz_albumid"] or "", artist["musicbrainz_artistid"] or "")
-             for row in primary_rows if inside(Path(row["path"]), self.music)],
-            artist["artist_name"], self.artist_art,
+        targets = self._artist_art_targets_for_identity(
+            artist, aliases, primary_rows,
             allow_managed_without_owned_album=bool(appearance_rows),
         )
         package = saved_package(targets)
-        portrait = self.artist_thumbnail_path(artist)
+        portrait = package.portrait
+        if portrait is None:
+            for candidate in [artist, *(row for row in aliases if row is not artist)]:
+                portrait = self.artist_thumbnail_path(candidate)
+                if portrait is not None:
+                    break
         candidates = []
         for label, path in local_candidates(targets):
             if inside(path, self.music) or inside(path, self.artist_art):
