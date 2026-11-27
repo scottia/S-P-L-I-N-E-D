@@ -1356,7 +1356,10 @@ class Catalog:
 
     @staticmethod
     def _album_list_status_key(
-        row, coordination: dict[str, object] | None = None
+        row,
+        coordination: dict[str, object] | None = None,
+        *,
+        missing_artist_art: bool = False,
     ) -> str:
         """Classify an Album-list name from indexed Album evidence only."""
         keys = set(row.keys())
@@ -1372,7 +1375,9 @@ class Catalog:
         static_cover = bool(cover_path and Path(cover_path).suffix.casefold() != ".webp")
         if "cover_found" in keys:
             static_cover = static_cover and bool(row["cover_found"])
-        if not overridden and (not static_cover or raw_status == "bypassed"):
+        if not overridden and (
+            not static_cover or missing_artist_art or raw_status == "bypassed"
+        ):
             conditions.add("missing_art")
 
         track_count = int(row["track_count"] or 0) if "track_count" in keys else 0
@@ -3082,6 +3087,141 @@ class Catalog:
         except Exception:
             return False
 
+    def _album_artist_art_evidence(
+        self, row, aliases=None, album_rows=None
+    ) -> dict[str, object]:
+        """Resolve whether one Album has applicable saved Artist Art.
+
+        This intentionally remains outside the initial Album-list query. Artist
+        Art lives in bounded Artist folders and managed packages, so resolving
+        it during ``albums()`` would put network filesystem I/O back on the
+        first paint. Synthetic V/A and soundtrack owners do not have an
+        applicable Artist presentation.
+        """
+        artist_name = str(row["artist_name"] or "").strip()
+        if not artist_name or synthetic_album_artist(artist_name):
+            return {"applicable_artist_art": False, "missing_artist_art": False}
+
+        keys = set(row.keys())
+        artist = {
+            "artist_key": str(row["artist_key"]),
+            "artist_name": artist_name,
+            "musicbrainz_artistid": (
+                str(row["art_list_artist_mbid"] or "")
+                if "art_list_artist_mbid" in keys else ""
+            ),
+            "primary_path": (
+                str(row["art_list_artist_primary_path"] or "")
+                if "art_list_artist_primary_path" in keys else ""
+            ),
+        }
+        aliases = list(aliases or [artist])
+        album_rows = list(album_rows or [dict(row)])
+        try:
+            targets = self._artist_art_targets_for_identity(
+                artist,
+                aliases,
+                album_rows,
+                allow_managed_without_owned_album=True,
+            )
+            package = saved_package(targets)
+            present = package.portrait is not None or package.banner is not None
+            if not present:
+                present = any(
+                    self.artist_thumbnail_path(candidate) is not None
+                    for candidate in [
+                        artist, *(item for item in aliases if item is not artist)
+                    ]
+                )
+        except (OSError, ValueError):
+            # A temporarily unavailable shared Artist Art directory must not
+            # prevent the Album itself from opening. Keep the conservative
+            # Yellow classification until a later bounded hydration succeeds.
+            present = False
+        return {"applicable_artist_art": True, "missing_artist_art": not present}
+
+    def album_artist_art_status(
+        self, album_ids: list[str]
+    ) -> list[dict[str, object]]:
+        """Hydrate bounded Artist-Art evidence after the Album list paints."""
+        requested = list(dict.fromkeys(
+            str(album_id).strip() for album_id in album_ids if str(album_id).strip()
+        ))[:50]
+        if not requested:
+            return []
+        placeholders = ",".join("?" for _ in requested)
+        with closing(self.connect()) as db:
+            rows = db.execute(
+                "SELECT albums.*, artists.artist_name, "
+                "artists.musicbrainz_artistid AS art_list_artist_mbid, "
+                "artists.primary_path AS art_list_artist_primary_path FROM albums "
+                "JOIN artists ON artists.artist_key=albums.artist_key "
+                f"WHERE albums.album_key IN ({placeholders})",
+                tuple(requested),
+            ).fetchall()
+            coordination = self._album_write_coordination(db, rows)
+            target_identities = {
+                normalized_artist_identity(row["artist_name"])
+                for row in rows
+                if not synthetic_album_artist(str(row["artist_name"] or ""))
+            }
+            artist_rows = [
+                dict(candidate) for candidate in db.execute(
+                    "SELECT artist_key,artist_name,musicbrainz_artistid,primary_path "
+                    "FROM artists"
+                ).fetchall()
+                if normalized_artist_identity(candidate["artist_name"])
+                in target_identities
+            ]
+            artist_keys = [str(candidate["artist_key"]) for candidate in artist_rows]
+            owned_rows = []
+            if artist_keys:
+                owner_placeholders = ",".join("?" for _ in artist_keys)
+                owned_rows = [dict(item) for item in db.execute(
+                    "SELECT albums.*, artists.artist_name FROM albums "
+                    "JOIN artists ON artists.artist_key=albums.artist_key "
+                    f"WHERE albums.artist_key IN ({owner_placeholders})",
+                    tuple(artist_keys),
+                ).fetchall()]
+        by_id = {str(row["album_key"]): row for row in rows}
+        aliases_by_identity: dict[str, list[dict[str, object]]] = {}
+        identity_by_artist_key = {}
+        for candidate in artist_rows:
+            identity = normalized_artist_identity(candidate["artist_name"])
+            aliases_by_identity.setdefault(identity, []).append(candidate)
+            identity_by_artist_key[str(candidate["artist_key"])] = identity
+        albums_by_identity: dict[str, list[dict[str, object]]] = {}
+        for owned in owned_rows:
+            identity = identity_by_artist_key.get(str(owned["artist_key"]))
+            if identity is not None:
+                albums_by_identity.setdefault(identity, []).append(owned)
+        evidence_by_artist: dict[str, dict[str, object]] = {}
+        result = []
+        for album_id in requested:
+            row = by_id.get(album_id)
+            if row is None:
+                continue
+            identity = normalized_artist_identity(row["artist_name"])
+            evidence = evidence_by_artist.get(identity)
+            if evidence is None:
+                evidence = self._album_artist_art_evidence(
+                    row,
+                    aliases_by_identity.get(identity),
+                    albums_by_identity.get(identity),
+                )
+                evidence_by_artist[identity] = evidence
+            missing = bool(evidence["missing_artist_art"])
+            result.append({
+                "id": album_id,
+                **evidence,
+                "list_status_key": self._album_list_status_key(
+                    row,
+                    coordination.get(album_id, {}),
+                    missing_artist_art=missing,
+                ),
+            })
+        return result
+
     def albums(self, query: str, view: str | bool = "va-ost") -> list[dict[str, object]]:
         requested_view = (
             "fallback" if view is True else "legacy-albums" if view is False else str(view)
@@ -3116,6 +3256,7 @@ class Catalog:
                 cover_url = self.image(self.album_cover_path(row))
             album_coordination = coordination.get(album_key, {})
             cover_path = str(row["cover_path"] or "")
+            artist_art_applicable = not synthetic_album_artist(str(row["artist_name"] or ""))
             items.append({
                 "id": row["album_key"], "name": row["album_name"],
                 "artist_id": row["artist_key"], "artist_name": row["artist_name"],
@@ -3137,7 +3278,17 @@ class Catalog:
                 ),
                 "webp_found": bool(row["webp_found"])
                     if "webp_found" in row_keys else False,
-                "list_status_key": self._album_list_status_key(row, album_coordination),
+                # Artist Art is deliberately hydrated after first paint. Until
+                # its bounded evidence arrives, an applicable real Artist must
+                # not be optimistically painted Green.
+                "applicable_artist_art": artist_art_applicable,
+                "missing_artist_art": artist_art_applicable,
+                "artist_art_pending": artist_art_applicable,
+                "list_status_key": self._album_list_status_key(
+                    row,
+                    album_coordination,
+                    missing_artist_art=artist_art_applicable,
+                ),
                 "album_mbid": row["musicbrainz_albumid"] or "",
                 "library_group": group,
                 "category_override": self.category_overrides.get(album_key, ""),
@@ -3344,6 +3495,12 @@ class Catalog:
             if inside(Path(item["path"]), folder)
         ]
         library_group = self.album_library_group(row)
+        hydrated_status = self.album_artist_art_status([album_id])
+        artist_art = hydrated_status[0] if hydrated_status else {
+            "applicable_artist_art": False,
+            "missing_artist_art": False,
+            "list_status_key": self._album_list_status_key(row, override),
+        }
         return {
             "id": album_id, "name": row["album_name"], "status": row["status"],
             "artist_id": row["artist_key"], "artist_name": row["artist_name"],
@@ -3358,6 +3515,7 @@ class Catalog:
             "cover_found": cover is not None,
             "static_cover_found": cover is not None and cover.suffix.casefold() != ".webp",
             "webp_found": bool(row["webp_found"]),
+            **artist_art,
             "cover": self.image(cover),
             # V/A OST Album Overview backgrounds are intentionally static.
             # Keep cover.webp available to the animation workflow without

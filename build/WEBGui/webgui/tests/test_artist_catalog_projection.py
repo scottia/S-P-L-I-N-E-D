@@ -66,6 +66,10 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             Catalog._album_list_status_key(complete, {"writer": "windows"}),
             "overridden",
         )
+        self.assertEqual(
+            Catalog._album_list_status_key(complete, missing_artist_art=True),
+            "bypassed",
+        )
 
     def test_art004_portability_does_not_change_independent_credit_normalization(self):
         profile = r"(?<=feat\.)\s+"

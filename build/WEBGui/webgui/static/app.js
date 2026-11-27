@@ -2957,6 +2957,7 @@ async function loadLibrary(query = "") {
     state.libraryLoading = false;
     state.libraryReady = true;
     renderLibrary();
+    if (mode === "albums") void hydrateAlbumArtistArt(request, results);
     if (mode === "artists" && state.artists.some(item => item.projection_pending === true)) {
       state.artistProjectionRetry = 0;
       scheduleArtistProjectionRefresh(query, request);
@@ -2971,6 +2972,29 @@ async function loadLibrary(query = "") {
       state.libraryLoading = false;
       renderLibrary();
       setStatus(error.message, "error");
+    }
+  }
+}
+async function hydrateAlbumArtistArt(request, albums) {
+  const pending = (albums || []).filter(album => album?.artist_art_pending === true);
+  for (let offset = 0; offset < pending.length; offset += 25) {
+    const batch = pending.slice(offset, offset + 25);
+    const query = new URLSearchParams();
+    for (const album of batch) query.append("id", album.id);
+    try {
+      const statuses = await api("/api/albums/artist-art-status?" + query.toString());
+      if (request !== state.listRequest || state.libraryMode !== "albums") return;
+      let changed = false;
+      for (const status of statuses) {
+        const album = state.albumsIndex.find(item => item.id === status.id);
+        if (!album) continue;
+        Object.assign(album, status, {artist_art_pending: false});
+        changed = true;
+      }
+      if (changed) renderLibrary();
+    } catch {
+      // The database-first list remains usable and conservatively Yellow when
+      // bounded Artist Art storage is temporarily unavailable.
     }
   }
 }

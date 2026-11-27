@@ -111,6 +111,42 @@ test("a superseded library response cannot commit stale rows", async () => {
   assert.equal(state.artistTotal, 2429, "a stale response cannot replace the inventory count");
 });
 
+test("V/A OST hydrates applicable Artist Art after the database-first list paints", async () => {
+  const albums = [
+    {id: "album-1", artist_art_pending: true, list_status_key: "bypassed"},
+    {id: "album-2", artist_art_pending: false, list_status_key: "albumsComplete"},
+  ];
+  const calls = [];
+  const state = {
+    libraryMode: "albums", listRequest: 0, libraryLoading: false,
+    libraryReady: false, albumsIndex: [], artists: [], artist: null,
+    artistProjectionRetry: 0,
+  };
+  const context = load(librarySearchFunctions, {
+    state,
+    URLSearchParams,
+    api: async path => {
+      calls.push(path);
+      if (path.startsWith("/api/albums/artist-art-status?")) {
+        return [{
+          id: "album-1", applicable_artist_art: true,
+          missing_artist_art: false, list_status_key: "albumsComplete",
+        }];
+      }
+      return albums;
+    },
+    renderLibrary() {}, chooseArtist: async () => {}, setStatus() {},
+    window: {setTimeout() { return 1; }, clearTimeout() {}},
+  });
+
+  await context.loadLibrary("");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(calls[1], /^\/api\/albums\/artist-art-status\?id=album-1$/);
+  assert.equal(state.albumsIndex[0].artist_art_pending, false);
+  assert.equal(state.albumsIndex[0].missing_artist_art, false);
+  assert.equal(state.albumsIndex[0].list_status_key, "albumsComplete");
+});
+
 test("Artist search renders an existing list and accepts a server-resolved alias", async () => {
   let release;
   const response = new Promise(resolve => { release = resolve; });
