@@ -258,22 +258,30 @@ test("Artist search renders an existing list and accepts a server-resolved alias
   const pending = context.loadLibrary("artist$alias");
   context.renderLibraryContents();
   assert.deepEqual(visible(), ["abba"]);
-  assert.equal(getElement("artistCount").textContent, "Artists: 2429");
+  assert.equal(getElement("libraryListTitle").textContent, "Artists Albums Count:");
+  assert.equal(getElement("artistCount").textContent, "2429");
 
   release({artists: [{id: "canonical", name: "Canonical Artist", albums: 1}], artist_total: 2429});
   await pending;
   assert.deepEqual(visible(), ["canonical"]);
   state.artists[0].status = "hidden";
   context.renderLibraryContents();
-  assert.equal(getElement("artistCount").textContent, "Artists: 2429");
+  assert.equal(getElement("artistCount").textContent, "2429");
   getElement("albumSearch").value = "Album title";
   state.albumLibraryMatches = [{id: "1", name: "Album title"}];
   context.renderLibraryContents();
-  assert.equal(getElement("libraryListTitle").textContent, "Album Search");
-  assert.equal(getElement("artistCount").textContent, "Artists: 2429");
+  assert.equal(getElement("libraryListTitle").textContent, "Artists Albums Count:");
+  assert.equal(getElement("artistCount").textContent, "2429");
+  state.libraryLoading = true;
+  state.libraryMode = "albums";
+  context.renderLibraryContents();
+  assert.equal(getElement("libraryListTitle").textContent, "V/A OST Albums Count:");
+  assert.equal(getElement("artistCount").textContent, "0");
   state.libraryMode = "fallback";
   context.renderLibraryContents();
-  assert.equal(getElement("artistCount").hidden, true);
+  assert.equal(getElement("libraryListTitle").textContent, "Fallback Albums Count:");
+  assert.equal(getElement("artistCount").textContent, "0");
+  assert.equal(getElement("artistCount").hidden, false);
 });
 
 test("Artist search waits for a complete inventory before replacing existing rows", async () => {

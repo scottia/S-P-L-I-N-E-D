@@ -702,10 +702,12 @@ function renderLibraryContents() {
   $("fallbackTab").classList.toggle("active", state.libraryMode === "fallback");
   const isArtistView = state.libraryMode === "artists";
   const albumQuery = isArtistView ? $("albumSearch").value.trim() : "";
-  $("libraryListTitle").textContent = state.libraryMode === "fallback" ? "Curated Compilations"
-    : state.libraryMode === "albums" ? "V/A OST" : albumQuery ? "Album Search" : "";
-  $("artistCount").hidden = !isArtistView;
-  $("artistCount").textContent = isArtistView ? "Artists: " + (state.artistTotal ?? "…") : "";
+  const inventoryLabel = state.libraryMode === "fallback" ? "Fallback Albums Count:"
+    : state.libraryMode === "albums" ? "V/A OST Albums Count:" : "Artists Albums Count:";
+  const inventoryCount = isArtistView ? (state.artistTotal ?? "…") : state.albumsIndex.length;
+  $("libraryListTitle").textContent = inventoryLabel;
+  $("artistCount").hidden = false;
+  $("artistCount").textContent = String(inventoryCount);
   const list = $("artistList"); resetLibraryThumbnailLoading(); clear(list);
   if (state.libraryLoading) {
     list.append(node("p", "empty-copy", state.libraryMode === "artists" ? "Loading artists…" : "Loading albums…"));
