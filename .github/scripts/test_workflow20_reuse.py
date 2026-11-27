@@ -226,7 +226,10 @@ class ReuseTests(unittest.TestCase):
         )
         self.assertNotIn("crazy-max/ghaction-github-runtime", workflow)
         self.assertIn('core.exportVariable("ACTIONS_RUNTIME_TOKEN", token)', workflow)
-        self.assertIn("--cache-to type=gha,mode=max,scope=splined-workflow20-webgui-${CACHE_SOURCE_SHA}", workflow)
+        self.assertIn(
+            "--cache-to type=gha,mode=max,ignore-error=true,scope=splined-workflow20-webgui-${CACHE_SOURCE_SHA}",
+            workflow,
+        )
         self.assertIn("--cache-from type=gha,scope=splined-workflow20-webgui-${CACHE_SOURCE_SHA}", workflow)
         self.assertIn("--cache-from type=gha,scope=splined-official-release-webgui", workflow)
 

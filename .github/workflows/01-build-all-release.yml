@@ -588,7 +588,7 @@ jobs:
             --cache-from type=gha,scope=splined-workflow20-webgui-${DEV_CACHE_SHA}
             --cache-from type=gha,scope=splined-workflow20-webgui
             --cache-from type=gha,scope=splined-official-release-webgui
-            --cache-to type=gha,mode=max,scope=splined-official-release-webgui
+            --cache-to type=gha,mode=max,ignore-error=true,scope=splined-official-release-webgui
           )
           docker buildx build --progress=plain "${cache_args[@]}" --load \
             --build-arg SPLINED_BUILD_CHANNEL=release \
