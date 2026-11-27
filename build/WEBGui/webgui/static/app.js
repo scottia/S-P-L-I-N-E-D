@@ -3002,6 +3002,7 @@ async function hydrateAlbumArtistArt(request, albums, target = "library") {
     : request === state.listRequest && ["albums", "fallback"].includes(state.libraryMode);
   for (let offset = 0; offset < pending.length; offset += 25) {
     const batch = pending.slice(offset, offset + 25);
+    const expectedRows = new Map(batch.map(album => [String(album.id), album]));
     const query = new URLSearchParams();
     for (const album of batch) query.append("id", album.id);
     try {
@@ -3011,7 +3012,7 @@ async function hydrateAlbumArtistArt(request, albums, target = "library") {
       let changed = false;
       for (const status of statuses) {
         const album = collection.find(item => item.id === status.id);
-        if (!album) continue;
+        if (!album || album !== expectedRows.get(String(status.id))) continue;
         Object.assign(album, status, {artist_art_pending: false});
         changed = true;
       }

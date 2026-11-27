@@ -185,6 +185,36 @@ test("Album lists and search hydrate applicable Artist Art after the database-fi
   assert.equal(preservedMissing[0].list_status_key, "bypassed");
 });
 
+test("late Artist Art hydration cannot overwrite a newer Album refresh", async () => {
+  let release;
+  const response = new Promise(resolve => { release = resolve; });
+  const original = {
+    id: "album-1", artist_id: "artist-1", artist_art_pending: true,
+    list_status_key: "overridden",
+  };
+  const state = {
+    libraryMode: "albums", listRequest: 4, albumsIndex: [original],
+    albumLibraryRequest: 0, albumLibraryMatches: [],
+  };
+  const context = load(librarySearchFunctions, {
+    state, URLSearchParams,
+    api: async () => response,
+    renderLibrary() {}, chooseArtist: async () => {}, setStatus() {},
+    window: {setTimeout() { return 1; }, clearTimeout() {}},
+  });
+
+  const hydration = context.hydrateAlbumArtistArt(4, state.albumsIndex);
+  state.albumsIndex = [{
+    ...original, artist_art_pending: false, list_status_key: "albumsComplete",
+  }];
+  release([{
+    id: "album-1", applicable_artist_art: true,
+    missing_artist_art: false, list_status_key: "overridden",
+  }]);
+  await hydration;
+  assert.equal(state.albumsIndex[0].list_status_key, "albumsComplete");
+});
+
 test("Artist search renders an existing list and accepts a server-resolved alias", async () => {
   let release;
   const response = new Promise(resolve => { release = resolve; });
