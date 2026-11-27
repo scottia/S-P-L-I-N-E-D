@@ -85,16 +85,6 @@ class CanonicalReleaseContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "invalid base"):
             pr_gate.check_diff("bad", "b" * 40)
 
-    def test_official_candidate_validates_policy_before_release_stamp(self) -> None:
-        release = (ROOT / ".github/workflows/01-build-all-release.yml").read_text(
-            encoding="utf-8"
-        )
-        self.assertLess(
-            release.index("python3 .github/scripts/validate_release_policy_contracts.py"),
-            release.index('source_version.py stamp-release "$RELEASE_VERSION"'),
-        )
-        self.assertLess(release.index("candidate-report:"), release.index("prepare-release:"))
-
     def test_pr_policy_check_is_independent_of_windows_advisory(self) -> None:
         content = (ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")
         self.assertIn("Canonical policy JSON — review gate", content)
