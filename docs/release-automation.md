@@ -41,5 +41,10 @@ than repeating those suites. Release runs still build the selected production
 assets, verify package identity, perform native/container smoke checks, and
 require a valid final Build Report before tagging or publication.
 
+WebGUI releases may warm Docker layers from a compatible Workflow 20 `/dev`
+cache and publish an updated official-release cache. This accelerates the build
+without accepting a Workflow 20 artifact: Buildx still evaluates the exact
+`main` source, invalidates changed layers, and produces a new release image.
+
 Release and Store notes share
 [`release/cliff.toml`](../release/cliff.toml) and the checked-in templates.

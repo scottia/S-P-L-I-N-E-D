@@ -604,6 +604,9 @@ jobs:
           node --check build/WEBGui/webgui/static/app.js
           node --check build/WEBGui/webgui/static/operations.js
           echo "seconds=$(($(date +%s) - started))" >> "$GITHUB_OUTPUT"
+      - name: Expose GitHub Actions cache runtime for Buildx
+        if: ${{ steps.reuse.outputs.reused != 'true' }}
+        uses: crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124 # v3
       - name: Build and smoke-test exact WebGUI image
         if: ${{ steps.reuse.outputs.reused != 'true' }}
         id: container

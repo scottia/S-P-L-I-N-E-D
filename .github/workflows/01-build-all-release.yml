@@ -576,6 +576,9 @@ jobs:
           git checkout --detach "$RELEASE_COMMIT"
           test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
 
+      - name: Expose GitHub Actions cache runtime for Buildx
+        uses: crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124 # v3
+
       - name: Build and smoke-test WebGUI container
         shell: bash
         env:
@@ -584,7 +587,12 @@ jobs:
         run: |
           set -euo pipefail
           docker buildx create --driver docker-container --name splined-official-release --use
-          docker buildx build --no-cache --load \
+          cache_args=(
+            --cache-from type=gha,scope=splined-workflow20-webgui
+            --cache-from type=gha,scope=splined-official-release-webgui
+            --cache-to type=gha,mode=max,scope=splined-official-release-webgui
+          )
+          docker buildx build --progress=plain "${cache_args[@]}" --load \
             --build-arg SPLINED_BUILD_CHANNEL=release \
             --label "org.opencontainers.image.source=https://github.com/scottia/S-P-L-I-N-E-D" \
             --label "org.opencontainers.image.version=$RELEASE_VERSION" \

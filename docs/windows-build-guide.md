@@ -55,6 +55,8 @@ bundle. Partner Center submission is not performed.
 No candidate or build run ID is copied between workflows. Source tests are not
 repeated after the validated dev-to-main promotion, and Workflow 20 artifacts
 cannot substitute for an official main build.
+Compatible WebGUI Docker layers may be warmed from Workflow 20, but the exact
+`main` source is always rebuilt and smoke-tested as a new release image.
 
 ### Production-equivalent local PC test build
 

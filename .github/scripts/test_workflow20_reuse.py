@@ -218,6 +218,15 @@ class ReuseTests(unittest.TestCase):
         self.assertEqual(original, workflow_contract(workflow.replace(b"continue-on-error: true", b"continue-on-error: false")))
         self.assertNotEqual(original, workflow_contract(workflow.replace(b"Validate WebGUI without retired writer routines", b"Skip WebGUI validation")))
 
+    def test_webgui_build_exposes_runtime_for_shared_gha_cache(self):
+        workflow = (Path(__file__).resolve().parents[1] / "workflows/20-quick-portable-windows.yml").read_text(encoding="utf-8")
+        self.assertIn(
+            "crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124",
+            workflow,
+        )
+        self.assertIn("--cache-to type=gha,mode=max,scope=splined-workflow20-webgui", workflow)
+        self.assertIn("--cache-from type=gha,scope=splined-official-release-webgui", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
