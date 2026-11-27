@@ -1,4 +1,4 @@
-"""Resolve the previous release-note baseline across Workflow 10 stamp commits."""
+"""Resolve the previous release-note baseline across official release stamps."""
 
 from __future__ import annotations
 

@@ -152,12 +152,11 @@ selected alternate cover or manually corrected identity into audio metadata.
 
 All Windows and WebGUI media writers must stage and verify before publication.
 If preservation is not provable, reject the write with the original untouched.
-Maintain mandatory real-writer and deliberately failing mutation tests in
-required PR validation, independent of fast/strict validation choices.
-Workflow 10 is the owner-designated active unified build/release path; it
-packages an exact previously approved commit and must not rerun either
-client's PR-level Audio Integrity suite solely because a build is selected.
-Workflow 01 remains manually dispatchable but is operationally superseded.
+Keep the production guards and focused negative mutation tests available for
+targeted development, but do not run dedicated real-writer routines as PR or
+official-release jobs. Official Workflows 01–03 trust the validated dev-to-main
+promotion and must not rerun source-test suites solely because a release is
+selected. They validate the selected build, package identity and smoke result.
 A source change that introduces audio-tag editing is prohibited; changing
 tests, policy JSON or a workflow to hide it is not an approved fix.
 
@@ -240,7 +239,15 @@ folder-artwork tests that reject an attempted WebP replacement.
 
 **COMP is a separate read/matching/artwork-selection policy.** Preserve `schema/comp-report-policy.json` entirely, including percentage-based results, fuzzy Artist recovery, batch revision pinning, verified-write events and unresolved-authority coordination. **COMP must never write MusicBrainz metadata to any media file.** The same universal non-artwork metadata prohibition applies to ordinary Album thumbnail embedding. Keep the canonical media-state JSON, existing classifications, status dots and COMP-track colors unchanged.
 
-Required PR validation must run **mandatory fail-closed real-writer audio integrity tests for every affected client**, even in fast/validation-only mode. WebGUI runtime changes require the WebGUI writer test; Windows runtime changes require the Windows writer test; shared artwork policy/schema or validation-gate changes require both. A selected required test that is skipped is not a pass. A synchronized numeric release-metadata-only change requires the WebGUI writer and full release-contract validation but does not require the unchanged Windows writer compile. Workflow 10 is the package/build cycle for an exact already-approved commit and must rely on that commit's required PR results rather than rerun either writer suite. A standalone schema JSON validation or optional Windows advisory does not certify audio write safety. Protect integrity tests, writer guards and required PR CI checks from removal or dilution without separate, narrow owner authorization.
+Dedicated Windows and WebGUI real-writer CI routines are retired by narrow
+owner authorization. Do not recreate them as required PR or official-release
+jobs. Preserve the fail-closed production guards and the focused negative test
+fixtures for targeted maintenance, but ordinary PR validation owns source
+quality and canonical policy review. Official Workflows 01–03 trust the exact
+validated dev-to-main promotion and do not rerun source tests; their Build
+Reports cover selected asset compilation, package identity and smoke results.
+A standalone schema check, advisory, or Build Report does not weaken the
+production rule that an unprovable audio write must leave the original intact.
 
 ## 5. Required PR validation and merge stop conditions
 

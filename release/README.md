@@ -34,10 +34,12 @@ published history belongs in Git tags and GitHub Releases.
 ## Current guidance
 
 - `README-WINDOWS.txt` ships with the supported Windows portable archive.
-- Workflow 23 builds the WebGUI/Python source archive and exact smoke-tested
-  container image; Workflow 24 publishes those validated outputs. There is **no supported native Linux
+- Workflows 01 and 03 build the WebGUI/Python source archive and exact
+  smoke-tested container image, then publish those validated outputs in the
+  same run. There is **no supported native Linux
   README or root-native Linux release target** in the two-target `/main` layout.
-- macOS is not a release target in the current Workflows 20–24 architecture.
+- macOS is not a release target in the current Workflow 20 and official
+  Workflows 01–03 architecture.
 
 Windows release notes are generated from [`cliff.toml`](cliff.toml) and
 `templates/github-release.tera`; a static migration-era release-note file is

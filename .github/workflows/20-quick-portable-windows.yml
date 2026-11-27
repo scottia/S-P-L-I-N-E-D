@@ -604,6 +604,9 @@ jobs:
           node --check build/WEBGui/webgui/static/app.js
           node --check build/WEBGui/webgui/static/operations.js
           echo "seconds=$(($(date +%s) - started))" >> "$GITHUB_OUTPUT"
+      - name: Expose GitHub Actions cache runtime for Buildx
+        if: ${{ steps.reuse.outputs.reused != 'true' }}
+        uses: crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124 # v3
       - name: Build and smoke-test exact WebGUI image
         if: ${{ steps.reuse.outputs.reused != 'true' }}
         id: container
@@ -611,14 +614,16 @@ jobs:
         env:
           RELEASE_VERSION: ${{ needs.resolve-source.outputs.source_version }}
           RELEASE_COMMIT: ${{ steps.evaluation-source.outputs.candidate_commit }}
+          CACHE_SOURCE_SHA: ${{ needs.resolve-source.outputs.source_sha }}
         run: |
           set -euo pipefail
           started=$(date +%s)
           builder="splined-workflow20-${GITHUB_RUN_ID}"
           docker buildx create --driver docker-container --name "$builder" --use
-          cache_args=(--cache-to type=gha,mode=max,scope=splined-workflow20-webgui
+          cache_args=(--cache-to type=gha,mode=max,scope=splined-workflow20-webgui-${CACHE_SOURCE_SHA}
+                      --cache-from type=gha,scope=splined-workflow20-webgui-${CACHE_SOURCE_SHA}
                       --cache-from type=gha,scope=splined-workflow20-webgui
-                      --cache-from type=gha,scope=splined-workflow23-webgui)
+                      --cache-from type=gha,scope=splined-official-release-webgui)
           set +e
           docker buildx build --progress=plain "${cache_args[@]}" --load \
             --build-arg SPLINED_BUILD_CHANNEL=dev \

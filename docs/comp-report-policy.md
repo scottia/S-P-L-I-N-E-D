@@ -1,6 +1,6 @@
 # Artist COMP report policy
 
-The canonical checked-in seed is [`schema/comp-report-policy.json`](../schema/comp-report-policy.json), protected by the repository review requirement in [POLICY-REGISTER.md](POLICY-REGISTER.md). Deliberate, validated edits to an installed policy revision through Settings do not change this checked-in source. Workflow 21 validates its source contract before candidate approval; this is not a live policy-mirror audit.
+The canonical checked-in seed is [`schema/comp-report-policy.json`](../schema/comp-report-policy.json), protected by the repository review requirement in [POLICY-REGISTER.md](POLICY-REGISTER.md). Deliberate, validated edits to an installed policy revision through Settings do not change this checked-in source. Official Workflows 01–03 trust the reviewed dev-to-main promotion and do not repeat this source-contract validation; this is not a live policy-mirror audit.
 
 `comp-report-policy.json` is the shared, editable contract for Artist COMP
 identity recovery, MusicBrainz result grouping, existing-artwork reuse, batch

@@ -43,8 +43,6 @@ class PromotionValidationTests(unittest.TestCase):
 
     def test_exact_promotion_does_not_repeat_source_suites(self) -> None:
         for name in (
-            "audio-integrity-webgui",
-            "audio-integrity-windows",
             "scope",
             "policy-review",
             "webgui",
@@ -53,11 +51,12 @@ class PromotionValidationTests(unittest.TestCase):
             with self.subTest(job=name):
                 self.assertIn(NON_PROMOTION, job(self.workflow, name))
 
-    def test_feature_prs_and_workflow_dispatch_keep_full_validation(self) -> None:
+    def test_feature_prs_and_workflow_dispatch_keep_standard_validation(self) -> None:
         self.assertIn("workflow_dispatch:", self.workflow)
         self.assertIn("github.event_name != 'pull_request'", self.workflow)
-        self.assertIn("Audio integrity — WebGUI real artwork writer", self.workflow)
-        self.assertIn("Audio integrity — Windows real artwork writer", self.workflow)
+        self.assertNotIn("real artwork writer", self.workflow)
+        self.assertNotIn("audio-integrity-windows", self.workflow)
+        self.assertNotIn("audio-integrity-webgui", self.workflow)
         self.assertIn("Canonical policy JSON — review gate", self.workflow)
 
 

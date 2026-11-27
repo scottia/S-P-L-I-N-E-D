@@ -3,9 +3,9 @@
 > Source-location inventory only. Application behavior and policy must be
 > verified independently; this file does not approve conflicting legacy rules.
 
-Workflows 21–24 are the supported production release chain. Workflow 21
-freezes the exact candidate, Workflows 22 and 23 independently build Windows
-and WebGUI, and Workflow 24 publishes their validated artifacts.
+Workflows 01–03 are the supported single-run production release entry points.
+Each pins `main`, validates and remembers its candidate internally, builds the
+selected targets, validates a Build Report, and publishes the exact outputs.
 
 ## Active source roots
 
@@ -22,30 +22,31 @@ and WebGUI, and Workflow 24 publishes their validated artifacts.
 - `build/WEBGui/docker/config.example.toml`: default WebGUI Config v5 example included
   in the container at `/app/build/WEBGui/docker/config.example.toml`.
 - `build/WEBGui/docker/compose.yaml`: source deployment configuration using the same
-  Dockerfile as Workflow 23.
+  Dockerfile as the official WebGUI release job.
 
 The `build/` directory contains exactly two application-specific directories,
 `WEBGui` and `Windows`. Policy documents and operator guides stay in
 `docs/`, outside `build/`. Runtime-served `guide.html` is an application
 asset, not the authoritative policy register.
 
-## Workflows 21–24 reference chain
+## Workflows 01–03 reference chain
 
-Before candidate approval, Workflow 21 checks the accepted media-state, COMP
-and lifecycle policies, Config v5 UI metadata and SQLite schema contracts.
+Before candidate approval, each official workflow checks the accepted
+media-state, COMP and lifecycle policies, Config v5 UI metadata and SQLite
+schema contracts and retains a candidate Build Report without creating an
+MSIX.
 Required pull-request validation separately checks protected JSON diffs in the
 **Canonical policy JSON — review gate**. These enforce the existing approved
 register, not a new policy or a deployed-database acceptance.
 
-When an unused synchronized version is unavailable, Workflow 21 may create an
-immutable temporary candidate that stamps `build/Windows/Cargo.toml`, its
-lockfile and Windows package manifests, plus
-`build/WEBGui/webgui/backend/splined.py`. It never writes that stamp to a
-protected branch. Workflow 22 compiles Windows with
-`--manifest-path build/Windows/Cargo.toml`; Workflow 23 runs the relocated
-Python tests, Node syntax checks, and the Docker build using
-`build/WEBGui/Dockerfile`. Workflow 24 publishes that exact smoke-tested image
-with its candidate revision label instead of rebuilding it.
+When the committed version is occupied, the workflow creates an immutable
+temporary candidate that stamps `build/Windows/Cargo.toml`, its lockfile and
+Windows package manifests, plus `build/WEBGui/webgui/backend/splined.py`. It
+never writes that stamp to a protected branch. The Windows job compiles with
+`--manifest-path build/Windows/Cargo.toml`; the WebGUI jobs run the relocated
+Python tests, Node syntax checks, and Docker build using
+`build/WEBGui/Dockerfile`. Publication uses the exact smoke-tested image with
+its candidate revision label instead of rebuilding it.
 
 Docs and release source packages are distinct from the GHCR runtime image.
 The image is controlled by `.dockerignore` and the Dockerfile COPY inputs.
