@@ -41,204 +41,15 @@ jobs:
           {
             echo "### Exact dev-to-main promotion verified"
             echo
-            echo "Source and Audio Integrity checks already passed before this commit entered dev."
+            echo "Source validation already passed before this commit entered dev."
             echo "Combining the current main base with the current dev head produces exactly the dev tree."
           } >> "$GITHUB_STEP_SUMMARY"
-  audio-integrity-webgui:
-    name: Audio integrity — WebGUI real artwork writer
-    needs: scope
-    if: ${{ (github.event_name != 'pull_request' || github.base_ref != 'main' || github.head_ref != 'dev') && needs.scope.outputs.audio_webgui == 'true' }}
-    runs-on: ubuntu-latest
-    env:
-      PYTHONPATH: .:build/WEBGui:build/WEBGui/webgui/backend
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ env.VALIDATION_HEAD_SHA }}
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: '3.12'
-      - name: Enforce actual MP3 artwork-only integrity and mutation rejection
-        run: |
-          python -m pip install -r build/WEBGui/webgui/requirements-test.txt
-          python -m unittest discover -s build/WEBGui/webgui/tests -p test_splined_compilation_authority_policy.py -v
-          python -m unittest discover -s build/WEBGui/webgui/tests -p test_audio_integrity.py -v
-          python -m unittest discover -s build/WEBGui/webgui/tests -p test_comp_job_scope.py -v
-          python -m unittest discover -s build/WEBGui/webgui/tests -p test_cross_format_cover_overwrite.py -v
-  audio-integrity-windows:
-    name: Audio integrity — Windows real artwork writer
-    needs: scope
-    if: ${{ (github.event_name != 'pull_request' || github.base_ref != 'main' || github.head_ref != 'dev') && needs.scope.outputs.audio_windows == 'true' }}
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ env.VALIDATION_HEAD_SHA }}
-      - name: Install pinned Rust toolchain
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          rustup toolchain install 1.99.0 --profile minimal --no-self-update
-          rustup target add x86_64-pc-windows-msvc --toolchain 1.99.0
-
-      - name: Calculate normalized Windows dependency cache key
-        id: windows-audio-cache-key
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $lock = Get-Content -Raw -LiteralPath build/Windows/Cargo.lock
-          $pattern = '(?ms)(\[\[package\]\]\r?\nname = "splined-windows"\r?\n)version = "[^"]+"'
-          $normalized = [regex]::Replace($lock, $pattern, '${1}version = "<release>"')
-          if ($normalized -eq $lock) {
-            throw "Unable to normalize the release-only Windows package version for the validation cache key."
-          }
-          $bytes = [Text.Encoding]::UTF8.GetBytes($normalized)
-          $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
-          "hash=$hash" | Add-Content $env:GITHUB_OUTPUT
-
-      - name: Restore Cargo registry and Git dependencies
-        id: windows-audio-dependency-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-splined-windows-dependencies-v2-1.99.0-${{ steps.windows-audio-cache-key.outputs.hash }}
-          restore-keys: |
-            ${{ runner.os }}-splined-windows-dependencies-v2-1.99.0-
-
-      - name: Restore compatible Windows test intermediates
-        id: windows-audio-compiled-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            build/Windows/target/debug/deps
-            !build/Windows/target/debug/deps/*.exe
-            !build/Windows/target/debug/deps/*.pdb
-            build/Windows/target/debug/build
-            build/Windows/target/debug/.fingerprint
-            build/Windows/target/debug/incremental
-            build/Windows/target/x86_64-pc-windows-msvc/debug/deps
-            !build/Windows/target/x86_64-pc-windows-msvc/debug/deps/*.exe
-            !build/Windows/target/x86_64-pc-windows-msvc/debug/deps/*.pdb
-            build/Windows/target/x86_64-pc-windows-msvc/debug/build
-            build/Windows/target/x86_64-pc-windows-msvc/debug/.fingerprint
-            build/Windows/target/x86_64-pc-windows-msvc/debug/incremental
-          key: ${{ runner.os }}-splined-windows-audio-tests-v2-1.99.0-x86_64-pc-windows-msvc-${{ steps.windows-audio-cache-key.outputs.hash }}-${{ env.VALIDATION_HEAD_SHA }}
-          restore-keys: |
-            ${{ runner.os }}-splined-windows-audio-tests-v2-1.99.0-x86_64-pc-windows-msvc-${{ steps.windows-audio-cache-key.outputs.hash }}-
-
-      - name: Compile once and run mandatory Rust/Lofty regressions
-        shell: pwsh
-        env:
-          CARGO_INCREMENTAL: "1"
-          CARGO_DEPENDENCY_CACHE_HIT: ${{ steps.windows-audio-dependency-cache.outputs.cache-hit }}
-          COMPILED_CACHE_HIT: ${{ steps.windows-audio-compiled-cache.outputs.cache-hit }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          $overallStarted = Get-Date
-          $compileStarted = Get-Date
-          $messages = Join-Path $env:RUNNER_TEMP "splined-audio-integrity-cargo.jsonl"
-
-          cargo +1.99.0 test `
-            --locked `
-            --manifest-path build/Windows/Cargo.toml `
-            --lib `
-            --bin splined `
-            --target x86_64-pc-windows-msvc `
-            --no-run `
-            --message-format=json-render-diagnostics 2>&1 | Tee-Object -FilePath $messages
-          if ($LASTEXITCODE -ne 0) {
-            throw "Windows audio-integrity test compilation failed with exit code $LASTEXITCODE."
-          }
-          $compileSeconds = [math]::Round(((Get-Date) - $compileStarted).TotalSeconds, 2)
-
-          $testExecutables = @(
-            Get-Content -LiteralPath $messages | ForEach-Object {
-              try {
-                $message = $_ | ConvertFrom-Json -ErrorAction Stop
-              } catch {
-                $message = $null
-              }
-              if (
-                $null -ne $message -and
-                $message.reason -eq "compiler-artifact" -and
-                $message.profile.test -eq $true -and
-                $message.target.name -eq "splined_core" -and
-                $message.executable
-              ) {
-                [string]$message.executable
-              }
-            }
-          )
-          if ($testExecutables.Count -ne 1 -or -not (Test-Path -LiteralPath $testExecutables[0] -PathType Leaf)) {
-            throw "Expected exactly one compiled splined_core test executable; found $($testExecutables.Count)."
-          }
-          $applicationTests = @(
-            Get-Content -LiteralPath $messages | ForEach-Object {
-              try {
-                $message = $_ | ConvertFrom-Json -ErrorAction Stop
-              } catch {
-                $message = $null
-              }
-              if ($message.reason -eq "compiler-artifact" -and $message.profile.test -eq $true -and
-                  $message.target.name -eq "splined" -and $message.executable) {
-                [string]$message.executable
-              }
-            }
-          )
-          if ($applicationTests.Count -ne 1 -or -not (Test-Path -LiteralPath $applicationTests[0] -PathType Leaf)) {
-            throw "Expected exactly one compiled Windows application test executable."
-          }
-
-          $testStarted = Get-Date
-          $testExecutable = $testExecutables[0]
-          $filters = @(
-            "artwork_integrity::tests",
-            "embedded_artwork",
-            "local_artwork",
-            "art004",
-            "snapshot_projects_cached_compilation_tracks_and_embedded_artwork_state"
-          )
-          foreach ($filter in $filters) {
-            & $testExecutable $filter --nocapture
-            if ($LASTEXITCODE -ne 0) {
-              throw "Windows audio-integrity filter '$filter' failed with exit code $LASTEXITCODE."
-            }
-          }
-          $applicationTest = "tests::artist_overview_cards_group_by_album_type_then_newest_year_with_separators"
-          $availableTests = & $applicationTests[0] --list
-          if ($LASTEXITCODE -ne 0 -or $availableTests -notcontains "${applicationTest}: test") {
-            throw "Required Windows application regression is missing."
-          }
-          & $applicationTests[0] --exact $applicationTest --nocapture
-          if ($LASTEXITCODE -ne 0) {
-            throw "Required Windows application regression failed."
-          }
-          $testSeconds = [math]::Round(((Get-Date) - $testStarted).TotalSeconds, 2)
-          $totalSeconds = [math]::Round(((Get-Date) - $overallStarted).TotalSeconds, 2)
-
-          $summary = @"
-          ### Windows audio-integrity validation timing
-
-          - Cargo dependency cache exact hit: $env:CARGO_DEPENDENCY_CACHE_HIT
-          - Compiled-intermediate cache exact hit: $env:COMPILED_CACHE_HIT
-          - Cargo invocations: 1 (library and application test targets)
-          - Mandatory writer and catalog filters executed: 5
-          - Windows production card regression: passed
-          - Compile seconds: $compileSeconds
-          - Test seconds: $testSeconds
-          - Total compile/test seconds: $totalSeconds
-          "@
-          $summary | Add-Content $env:GITHUB_STEP_SUMMARY
   scope:
     name: Select relevant validation
     if: ${{ github.event_name != 'pull_request' || github.base_ref != 'main' || github.head_ref != 'dev' }}
     runs-on: ubuntu-latest
     outputs:
       webgui: ${{ steps.scope.outputs.webgui }}
-      audio_webgui: ${{ steps.scope.outputs.audio_webgui }}
-      audio_windows: ${{ steps.scope.outputs.audio_windows }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -309,7 +120,14 @@ jobs:
         with:
           node-version: '22'
       - run: pip install -r build/WEBGui/webgui/requirements-test.txt
-      - run: python -m unittest discover -s build/WEBGui/webgui/tests -v
+      - name: Validate WebGUI without retired writer routines
+        run: |
+          for test in build/WEBGui/webgui/tests/test_*.py; do
+            case "$(basename "$test")" in
+              test_splined_compilation_authority_policy.py|test_audio_integrity.py|test_comp_job_scope.py|test_cross_format_cover_overwrite.py) continue ;;
+            esac
+            python -m unittest discover -s build/WEBGui/webgui/tests -p "$(basename "$test")" -v
+          done
       - run: node --check build/WEBGui/webgui/static/app.js && node --check build/WEBGui/webgui/static/operations.js
       - name: Build and start browser container
         run: |

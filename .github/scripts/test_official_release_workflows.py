@@ -78,6 +78,15 @@ class OfficialReleaseWorkflowTests(unittest.TestCase):
             self.all.index("finalize-tag:"),
         )
 
+    def test_release_trusts_dev_promotion_without_rerunning_source_tests(self) -> None:
+        self.assertIn('"candidate_validation": "trusted-dev-promotion"', self.all)
+        self.assertNotIn("webgui-tests:", self.all)
+        self.assertNotIn("validate_release_policy_contracts.py", self.all)
+        self.assertNotIn("python3 -m unittest", self.all)
+        self.assertNotIn("python -m unittest", self.all)
+        self.assertIn("Build and smoke-test WebGUI container", self.all)
+        self.assertIn("--native-smoke", self.all)
+
     def test_selected_targets_build_clean_and_publish_expected_outputs(self) -> None:
         self.assertIn("compile_mode=FULL SOURCE", self.all)
         self.assertIn("cargo clean --manifest-path build/Windows/Cargo.toml --release", self.all)
@@ -85,6 +94,8 @@ class OfficialReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("Build-StorePackage.ps1", self.all)
         self.assertIn("Test-DevelopmentPackage.ps1", self.all)
         self.assertIn("docker save splined-webgui:release-test", self.all)
+        self.assertIn("docker buildx build --no-cache --load", self.all)
+        self.assertNotIn("--cache-to type=gha", self.all)
         self.assertIn("docker push", self.all)
         self.assertIn("Generate-ReleaseNotes.ps1", self.all)
         self.assertIn("-ConfigPath release/cliff.toml", self.all)

@@ -14,9 +14,9 @@ Each workflow automatically performs the same ordered release contract:
 1. Pin the exact dispatch commit on `main` and allocate the next available
    numeric release tag. Workflow 20 artifacts and `/dev` candidate versions
    are never reused as official release inputs.
-2. Validate the candidate and retain
-   `splined-official-candidate-report`. This stage creates no MSIX and records
-   the internal candidate ID for the rest of the same run.
+2. Confirm the exact `main` source/version identity and retain
+   `splined-official-candidate-report`. This stage creates no MSIX, reruns no
+   source tests, and records the internal candidate ID for the same run.
 3. Prepare an immutable release commit when the version fields need a
    temporary stamp, then build every selected target from that exact commit.
 4. Validate the selected build results and retain
@@ -34,6 +34,12 @@ remain separate from this normal release path.
 
 Workflow 20 remains a `/dev` and PR evaluation path only. Its artifacts are
 marked `release_eligible: false` and cannot satisfy any official-release stage.
+
+Source validation belongs to the topic-branch → `dev` cycle. Once that exact
+tree is promoted to `main`, official Workflows 01–03 trust the promotion rather
+than repeating those suites. Release runs still build the selected production
+assets, verify package identity, perform native/container smoke checks, and
+require a valid final Build Report before tagging or publication.
 
 Release and Store notes share
 [`release/cliff.toml`](../release/cliff.toml) and the checked-in templates.

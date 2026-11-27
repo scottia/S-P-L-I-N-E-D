@@ -55,9 +55,10 @@ presentation and validation acceptance. See [Policy Index](POLICY-INDEX.md)
 for source mapping and [AGENTS.md](../AGENTS.md) for the agent compliance boundary.
 
 **Current process:** required PR checks in `.github/workflows/validate.yml`
-retain applicable fail-closed writer tests. Official Workflows 01–03 validate
-the exact `main` candidate and retain Build Reports before tagging or
-publication. Workflow 20 remains evaluation-only.
+perform the ordinary source and protected-policy review. Dedicated real-writer
+CI routines are retired. Official Workflows 01–03 trust the exact dev-to-main
+promotion, confirm the `main` identity, and retain asset Build Reports before
+tagging or publication. Workflow 20 remains evaluation-only.
 
 **Validation status:** documentation/source review only. This policy update
 changes no runtime, workflow file, protected schema JSON, migration, live

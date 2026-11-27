@@ -45,16 +45,16 @@ and keeps its candidate identity inside the same run.
 After the candidate Build Report passes, selected targets use a clean
 full-source build.
 Windows releases produce and validate the portable archive and unsigned
-production MSIX from the same executable. WebGUI releases validate Python,
-PostgreSQL, Node, and the exact production container. A second Build Report
+production MSIX from the same executable. WebGUI releases build and smoke-test
+the exact production container. A second Build Report
 must pass before tagging. Pinned git-cliff generates release notes, the GitHub
 Release is published, and WebGUI targets publish the exact smoke-tested image
 to GHCR. Windows targets then retain an offline Microsoft Store draft/review
 bundle. Partner Center submission is not performed.
 
-No candidate or build run ID is copied between workflows. Required source-PR
-Audio Integrity results remain authoritative, and Workflow 20 artifacts cannot
-substitute for an official main build.
+No candidate or build run ID is copied between workflows. Source tests are not
+repeated after the validated dev-to-main promotion, and Workflow 20 artifacts
+cannot substitute for an official main build.
 
 ### Production-equivalent local PC test build
 
@@ -93,7 +93,11 @@ runs on Ubuntu and reports **Not run — permanent PR policy exception** without
 provisioning Rust or a Windows runner. This applies to Windows, Slint,
 shared-schema, dependency, workflow, and promotion changes. Targeted local
 Windows compilation and regression testing remains appropriate in the isolated
-E: acceptance environment. Official Workflows 01 and 02 audit canonical source policies and the exact main candidate, then perform the native optimized build, identity, portable smoke, MSIX contract and isolated development-package validation from the same executable. The retained Store result is an offline draft; no Partner Center submission occurs.
+E: acceptance environment. Official Workflows 01 and 02 trust the reviewed
+dev-to-main promotion, confirm the exact main identity, then perform the native
+optimized build, portable smoke, MSIX contract and isolated development-package
+validation from the same executable. The retained Store result is an offline
+draft; no Partner Center submission occurs.
 
 `build/Windows/build.rs` compiles `build/Windows/ui/app.slint` and embeds build identity.
 The executable links directly to the Rust library modules in `build/Windows/src`.

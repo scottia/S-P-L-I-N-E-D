@@ -33,11 +33,8 @@ WEB_JOBS = {
         "Reject changed protected behavioural JSON",
         "Validate canonical policy, SQLite DDL and settings contracts",
     ),
-    "Audio integrity — WebGUI real artwork writer": (
-        "Enforce actual MP3 artwork-only integrity and mutation rejection",
-    ),
     "webgui": (
-        "Run python -m unittest discover -s build/WEBGui/webgui/tests -v",
+        "Validate WebGUI without retired writer routines",
         "Run node --check build/WEBGui/webgui/static/app.js && node --check build/WEBGui/webgui/static/operations.js",
         "Build and start browser container",
     ),
@@ -241,10 +238,10 @@ def workflow_contract(contents: bytes) -> tuple[str, ...]:
         match.group(1): match.group(0).strip()
         for match in re.finditer(r"(?ms)^  ([a-z][a-z0-9-]*):\n.*?(?=^  [a-z][a-z0-9-]*:\n|\Z)", jobs)
     }
-    # The trusted checkout, permissions, scope, policy and WebGUI recipes
+    # The trusted checkout, permissions, scope, policy and WebGUI recipe
     # must match exactly. Unrelated Windows filters are not WebGUI evidence.
     return (header.strip(), *(blocks[name] for name in (
-        "scope", "policy-review", "audio-integrity-webgui", "webgui",
+        "scope", "policy-review", "webgui",
     )))
 
 

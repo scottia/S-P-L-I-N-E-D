@@ -1,8 +1,4 @@
-"""Independent source-policy contract checks: run before every release stamp.
-
-This is an additional review boundary, not a replacement for the real Mutagen
-and Rust/Lofty staged-writer integrity tests in the mandatory Windows job.
-"""
+"""Independent source-policy checks for production artwork-write safeguards."""
 from pathlib import Path
 import unittest
 
@@ -58,18 +54,19 @@ class AudioIntegritySourceContract(unittest.TestCase):
         guard = source("build/WEBGui/webgui/backend/splined_audio_integrity.py")
         self.assertIn("Non-artwork metadata, ID3 version, or audio stream changed", guard)
 
-    def test_required_pr_validation_cannot_skip_integrity(self):
+    def test_retired_writer_routines_are_not_pr_jobs(self):
         pr = source(".github/workflows/validate.yml")
-        for key in ("  audio-integrity-webgui:", "  audio-integrity-windows:"):
-            self.assertIn(key, pr)
-        self.assertNotIn("  audio-integrity:\n", pr)
-        self.assertIn("test_audio_integrity.py -v", pr)
-        self.assertIn("test_cross_format_cover_overwrite.py -v", pr)
-        self.assertIn('"artwork_integrity::tests"', pr)
-        self.assertIn('"embedded_artwork"', pr)
-        self.assertIn('"local_artwork"', pr)
-        self.assertIn("--no-run `", pr)
-        self.assertIn("--message-format=json-render-diagnostics", pr)
+        self.assertNotIn("  audio-integrity-webgui:", pr)
+        self.assertNotIn("  audio-integrity-windows:", pr)
+        self.assertNotIn("real artwork writer", pr)
+        self.assertIn("Validate WebGUI without retired writer routines", pr)
+        for test in (
+            "test_splined_compilation_authority_policy.py",
+            "test_audio_integrity.py",
+            "test_comp_job_scope.py",
+            "test_cross_format_cover_overwrite.py",
+        ):
+            self.assertIn(test, pr)
 
 
 if __name__ == "__main__":

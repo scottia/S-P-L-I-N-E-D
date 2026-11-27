@@ -216,7 +216,7 @@ class ReuseTests(unittest.TestCase):
         workflow = (Path(__file__).resolve().parents[1] / "workflows/validate.yml").read_bytes()
         original = workflow_contract(workflow)
         self.assertEqual(original, workflow_contract(workflow.replace(b"continue-on-error: true", b"continue-on-error: false")))
-        self.assertNotEqual(original, workflow_contract(workflow.replace(b"python -m unittest discover -s build/WEBGui/webgui/tests -v", b"echo skipped")))
+        self.assertNotEqual(original, workflow_contract(workflow.replace(b"Validate WebGUI without retired writer routines", b"Skip WebGUI validation")))
 
 
 if __name__ == "__main__":

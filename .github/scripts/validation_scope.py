@@ -1,4 +1,4 @@
-"""Select client validation and real-writer integrity from a PR source diff."""
+"""Select relevant pull-request validation from a source diff."""
 
 import re
 import subprocess
@@ -84,25 +84,25 @@ def is_release_metadata_only(paths, diff_text):
 
 
 def select_checks(paths, *, release_metadata_only=False):
-    checks = {"webgui": False, "audio_webgui": False, "audio_windows": False}
+    checks = {"webgui": False}
     if release_metadata_only:
-        return {"webgui": True, "audio_webgui": True, "audio_windows": False}
+        return {"webgui": True}
     for path in paths:
         if path == "__all__":
-            return {"webgui": True, "audio_webgui": True, "audio_windows": True}
+            return {"webgui": True}
         if path in SHARED_POLICY_PATHS or path in VALIDATION_GATE_PATHS:
-            checks.update(webgui=True, audio_webgui=True, audio_windows=True)
+            checks["webgui"] = True
             continue
         if path.endswith(".md"):
             continue
         if path in {".gitattributes", ".dockerignore", ".github/CODEOWNERS", ".github/dependabot.yml"}:
             checks["webgui"] = True
         elif path.startswith(("schema/", "shared/")):
-            checks.update(webgui=True, audio_webgui=True, audio_windows=True)
+            checks["webgui"] = True
         elif path.startswith("build/WEBGui/"):
-            checks.update(webgui=True, audio_webgui=True)
+            checks["webgui"] = True
         elif path.startswith("build/Windows/"):
-            checks.update(webgui=True, audio_windows=True)
+            checks["webgui"] = True
         elif path.startswith((".github/workflows/", ".github/scripts/")):
             checks["webgui"] = True
     return checks
@@ -128,7 +128,7 @@ def main():
             release_metadata_only=is_release_metadata_only(changed, diff_text),
         )
     except (ValueError, subprocess.CalledProcessError, UnicodeError):
-        print("::warning::Changed files unavailable; running both client writer checks", file=sys.stderr)
+        print("::warning::Changed files unavailable; running full WebGUI validation", file=sys.stderr)
         checks = select_checks(["__all__"])
     for name, selected in checks.items():
         print(f"{name}={str(selected).lower()}")

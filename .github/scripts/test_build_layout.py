@@ -53,8 +53,8 @@ class BuildLayoutTests(unittest.TestCase):
             workflow,
         )
         self.assertIn("--file build/WEBGui/Dockerfile", workflow)
-        self.assertIn("build/WEBGui/webgui/tests/test_*.py", workflow)
-        self.assertIn("build/WEBGui:build/WEBGui/webgui/backend", workflow)
+        self.assertNotIn("webgui-tests:", workflow)
+        self.assertIn("docker build --file build/WEBGui/Dockerfile", workflow)
         self.assertIn("cp -R schema docs release-package/", workflow)
 
     def test_configuration_examples_are_runtime_owned(self):
