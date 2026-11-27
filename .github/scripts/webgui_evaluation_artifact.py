@@ -40,6 +40,8 @@ def create_manifest(root: Path, env: dict[str, str]) -> dict:
     source = env["SOURCE_COMMIT"]
     candidate = env["CANDIDATE_COMMIT"]
     version = env["SOURCE_VERSION"]
+    candidate_id = env["CANDIDATE_ID"]
+    official_release_version = env["OFFICIAL_RELEASE_VERSION"]
     mode = env["SOURCE_MODE"]
     pr = env.get("EVALUATION_PR", "")
     definition = env["GITHUB_SHA"]
@@ -49,6 +51,10 @@ def create_manifest(root: Path, env: dict[str, str]) -> dict:
         raise ValueError("Invalid source or workflow commit")
     if not re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", version):
         raise ValueError("Invalid evaluation version")
+    if not re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)-rc\.[1-9][0-9]*", candidate_id):
+        raise ValueError("Invalid candidate ID")
+    if not re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", official_release_version):
+        raise ValueError("Invalid official release reference")
     if mode == "pr-evaluation":
         if not re.fullmatch(r"[1-9][0-9]*", pr) or candidate == source:
             raise ValueError("Expected stamped evaluation commit and PR identity")
@@ -70,6 +76,8 @@ def create_manifest(root: Path, env: dict[str, str]) -> dict:
         "workflow_run_attempt": attempt,
         "workflow_definition_commit": definition,
         "candidate_run_id": run,
+        "candidate_id": candidate_id,
+        "official_release_version_reference": official_release_version,
         "candidate_commit": candidate,
         "source_commit": source,
         "release_version": version,

@@ -70,6 +70,10 @@ class OfficialReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("splined-official-candidate-report", self.all)
         self.assertIn("splined-official-build-report", self.all)
         self.assertIn('"msix_created": False', self.all)
+        self.assertIn('"dev_source_version_references"', self.all)
+        self.assertIn('"workflow20_candidate_references"', self.all)
+        self.assertIn('"workflow20_reference_only": True', self.all)
+        self.assertIn("workflow20_candidate.py resolve", self.all)
         self.assertIn("Candidate ID changed between validation and build", self.all)
         self.assertLess(
             self.all.index("candidate-report:"),

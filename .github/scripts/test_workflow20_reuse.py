@@ -21,7 +21,8 @@ ENV = {
     "GITHUB_SHA": "a" * 40, "SOURCE_COMMIT": "b" * 40,
     "SOURCE_VERSION": "3.0.34", "SOURCE_MODE": "pr-evaluation",
     "EVALUATION_PR": "356", "WINDOWS_TARGET": "x86_64-pc-windows-msvc",
-    "RUST_TOOLCHAIN": "1.99.0",
+    "RUST_TOOLCHAIN": "1.99.0", "CANDIDATE_ID": "3.0.31-rc.8",
+    "OFFICIAL_RELEASE_VERSION": "3.0.31",
 }
 
 
@@ -232,6 +233,9 @@ class ReuseTests(unittest.TestCase):
         )
         self.assertIn("--cache-from type=gha,scope=splined-workflow20-webgui-${CACHE_SOURCE_SHA}", workflow)
         self.assertIn("--cache-from type=gha,scope=splined-official-release-webgui", workflow)
+        self.assertIn('CANDIDATE_ID="${OFFICIAL_RELEASE_VERSION}-rc.${GITHUB_RUN_NUMBER}"', workflow)
+        self.assertIn("splined-workflow20-candidate-report", workflow)
+        self.assertIn("retention-days: 90", workflow)
 
 
 if __name__ == "__main__":

@@ -219,6 +219,8 @@ def reuse_artifact(kind: str, root: Path, env: dict[str, str]) -> dict[str, str]
                     workflow_run_id=int(env["GITHUB_RUN_ID"]),
                     workflow_run_attempt=int(env["GITHUB_RUN_ATTEMPT"]),
                     candidate_run_id=int(env["GITHUB_RUN_ID"]),
+                    candidate_id=env["CANDIDATE_ID"],
+                    official_release_version_reference=env["OFFICIAL_RELEASE_VERSION"],
                     created_at=datetime.now(timezone.utc).isoformat(),
                 )
                 (bundle / WEB_MANIFEST).write_text(
