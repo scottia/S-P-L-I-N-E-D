@@ -3232,8 +3232,11 @@ test("Album cards keep unknown validation separate from confirmed missing thumbn
     static_cover_found: true, cover: "cover.jpg", tracks: 2, embedded: 0,
     embedded_validation: "unknown",
   }, null);
-  assert.equal(vaOstAlbum.missingArt, false,
-    "V/A OST Album Overview does not require the removed Artist profile art");
+  assert.equal(vaOstAlbum.missingArt, true,
+    "hiding the V/A OST Artist profile does not suppress missing Artist-art evidence");
+  assert.equal(vaOstAlbum.stateKey, "bypassed",
+    "the selected V/A OST Album keeps the same Yellow classification as its file-list row");
+  assert.equal(vaOstAlbum.dots.some(([color]) => color === "#f4cc4d"), true);
 });
 
 test("selected Artist status includes its track-scoped COMP report", () => {
@@ -3692,7 +3695,8 @@ test("Album search and Album overview use the global single-Album contract", () 
   assert.match(appSource, /const presentedAlbums = honorSingleAlbum && singleAlbumOverviewActive\(\)/);
   assert.match(appSource, /const albums = albumOverview && state\.album[\s\S]*?cover: state\.album\.static_cover \|\| null/);
   assert.match(appSource, /albumOverview \? state\.album\?\.static_cover/);
-  assert.match(appSource, /const albumOverview = state\.libraryMode === "albums"[\s\S]*?const missingArtist = !albumOverview/);
+  assert.match(appSource, /const missingArtist = !artist\?\.portrait && !artist\?\.banner/);
+  assert.doesNotMatch(appSource, /const missingArtist = !albumOverview/);
   assert.match(appSource, /allAlbums\.find\(album => album\.id === state\.album\.id\)/);
 });
 

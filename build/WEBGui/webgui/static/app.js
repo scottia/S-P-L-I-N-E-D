@@ -1172,9 +1172,9 @@ function albumCardState(album, artist) {
     || (album.static_cover_found == null && Boolean(album.cover_found || album.cover)
       && !/\.webp(?:$|[?#])/i.test(String(album.cover_path || album.cover || "")));
   const missingCover = !fallback && !overridden && !staticCover;
-  const albumOverview = state.libraryMode === "albums"
-    && state.editorMode === "album" && !!state.album;
-  const missingArtist = !albumOverview && !artist?.portrait && !artist?.banner;
+  // Album mode hides the Artist profile presentation, not its policy
+  // evidence. Missing applicable Artist art must remain Yellow everywhere.
+  const missingArtist = !artist?.portrait && !artist?.banner;
   const missingArt = missingCover || missingArtist;
   const bypassed = status === "bypassed" || status === "artistBypass";
   // Missing cover art is yellow evidence. An unprocessed label alone
