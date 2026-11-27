@@ -606,7 +606,20 @@ jobs:
           echo "seconds=$(($(date +%s) - started))" >> "$GITHUB_OUTPUT"
       - name: Expose GitHub Actions cache runtime for Buildx
         if: ${{ steps.reuse.outputs.reused != 'true' }}
-        uses: crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124 # v3
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const token = process.env.ACTIONS_RUNTIME_TOKEN;
+            const cacheUrl = process.env.ACTIONS_CACHE_URL;
+            const resultsUrl = process.env.ACTIONS_RESULTS_URL;
+            if (!token || (!cacheUrl && !resultsUrl)) {
+              core.setFailed("GitHub Actions cache runtime variables are unavailable.");
+              return;
+            }
+            core.setSecret(token);
+            core.exportVariable("ACTIONS_RUNTIME_TOKEN", token);
+            if (cacheUrl) core.exportVariable("ACTIONS_CACHE_URL", cacheUrl);
+            if (resultsUrl) core.exportVariable("ACTIONS_RESULTS_URL", resultsUrl);
       - name: Build and smoke-test exact WebGUI image
         if: ${{ steps.reuse.outputs.reused != 'true' }}
         id: container
