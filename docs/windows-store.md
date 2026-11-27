@@ -60,67 +60,29 @@ channel and does not require package identity.
 
 ## Store release and update package
 
-The retired Workflow 22 — Windows Build & Microsoft Store
-owns Windows packaging and Store submission. Its standard **BUILD ONLY** path
-consumes an approved Workflow 21 candidate and always produces the portable
-ZIP, unsigned production MSIX, isolated development-package validation, and a
-complete offline local review bundle. Both **PARTIAL UPDATE** and **FULL SOURCE**
-use the same final executable for the portable and Store packages.
+Official Workflows 01 and 02 own Windows release packaging. The candidate
+validation stage creates no MSIX and retains a Build Report with the internal
+candidate identity. After protected approval, the same run performs a clean
+full-source build and creates the portable ZIP plus unsigned production MSIX
+from one version- and commit-bound executable.
 
-The local review bundle contains the unsigned MSIX, bounded Highlights,
-`STORE-SUBMISSION.json`, and `release-context.json`. It requires no Store
-credentials, CLI installation, authentication, baseline query, staging, draft
-modification, or certification submission. Its audit explicitly records that
-Partner Center was not contacted. An existing pending submission therefore
-cannot block a normal Windows build.
+The production layout is created directly from the Partner Center manifest.
+CI unpacks the final MSIX and verifies the exact identity, publisher, publisher
+display name, release version, x64 architecture, Windows.Desktop family,
+.spl association, runFullTrust capability, AMD64 executable, and absence of an
+unexpected signature or host DLL.
 
-**BUILD ONLY, REPORT** validates the approved candidate and proposed build,
-cache, packaging, and Store-readiness plan without compiling or packaging.
+SPLINED-x64-store-unsigned.msix is a maintainer-only Microsoft Store draft
+artifact. It is not an end-user installer and is not attached to the GitHub
+Release. Microsoft Store processing remains responsible for production signing
+and deployment.
 
-The retired Workflow 24 — Complete Release & Publication
-later publishes the previously validated portable artifact and reports MSIX
-readiness. It never submits to Partner Center.
-
-After the corresponding GitHub release is published, run Workflow 22 with
-**SUBMIT EXISTING MSIX** and **AUTO MSIX SUBMISSION** to request Store
-publication. This path requires the exact originating Windows build run ID,
-verifies its build manifest, SHA-256 values, candidate commit and published
-numeric tag, then waits for explicit protected-environment approval. Only then
-does it authenticate, resolve the last published Store baseline, generate
-cumulative Highlights and submit the exact previously validated MSIX. Cargo,
-portable packaging and MSIX packaging are not present in the submission path.
-
-The production layout is created directly from the Partner Center manifest and
-the same version/commit-bound binaries used by the Portable ZIP. It updates
-manifest assets and packs this layout without signing:
-
-```text
-GitHub Actions artifact: splined-windows-store-submission
-Artifact files: SPLINED-x64-store-unsigned.msix, STORE-HIGHLIGHTS.txt,
-                STORE-SUBMISSION.json
-```
-
-The production layout never runs `create-debug-identity`, never receives a
-development certificate, and is never development-signed. CI unpacks the final
-MSIX and reads back its manifest. Packaging fails unless the exact identity,
-publisher, publisher display name, release version, x64 architecture,
-`Windows.Desktop` family, `.spl` association, and `runFullTrust` capability are
-present. It also verifies `splined.exe` exists and is AMD64, rejects unexpected
-DLL host artifacts, and confirms that no package signature was added.
-
-`SPLINED-x64-store-unsigned.msix` is a maintainer-only Partner Center submission
-artifact for future Store releases and updates. It is not an end-user installer
-and is not attached to a GitHub Release or included in its checksums. Microsoft
-Store processing supplies the production signing and deployment path.
-Store-installed updates are delivered by Windows/Microsoft Store package
-deployment; SPLINED does not replace its own binaries.
-
-`02. Store Recovery - Tagged Draft or Update` accepts an existing numeric
-release tag, rebuilds that exact source version, performs production packaging
-and isolated development QA, and generates cumulative Store Highlights. It
-then stages a Partner Center draft or submits for certification according to
-the selected Store mode. It does not create a version, tag, GitHub Release, or
-GHCR image.
+After the GitHub Release is published, the same workflow uses pinned git-cliff
+release context to create an offline Store review bundle containing the
+unsigned MSIX, bounded Highlights, STORE-SUBMISSION.json, and
+release-context.json. It performs no Partner Center authentication, history
+query, staging, draft mutation, or certification submission. No separate run
+or copied build ID is required.
 
 ## Development package validation
 
@@ -161,44 +123,17 @@ detector.
 
 The public listing is already live at the
 [official Microsoft Store URL](https://apps.microsoft.com/detail/9p8g4gmbbvbs?hl=en-US&gl=US).
-For a normal future Store update, maintainers choose **SUBMIT EXISTING MSIX**
-only after the exact Windows build has been published through Workflow 24.
-First run Workflow 22 in its standard local-review build mode, inspect the
-downloadable package and audit bundle, and publish the corresponding release
-without Store access. Then dispatch Workflow 22 again with **SUBMIT EXISTING
-MSIX**, the exact prior Windows build run ID, and **AUTO MSIX SUBMISSION**.
-The protected submission approval and existing Store credential requirements
-remain additional release-policy boundaries. Submit mode stages and submits the
-already validated MSIX to Store ID `9P8G4GMBBVBS`, preserves existing package
-and listing metadata, and changes only the en-US release-notes field before
-certification. Actions reports the Store API status without waiting indefinitely.
 
-GitHub notes cover the immediately previous numeric Git tag through the new
-release. Store Highlights instead cover the last package actually published by
-Microsoft Store through the new release. This carries GitHub-only releases into
-the next Store update without treating an uncertified or rejected submission as
-history. The Store status and baseline are resolved before staging. A publishing
-mode fails closed when Store has an active or unresolved submission rather than
-replacing that draft. Read-only review mode may still use the last published
-baseline because it never changes the pending submission. The resolver uses the
-machine-readable application record and verifies the retrieved submission
-against `lastPublishedApplicationSubmission`.
-The 1,500-character Store limit is enforced without silent truncation.
+For an official Windows release, dispatch Workflow 01 or 02 from main. The
+single run validates the candidate, builds the exact Windows assets, publishes
+the GitHub Release, and retains the local Microsoft Store draft/review bundle.
+Review that artifact before any separately authorized Partner Center action.
+The official release workflows do not authenticate to or modify Partner Center.
 
-The Actions-only `splined-windows-release` artifact preserves the exact MSIX,
-offline review files, build manifest, checksums and candidate provenance for
-publication or submission recovery. Store history lookup or publication
-requires `AZURE_AD_APPLICATION_CLIENT_ID`,
-`AZURE_AD_APPLICATION_SECRET`,
-`AZURE_AD_TENANT_ID`, and `SELLER_ID` as GitHub Actions secrets; missing values
-fail clearly. Selecting **Review Bundle/No Submit** permits authentication and
-read-only published-history lookup but performs no staging or submission.
-Standard Workflow 22 builds perform no Partner Center authentication, history
-lookup, staging, or Store API submission. They always retain the unsigned MSIX
-and offline review bundle. Use
-`02. Store Recovery - Tagged Draft or Update` when an existing tag needs
-Store publication or a rebuilt package. See
-[Release automation](release-automation.md).
+GitHub release notes cover the immediately previous numeric Git tag through the
+new release. Store Highlights are rendered from the same pinned release context
+and remain bounded to the 1,500-character Store limit without silent
+truncation.
 
 The checked-in App Installer template is not the Microsoft Store update path.
 It is retained only for a possible separately signed direct-distribution

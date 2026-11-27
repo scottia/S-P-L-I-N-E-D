@@ -1,0 +1,17 @@
+name: 03. Build WebGUI [Release]
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    name: Build and publish official WebGUI release
+    uses: ./.github/workflows/01-build-all-release.yml
+    with:
+      release_target: WEBGUI
+    secrets: inherit

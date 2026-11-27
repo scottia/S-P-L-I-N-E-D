@@ -70,6 +70,12 @@ class AudioIntegritySourceContract(unittest.TestCase):
         self.assertIn('"local_artwork"', pr)
         self.assertIn("--no-run `", pr)
         self.assertIn("--message-format=json-render-diagnostics", pr)
+        release = source(".github/workflows/01-build-all-release.yml")
+        self.assertIn("Validate official main candidate", release)
+        self.assertIn("validate_release_policy_contracts.py", release)
+        self.assertIn("splined-official-candidate-report", release)
+        self.assertIn("splined-official-build-report", release)
+        self.assertNotIn("splined-quick-portable", release)
 
 
 if __name__ == "__main__":

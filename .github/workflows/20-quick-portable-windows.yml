@@ -618,7 +618,7 @@ jobs:
           docker buildx create --driver docker-container --name "$builder" --use
           cache_args=(--cache-to type=gha,mode=max,scope=splined-workflow20-webgui
                       --cache-from type=gha,scope=splined-workflow20-webgui
-                      --cache-from type=gha,scope=splined-workflow23-webgui)
+                      --cache-from type=gha,scope=splined-official-release-webgui)
           set +e
           docker buildx build --progress=plain "${cache_args[@]}" --load \
             --build-arg SPLINED_BUILD_CHANNEL=dev \

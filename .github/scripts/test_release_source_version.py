@@ -11,7 +11,7 @@ sys.path.insert(0, str(ROOT / ".github" / "scripts"))
 
 from release_source_version import (
     choose_release_version,
-    choose_workflow10_release_version,
+    choose_official_release_version,
 )
 from source_version import (
     current_source_version,
@@ -116,23 +116,23 @@ class ReleaseSourceVersionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "already exists"):
             choose_release_version("3.0.22", [(3, 0, 21)], ["v3.0.22"])
 
-    def test_workflow10_uses_committed_next_version_when_available(self) -> None:
+    def test_official_release_uses_committed_next_version_when_available(self) -> None:
         self.assertEqual(
-            choose_workflow10_release_version(
+            choose_official_release_version(
                 "3.0.27", [(3, 0, 26)], ["3.0.26"], False
             ),
             ("3.0.27", False),
         )
 
-    def test_workflow10_advances_changed_source_after_published_version(self) -> None:
+    def test_official_release_advances_changed_source_after_published_version(self) -> None:
         self.assertEqual(
-            choose_workflow10_release_version(
+            choose_official_release_version(
                 "3.0.26", [(3, 0, 26)], ["3.0.26"], False
             ),
             ("3.0.27", True),
         )
         self.assertEqual(
-            choose_workflow10_release_version(
+            choose_official_release_version(
                 "3.0.26", [(3, 0, 27)], ["3.0.27"], False
             ),
             ("3.0.28", True),
@@ -140,21 +140,21 @@ class ReleaseSourceVersionTests(unittest.TestCase):
 
     def test_matching_product_never_implicitly_reuses_latest_tag(self) -> None:
         self.assertEqual(
-            choose_workflow10_release_version(
+            choose_official_release_version(
                 "3.0.28", [(3, 0, 28), (3, 0, 29)], ["3.0.28", "3.0.29"], True
             ),
             ("3.0.30", True),
         )
         self.assertEqual(
-            choose_workflow10_release_version(
+            choose_official_release_version(
                 "3.0.30", [(3, 0, 29)], ["3.0.29"], True
             ),
             ("3.0.30", False),
         )
 
-    def test_workflow10_reuses_matching_latest_release_only_for_explicit_recovery(self) -> None:
+    def test_official_resolver_reuses_latest_only_for_explicit_recovery(self) -> None:
         self.assertEqual(
-            choose_workflow10_release_version(
+            choose_official_release_version(
                 "3.0.28", [(3, 0, 29)], ["3.0.29"], True,
                 complete_existing_release=True,
             ),
@@ -166,15 +166,24 @@ class ReleaseSourceVersionTests(unittest.TestCase):
         ):
             with self.subTest(versions=versions, match=match):
                 with self.assertRaisesRegex(ValueError, "recovery requires matching"):
-                    choose_workflow10_release_version(
+                    choose_official_release_version(
                         "3.0.28", versions, tags, match, complete_existing_release=True
                     )
 
     def test_normal_allocation_rejects_occupied_next_tag(self) -> None:
         with self.assertRaisesRegex(ValueError, "Next release tag already exists"):
-            choose_workflow10_release_version(
+            choose_official_release_version(
                 "3.0.28", [(3, 0, 29)], ["3.0.29", "v3.0.30"], True
             )
+
+    def test_official_release_workflow_calls_shared_resolver(self) -> None:
+        release = (ROOT / ".github/workflows/01-build-all-release.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("choose_official_release_version", release)
+        self.assertIn("source_version.py stamp-release", release)
+        self.assertIn('git commit -m "release: prepare ${RELEASE_VERSION}"', release)
+        self.assertNotIn("complete_existing_release", release)
 
 
 if __name__ == "__main__":

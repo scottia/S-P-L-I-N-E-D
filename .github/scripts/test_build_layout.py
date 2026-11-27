@@ -44,6 +44,19 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn("build/WEBGui/docker/config.example.toml", (ROOT / "build/WEBGui/webgui/runtime.py").read_text(encoding="utf-8"))
         self.assertIn("build/WEBGui/webgui/tests/", dockerignore)
 
+    def test_official_release_uses_relocated_sources(self):
+        workflow = (ROOT / ".github/workflows/01-build-all-release.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "cargo build --locked --release --manifest-path build/Windows/Cargo.toml",
+            workflow,
+        )
+        self.assertIn("--file build/WEBGui/Dockerfile", workflow)
+        self.assertIn("build/WEBGui/webgui/tests/test_*.py", workflow)
+        self.assertIn("build/WEBGui:build/WEBGui/webgui/backend", workflow)
+        self.assertIn("cp -R schema docs release-package/", workflow)
+
     def test_configuration_examples_are_runtime_owned(self):
         self.assertFalse((ROOT / "config.example.toml").exists())
         windows_example = ROOT / "build/Windows/config.example.toml"
@@ -72,6 +85,10 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn('classification = "release/cliff.toml"', store_renderer)
         release_docs = (ROOT / "docs/release-automation.md").read_text(encoding="utf-8")
         self.assertIn("../release/cliff.toml", release_docs)
+        official = (ROOT / ".github/workflows/01-build-all-release.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("-ConfigPath release/cliff.toml", official)
 
     def test_no_legacy_root_docker_config_references_in_python(self):
         # A missing relocated example can otherwise fail unrelated tests at

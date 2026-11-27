@@ -1,0 +1,17 @@
+name: 02. Build Windows [Release]
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  packages: read
+
+jobs:
+  release:
+    name: Build and publish official Windows release
+    uses: ./.github/workflows/01-build-all-release.yml
+    with:
+      release_target: WINDOWS
+    secrets: inherit

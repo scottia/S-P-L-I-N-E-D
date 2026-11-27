@@ -40,9 +40,9 @@ The three independently protected behavioral JSONs are media-state, COMP and sha
 | `WEB-LIFE-001..009` — WebGUI refinements | Existing approved WebGUI lifecycle refinements in the [Policy Register](POLICY-REGISTER.md) for its browser/Python/PostgreSQL queue and interaction mechanisms. The common `LIFE` contract applies to equivalent operations in both runtimes, while WebGUI-only browser/nonce details remain here. No permission to rewrite Windows-owned synchronized fields. |
 | `VISUAL-001..004` | Existing status dots, card frames/banners, override provenance and COMP-track presentation; do not infer those from NAME classification |
 | `STATE-POLICY-001..004` | Same canonical ordering in both runtimes; Windows policy loader/mirror, WebGUI PostgreSQL policy revision, inventory-derived Unprocessed count |
-| `GUARD-001..004` | Owner-approved review contract in `AGENTS.md` and the register; `.github/workflows/validate.yml` runs the independent `policy-review` job and `.github/scripts/check_protected_policies.py` rejects any diff to the media-state, COMP or lifecycle policy JSON. Focused negatives cover lifecycle add/change/delete/rename. Workflow 10 audits canonical contracts and exact selected release source; Workflow 01 remains manually dispatchable but is operationally superseded. Required GitHub ruleset enforcement remains a separate repository-setting check. |
+| `GUARD-001..004` | Owner-approved review contract in `AGENTS.md` and the register; `.github/workflows/validate.yml` runs the independent `policy-review` job and `.github/scripts/check_protected_policies.py` rejects any diff to the media-state, COMP or lifecycle policy JSON. Focused negatives cover lifecycle add/change/delete/rename. Official Workflows 01–03 audit canonical contracts and the exact selected `main` source before building. Required GitHub ruleset enforcement remains a separate repository-setting check. |
 
-| `AUDIO-INTEGRITY-001..006` | **Only embedded front art may change in audio files.** Both runtimes' writer paths above; disposable ID3v2.x multivalue/MBID and other-container regression fixtures; negative stage-mutation cases; mandatory fail-closed, scope-appropriate required-PR integrity checks. Workflow 10 is the active build/release path and packages the exact approved commit without rerunning either suite. Separate COMP candidate/results and media-state JSON policies remain unchanged. |
+| `AUDIO-INTEGRITY-001..006` | **Only embedded front art may change in audio files.** Both runtimes' writer paths above; disposable ID3v2.x multivalue/MBID and other-container regression fixtures; negative stage-mutation cases; mandatory fail-closed, scope-appropriate required-PR integrity checks. Official Workflows 01–03 package the exact approved `main` commit without treating Workflow 20 evaluation artifacts as release inputs. Separate COMP candidate/results and media-state JSON policies remain unchanged. |
 
 The test fixture that once lived under root `fixtures/` was retired; it was never a production policy. Independent Windows and WebGUI compilation tests now own the applicable release/category cases. Release scripts and synthetic Store test fixtures belong in root `release/`.
 
@@ -59,7 +59,7 @@ discovery, fuzzy scoring, revision-pinned batches and completion,
 | --- | --- | --- | --- |
 | Album preferred-size thumbnail and one-track COMP artwork | `src/scan_runtime.rs`, `src/embedded_artwork.rs` | `webgui/services.py`, `webgui/backend/splined_compilation_authority_policy.py` | `src/artwork_integrity.rs` checks MP3/FLAC stages; `webgui/backend/splined_audio_integrity.py` checks supported stages before replacement |
 | COMP MBID selection and fuzzy alternate-cover matching | `src/comp_report_policy.rs`, `src/scan_runtime.rs`; SQLite catalog only | `webgui/comp_report_policy.py`, `webgui/backend/splined_scan.py`; session/catalog only | No MusicBrainz/audio-text writes permitted under any branch |
-| Regression and required release gate | `src/artwork_integrity.rs` Rust tests | `webgui/tests/test_audio_integrity.py`, `test_comp_job_scope.py` | Required real-writer PR validation in `.github/workflows/validate.yml`; Workflow 10 audits/builds the exact already-approved source without repeating the PR writer tests |
+| Regression and required release gate | `src/artwork_integrity.rs` Rust tests | `webgui/tests/test_audio_integrity.py`, `test_comp_job_scope.py` | Required real-writer PR validation in `.github/workflows/validate.yml`; official Workflows 01–03 audit/build the exact already-approved `main` source without accepting Workflow 20 artifacts as release evidence |
 
 Native Windows test evidence, fail-closed supported-format coverage and installed-client
 acceptance must be recorded before any release. If a format cannot be proven
@@ -77,11 +77,11 @@ is not proof of native Windows compilation. The release-policy contract
 validator uses existing canonical validators, Config v5 checks and in-memory
 SQLite DDL; passing structural checks alone is not runtime or deployed parity.
 
-**The former Workflow 10 and split Workflows 21–24 are retired.** Required PR
-checks remain authoritative while replacement official release automation is
-reviewed independently. Workflow 20 remains evaluation-only and cannot
-legitimize a failing or skipped required PR writer test. Protected JSON review
-and audio-write safety remain independent fail-closed gates.
+**The former Workflow 10 and split Workflows 21–24 are retired.** Official
+Workflows 01–03 run from `main`, retain candidate and final Build Reports, and
+publish only their exact selected targets. Workflow 20 remains evaluation-only
+and cannot legitimize a failing or skipped required PR writer test. Protected
+JSON review and audio-write safety remain independent fail-closed gates.
 
 **Shared lifecycle acceptance:** `LIFE-001..009` in the
 [shared JSON](../schema/lifecycle-policy.json) define common behavioral
