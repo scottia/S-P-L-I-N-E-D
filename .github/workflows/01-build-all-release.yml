@@ -190,26 +190,9 @@ jobs:
           path: candidate-build-report.json
           if-no-files-found: error
 
-  approve-plan:
-    name: Approve official main release
-    needs: [resolve-plan, candidate-report]
-    runs-on: ubuntu-latest
-    environment:
-      name: workflow-official-release-approval
-    steps:
-      - name: Record approved candidate
-        run: |
-          {
-            echo "## Official release approved"
-            echo "- Candidate ID: ${{ needs.resolve-plan.outputs.candidate_id }}"
-            echo "- Target: ${{ needs.resolve-plan.outputs.target_label }}"
-            echo "- Main source: ${{ needs.resolve-plan.outputs.source_sha }}"
-            echo "- Release tag: ${{ needs.resolve-plan.outputs.release_version }}"
-          } >> "$GITHUB_STEP_SUMMARY"
-
   prepare-release:
     name: Prepare exact approved main candidate
-    needs: [resolve-plan, candidate-report, approve-plan]
+    needs: [resolve-plan, candidate-report]
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.release.outputs.version }}
@@ -825,7 +808,6 @@ jobs:
     needs:
       - resolve-plan
       - candidate-report
-      - approve-plan
       - prepare-release
       - build-windows
       - build-webgui
@@ -1195,7 +1177,6 @@ jobs:
     needs:
       - resolve-plan
       - candidate-report
-      - approve-plan
       - prepare-release
       - build-windows
       - webgui-tests
@@ -1215,7 +1196,6 @@ jobs:
           BUILD_WINDOWS: ${{ needs.resolve-plan.outputs.build_windows }}
           BUILD_WEBGUI: ${{ needs.resolve-plan.outputs.build_webgui }}
           CANDIDATE_RESULT: ${{ needs.candidate-report.result }}
-          APPROVAL_RESULT: ${{ needs.approve-plan.result }}
           PREPARE_RESULT: ${{ needs.prepare-release.result }}
           WINDOWS_RESULT: ${{ needs.build-windows.result }}
           WEBGUI_TEST_RESULT: ${{ needs.webgui-tests.result }}
@@ -1235,7 +1215,6 @@ jobs:
             fi
           }
           expect "Candidate Build Report" "$CANDIDATE_RESULT" success
-          expect "Release approval" "$APPROVAL_RESULT" success
           expect "Candidate preparation" "$PREPARE_RESULT" success
           expect "Validated Build Report" "$REPORT_RESULT" success
           expect "Release tag" "$TAG_RESULT" success

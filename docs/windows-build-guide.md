@@ -42,7 +42,8 @@ WebGUI only. Each run pins the dispatch commit on main, chooses the next
 available numeric main release tag, validates a no-MSIX candidate Build Report,
 and keeps its candidate identity inside the same run.
 
-After protected approval, selected targets use a clean full-source build.
+After the candidate Build Report passes, selected targets use a clean
+full-source build.
 Windows releases produce and validate the portable archive and unsigned
 production MSIX from the same executable. WebGUI releases validate Python,
 PostgreSQL, Node, and the exact production container. A second Build Report

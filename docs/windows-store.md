@@ -62,7 +62,7 @@ channel and does not require package identity.
 
 Official Workflows 01 and 02 own Windows release packaging. The candidate
 validation stage creates no MSIX and retains a Build Report with the internal
-candidate identity. After protected approval, the same run performs a clean
+candidate identity. After that report passes, the same run performs a clean
 full-source build and creates the portable ZIP plus unsigned production MSIX
 from one version- and commit-bound executable.
 

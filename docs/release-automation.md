@@ -17,15 +17,14 @@ Each workflow automatically performs the same ordered release contract:
 2. Validate the candidate and retain
    `splined-official-candidate-report`. This stage creates no MSIX and records
    the internal candidate ID for the rest of the same run.
-3. Require the protected `workflow-official-release-approval` environment.
-4. Prepare an immutable release commit when the version fields need a
+3. Prepare an immutable release commit when the version fields need a
    temporary stamp, then build every selected target from that exact commit.
-5. Validate the selected build results and retain
+4. Validate the selected build results and retain
    `splined-official-build-report`. No manual ID handoff is involved.
-6. Verify that `main` and the release tag are still unchanged, tag the exact
+5. Verify that `main` and the release tag are still unchanged, tag the exact
    built commit, generate incremental notes with pinned git-cliff 2.14.2, and
    publish the GitHub Release.
-7. Publish the exact smoke-tested WebGUI image to GHCR when WebGUI is selected.
+6. Publish the exact smoke-tested WebGUI image to GHCR when WebGUI is selected.
    When Windows is selected, create the unsigned production MSIX and, after
    publication, retain the offline Microsoft Store draft/review bundle.
 
