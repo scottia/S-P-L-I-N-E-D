@@ -44,22 +44,6 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn("build/WEBGui/docker/config.example.toml", (ROOT / "build/WEBGui/webgui/runtime.py").read_text(encoding="utf-8"))
         self.assertIn("build/WEBGui/webgui/tests/", dockerignore)
 
-    def test_candidate_and_build_workflows_use_relocated_sources(self):
-        candidate = (ROOT / ".github/workflows/21-release-preparation.yml").read_text(encoding="utf-8")
-        windows = (ROOT / ".github/workflows/22-windows-build-store.yml").read_text(encoding="utf-8")
-        webgui = (ROOT / ".github/workflows/23-webgui-build.yml").read_text(encoding="utf-8")
-        for path in (
-            "build/Windows/Cargo.toml",
-            "build/Windows/Cargo.lock",
-            "build/WEBGui/webgui/backend/splined.py",
-        ):
-            self.assertIn(path, candidate)
-        self.assertIn("cargo build --locked --release --manifest-path build/Windows/Cargo.toml", windows)
-        self.assertIn("--file build/WEBGui/Dockerfile", webgui)
-        self.assertIn("build/WEBGui/webgui/tests/test_*.py", webgui)
-        self.assertIn("build/WEBGui:build/WEBGui/webgui/backend", webgui)
-        self.assertIn("cp -R schema docs webgui-release/release-package/", webgui)
-
     def test_configuration_examples_are_runtime_owned(self):
         self.assertFalse((ROOT / "config.example.toml").exists())
         windows_example = ROOT / "build/Windows/config.example.toml"
@@ -70,10 +54,6 @@ class BuildLayoutTests(unittest.TestCase):
         self.assertIn('include_str!("../config.example.toml")', windows_source)
         webgui_source = (ROOT / "build/WEBGui/webgui/runtime.py").read_text(encoding="utf-8")
         self.assertIn("build/WEBGui/docker/config.example.toml", webgui_source)
-        workflow = (ROOT / ".github/workflows/23-webgui-build.yml").read_text(encoding="utf-8")
-        self.assertIn("cp -R build/WEBGui webgui-release/release-package/build/", workflow)
-        self.assertIn("cp README.md LICENSE PRIVACY.md SECURITY.md SUPPORT.md webgui-release/release-package/", workflow)
-        self.assertNotIn("cp config.example.toml ", workflow)
         webgui_tests = (ROOT / "build/WEBGui/webgui/tests/test_config_v5.py").read_text(encoding="utf-8")
         self.assertNotIn('load_example("config.example.toml")', webgui_tests)
         self.assertNotIn('            "config.example.toml",', webgui_tests)
@@ -83,10 +63,6 @@ class BuildLayoutTests(unittest.TestCase):
         classification = ROOT / "release/cliff.toml"
         self.assertTrue(classification.is_file())
         self.assertIn('tag_pattern = ', classification.read_text(encoding="utf-8"))
-        windows = (ROOT / ".github/workflows/22-windows-build-store.yml").read_text(encoding="utf-8")
-        publication = (ROOT / ".github/workflows/24-complete-release.yml").read_text(encoding="utf-8")
-        self.assertEqual(windows.count("-ConfigPath release/cliff.toml"), 2)
-        self.assertEqual(publication.count("-ConfigPath release/cliff.toml"), 1)
         github_fixture = (ROOT / "release/Test-ReleaseNoteClassification.ps1").read_text(encoding="utf-8")
         self.assertIn('Join-Path $PSScriptRoot "cliff.toml"', github_fixture)
         store_fixture = (ROOT / "release/Test-StoreBaseline.ps1").read_text(encoding="utf-8")

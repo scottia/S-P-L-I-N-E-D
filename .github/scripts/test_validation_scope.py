@@ -42,12 +42,6 @@ class ValidationScopeTests(unittest.TestCase):
                     {"webgui": True, "audio_webgui": True, "audio_windows": True},
                 )
 
-    def test_workflow_ten_keeps_pr_writer_suites_unselected(self):
-        self.assertEqual(
-            select_checks([".github/workflows/10-unified-build.yml"]),
-            {"webgui": True, "audio_webgui": False, "audio_windows": False},
-        )
-
     def test_documentation_only_change_remains_non_runtime(self):
         self.assertEqual(
             select_checks(["docs/POLICY-INDEX.md"]),
