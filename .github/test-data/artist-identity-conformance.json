@@ -77,7 +77,64 @@
       ]
     }
   },
+  "backslash_inventory_case": {
+    "owner": "A Great Big World",
+    "guest": "Christina Aguilera",
+    "joined_credit": "A Great Big World\\Christina Aguilera",
+    "track_title": "Fall On Me",
+    "track_artist_mbids": ["6958e806-1e14-4844-a0a7-07a27756aa0f", "b202beb7-99bd-47e7-8b72-195c8d72ebdd"],
+    "conflicting_owner_mbid": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+    "release_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "joined_album": "Particles",
+    "other_album": "Is There Anybody Out There?",
+    "other_track_title": "Say Something",
+    "query": "a great",
+    "positioned_credits": [
+      ["A Great Big World", 0, "6958e806-1e14-4844-a0a7-07a27756aa0f", true],
+      ["Christina Aguilera", 1, "b202beb7-99bd-47e7-8b72-195c8d72ebdd", true]
+    ]
+  },
   "positioned_credit_cases": [
+    {
+      "id": "backslash-exact-ordered-ids-and-physical-owner",
+      "value": "Owner\\Guest",
+      "artist_mbids": "55555555-5555-4555-8555-555555555555; 66666666-6666-4666-8666-666666666666",
+      "owner": "owner",
+      "separator_regex": "(?i) feat\\. ",
+      "title": "Title",
+      "filename": "01",
+      "expected": [["Owner", 0, "55555555-5555-4555-8555-555555555555", true], ["Guest", 1, "66666666-6666-4666-8666-666666666666", true]]
+    },
+    {
+      "id": "backslash-with-one-id-is-a-single-local-credit",
+      "value": "Owner\\Guest",
+      "artist_mbids": "55555555-5555-4555-8555-555555555555",
+      "owner": "Owner",
+      "separator_regex": "(?i) feat\\. ",
+      "title": "Title",
+      "filename": "01",
+      "expected": [["Owner\\Guest", 0, "55555555-5555-4555-8555-555555555555", true]]
+    },
+    {
+      "id": "backslash-without-owner-anchor-is-not-paired",
+      "value": "Owner\\Guest",
+      "artist_mbids": "55555555-5555-4555-8555-555555555555; 66666666-6666-4666-8666-666666666666",
+      "owner": "Other",
+      "separator_regex": "(?i) feat\\. ",
+      "title": "Title",
+      "filename": "01",
+      "expected": [["Owner\\Guest", 0, null, true]]
+    },
+    {
+      "id": "backslash-does-not-override-native-multi-values",
+      "value": "Owner\\Band\u001fGuest",
+      "artist_mbids": "55555555-5555-4555-8555-555555555555; 66666666-6666-4666-8666-666666666666",
+      "owner": "Owner",
+      "separator_regex": "(?i) feat\\. ",
+      "title": "Title",
+      "filename": "01",
+      "expected": [["Owner\\Band", 0, "55555555-5555-4555-8555-555555555555", true], ["Guest", 1, "66666666-6666-4666-8666-666666666666", true]]
+    },
     {
       "id": "raw-owner-name-anchors-ampersand",
       "value": "Earth & Sky",

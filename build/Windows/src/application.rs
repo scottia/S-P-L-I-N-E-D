@@ -24,6 +24,13 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
+
+#[derive(Debug)]
+struct ArtistPresentationLookups {
+    aliases: HashMap<String, String>,
+    labels: HashMap<String, HashSet<String>>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LibraryView {
@@ -33,7 +40,7 @@ pub enum LibraryView {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AlbumLibraryGroup {
+pub enum AlbumLibraryGroup {
     Artist,
     VariousArtists,
     Soundtracks,
@@ -362,6 +369,7 @@ pub struct LibraryState {
     /// Artist membership is catalog-generation evidence. Cache the completed
     /// projection so filtering, status counts, and Slint publication do not
     /// repeatedly rebuild thousands of track-credit associations.
+    artist_lookup_cache: RefCell<Option<Arc<ArtistPresentationLookups>>>,
     artist_projection_cache: RefCell<Option<BTreeMap<String, Vec<usize>>>>,
     fallback_track_identity_cache: RefCell<HashMap<String, Vec<HashSet<String>>>>,
     fallback_track_progress_cache:
@@ -477,6 +485,7 @@ impl LibraryState {
             artist_positioned_tracks: PositionedArtistTracks::new(),
             artist_separator_regex: artist_separator_regex.to_string(),
             artist_catalog_categories: BTreeMap::new(),
+            artist_lookup_cache: RefCell::new(None),
             artist_projection_cache: RefCell::new(None),
             fallback_track_identity_cache: RefCell::new(HashMap::new()),
             fallback_track_progress_cache: RefCell::new(HashMap::new()),
@@ -505,17 +514,24 @@ impl LibraryState {
         self.artist_owner_keys = projection.owner_keys;
         self.artist_owner_labels = projection.owner_labels;
         self.artist_positioned_tracks = projection.positioned_track_credits;
+        *self.artist_lookup_cache.borrow_mut() = None;
         *self.artist_projection_cache.borrow_mut() = None;
     }
 
     fn classify_artist_catalog_albums(&mut self) {
         self.artist_catalog_categories = self.albums.iter().map(|album| (
-            album.snapshot.album_key.clone(), self.catalog_album_category(album),
+            album.snapshot.album_key.clone(), self.resolve_catalog_album_category(album),
         )).collect();
+        *self.artist_lookup_cache.borrow_mut() = None;
         *self.artist_projection_cache.borrow_mut() = None;
     }
 
-    fn catalog_album_category(&self, album: &AlbumEntry) -> AlbumLibraryGroup {
+    pub fn catalog_album_category(&self, album: &AlbumEntry) -> AlbumLibraryGroup {
+        self.artist_catalog_categories.get(&album.snapshot.album_key).copied()
+            .unwrap_or_else(|| self.resolve_catalog_album_category(album))
+    }
+
+    fn resolve_catalog_album_category(&self, album: &AlbumEntry) -> AlbumLibraryGroup {
         if !self.category_paths_configured && !self.category_overrides.contains_key(
             &album.snapshot.album_key.to_ascii_lowercase()
         ) {
@@ -564,6 +580,7 @@ impl LibraryState {
             artist_positioned_tracks: PositionedArtistTracks::new(),
             artist_separator_regex: crate::config::DEFAULT_ARTIST_SEPARATOR_REGEX.to_string(),
             artist_catalog_categories: BTreeMap::new(),
+            artist_lookup_cache: RefCell::new(None),
             artist_projection_cache: RefCell::new(None),
             fallback_track_identity_cache: RefCell::new(HashMap::new()),
             fallback_track_progress_cache: RefCell::new(HashMap::new()),
@@ -875,7 +892,7 @@ impl LibraryState {
     /// Build non-destructive presentation aliases from durable local MBIDs.
     /// Album ownership, SQLite keys and per-track credits remain unchanged;
     /// only the visible Artist presentation consumes this connected mapping.
-    fn artist_presentation_aliases(&self) -> HashMap<String, String> {
+    fn build_artist_presentation_aliases(&self) -> HashMap<String, String> {
         let mut ids_by_name = HashMap::<String, HashSet<String>>::new();
         for (identity, ids) in &self.artist_credit_ids {
             ids_by_name.entry(identity.clone()).or_default().extend(ids.iter().cloned());
@@ -998,10 +1015,11 @@ impl LibraryState {
         }
     }
 
-    fn artist_search_alias_identities(
-        &self,
-    ) -> (HashMap<String, String>, HashMap<String, HashSet<String>>) {
-        let aliases = self.artist_presentation_aliases();
+    fn artist_presentation_lookups(&self) -> Arc<ArtistPresentationLookups> {
+        if let Some(existing) = self.artist_lookup_cache.borrow().as_ref() {
+            return Arc::clone(existing);
+        }
+        let aliases = self.build_artist_presentation_aliases();
         let mut result = HashMap::<String, HashSet<String>>::new();
         for (identity, labels) in &self.artist_credit_labels {
             let presentation = aliases.get(identity).unwrap_or(identity);
@@ -1021,7 +1039,9 @@ impl LibraryState {
                 .or_default()
                 .insert(name.to_string());
         }
-        (aliases, result)
+        let lookups = Arc::new(ArtistPresentationLookups { aliases, labels: result });
+        *self.artist_lookup_cache.borrow_mut() = Some(Arc::clone(&lookups));
+        lookups
     }
 
     fn artists(&self) -> BTreeMap<String, Vec<usize>> {
@@ -1036,7 +1056,8 @@ impl LibraryState {
                 .unwrap_or_else(|| self.catalog_album_category(album))
         }).collect::<Vec<_>>();
 
-        let aliases = self.artist_presentation_aliases();
+        let lookups = self.artist_presentation_lookups();
+        let aliases = &lookups.aliases;
         let owner_evidence = self.albums.iter().enumerate().filter_map(|(index, album)| {
             let (owner, ids) = self.artist_owner_label(album);
             if Self::is_synthetic_album_artist(owner) {
@@ -1045,7 +1066,7 @@ impl LibraryState {
             let durable_key = self.artist_owner_keys.get(&album.snapshot.album_key)
                 .cloned()
                 .unwrap_or_else(|| artist_key(owner, ids));
-            Some((index, Self::presentation_identity(&aliases, owner), durable_key))
+            Some((index, Self::presentation_identity(aliases, owner), durable_key))
         }).collect::<Vec<_>>();
 
         let mut eligible_owned_albums = HashMap::<(&str, String), BTreeSet<usize>>::new();
@@ -1100,7 +1121,7 @@ impl LibraryState {
                 continue;
             }
             let identity = artist_projection_identity(name);
-            let group = Self::presentation_identity(&aliases, name);
+            let group = Self::presentation_identity(aliases, name);
             let explicit = self.artist_explicit_credit_albums.get(&identity);
             let indexed = self.artist_credit_labels.contains_key(&identity);
             for key in album_keys {
@@ -1135,11 +1156,12 @@ impl LibraryState {
     }
 
     fn artist_indices(&self, artist: &str) -> Vec<usize> {
-        let aliases = self.artist_presentation_aliases();
-        let identity = Self::presentation_identity(&aliases, artist);
+        let lookups = self.artist_presentation_lookups();
+        let aliases = &lookups.aliases;
+        let identity = Self::presentation_identity(aliases, artist);
         self.artists()
             .into_iter()
-            .find(|(name, _)| Self::presentation_identity(&aliases, name) == identity)
+            .find(|(name, _)| Self::presentation_identity(aliases, name) == identity)
             .map(|(_, indices)| indices)
             .unwrap_or_default()
     }
@@ -1161,10 +1183,11 @@ impl LibraryState {
     }
 
     pub fn catalog_artist_appearances(&self, artist: &str) -> IndexedArtistAppearances {
-        let aliases = self.artist_presentation_aliases();
-        let identity = Self::presentation_identity(&aliases, artist);
+        let lookups = self.artist_presentation_lookups();
+        let aliases = &lookups.aliases;
+        let identity = Self::presentation_identity(aliases, artist);
         let album_keys = self.artist_appearance_album_keys.iter()
-            .filter(|(name, _)| Self::presentation_identity(&aliases, name) == identity)
+            .filter(|(name, _)| Self::presentation_identity(aliases, name) == identity)
             .flat_map(|(_, keys)| keys.iter().map(String::as_str))
             .collect::<HashSet<_>>();
         let mut result = IndexedArtistAppearances::default();
@@ -1176,13 +1199,13 @@ impl LibraryState {
             result.album_keys.insert(entry.album_key.clone());
             if let Some(tracks) = self.artist_positioned_tracks.get(&entry.album_key) {
                 let paths = tracks.iter().filter(|(_, credits)| credits.iter().any(|credit| {
-                    Self::presentation_identity(&aliases, &credit.name) == identity
+                    Self::presentation_identity(aliases, &credit.name) == identity
                 })).map(|(path, _)| path.clone()).collect();
                 result.track_paths.insert(entry.album_key.clone(), paths);
             }
             let owner = self.artist_owner_label(album).0;
             if !Self::is_synthetic_album_artist(owner)
-                && Self::presentation_identity(&aliases, owner) != identity
+                && Self::presentation_identity(aliases, owner) != identity
             {
                 result.featured_album_keys.insert(entry.album_key.clone());
             }
@@ -1190,39 +1213,21 @@ impl LibraryState {
         result
     }
 
-    fn text_matches_for_artist(
-        &self,
-        artist: &str,
-        album: &AlbumEntry,
-        presentation_aliases: &HashMap<String, String>,
-        search_aliases: &HashMap<String, HashSet<String>>,
-    ) -> bool {
-        let needle = self.text_filter.trim().to_ascii_lowercase();
-        let global_matches = needle.is_empty()
-            || artist.to_ascii_lowercase().contains(&needle)
-            || album.snapshot.artist.to_ascii_lowercase().contains(&needle)
-            || album.snapshot.title.to_ascii_lowercase().contains(&needle)
-            || album.snapshot.path.to_ascii_lowercase().contains(&needle);
-        let artist_filter = self.artist_filter.trim();
-        let presentation_identity = Self::presentation_identity(&presentation_aliases, artist);
-        let album_title = self.album_filter.trim().to_ascii_lowercase();
-        let artist_matches = artist_filter.is_empty()
-            || artist_search_matches(artist_filter, artist)
-            || search_aliases
-                .get(&presentation_identity)
-                .is_some_and(|aliases| {
-                    aliases
-                        .iter()
-                        .any(|alias| artist_search_matches(artist_filter, alias))
-                });
-        global_matches
-            && artist_matches
-            && (album_title.is_empty()
-                || album
-                    .snapshot
-                    .title
-                    .to_ascii_lowercase()
-                    .contains(&album_title))
+    fn artist_matches_typed_search(&self, artist: &str, lookups: &ArtistPresentationLookups) -> bool {
+        let query = self.artist_filter.trim();
+        query.is_empty()
+            || artist_search_matches(query, artist)
+            || lookups.labels.get(&Self::presentation_identity(&lookups.aliases, artist))
+                .is_some_and(|labels| labels.iter().any(|label| artist_search_matches(query, label)))
+    }
+
+    fn album_matches_text_filters(album: &AlbumEntry, artist: &str, text: &str, album_title: &str) -> bool {
+        (text.is_empty()
+            || artist.to_ascii_lowercase().contains(text)
+            || album.snapshot.artist.to_ascii_lowercase().contains(text)
+            || album.snapshot.title.to_ascii_lowercase().contains(text)
+            || album.snapshot.path.to_ascii_lowercase().contains(text))
+            && (album_title.is_empty() || album.snapshot.title.to_ascii_lowercase().contains(album_title))
     }
 
     fn is_synthetic_album_artist(artist: &str) -> bool {
@@ -1243,20 +1248,17 @@ impl LibraryState {
     /// the active filter removes it from the ordinary row model.
     pub fn adjacent_pending_artist(&self, direction: i32) -> Option<String> {
         let artists = self.artists();
-        let (presentation_aliases, search_aliases) = self.artist_search_alias_identities();
+        let lookups = self.artist_presentation_lookups();
+        let text = self.text_filter.trim().to_ascii_lowercase();
+        let album_title = self.album_filter.trim().to_ascii_lowercase();
         let pending = artists
             .iter()
             .filter(|(artist, indices)| {
-                indices.iter().any(|index| {
+                self.artist_matches_typed_search(artist, &lookups) && indices.iter().any(|index| {
                     let album = &self.albums[*index];
                     !self.is_curated_fallback(album)
                         && album.eligible_by_default()
-                        && self.text_matches_for_artist(
-                            artist,
-                            album,
-                            &presentation_aliases,
-                            &search_aliases,
-                        )
+                        && Self::album_matches_text_filters(album, artist, &text, &album_title)
                 })
             })
             .map(|(artist, _)| artist.clone())
@@ -1856,13 +1858,18 @@ impl LibraryState {
         let artists = self.artists();
         match self.view {
             LibraryView::Artists => {
-                let (presentation_aliases, search_aliases) = self.artist_search_alias_identities();
+                let lookups = self.artist_presentation_lookups();
+                let text = self.text_filter.trim().to_ascii_lowercase();
+                let album_title = self.album_filter.trim().to_ascii_lowercase();
                 let mut rows = Vec::new();
                 let mut sorted = artists.iter().collect::<Vec<_>>();
                 sorted.sort_by_cached_key(|(artist, _)| {
                     (artist_display_sort_key(artist), artist_projection_identity(artist))
                 });
                 for (artist, indices) in sorted {
+                    if !self.artist_matches_typed_search(artist, &lookups) {
+                        continue;
+                    }
                     // COMP fallback folders are reviewed by track in the
                     // overview/report, not as Artist albums in the sidebar.
                     let artist_album_indices = self.artist_album_indices(indices);
@@ -1870,12 +1877,7 @@ impl LibraryState {
                         .iter()
                         .copied()
                         .filter(|index| {
-                            self.text_matches_for_artist(
-                                artist,
-                                &self.albums[*index],
-                                &presentation_aliases,
-                                &search_aliases,
-                            ) && self.album_matches_artist_active_status(
+                            Self::album_matches_text_filters(&self.albums[*index], artist, &text, &album_title) && self.album_matches_artist_active_status(
                                 &self.albums[*index],
                                 artist,
                                 &artist_album_indices,
@@ -2075,13 +2077,11 @@ impl LibraryState {
         }
     }
 
-    pub fn visible_album_count(&self) -> usize {
-        let artists = self.artists();
-        self.albums
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| self.album_visible(*index, &artists))
-            .count()
+    pub fn artist_inventory_count(&self) -> usize {
+        if let Some(count) = self.artist_projection_cache.borrow().as_ref().map(BTreeMap::len) {
+            return count;
+        }
+        self.artists().len()
     }
 
     /// Albums presented inside Artist Overview. `appearance_keys` adds albums
@@ -2098,12 +2098,13 @@ impl LibraryState {
         let Some(artist) = self.focused_artist.as_deref() else {
             return Vec::new();
         };
-        let aliases = self.artist_presentation_aliases();
-        let artist_identity = Self::presentation_identity(&aliases, artist);
+        let lookups = self.artist_presentation_lookups();
+        let aliases = &lookups.aliases;
+        let artist_identity = Self::presentation_identity(aliases, artist);
         let projected_appearance_keys = self
             .artist_appearance_album_keys
             .iter()
-            .filter(|(name, _)| Self::presentation_identity(&aliases, name) == artist_identity)
+            .filter(|(name, _)| Self::presentation_identity(aliases, name) == artist_identity)
             .flat_map(|(_, keys)| keys.iter().cloned())
             .collect::<BTreeSet<_>>();
         let projected_indices = self
@@ -2286,15 +2287,10 @@ impl LibraryState {
 
     pub fn set_status_filters(&mut self, values: impl IntoIterator<Item = StatusFilter>) {
         self.completed_fallback_return_key = None;
-        let selected = values
-            .into_iter()
-            .filter(|value| *value != StatusFilter::All)
-            .collect::<BTreeSet<_>>();
-        self.status_filters = if selected.is_empty() {
-            all_status_filters()
-        } else {
-            selected
-        };
+        self.status_filters = values.into_iter().collect();
+        if self.status_filters.remove(&StatusFilter::All) && self.status_filters.is_empty() {
+            self.status_filters = all_status_filters();
+        }
         self.status_filter = StatusFilter::All;
     }
 
@@ -2302,8 +2298,14 @@ impl LibraryState {
         self.completed_fallback_return_key = None;
         if value == StatusFilter::All {
             self.status_filters = all_status_filters();
-        } else if !self.status_filters.remove(&value) {
-            self.status_filters.insert(value);
+        } else if self.status_filters.remove(&value) {
+            if self.status_filters.len() == 1 {
+                // Unprocessed is a heading count, so it cannot stand in for a
+                // selected status when every visible filter is switched off.
+                self.status_filters.remove(&StatusFilter::Unprocessed);
+            }
+        } else {
+            self.status_filters.extend([value, StatusFilter::Unprocessed]);
         }
         self.status_filter = StatusFilter::All;
     }
@@ -2570,12 +2572,13 @@ impl LibraryState {
     }
 
     pub fn focus_artist(&mut self, artist: &str) -> bool {
-        let aliases = self.artist_presentation_aliases();
-        let identity = Self::presentation_identity(&aliases, artist);
+        let lookups = self.artist_presentation_lookups();
+        let aliases = &lookups.aliases;
+        let identity = Self::presentation_identity(aliases, artist);
         let canonical = self
             .artists()
             .into_keys()
-            .find(|name| Self::presentation_identity(&aliases, name) == identity);
+            .find(|name| Self::presentation_identity(aliases, name) == identity);
         let Some(canonical) = canonical else {
             return false;
         };
@@ -3317,10 +3320,10 @@ impl LibraryState {
             .as_deref()
             .and_then(|artist| {
                 let refreshed_groups = refreshed.artists();
-                let refreshed_aliases = refreshed.artist_presentation_aliases();
-                let presentation = Self::presentation_identity(&refreshed_aliases, artist);
+                let refreshed_aliases = &refreshed.artist_presentation_lookups().aliases;
+                let presentation = Self::presentation_identity(refreshed_aliases, artist);
                 refreshed_groups.keys().find(|candidate| {
-                    Self::presentation_identity(&refreshed_aliases, candidate) == presentation
+                    Self::presentation_identity(refreshed_aliases, candidate) == presentation
                 }).cloned()
                 .or_else(|| {
                     let key = focused_artist_anchor.as_deref()?;
@@ -6377,6 +6380,29 @@ mod tests {
     }
 
     #[test]
+    fn art004_artist_state_filters_can_hide_every_row_without_changing_inventory() {
+        let mut state = artist_library();
+        let total = state.artist_inventory_count();
+        assert!(total > 0);
+        assert!(!state.rows().is_empty());
+
+        for filter in all_status_filters() {
+            if filter != StatusFilter::Unprocessed {
+                state.toggle_status_filter(filter);
+            }
+        }
+        assert!(state.status_filters.is_empty());
+        assert!(state.rows().is_empty());
+        assert_eq!(state.artist_inventory_count(), total);
+
+        state.set_status_filters([]);
+        assert!(state.rows().is_empty());
+        state.toggle_status_filter(StatusFilter::Incomplete);
+        assert!(!state.rows().is_empty());
+        assert_eq!(state.artist_inventory_count(), total);
+    }
+
+    #[test]
     fn startup_uses_indexed_local_cover_for_release_and_fallback_cards() {
         let mut release = album("release", "Alpha", "Release", "processed");
         release.album_mbid = "release-id".to_string();
@@ -6460,7 +6486,13 @@ mod tests {
         assert_eq!(state.fallback_album_rows()[0].key, "billboard");
 
         state.set_top_level_view(LibraryView::Albums);
-        assert_eq!(state.visible_album_count(), 2);
+        let artists = state.artists();
+        assert_eq!(
+            (0..state.albums.len())
+                .filter(|index| state.album_visible(*index, &artists))
+                .count(),
+            2
+        );
         assert!(state.toggle_library_category("category:various-artists"));
         let keys = state
             .rows()

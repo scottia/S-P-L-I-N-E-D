@@ -568,23 +568,27 @@ def inspect_album_tracks(
             }
         )
         if capture_original_artist_credit and "original_artist" in tags:
-            rows[-1]["original_artist_credit"] = {
-                "artist": tags["original_artist"].replace("\0", ARTIST_CREDIT_SEPARATOR),
-                "mbids": tags.get("original_track_artist_mbids", tags["artist_mbid"]).replace("\0", ARTIST_CREDIT_SEPARATOR),
-                "title": tags["title"].replace("\0", ARTIST_CREDIT_SEPARATOR),
-                "recording_mbid": tags["recording_mbid"].replace("\0", ARTIST_CREDIT_SEPARATOR) or None,
-                "album_artist_mbids": tags.get("original_album_artist_mbids", "").replace("\0", ARTIST_CREDIT_SEPARATOR),
-                **{
-                    key: tags.get("original_" + key, "").replace("\0", ARTIST_CREDIT_SEPARATOR) or None
-                    for key in (
-                        "album", "album_artist", "album_mbid", "release_group_mbid",
-                        "compilation", "tag_source",
-                    )
-                },
-                "file_size": size,
-                "file_mtime_ns": modified,
-            }
+            rows[-1]["original_artist_credit"] = original_artist_credit_payload(tags, size, modified)
     return rows, reads, reuses
+
+
+def original_artist_credit_payload(tags, size: int, modified: int) -> dict[str, str | int | None]:
+    return {
+        "artist": tags["original_artist"].replace("\0", ARTIST_CREDIT_SEPARATOR),
+        "mbids": tags.get("original_track_artist_mbids", tags["artist_mbid"]).replace("\0", ARTIST_CREDIT_SEPARATOR),
+        "title": tags["title"].replace("\0", ARTIST_CREDIT_SEPARATOR),
+        "recording_mbid": tags["recording_mbid"].replace("\0", ARTIST_CREDIT_SEPARATOR) or None,
+        "album_artist_mbids": tags.get("original_album_artist_mbids", "").replace("\0", ARTIST_CREDIT_SEPARATOR),
+        **{
+            key: tags.get("original_" + key, "").replace("\0", ARTIST_CREDIT_SEPARATOR) or None
+            for key in (
+                "album", "album_artist", "album_mbid", "release_group_mbid",
+                "compilation", "tag_source",
+            )
+        },
+        "file_size": size,
+        "file_mtime_ns": modified,
+    }
 
 
 def first_artist_value(value: str) -> str:

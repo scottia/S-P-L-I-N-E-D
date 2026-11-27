@@ -54,6 +54,7 @@ LOGGER = logging.getLogger("uvicorn.error")
 DEFAULT_ARTIST_SEPARATOR_REGEX = r"(?i)(?: / | feat\. | feat | ft\. | ft |; )"
 ARTIST_CREDIT_SEPARATOR = "\x1f"
 ARTIST_PROJECTION_CACHE_KEY = "webgui:artist-projection:v2"
+ARTIST_CREDIT_EVIDENCE_VERSION = 12
 
 
 class ArtistProjectionPending(RuntimeError):
@@ -216,13 +217,20 @@ def catalog_credit_slots(
         names = clean(joined.split(delimiter))
         if len(names) > 1 and len(names) == len(ids):
             return bind(names, True, True)
+    owner_key = artist_unicode.casefold(owner.strip())
+    # A backslash in one local value is positional evidence only with the
+    # physical owner as the first credit and exact ordered ID cardinality.
+    if owner_key and len(ids) > 1 and "\\" in joined:
+        names = clean(joined.split("\\"))
+        if len(names) == len(ids) and artist_unicode.casefold(names[0]) == owner_key:
+            return bind(names, True, True)
+
     def configured_names(value: str) -> list[str]:
         return clean(separator.split(value))
 
     configured = configured_names(joined)
     if len(configured) > 1 and len(configured) == len(ids):
         return bind(configured, True, True)
-    owner_key = artist_unicode.casefold(owner.strip())
 
     def anchored(value: str, allow_ampersand: bool) -> list[str] | None:
         if not owner_key or artist_unicode.casefold(value.strip()) == owner_key:
@@ -578,7 +586,7 @@ class Catalog:
         grouping = json.dumps(
             {
                 "generation": generation,
-                "credit_evidence": 11,
+                "credit_evidence": ARTIST_CREDIT_EVIDENCE_VERSION,
                 "separator": self.artist_separator_regex,
                 "separator_blocked": self.artist_separator_blocked,
                 "categories": sorted(categories),
@@ -2548,6 +2556,13 @@ class Catalog:
     def artists(
         self, query: str, *, nonblocking_projection: bool = False
     ) -> list[dict[str, object]]:
+        rows, _ = self.artist_list(query, nonblocking_projection=nonblocking_projection)
+        return rows
+
+    def artist_list(
+        self, query: str, *, nonblocking_projection: bool = False
+    ) -> tuple[list[dict[str, object]], int]:
+        """Return the searched rows and unfiltered eligible total from one snapshot."""
         with closing(self._connect_artist_catalog()) as db:
             rows = db.execute(
                 "SELECT artists.artist_key, artists.artist_name, artists.musicbrainz_artistid, "
@@ -2604,6 +2619,7 @@ class Catalog:
             )
             owned_album_keys.setdefault(str(row["artist_key"]), set()).add(album_key)
         result = []
+        artist_total = 0
         for selection_id, canonical, group in self._artist_selection_groups(rows, projected):
             if synthetic_album_artist(canonical["artist_name"]):
                 continue
@@ -2632,6 +2648,7 @@ class Catalog:
                 effective_album_count = sum(int(row["album_count"] or 0) for row in group)
             if effective_album_count == 0:
                 continue
+            artist_total += 1
             alias_names = {str(row["artist_name"] or "") for row in group}
             for row in group:
                 evidence = projected.get(normalized_artist_identity(row["artist_name"]), {})
@@ -2702,14 +2719,14 @@ class Catalog:
                 "has_incomplete_error": has_incomplete_error,
                 "projection_pending": False,
             })
-        return sorted(
-            result,
+        result.sort(
             key=lambda item: (
                 artist_display_sort_key(item["name"]),
                 normalized_artist_identity(item["name"]),
                 str(item["id"]).casefold(),
             ),
         )
+        return result, artist_total
 
     def artist_thumbnails(self) -> list[dict[str, object]]:
         """Resolve visible Artist Art without delaying the initial list projection.

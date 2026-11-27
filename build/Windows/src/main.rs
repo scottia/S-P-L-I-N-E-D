@@ -9,7 +9,7 @@ use slint::{
     Color, ComponentHandle, Model, ModelRc, ModelTracker, SharedString, Timer, TimerMode, VecModel,
 };
 use splined_core::application::{
-    AdjustmentState, AlbumEntry, AlbumState, ApplicationState, ArtistOverviewCacheEntry,
+    AdjustmentState, AlbumEntry, AlbumLibraryGroup, AlbumState, ApplicationState, ArtistOverviewCacheEntry,
     CandidateState, LaunchMode, LibraryRow, LibraryState, LibraryView, MusicBrainzResult, RunPhase,
     ScanScope, SelectionResult, StatusFilter, musicbrainz_artist_album_preferred,
     musicbrainz_match_section,
@@ -5858,25 +5858,27 @@ fn apply_ui_preferences(state: &mut ApplicationState, preferences: &UiPreference
             "albums" => LibraryView::Albums,
             _ => LibraryView::Artists,
         });
-    // `status_filter = "all"` is the durable user intent. Prefer it over
-    // the serialized member list so an upgrade that introduces a new state
-    // (for example Overridden) cannot silently hide that state. Custom
-    // lists keep Unprocessed enabled because it is now a heading count, not
-    // a separately clickable Artist State row.
+    // "all" opts into new visible statuses. An empty custom list keeps
+    // every filter off, including an older list containing only the heading.
     if preferences.status_filter.eq_ignore_ascii_case("all") {
         state.library.set_status_filter(StatusFilter::All);
-    } else if preferences.status_filters.is_empty() {
+    } else if preferences.status_filters.is_empty()
+        && !preferences.status_filter.eq_ignore_ascii_case("custom")
+    {
         state
             .library
             .set_status_filter(parse_status_filter(&preferences.status_filter));
     } else {
-        state.library.set_status_filters(
-            preferences
-                .status_filters
-                .iter()
-                .map(|value| parse_status_filter(value))
-                .chain(std::iter::once(StatusFilter::Unprocessed)),
-        );
+        let mut selected = preferences
+            .status_filters
+            .iter()
+            .map(|value| parse_status_filter(value))
+            .filter(|filter| !matches!(filter, StatusFilter::All | StatusFilter::Unprocessed))
+            .collect::<Vec<_>>();
+        if !selected.is_empty() {
+            selected.push(StatusFilter::Unprocessed);
+        }
+        state.library.set_status_filters(selected);
     }
     state
         .library
@@ -20692,12 +20694,7 @@ fn sync_media_filter_ui(ui: &AppWindow, state: &ApplicationState) {
         && state.library.view == LibraryView::Albums
         && library_rows.iter().all(|row| row.kind == "album-category");
     let reset_short_scroll = library_rows.len() < 8;
-    let shown_count = if !state.library.show_tracks && state.library.view == LibraryView::Albums {
-        state.library.visible_album_count()
-    } else {
-        library_rows.iter().filter(|row| row.depth == 0).count()
-    };
-    ui.set_library_shown_count(shown_count as i32);
+    ui.set_artist_inventory_count(state.library.artist_inventory_count() as i32);
     let model_signature = library_model_signature(state, &library_rows);
     if ui.get_library_model_signature().as_str() != model_signature {
         ui.set_library_rows(if state.media_selector_expanded {
@@ -22831,6 +22828,7 @@ fn theme_preview_album_row(state: &ApplicationState, target: &str) -> UiArtistAl
         soundtrack: banner_key == "soundtrack",
         various_artists: banner_key == "various",
         separator_before: false,
+        banner_key: banner_key.into(),
         banner_display: banner_display.into(),
         banner_background: banner_color("background", "#006B3C", true),
         banner_frame: banner_color("frame", "#D9AD43", false),
@@ -23127,12 +23125,13 @@ fn artist_album_card_artwork_path(
 }
 
 fn artist_overview_ui_model(state: &ApplicationState) -> ModelRc<UiArtistAlbumRow> {
-    artist_overview_ui_model_with_show_all(state, state.artist_overview_show_all)
+    artist_overview_ui_model_with_show_all(state, state.artist_overview_show_all, true)
 }
 
 fn artist_overview_ui_model_with_show_all(
     state: &ApplicationState,
     show_all: bool,
+    include_artwork: bool,
 ) -> ModelRc<UiArtistAlbumRow> {
     let artist_mode = !state.library.show_tracks
         && state.library.view == LibraryView::Artists
@@ -23258,16 +23257,8 @@ fn artist_overview_ui_model_with_show_all(
             let (soundtrack, various_artists) = artist_overview_release_banners(snapshot);
             let banner_key = if overridden {
                 "override"
-            } else if fallback {
-                if featured { "featuring" } else { "compiled" }
-            } else if soundtrack {
-                "soundtrack"
-            } else if various_artists {
-                "various"
-            } else if featured {
-                "featuring"
             } else {
-                "artist"
+                ["artist", "featuring", "soundtrack", "various", "compiled"][usize::from(group)]
             };
             let banner_style = state
                 .banner_theme_styles
@@ -23481,15 +23472,16 @@ fn artist_overview_ui_model_with_show_all(
                 .get(&snapshot.path.to_lowercase())
                 .cloned()
                 .unwrap_or_default();
-            let artwork_path = artist_album_card_artwork_path(state, snapshot);
-            let artwork = load_album_card_image(
-                &artwork_path,
-                192,
-                overridden
-                    && media_state_policy()
-                        .override_presentation
-                        .grayscale_thumbnail,
-            );
+            let artwork = if include_artwork {
+                let artwork_path = artist_album_card_artwork_path(state, snapshot);
+                load_album_card_image(
+                    &artwork_path,
+                    192,
+                    overridden && media_state_policy().override_presentation.grayscale_thumbnail,
+                )
+            } else {
+                slint::Image::default()
+            };
             UiArtistAlbumRow {
                 key: SharedString::from(snapshot.album_key.clone()),
                 title: SharedString::from(snapshot.title.clone()),
@@ -23515,6 +23507,7 @@ fn artist_overview_ui_model_with_show_all(
                 soundtrack,
                 various_artists,
                 separator_before,
+                banner_key: banner_key.into(),
                 banner_display: banner_display.into(),
                 banner_background,
                 banner_frame,
@@ -23579,31 +23572,14 @@ fn artist_overview_legend_counts(
                 _ => {}
             }
         }
-        // Mirror the visible banner's priority. Shared identified releases
-        // remain SOUNDTRACK/VARIOUS even though the selected Artist is not the
-        // synthetic folder owner; only a real Album owner's guest credit is
-        // presented as FEATURED.
-        if album.overridden {
-            // The OVERRIDE banner replaces the category banner while the
-            // opposing application owns the latest successful write.
-        } else if album.fallback {
-            if album.featured {
-                counts.feat += 1;
-            } else {
-                if album.fallback_complete {
-                    counts.comp_complete += 1;
-                } else {
-                    counts.comp_pending += 1;
-                }
-            }
-        } else if album.soundtrack {
-            counts.ost += 1;
-        } else if album.various_artists {
-            counts.various += 1;
-        } else if album.featured {
-            counts.feat += 1;
-        } else {
-            counts.artist += 1;
+        match album.banner_key.as_str() {
+            "compiled" if album.fallback_complete => counts.comp_complete += 1,
+            "compiled" => counts.comp_pending += 1,
+            "soundtrack" => counts.ost += 1,
+            "various" => counts.various += 1,
+            "featuring" => counts.feat += 1,
+            "artist" => counts.artist += 1,
+            _ => {}
         }
     }
     counts.in_process = counts.shown - counts.completed - counts.overridden - counts.validating;
@@ -23622,17 +23598,16 @@ fn artist_overview_legend_counts(
 // Card order is presentation-only: do not change the library's selection or
 // LAUNCH order when grouping the Artist Overview by album type.
 fn artist_overview_sort_group(state: &ApplicationState, album: &AlbumEntry) -> u8 {
-    if state.library.is_curated_fallback(album) {
-        return if artist_overview_is_featured(state, album) {
-            1 // Preserve the established COMP appearance presentation.
-        } else {
-            4 // COMP fallback is always the final Album-card group.
-        };
+    let category = state.library.catalog_album_category(album);
+    if matches!(category, AlbumLibraryGroup::Fallback | AlbumLibraryGroup::MiscCurated)
+        || album.snapshot.album_mbid.trim().is_empty()
+    {
+        return 4;
     }
     let (soundtrack, various_artists) = artist_overview_release_banners(&album.snapshot);
-    if soundtrack {
+    if soundtrack || category == AlbumLibraryGroup::Soundtracks {
         2
-    } else if various_artists {
+    } else if various_artists || category == AlbumLibraryGroup::VariousArtists {
         3
     } else if artist_overview_is_featured(state, album) {
         1 // A real Album owner's guest appearance follows owned Artist Albums.
@@ -23802,7 +23777,9 @@ fn artist_state_overview_model(state: &ApplicationState) -> Option<ModelRc<UiArt
         && !state.library.show_tracks
         && state.library.focused_artist.is_some();
     if focused_artist {
-        Some(artist_overview_ui_model_with_show_all(state, true))
+        // MEDIA FILTER uses these rows for state counts only. Album-card
+        // images are resolved once by the visible overview presentation.
+        Some(artist_overview_ui_model_with_show_all(state, true, false))
     } else {
         None
     }
@@ -28154,7 +28131,7 @@ mod tests {
         // Stale/provider metadata may label a shared release as a secondary
         // credit. Its explicit release type must still own the visible banner.
         app.artist_overview_featured_album_keys
-            .extend(["va-old", "ost-old"].into_iter().map(str::to_string));
+            .extend(["va-old", "ost-old", "comp-new"].into_iter().map(str::to_string));
 
         let cards = artist_overview_ui_model(&app);
         let actual = (0..cards.row_count())
@@ -28185,6 +28162,18 @@ mod tests {
         );
         let counts = artist_overview_legend_counts(&cards, &[]);
         assert_eq!(counts.shown, 12);
+        assert_eq!(counts.comp_pending, 2);
+        let compiled = cards.row_data(10).unwrap();
+        assert!(compiled.featured, "retain the Featured association");
+        assert_eq!(compiled.banner_display.replace('\n', ""), "COMPILED");
+        let summary = super::artist_state_overview_model(&app).unwrap();
+        assert_eq!(summary.row_count(), cards.row_count());
+        for index in 0..cards.row_count() {
+            let card = cards.row_data(index).unwrap();
+            let state = summary.row_data(index).unwrap();
+            assert_eq!((state.key, state.state_key), (card.key, card.state_key));
+            assert!(!state.has_artwork);
+        }
         assert_eq!(counts.completed, 0);
         assert_eq!(counts.in_process, 12);
         assert_eq!(counts.validating, 0);
@@ -28231,10 +28220,19 @@ mod tests {
         // A processed artist's three physical albums and one completed COMP
         // appearance must not acquire red dots merely because the COMP folder
         // has no Release ID/usable folder cover or remains globally incomplete.
-        app.library.albums.retain(|album| {
+        let selected_inventory = app.library.albums.iter().filter(|album| {
             ["artist-new", "artist-old", "new-new", "comp-new"]
                 .contains(&album.snapshot.album_key.as_str())
-        });
+        }).map(|album| album.snapshot.clone()).collect();
+        app.library.replace_snapshot(MediaSnapshot {
+            artist_catalog: None,
+            schema_version: splined_core::media_database::SCHEMA_VERSION,
+            database_path: String::new(),
+            canonical_root: String::new(),
+            local_root: String::new(),
+            albums: selected_inventory,
+        }).unwrap();
+        app.library.apply_album_category_override("comp-new", "fallback").unwrap();
         app.library.artist_artwork_paths.insert(
             "mariah carey".into(),
             "C:/Music/Mariah Carey/artist.jpg".into(),
