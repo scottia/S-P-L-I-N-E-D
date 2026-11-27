@@ -16,45 +16,45 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class ValidationScopeTests(unittest.TestCase):
-    def test_windows_runtime_runs_only_windows_writer_integrity(self):
+    def test_windows_runtime_runs_webgui_validation(self):
         self.assertEqual(
             select_checks(["build/Windows/src/main.rs"]),
-            {"webgui": True, "audio_webgui": False, "audio_windows": True},
+            {"webgui": True},
         )
 
-    def test_webgui_runtime_runs_only_webgui_writer_integrity(self):
+    def test_webgui_runtime_runs_webgui_validation(self):
         self.assertEqual(
             select_checks(["build/WEBGui/webgui/catalog.py"]),
-            {"webgui": True, "audio_webgui": True, "audio_windows": False},
+            {"webgui": True},
         )
 
-    def test_shared_contract_runs_both_writer_integrity_suites(self):
+    def test_shared_contract_runs_webgui_validation(self):
         self.assertEqual(
             select_checks(["schema/media.sql"]),
-            {"webgui": True, "audio_webgui": True, "audio_windows": True},
+            {"webgui": True},
         )
 
-    def test_validation_gate_changes_run_both_writer_integrity_suites(self):
+    def test_validation_gate_changes_run_webgui_validation(self):
         for path in VALIDATION_GATE_PATHS:
             with self.subTest(path=path):
                 self.assertEqual(
                     select_checks([path]),
-                    {"webgui": True, "audio_webgui": True, "audio_windows": True},
+                    {"webgui": True},
                 )
 
     def test_documentation_only_change_remains_non_runtime(self):
         self.assertEqual(
             select_checks(["docs/POLICY-INDEX.md"]),
-            {"webgui": False, "audio_webgui": False, "audio_windows": False},
+            {"webgui": False},
         )
 
     def test_unknown_diff_fails_open_to_full_webgui_validation(self):
         self.assertEqual(
             select_checks(["__all__"]),
-            {"webgui": True, "audio_webgui": True, "audio_windows": True},
+            {"webgui": True},
         )
 
-    def test_synchronized_release_metadata_skips_windows_writer_compile(self):
+    def test_synchronized_release_metadata_runs_webgui_validation(self):
         old = "3.0.25"
         new = "3.0.26"
         mutations = [
@@ -72,7 +72,7 @@ class ValidationScopeTests(unittest.TestCase):
         self.assertTrue(is_release_metadata_only(VERSION_METADATA_PATHS, "\n".join(mutations)))
         self.assertEqual(
             select_checks(VERSION_METADATA_PATHS, release_metadata_only=True),
-            {"webgui": True, "audio_webgui": True, "audio_windows": False},
+            {"webgui": True},
         )
 
     def test_release_metadata_recognizer_rejects_additional_runtime_change(self):
@@ -94,14 +94,10 @@ class ValidationScopeTests(unittest.TestCase):
 
     def test_workflow_jobs_use_scope_outputs(self):
         workflow = (ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")
-        webgui = workflow.split("  audio-integrity-webgui:\n", 1)[1].split(
-            "  audio-integrity-windows:\n", 1
-        )[0]
-        windows = workflow.split("  audio-integrity-windows:\n", 1)[1].split(
-            "  scope:\n", 1
-        )[0]
-        self.assertIn("needs.scope.outputs.audio_webgui == 'true'", webgui)
-        self.assertIn("needs.scope.outputs.audio_windows == 'true'", windows)
+        webgui = workflow.split("  webgui:\n", 1)[1].split("  windows-advisory:\n", 1)[0]
+        self.assertIn("needs.scope.outputs.webgui == 'true'", webgui)
+        self.assertNotIn("audio_webgui", workflow)
+        self.assertNotIn("audio_windows", workflow)
 
     @staticmethod
     def release_mutations(old, new):

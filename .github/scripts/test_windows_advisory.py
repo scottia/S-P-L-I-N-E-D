@@ -48,6 +48,21 @@ class WindowsAdvisoryTests(unittest.TestCase):
         self.assertNotIn("setup-python", advisory)
         self.assertNotIn("needs.scope.outputs.windows_advisory", advisory)
 
+    def test_official_windows_release_retains_cached_exact_source_and_msix_validation(self):
+        workflow = (REPOSITORY / ".github/workflows/01-build-all-release.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("compile_mode=FULL SOURCE", workflow)
+        self.assertNotIn("cargo clean --manifest-path build/Windows/Cargo.toml --release", workflow)
+        self.assertIn("splined-wf20-incremental-compiled-v3", workflow)
+        self.assertIn("dev_cache_sha", workflow)
+        self.assertIn(
+            "cargo build --locked --release --manifest-path build/Windows/Cargo.toml",
+            workflow,
+        )
+        self.assertIn("Test-DevelopmentPackage.ps1", workflow)
+        self.assertIn("New-LocalStoreReviewBundle.ps1", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()

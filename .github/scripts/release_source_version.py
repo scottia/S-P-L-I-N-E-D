@@ -42,7 +42,7 @@ def choose_release_version(
     return source_version
 
 
-def choose_workflow10_release_version(
+def choose_official_release_version(
     source_version: str,
     active_versions: Iterable[tuple[int, int, int]],
     all_tags: Iterable[str],
@@ -50,7 +50,7 @@ def choose_workflow10_release_version(
     *,
     complete_existing_release: bool = False,
 ) -> tuple[str, bool]:
-    """Return Workflow 10's version and whether a temporary stamp is required.
+    """Return the official release version and temporary-stamp requirement.
 
     Normal builds and new releases retain the approved source lineage, even
     when the latest tagged product digest matches. Only an explicit recovery

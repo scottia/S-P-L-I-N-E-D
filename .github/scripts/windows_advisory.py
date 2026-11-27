@@ -20,7 +20,7 @@ def render_summary(*, revision: str, run_url: str) -> str:
         "",
         "Strict Windows Rust/Slint diagnostics are not executed during pull-request validation.",
         "This permanent repository policy applies to every pull request targeting `dev` or `main`.",
-        "Mandatory Windows real-writer regression tests run in PR validation; production compilation and package validation run in the approved Windows build workflow.",
+        "Production compilation and package validation run in the approved Windows release workflow; dedicated real-writer PR routines are retired.",
         "",
         "No Windows runner, Rust toolchain, Cargo command, or Slint build was started by this compatibility report.",
         "",

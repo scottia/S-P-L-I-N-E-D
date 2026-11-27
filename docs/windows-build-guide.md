@@ -30,44 +30,36 @@ The release executable is:
 build\Windows\target\x86_64-pc-windows-msvc\release\splined.exe
 ```
 
-### Workflows 20–24
+### Evaluation and official release workflows
 
-[Workflow 20](../.github/workflows/20-quick-portable-windows.yml) is the rapid
-Windows evaluation path. It builds the exact current `origin/dev` source with
-locked optimized Rust/Slint settings, reuses compatible Cargo intermediates,
-and validates executable commit, version, AMD64 PE architecture, native smoke,
-size and SHA-256. Its standalone executable is explicitly QA-only and cannot
-be consumed by release publication.
+Workflow 20 is the rapid Windows and WebGUI evaluation path for current dev or
+an explicit PR. Its artifacts are QA-only, carry release_eligible false, and
+are never consumed by an official release.
 
-The retired Workflow 21 recorded the
-exact current `origin/main` and `origin/dev` hashes, validates their safe tree
-relationship, resolves the synchronized version, and optionally retains an
-approved immutable candidate. It does not compile either application.
+Workflows 01–03 are the official main release entry points. Workflow 01 builds
+both applications, Workflow 02 builds Windows only, and Workflow 03 builds
+WebGUI only. Each run pins the dispatch commit on main, chooses the next
+available numeric main release tag, validates a no-MSIX candidate Build Report,
+and keeps its candidate identity inside the same run.
 
-The retired Workflow 22 consumed that
-candidate. **PARTIAL UPDATE** restores compatible dependencies and optimized
-intermediates; **FULL SOURCE** performs a clean target-specific release build.
-Both modes produce and audit the complete portable executable, ZIP, unsigned
-MSIX, isolated development-package smoke, and offline local Store review
-bundle. Partial mode is never a delta package.
+After the candidate Build Report passes, selected targets use a clean
+full-source build.
+Windows releases produce and validate the portable archive and unsigned
+production MSIX from the same executable. WebGUI releases build and smoke-test
+the exact production container. A second Build Report
+must pass before tagging. Pinned git-cliff generates release notes, the GitHub
+Release is published, and WebGUI targets publish the exact smoke-tested image
+to GHCR. Windows targets then retain an offline Microsoft Store draft/review
+bundle. Partner Center submission is not performed.
 
-**BUILD ONLY, REPORT** audits the candidate and proposed cache/package plan
-without compiling or packaging. **SUBMIT EXISTING MSIX** instead consumes a
-previous successful Workflow 22 run after release publication and submits the
-exact validated MSIX without invoking Cargo or rebuilding the package.
-
-The retired Workflow 24 published only
-previously validated artifacts. It verifies build manifests and checksums,
-generates release notes, requires publication approval, and creates or
-completes the selected release without overwriting assets. Microsoft Store
-submission remains a separate Workflow 22 operation.
-
-These workflows rely on required source-PR Audio Integrity results for the
-exact candidate and do not repeat the Windows or WebGUI real-writer suites
-solely for packaging. Measure cold, equivalent warm-repeat, and warm
-source-change runs; summaries distinguish expected reuse from measured cache
-hits and report compilation, validation, packaging, artifact size, and total
-elapsed time.
+No candidate or build run ID is copied between workflows. Source tests are not
+repeated after the validated dev-to-main promotion, and Workflow 20 artifacts
+cannot substitute for an official main build.
+Compatible Windows compiler state and WebGUI Docker layers may be warmed from
+Workflow 20 using the current `dev` head as the cache identity, but the exact
+`main` source is always built, packaged and smoke-tested as new release assets.
+Workflows 01 and 02 do not repeat Rust/Slint strict tests, checks, formatting or
+linting; their only Cargo command is the production release build.
 
 ### Production-equivalent local PC test build
 
@@ -106,12 +98,11 @@ runs on Ubuntu and reports **Not run — permanent PR policy exception** without
 provisioning Rust or a Windows runner. This applies to Windows, Slint,
 shared-schema, dependency, workflow, and promotion changes. Targeted local
 Windows compilation and regression testing remains appropriate in the isolated
-E: acceptance environment. Workflow 21 audits canonical source policies and
-the exact reviewed candidate. Workflow 22 performs the native optimized build,
-identity, portable smoke, MSIX contract and isolated development-package
-validation, using the same executable for portable and Store packaging. Store
-submission accepts only that exact validated build after release publication
-and explicit approval.
+E: acceptance environment. Official Workflows 01 and 02 trust the reviewed
+dev-to-main promotion, confirm the exact main identity, then perform the native
+optimized build, portable smoke, MSIX contract and isolated development-package
+validation from the same executable. The retained Store result is an offline
+draft; no Partner Center submission occurs.
 
 `build/Windows/build.rs` compiles `build/Windows/ui/app.slint` and embeds build identity.
 The executable links directly to the Rust library modules in `build/Windows/src`.
@@ -210,7 +201,7 @@ splined.exe --write-build-info build-info.json
 ## Validation
 
 The historic root-crate architecture tests are outside the current source layout.
-Workflow 22's portable allowlist and native smoke checks remain active. Reestablish
+The official Windows release portable allowlist and native smoke checks remain active. Reestablish
 current-layout architecture coverage before treating past test claims as current.
 Controller and library unit tests cover real state transitions without placing
 business authority in Slint callbacks.

@@ -2,9 +2,9 @@
 
 Keep the existing ZIP member paths and build-manifest schema for development
 deployment consumers. Unlike a release build, there is deliberately no
-approved Workflow 21 candidate bundle; publication validation cannot accept
+approved official-release candidate report; publication validation cannot accept
 this artifact. candidate_run_id identifies the actual evaluation source
-selection run (Workflow 20), not a release preparation or approval.
+selection run (Workflow 20), not an official release preparation or approval.
 """
 from __future__ import annotations
 
