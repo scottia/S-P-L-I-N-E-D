@@ -111,7 +111,10 @@ class OfficialReleaseWorkflowTests(unittest.TestCase):
         self.assertNotIn("crazy-max/ghaction-github-runtime", self.all)
         self.assertIn('core.exportVariable("ACTIONS_RUNTIME_TOKEN", token)', self.all)
         self.assertIn("--cache-from type=gha,scope=splined-workflow20-webgui-${DEV_CACHE_SHA}", self.all)
-        self.assertIn("--cache-to type=gha,mode=max,scope=splined-official-release-webgui", self.all)
+        self.assertIn(
+            "--cache-to type=gha,mode=max,ignore-error=true,scope=splined-official-release-webgui",
+            self.all,
+        )
         self.assertIn('docker buildx build --progress=plain "${cache_args[@]}" --load', self.all)
         self.assertIn("docker push", self.all)
         self.assertIn("Generate-ReleaseNotes.ps1", self.all)
