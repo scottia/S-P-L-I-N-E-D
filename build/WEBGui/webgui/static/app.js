@@ -2957,7 +2957,7 @@ async function loadLibrary(query = "") {
     state.libraryLoading = false;
     state.libraryReady = true;
     renderLibrary();
-    if (mode === "albums") void hydrateAlbumArtistArt(request, results);
+    if (["albums", "fallback"].includes(mode)) void hydrateAlbumArtistArt(request, results);
     if (mode === "artists" && state.artists.some(item => item.projection_pending === true)) {
       state.artistProjectionRetry = 0;
       scheduleArtistProjectionRefresh(query, request);
@@ -2983,7 +2983,7 @@ async function hydrateAlbumArtistArt(request, albums) {
     for (const album of batch) query.append("id", album.id);
     try {
       const statuses = await api("/api/albums/artist-art-status?" + query.toString());
-      if (request !== state.listRequest || state.libraryMode !== "albums") return;
+      if (request !== state.listRequest || !["albums", "fallback"].includes(state.libraryMode)) return;
       let changed = false;
       for (const status of statuses) {
         const album = state.albumsIndex.find(item => item.id === status.id);

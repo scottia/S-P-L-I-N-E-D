@@ -111,7 +111,7 @@ test("a superseded library response cannot commit stale rows", async () => {
   assert.equal(state.artistTotal, 2429, "a stale response cannot replace the inventory count");
 });
 
-test("V/A OST hydrates applicable Artist Art after the database-first list paints", async () => {
+test("V/A OST and Fallback hydrate applicable Artist Art after the database-first list paints", async () => {
   const albums = [
     {id: "album-1", artist_art_pending: true, list_status_key: "bypassed"},
     {id: "album-2", artist_art_pending: false, list_status_key: "albumsComplete"},
@@ -133,7 +133,7 @@ test("V/A OST hydrates applicable Artist Art after the database-first list paint
           missing_artist_art: false, list_status_key: "albumsComplete",
         }];
       }
-      return albums;
+      return albums.map(album => ({...album}));
     },
     renderLibrary() {}, chooseArtist: async () => {}, setStatus() {},
     window: {setTimeout() { return 1; }, clearTimeout() {}},
@@ -144,6 +144,15 @@ test("V/A OST hydrates applicable Artist Art after the database-first list paint
   assert.match(calls[1], /^\/api\/albums\/artist-art-status\?id=album-1$/);
   assert.equal(state.albumsIndex[0].artist_art_pending, false);
   assert.equal(state.albumsIndex[0].missing_artist_art, false);
+  assert.equal(state.albumsIndex[0].list_status_key, "albumsComplete");
+
+  state.libraryMode = "fallback";
+  state.libraryReady = false;
+  await context.loadLibrary("");
+  await new Promise(resolve => setImmediate(resolve));
+  const hydrationCalls = calls.filter(path => path.startsWith("/api/albums/artist-art-status?"));
+  assert.equal(hydrationCalls.length, 2);
+  assert.equal(state.albumsIndex[0].artist_art_pending, false);
   assert.equal(state.albumsIndex[0].list_status_key, "albumsComplete");
 });
 
