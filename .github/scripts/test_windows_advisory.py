@@ -48,18 +48,6 @@ class WindowsAdvisoryTests(unittest.TestCase):
         self.assertNotIn("setup-python", advisory)
         self.assertNotIn("needs.scope.outputs.windows_advisory", advisory)
 
-    def test_windows_build_workflow_retains_full_source_clean_build(self):
-        workflow = (REPOSITORY / ".github/workflows/22-windows-build-store.yml").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn('compile_mode="FULL SOURCE"', workflow)
-        self.assertIn("cargo clean --manifest-path build/Windows/Cargo.toml --release", workflow)
-        self.assertIn(
-            "cargo build --locked --release --manifest-path build/Windows/Cargo.toml",
-            workflow,
-        )
-        self.assertIn("Test-DevelopmentPackage.ps1", workflow)
-
 
 if __name__ == "__main__":
     unittest.main()

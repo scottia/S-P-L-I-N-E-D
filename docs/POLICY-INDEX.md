@@ -77,19 +77,11 @@ is not proof of native Windows compilation. The release-policy contract
 validator uses existing canonical validators, Config v5 checks and in-memory
 SQLite DDL; passing structural checks alone is not runtime or deployed parity.
 
-**Workflow 10 (`.github/workflows/10-unified-build.yml`) is the owner-designated
-current unified build and release flow.** It audits the exact approved source
-and builds selected Windows/WebGUI outputs without rerunning the already-passed
-PR-level real-writer Audio Integrity suites merely to produce a build.
-Required PR checks must already have succeeded; Workflow 10 still performs its
-own source, policy, credential, build, package and release-safety checks.
-
-**Workflow 01 still exists with `workflow_dispatch`, but is operationally
-superseded by Workflow 10.** Disabling or archiving that dispatch path is a
-separate owner-authorized workflow task; documentation alone does not deactivate
-GitHub Actions or verify ruleset enforcement. A failing or skipped required PR
-writer test is never legitimized by any build mode. Protected JSON review and
-audio-write safety remain independent fail-closed gates.
+**The former Workflow 10 and split Workflows 21–24 are retired.** Required PR
+checks remain authoritative while replacement official release automation is
+reviewed independently. Workflow 20 remains evaluation-only and cannot
+legitimize a failing or skipped required PR writer test. Protected JSON review
+and audio-write safety remain independent fail-closed gates.
 
 **Shared lifecycle acceptance:** `LIFE-001..009` in the
 [shared JSON](../schema/lifecycle-policy.json) define common behavioral

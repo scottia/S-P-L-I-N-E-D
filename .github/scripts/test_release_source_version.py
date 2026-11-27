@@ -176,28 +176,6 @@ class ReleaseSourceVersionTests(unittest.TestCase):
                 "3.0.28", [(3, 0, 29)], ["3.0.29", "v3.0.30"], True
             )
 
-    def test_release_workflows_call_shared_resolver(self) -> None:
-        release = (ROOT / ".github/workflows/21-release-preparation.yml").read_text(encoding="utf-8")
-        self.assertIn("choose_workflow10_release_version", release)
-        self.assertIn("source_version.py stamp-release", release)
-        self.assertIn("git commit -m \"release: prepare ${RELEASE_VERSION}\"", release)
-        unified = (ROOT / ".github/workflows/10-unified-build.yml").read_text(encoding="utf-8")
-        self.assertIn("choose_workflow10_release_version", unified)
-        self.assertIn("stamp-release", unified)
-        self.assertNotIn('$RELEASE_COMMIT:refs/heads/main', unified)
-        for workflow in (unified, release):
-            with self.subTest(workflow=workflow.splitlines()[0]):
-                self.assertIn('complete_existing_release:', workflow)
-                self.assertIn('complete_existing_release=os.environ["COMPLETE_EXISTING_RELEASE"] == "true"', workflow)
-                self.assertIn('if [ "$COMPLETE_EXISTING_RELEASE" = true ] && [ -n "$LATEST_TAG" ]; then', workflow)
-                self.assertIn('title=Release version became occupied', workflow)
-                self.assertIn('RECOVERY_COMMIT: ${{ needs.resolve-plan.outputs.recovery_commit }}', workflow)
-                self.assertIn('"refs/tags/v$RELEASE_VERSION"', workflow)
-        self.assertIn('"$OUTCOME" = "BUILD ONLY"', unified)
-        self.assertIn('title=Recovery selection not valid for BUILD ONLY', unified)
-        self.assertIn('test "$RELEASE_COMMIT" = "$RECOVERY_COMMIT"', unified)
-        self.assertIn('test "$CANDIDATE_COMMIT" = "$RECOVERY_COMMIT"', release)
-
 
 if __name__ == "__main__":
     unittest.main()
