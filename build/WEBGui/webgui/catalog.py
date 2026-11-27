@@ -3499,8 +3499,17 @@ class Catalog:
         artist_art = hydrated_status[0] if hydrated_status else {
             "applicable_artist_art": False,
             "missing_artist_art": False,
-            "list_status_key": self._album_list_status_key(row, override),
         }
+        current_evidence = {
+            **dict(row),
+            "cover_path": str(static_cover or ""),
+            "cover_found": static_cover is not None,
+        }
+        artist_art["list_status_key"] = self._album_list_status_key(
+            current_evidence,
+            override,
+            missing_artist_art=bool(artist_art["missing_artist_art"]),
+        )
         return {
             "id": album_id, "name": row["album_name"], "status": row["status"],
             "artist_id": row["artist_key"], "artist_name": row["artist_name"],

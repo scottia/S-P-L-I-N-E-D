@@ -952,6 +952,28 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         self.assertEqual(projected_album["list_status_key"], "albumsComplete")
         self.assertEqual(self.services.index_changes()["count"], 0)
 
+    def test_album_refresh_classifies_the_current_static_cover(self):
+        with closing(self.db.connect()) as db, db:
+            db.execute(
+                "UPDATE albums SET status='processed',embedded_tracks=track_count,"
+                "embedded_validation_status='verified' WHERE album_key=?",
+                (self.row["album_key"],),
+            )
+
+        projected = self.services.catalog.album(self.row["album_key"])
+        self.assertTrue(projected["static_cover_found"])
+        self.assertEqual(projected["list_status_key"], "albumsComplete")
+
+        self.cover.unlink()
+        missing = self.services.catalog.album(self.row["album_key"])
+        self.assertFalse(missing["static_cover_found"])
+        self.assertEqual(missing["list_status_key"], "bypassed")
+
+        Image.new("RGB", (180, 180), "navy").save(self.cover)
+        restored = self.services.catalog.album(self.row["album_key"])
+        self.assertTrue(restored["static_cover_found"])
+        self.assertEqual(restored["list_status_key"], "albumsComplete")
+
     def test_album_write_coordination_is_durable_ordered_and_projected(self):
         preview = self.services.preview(self.payload())
         self.assertTrue(preview["image"])
