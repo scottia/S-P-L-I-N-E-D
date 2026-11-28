@@ -456,7 +456,7 @@ const CANDIDATE_TYPES = [["Recommended", "Recommended"], ["Upscalable", "Upscala
 const CANDIDATE_RANGES = [["Ideal", "Ideal"], ["UpperRange", "Upper range"], ["Ladder", "Ladder"], ["AboveLadder", "Above ladder"], ["LowerRange", "Lower range"], ["BelowMinimum", "Below minimum"]];
 function rawMediaStatusKey(item) {
   const raw = String(item.status || "unprocessed").toLowerCase();
-  if (raw === "complete" || raw === "artistcomplete" || raw === "albums complete") return "albumsComplete";
+  if (["complete", "artistcomplete", "albumscomplete", "albums complete"].includes(raw)) return "albumsComplete";
   if (raw.includes("bypass")) return "bypassed";
   if (raw.includes("error") || raw.includes("timeout") || raw.includes("incomplete")) return "incomplete";
   if (raw.includes("partial")) return "partial";
@@ -1167,10 +1167,6 @@ function albumCardState(album, artist) {
     : [];
   const compTrackOverridden = compTracks.some(track => compTrackOverride(track)?.writer === "windows");
   const overridden = albumOverridden || compTrackOverridden;
-  // A successful opposing write proves that an otherwise-unprocessed local
-  // presentation is stale. Preserve every other independent status dot, but
-  // replace that stale incomplete state with the override presentation.
-  const staleUnprocessed = albumOverridden && status === "unprocessed";
   // A cover.webp may be previewed but cannot satisfy a static cover.*.
   // The catalog sends this evidence separately from the preview URL.
   // Retain filename detection for older, non-indexed test/presentation data.
@@ -1178,16 +1174,17 @@ function albumCardState(album, artist) {
     || (album.static_cover_found == null && Boolean(album.cover_found || album.cover)
       && !/\.webp(?:$|[?#])/i.test(String(album.cover_path || album.cover || "")));
   const missingCover = !fallback && !overridden && !staticCover;
-  // Album mode hides the Artist profile presentation, not its policy
-  // evidence. Missing applicable Artist art must remain Yellow everywhere.
-  const missingArtist = !artist?.portrait && !artist?.banner;
+  // Album detail carries owner-art evidence even when a different Artist
+  // is still selected. Artist cards without that evidence use their context.
+  const missingArtist = album.applicable_artist_art == null
+    ? !artist?.portrait && !artist?.banner
+    : album.applicable_artist_art && album.missing_artist_art === true;
   const missingArt = missingCover || missingArtist;
   const bypassed = status === "bypassed" || status === "artistBypass";
   // Missing cover art is yellow evidence. An unprocessed label alone
   // cannot manufacture the independent red Incomplete/Error state.
   const incomplete = fallback ? album.fallback_complete !== true
     : ["incomplete", "timeout", "error"].includes(rawStatus);
-  const incompleteEvidence = !staleUnprocessed && incomplete;
   // cover_found is current filesystem evidence. It must outrank an old
   // unprocessed database label, while verified embedded-track evidence still
   // remains the only route to a green/complete Album.
@@ -1203,8 +1200,9 @@ function albumCardState(album, artist) {
   // actionable and therefore retain their own classification.
   const explicitReview = rawStatus === "partial";
   const fullyComplete = fallback ? album.fallback_complete === true && !compAttention
-    : !bypassed && !explicitReview && embeddedComplete;
-  const checkEmbedded = fallback ? compAttention : processed && embeddedKnown && !embeddedComplete;
+    : staticCover && !bypassed && !explicitReview && !["timeout", "error"].includes(rawStatus) && embeddedComplete;
+  const incompleteEvidence = incomplete && !fullyComplete;
+  const checkEmbedded = fallback ? compAttention : embeddedKnown && !embeddedComplete;
   const embeddedRetry = !fallback && processed && embeddedValidation === "retry";
   const embeddedPending = !fallback && processed && !embeddedKnown;
   // "unknown" is persisted catalog state, not an active validation job.  It
@@ -1255,7 +1253,7 @@ function albumCardPresentation(cardState, stagedForEmbedding) {
       : stagedForEmbedding ? "orange-purple" : cardState.mixedFrame,
   };
 }
-function selectedArtistAggregateStatus(artist = state.artist) {
+function selectedArtistAggregateStatus(artist = state.artist, listed) {
   if (!artist) return "incomplete";
   const cards = artistOverviewAlbums(artist, false).map(album => albumCardState(album, artist));
   const conditions = [];
@@ -1269,7 +1267,8 @@ function selectedArtistAggregateStatus(artist = state.artist) {
   // Green evidence until current card evidence establishes a higher-ranked
   // Red, Yellow, or Purple condition.  This is completion evidence only: an
   // unmatched Artist still follows the canonical default Red rule.
-  const indexedComplete = rawMediaStatusKey(artist) === "albumsComplete";
+  const indexedComplete = rawMediaStatusKey(artist) === "albumsComplete"
+    || (listed && rawMediaStatusKey(listed) === "albumsComplete");
   const cardsComplete = cards.length
     && cards.every(card => card.fullyComplete || card.albumOverridden);
   if (cardsComplete || indexedComplete) conditions.push("all_albums_complete_or_overridden");
@@ -1277,16 +1276,17 @@ function selectedArtistAggregateStatus(artist = state.artist) {
 }
 function syncSelectedArtistStatus() {
   if (!state.artist) return "incomplete";
-  const status = selectedArtistAggregateStatus(state.artist);
+  const listed = state.artists.find(item => String(item.id) === String(state.artist.id));
+  const status = selectedArtistAggregateStatus(state.artist, listed);
   // Explicit-error provenance is separate from the default unmatched Red.
   const cards = artistOverviewAlbums(state.artist, false).map(album => albumCardState(album, state.artist));
   const hasIncompleteError = cards.some(card => card.incomplete);
   state.artist.status = status;
   state.artist.has_incomplete_error = hasIncompleteError;
-  const listed = state.artists.find(item => String(item.id) === String(state.artist.id));
   if (listed) {
     listed.status = status;
     listed.has_incomplete_error = hasIncompleteError;
+    listed.missing_artist_art = !state.artist.portrait && !state.artist.banner;
   }
   return status;
 }
@@ -2950,6 +2950,13 @@ function preserveAlbumArtistArtEvidence(rows, previousRows) {
     };
   });
 }
+function publishAlbumStatus(album) {
+  const update = item => item.id === album.id ? {...item, ...album} : item;
+  state.albumsIndex = state.albumsIndex?.map(update);
+  state.albumLibraryMatches = state.albumLibraryMatches?.map(update);
+  if (Array.isArray(state.artist?.albums)) state.artist.albums = state.artist.albums.map(update);
+  if (state.album?.id === album.id) state.album = update(state.album);
+}
 async function loadLibrary(query = "") {
   const request = ++state.listRequest;
   const mode = state.libraryMode;
@@ -3190,6 +3197,7 @@ async function chooseAlbum(id) {
     }
     const tracks = fallback ? await api("/api/fallback/tracks?id=" + encodeURIComponent(id)) : [];
     if (request !== state.selectionRequest) return;
+    publishAlbumStatus(album);
     state.album = album; state.editorMode = fallback ? "fallback" : "album"; state.workspace = "find";
     state.fallbackTracks = tracks;
     markSelectedAlbum(album);

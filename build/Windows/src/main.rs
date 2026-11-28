@@ -392,6 +392,8 @@ impl AlbumEmbeddedCheck {
 // while projecting cards on the UI thread.
 static ALBUM_EMBEDDED_CHECKS: OnceLock<Mutex<HashMap<String, Option<AlbumEmbeddedCheck>>>> =
     OnceLock::new();
+static ALBUM_EMBEDDED_CHECK_ACTIVE: AtomicBool = AtomicBool::new(false);
+static VISIBLE_ALBUM_CHECK_ROWS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 
 #[derive(Clone, Debug)]
 struct ArtistAlbumEmbedTarget {
@@ -11863,7 +11865,11 @@ fn bind_callbacks(
                     let requests = std::mem::take(&mut *pending.borrow_mut())
                         .into_iter()
                         .collect::<Vec<_>>();
+                    if let Ok(mut rows) = VISIBLE_ALBUM_CHECK_ROWS.lock() {
+                        *rows = requests.clone();
+                    }
                     refresh_visible_navidrome_thumbnails(&state, weak.clone(), requests);
+                    schedule_artist_album_embedded_checks(&weak, &state);
                 },
             );
         });
@@ -20819,11 +20825,12 @@ fn refresh_media_filter_weak(
 }
 
 fn sync_media_filter_ui(ui: &AppWindow, state: &ApplicationState) {
-    let library_rows = if state.library.show_tracks {
+    let mut library_rows = if state.library.show_tracks {
         state.library.fallback_album_rows()
     } else {
         state.library.rows()
     };
+    apply_library_row_statuses(state, &mut library_rows);
     // Slint recreates virtual ListView delegates when its model is replaced.
     // Preserve the bound scroll offset across that replacement so lazy
     // thumbnail publication and live filtering cannot jump the file list to
@@ -22454,11 +22461,14 @@ fn sync_ui(ui: &AppWindow, shared: &Arc<Mutex<ApplicationState>>) {
     ui.set_run_failed(state.run_failed as i32);
 }
 
-fn library_ui_model_from_rows(
-    state: &ApplicationState,
-    mut rows: Vec<splined_core::application::LibraryRow>,
-) -> ModelRc<UiLibraryRow> {
-    for row in &mut rows {
+fn apply_library_row_statuses(state: &ApplicationState, rows: &mut [LibraryRow]) {
+    let albums = state
+        .library
+        .albums
+        .iter()
+        .map(|album| (album.snapshot.album_key.as_str(), album))
+        .collect::<HashMap<_, _>>();
+    for row in rows {
         if row.kind == "artist" {
             row.status = state
                 .library
@@ -22467,11 +22477,7 @@ fn library_ui_model_from_rows(
                 .cloned()
                 .unwrap_or_else(|| "unprocessed".to_string());
         } else if matches!(row.kind.as_str(), "album" | "album-child" | "folder")
-            && let Some(album) = state
-                .library
-                .albums
-                .iter()
-                .find(|album| album.snapshot.album_key.eq_ignore_ascii_case(&row.key))
+            && let Some(album) = albums.get(row.key.as_str())
         {
             let artist = (row.kind == "album-child")
                 .then(|| state.library.focused_artist.as_deref())
@@ -22480,6 +22486,12 @@ fn library_ui_model_from_rows(
                 classify_album(&album_policy_conditions(state, album, artist)).ui_status_key;
         }
     }
+}
+
+fn library_ui_model_from_rows(
+    state: &ApplicationState,
+    rows: Vec<LibraryRow>,
+) -> ModelRc<UiLibraryRow> {
     Rc::new(LibraryUiModel {
         rows,
         preview_size: 64,
@@ -22504,9 +22516,16 @@ fn album_policy_conditions<'a>(
     artist: Option<&str>,
 ) -> Vec<&'static str> {
     let fallback = state.library.is_curated_fallback(album);
-    let fallback_progress = artist.and_then(|artist| {
-        splined_core::application::LibraryState::artist_fallback_track_progress(album, artist)
-    });
+    let fallback_progress = artist
+        .and_then(|artist| {
+            splined_core::application::LibraryState::artist_fallback_track_progress(album, artist)
+        })
+        .or_else(|| {
+            fallback.then_some((
+                album.snapshot.compilation_completed_tracks.max(0) as usize,
+                album.snapshot.track_count.max(0) as usize,
+            ))
+        });
     let embedded_check = if fallback {
         fallback_album_embedded_check_from_cache(
             &album.snapshot,
@@ -22554,13 +22573,13 @@ fn album_policy_conditions_from_evidence<'a>(
         fallback_progress.is_some_and(|(done, total)| total > 0 && done == total);
     let fallback_incomplete =
         fallback_progress.is_some_and(|(done, total)| total > 0 && done < total);
-    let fully_complete = if fallback {
-        fallback_complete && embedded_check.is_none_or(|check| !check.needs_attention())
-    } else {
-        album.state == AlbumState::Processed
-            && album.snapshot.has_local_artwork
-            && embedded_check.is_some_and(|check| check.tracks > 0 && !check.needs_attention())
-    };
+    let fully_complete = artist_overview_is_fully_complete(
+        fallback,
+        fallback_complete,
+        !matches!(album.state, AlbumState::Bypassed | AlbumState::TimeoutActive),
+        album.snapshot.has_local_artwork,
+        embedded_check,
+    );
     let mut conditions = Vec::new();
     if artist_art_missing
         || (!fallback && !overridden && !album.snapshot.has_local_artwork)
@@ -22571,11 +22590,10 @@ fn album_policy_conditions_from_evidence<'a>(
     if embedded_check.is_some_and(AlbumEmbeddedCheck::needs_attention) {
         conditions.push("embedding_issues");
     }
-    if (!overridden
-        && matches!(
-            album.state,
-            AlbumState::New | AlbumState::Incomplete | AlbumState::TimeoutActive
-        ))
+    if (!fallback
+        && !overridden
+        && !fully_complete
+        && matches!(album.state, AlbumState::Incomplete | AlbumState::TimeoutActive))
         || fallback_incomplete
     {
         conditions.push("incomplete_tracks");
@@ -22652,7 +22670,6 @@ fn artist_file_list_policy_state_from_conditions(
         evidence.insert("missing_artist_art");
     }
     let mut all_complete_or_overridden = !indices.is_empty();
-    let mut has_unclassified_incomplete = indices.is_empty();
     for &index in indices {
         let conditions = conditions_for(index);
         if conditions.contains(&"missing_art") {
@@ -22666,14 +22683,7 @@ fn artist_file_list_policy_state_from_conditions(
         }
         let complete_or_overridden =
             conditions.contains(&"tracks_complete") || conditions.contains(&"opposing_override");
-        let specifically_classified = conditions.contains(&"missing_art")
-            || conditions.contains(&"embedding_issues")
-            || conditions.contains(&"incomplete_tracks");
-        has_unclassified_incomplete |= !complete_or_overridden && !specifically_classified;
         all_complete_or_overridden &= complete_or_overridden;
-    }
-    if has_unclassified_incomplete {
-        evidence.insert("incomplete_or_error");
     }
     if all_complete_or_overridden {
         evidence.insert("all_albums_complete_or_overridden");
@@ -23386,11 +23396,6 @@ fn artist_overview_ui_model_with_show_all(
             let snapshot = &album.snapshot;
             let fallback = state.library.is_curated_fallback(album);
             let overridden = album_has_opposing_override(state, album);
-            // An opposing successful write proves that a local New/no-cover
-            // presentation is stale. It replaces only that red Missing dot;
-            // every other independent status indicator remains authoritative.
-            let stale_unprocessed =
-                overridden && album.state == splined_core::application::AlbumState::New;
             let group = artist_overview_sort_group(state, album);
             let separator_before = previous_group.is_some_and(|previous| previous != group);
             previous_group = Some(group);
@@ -23419,14 +23424,6 @@ fn artist_overview_ui_model_with_show_all(
             // use its folder cover. Neither is an actionable red status for
             // the selected artist's track-scoped COMP workflow.
             let missing_album_art = !fallback && !overridden && !snapshot.has_local_artwork;
-            let incomplete = !fallback
-                && !overridden
-                && matches!(
-                    album.state,
-                    splined_core::application::AlbumState::New
-                        | splined_core::application::AlbumState::Incomplete
-                        | splined_core::application::AlbumState::TimeoutActive
-                );
             let processed = album.state == splined_core::application::AlbumState::Processed;
             let (soundtrack, various_artists) = artist_overview_release_banners(snapshot);
             let banner_key = if overridden {
@@ -23517,10 +23514,14 @@ fn artist_overview_ui_model_with_show_all(
             let fully_complete = artist_overview_is_fully_complete(
                 fallback,
                 fallback_complete,
-                processed,
+                !matches!(album.state, AlbumState::Bypassed | AlbumState::TimeoutActive),
                 snapshot.has_local_artwork,
                 embedded_check,
             );
+            let incomplete = !fallback
+                && !overridden
+                && !fully_complete
+                && matches!(album.state, AlbumState::Incomplete | AlbumState::TimeoutActive);
             let (has_webp, needs_still) = canonical_webp_status(snapshot);
             let embedding_detail = embedded_check
                 .filter(|check| check.needs_attention())
@@ -23542,11 +23543,9 @@ fn artist_overview_ui_model_with_show_all(
                 (
                     "incomplete_tracks",
                     (
-                        !stale_unprocessed
-                            && (incomplete
-                                || (fallback
-                                    && fallback_progress
-                                        .is_some_and(|(done, total)| done < total))),
+                        incomplete
+                            || (fallback
+                                && fallback_progress.is_some_and(|(done, total)| done < total)),
                         if fallback {
                             "Selected Artist's COMP tracks incomplete"
                         } else {
@@ -23844,7 +23843,7 @@ fn artist_overview_release_banners(
 fn artist_overview_is_fully_complete(
     fallback: bool,
     fallback_complete: bool,
-    processed: bool,
+    completion_allowed: bool,
     has_local_artwork: bool,
     embedded_check: Option<AlbumEmbeddedCheck>,
 ) -> bool {
@@ -23852,7 +23851,7 @@ fn artist_overview_is_fully_complete(
         fallback_complete
             && embedded_check.is_none_or(|check| check.tracks > 0 && !check.needs_attention())
     } else {
-        processed
+        completion_allowed
             && has_local_artwork
             && embedded_check.is_some_and(|check| check.tracks > 0 && !check.needs_attention())
     }
@@ -24162,6 +24161,13 @@ fn format_existing_embedded_info(infos: &[Option<(u32, u32, u64)>]) -> String {
 }
 
 fn cached_embedded_front_metadata(track: &Path) -> Option<(u32, u32, u64)> {
+    read_cached_embedded_front_metadata(track, true)
+}
+
+fn read_cached_embedded_front_metadata(
+    track: &Path,
+    invalidate_album: bool,
+) -> Option<(u32, u32, u64)> {
     let Ok(metadata) = fs::metadata(track) else {
         return None;
     };
@@ -24194,8 +24200,8 @@ fn cached_embedded_front_metadata(track: &Path) -> Option<(u32, u32, u64)> {
             }
         }
         if let Ok(mut cache) = cache.lock() {
-            cache.insert(key, (metadata.len(), modified, info));
-            if let Some(album_path) = track.parent() {
+            let previous = cache.insert(key, (metadata.len(), modified, info));
+            if invalidate_album && previous.is_some() && let Some(album_path) = track.parent() {
                 invalidate_album_embedded_check(album_path);
             }
             bump_artist_classification_evidence_revision();
@@ -25209,13 +25215,9 @@ fn album_embedded_check(path: &Path, side: u32) -> AlbumEmbeddedCheck {
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .filter(|track| track.is_file() && splined_core::scan::is_supported_audio_file(track))
-        // One representative track is sufficient for the immediate Artist
-        // overview index. Full track validation belongs to explicit album and
-        // COMP report actions, keeping large artists responsive.
-        .take(1)
     {
         result.tracks += 1;
-        match cached_embedded_front_metadata(&track) {
+        match read_cached_embedded_front_metadata(&track, false) {
             None => result.missing += 1,
             Some((width, height, _)) if width != side || height != side => {
                 result.wrong_size += 1;
@@ -25301,23 +25303,19 @@ fn schedule_artist_album_embedded_checks(
     weak: &slint::Weak<AppWindow>,
     state: &Arc<Mutex<ApplicationState>>,
 ) {
+    if ALBUM_EMBEDDED_CHECK_ACTIVE.load(Ordering::Acquire)
+        || CATALOG_INDEX_REFRESH_ACTIVE.load(Ordering::Relaxed)
+    {
+        return;
+    }
+    let visible = VISIBLE_ALBUM_CHECK_ROWS
+        .lock()
+        .map(|rows| rows.clone())
+        .unwrap_or_default();
     let targets = {
         let Ok(app) = state.lock() else { return };
-        let artist_mode = !app.library.show_tracks
-            && app.library.view == LibraryView::Artists
-            && app.library.focused_artist.is_some();
-        let album_mode =
-            app.library.view == LibraryView::Albums && app.library.focused_album_key.is_some();
-        if !artist_mode && !album_mode {
-            return;
-        }
-        // Routine Artist selection now follows the approved WebGUI cache
-        // model: paint from indexed status/cover evidence and do not open a
-        // representative audio file from every Album. A deliberate bulk
-        // reprocess request may still validate its selected Albums before
-        // launch, and an explicitly opened Album keeps its focused check.
-        let focused_artist_album = artist_mode && app.library.focused_album_key.is_some();
-        if artist_mode && !app.artist_bulk_reprocess_requested && !focused_artist_album {
+        let artist_mode = app.library.view == LibraryView::Artists;
+        if app.library.show_tracks || (!artist_mode && app.library.view != LibraryView::Albums) {
             return;
         }
         // Artist overview hydration reads Navidrome and its image cache. Do not
@@ -25328,40 +25326,19 @@ fn schedule_artist_album_embedded_checks(
             return;
         }
         let side = app.config.output.embedded_thumbnail_size;
-        let mut indices = if focused_artist_album && !app.artist_bulk_reprocess_requested {
-            app.library
-                .focused_album_key
-                .as_deref()
-                .map(|key| {
-                    app.library
-                        .albums
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, album)| album.snapshot.album_key.eq_ignore_ascii_case(key))
-                        .map(|(index, _)| index)
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default()
-        } else if artist_mode {
-            app.library.artist_overview_album_indices(
-                &app.artist_overview_album_keys,
-                app.artist_overview_show_all,
-            )
-        } else {
-            app.library
-                .focused_album_key
-                .as_deref()
-                .map(|key| {
-                    app.library
-                        .albums
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, album)| album.snapshot.album_key.eq_ignore_ascii_case(key))
-                        .map(|(index, _)| index)
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default()
-        };
+        let focused_key = app.library.focused_album_key.as_deref();
+        let indices_by_key = app.library.albums.iter().enumerate()
+            .map(|(index, album)| (album.snapshot.album_key.as_str(), index))
+            .collect::<HashMap<_, _>>();
+        let mut indices = focused_key
+            .and_then(|key| indices_by_key.get(key).copied())
+            .into_iter()
+            .collect::<Vec<_>>();
+        if artist_mode && app.library.focused_artist.is_some() {
+            indices.extend(app.library.artist_overview_album_indices(
+                &app.artist_overview_album_keys, true,
+            ));
+        }
         if artist_mode
             && app.library.artist_run_scope_active
             && app.library.focused_album_key.is_none()
@@ -25376,15 +25353,37 @@ fn schedule_artist_album_embedded_checks(
                 }
             }
         }
+        if artist_mode && visible.iter().any(|(_, kind)| kind == "artist") {
+            let artists = app.library.artist_state_album_index_map();
+            indices.extend(visible.iter()
+                .filter(|(_, kind)| kind == "artist")
+                .filter_map(|(key, _)| artists.get(key))
+                .flatten()
+                .copied());
+        }
+        let album_row_kind = if artist_mode { "album-child" } else { "album" };
+        indices.extend(visible.iter()
+            .filter(|(_, kind)| kind == album_row_kind)
+            .filter_map(|(key, _)| indices_by_key.get(key.as_str()).copied()));
+        let mut seen = HashSet::new();
         indices
             .into_iter()
+            .filter(|index| seen.insert(*index))
             .filter_map(|index| app.library.albums.get(index))
             // COMP/fallback albums remain metadata-only until the user asks
             // for COMP Report. Do not open any of their audio during overview.
-            .filter(|album| !app.library.is_curated_fallback(album))
+            .filter(|album| {
+                !app.library.is_curated_fallback(album)
+                    && (app.artist_bulk_reprocess_requested
+                        || !album_has_opposing_override(&app, album))
+                    && (album.snapshot.has_local_artwork
+                        || Some(album.snapshot.album_key.as_str()) == focused_key)
+                    && !matches!(album.state, AlbumState::Bypassed | AlbumState::TimeoutActive)
+            })
             .map(|album| {
                 let path = album.snapshot.path.clone();
-                (album_embedded_check_key(&path, side), path, side)
+                let expected_tracks = album.snapshot.track_count.max(0) as usize;
+                (album_embedded_check_key(&path, side), path, side, expected_tracks)
             })
             .collect::<Vec<_>>()
     };
@@ -25394,7 +25393,7 @@ fn schedule_artist_album_embedded_checks(
         };
         targets
             .into_iter()
-            .filter(|(key, _, _)| {
+            .filter(|(key, _, _, _)| {
                 if let std::collections::hash_map::Entry::Vacant(entry) = cache.entry(key.clone()) {
                     entry.insert(None);
                     true
@@ -25402,27 +25401,37 @@ fn schedule_artist_album_embedded_checks(
                     false
                 }
             })
+            .take(4)
             .collect::<Vec<_>>()
     };
     if pending.is_empty() {
         return;
     }
+    ALBUM_EMBEDDED_CHECK_ACTIVE.store(true, Ordering::Release);
     let weak = weak.clone();
     let state = Arc::clone(state);
     std::thread::spawn(move || {
-        for (key, path, side) in pending {
-            let check = album_embedded_check(Path::new(&path), side);
+        for (key, path, side, expected_tracks) in pending {
+            let mut check = album_embedded_check(Path::new(&path), side);
+            if expected_tracks > 0 && check.tracks != expected_tracks {
+                // An incomplete inventory cannot prove completion, even if
+                // every track that happened to be visible had the right size.
+                check = AlbumEmbeddedCheck::default();
+            }
             if let Some(log) = UI_DEBUG_LOG_HANDLE.get() {
                 log.record(format!(
                     "artist-album-embedded-check path={} tracks={} missing={} wrong_size={} side={}",
                     path, check.tracks, check.missing, check.wrong_size, side
                 ));
             }
-            if let Ok(mut cache) = album_embedded_check_cache().lock() {
-                cache.insert(key, Some(check));
+            if let Ok(mut cache) = album_embedded_check_cache().lock()
+                && let Some(entry @ None) = cache.get_mut(&key)
+            {
+                *entry = Some(check);
                 bump_artist_classification_evidence_revision();
             }
         }
+        ALBUM_EMBEDDED_CHECK_ACTIVE.store(false, Ordering::Release);
         let _ = slint::invoke_from_event_loop(move || refresh_weak(&weak, &state));
     });
 }
@@ -27254,9 +27263,8 @@ mod tests {
         fs::write(directory.path().join("second.mp3"), b"also not tagged").unwrap();
         fs::write(directory.path().join("notes.txt"), b"not audio").unwrap();
         let check = album_embedded_check(directory.path(), 1200);
-        // The overview index intentionally samples one track per album.
-        assert_eq!(check.tracks, 1);
-        assert_eq!(check.missing, 1);
+        assert_eq!(check.tracks, 2);
+        assert_eq!(check.missing, 2);
         assert_eq!(check.wrong_size, 0);
         assert!(check.needs_attention());
     }
@@ -27928,7 +27936,7 @@ mod tests {
     }
 
     #[test]
-    fn opposing_write_replaces_incomplete_new_state_without_a_stale_red_dot() {
+    fn opposing_write_replaces_unmatched_red_without_inventing_an_incomplete_dot() {
         let snapshot = MediaSnapshot {
             artist_catalog: None,
             schema_version: splined_core::media_database::SCHEMA_VERSION,
@@ -27975,11 +27983,15 @@ mod tests {
         let normal = artist_overview_ui_model(&app).row_data(0).unwrap();
         assert!(!normal.overridden);
         assert_eq!(normal.state_key, "Incomplete");
-        assert_eq!(normal.bullets.row_count(), 1);
+        assert_eq!(normal.bullets.row_count(), 0);
+
+        app.library.albums[0].state = super::AlbumState::Incomplete;
+        let incomplete = artist_overview_ui_model(&app).row_data(0).unwrap();
         assert_eq!(
-            normal.bullets.row_data(0).unwrap().tip,
+            incomplete.bullets.row_data(0).unwrap().tip,
             "Incomplete / timed-out Album"
         );
+        app.library.albums[0].state = super::AlbumState::New;
 
         let album_path = app.library.albums[0].snapshot.path.to_lowercase();
         app.embed_locked_album_paths.insert(album_path.clone());
@@ -28023,7 +28035,9 @@ mod tests {
         assert_eq!(counts.grey_frames, 1);
         assert_eq!(counts.orange_purple_frames, 0);
         assert_eq!(counts.artist, 0);
-        let library_model = super::library_ui_model_from_rows(&app, app.library.rows());
+        let mut library_rows = app.library.rows();
+        super::apply_library_row_statuses(&app, &mut library_rows);
+        let library_model = super::library_ui_model_from_rows(&app, library_rows);
         let child = (0..library_model.row_count())
             .filter_map(|index| library_model.row_data(index))
             .find(|row| row.kind == "album-child")
@@ -28867,7 +28881,16 @@ mod tests {
         let mut app = ApplicationState::new(Config::default(), snapshot).unwrap();
         app.library
             .set_artist_artwork_path("Alpha", &directory.path().join("artist.jpg"));
-        app.library.set_status_filter(StatusFilter::ArtistComplete);
+        app.library.focused_artist = Some("Alpha".into());
+        app.library.albums[0].state = super::AlbumState::Incomplete;
+        super::refresh_artist_classification_statuses(&mut app);
+        let mut before = app.library.rows();
+        let mut va_row = before.iter().find(|row| row.kind == "album-child").unwrap().clone();
+        va_row.kind = "album".into();
+        before.push(va_row);
+        let mut after = before.clone();
+        super::apply_library_row_statuses(&app, &mut before);
+        assert!(before.iter().all(|row| row.status == "incomplete"));
         let key = album_embedded_check_key(
             &album_path.to_string_lossy(),
             app.config.output.embedded_thumbnail_size,
@@ -28882,8 +28905,17 @@ mod tests {
         );
         super::bump_artist_classification_evidence_revision();
         super::refresh_artist_classification_statuses(&mut app);
-        let complete_rows = app.library.rows();
+        super::apply_library_row_statuses(&app, &mut after);
+        assert!(after.iter().all(|row| row.status == "albumsComplete"));
+        assert_ne!(
+            super::library_model_signature(&app, &before),
+            super::library_model_signature(&app, &after),
+        );
+        assert!(artist_overview_ui_model(&app).row_data(0).unwrap().fully_complete);
+        app.library.set_status_filter(StatusFilter::ArtistComplete);
+        let mut complete_rows = app.library.rows();
         assert!(complete_rows.iter().any(|row| row.primary == "Alpha"));
+        super::apply_library_row_statuses(&app, &mut complete_rows);
         let complete_model = super::library_ui_model_from_rows(&app, complete_rows);
         assert_eq!(complete_model.row_data(0).unwrap().status, "albumsComplete");
 

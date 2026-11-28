@@ -1162,25 +1162,29 @@ function renderQueue() {
 };
 async function refreshCompletedAlbum(albumId) {
   if (!albumId) return;
+  const selection = state.selectionRequest;
   const selectedArtistId = state.artist?.id || "";
   const affectsSelectedArtist = !!selectedArtistId
     && typeof albumInCurrentArtistContext === "function"
     && albumInCurrentArtistContext(albumId);
   const album = await api("/api/album?id=" + encodeURIComponent(albumId));
-  if (state.album?.id === albumId) state.album = album;
+  publishAlbumStatus(album);
+  renderLibrary(); renderHero(); renderPanes(); renderReview();
   // A Featured, soundtrack, V/A, or normalized-alias Album can contribute to
   // the selected Artist while retaining another physical owner row. Refresh
   // the visible presentation identity, not only album.artist_id.
+  if (state.selectionRequest !== selection) return;
   if (affectsSelectedArtist || state.artist?.id === album.artist_id) {
     const refreshArtistId = affectsSelectedArtist ? selectedArtistId : album.artist_id;
     const overview = await api("/api/artist/overview?id=" + encodeURIComponent(refreshArtistId));
-    if (state.artist?.id === refreshArtistId) {
+    if (state.selectionRequest === selection && state.artist?.id === refreshArtistId) {
       state.artist = overview.artist;
       state.compAlbums = overview.comp_albums || [];
+      publishAlbumStatus(album);
       if (typeof syncSelectedArtistStatus === "function") syncSelectedArtistStatus();
+      renderLibrary(); renderHero();
     }
   }
-  renderLibrary(); renderHero(); renderPanes(); renderReview();
 }
 async function refreshOpposingAlbumThumbnails(albumIds) {
   const visible = new Set([
@@ -1199,11 +1203,7 @@ async function refreshOpposingAlbumThumbnails(albumIds) {
     api("/api/album?id=" + encodeURIComponent(albumId))));
   for (const result of results) {
     if (result.status !== "fulfilled") continue;
-    const refreshed = result.value;
-    const update = album => album?.id === refreshed.id ? {...album, ...refreshed} : album;
-    if (state.album?.id === refreshed.id) state.album = update(state.album);
-    if (Array.isArray(state.artist?.albums)) state.artist.albums = state.artist.albums.map(update);
-    if (Array.isArray(state.albumsIndex)) state.albumsIndex = state.albumsIndex.map(update);
+    publishAlbumStatus(result.value);
   }
   if (state.artist) {
     if (typeof syncSelectedArtistStatus === "function") syncSelectedArtistStatus();
@@ -1300,11 +1300,15 @@ async function refreshQueuedAlbumAfterSave(job = null) {
   }
   const albumId = state.album?.id;
   if (!albumId) return;
+  const selection = state.selectionRequest;
   const album = await api("/api/album?id=" + encodeURIComponent(albumId));
-  if (state.album?.id !== albumId) return;
-  state.album = album;
+  if (state.selectionRequest !== selection || state.album?.id !== albumId) return;
+  publishAlbumStatus(album);
   if (state.artist?.id === album.artist_id) {
-    state.artist = await api("/api/artist?id=" + encodeURIComponent(album.artist_id));
+    const artist = await api("/api/artist?id=" + encodeURIComponent(album.artist_id));
+    if (state.selectionRequest !== selection || state.artist?.id !== album.artist_id) return;
+    state.artist = artist;
+    publishAlbumStatus(album);
     if (typeof syncSelectedArtistStatus === "function") syncSelectedArtistStatus();
   }
   if (state.editorMode === "fallback") {

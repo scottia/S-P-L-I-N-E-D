@@ -653,7 +653,8 @@ const coordinationFunctions = between(
   "function applyAlbumCoordination",
   "function albumCardState",
 );
-const opposingThumbnailFunctions = between(
+const publishAlbumStatusFunction = between(appSource, "function publishAlbumStatus", "async function loadLibrary");
+const opposingThumbnailFunctions = publishAlbumStatusFunction + between(
   operationsSource,
   "async function refreshOpposingAlbumThumbnails",
   "async function refreshQueuedAlbumAfterSave",
@@ -776,7 +777,7 @@ const renderQueueFunction = between(
   "function renderQueue",
   "async function refreshCompletedAlbum",
 );
-const refreshCompletedAlbumFunction = between(
+const refreshCompletedAlbumFunction = publishAlbumStatusFunction + between(
   operationsSource,
   "async function refreshCompletedAlbum",
   "async function refreshOpposingAlbumThumbnails",
@@ -897,7 +898,7 @@ const clearFocusFunction = between(
   "function clearFocusCandidates",
   "function resetFocusAdjustments",
 );
-const chooseAlbumFunction = between(
+const chooseAlbumFunction = publishAlbumStatusFunction + between(
   appSource,
   "async function chooseAlbum",
   "async function selectFallbackTrack",
@@ -962,6 +963,8 @@ test("completed projected Album refreshes the visible Artist state", async () =>
   const state = {
     artist: {id: "visible-artist", status: "partial", albums: [{id: "shared-album"}]},
     album: {id: "shared-album"}, compAlbums: [],
+    albumsIndex: [{id: "shared-album", list_status_key: "bypassed"}],
+    albumLibraryMatches: [{id: "shared-album", list_status_key: "bypassed"}],
   };
   const context = load(refreshCompletedAlbumFunction, {
     state,
@@ -969,7 +972,8 @@ test("completed projected Album refreshes the visible Artist state", async () =>
     api: async path => {
       calls.push(path);
       if (path.startsWith("/api/album"))
-        return {id: "shared-album", artist_id: "physical-owner", status: "processed"};
+        return {id: "shared-album", artist_id: "physical-owner", status: "processed",
+          list_status_key: "albumsComplete", tracks: 12, embedded: 12, embedded_validation: "verified"};
       if (path.startsWith("/api/artist/overview"))
         return {artist: {id: "visible-artist", status: "processed", albums: [{id: "shared-album"}]}, comp_albums: []};
       throw new Error(path);
@@ -982,6 +986,10 @@ test("completed projected Album refreshes the visible Artist state", async () =>
 
   assert.equal(state.artist.id, "visible-artist");
   assert.equal(state.artist.status, "processed");
+  assert.equal(state.artist.albums[0].embedded, 12);
+  assert.equal(state.albumsIndex[0].list_status_key, "albumsComplete");
+  assert.equal(state.albumLibraryMatches[0].list_status_key, "albumsComplete");
+  assert.equal(state.album.embedded_validation, "verified");
   assert.equal(synced, 1);
   assert.equal(calls[1], "/api/artist/overview?id=visible-artist");
 });
@@ -3362,6 +3370,16 @@ test("Album cards keep unknown validation separate from confirmed missing thumbn
   assert.equal(vaOstAlbum.stateKey, "bypassed",
     "the selected V/A OST Album keeps the same Yellow classification as its file-list row");
   assert.equal(vaOstAlbum.dots.some(([color]) => color === "#f4cc4d"), true);
+
+  const verifiedVaOst = context.albumCardState({
+    id: "va-ost", album_mbid: "release-va", library_group: "various-artists",
+    status: "incomplete", applicable_artist_art: false,
+    static_cover_found: true, cover: "cover.jpg", tracks: 12, embedded: 12,
+    embedded_validation: "verified",
+  }, null);
+  assert.equal(verifiedVaOst.stateKey, "albumsComplete");
+  assert.equal(verifiedVaOst.frame, "theme-complete");
+  assert.deepEqual(Array.from(verifiedVaOst.dots, ([color]) => color), ["#32dda0"]);
 });
 
 test("selected Artist status includes its track-scoped COMP report", () => {
@@ -3427,7 +3445,7 @@ test("selected Artist preserves indexed Green across load, select, and reselect"
   assert.equal(state.artists[0].status, "albumsComplete");
 
   state.artist = {
-    id: "complete", portrait: "artist.jpg", status: "complete",
+    id: "complete", portrait: "artist.jpg", status: "incomplete",
     albums: [{...completeAlbum}],
   };
   assert.equal(context.syncSelectedArtistStatus(), "albumsComplete",
@@ -3820,8 +3838,6 @@ test("Album search and Album overview use the global single-Album contract", () 
   assert.match(appSource, /const presentedAlbums = honorSingleAlbum && singleAlbumOverviewActive\(\)/);
   assert.match(appSource, /const albums = albumOverview && state\.album[\s\S]*?cover: state\.album\.static_cover \|\| null/);
   assert.match(appSource, /albumOverview \? state\.album\?\.static_cover/);
-  assert.match(appSource, /const missingArtist = !artist\?\.portrait && !artist\?\.banner/);
-  assert.doesNotMatch(appSource, /const missingArtist = !albumOverview/);
   assert.match(appSource, /allAlbums\.find\(album => album\.id === state\.album\.id\)/);
 });
 
