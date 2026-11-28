@@ -54,6 +54,12 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             "embedded_validation_status": "verified",
         }
         self.assertEqual(Catalog._album_list_status_key(complete), "albumsComplete")
+        stale = {**complete, "status": "incomplete"}
+        self.assertEqual(Catalog._album_list_status_key(stale), "albumsComplete")
+        self.assertEqual(Catalog._artist_album_state_conditions(stale), {"complete_or_overridden"})
+        unread = {**stale, "embedded_validation_status": "unknown"}
+        self.assertEqual(Catalog._album_list_status_key(unread), "incomplete")
+        self.assertEqual(Catalog._album_list_status_key({**stale, "status": "error"}), "incomplete")
         self.assertEqual(
             Catalog._album_list_status_key({**complete, "cover_found": 0}),
             "bypassed",
@@ -70,6 +76,12 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             Catalog._album_list_status_key(complete, missing_artist_art=True),
             "bypassed",
         )
+
+    def test_va_ost_named_owners_do_not_require_an_artist_art_package(self):
+        for group in ("various-artists", "soundtracks", "misc-undefined", "misc-curated"):
+            with self.subTest(group=group):
+                self.assertFalse(Catalog._album_artist_art_applicable("American Idol Ensemble", group))
+        self.assertTrue(Catalog._album_artist_art_applicable("American Idol Ensemble", "artist"))
 
     def test_art004_portability_does_not_change_independent_credit_normalization(self):
         profile = r"(?<=feat\.)\s+"

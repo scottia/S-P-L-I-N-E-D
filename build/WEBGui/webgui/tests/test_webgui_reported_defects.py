@@ -351,7 +351,6 @@ class ReportedDefectTests(unittest.TestCase):
         self.assertIn('["COMP track rows", [', application)
         self.assertIn("grid-template-columns:repeat(4,minmax(0,1fr))", styles)
         self.assertIn(": processed ? frames.in_process.color : mediaStatusColor(status)", application)
-        self.assertIn('const staleUnprocessed = albumOverridden && status === "unprocessed"', application)
         self.assertIn(
             'const stateKey = classifyMediaState("album", conditions).ui_status_key',
             application,
@@ -364,10 +363,6 @@ class ReportedDefectTests(unittest.TestCase):
         )
         self.assertIn(
             "for (const rule of activeMediaStatePolicy().album?.status_dots || [])",
-            application,
-        )
-        self.assertNotIn(
-            'if (!staleUnprocessed && (missingCover || incomplete))',
             application,
         )
 

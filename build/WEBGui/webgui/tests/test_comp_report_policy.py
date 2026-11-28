@@ -1,6 +1,10 @@
 import json
+from pathlib import Path
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
+import splined_compilation_authority_policy as authority
 import webgui.comp_report_policy as policy
 
 
@@ -24,6 +28,47 @@ class CompReportPolicyTests(unittest.TestCase):
             "*NSYNC",
         )
         self.assertTrue(policy.artist_names_compatible("*NSYNC/Gloria Estefan", "NSYNC"))
+
+    def test_comp_lookup_preserves_full_verified_artist_credit_with_slash(self) -> None:
+        artist_id = "66c662b6-6e2f-4930-8610-912e24c63ed1"
+        recording_id = "7578ce92-8b92-4232-b754-84bc1cb47bf4"
+        track = SimpleNamespace(
+            artist="AC/DC", title="Whole Lotta Rosie",
+            artist_mbid=artist_id, recording_mbid=recording_id,
+        )
+        core = SimpleNamespace(
+            mb_headers=lambda *_args: ({}, "oauth"),
+            MB_BASE="https://musicbrainz.test/ws/2",
+        )
+        credit = [{"artist": {"id": artist_id, "name": "AC/DC"}}]
+        recording = {
+            "id": recording_id, "title": track.title, "artist-credit": credit,
+            "releases": [{
+                "id": "79f03cd7-03ae-4786-8bea-800aa8c32bf5",
+                "title": "Let There Be Rock", "status": "Official",
+                "artist-credit": credit,
+                "release-group": {
+                    "id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+                    "title": "Let There Be Rock", "primary-type": "Album",
+                },
+            }],
+        }
+        with patch.object(authority, "_request_musicbrainz_entity", side_effect=[
+            (credit[0]["artist"], ""),
+            (recording, ""),
+            ({"recordings": []}, ""),
+        ]) as lookup:
+            result = authority.resolve_interactive_identity_matches(
+                core, object(), Path("config.toml"), {}, track,
+                authority.MusicBrainzOptions(1, 0.001, 7.0),
+            )
+
+        self.assertEqual(result.identity_status, "valid")
+        self.assertEqual(result.artist_status, "valid")
+        self.assertEqual(result.recording_status, "valid")
+        self.assertEqual(result.friendly_artist, "AC/DC")
+        self.assertEqual(result.candidates[0].match_basis, "exact-recording")
+        self.assertTrue(lookup.call_args_list[1].args[1].endswith(f"/recording/{recording_id}"))
 
     def test_exact_alias_score_comes_from_the_shared_policy(self) -> None:
         self.assertEqual(

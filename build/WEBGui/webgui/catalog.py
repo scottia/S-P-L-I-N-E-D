@@ -1303,8 +1303,7 @@ class Catalog:
                 conditions.add("missing_artist_art")
         if status == "partial":
             conditions.add("embedding_issues")
-        if status in {"incomplete", "timeout", "error"}:
-            conditions.add("incomplete_or_error")
+        complete = False
         if {
             "track_count",
             "embedded_tracks",
@@ -1317,8 +1316,11 @@ class Catalog:
                 validation == "verified" and track_count > 0 and embedded < track_count
             ):
                 conditions.add("embedding_issues")
-            if validation == "verified" and track_count > 0 and embedded >= track_count:
+            complete = validation == "verified" and track_count > 0 and embedded >= track_count
+            if complete and status not in {"bypassed", "timeout", "partial", "error"}:
                 conditions.add("complete_or_overridden")
+        if status in {"timeout", "error"} or (status == "incomplete" and not complete):
+            conditions.add("incomplete_or_error")
         return conditions
 
     @staticmethod
@@ -1365,11 +1367,10 @@ class Catalog:
         keys = set(row.keys())
         raw_status = str(row["status"] or "unprocessed").casefold()
         conditions: set[str] = set()
-        overridden = str((coordination or {}).get("writer", "")).casefold() == "windows"
-        if overridden or raw_status == "overridden":
+        overridden = (str((coordination or {}).get("writer", "")).casefold() == "windows"
+                      or raw_status == "overridden")
+        if overridden:
             conditions.add("opposing_override")
-        elif raw_status in {"incomplete", "timeout", "error"}:
-            conditions.add("incomplete_tracks")
 
         cover_path = str(row["cover_path"] or "").strip() if "cover_path" in keys else ""
         static_cover = bool(cover_path and Path(cover_path).suffix.casefold() != ".webp")
@@ -1386,7 +1387,11 @@ class Catalog:
             str(row["embedded_validation_status"] or "unknown").casefold()
             if "embedded_validation_status" in keys else "unknown"
         )
-        complete = validation == "verified" and track_count > 0 and embedded >= track_count
+        complete = (validation == "verified" and track_count > 0 and embedded >= track_count
+                    and raw_status not in {"bypassed", "timeout", "partial", "error"})
+        if not overridden and (raw_status in {"timeout", "error"}
+                               or (raw_status == "incomplete" and not complete)):
+            conditions.add("incomplete_tracks")
         attention = raw_status == "partial" or validation in {"retry", "error"} or (
             validation == "verified" and track_count > 0 and embedded < track_count
         )
@@ -3104,6 +3109,16 @@ class Catalog:
         except Exception:
             return False
 
+    @staticmethod
+    def _album_artist_art_applicable(artist_name: str, library_group: str) -> bool:
+        # A V/A OST credit can be a real name without a separate Artist
+        # package being required for the Album workflow.
+        return (
+            library_group == "artist"
+            and bool(artist_name.strip())
+            and not synthetic_album_artist(artist_name)
+        )
+
     def _album_artist_art_evidence(
         self, row, aliases=None, album_rows=None
     ) -> dict[str, object]:
@@ -3112,11 +3127,10 @@ class Catalog:
         This intentionally remains outside the initial Album-list query. Artist
         Art lives in bounded Artist folders and managed packages, so resolving
         it during ``albums()`` would put network filesystem I/O back on the
-        first paint. Synthetic V/A and soundtrack owners do not have an
-        applicable Artist presentation.
+        first paint. Only ordinary Artist releases require an Artist package.
         """
         artist_name = str(row["artist_name"] or "").strip()
-        if not artist_name or synthetic_album_artist(artist_name):
+        if not self._album_artist_art_applicable(artist_name, self.album_library_group(row)):
             return {"applicable_artist_art": False, "missing_artist_art": False}
 
         keys = set(row.keys())
@@ -3219,21 +3233,24 @@ class Catalog:
             group_key = group_key_by_artist.get(str(owned["artist_key"]))
             if group_key is not None:
                 albums_by_group.setdefault(group_key, []).append(owned)
-        evidence_by_group: dict[tuple[str, ...], dict[str, object]] = {}
+        evidence_by_group: dict[tuple[tuple[str, ...], bool], dict[str, object]] = {}
         result = []
         for album_id in requested:
             row = by_id.get(album_id)
             if row is None:
                 continue
             group_key = group_key_by_artist.get(str(row["artist_key"]), ())
-            evidence = evidence_by_group.get(group_key)
+            applicable = self._album_artist_art_applicable(
+                str(row["artist_name"] or ""), self.album_library_group(row)
+            )
+            evidence = evidence_by_group.get((group_key, applicable))
             if evidence is None:
                 evidence = self._album_artist_art_evidence(
                     row,
                     requested_groups.get(group_key),
                     albums_by_group.get(group_key),
                 )
-                evidence_by_group[group_key] = evidence
+                evidence_by_group[(group_key, applicable)] = evidence
             missing = bool(evidence["missing_artist_art"])
             result.append({
                 "id": album_id,
@@ -3280,7 +3297,7 @@ class Catalog:
                 cover_url = self.image(self.album_cover_path(row))
             album_coordination = coordination.get(album_key, {})
             cover_path = str(row["cover_path"] or "")
-            artist_art_applicable = not synthetic_album_artist(str(row["artist_name"] or ""))
+            artist_art_applicable = self._album_artist_art_applicable(str(row["artist_name"] or ""), group)
             items.append({
                 "id": row["album_key"], "name": row["album_name"],
                 "artist_id": row["artist_key"], "artist_name": row["artist_name"],
@@ -3541,6 +3558,7 @@ class Catalog:
             override,
             missing_artist_art=bool(artist_art["missing_artist_art"]),
         )
+        artist_art["artist_art_pending"] = False
         return {
             "id": album_id, "name": row["album_name"], "status": row["status"],
             "artist_id": row["artist_key"], "artist_name": row["artist_name"],
