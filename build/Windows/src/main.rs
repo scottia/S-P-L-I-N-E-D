@@ -167,12 +167,7 @@ fn album_category_key(selection: &str) -> Result<&'static str, String> {
 }
 
 fn navidrome_thumbnail_cache_root(config: &Config) -> PathBuf {
-    let cache_root = if config.scan.sqlite_shared {
-        &config.scan.cache_dir
-    } else {
-        &config.scan.temporary_cache_dir
-    };
-    Path::new(cache_root).join("navidrome-thumbnails")
+    Path::new(&config.scan.temporary_cache_dir).join("navidrome-thumbnails")
 }
 
 fn defer_thumbnail_requests_while_indexing(requests: &[(String, String)]) -> bool {
@@ -26473,7 +26468,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn native_thumbnail_hydration_defers_during_index_and_uses_mode_owned_cache() {
+    fn native_thumbnail_hydration_defers_during_index_and_uses_temporary_cache() {
         CATALOG_INDEX_REFRESH_ACTIVE.store(false, Ordering::SeqCst);
         let _ = take_deferred_thumbnail_requests();
         let requests = vec![
@@ -26500,9 +26495,9 @@ mod tests {
         let shared_root = navidrome_thumbnail_cache_root(&config);
         assert_eq!(
             shared_root,
-            std::path::Path::new(r"C:\persistent-cache\navidrome-thumbnails")
+            std::path::Path::new(r"C:\temporary-cache\navidrome-thumbnails")
         );
-        assert!(!shared_root.starts_with(&config.scan.temporary_cache_dir));
+        assert!(shared_root.starts_with(&config.scan.temporary_cache_dir));
         assert_eq!(NAVIDROME_ARTIST_DOWNLOAD_LIMIT, 4);
         assert_eq!(NAVIDROME_ALBUM_DOWNLOAD_LIMIT, 6);
     }
