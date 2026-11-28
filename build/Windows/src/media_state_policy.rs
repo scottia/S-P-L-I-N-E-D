@@ -247,7 +247,7 @@ pub fn active_revision() -> i64 {
 }
 
 pub fn postgres_authority_configured(config: &crate::config::Config) -> bool {
-    config.scan.sqlite_shared && config.scan.postgres_coordination
+    config.scan.postgres_coordination
 }
 
 pub async fn fetch_postgres_policy(pool: &PgPool) -> Result<PostgresPolicySnapshot, String> {
@@ -774,7 +774,7 @@ mod tests {
     }
 
     #[test]
-    fn postgres_authority_requires_shared_sqlite_and_explicit_coordination() {
+    fn postgres_authority_requires_explicit_coordination_in_either_sqlite_mode() {
         let mut config = crate::config::Config::default();
         assert!(!postgres_authority_configured(&config));
 
@@ -785,6 +785,6 @@ mod tests {
         assert!(postgres_authority_configured(&config));
 
         config.scan.sqlite_shared = false;
-        assert!(!postgres_authority_configured(&config));
+        assert!(postgres_authority_configured(&config));
     }
 }

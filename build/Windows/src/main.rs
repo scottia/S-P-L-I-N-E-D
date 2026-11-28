@@ -8095,12 +8095,12 @@ fn database_monitor_for_config(
 }
 
 fn database_monitor_backend(config: &Config) -> &'static str {
-    if !config.scan.sqlite_shared {
-        "current"
-    } else if config.scan.postgres_coordination {
+    if config.scan.postgres_coordination {
         "postgres"
-    } else {
+    } else if config.scan.sqlite_shared {
         "sqlite"
+    } else {
+        "current"
     }
 }
 
@@ -8192,13 +8192,12 @@ fn refresh_database_monitor_async(
 
 fn validate_setup_shared_policy_targets(
     config: &Config,
-    postgres_choice: &str,
     validated: Option<&ValidatedSetupPostgres>,
 ) -> Result<(), String> {
-    if !config.scan.sqlite_shared {
-        return Ok(());
-    }
-    if postgres_choice == "no" {
+    if !config.scan.postgres_coordination {
+        if !config.scan.sqlite_shared {
+            return Ok(());
+        }
         let path = media_state_policy_path(config)?;
         if path.is_file() {
             let existing = fs::read_to_string(&path).map_err(|error| {
@@ -8220,9 +8219,6 @@ fn validate_setup_shared_policy_targets(
             validate_comp_report_policy(&existing)?;
         }
         return Ok(());
-    }
-    if postgres_choice != "yes" {
-        return Err("Choose whether shared SQLite coordinates with WebGUI PostgreSQL.".to_string());
     }
     let validated = validated.ok_or_else(|| {
         "Test and validate the WebGUI PostgreSQL connection before saving Setup.".to_string()
@@ -8271,16 +8267,14 @@ fn validate_setup_shared_policy_targets(
 
 fn install_setup_shared_policy(
     config: &Config,
-    postgres_choice: &str,
     validated: Option<&ValidatedSetupPostgres>,
 ) -> Result<Option<i64>, String> {
-    validate_setup_shared_policy_targets(config, postgres_choice, validated)?;
-    if !config.scan.sqlite_shared {
-        return Ok(None);
-    }
-    if postgres_choice == "no" {
-        splined_core::media_state_policy::ensure_policy(config)?;
-        splined_core::comp_report_policy::ensure_policy(config)?;
+    validate_setup_shared_policy_targets(config, validated)?;
+    if !config.scan.postgres_coordination {
+        if config.scan.sqlite_shared {
+            splined_core::media_state_policy::ensure_policy(config)?;
+            splined_core::comp_report_policy::ensure_policy(config)?;
+        }
         return Ok(None);
     }
     let validated = validated.expect("validated PostgreSQL setup checked by preflight");
@@ -8346,7 +8340,7 @@ fn save_comp_report_policy_with_authority(
 ) -> Result<Option<i64>, String> {
     validate_comp_report_policy(text)?;
     let policy_path = comp_report_policy_path(config)?;
-    let database_url = if config.scan.sqlite_shared && config.scan.postgres_coordination {
+    let database_url = if config.scan.postgres_coordination {
         load_album_coordination_database_url(config)?
     } else {
         None
@@ -16784,12 +16778,8 @@ fn bind_service_callbacks(
                         "Configuration Path must be an absolute directory.".to_string(),
                     );
                 }
-                let postgres_choice = ui.get_setup_postgres_choice().trim().to_string();
-                config.scan.postgres_coordination =
-                    config.scan.sqlite_shared && postgres_choice == "yes";
-                let validated_postgres = if config.scan.sqlite_shared
-                    && postgres_choice == "yes"
-                {
+                config.scan.postgres_coordination = ui.get_setup_postgres_choice() == "yes";
+                let validated_postgres = if config.scan.postgres_coordination {
                     if !ui.get_setup_postgres_validated() {
                         return Err(
                             "Test and validate the PostgreSQL connection before saving Setup."
@@ -16831,26 +16821,14 @@ fn bind_service_callbacks(
                 } else {
                     None
                 };
-                if config.scan.sqlite_shared
-                    && !matches!(postgres_choice.as_str(), "yes" | "no")
-                {
-                    return Err(
-                        "Choose Yes or No for WebGUI PostgreSQL coordination.".to_string(),
-                    );
-                }
-                validate_setup_shared_policy_targets(
-                    &config,
-                    &postgres_choice,
-                    validated_postgres.as_ref(),
-                )?;
+                validate_setup_shared_policy_targets(&config, validated_postgres.as_ref())?;
                 Ok::<_, String>((
                     config,
                     configuration_directory,
-                    postgres_choice,
                     validated_postgres,
                 ))
             })();
-            let (mut config, configuration_directory, postgres_choice, validated_postgres) =
+            let (mut config, configuration_directory, validated_postgres) =
                 match prepared {
                 Ok(prepared) => prepared,
                 Err(error) => {
@@ -16906,7 +16884,6 @@ fn bind_service_callbacks(
                     splined_core::config::remove_first_run_draft_at_root(&setup_root)?;
                     let policy_revision = install_setup_shared_policy(
                         &config,
-                        &postgres_choice,
                         validated_postgres.as_ref(),
                     )?;
                     let progress_weak = weak.clone();
@@ -18046,6 +18023,8 @@ fn apply_saved_non_library_settings(
     config: Config,
     section: &str,
 ) -> Result<(), String> {
+    let coordination_changed =
+        app.config.scan.postgres_coordination != config.scan.postgres_coordination;
     let preview_adjustments = (section == "Enhancement"
         && ui.get_settings_preview_preset_index() != 0)
         .then(|| app.adjustments.clone());
@@ -18075,6 +18054,10 @@ fn apply_saved_non_library_settings(
         app.enhancement_settings_dirty = false;
     }
     app.push_log(format!("Validated and saved {section} settings."));
+    if coordination_changed {
+        app.service_status =
+            "PostgreSQL coordination setting saved. Restart SPLINED to apply it.".to_string();
+    }
     Ok(())
 }
 
@@ -18155,12 +18138,7 @@ fn set_settings_ui(ui: &AppWindow, config: &Config) {
     ui.set_settings_postgres_coordination(config.scan.postgres_coordination);
     ui.set_settings_windows_client_lock(config.scan.windows_client_lock);
     if ui.get_setup_required() {
-        if !config.scan.sqlite_shared {
-            ui.set_setup_postgres_choice(SharedString::default());
-            ui.set_setup_postgres_status(
-                "Standalone SQLite uses the built-in state policy.".into(),
-            );
-        } else if config.scan.postgres_coordination {
+        if config.scan.postgres_coordination {
             ui.set_setup_postgres_choice("yes".into());
             ui.set_setup_postgres_validated(false);
             ui.set_setup_postgres_status(
@@ -18176,7 +18154,7 @@ fn set_settings_ui(ui: &AppWindow, config: &Config) {
             ui.set_setup_postgres_choice("no".into());
             ui.set_setup_postgres_validated(false);
             ui.set_setup_postgres_status(
-                "Shared SQLite only will use its editable local media-state and COMP report policies.".into(),
+                "PostgreSQL coordination is optional for both local and shared SQLite.".into(),
             );
         }
     }
@@ -18345,8 +18323,7 @@ fn apply_settings_ui(ui: &AppWindow, config: &mut Config) -> Result<(), String> 
     config.scan.scan_mode_timeout.0 =
         override_delay_hours(ui.get_settings_scan_timeout().as_str())?;
     config.scan.sqlite_shared = ui.get_settings_sqlite_shared();
-    config.scan.postgres_coordination =
-        config.scan.sqlite_shared && ui.get_settings_postgres_coordination();
+    config.scan.postgres_coordination = ui.get_settings_postgres_coordination();
     config.scan.windows_client_lock = ui.get_settings_windows_client_lock();
     if is_remote_path(&resolved_setup_directory(&config.scan.cache_dir))
         && !config.scan.sqlite_shared
@@ -18536,8 +18513,7 @@ fn apply_settings_section_ui(
             config.scan.scan_mode_timeout.0 =
                 override_delay_hours(ui.get_settings_scan_timeout().as_str())?;
             config.scan.sqlite_shared = ui.get_settings_sqlite_shared();
-            config.scan.postgres_coordination =
-                config.scan.sqlite_shared && ui.get_settings_postgres_coordination();
+            config.scan.postgres_coordination = ui.get_settings_postgres_coordination();
             config.scan.windows_client_lock = ui.get_settings_windows_client_lock();
             config.history.enabled = ui.get_settings_history_enabled();
             config.history.retention_days =
@@ -31990,12 +31966,25 @@ mod tests {
     }
 
     #[test]
-    fn database_monitor_uses_postgres_for_coordinated_shared_sqlite() {
+    fn database_monitor_uses_postgres_for_either_coordinated_sqlite_mode() {
         let mut config = Config::default();
-        config.scan.sqlite_shared = true;
         config.scan.postgres_coordination = true;
 
         assert_eq!(super::database_monitor_backend(&config), "postgres");
+        config.scan.sqlite_shared = true;
+        assert_eq!(super::database_monitor_backend(&config), "postgres");
+    }
+
+    #[test]
+    fn setup_requires_postgres_validation_with_local_sqlite() {
+        let mut config = Config::default();
+        assert!(super::validate_setup_shared_policy_targets(&config, None).is_ok());
+        config.scan.postgres_coordination = true;
+        assert!(
+            super::validate_setup_shared_policy_targets(&config, None)
+                .unwrap_err()
+                .contains("Test and validate")
+        );
     }
 
     #[test]
