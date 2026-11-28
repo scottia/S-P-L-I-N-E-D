@@ -1006,9 +1006,6 @@ fn save_config_in_directory_at(
 /// schema; this adds the operational path contract required before the GUI may
 /// enter its normal workspace.
 pub fn validate_operational_config(config: &Config) -> Result<(), String> {
-    if config.scan.postgres_coordination && !config.scan.sqlite_shared {
-        return Err("WebGUI PostgreSQL coordination requires Shared / Network SQLite.".to_string());
-    }
     for (label, value) in [
         ("Music Library", config.library.music_library.as_str()),
         ("SQLite/database directory", config.scan.cache_dir.as_str()),
@@ -1167,6 +1164,20 @@ mod tests {
     #[test]
     fn config_text_validation_rejects_wrong_schema_before_write() {
         assert!(crate::config::parse_config("config_version = 999").is_err());
+    }
+
+    #[test]
+    fn local_sqlite_accepts_postgres_coordination_in_saved_settings() {
+        let root = TempDir::new().unwrap();
+        let mut config = test_config(root.path());
+        config.scan.postgres_coordination = true;
+        let saved = save_config_at_root(&config, root.path()).unwrap();
+        assert!(!saved.scan.sqlite_shared);
+        assert!(saved.scan.postgres_coordination);
+        validate_operational_config(&saved).unwrap();
+        let reloaded = crate::config::load_config_at_root(root.path()).unwrap();
+        assert!(!reloaded.scan.sqlite_shared);
+        assert!(reloaded.scan.postgres_coordination);
     }
 
     #[test]

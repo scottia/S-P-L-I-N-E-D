@@ -2084,6 +2084,32 @@ impl LibraryState {
         self.artists().len()
     }
 
+    /// Complete V/A OST inventory across every category, independent of the
+    /// currently expanded category and active text/status filters.
+    pub fn va_ost_album_inventory_count(&self) -> usize {
+        self.albums
+            .iter()
+            .filter(|album| {
+                matches!(
+                    self.album_library_group(album),
+                    AlbumLibraryGroup::VariousArtists
+                        | AlbumLibraryGroup::Soundtracks
+                        | AlbumLibraryGroup::MiscCurated
+                        | AlbumLibraryGroup::MiscUndefined
+                )
+            })
+            .count()
+    }
+
+    /// Complete Curated/Fallback Album inventory, independent of the active
+    /// track status and text filters.
+    pub fn fallback_album_inventory_count(&self) -> usize {
+        self.albums
+            .iter()
+            .filter(|album| self.is_curated_fallback(album))
+            .count()
+    }
+
     /// Albums presented inside Artist Overview. `appearance_keys` adds albums
     /// in which Navidrome tags the focused artist on a song even when the
     /// album artist is Various Artists. A path-defined Curated/Fallback album
@@ -2194,7 +2220,8 @@ impl LibraryState {
     pub fn fallback_album_rows(&self) -> Vec<LibraryRow> {
         let artists = self.artists();
         let mut seen = BTreeSet::new();
-        self.albums
+        let mut rows = self
+            .albums
             .iter()
             .enumerate()
             .filter(|(index, album)| {
@@ -2216,9 +2243,21 @@ impl LibraryState {
                     .focused_album_key
                     .as_ref()
                     .is_some_and(|focused| focused.eq_ignore_ascii_case(&album.snapshot.album_key));
-                self.album_row(album, "fallback-album", 0, expanded)
+                let mut row = self.album_row(album, "fallback-album", 0, expanded);
+                // Fallback is Album-owned presentation. Do not leak the first
+                // track performer into the Album file list; match WebGUI's
+                // canonical synthetic Album owner instead.
+                row.secondary = "Various Artists".to_string();
+                row
             })
-            .collect()
+            .collect::<Vec<_>>();
+        rows.sort_by(|left, right| {
+            left.primary
+                .to_ascii_lowercase()
+                .cmp(&right.primary.to_ascii_lowercase())
+                .then_with(|| left.key.to_ascii_lowercase().cmp(&right.key.to_ascii_lowercase()))
+        });
+        rows
     }
 
     pub fn set_view(&mut self, view: LibraryView) {
@@ -6802,6 +6841,46 @@ mod tests {
         let fallback = state.fallback_album_rows();
         assert_eq!(fallback.len(), 1);
         assert_eq!(fallback[0].key, "fallback");
+    }
+
+    #[test]
+    fn fallback_rows_are_album_sorted_and_use_the_canonical_owner_label() {
+        let mut zulu = album("zulu", "First Track Performer", "Zulu Album", "unprocessed");
+        zulu.path = r"C:\Music\Various Artists\Billboard\Zulu Album".into();
+        let mut alpha = album("alpha", "Another Performer", "alpha album", "unprocessed");
+        alpha.path = r"C:\Music\Various Artists\Billboard\alpha album".into();
+        let mut various = album("various", "Various Artists", "V/A Release", "unprocessed");
+        various.path = r"C:\Music\Various Artists\V-A Release".into();
+        various.album_mbid = "release-va".into();
+        let mut soundtrack = album("soundtrack", "Various Artists", "Film", "unprocessed");
+        soundtrack.path = r"C:\Music\Soundtracks\Film".into();
+        soundtrack.album_mbid = "release-ost".into();
+        let mut state = LibraryState::from_snapshot(MediaSnapshot {
+            artist_catalog: None,
+            schema_version: crate::media_database::SCHEMA_VERSION,
+            database_path: "splined.db".to_string(),
+            canonical_root: "/music".to_string(),
+            local_root: r"C:\Music".to_string(),
+            albums: vec![zulu, alpha, various, soundtrack],
+        })
+        .unwrap();
+        let mut config = Config::default();
+        config.library.music_library = r"C:\Music".into();
+        config.library.various_artist_path = r"C:\Music\Various Artists".into();
+        config.library.soundtracks_path = r"C:\Music\Soundtracks".into();
+        config.library.curated_compilations_path =
+            r"C:\Music\Various Artists\Billboard".into();
+        state.configure_library_categories(&config);
+
+        let rows = state.fallback_album_rows();
+        assert_eq!(
+            rows.iter().map(|row| row.primary.as_str()).collect::<Vec<_>>(),
+            vec!["alpha album", "Zulu Album"]
+        );
+        assert!(rows.iter().all(|row| row.secondary == "Various Artists"));
+        assert_eq!(state.artist_inventory_count(), 0);
+        assert_eq!(state.va_ost_album_inventory_count(), 2);
+        assert_eq!(state.fallback_album_inventory_count(), 2);
     }
 
     #[test]

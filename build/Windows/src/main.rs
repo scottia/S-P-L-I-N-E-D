@@ -66,13 +66,13 @@ use splined_core::media_database::{
 };
 use splined_core::media_state_policy::{
     PostgresPolicySnapshot as MediaStatePostgresPolicySnapshot,
-    activate_policy as activate_media_state_policy,
     activate_policy_revision as activate_media_state_policy_revision,
     active_revision as active_media_state_policy_revision, classify_album, classify_artist,
     database_monitor_poll_seconds, database_monitor_presentation, fetch_postgres_policy,
     named_color, policy as media_state_policy, policy_json as media_state_policy_json,
-    policy_path as media_state_policy_path, save_policy as save_media_state_policy,
-    save_postgres_policy, status_color as media_status_color,
+    policy_path as media_state_policy_path,
+    postgres_authority_configured as media_state_postgres_configured,
+    save_policy as save_media_state_policy, save_postgres_policy, status_color as media_status_color,
     validate_policy as validate_media_state_policy,
 };
 use splined_core::musicbrainz::{ArtistLookup, ArtistSearchHit, MusicBrainzClient};
@@ -111,7 +111,7 @@ use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 slint::include_modules!();
@@ -167,7 +167,7 @@ fn album_category_key(selection: &str) -> Result<&'static str, String> {
 }
 
 fn navidrome_thumbnail_cache_root(config: &Config) -> PathBuf {
-    Path::new(&config.scan.cache_dir).join("navidrome-thumbnails")
+    Path::new(&config.scan.temporary_cache_dir).join("navidrome-thumbnails")
 }
 
 fn defer_thumbnail_requests_while_indexing(requests: &[(String, String)]) -> bool {
@@ -445,7 +445,11 @@ const PREVIEW_CACHE_DIMENSION: u32 = 1600;
 // former 6/4 split guaranteed eviction/redecode churn during ordinary clicks.
 const LARGE_RAW_IMAGE_CACHE_LIMIT: usize = 10;
 const LARGE_RENDERED_IMAGE_CACHE_LIMIT: usize = 10;
-const MEDIUM_IMAGE_CACHE_LIMIT: usize = 16;
+// Artist Overview can legitimately project more than 100 Album cards.  A
+// 16-image medium cache caused every asynchronous metadata/thumbnail publish
+// to evict and then re-decode the same visible card strip, eventually making
+// ordinary clicks look frozen on a network library.
+const MEDIUM_IMAGE_CACHE_LIMIT: usize = 128;
 const SMALL_IMAGE_CACHE_LIMIT: usize = 256;
 const COMPILATION_GATHERING_STATUS: &str =
     "Gathering compilation albums and artists track information…";
@@ -1471,6 +1475,36 @@ fn publish_thumbnail_paths(
     if changed {
         refresh_weak(weak, state);
     }
+}
+
+/// Publish lazy file-list thumbnails without rebuilding the entire artwork
+/// workspace.  A full `sync_ui` also projects every Artist Overview album,
+/// candidate and preview image; doing that once per thumbnail batch was the
+/// main source of multi-second input stalls after the app had been open for a
+/// few minutes.
+fn publish_library_thumbnail_paths(
+    state: &Arc<Mutex<ApplicationState>>,
+    weak: &slint::Weak<AppWindow>,
+    artist_paths: ThumbnailPaths,
+    album_paths: ThumbnailPaths,
+    artist_ids: ArtistNavidromeIds,
+) {
+    let changed = state
+        .lock()
+        .ok()
+        .is_some_and(|mut app| {
+            apply_thumbnail_path_updates(&mut app, artist_paths, album_paths, artist_ids)
+        });
+    if !changed {
+        return;
+    }
+    let Some(ui) = weak.upgrade() else {
+        return;
+    };
+    let Ok(app) = state.lock() else {
+        return;
+    };
+    sync_media_filter_ui(&ui, &app);
 }
 
 fn logical_dimension(value: f32, minimum: u32) -> u32 {
@@ -2842,13 +2876,12 @@ fn refresh_visible_navidrome_thumbnails(
                     let local_state = Arc::clone(&state);
                     let local_weak = weak.clone();
                     let _ = slint::invoke_from_event_loop(move || {
-                        publish_thumbnail_paths(
+                        publish_library_thumbnail_paths(
                             &local_state,
                             &local_weak,
                             local_artists,
                             local_albums,
                             Vec::new(),
-                            None,
                         );
                     });
                 }
@@ -2963,7 +2996,13 @@ fn refresh_visible_navidrome_thumbnails(
             })();
         let _ = slint::invoke_from_event_loop(move || match result {
             Ok((artist_paths, album_paths, artist_ids)) => {
-                publish_thumbnail_paths(&state, &weak, artist_paths, album_paths, artist_ids, None)
+                publish_library_thumbnail_paths(
+                    &state,
+                    &weak,
+                    artist_paths,
+                    album_paths,
+                    artist_ids,
+                )
             }
             Err(error) => {
                 if let Ok(mut app) = state.lock() {
@@ -3290,12 +3329,73 @@ fn local_album_art_file(album: &ThumbnailAlbumTarget, configured_stem: &str) -> 
     newest
 }
 
+/// Resolve read-only Artist Art locations from both the managed package and
+/// the physical Artist folder.  Writing remains restricted to the stricter
+/// Release-ID targets above, but existing `artist.*`/`banner.*` files must be
+/// visible even when an otherwise ordinary Artist Album has no embedded
+/// MusicBrainz Release ID.  The parent-folder identity check keeps COMP and
+/// Various Artists folders out of this physical fallback.
+fn artist_art_read_targets_for_albums<'a>(
+    albums: impl IntoIterator<Item = (&'a str, &'a str, &'a str, &'a str)>,
+    artist: &str,
+    cache_dir: &Path,
+) -> Vec<ArtistArtTarget> {
+    let albums = albums.into_iter().collect::<Vec<_>>();
+    let mut targets = artist_art_targets_for_albums_with_projection(
+        albums.iter().copied(),
+        artist,
+        cache_dir,
+        true,
+    );
+    targets.retain(|target| target.managed);
+
+    let artist_identity = artist_projection_identity(artist);
+    let mut physical = HashMap::<String, (PathBuf, usize)>::new();
+    for (album_artist, album_path, _, _) in albums {
+        if artist_projection_identity(album_artist) != artist_identity {
+            continue;
+        }
+        let Some(parent) = Path::new(album_path).parent() else {
+            continue;
+        };
+        let parent_matches = parent
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| artist_projection_identity(name) == artist_identity);
+        if !parent_matches {
+            continue;
+        }
+        let key = parent.to_string_lossy().to_ascii_lowercase();
+        let entry = physical
+            .entry(key)
+            .or_insert_with(|| (parent.to_path_buf(), 0));
+        entry.1 += 1;
+    }
+    targets.extend(
+        physical
+            .into_values()
+            .map(|(directory, album_count)| ArtistArtTarget {
+                directory,
+                stem: "artist".to_string(),
+                album_count,
+                managed: false,
+            }),
+    );
+    targets.sort_by(|left, right| {
+        left.managed
+            .cmp(&right.managed)
+            .then_with(|| right.album_count.cmp(&left.album_count))
+            .then_with(|| left.directory.cmp(&right.directory))
+    });
+    targets
+}
+
 fn local_artist_art_for_albums(
     albums: &[ThumbnailAlbumTarget],
     artist: &str,
     cache_dir: &Path,
 ) -> Option<PathBuf> {
-    artist_art_targets_for_albums_with_projection(
+    artist_art_read_targets_for_albums(
         albums.iter().map(|album| {
             (
                 album.artist.as_str(),
@@ -3306,7 +3406,6 @@ fn local_artist_art_for_albums(
         }),
         artist,
         cache_dir,
-        true,
     )
     .into_iter()
     .find_map(|target| local_artist_art_at_target(&target))
@@ -3335,7 +3434,7 @@ fn local_artist_banner_for_albums(
     artist: &str,
     directory: &Path,
 ) -> Option<PathBuf> {
-    artist_banner_targets_for_albums(
+    artist_art_read_targets_for_albums(
         albums.iter().map(|album| {
             (
                 album.artist.as_str(),
@@ -3348,7 +3447,14 @@ fn local_artist_banner_for_albums(
         directory,
     )
     .into_iter()
-    .find_map(|(directory, stem)| newest_local_artwork_file(&directory, &[&stem], true))
+    .find_map(|target| {
+        let stem = if target.managed {
+            format!("banner-{}", target.stem.trim_start_matches("artist-"))
+        } else {
+            "banner".to_string()
+        };
+        newest_local_artwork_file(&target.directory, &[&stem], true)
+    })
 }
 
 fn saved_artist_package_for_albums(
@@ -3383,7 +3489,7 @@ fn local_artist_art_candidates<'a>(
     cache_dir: &Path,
 ) -> Vec<(String, String)> {
     let mut result = Vec::new();
-    for target in artist_art_targets_for_albums_with_projection(albums, artist, cache_dir, true) {
+    for target in artist_art_read_targets_for_albums(albums, artist, cache_dir) {
         let banner_stem = if target.managed {
             format!("banner-{}", target.stem.trim_start_matches("artist-"))
         } else {
@@ -3802,27 +3908,30 @@ fn compose_artist_banner_with_position(
     horizontal: f32,
     vertical: f32,
 ) -> image::RgbaImage {
-    const WIDTH: u32 = 1400;
-    const HEIGHT: u32 = 600;
-    // Blur a quarter-size backing plate before enlarging it. Blurring the
-    // full 1400 × 600 image twice made Artist Overview noticeably slow.
-    let mut banner = decoded
-        .resize_to_fill(WIDTH / 4, HEIGHT / 4, image::imageops::FilterType::Triangle)
-        .blur(5.0)
-        .resize_exact(WIDTH, HEIGHT, image::imageops::FilterType::Triangle)
-        .to_rgba8();
+    // Match WebGUI imaging.framed(): a neutral banner contains the complete
+    // source in a transparent 1400:600-ratio canvas. Cropping occurs only
+    // after the operator explicitly zooms above 1, and pan is expressed as a
+    // percentage of the output frame.
+    let width = decoded.width().min(4096).max(1);
+    let height = ((width as f32 * 600.0 / 1400.0).round() as u32).max(1);
     let zoom = zoom.clamp(0.5, 8.0);
+    let scale = (width as f32 / decoded.width().max(1) as f32)
+        .min(height as f32 / decoded.height().max(1) as f32)
+        * zoom;
+    let rendered_width = ((decoded.width() as f32 * scale).round() as u32).max(1);
+    let rendered_height = ((decoded.height() as f32 * scale).round() as u32).max(1);
     let foreground = decoded
-        .resize(
-            ((WIDTH as f32 * zoom).round() as u32).max(1),
-            ((HEIGHT as f32 * zoom).round() as u32).max(1),
+        .resize_exact(
+            rendered_width,
+            rendered_height,
             image::imageops::FilterType::Lanczos3,
         )
         .to_rgba8();
-    let x = (WIDTH as i64 - foreground.width() as i64) / 2
-        + (horizontal.clamp(-0.4, 0.4) * WIDTH as f32).round() as i64;
-    let y = (HEIGHT as i64 - foreground.height() as i64) / 2
-        + (vertical.clamp(-0.4, 0.4) * HEIGHT as f32).round() as i64;
+    let mut banner = image::RgbaImage::new(width, height);
+    let x = (width as i64 - foreground.width() as i64) / 2
+        + (horizontal.clamp(-1.0, 1.0) * width as f32).round() as i64;
+    let y = (height as i64 - foreground.height() as i64) / 2
+        + (vertical.clamp(-1.0, 1.0) * height as f32).round() as i64;
     image::imageops::overlay(&mut banner, &foreground, x, y);
     banner
 }
@@ -3846,26 +3955,16 @@ fn enhanced_artist_banner_with_position(
 ) -> Result<image::DynamicImage, String> {
     let decoded = image::load_from_memory(source)
         .map_err(|error| format!("Unable to decode banner source: {error}"))?;
-    Ok(apply_selected_image_adjustments(
-        image::DynamicImage::ImageRgba8(compose_artist_banner_with_position(
-            &decoded, zoom, horizontal, vertical,
-        )),
-        output,
+    let adjusted = apply_selected_image_adjustments(decoded, output);
+    Ok(image::DynamicImage::ImageRgba8(
+        compose_artist_banner_with_position(&adjusted, zoom, horizontal, vertical),
     ))
 }
 
-fn auto_artist_banner_zoom(path: &Path) -> f32 {
-    let Ok((width, height)) = image::image_dimensions(path) else {
-        return 1.0;
-    };
-    if width == 0 || height == 0 {
-        return 1.0;
-    }
-    let image_ratio = width as f32 / height as f32;
-    let banner_ratio = 1400.0 / 600.0;
-    (image_ratio / banner_ratio)
-        .max(banner_ratio / image_ratio)
-        .clamp(1.0, 8.0)
+fn auto_artist_banner_zoom(_path: &Path) -> f32 {
+    // WebGUI begins every newly selected banner at neutral fitment so the
+    // complete source remains visible. Any crop must be an explicit zoom.
+    1.0
 }
 
 fn formatted_storage_size(bytes: u64) -> String {
@@ -4618,6 +4717,68 @@ fn run_database_upgrade_preparedness() -> Result<bool, slint::PlatformError> {
     Ok(completed.load(Ordering::SeqCst))
 }
 
+fn load_application_state_with_startup_feedback()
+-> Result<(ApplicationState, bool, Option<String>, StartupWindow), slint::PlatformError> {
+    // The shared SQLite snapshot can legitimately take several seconds over a
+    // network path.  Put a rendered, branded window on screen before that I/O
+    // begins so Windows never presents an unresponsive white application
+    // frame while the catalog is loading.
+    let window = StartupWindow::new()?;
+    let (progress_sender, progress_receiver) = mpsc::channel::<&'static str>();
+    let progress_started = Instant::now();
+    let progress_step = Rc::new(Cell::new(0u32));
+    let progress_timer = Timer::default();
+    {
+        let weak = window.as_weak();
+        let progress_step = Rc::clone(&progress_step);
+        progress_timer.start(TimerMode::Repeated, Duration::from_millis(150), move || {
+            let Some(window) = weak.upgrade() else {
+                return;
+            };
+            while let Ok(stage) = progress_receiver.try_recv() {
+                window.set_startup_stage(stage.into());
+            }
+            let step = (progress_step.get() + 1) % 40;
+            progress_step.set(step);
+            let phase = if step <= 20 {
+                step as f32 / 20.0
+            } else {
+                (40 - step) as f32 / 20.0
+            };
+            window.set_startup_progress_phase(phase);
+            window.set_startup_elapsed(
+                format!("Elapsed: {} seconds", progress_started.elapsed().as_secs()).into(),
+            );
+        });
+    }
+    {
+        let weak = window.as_weak();
+        window.window().on_close_requested(move || {
+            if weak.upgrade().is_some() {
+                slint::CloseRequestResponse::KeepWindowShown
+            } else {
+                slint::CloseRequestResponse::HideWindow
+            }
+        });
+    }
+    let weak = window.as_weak();
+    let worker = std::thread::spawn(move || {
+        let state = load_application_state(&progress_sender);
+        let _ = progress_sender.send("Catalog loaded. Preparing the artwork workspace…");
+        let _ = slint::invoke_from_event_loop(move || {
+            let _ = weak.upgrade();
+            let _ = slint::quit_event_loop();
+        });
+        state
+    });
+    window.run()?;
+    progress_timer.stop();
+    let (state, setup_required, startup_error) = worker
+        .join()
+        .expect("startup catalog loader must return an application state");
+    Ok((state, setup_required, startup_error, window))
+}
+
 fn main() -> Result<(), slint::PlatformError> {
     record_startup_timing("startup-process begin".to_string());
     // Local and bounded: fail before any database, provider, or catalog work
@@ -4673,7 +4834,13 @@ fn main() -> Result<(), slint::PlatformError> {
     let association_warning =
         splined_core::file_association::register_portable_backup_association().err();
     let state_load_started = Instant::now();
-    let (mut state, mut setup_required, mut startup_error) = load_application_state();
+    let (mut state, mut setup_required, mut startup_error, startup_window) =
+        load_application_state_with_startup_feedback()?;
+    startup_window.set_startup_stage("Preparing the artwork workspace…".into());
+    startup_window.set_startup_elapsed(
+        format!("Elapsed: {} seconds", state_load_started.elapsed().as_secs()).into(),
+    );
+    startup_window.show()?;
     if let Some(config) = staged_archive_config {
         let reason = automatic_settings_import
             .as_ref()
@@ -4966,11 +5133,7 @@ fn main() -> Result<(), slint::PlatformError> {
             None
         }
     };
-    if embed_queue_stop.is_some() {
-        sync_ui(&ui, &state);
-    }
     let album_coordination_stop = start_album_coordination_worker(&ui, Arc::clone(&state));
-    sync_ui(&ui, &state);
     if !setup_required {
         let check_config = state.lock().ok().map(|app| app.config.clone());
         if let Some(check_config) = check_config {
@@ -5750,6 +5913,10 @@ fn main() -> Result<(), slint::PlatformError> {
         schedule_shared_policy_refresh(ui.as_weak(), Arc::clone(&state));
     }
 
+    // Present the completed workspace before dismissing startup feedback so
+    // Windows never exposes an unpainted handoff frame.
+    ui.show()?;
+    let _ = startup_window.hide();
     record_startup_timing("startup-event-loop begin".to_string());
     let result = ui.run();
     record_startup_timing("startup-event-loop end".to_string());
@@ -7928,12 +8095,12 @@ fn database_monitor_for_config(
 }
 
 fn database_monitor_backend(config: &Config) -> &'static str {
-    if !config.scan.sqlite_shared {
-        "current"
-    } else if config.scan.postgres_coordination {
+    if config.scan.postgres_coordination {
         "postgres"
-    } else {
+    } else if config.scan.sqlite_shared {
         "sqlite"
+    } else {
+        "current"
     }
 }
 
@@ -8025,13 +8192,12 @@ fn refresh_database_monitor_async(
 
 fn validate_setup_shared_policy_targets(
     config: &Config,
-    postgres_choice: &str,
     validated: Option<&ValidatedSetupPostgres>,
 ) -> Result<(), String> {
-    if !config.scan.sqlite_shared {
-        return Ok(());
-    }
-    if postgres_choice == "no" {
+    if !config.scan.postgres_coordination {
+        if !config.scan.sqlite_shared {
+            return Ok(());
+        }
         let path = media_state_policy_path(config)?;
         if path.is_file() {
             let existing = fs::read_to_string(&path).map_err(|error| {
@@ -8054,36 +8220,11 @@ fn validate_setup_shared_policy_targets(
         }
         return Ok(());
     }
-    if postgres_choice != "yes" {
-        return Err("Choose whether shared SQLite coordinates with WebGUI PostgreSQL.".to_string());
-    }
     let validated = validated.ok_or_else(|| {
         "Test and validate the WebGUI PostgreSQL connection before saving Setup.".to_string()
     })?;
     validate_media_state_policy(&validated.snapshot.media_state.policy_json)?;
     validate_comp_report_policy(&validated.snapshot.comp_report.policy_json)?;
-
-    let policy_path = media_state_policy_path(config)?;
-    if policy_path.is_file() {
-        let existing = fs::read_to_string(&policy_path).map_err(|error| {
-            format!(
-                "Unable to read existing media-state policy {}: {error}",
-                policy_path.display()
-            )
-        })?;
-        validate_media_state_policy(&existing)?;
-        let existing_value = serde_json::from_str::<serde_json::Value>(&existing)
-            .map_err(|error| format!("Existing media-state policy is invalid: {error}"))?;
-        let validated_value =
-            serde_json::from_str::<serde_json::Value>(&validated.snapshot.media_state.policy_json)
-                .map_err(|error| format!("PostgreSQL media-state policy is invalid: {error}"))?;
-        if existing_value != validated_value {
-            return Err(format!(
-                "Setup will not overwrite the different existing media-state policy {}. Choose another Provider Credential Directory or reconcile it in Advanced Settings.",
-                policy_path.display()
-            ));
-        }
-    }
 
     let comp_path = comp_report_policy_path(config)?;
     if comp_path.is_file() {
@@ -8126,16 +8267,14 @@ fn validate_setup_shared_policy_targets(
 
 fn install_setup_shared_policy(
     config: &Config,
-    postgres_choice: &str,
     validated: Option<&ValidatedSetupPostgres>,
 ) -> Result<Option<i64>, String> {
-    validate_setup_shared_policy_targets(config, postgres_choice, validated)?;
-    if !config.scan.sqlite_shared {
-        return Ok(None);
-    }
-    if postgres_choice == "no" {
-        splined_core::media_state_policy::ensure_policy(config)?;
-        splined_core::comp_report_policy::ensure_policy(config)?;
+    validate_setup_shared_policy_targets(config, validated)?;
+    if !config.scan.postgres_coordination {
+        if config.scan.sqlite_shared {
+            splined_core::media_state_policy::ensure_policy(config)?;
+            splined_core::comp_report_policy::ensure_policy(config)?;
+        }
         return Ok(None);
     }
     let validated = validated.expect("validated PostgreSQL setup checked by preflight");
@@ -8143,12 +8282,10 @@ fn install_setup_shared_policy(
     if !coordination_path.is_file() {
         save_editor(config, &validated.editor)?;
     }
-    let policy_path = media_state_policy_path(config)?;
-    if policy_path.is_file() {
-        activate_media_state_policy(&validated.snapshot.media_state.policy_json)?;
-    } else {
-        save_media_state_policy(&policy_path, &validated.snapshot.media_state.policy_json)?;
-    }
+    activate_media_state_policy_revision(
+        &validated.snapshot.media_state.policy_json,
+        validated.snapshot.media_state.revision,
+    )?;
     let comp_path = comp_report_policy_path(config)?;
     if comp_path.is_file() {
         activate_comp_report_policy(
@@ -8170,16 +8307,15 @@ fn save_media_state_policy_with_authority(
     text: &str,
 ) -> Result<Option<i64>, String> {
     validate_media_state_policy(text)?;
-    let policy_path = media_state_policy_path(config)?;
-    let database_url = if config.scan.sqlite_shared && config.scan.postgres_coordination {
-        load_album_coordination_database_url(config)?
-    } else {
-        None
-    };
-    let Some(database_url) = database_url else {
+    if !media_state_postgres_configured(config) {
+        let policy_path = media_state_policy_path(config)?;
         save_media_state_policy(&policy_path, text)?;
         return Ok(None);
-    };
+    }
+    let database_url = load_album_coordination_database_url(config)?.ok_or_else(|| {
+        "PostgreSQL media-state authority is configured but its authorization is unavailable."
+            .to_string()
+    })?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -8194,7 +8330,7 @@ fn save_media_state_policy_with_authority(
         .await
         .map_err(|_| "PostgreSQL policy save timed out after 15 seconds.".to_string())?
     })?;
-    save_media_state_policy(&policy_path, &snapshot.policy_json)?;
+    activate_media_state_policy_revision(&snapshot.policy_json, snapshot.revision)?;
     Ok(Some(snapshot.revision))
 }
 
@@ -8204,7 +8340,7 @@ fn save_comp_report_policy_with_authority(
 ) -> Result<Option<i64>, String> {
     validate_comp_report_policy(text)?;
     let policy_path = comp_report_policy_path(config)?;
-    let database_url = if config.scan.sqlite_shared && config.scan.postgres_coordination {
+    let database_url = if config.scan.postgres_coordination {
         load_album_coordination_database_url(config)?
     } else {
         None
@@ -8232,7 +8368,7 @@ fn save_comp_report_policy_with_authority(
 }
 
 fn fetch_shared_policy_snapshots(config: &Config) -> Result<Option<SharedPolicySnapshots>, String> {
-    if !config.scan.sqlite_shared || !config.scan.postgres_coordination {
+    if !media_state_postgres_configured(config) {
         return Ok(None);
     }
     let Some(database_url) = load_album_coordination_database_url(config)? else {
@@ -8266,8 +8402,7 @@ fn schedule_shared_policy_refresh(
     state: Arc<Mutex<ApplicationState>>,
 ) {
     let config = state.lock().ok().and_then(|app| {
-        (app.config.scan.sqlite_shared && app.config.scan.postgres_coordination)
-            .then(|| app.config.clone())
+        media_state_postgres_configured(&app.config).then(|| app.config.clone())
     });
     let Some(config) = config else {
         return;
@@ -8279,7 +8414,7 @@ fn schedule_shared_policy_refresh(
             Err(error) => {
                 if let Ok(mut app) = state.lock() {
                     app.push_log(format!(
-                        "WARNING: PostgreSQL shared-policy check failed; continuing with validated local mirrors: {error}"
+                        "WARNING: PostgreSQL shared-policy authorization failed; the validated local media-state JSON remains active: {error}"
                     ));
                 }
                 let _ = slint::invoke_from_event_loop(move || refresh_weak(&weak, &state));
@@ -8306,13 +8441,12 @@ fn schedule_shared_policy_refresh(
                 return Err("processing resumed before shared policies could activate".to_string());
             }
             let mut activated = Vec::new();
-            if snapshots.media_state.revision > active_media_state_policy_revision() {
-                let path = media_state_policy_path(&app.config)?;
-                save_media_state_policy(&path, &snapshots.media_state.policy_json)?;
-                activate_media_state_policy_revision(
-                    &snapshots.media_state.policy_json,
-                    snapshots.media_state.revision,
-                )?;
+            let prior_media_state_revision = active_media_state_policy_revision();
+            activate_media_state_policy_revision(
+                &snapshots.media_state.policy_json,
+                snapshots.media_state.revision,
+            )?;
+            if snapshots.media_state.revision != prior_media_state_revision {
                 activated.push(format!("media-state r{}", snapshots.media_state.revision));
             }
             if snapshots.comp_report.revision > active_comp_report_policy_revision() {
@@ -8343,7 +8477,7 @@ fn schedule_shared_policy_refresh(
             && let Ok(mut app) = state.lock()
         {
             app.push_log(format!(
-                "WARNING: PostgreSQL shared policies were fetched but not activated; local mirrors remain active: {error}"
+                "WARNING: PostgreSQL shared policies were fetched but not activated; the validated local media-state JSON remains active: {error}"
             ));
         }
         let _ = slint::invoke_from_event_loop(move || refresh_weak(&weak, &state));
@@ -8961,8 +9095,11 @@ fn package_identity_smoke() {
     }
 }
 
-fn load_application_state() -> (ApplicationState, bool, Option<String>) {
+fn load_application_state(
+    progress: &mpsc::Sender<&'static str>,
+) -> (ApplicationState, bool, Option<String>) {
     record_startup_timing("startup-state begin".to_string());
+    let _ = progress.send("Reading and validating Config v5…");
     let config_started = Instant::now();
     let mut first_error = splined_core::portable::initialize_process_roots().err();
     if first_error.is_none()
@@ -9012,14 +9149,18 @@ fn load_application_state() -> (ApplicationState, bool, Option<String>) {
         state.push_log(format!("SETUP REQUIRED: {error}"));
         return (state, true, first_error);
     }
-    record_startup_timing(
-        "startup-shared-policy local_mirrors_active async_check_deferred".to_string(),
-    );
+    record_startup_timing(if media_state_postgres_configured(&config) {
+        "startup-shared-policy local_media_state_json_active postgres_authorization_deferred"
+            .to_string()
+    } else {
+        "startup-shared-policy local_media_state_json_authority".to_string()
+    });
     let configured_cache = Path::new(&config.scan.temporary_cache_dir);
     let portable_cache = splined_core::portable::app_layout()
         .ok()
         .map(|layout| layout.root.join("_cache"));
     record_startup_timing("startup-cache-cleanup begin".to_string());
+    let _ = progress.send("Cleaning disposable local artwork caches…");
     let mut cache_cleanups = vec![
         splined_core::pipeline::cleanup_stale_artwork_on_startup(configured_cache),
         splined_core::pipeline::cleanup_stale_artwork_on_startup(&embedded_preview_cache_dir(
@@ -9034,6 +9175,7 @@ fn load_application_state() -> (ApplicationState, bool, Option<String>) {
     record_startup_timing("startup-cache-cleanup end".to_string());
     let snapshot_started = Instant::now();
     record_startup_timing("startup-database begin".to_string());
+    let _ = progress.send("Loading the indexed SQLite music catalog…");
     let snapshot = match media_snapshot(&config, false) {
         Ok(snapshot) => snapshot,
         Err(error) => {
@@ -9057,6 +9199,7 @@ fn load_application_state() -> (ApplicationState, bool, Option<String>) {
     let diagnostics = startup_diagnostics(&config, &snapshot);
     let model_started = Instant::now();
     record_startup_timing("startup-model begin".to_string());
+    let _ = progress.send("Building Artist and Album presentation models…");
     let mut state = ApplicationState::new(config, snapshot)
         .expect("a parsed Config v5 and database snapshot must initialize application state");
     record_startup_timing(format!(
@@ -14243,7 +14386,7 @@ fn bind_callbacks(
                 && !app.artist_banner_source_path.is_empty()
             {
                 app.artist_banner_zoom = zoom.clamp(0.5, 8.0);
-                app.artist_banner_vertical = vertical.clamp(-0.4, 0.4);
+                app.artist_banner_vertical = vertical.clamp(-1.0, 1.0);
                 app.artist_theme_banner_preview_path.clear();
                 // The adjusted frame is a preview only; clicking Upscale Preview
                 // renders the same framing in memory without writing a banner.
@@ -14278,8 +14421,8 @@ fn bind_callbacks(
                 && !app.artist_banner_source_path.is_empty()
             {
                 app.artist_banner_zoom = zoom.clamp(0.5, 8.0);
-                app.artist_banner_horizontal = horizontal.clamp(-0.4, 0.4);
-                app.artist_banner_vertical = vertical.clamp(-0.4, 0.4);
+                app.artist_banner_horizontal = horizontal.clamp(-1.0, 1.0);
+                app.artist_banner_vertical = vertical.clamp(-1.0, 1.0);
                 app.artist_banner_preview_path = app.artist_banner_source_path.clone();
                 app.artist_theme_banner_preview_path.clear();
                 app.edit_preview_path.clear();
@@ -16133,7 +16276,7 @@ fn bind_service_callbacks(
                         );
                         ui.set_settings_media_state_policy_status(match revision {
                             Some(revision) => format!(
-                                "Validated, saved to PostgreSQL revision {revision}, mirrored locally, and active"
+                                "Validated, saved to PostgreSQL revision {revision}, and active"
                             )
                             .into(),
                             None => "Validated, saved locally, and active".into(),
@@ -16635,12 +16778,8 @@ fn bind_service_callbacks(
                         "Configuration Path must be an absolute directory.".to_string(),
                     );
                 }
-                let postgres_choice = ui.get_setup_postgres_choice().trim().to_string();
-                config.scan.postgres_coordination =
-                    config.scan.sqlite_shared && postgres_choice == "yes";
-                let validated_postgres = if config.scan.sqlite_shared
-                    && postgres_choice == "yes"
-                {
+                config.scan.postgres_coordination = ui.get_setup_postgres_choice() == "yes";
+                let validated_postgres = if config.scan.postgres_coordination {
                     if !ui.get_setup_postgres_validated() {
                         return Err(
                             "Test and validate the PostgreSQL connection before saving Setup."
@@ -16682,26 +16821,14 @@ fn bind_service_callbacks(
                 } else {
                     None
                 };
-                if config.scan.sqlite_shared
-                    && !matches!(postgres_choice.as_str(), "yes" | "no")
-                {
-                    return Err(
-                        "Choose Yes or No for WebGUI PostgreSQL coordination.".to_string(),
-                    );
-                }
-                validate_setup_shared_policy_targets(
-                    &config,
-                    &postgres_choice,
-                    validated_postgres.as_ref(),
-                )?;
+                validate_setup_shared_policy_targets(&config, validated_postgres.as_ref())?;
                 Ok::<_, String>((
                     config,
                     configuration_directory,
-                    postgres_choice,
                     validated_postgres,
                 ))
             })();
-            let (mut config, configuration_directory, postgres_choice, validated_postgres) =
+            let (mut config, configuration_directory, validated_postgres) =
                 match prepared {
                 Ok(prepared) => prepared,
                 Err(error) => {
@@ -16757,7 +16884,6 @@ fn bind_service_callbacks(
                     splined_core::config::remove_first_run_draft_at_root(&setup_root)?;
                     let policy_revision = install_setup_shared_policy(
                         &config,
-                        &postgres_choice,
                         validated_postgres.as_ref(),
                     )?;
                     let progress_weak = weak.clone();
@@ -17897,6 +18023,8 @@ fn apply_saved_non_library_settings(
     config: Config,
     section: &str,
 ) -> Result<(), String> {
+    let coordination_changed =
+        app.config.scan.postgres_coordination != config.scan.postgres_coordination;
     let preview_adjustments = (section == "Enhancement"
         && ui.get_settings_preview_preset_index() != 0)
         .then(|| app.adjustments.clone());
@@ -17926,6 +18054,10 @@ fn apply_saved_non_library_settings(
         app.enhancement_settings_dirty = false;
     }
     app.push_log(format!("Validated and saved {section} settings."));
+    if coordination_changed {
+        app.service_status =
+            "PostgreSQL coordination setting saved. Restart SPLINED to apply it.".to_string();
+    }
     Ok(())
 }
 
@@ -18006,12 +18138,7 @@ fn set_settings_ui(ui: &AppWindow, config: &Config) {
     ui.set_settings_postgres_coordination(config.scan.postgres_coordination);
     ui.set_settings_windows_client_lock(config.scan.windows_client_lock);
     if ui.get_setup_required() {
-        if !config.scan.sqlite_shared {
-            ui.set_setup_postgres_choice(SharedString::default());
-            ui.set_setup_postgres_status(
-                "Standalone SQLite uses the built-in state policy.".into(),
-            );
-        } else if config.scan.postgres_coordination {
+        if config.scan.postgres_coordination {
             ui.set_setup_postgres_choice("yes".into());
             ui.set_setup_postgres_validated(false);
             ui.set_setup_postgres_status(
@@ -18027,7 +18154,7 @@ fn set_settings_ui(ui: &AppWindow, config: &Config) {
             ui.set_setup_postgres_choice("no".into());
             ui.set_setup_postgres_validated(false);
             ui.set_setup_postgres_status(
-                "Shared SQLite only will use its editable local media-state and COMP report policies.".into(),
+                "PostgreSQL coordination is optional for both local and shared SQLite.".into(),
             );
         }
     }
@@ -18196,8 +18323,7 @@ fn apply_settings_ui(ui: &AppWindow, config: &mut Config) -> Result<(), String> 
     config.scan.scan_mode_timeout.0 =
         override_delay_hours(ui.get_settings_scan_timeout().as_str())?;
     config.scan.sqlite_shared = ui.get_settings_sqlite_shared();
-    config.scan.postgres_coordination =
-        config.scan.sqlite_shared && ui.get_settings_postgres_coordination();
+    config.scan.postgres_coordination = ui.get_settings_postgres_coordination();
     config.scan.windows_client_lock = ui.get_settings_windows_client_lock();
     if is_remote_path(&resolved_setup_directory(&config.scan.cache_dir))
         && !config.scan.sqlite_shared
@@ -18387,8 +18513,7 @@ fn apply_settings_section_ui(
             config.scan.scan_mode_timeout.0 =
                 override_delay_hours(ui.get_settings_scan_timeout().as_str())?;
             config.scan.sqlite_shared = ui.get_settings_sqlite_shared();
-            config.scan.postgres_coordination =
-                config.scan.sqlite_shared && ui.get_settings_postgres_coordination();
+            config.scan.postgres_coordination = ui.get_settings_postgres_coordination();
             config.scan.windows_client_lock = ui.get_settings_windows_client_lock();
             config.history.enabled = ui.get_settings_history_enabled();
             config.history.retention_days =
@@ -20710,6 +20835,8 @@ fn sync_media_filter_ui(ui: &AppWindow, state: &ApplicationState) {
         && library_rows.iter().all(|row| row.kind == "album-category");
     let reset_short_scroll = library_rows.len() < 8;
     ui.set_artist_inventory_count(state.library.artist_inventory_count() as i32);
+    ui.set_album_inventory_count(state.library.va_ost_album_inventory_count() as i32);
+    ui.set_fallback_inventory_count(state.library.fallback_album_inventory_count() as i32);
     let model_signature = library_model_signature(state, &library_rows);
     if ui.get_library_model_signature().as_str() != model_signature {
         ui.set_library_rows(if state.media_selector_expanded {
@@ -26317,7 +26444,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn native_thumbnail_hydration_defers_during_index_and_uses_persistent_cache() {
+    fn native_thumbnail_hydration_defers_during_index_and_uses_temporary_cache() {
         CATALOG_INDEX_REFRESH_ACTIVE.store(false, Ordering::SeqCst);
         let _ = take_deferred_thumbnail_requests();
         let requests = vec![
@@ -26333,12 +26460,20 @@ mod tests {
         let mut config = splined_core::config::Config::default();
         config.scan.cache_dir = r"C:\persistent-cache".to_string();
         config.scan.temporary_cache_dir = r"C:\temporary-cache".to_string();
-        let root = navidrome_thumbnail_cache_root(&config);
+        let local_root = navidrome_thumbnail_cache_root(&config);
         assert_eq!(
-            root,
-            std::path::Path::new(r"C:\persistent-cache\navidrome-thumbnails")
+            local_root,
+            std::path::Path::new(r"C:\temporary-cache\navidrome-thumbnails")
         );
-        assert!(!root.starts_with(&config.scan.temporary_cache_dir));
+        assert!(local_root.starts_with(&config.scan.temporary_cache_dir));
+
+        config.scan.sqlite_shared = true;
+        let shared_root = navidrome_thumbnail_cache_root(&config);
+        assert_eq!(
+            shared_root,
+            std::path::Path::new(r"C:\temporary-cache\navidrome-thumbnails")
+        );
+        assert!(shared_root.starts_with(&config.scan.temporary_cache_dir));
         assert_eq!(NAVIDROME_ARTIST_DOWNLOAD_LIMIT, 4);
         assert_eq!(NAVIDROME_ALBUM_DOWNLOAD_LIMIT, 6);
     }
@@ -29311,6 +29446,20 @@ mod tests {
             super::local_artist_art_for_albums(&albums, "AC/DC", &managed),
             Some(folder_portrait.clone())
         );
+        let mut untagged_albums = albums.clone();
+        untagged_albums[0].album_mbid.clear();
+        assert_eq!(
+            super::local_artist_art_for_albums(&untagged_albums, "AC/DC", &managed),
+            Some(folder_portrait.clone())
+        );
+        let folder_banner = alias_directory.join("banner.png");
+        image::RgbImage::from_pixel(48, 20, image::Rgb([20, 70, 120]))
+            .save(&folder_banner)
+            .unwrap();
+        assert_eq!(
+            super::local_artist_banner_for_albums(&untagged_albums, "AC/DC", &managed),
+            Some(folder_banner)
+        );
 
         fs::remove_file(&folder_portrait).unwrap();
         let rows = [("AC-DC", album_directory.to_str().unwrap(), "release-id", "")];
@@ -30477,7 +30626,7 @@ mod tests {
         for index in 0..400 {
             cache.insert(format!("small-{index}\u{1f}64"), index);
         }
-        for index in 0..30 {
+        for index in 0..MEDIUM_IMAGE_CACHE_LIMIT + 30 {
             cache.insert(format!("medium-{index}\u{1f}320"), index);
         }
         for index in 0..10 {
@@ -30988,14 +31137,14 @@ mod tests {
     }
 
     #[test]
-    fn auto_banner_fit_fills_the_target_and_enhancement_changes_approved_pixels() {
+    fn neutral_banner_fit_matches_webgui_containment_and_preserves_adjustments() {
         let directory = tempfile::TempDir::new().unwrap();
         let source = directory.path().join("portrait.png");
         image::RgbaImage::from_pixel(320, 480, image::Rgba([80, 140, 220, 255]))
             .save_with_format(&source, image::ImageFormat::Png)
             .unwrap();
         let zoom = super::auto_artist_banner_zoom(&source);
-        assert!(zoom > 3.0);
+        assert_eq!(zoom, 1.0);
         let bytes = std::fs::read(&source).unwrap();
         let mut output = splined_core::config::OutputConfig {
             upscale_adaptive_defaults: false,
@@ -31005,12 +31154,13 @@ mod tests {
         let enhanced = super::enhanced_artist_banner(&bytes, zoom, 0.0, &output)
             .unwrap()
             .to_rgba8();
-        assert_eq!(enhanced.dimensions(), (1400, 600));
+        assert_eq!(enhanced.dimensions(), (320, 137));
+        assert_eq!(enhanced.get_pixel(0, 68).0[3], 0);
         output.upscale_hue_degrees = 0;
         let original = super::enhanced_artist_banner(&bytes, zoom, 0.0, &output)
             .unwrap()
             .to_rgba8();
-        assert_ne!(enhanced.get_pixel(700, 300), original.get_pixel(700, 300));
+        assert_ne!(enhanced.get_pixel(160, 68), original.get_pixel(160, 68));
     }
 
     #[test]
@@ -31816,12 +31966,25 @@ mod tests {
     }
 
     #[test]
-    fn database_monitor_uses_postgres_for_coordinated_shared_sqlite() {
+    fn database_monitor_uses_postgres_for_either_coordinated_sqlite_mode() {
         let mut config = Config::default();
-        config.scan.sqlite_shared = true;
         config.scan.postgres_coordination = true;
 
         assert_eq!(super::database_monitor_backend(&config), "postgres");
+        config.scan.sqlite_shared = true;
+        assert_eq!(super::database_monitor_backend(&config), "postgres");
+    }
+
+    #[test]
+    fn setup_requires_postgres_validation_with_local_sqlite() {
+        let mut config = Config::default();
+        assert!(super::validate_setup_shared_policy_targets(&config, None).is_ok());
+        config.scan.postgres_coordination = true;
+        assert!(
+            super::validate_setup_shared_policy_targets(&config, None)
+                .unwrap_err()
+                .contains("Test and validate")
+        );
     }
 
     #[test]

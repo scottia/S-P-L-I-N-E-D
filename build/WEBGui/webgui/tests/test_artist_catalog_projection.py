@@ -15,6 +15,7 @@ from unittest import mock
 from PIL import Image
 
 from webgui.catalog import (
+    Catalog,
     PreviewApp,
     artist_credit_position,
     artist_display_sort_key,
@@ -43,6 +44,33 @@ CONFORMANCE = json.loads(
 
 
 class ArtistCatalogProjectionTests(unittest.TestCase):
+    def test_va_ost_album_names_follow_indexed_album_status_precedence(self):
+        complete = {
+            "status": "processed",
+            "cover_path": "C:/Music/Album/cover.jpg",
+            "cover_found": 1,
+            "track_count": 2,
+            "embedded_tracks": 2,
+            "embedded_validation_status": "verified",
+        }
+        self.assertEqual(Catalog._album_list_status_key(complete), "albumsComplete")
+        self.assertEqual(
+            Catalog._album_list_status_key({**complete, "cover_found": 0}),
+            "bypassed",
+        )
+        self.assertEqual(
+            Catalog._album_list_status_key({**complete, "status": "partial"}),
+            "partial",
+        )
+        self.assertEqual(
+            Catalog._album_list_status_key(complete, {"writer": "windows"}),
+            "overridden",
+        )
+        self.assertEqual(
+            Catalog._album_list_status_key(complete, missing_artist_art=True),
+            "bypassed",
+        )
+
     def test_art004_portability_does_not_change_independent_credit_normalization(self):
         profile = r"(?<=feat\.)\s+"
         with self.assertRaisesRegex(ValueError, "Incompatible Artist separator"):
@@ -814,7 +842,8 @@ class ArtistCatalogProjectionTests(unittest.TestCase):
             ):
                 albums = app.albums("", False)
             self.assertEqual({item["id"] for item in albums}, {"30"})
-            self.assertTrue(all(item["cover"].startswith("/api/album/thumbnail?id=") for item in albums))
+            self.assertTrue(all(item["cover"] is None for item in albums))
+            self.assertTrue(all(item["list_status_key"] == "bypassed" for item in albums))
             self.assertEqual({item["id"] for item in app.albums("Adele", False)}, {"30"})
             self.assertEqual(app.albums("Billboard", False), [])
             self.assertEqual(

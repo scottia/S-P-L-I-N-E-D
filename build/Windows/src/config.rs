@@ -113,8 +113,8 @@ pub struct ScanConfig {
     /// Use rollback journaling for an intentionally shared/network SQLite file.
     #[serde(default)]
     pub sqlite_shared: bool,
-    /// Coordinate shared SQLite state and override evidence with WebGUI PostgreSQL.
-    /// This remains inactive unless shared SQLite is also enabled.
+    /// Coordinate Album and COMP artwork overrides with WebGUI PostgreSQL,
+    /// independently of SQLite journaling mode.
     #[serde(default)]
     pub postgres_coordination: bool,
     /// Optional coordination between Windows clients sharing one SQLite file.

@@ -18,6 +18,7 @@ from PIL import Image
 import requests
 
 from webgui.catalog import Catalog
+from splined_artist_art import saved_package
 from webgui.server import create_app
 
 
@@ -178,6 +179,86 @@ class ArtistThumbnailRecoveryTests(unittest.TestCase):
         managed.parent.mkdir(parents=True)
         managed.write_bytes(_png())
         self.assertEqual(self.catalog.artist_thumbnail_path(rahman), managed)
+
+    def test_group_mbid_package_outranks_stale_name_package_for_read_and_write(self) -> None:
+        soundtrack_root = self.music / "[Soundtracks]"
+        album = soundtrack_root / "Slumdog Millionaire"
+        album.mkdir(parents=True)
+        rahman_id = "e0bba708-bdd3-478d-84ea-c706413bedab"
+        canonical = {
+            "artist_key": "credit:rahman",
+            "artist_name": "A. R. Rahman",
+            "musicbrainz_artistid": "",
+            "primary_path": "",
+        }
+        alias = {**canonical, "artist_key": "mbid:" + rahman_id,
+                 "musicbrainz_artistid": rahman_id}
+        row = {
+            "path": str(album),
+            "musicbrainz_albumid": "cf1da014-7b14-4ace-b231-271013d04625",
+            "musicbrainz_artistid": rahman_id,
+        }
+        name_hash = sha256(b"a. r. rahman").digest()[:16].hex()
+        stale = self.root / "artist-art" / f"artist-name-{name_hash}.png"
+        managed = self.root / "artist-art" / f"artist-mbid-{rahman_id}.png"
+        stale.parent.mkdir(parents=True)
+        stale.write_bytes(_png())
+        managed.write_bytes(_png())
+
+        targets = self.catalog._artist_art_targets_for_identity(
+            canonical, [canonical, alias], [row],
+            allow_managed_without_owned_album=True,
+        )
+
+        self.assertEqual(targets[0].stem, f"artist-mbid-{rahman_id}")
+        self.assertEqual(saved_package(targets).portrait, managed)
+
+    def test_album_status_finds_differently_named_mbid_alias_folder_art(self) -> None:
+        artist_id = "e0bba708-bdd3-478d-84ea-c706413bedab"
+        primary_folder = self.music / "Primary Name"
+        alias_folder = self.music / "Local Alias"
+        primary_album = primary_folder / "Primary Album"
+        alias_album = alias_folder / "Alias Album"
+        primary_album.mkdir(parents=True)
+        alias_album.mkdir(parents=True)
+        portrait = alias_folder / "artist.png"
+        portrait.write_bytes(_png())
+        primary = {
+            "artist_key": "primary",
+            "artist_name": "Primary Name",
+            "musicbrainz_artistid": artist_id,
+            "primary_path": str(primary_folder),
+        }
+        alias = {
+            "artist_key": "alias",
+            "artist_name": "Local Alias",
+            "musicbrainz_artistid": artist_id,
+            "primary_path": str(alias_folder),
+        }
+        rows = [
+            {
+                "artist_key": "primary", "artist_name": "Primary Name",
+                "path": str(primary_album), "musicbrainz_albumid": "release-primary",
+                "musicbrainz_artistid": artist_id,
+            },
+            {
+                "artist_key": "alias", "artist_name": "Local Alias",
+                "path": str(alias_album), "musicbrainz_albumid": "release-alias",
+                "musicbrainz_artistid": artist_id,
+            },
+        ]
+        request_row = {
+            **rows[0],
+            "art_list_artist_mbid": artist_id,
+            "art_list_artist_primary_path": str(primary_folder),
+        }
+
+        self.assertEqual(len(Catalog._artist_groups([primary, alias])), 1)
+        evidence = self.catalog._album_artist_art_evidence(
+            request_row, [primary, alias], rows
+        )
+        self.assertTrue(evidence["applicable_artist_art"])
+        self.assertFalse(evidence["missing_artist_art"])
 
     def test_direct_artist_folder_still_owns_its_unqualified_package(self) -> None:
         portrait = self.artist_path / "artist.png"

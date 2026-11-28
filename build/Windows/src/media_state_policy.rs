@@ -1,11 +1,10 @@
 //! Shared Artist and Album file-list state classification.
 //!
-//! A standalone SQLite installation and a coordinated PostgreSQL installation
-//! both use the same JSON policy. `SPLINED_MEDIA_STATE_POLICY` may point both
-//! runtimes at one external file. Windows carries the repository policy only
-//! as an unsaved first-run seed; Setup writes the editable runtime authority
-//! in the selected Provider Credential Directory beside
-//! `album-coordination.json`.
+//! Standalone and SQLite-only installations load the local
+//! `media-state-classification.json`. A PostgreSQL configuration does not
+//! supersede that local authority until Windows has successfully authorized
+//! the connection and validated its policy snapshot. The validated PostgreSQL
+//! policy then activates in memory without reading or writing a local mirror.
 
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
@@ -225,6 +224,7 @@ pub fn save_policy(path: &Path, text: &str) -> Result<(), String> {
     *POLICY
         .write()
         .map_err(|_| "media-state policy lock is unavailable".to_string())? = parsed;
+    ACTIVE_POSTGRES_REVISION.store(0, Ordering::SeqCst);
     Ok(())
 }
 
@@ -244,6 +244,10 @@ pub fn activate_policy_revision(text: &str, revision: i64) -> Result<(), String>
 
 pub fn active_revision() -> i64 {
     ACTIVE_POSTGRES_REVISION.load(Ordering::SeqCst)
+}
+
+pub fn postgres_authority_configured(config: &crate::config::Config) -> bool {
+    config.scan.postgres_coordination
 }
 
 pub async fn fetch_postgres_policy(pool: &PgPool) -> Result<PostgresPolicySnapshot, String> {
@@ -342,6 +346,7 @@ pub fn ensure_policy(config: &crate::config::Config) -> Result<PathBuf, String> 
         *POLICY
             .write()
             .map_err(|_| "media-state policy lock is unavailable".to_string())? = parsed;
+        ACTIVE_POSTGRES_REVISION.store(0, Ordering::SeqCst);
         return Ok(path);
     }
     save_policy(&path, &policy_json())?;
@@ -766,5 +771,20 @@ mod tests {
         let migrated = std::fs::read_to_string(path).unwrap();
         assert!(migrated.contains(CURRENT_POLICY_ID));
         assert!(!migrated.contains("\"color\": \"white\""));
+    }
+
+    #[test]
+    fn postgres_authority_requires_explicit_coordination_in_either_sqlite_mode() {
+        let mut config = crate::config::Config::default();
+        assert!(!postgres_authority_configured(&config));
+
+        config.scan.sqlite_shared = true;
+        assert!(!postgres_authority_configured(&config));
+
+        config.scan.postgres_coordination = true;
+        assert!(postgres_authority_configured(&config));
+
+        config.scan.sqlite_shared = false;
+        assert!(postgres_authority_configured(&config));
     }
 }

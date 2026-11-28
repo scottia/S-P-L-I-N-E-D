@@ -477,9 +477,9 @@ component ArtistAlbumCard inherits Rectangle {
                 Rectangle { width: (131px * AppTheme.ui-scale); clip: true; background: transparent;
                     VerticalLayout { spacing: (2px * AppTheme.ui-scale);
                         Rectangle { height: (127px * AppTheme.ui-scale); background: transparent;
-                            Rectangle { x: (2px * AppTheme.ui-scale); width: parent.width - (4px * AppTheme.ui-scale); height: parent.height; background: AppTheme.image-surface; border-radius: (5px * AppTheme.ui-scale); clip: true;
+                            Rectangle { x: (2px * AppTheme.ui-scale); width: parent.width - (4px * AppTheme.ui-scale); height: parent.height; background: AppTheme.image-surface; border-radius: self.width / 2; clip: true;
                                 Text { text: "🎵"; color: AppTheme.secondary-foreground; font-size: (28px * AppTheme.ui-scale) * AppTheme.font-scale; horizontal-alignment: center; vertical-alignment: center; visible: !root.preview-mode && !root.item.has-artwork; }
-                                Image { source: root.item.artwork; width: parent.width; height: parent.height; image-fit: contain; visible: !root.preview-mode && root.item.has-artwork; }
+                                Image { source: root.item.artwork; width: parent.width; height: parent.height; image-fit: cover; visible: !root.preview-mode && root.item.has-artwork; }
                                 Image { source: @image-url("../gui/splined-watermark.png"); width: parent.width; height: parent.height; image-fit: contain; visible: root.preview-mode; }
                                 if root.item.comp-loading: Rectangle {
                                     x: (1px * AppTheme.ui-scale); y: parent.height - (26px * AppTheme.ui-scale); width: parent.width - (2px * AppTheme.ui-scale); height: (25px * AppTheme.ui-scale);
@@ -603,6 +603,8 @@ component MediaLibraryPane inherits NeonPanel {
     in-out property <float> pane-width: 350;
     in property <[UiLibraryRow]> library-rows;
     in property <int> artist-inventory-count;
+    in property <int> album-inventory-count;
+    in property <int> fallback-inventory-count;
     in-out property <length> list-scroll-y: (0px * AppTheme.ui-scale);
     in property <[UiCompilationTrackRow]> compilation-track-rows;
     in property <[UiStatusFilterRow]> status-filter-rows;
@@ -781,9 +783,28 @@ component MediaLibraryPane inherits NeonPanel {
                 source-action(name, action) => root.candidate-source-action(name, action);
                 clear => root.clear-candidate-filters();
             }
-            if root.library-view-label == "Artists" && !root.show-tracks: HorizontalLayout { height: (20px * AppTheme.ui-scale);
-                Rectangle { horizontal-stretch: 1; background: transparent; }
-                Text { text: "Artists: " + root.artist-inventory-count; color: AppTheme.secondary-foreground; font-size: (12px * AppTheme.ui-scale) * AppTheme.font-scale; horizontal-alignment: right; vertical-alignment: center; }
+            HorizontalLayout { height: (24px * AppTheme.ui-scale); spacing: (6px * AppTheme.ui-scale);
+                Text {
+                    text: root.show-tracks ? "Fallback Albums Count:"
+                        : (root.library-view-label == "V/A OST" ? "V/A OST Albums Count:"
+                        : "Artists Albums Count:");
+                    color: AppTheme.foreground;
+                    font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale;
+                    font-weight: 700;
+                    horizontal-stretch: 1;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                Text {
+                    text: root.show-tracks ? root.fallback-inventory-count
+                        : (root.library-view-label == "V/A OST" ? root.album-inventory-count
+                        : root.artist-inventory-count);
+                    color: AppTheme.green;
+                    font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale;
+                    font-weight: 800;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                }
             }
             if !root.show-tracks: artist-library-list := ListView {
                 content-y <=> root.list-scroll-y;
@@ -1429,7 +1450,9 @@ export component EmbedQueueWindow inherits Window {
         Text { text: "Use an album's red queue control, EMBED All Albums, or EMBED Batch. Staging a chosen or upscaled cover saves the full-resolution cover.* now; Start All Staged embeds its prepared thumbnail later."; color: AppTheme.secondary-foreground; wrap: word-wrap; height: (42px * AppTheme.ui-scale); }
         Rectangle { height: (136px * AppTheme.ui-scale); background: AppTheme.card; border-color: AppTheme.border; border-width: (1px * AppTheme.ui-scale); border-radius: (6px * AppTheme.ui-scale);
             HorizontalLayout { padding: (8px * AppTheme.ui-scale); spacing: (12px * AppTheme.ui-scale);
-                Image { source: root.current-preview; width: (96px * AppTheme.ui-scale); height: (96px * AppTheme.ui-scale); image-fit: contain; }
+                Rectangle { width: (96px * AppTheme.ui-scale); height: (96px * AppTheme.ui-scale); border-radius: self.width / 2; clip: true; background: AppTheme.image-surface;
+                    Image { source: root.current-preview; width: parent.width; height: parent.height; image-fit: cover; }
+                }
                 VerticalLayout { spacing: (6px * AppTheme.ui-scale);
                     Text { text: root.current-label == "" ? "Select a saved album cover" : root.current-label; color: AppTheme.foreground; font-weight: 700; overflow: elide; }
                     Text { text: root.current-summary; color: AppTheme.cyan; overflow: elide; }
@@ -1449,7 +1472,9 @@ export component EmbedQueueWindow inherits Window {
                 for job in root.jobs: Rectangle { height: (103px * AppTheme.ui-scale); opacity: job.preferred-size && (job.status == "staged" || job.status == "queued" || job.status == "paused") ? 0.72 : 1; background: AppTheme.light ? (job.status == "running" ? #fff0e3 : (job.status == "failed" ? #ffe6e9 : (job.status == "done" ? #e2f7eb : (job.preferred-size ? #e7efff : #efe8fa)))) : (job.status == "running" ? #33251d : (job.status == "failed" ? #321c24 : (job.status == "done" ? #18352c : (job.preferred-size ? #1b2935 : #2b2041)))); border-color: job.status == "running" ? #ff7935 : (job.status == "failed" ? AppTheme.danger : (job.status == "done" ? AppTheme.green : (job.preferred-size ? AppTheme.blue : AppTheme.violet))); border-width: (2px * AppTheme.ui-scale); border-radius: (5px * AppTheme.ui-scale);
                     HorizontalLayout { padding: (6px * AppTheme.ui-scale); spacing: (9px * AppTheme.ui-scale);
                         Text { text: "●"; width: (17px * AppTheme.ui-scale); color: job.status == "running" ? #ff7935 : (job.status == "failed" ? AppTheme.danger : (job.status == "done" ? AppTheme.green : (job.preferred-size ? AppTheme.blue : AppTheme.violet))); font-size: (20px * AppTheme.ui-scale) * AppTheme.font-scale; vertical-alignment: center; }
-                        Image { source: job.preview; width: (76px * AppTheme.ui-scale); height: (76px * AppTheme.ui-scale); image-fit: contain; }
+                        Rectangle { width: (76px * AppTheme.ui-scale); height: (76px * AppTheme.ui-scale); border-radius: self.width / 2; clip: true; background: AppTheme.image-surface;
+                            Image { source: job.preview; width: parent.width; height: parent.height; image-fit: cover; }
+                        }
                         VerticalLayout { spacing: (3px * AppTheme.ui-scale); horizontal-stretch: 1;
                             Text { text: job.label; color: AppTheme.foreground; font-weight: 700; overflow: elide; }
                             Text { text: (job.preferred-size && (job.status == "staged" || job.status == "queued" || job.status == "paused") ? "Preferred size detected; explicit embed remains available" : job.status) + " · " + job.progress; color: job.status == "failed" ? #ff8386 : (job.status == "done" ? #7eeaba : (job.status == "running" ? #ff7935 : (job.preferred-size ? AppTheme.blue : AppTheme.violet))); }
@@ -1470,6 +1495,70 @@ export component EmbedQueueWindow inherits Window {
         HorizontalLayout { alignment: end; height: (34px * AppTheme.ui-scale);
             Button { text: "Remove All"; enabled: !root.has-running && root.staging-count == 0; clicked => root.remove-all(); }
             Button { text: "Close Window"; clicked => root.close-queue(); }
+        }
+    }
+}
+
+export component StartupWindow inherits Window {
+    title: "S.P.L.I.N.E.D. — Opening Library";
+    icon: @image-url("../gui/splined-app-icon.png");
+    preferred-width: 760px;
+    preferred-height: 430px;
+    min-width: 620px;
+    min-height: 360px;
+    max-width: 760px;
+    max-height: 430px;
+    background: AppTheme.window-background;
+    in-out property <string> startup-stage: "Preparing startup configuration…";
+    in-out property <string> startup-elapsed: "Elapsed: 0 seconds";
+    in-out property <float> startup-progress-phase: 0.0;
+
+    Rectangle {
+        background: AppTheme.window-background;
+        border-color: AppTheme.cyan;
+        border-width: 1px;
+        VerticalLayout {
+            padding: 34px;
+            spacing: 22px;
+            alignment: center;
+            BrandMark { height: 92px; width: 470px; compact: false; }
+            Text {
+                text: "Opening your indexed music library…";
+                color: AppTheme.cyan;
+                font-size: 24px * AppTheme.font-scale;
+                font-weight: 800;
+                horizontal-alignment: center;
+            }
+            Text {
+                text: root.startup-stage;
+                color: AppTheme.foreground;
+                font-size: 15px * AppTheme.font-scale;
+                font-weight: 700;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                wrap: word-wrap;
+                height: 82px;
+            }
+            Rectangle {
+                height: 9px;
+                border-radius: 4px;
+                background: AppTheme.quiet-surface;
+                clip: true;
+                Rectangle {
+                    width: parent.width * 0.24;
+                    height: parent.height;
+                    x: (parent.width - self.width) * root.startup-progress-phase;
+                    border-radius: 4px;
+                    background: @linear-gradient(90deg, AppTheme.cyan 0%, AppTheme.violet 45%, AppTheme.magenta 100%);
+                }
+            }
+            Text {
+                text: root.startup-elapsed;
+                color: AppTheme.cyan;
+                font-size: 13px * AppTheme.font-scale;
+                font-weight: 800;
+                horizontal-alignment: center;
+            }
         }
     }
 }
@@ -1552,6 +1641,8 @@ export component AppWindow inherits Window {
     out property <float> responsive-font-factor: root.width / 1px <= 1050 ? 0.82 : (root.width / 1px <= 1280 ? 0.90 : 1.0);
     in property <[UiLibraryRow]> library-rows;
     in property <int> artist-inventory-count;
+    in property <int> album-inventory-count;
+    in property <int> fallback-inventory-count;
     in-out property <bool> album-category-dialog-visible: false;
     in-out property <string> album-category-album-key;
     in-out property <string> album-category-album-name;
@@ -2197,7 +2288,7 @@ export component AppWindow inherits Window {
                 if root.setup-required: HeaderAction {
                     label: "Setup";
                     width: (78px * AppTheme.ui-scale);
-                    enabled: root.setup-library-ready && !root.setup-saving && (!root.setup-database-network-path || root.settings-sqlite-shared) && (!root.settings-sqlite-shared || root.setup-postgres-choice == "no" || (root.setup-postgres-choice == "yes" && root.setup-postgres-validated)) && (root.restore-path == "" || root.restore-path == root.setup-loaded-archive-path);
+                    enabled: root.setup-library-ready && !root.setup-saving && (!root.setup-database-network-path || root.settings-sqlite-shared) && (root.setup-postgres-choice != "yes" || root.setup-postgres-validated) && (root.restore-path == "" || root.restore-path == root.setup-loaded-archive-path);
                     clicked => root.save-setup();
                 }
             }
@@ -2289,13 +2380,13 @@ export component AppWindow inherits Window {
                                 color: root.setup-database-network-path && !root.settings-sqlite-shared ? AppTheme.danger : (root.settings-sqlite-shared ? AppTheme.yellow : AppTheme.secondary-foreground); wrap: word-wrap; height: (43px * AppTheme.ui-scale); font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale;
                             }
                             HorizontalLayout { height: (34px * AppTheme.ui-scale); spacing: (16px * AppTheme.ui-scale);
-                                RadioToggle { label: "Shared/network SQLite (advanced)"; checked <=> root.settings-sqlite-shared; enabled: root.setup-library-ready; horizontal-stretch: 1; toggled(value) => { root.setup-postgres-validated = false; root.setup-postgres-choice = ""; root.settings-postgres-coordination = false; root.setup-postgres-status = value ? "Choose whether this shared SQLite installation coordinates with WebGUI PostgreSQL." : "Standalone SQLite uses the built-in state policy."; } }
+                                RadioToggle { label: "Shared/network SQLite (advanced)"; checked <=> root.settings-sqlite-shared; enabled: root.setup-library-ready; horizontal-stretch: 1; }
                                 RadioToggle { label: "Use extra .client-lock"; checked <=> root.settings-windows-client-lock; enabled: root.setup-library-ready && root.settings-sqlite-shared; horizontal-stretch: 1; }
                             }
                         }
                     }
 
-                    if root.settings-sqlite-shared: Rectangle {
+                    if root.setup-library-ready: Rectangle {
                         height: root.setup-postgres-choice == "yes" ? (300px * AppTheme.ui-scale) : (126px * AppTheme.ui-scale);
                         border-radius: (8px * AppTheme.ui-scale); border-width: (1px * AppTheme.ui-scale);
                         border-color: root.setup-postgres-choice == "yes" && root.setup-postgres-validated ? AppTheme.green : AppTheme.yellow;
@@ -2304,7 +2395,7 @@ export component AppWindow inherits Window {
                             Text { text: "Coordinate with a separate WebGUI PostgreSQL instance?"; color: AppTheme.yellow; font-size: (15px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 700; height: (26px * AppTheme.ui-scale); }
                             HorizontalLayout { height: (36px * AppTheme.ui-scale); spacing: (8px * AppTheme.ui-scale);
                                 Button { text: "Yes · PostgreSQL"; enabled: !root.setup-saving; clicked => { root.setup-postgres-choice = "yes"; root.settings-postgres-coordination = true; root.setup-postgres-validated = false; root.setup-postgres-status = "Enter and test the WebGUI PostgreSQL connection. No JSON is written until Setup Save."; } }
-                                Button { text: "No · Shared SQLite only"; enabled: !root.setup-saving; clicked => { root.setup-postgres-choice = "no"; root.settings-postgres-coordination = false; root.setup-postgres-validated = false; root.setup-postgres-status = "Setup Save will create editable SQLite media-state and COMP report policies."; } }
+                                Button { text: "No · SQLite only"; enabled: !root.setup-saving; clicked => { root.setup-postgres-choice = "no"; root.settings-postgres-coordination = false; root.setup-postgres-validated = false; root.setup-postgres-status = "Windows will use its local media-state and COMP report policies."; } }
                             }
                             if root.setup-postgres-choice == "yes": VerticalLayout { spacing: (6px * AppTheme.ui-scale);
                                 SettingField { label: "PostgreSQL Server URL"; value: root.setup-postgres-server; hint: "postgresql://host:5432/database"; edited(value) => { root.setup-postgres-server = value; root.setup-postgres-validated = false; } }
@@ -2331,7 +2422,7 @@ export component AppWindow inherits Window {
                     Rectangle { height: (78px * AppTheme.ui-scale); border-radius: (8px * AppTheme.ui-scale); border-width: (1px * AppTheme.ui-scale); border-color: root.setup-database-network-path && !root.settings-sqlite-shared ? AppTheme.danger : AppTheme.border; background: AppTheme.quiet-surface;
                         HorizontalLayout { padding: (12px * AppTheme.ui-scale); spacing: (12px * AppTheme.ui-scale);
                             Text { text: root.setup-database-network-path && !root.settings-sqlite-shared ? "Select Shared/network SQLite above to continue safely." : "Setup may take several minutes for a large first index. Keep this window open; album counts, current path, errors, and publication progress will be shown here."; color: root.setup-database-network-path && !root.settings-sqlite-shared ? AppTheme.danger : AppTheme.secondary-foreground; wrap: word-wrap; vertical-alignment: center; horizontal-stretch: 1; }
-                            Button { text: root.setup-saving ? "Setup in Progress…" : (root.setup-database-network-path && !root.settings-sqlite-shared ? "Shared Mode Required" : "Save & Open Settings"); width: root.setup-saving ? (220px * AppTheme.ui-scale) : (210px * AppTheme.ui-scale); enabled: root.setup-library-ready && !root.setup-saving && (!root.setup-database-network-path || root.settings-sqlite-shared) && (!root.settings-sqlite-shared || root.setup-postgres-choice == "no" || (root.setup-postgres-choice == "yes" && root.setup-postgres-validated)) && (root.restore-path == "" || root.restore-path == root.setup-loaded-archive-path); clicked => root.save-setup(); }
+                            Button { text: root.setup-saving ? "Setup in Progress…" : (root.setup-database-network-path && !root.settings-sqlite-shared ? "Shared Mode Required" : "Save & Open Settings"); width: root.setup-saving ? (220px * AppTheme.ui-scale) : (210px * AppTheme.ui-scale); enabled: root.setup-library-ready && !root.setup-saving && (!root.setup-database-network-path || root.settings-sqlite-shared) && (root.setup-postgres-choice != "yes" || root.setup-postgres-validated) && (root.restore-path == "" || root.restore-path == root.setup-loaded-archive-path); clicked => root.save-setup(); }
                         }
                     }
                     Rectangle { height: (12px * AppTheme.ui-scale); background: transparent; }
@@ -2363,6 +2454,8 @@ export component AppWindow inherits Window {
                     pane-width <=> root.media-pane-width;
                     library-rows: root.library-rows;
                     artist-inventory-count: root.artist-inventory-count;
+                    album-inventory-count: root.album-inventory-count;
+                    fallback-inventory-count: root.fallback-inventory-count;
                     list-scroll-y <=> root.library-scroll-y;
                     compilation-track-rows: root.compilation-track-rows;
                     status-filter-rows: root.status-filter-rows;
@@ -2653,6 +2746,8 @@ export component AppWindow inherits Window {
                                                 property <[UiBiographyLine]> biography-lines: self.biography-full-lines;
                                                 property <int> biography-visible-line-count: min(root.artist-biography-expanded ? 10 : 5, max(1, self.biography-lines.length));
                                                 vertical-stretch: 1; horizontal-stretch: 1; max-width: (10000px * AppTheme.ui-scale); clip: true; border-radius: (8px * AppTheme.ui-scale); background: AppTheme.quiet-surface; border-color: AppTheme.border; border-width: (1px * AppTheme.ui-scale);
+                                                // The approved banner is already framed to the WebGUI 1400:600
+                                                // contract; the Overview then uses the same cover presentation.
                                                 Image { source: root.artist-overview-banner; visible: root.overview-mode != "Fallback" && !root.artist-banner-preview-active; width: parent.width; height: parent.height; image-fit: cover; }
                                                 if root.artist-banner-preview-active: Image {
                                                     source: root.artist-banner-preview;
@@ -3256,7 +3351,9 @@ export component AppWindow inherits Window {
                                             for job in root.embed-panel-jobs: Rectangle { height: (96px * AppTheme.ui-scale); border-radius: (6px * AppTheme.ui-scale); border-width: (2px * AppTheme.ui-scale); background: job.status == "running" ? #33251d : (job.status == "failed" ? #321c24 : (job.status == "done" ? #18352c : (job.preferred-size ? #1b2935 : #2b2041))); border-color: job.status == "running" ? #ff7935 : (job.status == "failed" ? AppTheme.danger : (job.status == "done" ? AppTheme.green : (job.preferred-size ? AppTheme.blue : AppTheme.violet)));
                                                 HorizontalLayout { padding: (7px * AppTheme.ui-scale); spacing: (9px * AppTheme.ui-scale);
                                                     Text { text: "●"; width: (16px * AppTheme.ui-scale); color: job.status == "running" ? #ff7935 : (job.status == "failed" ? AppTheme.danger : (job.status == "done" ? AppTheme.green : (job.preferred-size ? AppTheme.blue : AppTheme.violet))); font-size: (20px * AppTheme.ui-scale) * AppTheme.font-scale; vertical-alignment: center; }
-                                                    Image { source: job.preview; width: (72px * AppTheme.ui-scale); height: (72px * AppTheme.ui-scale); image-fit: contain; }
+                                                    Rectangle { width: (72px * AppTheme.ui-scale); height: (72px * AppTheme.ui-scale); border-radius: self.width / 2; clip: true; background: AppTheme.image-surface;
+                                                        Image { source: job.preview; width: parent.width; height: parent.height; image-fit: cover; }
+                                                    }
                                                     VerticalLayout { spacing: (3px * AppTheme.ui-scale); horizontal-stretch: 1;
                                                         Text { text: job.label; color: AppTheme.foreground; font-size: (14px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 700; overflow: elide; }
                                                         Text { text: job.status + " · " + job.progress; color: job.status == "failed" ? AppTheme.danger : (job.status == "done" ? AppTheme.green : (job.status == "running" ? #ff7935 : (job.preferred-size ? AppTheme.blue : AppTheme.violet))); font-size: (12px * AppTheme.ui-scale) * AppTheme.font-scale; }
@@ -3707,7 +3804,7 @@ export component AppWindow inherits Window {
                                     if root.settings-advanced-visible: VerticalLayout { spacing: (6px * AppTheme.ui-scale);
                                         Heading { text: "Database Access"; height: (29px * AppTheme.ui-scale); color: AppTheme.cyan; }
                                         SettingToggle { label: "Shared/Network SQLite"; value <=> root.settings-sqlite-shared; }
-                                        if root.settings-sqlite-shared: SettingToggle { label: "Coordinate with WebGUI PostgreSQL"; value <=> root.settings-postgres-coordination; }
+                                        SettingToggle { label: "Coordinate with WebGUI PostgreSQL"; value <=> root.settings-postgres-coordination; }
                                         RadioToggle { label: "Use extra .client-lock for shared SQLite"; checked <=> root.settings-windows-client-lock; enabled: root.settings-sqlite-shared; height: (30px * AppTheme.ui-scale); }
                                         SettingsHelpTip { summary: "What must I check before sharing SQLite?"; detail: "Advanced: every client must point to the same database on a share with reliable cross-host locking. Shared mode uses SQLite rollback journaling and a 30-second busy timeout. The extra .client-lock is recommended only when every client participates and can acquire it; otherwise coordinate writes yourself. Read the Shared DB Guide before enabling."; }
                                         NeonAction { label: "Shared DB Guide ↗"; clicked => root.open-about-link("shared-db"); }

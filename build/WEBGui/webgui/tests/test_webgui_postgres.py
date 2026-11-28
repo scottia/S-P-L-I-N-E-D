@@ -944,14 +944,35 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             self.assertEqual((len(samples), rate), (4410, 44100))
             with Image.open(BytesIO(embedded_track_artwork_bytes(path))) as image:
                 self.assertEqual(image.size, (300, 300))
-        self.assertEqual(
-            self.services.catalog.album(self.row["album_key"])["embedded"], 2
-        )
-        self.assertEqual(
-            self.services.catalog.album(self.row["album_key"])["embedded_validation"],
-            "verified",
-        )
+        projected_album = self.services.catalog.album(self.row["album_key"])
+        self.assertEqual(projected_album["embedded"], 2)
+        self.assertEqual(projected_album["embedded_validation"], "verified")
+        self.assertTrue(projected_album["applicable_artist_art"])
+        self.assertFalse(projected_album["missing_artist_art"])
+        self.assertEqual(projected_album["list_status_key"], "albumsComplete")
         self.assertEqual(self.services.index_changes()["count"], 0)
+
+    def test_album_refresh_classifies_the_current_static_cover(self):
+        with closing(self.db.connect()) as db, db:
+            db.execute(
+                "UPDATE albums SET status='processed',embedded_tracks=track_count,"
+                "embedded_validation_status='verified' WHERE album_key=?",
+                (self.row["album_key"],),
+            )
+
+        projected = self.services.catalog.album(self.row["album_key"])
+        self.assertTrue(projected["static_cover_found"])
+        self.assertEqual(projected["list_status_key"], "albumsComplete")
+
+        self.cover.unlink()
+        missing = self.services.catalog.album(self.row["album_key"])
+        self.assertFalse(missing["static_cover_found"])
+        self.assertEqual(missing["list_status_key"], "bypassed")
+
+        Image.new("RGB", (180, 180), "navy").save(self.cover)
+        restored = self.services.catalog.album(self.row["album_key"])
+        self.assertTrue(restored["static_cover_found"])
+        self.assertEqual(restored["list_status_key"], "albumsComplete")
 
     def test_album_write_coordination_is_durable_ordered_and_projected(self):
         preview = self.services.preview(self.payload())
@@ -977,10 +998,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
             )
         self.assertEqual(current["album_key"], self.row["album_key"])
         self.assertEqual(current["relative_path"], "test artist/test album")
-        self.assertEqual(
-            self.services.catalog.album(self.row["album_key"])["override_writer"],
-            "webgui",
-        )
+        projected = self.services.catalog.album(self.row["album_key"])
+        self.assertEqual(projected["override_writer"], "webgui")
+        self.assertNotEqual(projected["list_status_key"], "overridden")
         artist_album = next(
             item
             for item in self.services.catalog.artist(self.row["artist_key"])["albums"]
@@ -1009,10 +1029,9 @@ class PostgreSQLBrowserTests(unittest.TestCase):
         transferred = record_event(self.db, newer)
         self.assertEqual(transferred["writer"], "windows")
         self.assertGreater(transferred["revision"], current["revision"])
-        self.assertEqual(
-            self.services.catalog.album(self.row["album_key"])["override_writer"],
-            "windows",
-        )
+        projected = self.services.catalog.album(self.row["album_key"])
+        self.assertEqual(projected["override_writer"], "windows")
+        self.assertEqual(projected["list_status_key"], "overridden")
 
     def test_album_write_coordination_projects_newer_relative_path_identity(self):
         """A stale MBID must not hide a write to the same physical Album."""
