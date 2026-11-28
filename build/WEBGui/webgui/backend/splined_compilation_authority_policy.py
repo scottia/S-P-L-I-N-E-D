@@ -1555,7 +1555,15 @@ def resolve_interactive_identity_matches(
             last_error = error
             continue
         artist_name = str(artist.get("name") or "").strip()
-        if _artist_names_compatible(local_artist, artist_name):
+        # A single verified Artist can own the whole credit, even when its
+        # name contains a collaboration separator (for example, AC/DC).
+        artist_key = _artist_name_key(artist_name)
+        whole_credit_matches = (
+            len(artist_mbids) == 1
+            and artist_key
+            and _artist_name_key(tagged_artist_credit) == artist_key
+        )
+        if whole_credit_matches or _artist_names_compatible(local_artist, artist_name):
             focused_artist_mbid = artist_mbid
             friendly_artist = artist_name or local_artist
             resolved_artists.append((artist_mbid, friendly_artist, 100))
