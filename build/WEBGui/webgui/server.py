@@ -17,7 +17,7 @@ import threading
 import time
 import tomllib
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -1057,6 +1057,10 @@ def create_app(config_file=None, database_url=None, *, token=None, start_worker=
     @app.get("/api/albums")
     def albums(q: str = "", view: str = "albums"):
         return context.require().catalog.albums(q, view)
+
+    @app.get("/api/albums/artist-art-status")
+    def album_artist_art_status(id: list[str] = Query(default=[])):
+        return context.require().catalog.album_artist_art_status(id)
 
     @app.get("/api/album/thumbnail")
     def album_thumbnail(id: str):
