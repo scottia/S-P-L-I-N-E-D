@@ -3382,6 +3382,33 @@ test("Album cards keep unknown validation separate from confirmed missing thumbn
   assert.deepEqual(Array.from(verifiedVaOst.dots, ([color]) => color), ["#32dda0"]);
 });
 
+test("opposing Album override keeps independent card dots and suppresses stale cover evidence", () => {
+  const state = {graphicalEnhancement: {frame_styles: {complete: {color: "theme-complete"}}}};
+  const context = load(albumSummaryFunctions, {state});
+  const artist = {portrait: "artist.jpg"};
+  const album = {
+    id: "shared-album", status: "unprocessed", override_writer: "windows",
+    static_cover_found: false, tracks: 2, embedded: 0, embedded_validation: "unknown",
+  };
+  const dotColors = card => Array.from(card.dots, ([color]) => color);
+
+  const stale = context.albumCardState(album, artist);
+  assert.equal(stale.stateKey, "overridden");
+  assert.equal(stale.frame, "#6b737b");
+  assert.deepEqual(dotColors(stale), ["#6b737b"]);
+
+  const incomplete = context.albumCardState({...album, status: "timeout"}, artist);
+  assert.equal(incomplete.stateKey, "overridden");
+  assert.deepEqual(dotColors(incomplete), ["#6b737b", "#ff5268"]);
+
+  const complete = context.albumCardState({
+    ...album, status: "incomplete", static_cover_found: true, embedded: 2, embedded_validation: "verified",
+  }, artist);
+  assert.equal(complete.stateKey, "overridden");
+  assert.equal(complete.frame, "#6b737b");
+  assert.deepEqual(dotColors(complete), ["#6b737b", "#32dda0"]);
+});
+
 test("selected Artist status includes its track-scoped COMP report", () => {
   const state = {
     graphicalEnhancement: {frame_styles: {
