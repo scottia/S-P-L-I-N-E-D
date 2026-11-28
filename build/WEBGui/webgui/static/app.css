@@ -172,6 +172,12 @@ html[data-theme=light] .library-row .status-orbit.selected,html[data-theme=light
 
 
 .hero.fallback-overview .hero-main,.hero.fallback-overview .hero-details{display:none}
+.hero.neutral-album-overview-active{display:grid;place-items:center;background:#111d25;background-image:none}
+.hero.neutral-album-overview-active .hero-main,.hero.neutral-album-overview-active .hero-details,.hero.neutral-album-overview-active .hero-lower,.hero.neutral-album-overview-active .overview-actions{display:none}
+.neutral-album-overview{width:min(760px,90%);margin:auto;place-items:center;text-align:center;color:var(--cyan)}
+.neutral-album-overview:not([hidden]){display:grid;gap:18px}
+.neutral-album-overview img{width:clamp(180px,28vw,310px);max-height:42vh;object-fit:contain}
+.neutral-album-overview strong{font-size:clamp(15px,1.6vw,23px);line-height:1.35}
 .fallback-help{position:relative;z-index:1;margin:10px 12px 0;min-height:78px;color:var(--text);font-size:12px;line-height:1.35}
 .fallback-help[hidden]{display:none}
 .fallback-help p{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;margin:0}

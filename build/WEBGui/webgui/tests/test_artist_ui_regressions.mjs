@@ -111,6 +111,110 @@ test("a superseded library response cannot commit stale rows", async () => {
   assert.equal(state.artistTotal, 2429, "a stale response cannot replace the inventory count");
 });
 
+test("Album lists and search hydrate applicable Artist Art after the database-first rows paint", async () => {
+  const albums = [
+    {
+      id: "album-1", artist_id: "artist-1", artist_art_pending: true,
+      indexed_list_status_key: "albumsComplete",
+      missing_artist_art_list_status_key: "bypassed",
+      missing_artist_art: false, list_status_key: "albumsComplete",
+    },
+    {id: "album-2", artist_art_pending: false, list_status_key: "albumsComplete"},
+  ];
+  const calls = [];
+  const state = {
+    libraryMode: "albums", listRequest: 0, libraryLoading: false,
+    libraryReady: false, albumsIndex: [], artists: [], artist: null,
+    artistProjectionRetry: 0, albumLibraryRequest: 0,
+    albumLibraryMatches: [], albumLibraryLoading: false,
+  };
+  const context = load(librarySearchFunctions, {
+    state,
+    URLSearchParams,
+    api: async path => {
+      calls.push(path);
+      if (path.startsWith("/api/albums/artist-art-status?")) {
+        return [{
+          id: "album-1", applicable_artist_art: true,
+          missing_artist_art: false, list_status_key: "albumsComplete",
+        }];
+      }
+      return albums.map(album => ({...album}));
+    },
+    renderLibrary() {}, chooseArtist: async () => {}, setStatus() {},
+    window: {setTimeout() { return 1; }, clearTimeout() {}},
+  });
+
+  await context.loadLibrary("");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(calls[1], /^\/api\/albums\/artist-art-status\?id=album-1$/);
+  assert.equal(state.albumsIndex[0].artist_art_pending, false);
+  assert.equal(state.albumsIndex[0].missing_artist_art, false);
+  assert.equal(state.albumsIndex[0].list_status_key, "albumsComplete");
+
+  state.libraryMode = "fallback";
+  state.libraryReady = false;
+  await context.loadLibrary("");
+  await new Promise(resolve => setImmediate(resolve));
+  const hydrationCalls = calls.filter(path => path.startsWith("/api/albums/artist-art-status?"));
+  assert.equal(hydrationCalls.length, 2);
+  assert.equal(state.albumsIndex[0].artist_art_pending, false);
+  assert.equal(state.albumsIndex[0].list_status_key, "albumsComplete");
+
+  state.libraryMode = "artists";
+  await context.loadAlbumLibraryMatches("Album");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(state.albumLibraryMatches[0].artist_art_pending, false);
+  assert.equal(state.albumLibraryMatches[0].list_status_key, "albumsComplete");
+  assert.equal(calls.filter(path => path.startsWith("/api/albums/artist-art-status?")).length, 3);
+
+  const preserved = context.preserveAlbumArtistArtEvidence(albums, [{
+    id: "album-1", artist_id: "artist-1", artist_art_pending: false,
+    applicable_artist_art: true, missing_artist_art: false,
+    list_status_key: "albumsComplete",
+  }]);
+  assert.equal(preserved[0].artist_art_pending, true);
+  assert.equal(preserved[0].missing_artist_art, false);
+  assert.equal(preserved[0].list_status_key, "albumsComplete");
+  const preservedMissing = context.preserveAlbumArtistArtEvidence(albums, [{
+    id: "album-1", artist_id: "artist-1", artist_art_pending: false,
+    applicable_artist_art: true, missing_artist_art: true,
+    list_status_key: "bypassed",
+  }]);
+  assert.equal(preservedMissing[0].missing_artist_art, true);
+  assert.equal(preservedMissing[0].list_status_key, "bypassed");
+});
+
+test("late Artist Art hydration cannot overwrite a newer Album refresh", async () => {
+  let release;
+  const response = new Promise(resolve => { release = resolve; });
+  const original = {
+    id: "album-1", artist_id: "artist-1", artist_art_pending: true,
+    list_status_key: "overridden",
+  };
+  const state = {
+    libraryMode: "albums", listRequest: 4, albumsIndex: [original],
+    albumLibraryRequest: 0, albumLibraryMatches: [],
+  };
+  const context = load(librarySearchFunctions, {
+    state, URLSearchParams,
+    api: async () => response,
+    renderLibrary() {}, chooseArtist: async () => {}, setStatus() {},
+    window: {setTimeout() { return 1; }, clearTimeout() {}},
+  });
+
+  const hydration = context.hydrateAlbumArtistArt(4, state.albumsIndex);
+  state.albumsIndex = [{
+    ...original, artist_art_pending: false, list_status_key: "albumsComplete",
+  }];
+  release([{
+    id: "album-1", applicable_artist_art: true,
+    missing_artist_art: false, list_status_key: "overridden",
+  }]);
+  await hydration;
+  assert.equal(state.albumsIndex[0].list_status_key, "albumsComplete");
+});
+
 test("Artist search renders an existing list and accepts a server-resolved alias", async () => {
   let release;
   const response = new Promise(resolve => { release = resolve; });
@@ -154,22 +258,30 @@ test("Artist search renders an existing list and accepts a server-resolved alias
   const pending = context.loadLibrary("artist$alias");
   context.renderLibraryContents();
   assert.deepEqual(visible(), ["abba"]);
-  assert.equal(getElement("artistCount").textContent, "Artists: 2429");
+  assert.equal(getElement("libraryListTitle").textContent, "Artists Albums Count:");
+  assert.equal(getElement("artistCount").textContent, "2429");
 
   release({artists: [{id: "canonical", name: "Canonical Artist", albums: 1}], artist_total: 2429});
   await pending;
   assert.deepEqual(visible(), ["canonical"]);
   state.artists[0].status = "hidden";
   context.renderLibraryContents();
-  assert.equal(getElement("artistCount").textContent, "Artists: 2429");
+  assert.equal(getElement("artistCount").textContent, "2429");
   getElement("albumSearch").value = "Album title";
   state.albumLibraryMatches = [{id: "1", name: "Album title"}];
   context.renderLibraryContents();
-  assert.equal(getElement("libraryListTitle").textContent, "Album Search");
-  assert.equal(getElement("artistCount").textContent, "Artists: 2429");
+  assert.equal(getElement("libraryListTitle").textContent, "Artists Albums Count:");
+  assert.equal(getElement("artistCount").textContent, "2429");
+  state.libraryLoading = true;
+  state.libraryMode = "albums";
+  context.renderLibraryContents();
+  assert.equal(getElement("libraryListTitle").textContent, "V/A OST Albums Count:");
+  assert.equal(getElement("artistCount").textContent, "0");
   state.libraryMode = "fallback";
   context.renderLibraryContents();
-  assert.equal(getElement("artistCount").hidden, true);
+  assert.equal(getElement("libraryListTitle").textContent, "Fallback Albums Count:");
+  assert.equal(getElement("artistCount").textContent, "0");
+  assert.equal(getElement("artistCount").hidden, false);
 });
 
 test("Artist search waits for a complete inventory before replacing existing rows", async () => {
@@ -441,8 +553,11 @@ test("opposing Album overrides use their own dark-grey filter and never inflate 
 
   assert.equal(context.rawMediaStatusKey(album), "partial");
   assert.equal(context.mediaStatusKey(album), "overridden");
+  assert.equal(context.mediaStatusKey({
+    ...album, missing_artist_art: true, list_status_key: "incomplete",
+  }), "incomplete");
   assert.equal(context.mediaStatusColor("override"), "#6b737b");
-  assert.match(appSource, /applyStatusPalette\(button, overridden \? "override" : albumCardState\(album, state\.artist\)\.stateKey\)/);
+  assert.match(appSource, /applyStatusPalette\(button, overridden \? "override" : album\.list_status_key \|\| albumCardState\(album, state\.artist\)\.stateKey\)/);
   assert.match(appSource, /item\.has_incomplete_error === true/);
   assert.match(appSource, /classifyMediaState\("artist", evidence\)\.ui_status_key/);
   assert.match(appSource, /artist\.missing_artist_art = missing/);
@@ -2766,6 +2881,16 @@ test("single Album overview is limited to the global Albums library", () => {
     state: {libraryMode: "albums", editorMode: "album", album: {id: "album-1"}},
   });
   assert.equal(albumContext.singleAlbumOverviewActive(), true);
+});
+
+test("V/A OST opens on the neutral album landing before an Album is selected", () => {
+  assert.match(indexSource, /id="neutralAlbumOverview"[^>]*hidden/);
+  assert.match(indexSource, /Select an album to get started/);
+  assert.match(appSource, /const neutralAlbumOverview = state\.libraryMode === "albums" && !state\.album/);
+  assert.match(appSource, /classList\.remove\("neutral-album-overview-active"\)[\s\S]*if \(state\.editorMode === "fallback"\)/);
+  assert.match(appSource, /classList\.toggle\("neutral-album-overview-active", neutralAlbumOverview\)/);
+  assert.match(appSource, /if \(neutralAlbumOverview\) \{[\s\S]*style\.backgroundImage = "none"[\s\S]*return;/);
+  assert.match(cssSource, /\.hero\.neutral-album-overview-active \.hero-main/);
 });
 
 test("successful EMBED Batch invalidates stale handles and refreshes the Album before polling", async () => {

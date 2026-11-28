@@ -474,6 +474,7 @@ function opposingAlbumOverride(item) {
   return !fallback && albumOverride(item)?.writer === "windows";
 }
 function mediaStatusKey(item) {
+  if (item?.list_status_key) return String(item.list_status_key);
   if (item?.missing_artist_art === true) {
     // Red from independent error evidence outranks missing Artist Art Yellow;
     // an unmatched/default Red is not itself error evidence.
@@ -701,10 +702,12 @@ function renderLibraryContents() {
   $("fallbackTab").classList.toggle("active", state.libraryMode === "fallback");
   const isArtistView = state.libraryMode === "artists";
   const albumQuery = isArtistView ? $("albumSearch").value.trim() : "";
-  $("libraryListTitle").textContent = state.libraryMode === "fallback" ? "Curated Compilations"
-    : state.libraryMode === "albums" ? "V/A OST" : albumQuery ? "Album Search" : "";
-  $("artistCount").hidden = !isArtistView;
-  $("artistCount").textContent = isArtistView ? "Artists: " + (state.artistTotal ?? "…") : "";
+  const inventoryLabel = state.libraryMode === "fallback" ? "Fallback Albums Count:"
+    : state.libraryMode === "albums" ? "V/A OST Albums Count:" : "Artists Albums Count:";
+  const inventoryCount = isArtistView ? (state.artistTotal ?? "…") : state.albumsIndex.length;
+  $("libraryListTitle").textContent = inventoryLabel;
+  $("artistCount").hidden = false;
+  $("artistCount").textContent = String(inventoryCount);
   const list = $("artistList"); resetLibraryThumbnailLoading(); clear(list);
   if (state.libraryLoading) {
     list.append(node("p", "empty-copy", state.libraryMode === "artists" ? "Loading artists…" : "Loading albums…"));
@@ -1028,7 +1031,10 @@ function albumRow(album, child) {
   // A discovered cover.* is already processed material even when the stored
   // catalog label predates the file. Use the same material-aware state as the
   // Overview card instead of painting that Album white/unprocessed.
-  applyStatusPalette(button, overridden ? "override" : albumCardState(album, state.artist).stateKey);
+  // The global V/A OST list has no selected Artist context.  Use its
+  // database-first Album classification instead of manufacturing Yellow from
+  // a deliberately absent Artist overview.
+  applyStatusPalette(button, overridden ? "override" : album.list_status_key || albumCardState(album, state.artist).stateKey);
   button.classList.toggle("opposing-override", overridden);
   button.append(albumArtworkNode(album, "library-thumb", ""));
   const copy = node("span", "row-copy"); copy.append(node("strong", "", album.name), node("small", "", child ? album.tracks + " tracks" : album.artist_name)); button.append(copy);
@@ -1461,11 +1467,25 @@ function renderCompReportButtonState() {
 }
 function renderHeroContents() {
   renderCompReportButtonState();
+  $("hero").classList.remove("neutral-album-overview-active");
+  $("neutralAlbumOverview").hidden = true;
   if (state.editorMode === "fallback") { renderFallbackOverview(); return; }
   const albumOverview = singleAlbumOverviewActive();
+  const neutralAlbumOverview = state.libraryMode === "albums" && !state.album;
   $("hero").classList.remove("fallback-overview");
   $("hero").classList.toggle("album-overview", albumOverview);
+  $("hero").classList.toggle("neutral-album-overview-active", neutralAlbumOverview);
+  $("neutralAlbumOverview").hidden = !neutralAlbumOverview;
   $("fallbackHelp").hidden = true;
+  if (neutralAlbumOverview) {
+    $("overviewHeading").textContent = "V/A OST Album Selection";
+    $("overviewArtist").textContent = "";
+    $("hero").style.backgroundImage = "none";
+    $("albumStatusHelp").hidden = true;
+    $("fallbackReport").hidden = true;
+    document.querySelector(".overview-actions").hidden = true;
+    return;
+  }
   $("overviewHeading").textContent = albumOverview
     ? "V/A OST Album Overview"
     : "Artist Overview & Album Selection";
@@ -2912,6 +2932,24 @@ function scheduleLibrarySearch(kind, query) {
     else void loadLibrary(value);
   }, LIBRARY_SEARCH_DEBOUNCE_MS);
 }
+function preserveAlbumArtistArtEvidence(rows, previousRows) {
+  const previous = new Map((previousRows || []).map(album => [String(album.id), album]));
+  return (rows || []).map(album => {
+    if (album?.artist_art_pending !== true) return album;
+    const prior = previous.get(String(album.id));
+    if (!prior || prior.artist_art_pending !== false
+      || String(prior.artist_id || "") !== String(album.artist_id || "")) return album;
+    const missing = prior.missing_artist_art === true;
+    return {
+      ...album,
+      applicable_artist_art: prior.applicable_artist_art === true,
+      missing_artist_art: missing,
+      list_status_key: missing
+        ? album.missing_artist_art_list_status_key || album.list_status_key
+        : album.indexed_list_status_key || album.list_status_key,
+    };
+  });
+}
 async function loadLibrary(query = "") {
   const request = ++state.listRequest;
   const mode = state.libraryMode;
@@ -2936,10 +2974,12 @@ async function loadLibrary(query = "") {
     if (mode === "artists") {
       state.artists = results.artists;
       state.artistTotal = results.artist_total;
-    } else state.albumsIndex = results;
+    } else state.albumsIndex = preserveAlbumArtistArtEvidence(results, state.albumsIndex);
     state.libraryLoading = false;
     state.libraryReady = true;
     renderLibrary();
+    if (["albums", "fallback"].includes(mode))
+      void hydrateAlbumArtistArt(request, state.albumsIndex);
     if (mode === "artists" && state.artists.some(item => item.projection_pending === true)) {
       state.artistProjectionRetry = 0;
       scheduleArtistProjectionRefresh(query, request);
@@ -2957,6 +2997,34 @@ async function loadLibrary(query = "") {
     }
   }
 }
+async function hydrateAlbumArtistArt(request, albums, target = "library") {
+  const pending = (albums || []).filter(album => album?.artist_art_pending === true);
+  const isCurrent = () => target === "search"
+    ? request === state.albumLibraryRequest && state.libraryMode === "artists"
+    : request === state.listRequest && ["albums", "fallback"].includes(state.libraryMode);
+  for (let offset = 0; offset < pending.length; offset += 25) {
+    const batch = pending.slice(offset, offset + 25);
+    const expectedRows = new Map(batch.map(album => [String(album.id), album]));
+    const query = new URLSearchParams();
+    for (const album of batch) query.append("id", album.id);
+    try {
+      const statuses = await api("/api/albums/artist-art-status?" + query.toString());
+      if (!isCurrent()) return;
+      const collection = target === "search" ? state.albumLibraryMatches : state.albumsIndex;
+      let changed = false;
+      for (const status of statuses) {
+        const album = collection.find(item => item.id === status.id);
+        if (!album || album !== expectedRows.get(String(status.id))) continue;
+        Object.assign(album, status, {artist_art_pending: false});
+        changed = true;
+      }
+      if (changed) renderLibrary();
+    } catch {
+      // The database-first list remains usable and conservatively Yellow when
+      // bounded Artist Art storage is temporarily unavailable.
+    }
+  }
+}
 async function loadAlbumLibraryMatches(query) {
   const request = ++state.albumLibraryRequest;
   const value = String(query || "").trim();
@@ -2971,9 +3039,12 @@ async function loadAlbumLibraryMatches(query) {
   try {
     const matches = await coalescedLibraryApi("/api/albums?view=search&q=" + encodeURIComponent(value));
     if (request !== state.albumLibraryRequest || state.libraryMode !== "artists") return;
-    state.albumLibraryMatches = matches;
+    state.albumLibraryMatches = preserveAlbumArtistArtEvidence(
+      matches, state.albumLibraryMatches,
+    );
     state.albumLibraryLoading = false;
     renderLibrary();
+    void hydrateAlbumArtistArt(request, state.albumLibraryMatches, "search");
   } catch (error) {
     if (request !== state.albumLibraryRequest || state.libraryMode !== "artists") return;
     state.albumLibraryMatches = [];
