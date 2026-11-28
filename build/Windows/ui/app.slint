@@ -2288,7 +2288,7 @@ export component AppWindow inherits Window {
                 if root.setup-required: HeaderAction {
                     label: "Setup";
                     width: (78px * AppTheme.ui-scale);
-                    enabled: root.setup-library-ready && !root.setup-saving && (!root.setup-database-network-path || root.settings-sqlite-shared) && (!root.settings-sqlite-shared || root.setup-postgres-choice == "no" || (root.setup-postgres-choice == "yes" && root.setup-postgres-validated)) && (root.restore-path == "" || root.restore-path == root.setup-loaded-archive-path);
+                    enabled: root.setup-library-ready && !root.setup-saving && (!root.setup-database-network-path || root.settings-sqlite-shared) && (root.setup-postgres-choice != "yes" || root.setup-postgres-validated) && (root.restore-path == "" || root.restore-path == root.setup-loaded-archive-path);
                     clicked => root.save-setup();
                 }
             }
@@ -2380,13 +2380,13 @@ export component AppWindow inherits Window {
                                 color: root.setup-database-network-path && !root.settings-sqlite-shared ? AppTheme.danger : (root.settings-sqlite-shared ? AppTheme.yellow : AppTheme.secondary-foreground); wrap: word-wrap; height: (43px * AppTheme.ui-scale); font-size: (13px * AppTheme.ui-scale) * AppTheme.font-scale;
                             }
                             HorizontalLayout { height: (34px * AppTheme.ui-scale); spacing: (16px * AppTheme.ui-scale);
-                                RadioToggle { label: "Shared/network SQLite (advanced)"; checked <=> root.settings-sqlite-shared; enabled: root.setup-library-ready; horizontal-stretch: 1; toggled(value) => { root.setup-postgres-validated = false; root.setup-postgres-choice = ""; root.settings-postgres-coordination = false; root.setup-postgres-status = value ? "Choose whether this shared SQLite installation coordinates with WebGUI PostgreSQL." : "Standalone SQLite uses the built-in state policy."; } }
+                                RadioToggle { label: "Shared/network SQLite (advanced)"; checked <=> root.settings-sqlite-shared; enabled: root.setup-library-ready; horizontal-stretch: 1; }
                                 RadioToggle { label: "Use extra .client-lock"; checked <=> root.settings-windows-client-lock; enabled: root.setup-library-ready && root.settings-sqlite-shared; horizontal-stretch: 1; }
                             }
                         }
                     }
 
-                    if root.settings-sqlite-shared: Rectangle {
+                    if root.setup-library-ready: Rectangle {
                         height: root.setup-postgres-choice == "yes" ? (300px * AppTheme.ui-scale) : (126px * AppTheme.ui-scale);
                         border-radius: (8px * AppTheme.ui-scale); border-width: (1px * AppTheme.ui-scale);
                         border-color: root.setup-postgres-choice == "yes" && root.setup-postgres-validated ? AppTheme.green : AppTheme.yellow;
@@ -2395,7 +2395,7 @@ export component AppWindow inherits Window {
                             Text { text: "Coordinate with a separate WebGUI PostgreSQL instance?"; color: AppTheme.yellow; font-size: (15px * AppTheme.ui-scale) * AppTheme.font-scale; font-weight: 700; height: (26px * AppTheme.ui-scale); }
                             HorizontalLayout { height: (36px * AppTheme.ui-scale); spacing: (8px * AppTheme.ui-scale);
                                 Button { text: "Yes · PostgreSQL"; enabled: !root.setup-saving; clicked => { root.setup-postgres-choice = "yes"; root.settings-postgres-coordination = true; root.setup-postgres-validated = false; root.setup-postgres-status = "Enter and test the WebGUI PostgreSQL connection. No JSON is written until Setup Save."; } }
-                                Button { text: "No · Shared SQLite only"; enabled: !root.setup-saving; clicked => { root.setup-postgres-choice = "no"; root.settings-postgres-coordination = false; root.setup-postgres-validated = false; root.setup-postgres-status = "Setup Save will create editable SQLite media-state and COMP report policies."; } }
+                                Button { text: "No · SQLite only"; enabled: !root.setup-saving; clicked => { root.setup-postgres-choice = "no"; root.settings-postgres-coordination = false; root.setup-postgres-validated = false; root.setup-postgres-status = "Windows will use its local media-state and COMP report policies."; } }
                             }
                             if root.setup-postgres-choice == "yes": VerticalLayout { spacing: (6px * AppTheme.ui-scale);
                                 SettingField { label: "PostgreSQL Server URL"; value: root.setup-postgres-server; hint: "postgresql://host:5432/database"; edited(value) => { root.setup-postgres-server = value; root.setup-postgres-validated = false; } }
@@ -2422,7 +2422,7 @@ export component AppWindow inherits Window {
                     Rectangle { height: (78px * AppTheme.ui-scale); border-radius: (8px * AppTheme.ui-scale); border-width: (1px * AppTheme.ui-scale); border-color: root.setup-database-network-path && !root.settings-sqlite-shared ? AppTheme.danger : AppTheme.border; background: AppTheme.quiet-surface;
                         HorizontalLayout { padding: (12px * AppTheme.ui-scale); spacing: (12px * AppTheme.ui-scale);
                             Text { text: root.setup-database-network-path && !root.settings-sqlite-shared ? "Select Shared/network SQLite above to continue safely." : "Setup may take several minutes for a large first index. Keep this window open; album counts, current path, errors, and publication progress will be shown here."; color: root.setup-database-network-path && !root.settings-sqlite-shared ? AppTheme.danger : AppTheme.secondary-foreground; wrap: word-wrap; vertical-alignment: center; horizontal-stretch: 1; }
-                            Button { text: root.setup-saving ? "Setup in Progress…" : (root.setup-database-network-path && !root.settings-sqlite-shared ? "Shared Mode Required" : "Save & Open Settings"); width: root.setup-saving ? (220px * AppTheme.ui-scale) : (210px * AppTheme.ui-scale); enabled: root.setup-library-ready && !root.setup-saving && (!root.setup-database-network-path || root.settings-sqlite-shared) && (!root.settings-sqlite-shared || root.setup-postgres-choice == "no" || (root.setup-postgres-choice == "yes" && root.setup-postgres-validated)) && (root.restore-path == "" || root.restore-path == root.setup-loaded-archive-path); clicked => root.save-setup(); }
+                            Button { text: root.setup-saving ? "Setup in Progress…" : (root.setup-database-network-path && !root.settings-sqlite-shared ? "Shared Mode Required" : "Save & Open Settings"); width: root.setup-saving ? (220px * AppTheme.ui-scale) : (210px * AppTheme.ui-scale); enabled: root.setup-library-ready && !root.setup-saving && (!root.setup-database-network-path || root.settings-sqlite-shared) && (root.setup-postgres-choice != "yes" || root.setup-postgres-validated) && (root.restore-path == "" || root.restore-path == root.setup-loaded-archive-path); clicked => root.save-setup(); }
                         }
                     }
                     Rectangle { height: (12px * AppTheme.ui-scale); background: transparent; }
@@ -3804,7 +3804,7 @@ export component AppWindow inherits Window {
                                     if root.settings-advanced-visible: VerticalLayout { spacing: (6px * AppTheme.ui-scale);
                                         Heading { text: "Database Access"; height: (29px * AppTheme.ui-scale); color: AppTheme.cyan; }
                                         SettingToggle { label: "Shared/Network SQLite"; value <=> root.settings-sqlite-shared; }
-                                        if root.settings-sqlite-shared: SettingToggle { label: "Coordinate with WebGUI PostgreSQL"; value <=> root.settings-postgres-coordination; }
+                                        SettingToggle { label: "Coordinate with WebGUI PostgreSQL"; value <=> root.settings-postgres-coordination; }
                                         RadioToggle { label: "Use extra .client-lock for shared SQLite"; checked <=> root.settings-windows-client-lock; enabled: root.settings-sqlite-shared; height: (30px * AppTheme.ui-scale); }
                                         SettingsHelpTip { summary: "What must I check before sharing SQLite?"; detail: "Advanced: every client must point to the same database on a share with reliable cross-host locking. Shared mode uses SQLite rollback journaling and a 30-second busy timeout. The extra .client-lock is recommended only when every client participates and can acquire it; otherwise coordinate writes yourself. Read the Shared DB Guide before enabling."; }
                                         NeonAction { label: "Shared DB Guide ↗"; clicked => root.open-about-link("shared-db"); }

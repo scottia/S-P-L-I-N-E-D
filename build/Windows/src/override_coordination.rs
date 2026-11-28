@@ -751,21 +751,21 @@ pub fn effective_track_write_states(
 pub fn coordination_database_url(config: &Config) -> Result<Option<String>, String> {
     if let Ok(value) = std::env::var("SPLINED_COORDINATION_DATABASE_URL") {
         let value = value.trim().to_string();
-        if value.is_empty() {
-            if !config.scan.sqlite_shared || !config.scan.postgres_coordination {
-                return Ok(None);
+        if !value.is_empty() {
+            if !value.starts_with("postgres://") && !value.starts_with("postgresql://") {
+                return Err(
+                    "SPLINED_COORDINATION_DATABASE_URL must use postgres:// or postgresql://."
+                        .to_string(),
+                );
             }
-            return load_album_coordination_database_url(config);
+            return Ok(Some(value));
         }
-        if !value.starts_with("postgres://") && !value.starts_with("postgresql://") {
-            return Err(
-                "SPLINED_COORDINATION_DATABASE_URL must use postgres:// or postgresql://."
-                    .to_string(),
-            );
-        }
-        return Ok(Some(value));
     }
-    if !config.scan.sqlite_shared || !config.scan.postgres_coordination {
+    saved_coordination_database_url(config)
+}
+
+fn saved_coordination_database_url(config: &Config) -> Result<Option<String>, String> {
+    if !config.scan.postgres_coordination {
         return Ok(None);
     }
     load_album_coordination_database_url(config)
@@ -993,6 +993,36 @@ pub fn local_writer(database_path: &Path, album_key: &str) -> Result<Option<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_album_coordination_credential_works_in_both_sqlite_modes() {
+        use crate::credential_store::{ALBUM_COORDINATION_PROVIDER, CredentialEditor, save_editor};
+
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.credentials.credential_dir = directory.path().to_string_lossy().into_owned();
+        config.scan.postgres_coordination = true;
+        assert!(saved_coordination_database_url(&config).unwrap().is_none());
+        save_editor(
+            &config,
+            &CredentialEditor {
+                provider: ALBUM_COORDINATION_PROVIDER.into(),
+                server_url: "postgresql://127.0.0.1:55432/splined".into(),
+                username: "test-user".into(),
+                secret: "test-password".into(),
+                ..CredentialEditor::default()
+            },
+        )
+        .unwrap();
+
+        let local = saved_coordination_database_url(&config).unwrap();
+        assert!(local.is_some());
+        config.scan.sqlite_shared = true;
+        assert_eq!(saved_coordination_database_url(&config).unwrap(), local);
+
+        config.scan.postgres_coordination = false;
+        assert!(saved_coordination_database_url(&config).unwrap().is_none());
+    }
 
     #[test]
     fn identity_is_exact_except_for_bom_and_case() {
