@@ -66,13 +66,13 @@ use splined_core::media_database::{
 };
 use splined_core::media_state_policy::{
     PostgresPolicySnapshot as MediaStatePostgresPolicySnapshot,
-    activate_policy as activate_media_state_policy,
     activate_policy_revision as activate_media_state_policy_revision,
     active_revision as active_media_state_policy_revision, classify_album, classify_artist,
     database_monitor_poll_seconds, database_monitor_presentation, fetch_postgres_policy,
     named_color, policy as media_state_policy, policy_json as media_state_policy_json,
-    policy_path as media_state_policy_path, save_policy as save_media_state_policy,
-    save_postgres_policy, status_color as media_status_color,
+    policy_path as media_state_policy_path,
+    postgres_authority_configured as media_state_postgres_configured,
+    save_policy as save_media_state_policy, save_postgres_policy, status_color as media_status_color,
     validate_policy as validate_media_state_policy,
 };
 use splined_core::musicbrainz::{ArtistLookup, ArtistSearchHit, MusicBrainzClient};
@@ -167,7 +167,12 @@ fn album_category_key(selection: &str) -> Result<&'static str, String> {
 }
 
 fn navidrome_thumbnail_cache_root(config: &Config) -> PathBuf {
-    Path::new(&config.scan.cache_dir).join("navidrome-thumbnails")
+    let cache_root = if config.scan.sqlite_shared {
+        &config.scan.cache_dir
+    } else {
+        &config.scan.temporary_cache_dir
+    };
+    Path::new(cache_root).join("navidrome-thumbnails")
 }
 
 fn defer_thumbnail_requests_while_indexing(requests: &[(String, String)]) -> bool {
@@ -8230,28 +8235,6 @@ fn validate_setup_shared_policy_targets(
     validate_media_state_policy(&validated.snapshot.media_state.policy_json)?;
     validate_comp_report_policy(&validated.snapshot.comp_report.policy_json)?;
 
-    let policy_path = media_state_policy_path(config)?;
-    if policy_path.is_file() {
-        let existing = fs::read_to_string(&policy_path).map_err(|error| {
-            format!(
-                "Unable to read existing media-state policy {}: {error}",
-                policy_path.display()
-            )
-        })?;
-        validate_media_state_policy(&existing)?;
-        let existing_value = serde_json::from_str::<serde_json::Value>(&existing)
-            .map_err(|error| format!("Existing media-state policy is invalid: {error}"))?;
-        let validated_value =
-            serde_json::from_str::<serde_json::Value>(&validated.snapshot.media_state.policy_json)
-                .map_err(|error| format!("PostgreSQL media-state policy is invalid: {error}"))?;
-        if existing_value != validated_value {
-            return Err(format!(
-                "Setup will not overwrite the different existing media-state policy {}. Choose another Provider Credential Directory or reconcile it in Advanced Settings.",
-                policy_path.display()
-            ));
-        }
-    }
-
     let comp_path = comp_report_policy_path(config)?;
     if comp_path.is_file() {
         let existing = fs::read_to_string(&comp_path).map_err(|error| {
@@ -8310,12 +8293,10 @@ fn install_setup_shared_policy(
     if !coordination_path.is_file() {
         save_editor(config, &validated.editor)?;
     }
-    let policy_path = media_state_policy_path(config)?;
-    if policy_path.is_file() {
-        activate_media_state_policy(&validated.snapshot.media_state.policy_json)?;
-    } else {
-        save_media_state_policy(&policy_path, &validated.snapshot.media_state.policy_json)?;
-    }
+    activate_media_state_policy_revision(
+        &validated.snapshot.media_state.policy_json,
+        validated.snapshot.media_state.revision,
+    )?;
     let comp_path = comp_report_policy_path(config)?;
     if comp_path.is_file() {
         activate_comp_report_policy(
@@ -8337,16 +8318,15 @@ fn save_media_state_policy_with_authority(
     text: &str,
 ) -> Result<Option<i64>, String> {
     validate_media_state_policy(text)?;
-    let policy_path = media_state_policy_path(config)?;
-    let database_url = if config.scan.sqlite_shared && config.scan.postgres_coordination {
-        load_album_coordination_database_url(config)?
-    } else {
-        None
-    };
-    let Some(database_url) = database_url else {
+    if !media_state_postgres_configured(config) {
+        let policy_path = media_state_policy_path(config)?;
         save_media_state_policy(&policy_path, text)?;
         return Ok(None);
-    };
+    }
+    let database_url = load_album_coordination_database_url(config)?.ok_or_else(|| {
+        "PostgreSQL media-state authority is configured but its authorization is unavailable."
+            .to_string()
+    })?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -8361,7 +8341,7 @@ fn save_media_state_policy_with_authority(
         .await
         .map_err(|_| "PostgreSQL policy save timed out after 15 seconds.".to_string())?
     })?;
-    save_media_state_policy(&policy_path, &snapshot.policy_json)?;
+    activate_media_state_policy_revision(&snapshot.policy_json, snapshot.revision)?;
     Ok(Some(snapshot.revision))
 }
 
@@ -8399,7 +8379,7 @@ fn save_comp_report_policy_with_authority(
 }
 
 fn fetch_shared_policy_snapshots(config: &Config) -> Result<Option<SharedPolicySnapshots>, String> {
-    if !config.scan.sqlite_shared || !config.scan.postgres_coordination {
+    if !media_state_postgres_configured(config) {
         return Ok(None);
     }
     let Some(database_url) = load_album_coordination_database_url(config)? else {
@@ -8433,8 +8413,7 @@ fn schedule_shared_policy_refresh(
     state: Arc<Mutex<ApplicationState>>,
 ) {
     let config = state.lock().ok().and_then(|app| {
-        (app.config.scan.sqlite_shared && app.config.scan.postgres_coordination)
-            .then(|| app.config.clone())
+        media_state_postgres_configured(&app.config).then(|| app.config.clone())
     });
     let Some(config) = config else {
         return;
@@ -8446,7 +8425,7 @@ fn schedule_shared_policy_refresh(
             Err(error) => {
                 if let Ok(mut app) = state.lock() {
                     app.push_log(format!(
-                        "WARNING: PostgreSQL shared-policy check failed; continuing with validated local mirrors: {error}"
+                        "WARNING: PostgreSQL shared-policy authorization failed; the validated local media-state JSON remains active: {error}"
                     ));
                 }
                 let _ = slint::invoke_from_event_loop(move || refresh_weak(&weak, &state));
@@ -8473,13 +8452,12 @@ fn schedule_shared_policy_refresh(
                 return Err("processing resumed before shared policies could activate".to_string());
             }
             let mut activated = Vec::new();
-            if snapshots.media_state.revision > active_media_state_policy_revision() {
-                let path = media_state_policy_path(&app.config)?;
-                save_media_state_policy(&path, &snapshots.media_state.policy_json)?;
-                activate_media_state_policy_revision(
-                    &snapshots.media_state.policy_json,
-                    snapshots.media_state.revision,
-                )?;
+            let prior_media_state_revision = active_media_state_policy_revision();
+            activate_media_state_policy_revision(
+                &snapshots.media_state.policy_json,
+                snapshots.media_state.revision,
+            )?;
+            if snapshots.media_state.revision != prior_media_state_revision {
                 activated.push(format!("media-state r{}", snapshots.media_state.revision));
             }
             if snapshots.comp_report.revision > active_comp_report_policy_revision() {
@@ -8510,7 +8488,7 @@ fn schedule_shared_policy_refresh(
             && let Ok(mut app) = state.lock()
         {
             app.push_log(format!(
-                "WARNING: PostgreSQL shared policies were fetched but not activated; local mirrors remain active: {error}"
+                "WARNING: PostgreSQL shared policies were fetched but not activated; the validated local media-state JSON remains active: {error}"
             ));
         }
         let _ = slint::invoke_from_event_loop(move || refresh_weak(&weak, &state));
@@ -9182,9 +9160,12 @@ fn load_application_state(
         state.push_log(format!("SETUP REQUIRED: {error}"));
         return (state, true, first_error);
     }
-    record_startup_timing(
-        "startup-shared-policy local_mirrors_active async_check_deferred".to_string(),
-    );
+    record_startup_timing(if media_state_postgres_configured(&config) {
+        "startup-shared-policy local_media_state_json_active postgres_authorization_deferred"
+            .to_string()
+    } else {
+        "startup-shared-policy local_media_state_json_authority".to_string()
+    });
     let configured_cache = Path::new(&config.scan.temporary_cache_dir);
     let portable_cache = splined_core::portable::app_layout()
         .ok()
@@ -16306,7 +16287,7 @@ fn bind_service_callbacks(
                         );
                         ui.set_settings_media_state_policy_status(match revision {
                             Some(revision) => format!(
-                                "Validated, saved to PostgreSQL revision {revision}, mirrored locally, and active"
+                                "Validated, saved to PostgreSQL revision {revision}, and active"
                             )
                             .into(),
                             None => "Validated, saved locally, and active".into(),
@@ -26492,7 +26473,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn native_thumbnail_hydration_defers_during_index_and_uses_persistent_cache() {
+    fn native_thumbnail_hydration_defers_during_index_and_uses_mode_owned_cache() {
         CATALOG_INDEX_REFRESH_ACTIVE.store(false, Ordering::SeqCst);
         let _ = take_deferred_thumbnail_requests();
         let requests = vec![
@@ -26508,12 +26489,20 @@ mod tests {
         let mut config = splined_core::config::Config::default();
         config.scan.cache_dir = r"C:\persistent-cache".to_string();
         config.scan.temporary_cache_dir = r"C:\temporary-cache".to_string();
-        let root = navidrome_thumbnail_cache_root(&config);
+        let local_root = navidrome_thumbnail_cache_root(&config);
         assert_eq!(
-            root,
+            local_root,
+            std::path::Path::new(r"C:\temporary-cache\navidrome-thumbnails")
+        );
+        assert!(local_root.starts_with(&config.scan.temporary_cache_dir));
+
+        config.scan.sqlite_shared = true;
+        let shared_root = navidrome_thumbnail_cache_root(&config);
+        assert_eq!(
+            shared_root,
             std::path::Path::new(r"C:\persistent-cache\navidrome-thumbnails")
         );
-        assert!(!root.starts_with(&config.scan.temporary_cache_dir));
+        assert!(!shared_root.starts_with(&config.scan.temporary_cache_dir));
         assert_eq!(NAVIDROME_ARTIST_DOWNLOAD_LIMIT, 4);
         assert_eq!(NAVIDROME_ALBUM_DOWNLOAD_LIMIT, 6);
     }
